@@ -61,9 +61,18 @@ function errorMessage(value: unknown, fallback: string): string {
 export class HubClient {
   private readonly fetcher: Fetch;
   private readonly navigate: Navigate;
+  private readonly unauthorizedListeners = new Set<() => Promise<void>>();
+
+  onUnauthorized(listener: () => Promise<void>): () => void {
+    this.unauthorizedListeners.add(listener);
+    return () => this.unauthorizedListeners.delete(listener);
+  }
 
   constructor(
-    readonly config: Pick<HubConfig, 'basePath' | 'authMode'>,
+    readonly config: Pick<
+      HubConfig,
+      'basePath' | 'authMode' | 'cacheScope' | 'cacheDisplayAllowed'
+    >,
     options: { fetch?: Fetch; navigate?: Navigate } = {},
   ) {
     this.fetcher = options.fetch ?? window.fetch.bind(window);
@@ -89,6 +98,11 @@ export class HubClient {
       credentials: 'same-origin',
       signal: options.signal,
     });
+    // Revoke cached display as soon as headers arrive, before reading a body
+    // that may stall and before passkey sign-in navigation leaves this page.
+    if (response.status === 401 || response.status === 403) {
+      await Promise.allSettled([...this.unauthorizedListeners].map((listener) => listener()));
+    }
     const contentType = response.headers.get('Content-Type')?.toLowerCase() ?? '';
     let value: unknown;
     if (contentType.includes('json')) {

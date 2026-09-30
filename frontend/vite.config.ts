@@ -1,8 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import type { Plugin } from 'vite';
 import preact from '@preact/preset-vite';
-import { dirname, resolve } from 'node:path';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 function deterministicStyles(): Plugin {
   return {
@@ -18,48 +17,6 @@ function deterministicStyles(): Plugin {
         map: null,
       };
     },
-    generateBundle(_options, bundle) {
-      const renamed = new Map<string, string>();
-      for (const output of Object.values(bundle)) {
-        if (output.type !== 'asset' || !output.fileName.endsWith('.css')) continue;
-        const css = String(output.source);
-        const target =
-          css.length > 100_000
-            ? 'app.css'
-            : css.includes('KaTeX_Main')
-              ? 'chunks/katex.css'
-              : css.includes('.hljs')
-                ? 'chunks/highlight.css'
-                : `assets/${output.fileName.split('/').pop()}`;
-        renamed.set(output.fileName, target);
-        output.fileName = target;
-      }
-      for (const output of Object.values(bundle)) {
-        if (output.type !== 'chunk') continue;
-        for (const [before, after] of renamed) output.code = output.code.replaceAll(before, after);
-        output.code = output.code
-          .replaceAll('./assets/highlight.css', './chunks/highlight.css')
-          .replaceAll('./assets/katex.css', './chunks/katex.css');
-      }
-    },
-    closeBundle() {
-      // Vite injects __vite__mapDeps after Rollup's generateBundle hooks. Keep
-      // those generated preload URLs aligned with the deterministic CSS moves,
-      // including maps emitted into lazy chunks rather than the entry module.
-      const outputDir = resolve(import.meta.dirname, '../internal/serveui/static/dist');
-      for (const relative of readdirSync(outputDir, { recursive: true, encoding: 'utf8' })) {
-        if (!relative.endsWith('.js')) continue;
-        const file = resolve(outputDir, relative);
-        const inOutputRoot = dirname(relative) === '.';
-        const relativeToOutput = inOutputRoot ? './' : '../';
-        const relativeToChunks = inOutputRoot ? './chunks/' : './';
-        const code = readFileSync(file, 'utf8')
-          .replaceAll(`${relativeToOutput}assets/main.css`, `${relativeToOutput}app.css`)
-          .replaceAll(`${relativeToOutput}assets/highlight.css`, `${relativeToChunks}highlight.css`)
-          .replaceAll(`${relativeToOutput}assets/katex.css`, `${relativeToChunks}katex.css`);
-        writeFileSync(file, code);
-      }
-    },
   };
 }
 
@@ -71,16 +28,24 @@ export default defineConfig({
     chunkSizeWarningLimit: 550,
     outDir: resolve(import.meta.dirname, '../internal/serveui/static/dist'),
     emptyOutDir: true,
-    manifest: false,
+    manifest: 'asset-manifest.json',
     sourcemap: false,
     assetsInlineLimit: 0,
     minify: 'esbuild',
     rollupOptions: {
       input: resolve(import.meta.dirname, 'src/main.tsx'),
       output: {
-        entryFileNames: 'app.js',
-        chunkFileNames: 'chunks/[name].js',
-        assetFileNames: 'assets/[name][extname]',
+        entryFileNames: 'app-[hash].js',
+        chunkFileNames: 'chunks/[name]-[hash].js',
+        // Name CSS before Vite creates preload maps and Rollup hashes the graph.
+        // No post-hash rewriting: every import and preload retains one identity.
+        assetFileNames(asset) {
+          const name = asset.names[0] ?? '';
+          if (name === 'main.css') return 'app-[hash][extname]';
+          if (name === 'katex.css' || name === 'highlight.css')
+            return 'chunks/[name]-[hash][extname]';
+          return 'assets/[name]-[hash][extname]';
+        },
         manualChunks(id) {
           if (id.includes('/katex/')) return 'katex';
           if (id.includes('/highlight.js/')) return 'highlight';

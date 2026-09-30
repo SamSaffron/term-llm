@@ -402,7 +402,8 @@ function ConversationComposer() {
     return skill ? { skill, name: match[1], args: match[2] || '' } : null;
   };
   const sendOrCommand = () => {
-    if (voiceBusy) return;
+    // Commands mutate server state too; keep the typed text until ready.
+    if (voiceBusy || (store.workspaceShown.peek() && !store.startupDone.peek())) return;
     const value = store.prompt.value.trim();
     const command = value.toLowerCase();
     if (command === '/stats') {
@@ -598,30 +599,35 @@ function ConversationComposer() {
     store.attachments.value.length === 0;
   const sendPending = store.sendPending.value;
   const sendBlocked = store.sendBlocked.value;
+  // A restored or hydrating workspace is editable, but nothing is sent (or
+  // started) until startup is authoritative.
+  const connecting = store.workspaceShown.value && !store.startupDone.value;
   const attachmentBlocked = store.attachments.value.some(
     (attachment) => attachment.status === 'preparing' || attachment.status === 'error',
   );
   const steering = !liveTextMode && canSteer && hasDraft;
   const loading = !liveButton && !liveTextMode && runActive && !hasDraft;
-  const sendLabel = liveButton
-    ? liveActive
-      ? 'Stop live voice'
-      : store.liveStore.phase.value === 'failed'
-        ? 'Retry live voice'
-        : 'Start live voice'
-    : liveTextMode
-      ? 'Send text to live voice'
-      : bindingBlocked
-        ? 'Project unavailable'
-        : sendPending
-          ? 'Sending message'
-          : loading
-            ? 'Response is running'
-            : sendBlocked
-              ? 'Checking whether sent'
-              : steering
-                ? 'Steer'
-                : 'Send message';
+  const sendLabel = connecting
+    ? 'Connecting to term-llm'
+    : liveButton
+      ? liveActive
+        ? 'Stop live voice'
+        : store.liveStore.phase.value === 'failed'
+          ? 'Retry live voice'
+          : 'Start live voice'
+      : liveTextMode
+        ? 'Send text to live voice'
+        : bindingBlocked
+          ? 'Project unavailable'
+          : sendPending
+            ? 'Sending message'
+            : loading
+              ? 'Response is running'
+              : sendBlocked
+                ? 'Checking whether sent'
+                : steering
+                  ? 'Steer'
+                  : 'Send message';
   const inspectDraggedFiles = (files: FileList | null): string => {
     let count = store.attachments.peek().length;
     for (const candidate of Array.from(files || [])) {
@@ -1110,7 +1116,8 @@ function ConversationComposer() {
               aria-label={sendLabel}
               aria-pressed={liveButton ? liveActive : undefined}
               disabled={
-                liveButton
+                connecting ||
+                (liveButton
                   ? !liveActive && (voiceBusy || bindingBlocked)
                   : liveTextMode
                     ? false
@@ -1118,7 +1125,7 @@ function ConversationComposer() {
                       voiceBusy ||
                       bindingBlocked ||
                       attachmentBlocked ||
-                      (!hasDraft && !loading)
+                      (!hasDraft && !loading))
               }
               onClick={liveButton ? toggleLiveCall : sendOrCommand}
             >

@@ -66,6 +66,24 @@ describe('Hub config', () => {
     });
   });
 
+  it('accepts only an opaque server scope and an explicit display authorization guarantee', () => {
+    const parse = (scope?: unknown, allowed?: unknown) =>
+      parseHubConfig({
+        page: 'dashboard',
+        authMode: 'bearer',
+        basePath: '/hub',
+        cacheScope: scope,
+        cacheDisplayAllowed: allowed,
+      });
+    expect(parse('a'.repeat(24), true)).toMatchObject({
+      cacheScope: 'a'.repeat(24),
+      cacheDisplayAllowed: true,
+    });
+    for (const scope of [undefined, 'token-secret', 'a'.repeat(23), 123]) {
+      expect(parse(scope, 'true')).toMatchObject({ cacheScope: '', cacheDisplayAllowed: false });
+    }
+  });
+
   it('requires a root-absolute bearer form action', () => {
     for (const formAction of ['relative', '//evil.example/login', '/\\evil.example/login']) {
       expect(() =>

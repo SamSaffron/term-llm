@@ -48,7 +48,7 @@ export function HubApp({
             </p>
           </div>
         )}
-        {store.initialLoading.value && (
+        {store.initialLoading.value && !store.hasDisplayData.value && (
           <div class="hub-empty" role="status">
             Loading Hub…
           </div>

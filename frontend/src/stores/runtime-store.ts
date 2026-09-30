@@ -3,6 +3,7 @@ import type { Session } from '../domain/types';
 import type { RuntimeOption } from './store-types';
 import { listFrom } from './store-utils';
 import type { AppStoreServices } from './app-store-services';
+import { MODEL_CATALOG_FRESH_MS, providerFingerprint } from './workspace-cache';
 
 export interface RuntimeStoreOptions {
   activeSession: ReadonlySignal<Session | null>;
@@ -16,6 +17,11 @@ export class RuntimeStore {
   readonly modelsLoadingProvider = signal<string | null>(null);
   readonly modelCatalogs = signal<Record<string, RuntimeOption[]>>({});
   private modelRequest: Promise<void> = Promise.resolve();
+  private modelRequestProvider = '';
+  private modelRequestPending = false;
+  /** When each displayed catalog was fetched from the server (cached or live). */
+  private readonly catalogFetchedAt = new Map<string, number>();
+  private providersVerified = false;
   readonly selectedProvider: Signal<string>;
   readonly selectedModel: Signal<string>;
   readonly selectedEffort: Signal<string>;
@@ -40,7 +46,11 @@ export class RuntimeStore {
     this.selectedAgent = signal(config.agentNames.includes(agent) ? agent : '');
   }
 
-  applyProviders(data: Record<string, unknown>): void {
+  /**
+   * Installs a provider list. Only an authoritative (server) list may prune a
+   * saved preference or refresh the persisted copy; a cached list is a label hint.
+   */
+  applyProviders(data: Record<string, unknown>, authoritative = true): void {
     const values = listFrom(data, 'data', 'providers', 'items')
       .map((entry) => ({
         ...entry,
@@ -49,7 +59,23 @@ export class RuntimeStore {
         models: Array.isArray(entry.models) ? entry.models : [],
       }))
       .filter((entry) => entry.id);
+    if (authoritative) {
+      const catalogs = { ...this.modelCatalogs.peek() };
+      for (const id of Object.keys(catalogs)) {
+        const previous = this.providers.peek().find((entry) => entry.id === id);
+        const incoming = values.find((entry) => entry.id === id);
+        if (providerFingerprint(previous) === providerFingerprint(incoming)) continue;
+        // Freshness cannot outlive the provider configuration it describes.
+        delete catalogs[id];
+        this.catalogFetchedAt.delete(id);
+        if (id === this.selectedProvider.peek()) this.models.value = [];
+      }
+      this.modelCatalogs.value = catalogs;
+    }
     this.providers.value = values;
+    if (!authoritative) return;
+    this.providersVerified = true;
+    this.services.workspaceCache.saveProviders(data);
     if (
       this.selectedProvider.value &&
       !values.some((provider) => provider.id === this.selectedProvider.value)
@@ -59,9 +85,65 @@ export class RuntimeStore {
     }
   }
 
+  /**
+   * Shows the last-known provider list and the selected provider's model
+   * catalog before discovery answers. Never prunes preferences.
+   */
+  async restoreCachedDiscovery(): Promise<void> {
+    const cache = this.services.workspaceCache;
+    if (!cache.enabled) return;
+    const providers = await cache.readProviders();
+    if (!providers) {
+      this.services.recordDiscovery({ discoveryCacheMisses: 1 });
+      return;
+    }
+    // A real response may already have landed while IndexedDB was reading.
+    if (!this.providersVerified) this.applyProviders(providers.value.payload, false);
+    const provider = this.selectedProvider.peek();
+    const fingerprint = providerFingerprint(this.providers.peek().find((p) => p.id === provider));
+    const models = provider ? await cache.readModels(provider, fingerprint) : null;
+    this.services.recordDiscovery({
+      discoveryCacheHits: models ? 2 : 1,
+      discoveryCacheMisses: provider && !models ? 1 : 0,
+    });
+    // Authoritative providers may have landed (and changed this provider's
+    // configuration) while IndexedDB was reading: never reinstall a catalog
+    // for a fingerprint that is no longer current.
+    const current = providerFingerprint(this.providers.peek().find((p) => p.id === provider));
+    if (!models || current !== fingerprint || this.modelCatalogs.peek()[provider]) return;
+    this.catalogFetchedAt.set(provider, models.updated);
+    batch(() => {
+      this.modelCatalogs.value = { ...this.modelCatalogs.peek(), [provider]: models.value.models };
+      if (provider === this.selectedProvider.peek()) this.models.value = models.value.models;
+    });
+  }
+
+  /**
+   * Background startup discovery: skipped while the displayed catalog is
+   * younger than the freshness window, otherwise one deduplicated request.
+   */
+  refreshModelsInBackground(provider = this.selectedProvider.peek()): Promise<void> {
+    const fetchedAt = this.catalogFetchedAt.get(provider);
+    if (
+      this.modelCatalogs.peek()[provider] &&
+      fetchedAt !== undefined &&
+      Date.now() - fetchedAt < MODEL_CATALOG_FRESH_MS
+    )
+      return Promise.resolve();
+    return this.loadModels(provider);
+  }
+
+  /** Concurrent loads of the same provider share one request. */
   loadModels(provider = this.selectedProvider.value): Promise<void> {
-    this.modelRequest = this.fetchModels(provider);
-    return this.modelRequest;
+    if (this.modelRequestPending && this.modelRequestProvider === provider)
+      return this.modelRequest;
+    this.modelRequestProvider = provider;
+    this.modelRequestPending = true;
+    const request = this.fetchModels(provider).finally(() => {
+      if (this.modelRequest === request) this.modelRequestPending = false;
+    });
+    this.modelRequest = request;
+    return request;
   }
 
   whenModelsReady(provider = this.selectedProvider.peek()): Promise<void> {
@@ -86,6 +168,8 @@ export class RuntimeStore {
     this.modelAbort = controller;
     this.modelsLoadingProvider.value = this.modelCatalogs.peek()[provider] ? null : provider;
     let data: Record<string, unknown>;
+    const started = performance.now();
+    this.services.recordDiscovery({ discoveryFetches: 1 });
     try {
       data = await this.services.endpoints.models(provider, controller.signal);
     } catch (error) {
@@ -93,6 +177,7 @@ export class RuntimeStore {
       this.modelsLoadingProvider.value = null;
       throw error;
     }
+    this.services.recordDiscovery({}, performance.now() - started);
     if (controller.signal.aborted || epoch !== this.modelEpoch) return;
     const models = listFrom(data, 'data', 'models', 'items')
       .map((entry) => ({
@@ -115,6 +200,15 @@ export class RuntimeStore {
       this.models.value = models;
       this.modelsLoadingProvider.value = null;
     });
+    this.catalogFetchedAt.set(provider, Date.now());
+    // Persist against the verified provider entry only; a catalog fetched
+    // while providers are still last-known would carry an unverified fingerprint.
+    if (this.providersVerified)
+      this.services.workspaceCache.saveModels(
+        provider,
+        providerFingerprint(this.providers.peek().find((entry) => entry.id === provider)),
+        models,
+      );
     if (provider !== this.selectedProvider.peek()) return;
     if (
       this.selectedModel.value &&

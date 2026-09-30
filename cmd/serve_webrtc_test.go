@@ -49,7 +49,7 @@ func TestRenderIndexHTMLUsesSingleModuleForWebRTC(t *testing.T) {
 			webrtcHeadSnippet: map[bool]string{true: `<script>window.__WEBRTC_ENABLED__=true;</script>`}[enabled],
 		}
 		html := string(s.renderIndexHTML())
-		if strings.Count(html, `type="module" src="dist/app.js`) != 1 {
+		if strings.Count(html, `type="module" src="`+uiBuildAsset(t, "dist/app.js")) != 1 {
 			t.Fatalf("enabled=%v: expected one application module", enabled)
 		}
 		if strings.Contains(html, "app-webrtc.js") {
@@ -58,7 +58,7 @@ func TestRenderIndexHTMLUsesSingleModuleForWebRTC(t *testing.T) {
 	}
 }
 
-func TestHandleUIServiceWorkerKeepsWebRTCChunkNetworkFirst(t *testing.T) {
+func TestHandleUIServiceWorkerIncludesHashedWebRTCChunk(t *testing.T) {
 	var bodies []string
 	for _, enabled := range []bool{false, true} {
 		s := &serveServer{
@@ -74,8 +74,8 @@ func TestHandleUIServiceWorkerKeepsWebRTCChunkNetworkFirst(t *testing.T) {
 			t.Fatalf("enabled=%v: status = %d, want %d", enabled, rec.Code, http.StatusOK)
 		}
 		body := rec.Body.String()
-		if strings.Contains(body, "dist/chunks/webrtc.js") {
-			t.Fatalf("enabled=%v: stable-named WebRTC chunk must not be treated as a versioned shell URL", enabled)
+		if !strings.Contains(body, uiBuildAsset(t, "dist/chunks/webrtc.js")) {
+			t.Fatalf("enabled=%v: hashed WebRTC chunk missing from content cache list", enabled)
 		}
 		bodies = append(bodies, body)
 	}

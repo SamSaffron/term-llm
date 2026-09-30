@@ -108,6 +108,7 @@ describe('Hub components', () => {
 
   it('caps rendered delegations at eight while counting the full active set', () => {
     const value = store();
+    value.delegationsVerified.value = true;
     value.delegations.value = Array.from({ length: 9 }, (_, index) => ({
       id: `delegation-${index}`,
       origin_node: 'origin',

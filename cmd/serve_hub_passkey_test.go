@@ -122,7 +122,7 @@ func TestHubPasskeyOnlyStandaloneAssetsArePublic(t *testing.T) {
 			t.Errorf("public asset %s status=%d bytes=%d", path, recorder.Code, recorder.Body.Len())
 		}
 	}
-	for _, path := range []string{"/hub/dist/app.js", "/hub/dist/chunks/vendor.js", "/hub/dist/hub.js.map", "/hub/api/nodes"} {
+	for _, path := range []string{"/hub/" + uiBuildAsset(t, "dist/app.js"), "/hub/" + uiBuildAsset(t, "dist/chunks/vendor.js"), "/hub/dist/hub.js.map", "/hub/api/nodes"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://backend"+path, nil))
 		if recorder.Code != http.StatusUnauthorized {

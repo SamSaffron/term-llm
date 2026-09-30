@@ -2,6 +2,7 @@ import { relativeSessionTime } from '../domain/formatting';
 import type { HubStore } from '../stores/hub-store';
 
 export function AttentionPanels({ store }: { store: HubStore }) {
+  const stale = !store.attentionVerified.value;
   const waiting = store.inputRequired.value;
   const inbox = store.inbox.value;
   return (
@@ -10,7 +11,10 @@ export function AttentionPanels({ store }: { store: HubStore }) {
         <section class="attention-panel input-required-panel" aria-label="Needs your input">
           <div class="delegations-head">
             <div>
-              <h2>Needs your input</h2>
+              <h2>
+                Needs your input
+                {stale && <span class="hub-cache-marker"> · last known · updating</span>}
+              </h2>
               <p>Conversations blocked on a question or approval.</p>
             </div>
             <span class="delegations-count" aria-live="polite">
@@ -31,7 +35,7 @@ export function AttentionPanels({ store }: { store: HubStore }) {
               return (
                 <li key={`${item.node_id}:${item.session_id}`}>
                   <a
-                    class={`attention-row input-required-row${item.stale ? ' is-stale' : ''}`}
+                    class={`attention-row input-required-row${stale || item.stale ? ' is-stale' : ''}`}
                     href={item.resume_path || '#'}
                   >
                     <span class="attention-dot" />
@@ -43,7 +47,7 @@ export function AttentionPanels({ store }: { store: HubStore }) {
                         {[
                           item.node_name || item.node_id,
                           count > 1 ? `${count} decisions waiting` : label,
-                          item.stale ? 'last known state' : when,
+                          stale || item.stale ? 'last known state' : when,
                         ]
                           .filter(Boolean)
                           .join(' · ')}
@@ -60,7 +64,10 @@ export function AttentionPanels({ store }: { store: HubStore }) {
         <section class="attention-panel" aria-label="Ready to review">
           <div class="delegations-head">
             <div>
-              <h2>Ready to review</h2>
+              <h2>
+                Ready to review
+                {stale && <span class="hub-cache-marker"> · last known · updating</span>}
+              </h2>
               <p>Finished conversations not yet visited.</p>
             </div>
             <span class="delegations-count" aria-live="polite">
@@ -71,7 +78,10 @@ export function AttentionPanels({ store }: { store: HubStore }) {
           <ul class="attention-list">
             {inbox.map((item) => (
               <li key={`${item.node_id}:${item.session_id}`}>
-                <a class="attention-row" href={item.resume_path || '#'}>
+                <a
+                  class={`attention-row${stale ? ' is-stale' : ''}`}
+                  href={item.resume_path || '#'}
+                >
                   <span class="attention-dot" />
                   <span class="attention-body">
                     <strong class="attention-title">
@@ -81,7 +91,7 @@ export function AttentionPanels({ store }: { store: HubStore }) {
                       {[
                         item.node_name || item.node_id,
                         item.outcome || 'completed',
-                        relativeSessionTime(item.terminal_at),
+                        stale ? 'last known state' : relativeSessionTime(item.terminal_at),
                       ]
                         .filter(Boolean)
                         .join(' · ')}

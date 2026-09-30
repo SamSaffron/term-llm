@@ -60,7 +60,8 @@ function displayedSessions(node: HubNode) {
   return result;
 }
 
-export function NodeSessions({ node }: { node: HubNode }) {
+export function NodeSessions({ node, verified = true }: { node: HubNode; verified?: boolean }) {
+  if (!verified) return null;
   const sessions = node.sessions;
   if (!sessions) {
     return (

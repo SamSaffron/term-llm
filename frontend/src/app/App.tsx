@@ -122,6 +122,44 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
   );
 }
 
+/**
+ * Subtle status for last-known content. Cached UI must never look live: it
+ * is labelled until the server confirms it, and a failed startup over a
+ * restored workspace offers a retry instead of the blocking splash.
+ */
+export function WorkspaceNotice({ store }: { store: AppStore }) {
+  const notice = store.workspaceNotice.value;
+  if (!notice) return null;
+  const retry =
+    notice === 'offline'
+      ? () => void store.bootstrap()
+      : notice === 'unverified'
+        ? () => void store.loadSession(store.activeSessionId.peek())
+        : null;
+  const message =
+    notice === 'offline'
+      ? `Couldn't reach term-llm. Showing your last-known workspace.`
+      : notice === 'unverified'
+        ? `Couldn't refresh this conversation. Showing last-known messages.`
+        : 'Showing last-known workspace · reconnecting…';
+  return (
+    <div
+      class={`workspace-notice workspace-notice-${notice}`}
+      role="status"
+      aria-live="polite"
+      data-testid="workspace-notice"
+    >
+      {notice === 'cached' && <span class="workspace-notice-spinner" aria-hidden="true" />}
+      <span>{message}</span>
+      {retry && (
+        <button class="btn workspace-notice-retry" type="button" onClick={retry}>
+          Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function App({ store }: { store: AppStore }) {
   const shell = useRef<HTMLDivElement>(null);
   const diffWidth = useMemo(() => computed(() => store.diff.value.width), [store]);
@@ -141,13 +179,22 @@ export function App({ store }: { store: AppStore }) {
       bind('--shell-dock-right-size', () => store.shellStore.dockRightSize.value),
     ];
     return () => dispose.forEach((stop) => stop());
-  }, [store, diffWidth, store.authRequired.value, store.startupDone.value]);
+  }, [
+    store,
+    diffWidth,
+    store.authRequired.value,
+    store.startupDone.value,
+    store.workspaceShown.value,
+  ]);
   const session = store.activeSession.value;
   const shellVisible = store.shellStore.visible.value;
   const shellLayout = store.shellStore.layout.value;
   const shellSessionId = store.shellStore.sessionId.value;
   const draftActive = store.draftActive.value;
   const shellFullscreen = shellVisible && shellLayout === 'fullscreen';
+  // A restored last-known workspace renders before startup is authoritative;
+  // WorkspaceNotice marks it and sending stays blocked until startupDone.
+  const workspaceVisible = store.startupDone.value || store.workspaceShown.value;
   useEffect(() => {
     if (
       shellVisible &&
@@ -218,7 +265,7 @@ export function App({ store }: { store: AppStore }) {
             </div>
           ))}
         </div>
-        {!store.startupDone.value && !store.authRequired.value && (
+        {!workspaceVisible && !store.authRequired.value && (
           <div class="startup-splash" id="startupSplash" role="status" aria-live="polite">
             <div class="startup-card">
               <div class="startup-mark" aria-hidden="true">
@@ -238,7 +285,7 @@ export function App({ store }: { store: AppStore }) {
             </div>
           </div>
         )}
-        {store.startupDone.value && (
+        {workspaceVisible && (
           <div
             style={{ display: store.authRequired.value ? 'none' : 'contents' }}
             inert={store.authRequired.value || undefined}
@@ -253,6 +300,7 @@ export function App({ store }: { store: AppStore }) {
             >
               <Sidebar />
               <main class="main" id="appMain">
+                <WorkspaceNotice store={store} />
                 <Header />
                 <DelegationContext />
                 <Transcript />

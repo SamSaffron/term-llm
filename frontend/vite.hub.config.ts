@@ -1,16 +1,26 @@
 import preact from '@preact/preset-vite';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
 
 const outputDirectory = resolve(import.meta.dirname, '../internal/serveui/static/dist');
 
+function chatOutputs(): string[] {
+  const manifest = JSON.parse(
+    readFileSync(resolve(outputDirectory, 'asset-manifest.json'), 'utf8'),
+  );
+  const entry = manifest['src/main.tsx'];
+  if (!entry?.isEntry || !entry.css?.length)
+    throw new Error('Chat asset manifest has no entry/CSS');
+  return [entry.file, ...entry.css];
+}
+
 function preserveChatBuild(): Plugin {
   return {
     name: 'term-llm-preserve-chat-build',
     buildStart() {
-      for (const file of ['app.js', 'app.css']) {
+      for (const file of chatOutputs()) {
         if (!existsSync(resolve(outputDirectory, file))) {
           throw new Error(`Hub build requires the chat build output dist/${file}`);
         }
@@ -29,7 +39,7 @@ function preserveChatBuild(): Plugin {
           `Hub must build with exactly one standalone CSS asset and no other files: ${assets.map((asset) => asset.fileName).join(', ')}`,
         );
       }
-      for (const file of ['app.js', 'app.css', 'hub.js', 'hub.css']) {
+      for (const file of [...chatOutputs(), 'hub.js', 'hub.css']) {
         if (!existsSync(resolve(outputDirectory, file))) {
           throw new Error(`Frontend build did not produce dist/${file}`);
         }

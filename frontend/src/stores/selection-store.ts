@@ -1,4 +1,4 @@
-import { batch, signal } from '@preact/signals';
+import { batch, computed, signal } from '@preact/signals';
 import { APIError } from '../api/client';
 import type {
   ApprovalMode,
@@ -26,10 +26,23 @@ import type { GoalStore } from './goal-store';
 import type { WidgetStore } from './widget-store';
 import { approvalPrompt, askUserPrompt, listFrom, recordValue } from './store-utils';
 
+/** Result of one authoritative hydration of the selected session. */
+export type SessionLoadOutcome = 'loaded' | 'missing' | 'failed' | 'superseded';
+
 /** Owns navigation, selection generations, and authoritative session hydration. */
 export class SelectionStore {
   private epoch = 0;
   readonly headerLoading = signal(false);
+  /**
+   * Selected session whose visible transcript came from the persistent
+   * workspace cache and has not yet been confirmed by an authoritative load.
+   */
+  readonly unverifiedSessions = signal<ReadonlySet<string>>(new Set());
+  /** The selected session when its visible transcript is still unverified. */
+  readonly unverifiedSessionId = computed(() => {
+    const id = this.sessionsStore.activeSessionId.value;
+    return id && this.unverifiedSessions.value.has(id) ? id : '';
+  });
   /**
    * Session whose transcript is being hydrated with nothing local to show yet.
    * The transcript must not fall back to the new-chat screen there: the switch
@@ -64,11 +77,24 @@ export class SelectionStore {
     this.transcriptLoading.value = '';
   }
 
+  private setUnverified(id: string, unverified: boolean): void {
+    const current = this.unverifiedSessions.peek();
+    if (current.has(id) === unverified) return;
+    const next = new Set(current);
+    if (unverified) next.add(id);
+    else next.delete(id);
+    this.unverifiedSessions.value = next;
+  }
+
   get generation(): number {
     return this.epoch;
   }
 
-  async selectSession(session: Session, replace = false): Promise<void> {
+  async selectSession(
+    session: Session,
+    replace = false,
+    options: { fromCache?: boolean } = {},
+  ): Promise<SessionLoadOutcome> {
     // Sidebar rows carry lightweight projections, not runtime/transcript state.
     session =
       this.sessionsStore.sessions.peek().find((entry) => entry.id === session.id) || session;
@@ -79,6 +105,9 @@ export class SelectionStore {
     this.cancelHistoryRequest();
     clearTimeout(this.headerDeadline);
     batch(() => {
+      // Verification is per session: navigating away and back must not turn
+      // restored bodies into verified ones before a successful load.
+      if (options.fromCache) this.setUnverified(session.id, true);
       this.headerLoading.value = true;
       // Cached bodies render immediately; only an unhydrated row needs the
       // placeholder. A live projection alone still counts as nothing durable.
@@ -143,18 +172,20 @@ export class SelectionStore {
         return this.runtime.whenModelsReady(provider);
       }),
     ]).then(revealHeader);
-    await hydration;
-    if (epoch !== this.epoch) return;
+    const outcome = await hydration;
+    if (epoch !== this.epoch) return 'superseded';
     const current =
       this.sessionsStore.sessions.value.find(
         (entry) => entry.id === this.sessionsStore.activeSessionId.value,
       ) || session;
-    await this.skillStore.loadSkills(current.id).catch(() => {
+    // Skills are composer metadata, not transcript display: never hold the
+    // selection (and therefore startup readiness) behind them.
+    void this.skillStore.loadSkills(current.id).catch(() => {
       if (epoch === this.epoch) this.skillStore.skills.value = [];
     });
-    if (epoch !== this.epoch) return;
     if (current.activeResponseId)
       void this.runEngine.resumeResponse(current.id, current.activeResponseId);
+    return outcome;
   }
 
   newChat(replace = false, projectId?: string, persistCurrent = true): void {
@@ -329,16 +360,24 @@ export class SelectionStore {
     }
   }
 
-  async loadSession(id: string, epoch = this.epoch): Promise<void> {
+  async loadSession(id: string, epoch = this.epoch): Promise<SessionLoadOutcome> {
     const sampledAskUser = this.interactions.askUser.peek();
     const sampledApproval = this.interactions.approval.peek();
     const sampledSteeringRevision = this.runEngine.steeringStateRevision;
+    const stillCurrent = () =>
+      epoch === this.epoch && this.sessionsStore.activeSessionId.peek() === id;
     try {
       const [state, selected] = await Promise.all([
         this.services.endpoints.sessionState(id),
         this.services.endpoints.selectedSession(id),
       ]);
-      if (epoch !== this.epoch || this.sessionsStore.activeSessionId.peek() !== id) return;
+      if (!stillCurrent()) return 'superseded';
+      // An explicit null means the id no longer resolves (deleted or
+      // inaccessible); never install an empty placeholder over cached bodies.
+      if (selected.selected_session === null) {
+        this.setUnverified(id, false);
+        return 'missing';
+      }
       this.historyError.value = '';
       const selectedSource = recordValue(selected.selected_session) || {};
       const sideload = recordValue(selected.selected_transcript) || {};
@@ -492,8 +531,17 @@ export class SelectionStore {
       this.runEngine.reconcileLoadedIntents(updated.id, incoming.messages, Boolean(activeResponse));
       if (activeResponse)
         this.sessionsStore.patch(updated.id, { activeResponseId: activeResponse });
+      this.setUnverified(id, false);
+      this.setUnverified(updated.id, false);
+      return 'loaded';
     } catch (error) {
-      if (epoch === this.epoch) this.services.toast(error, 'error');
+      if (!stillCurrent()) return 'superseded';
+      if (error instanceof APIError && (error.status === 404 || error.status === 410)) {
+        this.setUnverified(id, false);
+        return 'missing';
+      }
+      this.services.toast(error, 'error');
+      return 'failed';
     }
   }
 

@@ -6,8 +6,30 @@ import { errorMessage } from '../domain/text';
 import { hardRefreshAssets, syncTokenCookie } from '../platform/browser';
 import { NotificationController, type NotificationState } from '../platform/notifications';
 import { migrateScopedStorage, type StorageKeys } from '../platform/storage';
+import { IndexedDBBackend, PersistentCache } from '../platform/persistent-cache';
 import type { Toast } from './store-types';
 import { uuid } from './store-utils';
+import { WorkspaceCache } from './workspace-cache';
+
+/**
+ * Startup timings in milliseconds since navigation start, plus discovery
+ * cache counters. Never contains transcript content or credentials.
+ */
+export interface StartupMetrics {
+  /** Shell showed a usable workspace (cached or fresh). */
+  firstUsefulPaint?: number;
+  /** Selected conversation (or new chat) confirmed by the server. */
+  authoritative?: number;
+  /** Startup finished; lifecycle, events and sending are enabled. */
+  actionsReady?: number;
+  /** The first useful paint came from the persistent workspace cache. */
+  restoredFromCache: boolean;
+  discoveryCacheHits: number;
+  discoveryCacheMisses: number;
+  discoveryFetches: number;
+  /** Duration of the most recent model discovery request. */
+  lastDiscoveryMs?: number;
+}
 
 export interface StoreDiagnostics {
   staleStatusResults: number;
@@ -64,9 +86,22 @@ export class AppStoreServices {
     detail: 'Checking notification support…',
     verified: false,
   });
+  readonly startupMetrics = signal<StartupMetrics>({
+    restoredFromCache: false,
+    discoveryCacheHits: 0,
+    discoveryCacheMisses: 0,
+    discoveryFetches: 0,
+  });
   readonly api: APIClient;
   readonly endpoints: Endpoints;
   readonly notificationController: NotificationController;
+  readonly workspaceCache: WorkspaceCache;
+
+  /**
+   * Counts 401/403 responses from any request, including detached background
+   * work, so startup cannot declare success over a lost auth failure.
+   */
+  authFailures = 0;
 
   private readonly ownedTimers = new Set<number>();
   private disposed = false;
@@ -74,7 +109,13 @@ export class AppStoreServices {
   constructor(
     readonly config: AppConfig,
     readonly storage: Storage,
+    persistentCache?: PersistentCache,
   ) {
+    this.workspaceCache = new WorkspaceCache(
+      config,
+      persistentCache ||
+        new PersistentCache(new IndexedDBBackend(), () => this.bumpDiagnostic('storageFailures')),
+    );
     this.keys = migrateScopedStorage(storage, config.hub);
     if (config.passkeyAuth) storage.removeItem(this.keys.token);
     this.token = signal(config.passkeyAuth ? '' : storage.getItem(this.keys.token) || '');
@@ -82,6 +123,7 @@ export class AppStoreServices {
     this.api = new APIClient(config, {
       getToken: () => this.token.value,
       onAuthRequired: () => {
+        this.authFailures += 1;
         this.authRequired.value = true;
       },
       onNetworkState: (state) => {
@@ -117,6 +159,34 @@ export class AppStoreServices {
     return timer;
   }
 
+  /** Records a startup milestone once, as a Performance mark and a metric. */
+  markStartup(name: 'firstUsefulPaint' | 'authoritative' | 'actionsReady'): void {
+    if (this.startupMetrics.peek()[name] !== undefined) return;
+    const at = Math.round(typeof performance === 'undefined' ? Date.now() : performance.now());
+    try {
+      performance.mark(`term-llm:${name}`);
+    } catch {
+      /* Performance marks are optional instrumentation. */
+    }
+    this.startupMetrics.value = { ...this.startupMetrics.peek(), [name]: at };
+  }
+
+  recordDiscovery(
+    patch: Partial<
+      Pick<StartupMetrics, 'discoveryCacheHits' | 'discoveryCacheMisses' | 'discoveryFetches'>
+    >,
+    durationMs?: number,
+  ): void {
+    const current = this.startupMetrics.peek();
+    this.startupMetrics.value = {
+      ...current,
+      discoveryCacheHits: current.discoveryCacheHits + (patch.discoveryCacheHits || 0),
+      discoveryCacheMisses: current.discoveryCacheMisses + (patch.discoveryCacheMisses || 0),
+      discoveryFetches: current.discoveryFetches + (patch.discoveryFetches || 0),
+      ...(durationMs === undefined ? {} : { lastDiscoveryMs: Math.round(durationMs) }),
+    };
+  }
+
   bumpDiagnostic(key: keyof StoreDiagnostics): void {
     this.diagnostics.value = {
       ...this.diagnostics.peek(),
@@ -147,7 +217,12 @@ export class AppStoreServices {
   }
 
   setToken(value: string): void {
+    const previous = this.token.peek();
     this.token.value = value.trim();
+    // Defense in depth for every credential removal/replacement path (connect()
+    // additionally awaits its purge before switching): never carry the previous
+    // credential's cached workspace across a change.
+    if (previous && previous !== this.token.value) void this.workspaceCache.purge();
     if (this.token.value) this.storage.setItem(this.keys.token, this.token.value);
     else this.storage.removeItem(this.keys.token);
     syncTokenCookie(this.config.prefix, this.token.value);
@@ -156,6 +231,7 @@ export class AppStoreServices {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.workspaceCache.dispose();
     this.ownedTimers.forEach((timer) => window.clearTimeout(timer));
     this.ownedTimers.clear();
     this.notificationController.dispose();

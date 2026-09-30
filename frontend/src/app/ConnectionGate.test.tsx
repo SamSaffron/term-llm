@@ -5,6 +5,16 @@ import { readInjectedConfig } from './config';
 import { APIError } from '../api/client';
 import { AppStore } from '../stores/app-store';
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+};
+
 let store: AppStore;
 afterEach(() => store?.dispose());
 function setup(auth = true, acceptedToken = 'server-secret') {
@@ -242,20 +252,31 @@ it('does not replace the shared credential while verification is pending', async
   expect(store.token.value).toBe('old-token');
 });
 
-it.each(['capabilities', 'models'] as const)(
-  'does not swallow auth failures from optional %s discovery',
-  async (endpoint) => {
-    setup();
-    store.authRequired.value = true;
-    store.endpoints[endpoint] = vi.fn(async () => {
-      throw new APIError('Expired', 401);
-    });
-    await expect(store.connect('server-secret')).rejects.toMatchObject({ status: 401 });
-    expect(store.startupDone.value).toBe(false);
-    expect(store.authRequired.value).toBe(true);
-    expect(localStorage.getItem(store.keys.token)).toBeNull();
-  },
-);
+it('does not swallow auth failures from optional capabilities discovery', async () => {
+  setup();
+  store.authRequired.value = true;
+  store.endpoints.capabilities = vi.fn(async () => {
+    throw new APIError('Expired', 401);
+  });
+  await expect(store.connect('server-secret')).rejects.toMatchObject({ status: 401 });
+  expect(store.startupDone.value).toBe(false);
+  expect(store.authRequired.value).toBe(true);
+  expect(localStorage.getItem(store.keys.token)).toBeNull();
+});
+
+it('surfaces an auth failure from background model discovery without holding startup', async () => {
+  setup();
+  store.authRequired.value = true;
+  const models = deferred<Record<string, unknown>>();
+  store.endpoints.models = vi.fn(() => models.promise);
+  await store.connect('server-secret');
+  // Discovery is off the startup path, so the chat opened while it was pending.
+  expect(store.startupDone.value).toBe(true);
+  expect(store.authRequired.value).toBe(false);
+  models.reject(new APIError('Expired', 401));
+  // The detached rejection still returns the user to the credential gate.
+  await waitFor(() => expect(store.authRequired.value).toBe(true));
+});
 
 it('uses passkey sign-in instead of resurrecting a stored bearer token', async () => {
   localStorage.setItem('term_llm_token', 'old-server-token');

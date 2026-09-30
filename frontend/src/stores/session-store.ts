@@ -1,4 +1,4 @@
-import { computed, signal, type Signal } from '@preact/signals';
+import { batch, computed, signal, type Signal } from '@preact/signals';
 import { APIError } from '../api/client';
 import { errorMessage } from '../domain/text';
 import { rankFrom } from '../domain/transcript';
@@ -161,6 +161,8 @@ export class SessionStore {
   readonly searchError = signal('');
   readonly showArchived: Signal<boolean>;
   readonly hubAgents = signal<HubAgent[]>([]);
+  /** The catalog on screen is the persisted last-known snapshot, not yet verified. */
+  readonly catalogCached = signal(false);
   readonly renameTarget = signal<Session | null>(null);
   readonly projectTarget = signal<Session | null>(null);
   readonly activeSession = computed(
@@ -473,7 +475,73 @@ export class SessionStore {
     return this.host.hasRun(id) || id.startsWith('draft_') || id === this.activeSessionId.peek();
   }
 
+  /**
+   * Shows the persisted last-known sidebar. The first server snapshot replaces
+   * it wholesale instead of merging, so cached rows can never masquerade as
+   * already-loaded pagination tails.
+   */
+  applyCachedSidebar(data: Record<string, unknown>): void {
+    batch(() => {
+      this.applySidebarSnapshot(data);
+      // Last-known rows never claim a live run or an actionable interaction;
+      // only the server's status/state reads may establish either.
+      this.updateEveryCatalogSession((session) => ({
+        ...session,
+        activeRun: false,
+        activeResponseId: null,
+        interactionRequired: false,
+        interactionResponseId: undefined,
+        interactionStateRev: undefined,
+        interactionRequiredSince: undefined,
+        pendingInteractionCount: 0,
+        pendingInteractionKinds: [],
+      }));
+      this.catalogCached.value = true;
+    });
+  }
+
+  /** Removes a session that no longer resolves from every catalog copy. */
+  forget(id: string): void {
+    const without = (entries: Session[]) =>
+      entries.some((entry) => entry.id === id)
+        ? entries.filter((entry) => entry.id !== id)
+        : entries;
+    batch(() => {
+      this.sessions.value = without(this.sessions.peek());
+      this.recentSessions.value = without(this.recentSessions.peek());
+      const projects = this.projects.peek().map((project) => {
+        const sessions = project.sessions && without(project.sessions);
+        return sessions === project.sessions ? project : { ...project, sessions };
+      });
+      if (!sameIdentityList(this.projects.peek(), projects)) this.projects.value = projects;
+      const results = this.searchResults.peek();
+      if (results) this.searchResults.value = without(results);
+      if (this.transientSession.peek()?.id === id) this.transientSession.value = null;
+    });
+  }
+
   applySidebar(data: Record<string, unknown>): void {
+    batch(() => {
+      if (this.catalogCached.peek()) {
+        // Keep only rows this client owns (active selection, runs, drafts).
+        this.sessions.value = this.sessions
+          .peek()
+          .filter((entry) => this.retainedLocally(entry.id));
+        this.recentSessions.value = [];
+        this.projects.value = [];
+        this.catalogCached.value = false;
+      }
+      this.applySidebarSnapshot(data);
+    });
+    this.services.workspaceCache.saveSidebar({
+      projectsEnabled: this.projectsEnabled.peek(),
+      worktreesEnabled: this.worktreesEnabled.peek(),
+      showArchived: this.showArchived.peek(),
+      payload: data,
+    });
+  }
+
+  private applySidebarSnapshot(data: Record<string, unknown>): void {
     const direct = listFrom(data, 'data', 'sessions', 'items').map((entry) =>
       this.sessionFrom(entry),
     );

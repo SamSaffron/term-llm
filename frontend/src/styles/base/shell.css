@@ -69,6 +69,40 @@
   animation: spin 0.8s linear infinite;
 }
 
+/* Last-known (cached) workspace marker: subtle, never styled as live. */
+.workspace-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.workspace-notice-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--text-muted);
+  animation: spin 0.9s linear infinite;
+}
+
+.workspace-notice-retry {
+  margin-left: auto;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-notice-spinner {
+    animation: none;
+  }
+}
+
 button,
 input,
 textarea,

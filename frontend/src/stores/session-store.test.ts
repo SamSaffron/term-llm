@@ -146,7 +146,7 @@ describe('chat Hub agent ordering', () => {
     }
   });
 
-  it('loads online Hub agents before model and selected-chat hydration completes', async () => {
+  it('loads online Hub agents without waiting for model discovery', async () => {
     const store = new AppStore(hubConfig);
     const models = deferred<Record<string, unknown>>();
     let pending: Promise<void> | undefined;
@@ -158,7 +158,9 @@ describe('chat Hub agent ordering', () => {
       store.endpoints.hubNodes = vi.fn(async () => hubListing('alpha'));
       pending = store.bootstrap();
       await vi.waitFor(() => expect(agentIds(store)).toEqual(['alpha']));
-      expect(store.startupDone.value).toBe(false);
+      // Discovery is picker metadata: startup completes while it is pending.
+      await pending;
+      expect(store.startupDone.value).toBe(true);
       expect(store.endpoints.models).toHaveBeenCalled();
     } finally {
       models.resolve({ object: 'list', data: [] });

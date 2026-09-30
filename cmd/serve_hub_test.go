@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -240,7 +241,7 @@ func TestHubAuthBrowserNavigationShowsLoginPage(t *testing.T) {
 	for _, want := range []string{
 		"Hub - term-llm",
 		`href="/dist/hub.css?v=`,
-		`type="module" src="/dist/hub.js"`,
+		`type="module" src="/dist/hub.js?v=`,
 		`data-hub-config=`,
 		`&#34;page&#34;:&#34;bearer-login&#34;`,
 		"term-llm Hub",
@@ -367,7 +368,7 @@ func TestHubIndexBootstrapDoesNotEmbedRegistrationToken(t *testing.T) {
 		`data-hub-config=`,
 		`&#34;page&#34;:&#34;dashboard&#34;`,
 		`&#34;canAddNodes&#34;:true`,
-		`src="/dist/hub.js"`,
+		`src="/dist/hub.js?v=`,
 		`href="/dist/hub.css?v=`,
 	} {
 		if !strings.Contains(body, want) {
@@ -416,7 +417,7 @@ func TestHubBasePathMountsDashboardAPIAndProxy(t *testing.T) {
 	for _, want := range []string{
 		`&#34;basePath&#34;:&#34;/hub&#34;`,
 		`href="/hub/dist/hub.css?v=`,
-		`src="/hub/dist/hub.js"`,
+		`src="/hub/dist/hub.js?v=`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("index missing mounted bootstrap value %q: %s", want, rec.Body.String())
@@ -1289,7 +1290,7 @@ func TestHubIndexUsesStandaloneFrontendShell(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
-	for _, want := range []string{`id="root"`, `src="/dist/hub.js"`, `href="/dist/hub.css?v=`} {
+	for _, want := range []string{`id="root"`, `src="/dist/hub.js?v=`, `href="/dist/hub.css?v=`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard shell missing %q", want)
 		}
@@ -1384,7 +1385,7 @@ func TestHubIndexBranding(t *testing.T) {
 		"Hub - term-llm",
 		`rel="icon"`,
 		"data:image/svg+xml",
-		`type="module" src="/dist/hub.js"`,
+		`type="module" src="/dist/hub.js?v=`,
 		`href="/dist/hub.css?v=`,
 		`&#34;page&#34;:&#34;dashboard&#34;`,
 		`&#34;canAddNodes&#34;:true`,
@@ -1543,18 +1544,79 @@ func TestHubRebaseNeedlesMatchServeOutput(t *testing.T) {
 	if !strings.Contains(string(rewritten), `<base href="/node/x/">`) {
 		t.Error("rebased html missing new base tag")
 	}
-	if !strings.Contains(string(rewritten), `type="module" src="dist/app.js"`) || strings.Contains(string(rewritten), `src="dist/app.js?v=`) {
+	if !strings.Contains(string(rewritten), `type="module" src="`+uiBuildAsset(t, "dist/app.js")+`"`) || strings.Contains(string(rewritten), `src="dist/app.js?v=`) {
 		t.Error("rebased html lost canonical relative Preact module URL")
 	}
-	moduleURL, err := url.Parse("https://hub.example/node/x/dist/app.js")
+	moduleURL, err := url.Parse("https://hub.example/node/x/" + uiBuildAsset(t, "dist/app.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	lazyURL, err := moduleURL.Parse("./chunks/katex.js")
+	lazyURL, err := moduleURL.Parse("./" + strings.TrimPrefix(uiBuildAsset(t, "dist/chunks/katex.js"), "dist/"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := lazyURL.Path, "/node/x/dist/chunks/katex.js"; got != want {
+	if got, want := lazyURL.Path, "/node/x/"+uiBuildAsset(t, "dist/chunks/katex.js"); got != want {
 		t.Fatalf("Hub lazy chunk path = %q, want %q", got, want)
+	}
+}
+
+// A proxied node UI must keep the node's compression for JS/CSS/JSON; only the
+// HTML shell is decoded so the Hub can rebase and inject into it.
+func TestHubProxyPreservesNodeCompression(t *testing.T) {
+	const html = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";</script></head><body></body></html>`
+	asset := strings.Repeat("console.log('proxied asset');\n", 200)
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		body, contentType := asset, "text/javascript; charset=utf-8"
+		if r.URL.Path == "/chat/" {
+			body, contentType = html, "text/html; charset=utf-8"
+		}
+		serveEmbeddedUIBytes(w, r, []byte(body), contentType, "public, max-age=31536000, immutable", true)
+	})
+	get := func(path, acceptEncoding string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if acceptEncoding != "" {
+			req.Header.Set("Accept-Encoding", acceptEncoding)
+		}
+		rec := httptest.NewRecorder()
+		s.handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, rec.Code)
+		}
+		return rec
+	}
+
+	rec := get("/node/alpha/dist/app-abcdefgh.js", "gzip, deflate, br")
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("asset lost node compression: headers %v", rec.Header())
+	}
+	if rec.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" || rec.Header().Get("ETag") == "" {
+		t.Fatalf("asset cache headers not passed through: %v", rec.Header())
+	}
+	reader, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded, _ := io.ReadAll(reader); string(decoded) != asset {
+		t.Fatalf("asset body changed through proxy")
+	}
+	if rec.Body.Len() >= len(asset) {
+		t.Fatalf("compressed asset (%d) not smaller than identity (%d)", rec.Body.Len(), len(asset))
+	}
+
+	rec = get("/node/alpha/", "gzip")
+	if rec.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("rewritten HTML kept a stale encoding: %v", rec.Header())
+	}
+	got := rec.Body.String()
+	if !strings.Contains(got, `<base href="/node/alpha/">`) || !strings.Contains(got, "window.TERM_LLM_HUB=") {
+		t.Fatalf("gzip HTML was not decoded and rewritten: %q", got)
+	}
+	if cl := rec.Header().Get("Content-Length"); cl != fmt.Sprintf("%d", len(got)) {
+		t.Fatalf("Content-Length = %q, want %d", cl, len(got))
+	}
+
+	rec = get("/node/alpha/dist/app-abcdefgh.js", "")
+	if rec.Header().Get("Content-Encoding") != "" || rec.Body.String() != asset {
+		t.Fatalf("client without gzip must receive an identity body: %v", rec.Header())
 	}
 }

@@ -87,6 +87,20 @@ export class ServerEventCoordinator {
     return Promise.race([this.prepared, sleep(2_000, this.lifetime.signal).catch(() => undefined)]);
   }
 
+  /**
+   * Resolves once the transport has an authoritative cursor (or is known to
+   * be unavailable). Unlike prepare(), never times out; callers that proceed
+   * without waiting use it to schedule a catch-up reconciliation.
+   */
+  whenPrepared(): Promise<void> {
+    return this.prepared;
+  }
+
+  /** True once the current preparation produced a cursor or gave up. */
+  get preparedSettled(): boolean {
+    return this.preparedResolve === null;
+  }
+
   flushBuffered(): void {
     if (!this.host.startupDone.peek()) return;
     const events = this.buffered;

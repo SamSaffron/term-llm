@@ -1,3 +1,12 @@
+import { deletePersistentUICaches } from '../../platform/persistent-cache';
+import {
+  HubCache,
+  cacheNodes,
+  cacheAttention,
+  cacheDelegations,
+  type HubCacheSection,
+  type HubCacheData,
+} from './hub-cache';
 import { reconcileHubItems } from '../domain/reconcile';
 import { computed, signal } from '@preact/signals';
 import { activeSessionCount as countActiveSessions } from '../domain/formatting';
@@ -15,6 +24,7 @@ import type {
 import type { PasskeyPlatform } from '../platform/passkeys';
 
 export interface HubStoreOptions {
+  cache?: HubCache;
   pollMilliseconds?: number;
   setInterval?: typeof window.setInterval;
   clearInterval?: typeof window.clearInterval;
@@ -47,6 +57,20 @@ export class HubStore {
   readonly totalInputRequired = signal(0);
   readonly totalUnseen = signal(0);
 
+  readonly nodesVerified = signal(false);
+  readonly attentionVerified = signal(false);
+  readonly delegationsVerified = signal(false);
+  private readonly cachedSections = signal<HubCacheSection[]>([]);
+  readonly lastKnown = computed(() =>
+    this.cachedSections.value.some((section) => !this.verified(section).value),
+  );
+  readonly hasDisplayData = computed(
+    () =>
+      this.cachedSections.value.length > 0 ||
+      this.nodesVerified.value ||
+      this.attentionVerified.value ||
+      this.delegationsVerified.value,
+  );
   readonly initialLoading = signal(true);
   readonly refreshing = signal(false);
   readonly nodeError = signal('');
@@ -74,16 +98,19 @@ export class HubStore {
   readonly credentials = signal<HubCredential[]>([]);
   readonly activeSessions = signal(0);
 
-  readonly reachableCount = computed(
-    () => this.nodes.value.filter((node) => node.status.reachable).length,
+  readonly reachableCount = computed(() =>
+    this.nodesVerified.value ? this.nodes.value.filter((node) => node.status.reachable).length : 0,
   );
-  readonly activeSessionCount = computed(() => countActiveSessions(this.nodes.value));
-  readonly activeDelegationCount = computed(
-    () =>
-      this.delegations.value.filter(
-        (delegation) =>
-          !['succeeded', 'failed', 'cancelled', 'timed_out', 'error'].includes(delegation.status),
-      ).length,
+  readonly activeSessionCount = computed(() =>
+    this.nodesVerified.value ? countActiveSessions(this.nodes.value) : 0,
+  );
+  readonly activeDelegationCount = computed(() =>
+    this.delegationsVerified.value
+      ? this.delegations.value.filter(
+          (delegation) =>
+            !['succeeded', 'failed', 'cancelled', 'timed_out', 'error'].includes(delegation.status),
+        ).length
+      : 0,
   );
 
   private readonly pollMilliseconds: number;
@@ -103,12 +130,19 @@ export class HubStore {
   private orderVersion = 0;
   /** Node order saves that have not settled. */
   private orderSaves = 0;
+  private readonly cache: HubCache;
+  private cacheRead: Promise<void> | undefined;
+  private cacheRevoked = false;
+  private readonly writeTimers = new Map<HubCacheSection, ReturnType<typeof setTimeout>>();
+  private readonly unsubscribeUnauthorized: (() => void) | undefined;
 
   constructor(
     readonly client: HubClient,
     readonly passkeys?: PasskeyPlatform,
     options: HubStoreOptions = {},
   ) {
+    this.cache = options.cache ?? new HubCache(client.config ?? { basePath: '' });
+    this.unsubscribeUnauthorized = client.onUnauthorized?.(() => this.invalidateCache());
     this.pollMilliseconds = options.pollMilliseconds ?? 15_000;
     this.startInterval = options.setInterval ?? window.setInterval.bind(window);
     this.stopInterval = options.clearInterval ?? window.clearInterval.bind(window);
@@ -116,12 +150,13 @@ export class HubStore {
 
   start(): void {
     if (this.disposed || this.interval !== undefined) return;
+    if (this.client.config?.cacheDisplayAllowed) void this.hydrateCache();
     void this.refresh('initial');
     this.interval = this.startInterval(() => void this.refresh('poll'), this.pollMilliseconds);
   }
 
   refresh(kind: 'initial' | 'manual' | 'poll' = 'manual'): Promise<void> {
-    if (this.disposed) return Promise.resolve();
+    if (this.disposed || this.cacheRevoked) return Promise.resolve();
     if (kind === 'poll' && this.currentRefresh) return this.currentRefresh;
     this.reads?.abort();
     const controller = new AbortController();
@@ -141,52 +176,219 @@ export class HubStore {
     return run;
   }
 
+  private verified(section: HubCacheSection) {
+    return section === 'nodes'
+      ? this.nodesVerified
+      : section === 'attention'
+        ? this.attentionVerified
+        : this.delegationsVerified;
+  }
+
+  private isCurrent(signal: AbortSignal, generation: number): boolean {
+    return (
+      !this.disposed && !this.cacheRevoked && !signal.aborted && generation === this.generation
+    );
+  }
+
   private async runRefresh(signal: AbortSignal, generation: number): Promise<void> {
     const orderVersion = this.orderVersion;
-    const [nodes, attention, delegations] = await Promise.allSettled([
-      this.client.listNodes(signal),
-      this.client.listAttention(signal),
-      this.client.listDelegations(signal),
+    const settle = async <T>(
+      section: HubCacheSection,
+      request: Promise<T>,
+      apply: (data: T) => void,
+    ) => {
+      try {
+        const data = await request;
+        if (!this.isCurrent(signal, generation)) return;
+        apply(data);
+        this.verified(section).value = true;
+        // A shell without the explicit authorization guarantee must wait for
+        // an authenticated response before showing any private cached section.
+        void this.hydrateCache();
+        this.scheduleWrite(section, generation);
+      } catch (error) {
+        if (!this.isCurrent(signal, generation)) return;
+        if (error instanceof HubAPIError && [401, 403].includes(error.status)) {
+          await this.invalidateCache();
+          return;
+        }
+        if (error instanceof Error && error.name === 'AbortError') return;
+        const target =
+          section === 'nodes'
+            ? this.nodeError
+            : section === 'attention'
+              ? this.attentionError
+              : this.delegationError;
+        target.value =
+          section === 'nodes' ? `Failed to load nodes: ${message(error)}` : message(error);
+      }
+    };
+    await Promise.allSettled([
+      settle('nodes', this.client.listNodes(signal), (data) =>
+        this.acceptNodes(data.nodes ?? [], data.resolver_error ?? '', orderVersion, generation),
+      ),
+      settle('attention', this.client.listAttention(signal), (data) => {
+        this.inputRequired.value = reconcileHubItems(
+          this.inputRequired.peek(),
+          data.input_required ?? [],
+          (item) => JSON.stringify([item.node_id, item.session_id]),
+        );
+        this.inbox.value = reconcileHubItems(this.inbox.peek(), data.inbox ?? [], (item) =>
+          JSON.stringify([item.node_id, item.session_id]),
+        );
+        this.totalInputRequired.value =
+          data.total_input_required ?? this.inputRequired.value.length;
+        this.totalUnseen.value = data.total_unseen ?? this.inbox.value.length;
+        this.attentionHasMore.value = Boolean(data.has_more);
+        this.attentionError.value = '';
+        this.lastAttentionRefresh.value = Date.now();
+      }),
+      settle('delegations', this.client.listDelegations(signal), (data) => {
+        this.delegations.value = reconcileHubItems(
+          this.delegations.peek(),
+          data.delegations ?? [],
+          (item) => item.id,
+        );
+        this.delegationError.value = '';
+        this.lastDelegationsRefresh.value = Date.now();
+      }),
     ]);
-    if (this.disposed || signal.aborted || generation !== this.generation) return;
-    const now = Date.now();
-    if (nodes.status === 'fulfilled') {
-      this.showNodes(nodes.value.nodes ?? [], orderVersion);
-      this.resolverWarning.value = nodes.value.resolver_error ?? '';
-      this.nodeError.value = '';
-      this.lastNodesRefresh.value = now;
-    } else if (nodes.reason?.name !== 'AbortError') {
-      this.nodeError.value = `Failed to load nodes: ${message(nodes.reason)}`;
+  }
+
+  private acceptNodes(
+    nodes: HubNode[],
+    warning: string,
+    orderVersion: number,
+    generation: number,
+  ): void {
+    this.showNodes(nodes, orderVersion);
+    this.nodesVerified.value = true;
+    this.resolverWarning.value = warning;
+    this.nodeError.value = '';
+    this.lastNodesRefresh.value = Date.now();
+    const ids = new Set(nodes.map((node) => node.id));
+    // Only cached/unverified summaries are pruned from the display. Verified
+    // attention remains durable across transient resolver failures.
+    if (!this.attentionVerified.peek()) {
+      this.inputRequired.value = this.inputRequired.peek().filter((item) => ids.has(item.node_id));
+      this.inbox.value = this.inbox.peek().filter((item) => ids.has(item.node_id));
     }
-    if (attention.status === 'fulfilled') {
-      this.inputRequired.value = reconcileHubItems(
-        this.inputRequired.peek(),
-        attention.value.input_required ?? [],
-        (item) => JSON.stringify([item.node_id, item.session_id]),
-      );
-      this.inbox.value = reconcileHubItems(this.inbox.peek(), attention.value.inbox ?? [], (item) =>
-        JSON.stringify([item.node_id, item.session_id]),
-      );
-      this.totalInputRequired.value =
-        attention.value.total_input_required ?? this.inputRequired.value.length;
-      this.totalUnseen.value = attention.value.total_unseen ?? this.inbox.value.length;
-      this.attentionHasMore.value = Boolean(attention.value.has_more);
-      this.attentionError.value = '';
-      this.lastAttentionRefresh.value = now;
-    } else if (attention.reason?.name !== 'AbortError') {
-      this.attentionError.value = message(attention.reason);
+    if (!this.delegationsVerified.peek())
+      this.delegations.value = this.delegations
+        .peek()
+        .filter((item) => ids.has(item.origin_node) && ids.has(item.target_node));
+    void this.cache.retainNodes(
+      ids,
+      () => !this.disposed && !this.cacheRevoked && generation === this.generation,
+    );
+  }
+
+  private hydrateCache(): Promise<void> {
+    if (this.cacheRead) return this.cacheRead;
+    this.cacheRead = this.readCache();
+    return this.cacheRead;
+  }
+
+  private async readCache(): Promise<void> {
+    for (const section of ['nodes', 'attention', 'delegations'] as const) {
+      const row = await this.cache.read(section);
+      if (!row || this.disposed || this.cacheRevoked || this.verified(section).peek()) continue;
+      if (section === 'nodes') {
+        // Local order edits made while IndexedDB opened must survive hydration.
+        if (this.orderVersion > 0) continue;
+        this.nodes.value = cacheNodes(row.data as HubCacheData['nodes']);
+        this.lastNodesRefresh.value = row.timestamp;
+      } else if (section === 'attention') {
+        const data = cacheAttention(row.data as HubCacheData['attention']);
+        const keep = (id: string) =>
+          !this.nodesVerified.peek() || this.nodes.peek().some((node) => node.id === id);
+        this.inputRequired.value = data.inputRequired.filter((item) => keep(item.node_id));
+        this.inbox.value = data.inbox.filter((item) => keep(item.node_id));
+        this.totalInputRequired.value = data.totalInputRequired;
+        this.totalUnseen.value = data.totalUnseen;
+        this.attentionHasMore.value = data.hasMore;
+        this.lastAttentionRefresh.value = row.timestamp;
+      } else {
+        this.delegations.value = cacheDelegations(row.data as HubCacheData['delegations']).filter(
+          (item) =>
+            !this.nodesVerified.peek() ||
+            (this.nodes.peek().some((node) => node.id === item.origin_node) &&
+              this.nodes.peek().some((node) => node.id === item.target_node)),
+        );
+        this.lastDelegationsRefresh.value = row.timestamp;
+      }
+      this.cachedSections.value = [...this.cachedSections.peek(), section];
     }
-    if (delegations.status === 'fulfilled') {
-      this.delegations.value = reconcileHubItems(
-        this.delegations.peek(),
-        delegations.value.delegations ?? [],
-        (item) => item.id,
-      );
-      this.delegationError.value = '';
-      this.lastDelegationsRefresh.value = now;
-    } else if (delegations.reason?.name !== 'AbortError') {
-      this.delegationError.value = message(delegations.reason);
-    }
+  }
+
+  private scheduleWrite(section: HubCacheSection, generation = this.generation): void {
+    clearTimeout(this.writeTimers.get(section));
+    if (!this.cache.namespace) return;
+    this.writeTimers.set(
+      section,
+      setTimeout(() => {
+        this.writeTimers.delete(section);
+        const current = () =>
+          !this.disposed && !this.cacheRevoked && generation === this.generation;
+        if (!current() || !this.verified(section).peek()) return;
+        const ids = new Set(this.nodes.peek().map((node) => node.id));
+        const keep = (id: string) => !this.nodesVerified.peek() || ids.has(id);
+        if (section === 'nodes') {
+          void this.cache.write(
+            section,
+            cacheNodes(this.nodes.peek()),
+            this.lastNodesRefresh.peek(),
+            current,
+          );
+        } else if (section === 'attention') {
+          void this.cache.write(
+            section,
+            cacheAttention({
+              inputRequired: this.inputRequired.peek().filter((item) => keep(item.node_id)),
+              inbox: this.inbox.peek().filter((item) => keep(item.node_id)),
+              totalInputRequired: this.totalInputRequired.peek(),
+              totalUnseen: this.totalUnseen.peek(),
+              hasMore: this.attentionHasMore.peek(),
+            }),
+            this.lastAttentionRefresh.peek(),
+            current,
+          );
+        } else {
+          void this.cache.write(
+            section,
+            cacheDelegations(
+              this.delegations
+                .peek()
+                .filter((item) => keep(item.origin_node) && keep(item.target_node)),
+            ),
+            this.lastDelegationsRefresh.peek(),
+            current,
+          );
+        }
+      }, 200),
+    );
+  }
+
+  private async invalidateCache(): Promise<void> {
+    this.cacheRevoked = true;
+    this.generation++;
+    this.reads?.abort();
+    this.writeTimers.forEach(clearTimeout);
+    this.writeTimers.clear();
+    this.nodes.value = [];
+    this.inputRequired.value = [];
+    this.inbox.value = [];
+    this.delegations.value = [];
+    this.totalInputRequired.value = 0;
+    this.totalUnseen.value = 0;
+    this.nodesVerified.value = false;
+    this.attentionVerified.value = false;
+    this.delegationsVerified.value = false;
+    this.cachedSections.value = [];
+    this.initialLoading.value = false;
+    this.refreshing.value = false;
+    this.nodeError.value = 'Hub authorization expired. Sign in again.';
+    await this.cache.purge();
   }
 
   openAddDialog(): void {
@@ -272,7 +474,7 @@ export class HubStore {
   }
 
   private async refreshNodes(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || this.cacheRevoked) return;
     this.reads?.abort();
     const controller = new AbortController();
     const generation = ++this.generation;
@@ -281,14 +483,19 @@ export class HubStore {
     try {
       const response = await this.client.listNodes(controller.signal);
       if (this.disposed || controller.signal.aborted || generation !== this.generation) return;
-      this.showNodes(response.nodes ?? [], orderVersion);
-      this.resolverWarning.value = response.resolver_error ?? '';
-      this.nodeError.value = '';
-      this.lastNodesRefresh.value = Date.now();
+      this.acceptNodes(
+        response.nodes ?? [],
+        response.resolver_error ?? '',
+        orderVersion,
+        generation,
+      );
+      this.scheduleWrite('nodes', generation);
       this.initialLoading.value = false;
     } catch (error) {
       if (this.disposed || controller.signal.aborted || generation !== this.generation) return;
       this.initialLoading.value = false;
+      if (error instanceof HubAPIError && [401, 403].includes(error.status))
+        await this.invalidateCache();
       throw error;
     } finally {
       if (this.reads === controller) this.reads = undefined;
@@ -355,7 +562,10 @@ export class HubStore {
     } finally {
       this.orderSaves--;
     }
-    if (!failure) return;
+    if (!failure) {
+      this.scheduleWrite('nodes');
+      return;
+    }
     // The restored order may be stale too: show the Hub's order.
     await this.refreshNodes().catch(() => undefined);
     throw nodeOrderError(failure.error);
@@ -498,7 +708,10 @@ export class HubStore {
     if (this.securityOperation.value || this.disposed) return null;
     this.securityOperation.value = 'logout';
     try {
-      return (await this.client.logout()).redirect;
+      const result = await this.client.logout();
+      await this.invalidateCache();
+      await deletePersistentUICaches();
+      return result.redirect;
     } catch (error) {
       if (!this.disposed) this.securityStatus.value = message(error);
       return null;
@@ -524,6 +737,9 @@ export class HubStore {
 
   dispose(): void {
     this.disposed = true;
+    this.unsubscribeUnauthorized?.();
+    this.writeTimers.forEach(clearTimeout);
+    this.writeTimers.clear();
     this.generation++;
     this.reads?.abort();
     this.reads = undefined;

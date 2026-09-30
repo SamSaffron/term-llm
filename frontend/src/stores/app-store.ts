@@ -1,5 +1,5 @@
 import type { RushOperation } from '../domain/steering';
-import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
+import { computed, effect, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { AppConfig } from '../app/config';
 import { APIError, type APIClient } from '../api/client';
 import type { Endpoints } from '../api/endpoints';
@@ -33,7 +33,10 @@ import { eventFeedCapability } from '../platform/server-events';
 import { NotificationController, type NotificationState } from '../platform/notifications';
 import { type TabEventType } from '../platform/tab-sync';
 import type { StreamSupervisor } from './stream-supervisor';
-import { AppStoreServices, type StoreDiagnostics } from './app-store-services';
+import { AppStoreServices, type StartupMetrics, type StoreDiagnostics } from './app-store-services';
+import { deletePersistentUICaches, type PersistentCache } from '../platform/persistent-cache';
+import { restoredSession, type StartupSnapshot } from './workspace-cache';
+import type { SessionLoadOutcome } from './selection-store';
 import { RuntimeStore } from './runtime-store';
 import { InteractionStore } from './interaction-store';
 import { SideQuestionStore } from './side-question-store';
@@ -69,7 +72,7 @@ import type {
   SideQuestionState,
   Toast,
 } from './store-types';
-import { recordValue } from './store-utils';
+import { listFrom, recordValue } from './store-utils';
 
 export type {
   DiffState,
@@ -105,6 +108,10 @@ export interface LightboxState {
 // Only a burst of switches can still be in flight; older entries describe
 // echoes that have already been replayed or dropped by the event ring buffer.
 const OPTIMISTIC_BINDING_LIMIT = 4;
+/** A slow IndexedDB must not delay startup; past this the network path owns it. */
+const STARTUP_CACHE_READ_TIMEOUT_MS = 500;
+/** Snapshot reads wait at most this long for the event cursor; see prepareServerEvents. */
+const EVENT_FEED_HEAD_START_MS = 150;
 
 export class AppStore {
   readonly services: AppStoreServices;
@@ -242,7 +249,28 @@ export class AppStore {
   readonly canSteer: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
+  /** The shell is showing a usable workspace (restored or fresh); see bootstrap(). */
+  readonly workspaceShown = signal(false);
+  /** Startup milestones and discovery cache counters (no private content). */
+  readonly startupMetrics: ReadonlySignal<StartupMetrics>;
+  /**
+   * What the visible workspace currently is, for the status notice:
+   * 'cached' while any on-screen catalog/transcript is last-known and
+   * unverified, 'offline' when startup failed over a restored workspace.
+   */
+  readonly workspaceNotice: ReadonlySignal<'' | 'cached' | 'offline' | 'unverified'>;
+
   private lifecycleInstalled = false;
+  private startupRestoreAttempted = false;
+  private capabilitiesApplied = false;
+  /** The first-load selection, so a retry verifies it instead of reselecting. */
+  private startupSelection: {
+    epoch: number;
+    sessionId: string;
+    number?: number;
+    outcome: Promise<SessionLoadOutcome> | null;
+  } | null = null;
+  private readonly disposeEffects: Array<() => void> = [];
   private readonly lifecycleAbort = new AbortController();
   private disposed = false;
   private recoveryPromise: Promise<void> | null = null;
@@ -262,8 +290,10 @@ export class AppStore {
   constructor(
     readonly config: AppConfig,
     readonly storage: Storage = localStorage,
+    persistentCache?: PersistentCache,
   ) {
-    this.services = new AppStoreServices(config, storage);
+    this.services = new AppStoreServices(config, storage, persistentCache);
+    this.startupMetrics = this.services.startupMetrics;
     this.keys = this.services.keys;
     this.api = this.services.api;
     this.endpoints = this.services.endpoints;
@@ -473,7 +503,12 @@ export class AppStore {
     this.runLivenessUnknown = this.runEngine.runLivenessUnknown;
     this.canStop = this.runEngine.canStop;
     this.canSteer = this.runEngine.canSteer;
-    this.sendBlocked = this.runEngine.sendBlocked;
+    // A restored or still-hydrating workspace is readable and editable, but
+    // sending waits until startup is authoritative (actions ready).
+    this.sendBlocked = computed(
+      () =>
+        this.runEngine.sendBlocked.value || (this.workspaceShown.value && !this.startupDone.value),
+    );
     this.locallyStoppedResponses = this.runEngine.locallyStoppedResponses;
     this.commitStore = new CommitStore(this.services, {
       activeSession: this.activeSession,
@@ -620,6 +655,47 @@ export class AppStore {
       authoritativeRecovery: (reason) => this.authoritativeRecovery(reason),
       eventFeedHealthChanged: () => this.startStatusPoll(),
     });
+    this.workspaceNotice = computed(() => {
+      const shown = this.workspaceShown.value;
+      const done = this.startupDone.value;
+      const unverified =
+        Boolean(this.activeSessionId.value) &&
+        this.selectionStore.unverifiedSessionId.value === this.activeSessionId.value;
+      if (shown && !done && this.startupFailed.value) return 'offline';
+      if (this.sessionStore.catalogCached.value || (unverified && !done)) return 'cached';
+      // Startup finished but the restored transcript could not be refreshed.
+      if (unverified) return 'unverified';
+      return '';
+    });
+    this.installWorkspacePersistence();
+  }
+
+  /**
+   * Persists the verified selected conversation (debounced, bounded) and drops
+   * this scope's private cache whenever the server rejects our credential.
+   */
+  private installWorkspacePersistence(): void {
+    const cache = this.services.workspaceCache;
+    if (!cache.enabled) return;
+    this.disposeEffects.push(
+      effect(() => {
+        if (this.authRequired.value) void cache.purge();
+      }),
+      effect(() => {
+        const session = this.activeSession.value;
+        if (!session || this.authRequired.value) return;
+        // Unverified (restored) bodies are never written back as if fresh.
+        if (this.selectionStore.unverifiedSessions.value.has(session.id)) return;
+        cache.saveSession(session);
+      }),
+    );
+  }
+
+  /** Explicit "clear local cache": forgets every persisted workspace/discovery record. */
+  async clearLocalCache(): Promise<void> {
+    await this.services.workspaceCache.purge();
+    await deletePersistentUICaches();
+    this.services.toast('Cleared cached conversations and model lists on this device.', 'success');
   }
 
   async connect(token: string): Promise<void> {
@@ -627,6 +703,9 @@ export class AppStore {
     const candidate = token.trim();
     // Probe without changing credentials used by background requests.
     await this.endpoints.verifyToken(candidate);
+    // A different credential may belong to someone else: never carry the
+    // previous credential's cached workspace across the switch.
+    if (previousToken && previousToken !== candidate) await this.services.workspaceCache.purge();
     this.services.setToken(candidate);
     try {
       await this.bootstrap(true);
@@ -637,18 +716,40 @@ export class AppStore {
     }
   }
 
+  /**
+   * Startup has three observable milestones (see StartupMetrics):
+   * 1. first useful paint — a restored last-known workspace, or the fresh
+   *    sidebar with the selected conversation hydrating;
+   * 2. authoritative — the selected conversation (or new chat) confirmed;
+   * 3. actions ready — `startupDone`: lifecycle, events and sending enabled.
+   * Model discovery, skills, branches and Hub agent health never block 1 or 2.
+   */
   async bootstrap(propagateError = false): Promise<void> {
     this.startupFailed.value = false;
     this.startup.value = 'Connecting to term-llm…';
+    const authFailuresBefore = this.services.authFailures;
     const optional = (error: unknown) => {
       if (error instanceof APIError && [401, 403].includes(error.status)) throw error;
       return {};
     };
+    // Read the last-known workspace while the first request is in flight.
+    const snapshot = this.startupDone.peek() ? null : this.readStartupSnapshot();
     try {
-      const capabilities = await this.endpoints.capabilities().catch(optional);
+      let authorized = false;
+      const capabilitiesRequest = this.endpoints.capabilities().then((value) => {
+        authorized = true;
+        return value;
+      }, optional);
+      const cache = this.services.workspaceCache;
+      if (snapshot && cache.policy === 'immediate') await this.restoreStartupSnapshot(snapshot);
+      const capabilities = await capabilitiesRequest;
       this.applyCapabilities(capabilities);
+      // Bearer servers serve public HTML: private cached state waits for proof
+      // that this page's credential is currently accepted.
+      if (snapshot && authorized && cache.policy === 'after-auth')
+        await this.restoreStartupSnapshot(snapshot);
       this.serverEventFeedEnabled = eventFeedCapability(capabilities);
-      if (this.serverEventFeedEnabled) await this.serverEventCoordinator.prepare();
+      const eventCatchUp = await this.prepareServerEvents();
       const [providers, sidebar] = await Promise.all([
         this.endpoints.providers(),
         this.projectsEnabled.value
@@ -659,44 +760,25 @@ export class AppStore {
       ]);
       this.applyProviders(providers);
       this.applySidebar(sidebar);
-      // Agent health is cached on the Hub; fetch it alongside model/session
+      // Agent health is cached on the Hub; fetch it alongside session
       // hydration instead of making the list wait for the selected chat.
       void this.refreshHubAgents();
-      await this.loadModels().catch(optional);
+      // Catalogs are picker metadata. Auth failures still surface through the
+      // transport hook (and fail this bootstrap below); others stay optional.
+      void this.runtime.refreshModelsInBackground().catch((error) => this.backgroundFailure(error));
       // Route hydration is first-load work. Reauthentication and Settings saves
       // must not reselect the chat or restore over the live unsent composer.
-      if (!this.startupDone.peek()) {
-        const routed = sessionIDFromLocation(this.config.prefix);
-        const forceNew = new URLSearchParams(location.search).get('new') === '1';
-        const restoreDraft = !routed && Boolean(this.storage.getItem(this.keys.draftSessionActive));
-        const preferred = routed || this.storage.getItem(this.keys.activeSession) || '';
-        const session = this.sessions.value.find(
-          (entry) => entry.id === preferred || String(entry.number || '') === preferred,
-        );
-        const startNewChat = () =>
-          this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
-        if (forceNew || restoreDraft) startNewChat();
-        else if (session) await this.selectSession(session, true);
-        else if (routed) {
-          // Hub attention links can target sessions older than the sidebar page.
-          // A browser Back during the lookup must not replace the newer route.
-          const route = location.pathname;
-          const epoch = this.selectionEpoch;
-          const resolved = await this.resolveAndSelectSession(routed, true, {
-            newChatOnMiss: false,
-            propagateError: true,
-            isCurrent: () => location.pathname === route,
-          });
-          if (location.pathname !== route) await this.navigateFromHistory();
-          else if (!resolved && this.selectionEpoch === epoch) startNewChat();
-        } else if (this.sessions.value[0]) await this.selectSession(this.sessions.value[0], true);
-        else startNewChat();
-      }
+      if (!this.startupDone.peek()) await this.settleStartupRoute();
+      if (this.services.authFailures !== authFailuresBefore)
+        throw new APIError('Authentication is required.', 401);
+      this.services.markStartup('authoritative');
       this.syncSessionInterest();
       this.connected.value = true;
       this.networkState.value = 'online';
       this.authRequired.value = false;
+      this.revealWorkspace();
       this.startupDone.value = true;
+      this.services.markStartup('actionsReady');
       // Do not enroll notifications or install background API checks before login.
       if (this.lifecycleInstalled) void this.notificationController.reconcile();
       this.installLifecycle();
@@ -704,6 +786,7 @@ export class AppStore {
       this.startStatusPoll();
       this.tabSyncCoordinator.flushPending();
       if (!this.widgets.value.length) void this.loadWidgetStatus();
+      if (eventCatchUp) void eventCatchUp.ready.then(() => this.catchUpServerEvents());
     } catch (error) {
       this.startup.value = error instanceof Error ? error.message : 'Could not load the chat UI.';
       this.connected.value = false;
@@ -712,6 +795,227 @@ export class AppStore {
         this.authRequired.value = true;
       if (propagateError) throw error;
     }
+  }
+
+  /**
+   * Detached work must still surface credential rejection, even when the
+   * error did not pass through the transport hook; other failures stay optional.
+   */
+  private backgroundFailure(error: unknown): void {
+    if (!(error instanceof APIError) || ![401, 403].includes(error.status)) return;
+    this.services.authFailures += 1;
+    this.authRequired.value = true;
+  }
+
+  /** Where the first load wants to land, derived from the URL and saved state. */
+  private startupRoute() {
+    const routed = sessionIDFromLocation(this.config.prefix);
+    const forceNew = new URLSearchParams(location.search).get('new') === '1';
+    const restoreDraft = !routed && Boolean(this.storage.getItem(this.keys.draftSessionActive));
+    const preferred = routed || this.storage.getItem(this.keys.activeSession) || '';
+    return { routed, forceNew, restoreDraft, preferred };
+  }
+
+  private startNewChatForStartup(): void {
+    this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+  }
+
+  /** Marks the first useful paint: the shell may render from here on. */
+  private revealWorkspace(): void {
+    if (this.workspaceShown.peek()) return;
+    this.workspaceShown.value = true;
+    this.services.markStartup('firstUsefulPaint');
+  }
+
+  /**
+   * Reads the persisted workspace for this route, bounded in time so a slow
+   * or wedged IndexedDB can never delay the authoritative path.
+   */
+  private readStartupSnapshot(): Promise<StartupSnapshot | null> {
+    const cache = this.services.workspaceCache;
+    if (
+      !cache.enabled ||
+      this.startupRestoreAttempted ||
+      this.startupSelection ||
+      this.authRequired.peek()
+    )
+      return Promise.resolve(null);
+    const route = this.startupRoute();
+    const read = (async (): Promise<StartupSnapshot | null> => {
+      const sidebarOnly = await cache.readStartup('');
+      const firstListed = sidebarOnly.sidebar
+        ? listFrom(
+            sidebarOnly.sidebar.value.payload,
+            'data',
+            'sessions',
+            'items',
+            'recent_sessions',
+          )
+        : [];
+      const hint = route.preferred || (!route.routed ? String(firstListed[0]?.id || '') : '') || '';
+      const session = hint ? await cache.readSession(hint) : null;
+      return { sidebar: sidebarOnly.sidebar, session };
+    })().catch(() => null);
+    const timeout = new Promise<null>((resolve) => {
+      window.setTimeout(() => resolve(null), STARTUP_CACHE_READ_TIMEOUT_MS);
+    });
+    return Promise.race([read, timeout]);
+  }
+
+  /**
+   * Shows the last-known workspace. It is display-only: rows are stripped of
+   * live/interaction state, the transcript is flagged unverified, and the
+   * normal selection path starts authoritative hydration immediately.
+   * Routed launches only restore the exact routed conversation.
+   */
+  private async restoreStartupSnapshot(pending: Promise<StartupSnapshot | null>): Promise<void> {
+    if (this.startupRestoreAttempted) return;
+    this.startupRestoreAttempted = true;
+    const epoch = this.selectionEpoch;
+    const [snapshot] = await Promise.all([pending, this.runtime.restoreCachedDiscovery()]);
+    // Anything that already navigated, failed auth, or finished owns the UI.
+    if (
+      !snapshot ||
+      this.startupSelection ||
+      this.startupDone.peek() ||
+      this.authRequired.peek() ||
+      this.selectionEpoch !== epoch
+    )
+      return;
+    const route = this.startupRoute();
+    const cached = snapshot.session?.value;
+    const matchesRoute =
+      cached &&
+      (!route.preferred ||
+        cached.session.id === route.preferred ||
+        String(cached.session.number || '') === route.preferred);
+    const newChat = route.forceNew || route.restoreDraft;
+    if (!newChat && !matchesRoute) return;
+    const sidebar = snapshot.sidebar?.value;
+    if (sidebar && sidebar.showArchived === this.showArchived.peek()) {
+      if (!this.capabilitiesApplied)
+        this.sessionStore.applyCapabilities(sidebar.projectsEnabled, sidebar.worktreesEnabled);
+      if (sidebar.projectsEnabled === this.projectsEnabled.peek())
+        this.sessionStore.applyCachedSidebar(sidebar.payload);
+    }
+    this.services.startupMetrics.value = {
+      ...this.services.startupMetrics.peek(),
+      restoredFromCache: true,
+    };
+    if (newChat || !cached) {
+      this.startNewChatForStartup();
+      this.startupSelection = { epoch: this.selectionEpoch, sessionId: '', outcome: null };
+      this.revealWorkspace();
+      return;
+    }
+    const restored = restoredSession(cached);
+    const row = this.sessions.peek().find((entry) => entry.id === restored.id);
+    if (row)
+      this.sessionStore.update(restored.id, (current) => ({
+        ...current,
+        messages: restored.messages,
+        transcriptRev: restored.transcriptRev,
+      }));
+    else this.sessionStore.prepend(restored);
+    const outcome = this.selectSessionForOutcome(row || restored, true, { fromCache: true });
+    this.startupSelection = {
+      epoch: this.selectionEpoch,
+      sessionId: restored.id,
+      number: restored.number,
+      outcome,
+    };
+    this.revealWorkspace();
+  }
+
+  /**
+   * Starts the event transport without letting it gate the snapshot reads.
+   * A short head start keeps the common case race-free; otherwise the
+   * returned promise schedules one catch-up reconciliation once a cursor exists,
+   * covering events between the snapshot reads and the subscription.
+   */
+  private async prepareServerEvents(): Promise<{ ready: Promise<void> } | null> {
+    if (!this.serverEventFeedEnabled) return null;
+    const preparing = this.serverEventCoordinator.prepare();
+    let headStart = 0;
+    await Promise.race([
+      preparing,
+      new Promise<void>((resolve) => {
+        headStart = window.setTimeout(resolve, EVENT_FEED_HEAD_START_MS);
+      }),
+    ]);
+    window.clearTimeout(headStart);
+    // Wrapped: awaiting a bare promise here would flatten it and wait.
+    return this.serverEventCoordinator.preparedSettled
+      ? null
+      : { ready: this.serverEventCoordinator.whenPrepared() };
+  }
+
+  private async catchUpServerEvents(): Promise<void> {
+    if (this.disposed || !this.serverEventCoordinator.isHealthy()) return;
+    await this.refreshSidebar(false).catch(() => undefined);
+    await this.reconcile('event-feed-ready', { authoritative: true });
+  }
+
+  /**
+   * Lands the first load on its route. A cached restoration already selected
+   * the route (and owns the composer), so it is only verified here; a user
+   * navigation during startup always wins over the startup route.
+   */
+  private async settleStartupRoute(): Promise<void> {
+    const selection = this.startupSelection;
+    if (selection) {
+      if (selection.epoch !== this.selectionEpoch || !selection.sessionId || !selection.outcome)
+        return;
+      let outcome = await selection.outcome;
+      if (selection.epoch !== this.selectionEpoch) return;
+      // A retry after reauthentication re-verifies instead of reselecting.
+      if (outcome === 'failed') {
+        outcome = await this.loadSessionForOutcome(selection.sessionId, selection.epoch);
+        selection.outcome = Promise.resolve(outcome);
+      }
+      if (outcome === 'missing' && selection.epoch === this.selectionEpoch) {
+        this.services.workspaceCache.forgetSession(selection.sessionId, selection.number);
+        this.sessionStore.forget(selection.sessionId);
+        this.startupSelection = { epoch: this.selectionEpoch, sessionId: '', outcome: null };
+        this.startNewChatForStartup();
+      }
+      return;
+    }
+    const { routed, forceNew, restoreDraft, preferred } = this.startupRoute();
+    const session = this.sessions.value.find(
+      (entry) => entry.id === preferred || String(entry.number || '') === preferred,
+    );
+    const target =
+      forceNew || restoreDraft ? undefined : session || (!routed && this.sessions.value[0]);
+    if (forceNew || restoreDraft || (!target && !routed)) {
+      this.startNewChatForStartup();
+      this.startupSelection = { epoch: this.selectionEpoch, sessionId: '', outcome: null };
+      this.revealWorkspace();
+      return;
+    }
+    if (target) {
+      const outcome = this.selectSessionForOutcome(target, true);
+      this.startupSelection = {
+        epoch: this.selectionEpoch,
+        sessionId: target.id,
+        number: target.number,
+        outcome,
+      };
+      // The fresh sidebar plus a hydrating transcript is already useful.
+      this.revealWorkspace();
+      return this.settleStartupRoute();
+    }
+    // Hub attention links can target sessions older than the sidebar page.
+    // A browser Back during the lookup must not replace the newer route.
+    const route = location.pathname;
+    const epoch = this.selectionEpoch;
+    const resolved = await this.resolveAndSelectSession(routed, true, {
+      newChatOnMiss: false,
+      propagateError: true,
+      isCurrent: () => location.pathname === route,
+    });
+    if (location.pathname !== route) await this.navigateFromHistory();
+    else if (!resolved && this.selectionEpoch === epoch) this.startNewChatForStartup();
   }
 
   private installLifecycle(): void {
@@ -767,6 +1071,7 @@ export class AppStore {
     addEventListener(
       'pagehide',
       (event) => {
+        this.services.workspaceCache.flush();
         if ((event as PageTransitionEvent).persisted) return;
         this.tabSyncCoordinator.closeChannel();
       },
@@ -779,6 +1084,9 @@ export class AppStore {
           this.serverEventCoordinator.restart();
           void this.reconcile('visibility', { authoritative: true });
           void this.refreshHubAgents();
+        } else {
+          // Mobile WebKit may never deliver pagehide before suspension.
+          this.services.workspaceCache.flush();
         }
       },
       { signal: this.lifecycleAbort.signal },
@@ -925,6 +1233,7 @@ export class AppStore {
       data.worktrees && typeof data.worktrees === 'object'
         ? (data.worktrees as Record<string, unknown>)
         : {};
+    this.capabilitiesApplied = true;
     const projectsEnabled = projects.enabled === true;
     const worktreesEnabled =
       worktrees.enabled === true || (worktrees.enabled === undefined && this.config.worktrees);
@@ -1053,15 +1362,45 @@ export class AppStore {
     replace = false,
     options: { keepLive?: boolean; fromLive?: boolean } = {},
   ): Promise<void> {
+    await this.selectSessionForOutcome(session, replace, options);
+  }
+
+  /** selectSession, reporting how the authoritative hydration ended. */
+  private async selectSessionForOutcome(
+    session: Session,
+    replace = false,
+    options: { keepLive?: boolean; fromLive?: boolean; fromCache?: boolean } = {},
+  ): Promise<SessionLoadOutcome> {
     const { liveId, rebind } = this.liveNavigation(session.id, options);
-    const navigating = this.selectionStore.selectSession(session, replace);
+    const navigating = this.selectionStore.selectSession(session, replace, {
+      fromCache: options.fromCache,
+    });
     // The navigation bumps the selection generation synchronously; tying the
     // rebind to that generation keeps a stale response from moving the call
     // back after the user has already gone somewhere else.
-    if (rebind) this.rebindLiveCall(liveId, session, this.selectionStore.generation);
-    await navigating;
+    const generation = this.selectionStore.generation;
+    if (rebind) this.rebindLiveCall(liveId, session, generation);
+    const outcome = await navigating;
+    // During startup the bootstrap owns the missing-route fallback.
+    if (outcome === 'missing' && this.startupDone.peek()) this.dropMissingSession(session);
     this.syncSessionInterest();
     void this.acknowledgeSelectedAttention();
+    return outcome;
+  }
+
+  /**
+   * The selected conversation no longer resolves (deleted, or no longer
+   * accessible). Forget every local copy, including the persisted one, and
+   * fall back to a new chat without replacing a newer navigation.
+   */
+  private dropMissingSession(session: Session): void {
+    this.services.workspaceCache.forgetSession(session.id, session.number);
+    const selected = this.activeSessionId.peek() === session.id;
+    this.sessionStore.forget(session.id);
+    if (selected) {
+      this.newChat(true);
+      this.services.toast('That conversation is no longer available.', 'info');
+    }
   }
 
   /**
@@ -1257,14 +1596,30 @@ export class AppStore {
   }
 
   async loadSession(id: string, epoch = this.selectionEpoch): Promise<void> {
-    await this.selectionStore.loadSession(id, epoch);
+    await this.loadSessionForOutcome(id, epoch);
+  }
+
+  private async loadSessionForOutcome(
+    id: string,
+    epoch = this.selectionEpoch,
+  ): Promise<SessionLoadOutcome> {
+    const outcome = await this.selectionStore.loadSession(id, epoch);
+    // After startup (retry, server events, recovery) a selected conversation
+    // that stopped resolving must not linger; startup owns its own fallback.
+    const selected = this.activeSession.peek();
+    if (outcome === 'missing' && this.startupDone.peek() && selected?.id === id) {
+      this.dropMissingSession(selected);
+      return outcome;
+    }
     if (this.activeSessionId.peek() === id && this.selectionEpoch === epoch) {
       this.syncSessionInterest();
       void this.acknowledgeSelectedAttention();
     }
+    return outcome;
   }
 
   async send(options: SendOptions = {}): Promise<void> {
+    if (this.sendBlocked.peek() && !this.runEngine.sendBlocked.peek()) return;
     await this.runEngine.send(options);
   }
 
@@ -1306,6 +1661,7 @@ export class AppStore {
   }
 
   async steer(content: string, options: SendOptions = {}): Promise<void> {
+    if (this.workspaceShown.peek() && !this.startupDone.peek()) return;
     await this.runEngine.steer(content, options);
   }
 
@@ -1721,6 +2077,7 @@ export class AppStore {
     if (this.disposed) return;
     this.disposed = true;
     this.persistCurrentDraft();
+    this.disposeEffects.splice(0).forEach((dispose) => dispose());
     this.lifecycleAbort.abort();
     this.sideQuestions.dispose();
     this.webMCP.dispose();

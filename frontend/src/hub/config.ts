@@ -6,6 +6,9 @@ export interface HubConfig {
   page: HubPageKind;
   authMode: HubAuthMode;
   basePath: string;
+  /** Opaque non-secret Hub state/auth-domain identity; missing disables persistence. */
+  cacheScope?: string;
+  cacheDisplayAllowed?: boolean;
   canAddNodes: boolean;
   passkeyAuth: boolean;
   invalidToken: boolean;
@@ -79,6 +82,11 @@ export function parseHubConfig(value: unknown): HubConfig {
     passkeyAuth: bool(raw.passkeyAuth),
     invalidToken: bool(raw.invalidToken),
     formAction: String(raw.formAction || ''),
+    cacheScope:
+      typeof raw.cacheScope === 'string' && /^[a-f0-9]{24}$/.test(raw.cacheScope)
+        ? raw.cacheScope
+        : '',
+    cacheDisplayAllowed: bool(raw.cacheDisplayAllowed),
   };
   if (config.page === 'passkey-auth') {
     const passkey = raw.passkey;

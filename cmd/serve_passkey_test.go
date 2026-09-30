@@ -38,7 +38,7 @@ func TestWebPasskeyAuthenticationBoundary(t *testing.T) {
 		{name: "widget cookie mutation reaches proxy", path: "/widgets/absent/", method: "POST", cookie: "term_llm_web_session", origin: runtime.endpoint.Origin, want: 404},
 		{name: "widget cross-origin denied", path: "/widgets/absent/", method: "POST", cookie: "term_llm_web_session", origin: "null", want: 403},
 		{name: "OPTIONS never forwarded", path: "/widgets/example/", method: "OPTIONS", want: 405},
-		{name: "chat asset protected", path: "/dist/app.js", want: 401},
+		{name: "chat asset protected", path: "/" + uiBuildAsset(t, "dist/app.js"), want: 401},
 		{name: "auth CSS public", path: "/dist/hub.css", want: 200},
 		{name: "health", path: "/healthz", want: 200},
 		{name: "setup", path: "/auth/setup", want: 200},

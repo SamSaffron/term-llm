@@ -3,17 +3,25 @@ import { firstDelegationArtifact } from '../domain/links';
 import type { HubStore } from '../stores/hub-store';
 
 export function DelegationsPanel({ config, store }: { config: HubConfig; store: HubStore }) {
+  const stale = !store.delegationsVerified.value;
   const delegations = store.delegations.value;
   return (
     <section class="delegations-panel" aria-label="Delegations">
       <div class="delegations-head">
         <div>
-          <h2>Delegations</h2>
+          <h2>
+            Delegations
+            {stale && delegations.length > 0 && (
+              <span class="hub-cache-marker"> · last known · updating</span>
+            )}
+          </h2>
           <p>Cross-node work routed through the Hub.</p>
         </div>
         <span class="delegations-count">
           {delegations.length
-            ? `${store.activeDelegationCount.value} active · ${delegations.length} total`
+            ? stale
+              ? `${delegations.length} last known`
+              : `${store.activeDelegationCount.value} active · ${delegations.length} total`
             : ''}
         </span>
       </div>
@@ -34,8 +42,12 @@ export function DelegationsPanel({ config, store }: { config: HubConfig; store: 
                 <strong>{delegation.origin_node || 'unknown'}</strong>
                 <span class="route-arrow">→</span>
                 <strong>{delegation.target_node || 'unknown'}</strong>
-                <span class={`delegation-status status-${delegation.status || 'unknown'}`}>
-                  {delegation.status || 'unknown'}
+                <span
+                  class={`delegation-status status-${stale ? 'last-known' : delegation.status || 'unknown'}`}
+                >
+                  {stale
+                    ? `last known: ${delegation.status || 'unknown'}`
+                    : delegation.status || 'unknown'}
                 </span>
               </div>
               <div class="delegation-meta">
@@ -80,16 +92,17 @@ export function DelegationsPanel({ config, store }: { config: HubConfig; store: 
           );
         })}
       </div>
-      {!store.initialLoading.value && store.delegationError.value && (
-        <div class="delegations-empty" role="status">
-          {delegations.length
-            ? `Could not refresh delegations: ${store.delegationError.value}. Showing the last successful result.`
-            : `Could not load delegations: ${store.delegationError.value}`}
-        </div>
-      )}
-      {!delegations.length && !store.initialLoading.value && !store.delegationError.value && (
-        <div class="delegations-empty">No delegated work yet.</div>
-      )}
+      {(store.delegationsVerified.value || !store.initialLoading.value) &&
+        store.delegationError.value && (
+          <div class="delegations-empty" role="status">
+            {delegations.length
+              ? `Could not refresh delegations: ${store.delegationError.value}. Showing the last successful result.`
+              : `Could not load delegations: ${store.delegationError.value}`}
+          </div>
+        )}
+      {!delegations.length &&
+        (store.delegationsVerified.value || !store.initialLoading.value) &&
+        !store.delegationError.value && <div class="delegations-empty">No delegated work yet.</div>}
     </section>
   );
 }

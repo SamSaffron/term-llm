@@ -260,15 +260,12 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	assetName := strings.TrimPrefix(r.URL.Path, "/")
 	if assetName == "index.html" {
 		cacheControl := "no-cache, no-store, must-revalidate"
-		if strings.Contains(r.URL.RawQuery, "v=") {
-			cacheControl = "public, max-age=31536000, immutable"
-		}
 		serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", cacheControl, false)
 		return
 	}
 	if assetName == "manifest.webmanifest" {
 		cacheControl := "no-cache"
-		if strings.Contains(r.URL.RawQuery, "v=") {
+		if r.URL.Query().Get("v") == serveui.AssetVersion() {
 			cacheControl = "public, max-age=31536000, immutable"
 		}
 		serveEmbeddedUIBytes(w, r, serveui.RenderManifest(), "application/manifest+json", cacheControl, true)
@@ -295,7 +292,7 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			cacheControl := "no-cache"
-			if strings.Contains(r.URL.RawQuery, "v=") {
+			if serveui.IsHashedAsset(assetName) || r.URL.Query().Get("v") == serveui.AssetVersion() {
 				cacheControl = "public, max-age=31536000, immutable"
 			}
 			serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
@@ -325,13 +322,15 @@ func (s *serveServer) renderIndexHTML() []byte {
 	// Resolve outside the HTML lock. The credential cache shares concurrent
 	// lookups, so a vault failure does not serialize a queue of page requests.
 	publicKey, err := webPushPublicKey(s.cfgRef)
-	html := s.buildIndexHTML(publicKey)
+	html, scopeFinal := s.buildIndexHTMLCacheable(publicKey)
 	s.indexHTMLMu.Lock()
 	defer s.indexHTMLMu.Unlock()
 	if s.cachedIndexHTML != nil {
 		return s.cachedIndexHTML
 	}
-	if err == nil && (publicKey != "" || s.cfgRef == nil || !s.cfgRef.Serve.WebPush.PublicKeyRef().Configured()) {
+	// A transient cache-scope lookup failure must not disable fast reopen for
+	// the process lifetime: retry it on the next page request.
+	if err == nil && scopeFinal && (publicKey != "" || s.cfgRef == nil || !s.cfgRef.Serve.WebPush.PublicKeyRef().Configured()) {
 		s.cachedIndexHTML = html
 	}
 	// A locked vault must not permanently remove push support from the shell.
@@ -340,6 +339,13 @@ func (s *serveServer) renderIndexHTML() []byte {
 }
 
 func (s *serveServer) buildIndexHTML(vapidKey string) []byte {
+	html, _ := s.buildIndexHTMLCacheable(vapidKey)
+	return html
+}
+
+// buildIndexHTMLCacheable reports whether every injected value is final and the
+// page may be reused across requests.
+func (s *serveServer) buildIndexHTMLCacheable(vapidKey string) ([]byte, bool) {
 	// Inject UI prefix so JS can prefix all API calls with it.
 	// Also inject VAPID public key for web push if configured.
 	var headSnippet string
@@ -350,6 +356,12 @@ func (s *serveServer) buildIndexHTML(vapidKey string) []byte {
 	headSnippet += `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script>`
 	versionEscaped, _ := json.Marshal(serveui.AssetVersion())
 	headSnippet += `<script>window.TERM_LLM_UI_VERSION=` + string(versionEscaped) + `;</script>`
+	scope, scopeFinal := s.uiCacheScope()
+	if scope != "" {
+		scopeEscaped, _ := json.Marshal(scope)
+		headSnippet += `<script>window.TERM_LLM_CACHE_SCOPE=` + string(scopeEscaped) + `;</script>`
+	}
+	headSnippet += `<script>window.TERM_LLM_SHELL_AUTHORIZED=` + strconv.FormatBool(s.uiShellAuthorized()) + `;</script>`
 	sidebarSessions := s.cfg.sidebarSessions
 	if len(sidebarSessions) == 0 {
 		sidebarSessions = []string{"all"}
@@ -383,7 +395,7 @@ func (s *serveServer) buildIndexHTML(vapidKey string) []byte {
 	_, pushPersistent := session.AsPushSubscriptionLifecycleStore(s.store)
 	headSnippet += `<script>window.TERM_LLM_PUSH_SUPPORTED=` + strconv.FormatBool(pushPersistent) + `;</script>`
 	headSnippet += s.webrtcHeadSnippet
-	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet, serveui.RenderOptions{WebRTC: s.webrtcEnabled})
+	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet, serveui.RenderOptions{WebRTC: s.webrtcEnabled}), scopeFinal
 }
 
 // prewarmUIAssetCache pre-compresses the service-worker shell assets in a
@@ -396,15 +408,8 @@ func (s *serveServer) prewarmUIAssetCache() {
 		uiGetOrBuildEntry(serveui.RenderServiceWorker(serveui.RenderOptions{WebRTC: s.webrtcEnabled}), true)
 		uiGetOrBuildEntry(serveui.RenderManifest(), true)
 
-		// Static shell assets (SW precache list minus the PNG icon).
-		assetNames := []string{
-			"dist/app.css",
-			"dist/app.js",
-			"dist/chunks/vendor.js",
-		}
-		if s.webrtcEnabled {
-			assetNames = append(assetNames, "dist/chunks/webrtc.js")
-		}
+		// The manifest keeps warm paths aligned with the hashed graph.
+		assetNames := serveui.PrewarmAssetPaths(s.webrtcEnabled)
 		for _, name := range assetNames {
 			if data, err := serveui.StaticAsset(name); err == nil {
 				uiGetOrBuildEntry(data, true)

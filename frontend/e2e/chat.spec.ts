@@ -792,14 +792,15 @@ test('mobile lightbox pinches to 32× without focal drift or browser zoom', asyn
 test('lightbox loads its module and stylesheet only when opened', async ({ page }) => {
   const assets: string[] = [];
   page.on('request', (request) => {
-    if (/\/(?:chunks|assets)\/Lightbox\.(?:js|css)/.test(request.url())) assets.push(request.url());
+    if (/\/(?:chunks|assets)\/Lightbox-[A-Za-z0-9_-]{8,}\.(?:js|css)/.test(request.url()))
+      assets.push(request.url());
   });
   await open(page, '', { media: true });
   expect(assets).toEqual([]);
   await page.getByRole('button', { name: 'preview.png' }).click();
   await expect(page.getByRole('dialog', { name: 'Media preview' }).getByRole('img')).toBeVisible();
-  expect(assets.some((url) => url.includes('/chunks/Lightbox.js'))).toBe(true);
-  expect(assets.some((url) => url.includes('/assets/Lightbox.css'))).toBe(true);
+  expect(assets.some((url) => /\/chunks\/Lightbox-[A-Za-z0-9_-]{8,}\.js/.test(url))).toBe(true);
+  expect(assets.some((url) => /\/assets\/Lightbox-[A-Za-z0-9_-]{8,}\.css/.test(url))).toBe(true);
 });
 
 test.describe('lightbox chunk failures and handoff', () => {
@@ -813,7 +814,7 @@ test.describe('lightbox chunk failures and handoff', () => {
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await page.route('**/chunks/Lightbox.js*', async (route) => {
+    await page.route('**/chunks/Lightbox-*.js*', async (route) => {
       await held;
       await route.continue();
     });
@@ -836,7 +837,9 @@ test.describe('lightbox chunk failures and handoff', () => {
   test('lightbox offers a reload and original media when its module cannot load', async ({
     page,
   }) => {
-    await page.route('**/chunks/Lightbox.js*', (route) => route.abort('failed'));
+    await page.route('**/chunks/Lightbox-*.js*', (route) =>
+      route.fulfill({ status: 404, body: 'Not found' }),
+    );
     await open(page, '', { media: true });
     await page.getByRole('button', { name: 'preview.png' }).click();
     const dialog = page.getByRole('dialog', { name: 'Media preview' });
@@ -855,7 +858,7 @@ test.describe('lightbox chunk failures and handoff', () => {
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await page.route('**/chunks/Lightbox.js*', async (route) => {
+    await page.route('**/chunks/Lightbox-*.js*', async (route) => {
       await held;
       await route.continue();
     });

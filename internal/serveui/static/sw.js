@@ -2,11 +2,42 @@ const SHELL_CACHE = 'term-llm-shell-v7';
 const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',
-  './dist/app.css',
 ];
 
+// Replaced by Go with all chat build files. Hub assets never join this cache.
+const HASHED_ASSETS = [];
+const ASSET_CACHE = `term-llm-assets-${new URL(self.registration.scope).pathname}`;
+const ASSET_METADATA = new URL('./__asset-cache-deployments__', self.registration.scope).href;
+const currentAssets = HASHED_ASSETS.map((asset) => new URL(asset, self.registration.scope).href);
+let retainedAssets = new Set(currentAssets);
+let assetListsLoaded = false;
+
+const previousAssetsFor = (stored) => {
+  const previous = stored?.version === SHELL_CACHE ? stored.previous : stored?.current;
+  return Array.isArray(previous) ? previous.filter((url) => typeof url === 'string') : [];
+};
+
+const pruneAssets = async () => {
+  const cache = await caches.open(ASSET_CACHE);
+  let stored;
+  try {
+    stored = await (await cache.match(ASSET_METADATA))?.json();
+  } catch {
+    // Corrupt/missing metadata starts a fresh retention window.
+  }
+  const previousAssets = previousAssetsFor(stored);
+  retainedAssets = new Set([...currentAssets, ...previousAssets]);
+  assetListsLoaded = true;
+  for (const request of await cache.keys()) {
+    if (request.url !== ASSET_METADATA && !retainedAssets.has(request.url)) await cache.delete(request);
+  }
+  await cache.put(ASSET_METADATA, new Response(JSON.stringify({
+    version: SHELL_CACHE, current: currentAssets, previous: previousAssets,
+  }), { headers: { 'Content-Type': 'application/json' } }));
+};
+
 const putIfCacheable = async (cache, request, response) => {
-  if (!response || !response.ok) return response;
+  if (!response || !response.ok || response.redirected || response.type === 'opaqueredirect') return response;
   try {
     await cache.put(request, response.clone());
   } catch {
@@ -26,6 +57,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys.filter((key) => key.startsWith('term-llm-shell-') && key !== SHELL_CACHE).map((key) => caches.delete(key)));
+    try { await pruneAssets(); } catch { /* Storage is optional, never block activation. */ }
     await self.clients.claim();
   })());
 });
@@ -41,12 +73,44 @@ self.addEventListener('fetch', (event) => {
   const isAppRequest = url.pathname.startsWith(scopePath);
   if (!isAppRequest) return;
   // Trusted extensions are mutable external assets, never offline shell assets.
-  if (url.pathname.slice(scopePath.length).startsWith('extensions/')) return;
+  const relativePath = url.pathname.slice(scopePath.length);
+  if (relativePath.startsWith('extensions/') || relativePath.startsWith('api/') || relativePath.startsWith('v1/')) return;
 
+  if (/^dist\/hub\.(js|css)$/.test(url.pathname.slice(scopePath.length))) return;
   // Navigations are authoritative. A cached application shell can mask login,
   // logout, deployment, and reverse-proxy redirects, so only cache versioned
   // static assets; the application is not useful offline without its API.
   if (request.mode === 'navigate') return;
+
+  const assetURL = new URL(url.href);
+  assetURL.search = '';
+  // Match old hashes too, but only retain current/previous manifest members.
+  // Worker processes can restart without activation; reload persisted lists on
+  // their first asset fetch so an open old client still gets its cached chunks.
+  if (/^dist\/.+-[A-Za-z0-9_-]{8,}\.[a-zA-Z0-9]+$/.test(relativePath)) {
+    event.respondWith((async () => {
+      let cache;
+      try {
+        cache = await caches.open(ASSET_CACHE);
+        if (!assetListsLoaded) {
+          let stored;
+          try { stored = await (await cache.match(ASSET_METADATA))?.json(); } catch { /* Ignore corrupt metadata. */ }
+          retainedAssets = new Set([...currentAssets, ...previousAssetsFor(stored)]);
+          assetListsLoaded = true;
+        }
+        if (retainedAssets.has(assetURL.href)) {
+          const cached = await cache.match(assetURL.href);
+          if (cached) return cached;
+        }
+      } catch {
+        // CacheStorage can be unavailable in privacy modes. HTTP caching works.
+      }
+      const response = await fetch(request);
+      // Retired/unknown hashes must not enter either the asset or shell cache.
+      return cache && retainedAssets.has(assetURL.href) ? putIfCacheable(cache, assetURL.href, response) : response;
+    })());
+    return;
+  }
 
   const isShellAsset = SHELL_ASSETS.some((asset) => url.href === new URL(asset, self.registration.scope).href);
   if (!isShellAsset && request.destination !== 'script' && request.destination !== 'style' && request.destination !== 'image' && request.destination !== 'font') {
@@ -59,12 +123,10 @@ self.addEventListener('fetch', (event) => {
     const networkFetch = fetch(request)
       .then((response) => putIfCacheable(cache, request, response))
       .catch(() => null);
-    // The rendered HTML requests versioned cacheable assets directly, so they
-    // are safe for stale-while-revalidate. The canonical app entry and every
-    // stable-named Vite chunk stay network-first so imports share one module URL
-    // and a deployment cannot execute an old dependency graph.
+    // Versioned shell assets are stale-while-revalidate. Mutable scripts and
+    // styles remain network-first, outside the content-addressed asset cache.
     if (cached && isShellAsset) {
-      void networkFetch;
+      event.waitUntil(networkFetch);
       return cached;
     }
     const response = await networkFetch;

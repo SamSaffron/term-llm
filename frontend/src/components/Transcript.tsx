@@ -1349,6 +1349,7 @@ export function Transcript() {
   const hydratingTranscript = Boolean(
     sessionId && store.selectionStore.transcriptLoading.value === sessionId,
   );
+  const wasHydratingTranscript = useRef(hydratingTranscript);
   const resolverCache = useRef<{
     sessionId: string | undefined;
     store: AppStore;
@@ -1516,6 +1517,10 @@ export function Transcript() {
     };
   }, [store.activeSession.value?.id]);
   useLayoutEffect(() => {
+    // The empty startup placeholder can pin at zero. Once bodies arrive,
+    // that old pin must not disguise a user scroll to the history sentinel.
+    if (wasHydratingTranscript.current && !hydratingTranscript) programmaticScrollTops.current = [];
+    wasHydratingTranscript.current = hydratingTranscript;
     const element = scroll.current;
     if (element && stickToTail.current) {
       element.scrollTop = element.scrollHeight;
@@ -1525,7 +1530,7 @@ export function Transcript() {
         programmaticScrollTops.current = [...recentTops.slice(-7), pinnedTop];
       }
     }
-  }, [messages]);
+  }, [messages, hydratingTranscript]);
   useLayoutEffect(() => {
     const element = scroll.current;
     const anchor = prependAnchor.current;

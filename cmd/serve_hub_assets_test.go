@@ -48,7 +48,7 @@ func TestHubPublicAssetsAreExactAndHardened(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{"/dist/app.js", "/dist/hub.js.map", "/dist/hub.css/extra", "/api/nodes", "/"} {
+	for _, path := range []string{"/" + uiBuildAsset(t, "dist/app.js"), "/dist/hub.js.map", "/dist/hub.css/extra", "/api/nodes", "/"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusUnauthorized {
@@ -166,7 +166,7 @@ func TestHubShellSecurityPoliciesAndDeepBearerAssets(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="/hub/dist/hub.css?v=`,
-		`src="/hub/dist/hub.js"`,
+		`src="/hub/dist/hub.js?v=`,
 		`action="/hub/node/alpha/chat/"`,
 		`&#34;formAction&#34;:&#34;/hub/node/alpha/chat/&#34;`,
 	} {

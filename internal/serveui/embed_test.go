@@ -23,26 +23,26 @@ func TestGeneratedBundleAssets(t *testing.T) {
 		"dist/chunks/ShellOverlay.js", "dist/chunks/markdown-document.js", "dist/chunks/file-text.js",
 		"dist/assets/MarkdownFilePreview.css", "dist/assets/ShellOverlay.css",
 	} {
-		body, err := StaticAsset(name)
+		body, err := testBuildAsset(name)
 		if err != nil {
-			t.Fatalf("StaticAsset(%q): %v", name, err)
+			t.Fatalf("testBuildAsset(%q): %v", name, err)
 		}
 		if len(body) == 0 {
-			t.Fatalf("StaticAsset(%q) is empty", name)
+			t.Fatalf("testBuildAsset(%q) is empty", name)
 		}
 	}
-	if _, err := StaticAsset("dist/app.js.map"); err == nil {
+	if _, err := testBuildAsset("dist/app.js.map"); err == nil {
 		t.Fatal("production source map must not be embedded")
 	}
-	if _, err := StaticAsset("dist/hub.js.map"); err == nil {
+	if _, err := testBuildAsset("dist/hub.js.map"); err == nil {
 		t.Fatal("Hub production source map must not be embedded")
 	}
 }
 
-func TestGeneratedCSSPreloadsResolveToEmbeddedAssets(t *testing.T) {
-	cssReference := regexp.MustCompile(`["']((?:\.\.?/)[^"']+\.css)["']`)
+func TestGeneratedImportsPreloadsAndCSSURLsResolveToEmbeddedAssets(t *testing.T) {
+	assetReference := regexp.MustCompile(`(?:["']|url\()((?:\.\.?/)[^"'()]+\.(?:js|css|woff2|png|svg))["') ]`)
 	err := fs.WalkDir(staticFiles, "static/dist", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || !strings.HasSuffix(name, ".js") {
+		if err != nil || entry.IsDir() || (!strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css")) {
 			return err
 		}
 		body, err := fs.ReadFile(staticFiles, name)
@@ -50,10 +50,10 @@ func TestGeneratedCSSPreloadsResolveToEmbeddedAssets(t *testing.T) {
 			return err
 		}
 		assetName := strings.TrimPrefix(name, "static/")
-		for _, match := range cssReference.FindAllSubmatch(body, -1) {
+		for _, match := range assetReference.FindAllSubmatch(body, -1) {
 			resolved := pathpkg.Clean(pathpkg.Join(pathpkg.Dir(assetName), string(match[1])))
 			if _, err := StaticAsset(resolved); err != nil {
-				t.Errorf("%s preloads missing CSS asset %q: %v", assetName, resolved, err)
+				t.Errorf("%s references missing graph asset %q: %v", assetName, resolved, err)
 			}
 		}
 		return nil
@@ -148,7 +148,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// and offers link drag, keyboard/menu moves, optimistic saves, and stale
 		// read protection. Those controls are needed at startup: ~552.0/161.6 kB
 		// raw/gzip, with roughly the same modest headroom as the other budgets.
-		"dist/app.js":                {raw: 558_000, gzip: 164_000},
+		// Fast reopen restores the last-known workspace before any network
+		// response, so the bounded IndexedDB cache, the workspace/discovery
+		// records and their sanitizers must be in the entry: ~566.8/166.4 kB.
+		"dist/app.js":                {raw: 575_000, gzip: 169_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
@@ -177,11 +180,14 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// rollback, and adds the card controls and store wiring: ~9.4 KiB raw,
 		// all of it on screen at startup, bringing JS to 82.1/27.3 KiB. These
 		// limits keep the same modest headroom as before.
-		"dist/hub.js":  {raw: 88_000, gzip: 29_000},
+		// The dashboard now paints a persisted last-known snapshot before any
+		// request and applies each section as it lands; the shared IndexedDB
+		// cache plus field allowlists add ~9.8 KiB: 97.9/31.9 KiB.
+		"dist/hub.js":  {raw: 101_000, gzip: 33_000},
 		"dist/hub.css": {raw: 19_000, gzip: 5_500},
 	}
 	for name, budget := range budgets {
-		body, err := StaticAsset(name)
+		body, err := testBuildAsset(name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,7 +202,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 }
 
 func TestBundlePolicy(t *testing.T) {
-	js, err := StaticAsset("dist/app.js")
+	js, err := testBuildAsset("dist/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,11 +221,11 @@ func TestLightboxAssetsRemainLazy(t *testing.T) {
 		{"dist/app.js", "dist/chunks/Lightbox.js", "lightbox-view-controls"},
 		{"dist/app.css", "dist/assets/Lightbox.css", ".lightbox-toolbar"},
 	} {
-		eager, err := StaticAsset(asset.eager)
+		eager, err := testBuildAsset(asset.eager)
 		if err != nil {
 			t.Fatal(err)
 		}
-		lazy, err := StaticAsset(asset.lazy)
+		lazy, err := testBuildAsset(asset.lazy)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -233,11 +239,11 @@ func TestLightboxAssetsRemainLazy(t *testing.T) {
 }
 
 func TestCommitDialogRemainsLazy(t *testing.T) {
-	eager, err := StaticAsset("dist/app.js")
+	eager, err := testBuildAsset("dist/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lazy, err := StaticAsset("dist/chunks/CommitModal.js")
+	lazy, err := testBuildAsset("dist/chunks/CommitModal.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,11 +261,11 @@ func TestMCPDialogAssetsRemainLazy(t *testing.T) {
 		{"dist/app.js", "dist/chunks/MCPModal.js", "Local command"},
 		{"dist/app.css", "dist/assets/MCPModal.css", ".mcp-row-menu"},
 	} {
-		eager, err := StaticAsset(asset.eager)
+		eager, err := testBuildAsset(asset.eager)
 		if err != nil {
 			t.Fatal(err)
 		}
-		lazy, err := StaticAsset(asset.lazy)
+		lazy, err := testBuildAsset(asset.lazy)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -273,11 +279,11 @@ func TestMCPDialogAssetsRemainLazy(t *testing.T) {
 }
 
 func TestLiveVoiceCallRemainsLazy(t *testing.T) {
-	eager, err := StaticAsset("dist/app.js")
+	eager, err := testBuildAsset("dist/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lazy, err := StaticAsset("dist/chunks/live.js")
+	lazy, err := testBuildAsset("dist/chunks/live.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +296,7 @@ func TestLiveVoiceCallRemainsLazy(t *testing.T) {
 	if !bytes.Contains(lazy, []byte(marker)) {
 		t.Error("dist/chunks/live.js is missing the live voice WebRTC peer")
 	}
-	endpoints, err := StaticAsset("dist/chunks/live-endpoints.js")
+	endpoints, err := testBuildAsset("dist/chunks/live-endpoints.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +310,7 @@ func TestLiveVoiceCallRemainsLazy(t *testing.T) {
 }
 
 func TestHubBundlePolicy(t *testing.T) {
-	js, err := StaticAsset("dist/hub.js")
+	js, err := testBuildAsset("dist/hub.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,17 +379,17 @@ func TestLazyChunksReuseCanonicalEntryModuleURL(t *testing.T) {
 		"dist/chunks/markdown-preview-store.js",
 		"dist/chunks/file-text.js",
 	} {
-		body, err := StaticAsset(name)
+		body, err := testBuildAsset(name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		importsEntry = importsEntry || bytes.Contains(body, []byte(`../app.js`))
+		importsEntry = importsEntry || bytes.Contains(body, []byte(`../`+strings.TrimPrefix(ChatAssetManifest().EntryJS, "dist/")))
 	}
 	if !importsEntry {
 		t.Fatal("expected a lazy Markdown chunk to exercise the shared entry import contract")
 	}
 	rendered := string(RenderIndexHTML("/ui", "", RenderOptions{}))
-	if !strings.Contains(rendered, `type="module" src="dist/app.js"`) || strings.Contains(rendered, `src="dist/app.js?v=`) {
+	if !strings.Contains(rendered, `type="module" src="`+ChatAssetManifest().EntryJS+`"`) || strings.Contains(rendered, `src="dist/app.js?v=`) {
 		t.Fatal("lazy chunks and the HTML entry must resolve app.js to one canonical module URL")
 	}
 }
@@ -391,12 +397,11 @@ func TestLazyChunksReuseCanonicalEntryModuleURL(t *testing.T) {
 func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	const bootstrap = `<script>window.TERM_LLM_UI_PREFIX="/chat/nodes/alpha";</script>`
 	rendered := string(RenderIndexHTML("/chat/nodes/alpha", bootstrap, RenderOptions{WebRTC: true}))
-	version := AssetVersion()
 	for _, want := range []string{
 		`<base href="/chat/nodes/alpha/">`,
 		bootstrap,
-		`href="dist/app.css?v=` + version + `"`,
-		`type="module" src="dist/app.js"`,
+		`href="` + ChatAssetManifest().EntryCSS[0] + `"`,
+		`type="module" src="` + ChatAssetManifest().EntryJS + `"`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered index missing %q", want)
@@ -405,7 +410,7 @@ func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	if strings.Contains(rendered, `src="dist/app.js?v=`) {
 		t.Fatal("entry module must keep the canonical URL imported by lazy chunks")
 	}
-	if strings.Index(rendered, bootstrap) > strings.Index(rendered, `src="dist/app.js`) {
+	if strings.Index(rendered, bootstrap) > strings.Index(rendered, `src="`+ChatAssetManifest().EntryJS) {
 		t.Fatal("injected Hub/bootstrap context must precede the deferred module")
 	}
 	if count := strings.Count(rendered, `<script type="module"`); count != 1 {
@@ -420,7 +425,6 @@ func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
 		"term-llm-shell-" + AssetVersion(),
 		"'./manifest.webmanifest?v=" + AssetVersion() + "'",
 		"'./icon-512.png?v=" + AssetVersion() + "'",
-		"'./dist/app.css?v=" + AssetVersion() + "'",
 	} {
 		if !strings.Contains(without, want) {
 			t.Errorf("service worker missing %q", want)
@@ -428,11 +432,11 @@ func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
 	}
 	for _, chunk := range []string{"app.js?v=", "vendor.js?v=", "webrtc.js?v=", "highlight.js?v=", "katex.js?v=", "mcp.js?v="} {
 		if strings.Contains(without, chunk) || strings.Contains(with, chunk) {
-			t.Errorf("stable-named chunk %q must remain unversioned and network-first", chunk)
+			t.Errorf("canonical stable URL %q must not appear in the hashed graph", chunk)
 		}
 	}
 	if strings.Contains(without, "'./dist/app.js'") || strings.Contains(with, "'./dist/app.js'") {
-		t.Fatal("canonical app entry must remain network-first instead of joining the shell cache")
+		t.Fatal("stable entry URL must not appear in the hashed asset list")
 	}
 	if strings.Contains(without, "hub.js") || strings.Contains(without, "hub.css") || strings.Contains(with, "hub.js") || strings.Contains(with, "hub.css") {
 		t.Fatal("standalone Hub assets must stay outside the chat service-worker cache")
@@ -443,11 +447,11 @@ func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
 }
 
 func TestStaticAssetReturnsCopy(t *testing.T) {
-	first, err := StaticAsset("dist/app.js")
+	first, err := testBuildAsset("dist/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _ := StaticAsset("dist/app.js")
+	second, _ := testBuildAsset("dist/app.js")
 	first[0] ^= 0xff
 	if bytes.Equal(first, second) {
 		t.Fatal("StaticAsset returned shared mutable storage")
@@ -455,7 +459,7 @@ func TestStaticAssetReturnsCopy(t *testing.T) {
 }
 
 func TestRenderedAssetsAreGzipReadable(t *testing.T) {
-	body, _ := StaticAsset("dist/app.js")
+	body, _ := testBuildAsset("dist/app.js")
 	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)
 	_, _ = writer.Write(body)
@@ -467,5 +471,85 @@ func TestRenderedAssetsAreGzipReadable(t *testing.T) {
 	decoded, err := io.ReadAll(reader)
 	if err != nil || !bytes.Equal(decoded, body) {
 		t.Fatalf("gzip round trip failed: %v", err)
+	}
+}
+
+// Logical asset names keep lazy-content and budget assertions independent of
+// build hashes. This helper is test-only: HTTP serving never aliases old URLs.
+func testBuildAsset(name string) ([]byte, error) {
+	if body, err := StaticAsset(name); err == nil {
+		return body, nil
+	}
+	ext := pathpkg.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for _, file := range ChatAssetManifest().Files {
+		if strings.HasPrefix(file, stem+"-") && strings.HasSuffix(file, ext) && len(strings.TrimSuffix(strings.TrimPrefix(file, stem+"-"), ext)) == 8 {
+			return StaticAsset(file)
+		}
+	}
+	return StaticAsset(name)
+}
+
+func TestChatManifestCompleteAndContentAddressed(t *testing.T) {
+	manifest := ChatAssetManifest()
+	if len(manifest.Files) < 30 {
+		t.Fatal("incomplete asset graph")
+	}
+	for _, canonical := range []string{"dist/app.js", "dist/app.css", "dist/chunks/vendor.js", "dist/chunks/katex.js"} {
+		if _, err := StaticAsset(canonical); err == nil {
+			t.Errorf("stable build path still embedded: %s", canonical)
+		}
+	}
+	err := fs.WalkDir(staticFiles, "static/dist", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		file := strings.TrimPrefix(name, "static/")
+		if file == "dist/hub.js" || file == "dist/hub.css" || file == "dist/asset-manifest.json" {
+			return nil
+		}
+		if !IsHashedAsset(file) {
+			t.Errorf("build file absent from hashed manifest: %s", file)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := string(RenderServiceWorker(RenderOptions{}))
+	for _, file := range manifest.Files {
+		if !strings.Contains(rendered, `"./`+file+`"`) {
+			t.Errorf("SW missing %s", file)
+		}
+	}
+	for _, path := range PrewarmAssetPaths(true) {
+		if !IsHashedAsset(path) {
+			t.Errorf("prewarm not hashed: %s", path)
+		}
+	}
+}
+
+func TestSourceAssetPathsAndManifestCopies(t *testing.T) {
+	manifest := ChatAssetManifest()
+	originalEntryCSS := manifest.EntryCSS[0]
+	manifest.EntryCSS[0] = "mutated"
+	manifest.Files[0] = "mutated"
+	copy := ChatAssetManifest()
+	if copy.EntryCSS[0] != originalEntryCSS || copy.Files[0] == "mutated" {
+		t.Fatal("manifest exposed mutable shared storage")
+	}
+	sourcePaths := SourceAssetPaths()
+	for _, file := range sourcePaths {
+		if _, err := StaticAsset(file); err != nil {
+			t.Errorf("source path %s: %v", file, err)
+		}
+	}
+	for _, file := range copy.Files {
+		if strings.HasSuffix(file, ".js") || strings.HasSuffix(file, ".css") {
+			index := sort.SearchStrings(sourcePaths, file)
+			if index == len(sourcePaths) || sourcePaths[index] != file {
+				t.Errorf("hashed source omitted: %s", file)
+			}
+		}
 	}
 }

@@ -49,6 +49,7 @@ export const NodeCard = memo(function NodeCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const reorderable = Boolean(reorder && count > 1);
+  const stale = !store.nodesVerified.value;
   const status = node.status ?? { reachable: false, state: 'unknown', latency_ms: 0 };
   const summary = [
     status.agent || node.id,
@@ -95,11 +96,17 @@ export const NodeCard = memo(function NodeCard({
         onPointerDown={reorderable ? (event) => reorder!.press(event, node.id) : undefined}
       >
         <span
-          class={`status-dot ${status.reachable ? 'ok' : 'down'}`}
-          title={status.reachable ? 'Reachable' : status.error || 'Unreachable'}
+          class={`status-dot ${stale ? 'last-known' : status.reachable ? 'ok' : 'down'}`}
+          title={
+            stale
+              ? 'Last seen · updating'
+              : status.reachable
+                ? 'Reachable'
+                : status.error || 'Unreachable'
+          }
         />
         <h2 class="node-name">{node.name}</h2>
-        {attention && (
+        {!stale && attention && (
           <span
             class="attention-dot"
             title={`${Number(sessions.input_required_count) || 0} waiting · ${Number(sessions.active_count) || 0} running · ${Number(sessions.unseen_count) || 0} ready to review`}
@@ -117,7 +124,8 @@ export const NodeCard = memo(function NodeCard({
           ))}
         </div>
       )}
-      <NodeSessions node={node} />
+      {stale && <div class="node-summary-line hub-cache-marker">Last seen · updating</div>}
+      <NodeSessions node={node} verified={!stale} />
       {!status.reachable && status.error && <div class="node-error">{status.error}</div>}
       {(node.diagnostics?.length ?? 0) > 0 && (
         <div class="node-diagnostics">

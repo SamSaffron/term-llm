@@ -5,6 +5,8 @@ declare global {
     TERM_LLM_UI_PREFIX?: string;
     TERM_LLM_AUTH_MODE?: string;
     TERM_LLM_UI_VERSION?: string;
+    TERM_LLM_CACHE_SCOPE?: string;
+    TERM_LLM_SHELL_AUTHORIZED?: boolean;
     TERM_LLM_SIDEBAR_SESSIONS?: string[] | string;
     TERM_LLM_AGENT_NAME?: string;
     TERM_LLM_AGENT_NAMES?: string[];
@@ -54,6 +56,13 @@ export interface AppConfig {
   webRTC: boolean;
   signalingURL: string;
   initialProject?: Project;
+  /**
+   * Opaque server store/auth identity for persistent UI caches. Never derived
+   * from credentials; absent disables private persistence.
+   */
+  cacheScope?: string;
+  /** True when serving this HTML already required authorization (or no auth is configured). */
+  shellAuthorized?: boolean;
 }
 
 export function parseSidebarCategories(raw: unknown): string[] {
@@ -80,6 +89,10 @@ export function readInjectedConfig(target: Window = window): AppConfig {
     prefix,
     passkeyAuth: target.TERM_LLM_AUTH_MODE === 'passkey',
     version: String(target.TERM_LLM_UI_VERSION || ''),
+    cacheScope: /^[a-z0-9]{8,64}$/.test(String(target.TERM_LLM_CACHE_SCOPE || ''))
+      ? String(target.TERM_LLM_CACHE_SCOPE)
+      : '',
+    shellAuthorized: target.TERM_LLM_SHELL_AUTHORIZED === true,
     sidebarCategories: parseSidebarCategories(target.TERM_LLM_SIDEBAR_SESSIONS),
     agentName: String(target.TERM_LLM_AGENT_NAME || ''),
     agentNames: Array.isArray(target.TERM_LLM_AGENT_NAMES)

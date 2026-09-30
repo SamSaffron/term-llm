@@ -4,9 +4,12 @@ import type { HubStore } from '../stores/hub-store';
 export function HubHeader({ config, store }: { config: HubConfig; store: HubStore }) {
   const nodes = store.nodes.value.length;
   const active = store.activeSessionCount.value;
-  const summary = nodes
-    ? `${store.reachableCount.value}/${nodes} nodes reachable${active ? ` · ${active} active ${active === 1 ? 'session' : 'sessions'}` : ''}`
-    : '';
+  const summary =
+    !store.nodesVerified.value && nodes
+      ? `${nodes} last-known ${nodes === 1 ? 'node' : 'nodes'}`
+      : nodes
+        ? `${store.reachableCount.value}/${nodes} nodes reachable${active ? ` · ${active} active ${active === 1 ? 'session' : 'sessions'}` : ''}`
+        : '';
   return (
     <header class="hub-header">
       <div class="hub-brand">
@@ -39,6 +42,7 @@ export function HubHeader({ config, store }: { config: HubConfig; store: HubStor
       <div class="hub-header-actions">
         <span class="hub-summary" aria-live="polite">
           {summary}
+          {store.lastKnown.value && <span class="hub-cache-marker"> · last known · updating</span>}
         </span>
         {config.passkeyAuth && (
           <button

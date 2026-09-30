@@ -17,14 +17,16 @@ var hubShellHTML string
 var hubShellTmpl = template.Must(template.New("hub-shell").Parse(hubShellHTML))
 
 type hubPageConfig struct {
-	Page         string                `json:"page"`
-	AuthMode     string                `json:"authMode"`
-	BasePath     string                `json:"basePath"`
-	CanAddNodes  bool                  `json:"canAddNodes"`
-	PasskeyAuth  bool                  `json:"passkeyAuth"`
-	InvalidToken bool                  `json:"invalidToken"`
-	FormAction   string                `json:"formAction"`
-	Passkey      *hubPasskeyPageConfig `json:"passkey,omitempty"`
+	CacheScope          string                `json:"cacheScope,omitempty"`
+	CacheDisplayAllowed bool                  `json:"cacheDisplayAllowed"`
+	Page                string                `json:"page"`
+	AuthMode            string                `json:"authMode"`
+	BasePath            string                `json:"basePath"`
+	CanAddNodes         bool                  `json:"canAddNodes"`
+	PasskeyAuth         bool                  `json:"passkeyAuth"`
+	InvalidToken        bool                  `json:"invalidToken"`
+	FormAction          string                `json:"formAction"`
+	Passkey             *hubPasskeyPageConfig `json:"passkey,omitempty"`
 }
 
 type hubPasskeyPageConfig struct {
@@ -73,13 +75,18 @@ func (s *hubServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.writeHubShell(w, r, http.StatusOK, "Hub - term-llm", hubPageConfig{
-		Page:         "dashboard",
-		AuthMode:     authMode,
-		BasePath:     s.basePath,
-		CanAddNodes:  s.store != nil,
-		PasskeyAuth:  s.passkey != nil,
-		InvalidToken: false,
-		FormAction:   s.publicPath("/"),
+		// Unlike the chat bearer shell, the Hub dashboard is gated by auth:
+		// bearer navigation requires the Hub token cookie (or Authorization),
+		// passkey navigation requires a session; none grants access outright.
+		CacheScope:          s.hubCacheScope(authMode),
+		CacheDisplayAllowed: true,
+		Page:                "dashboard",
+		AuthMode:            authMode,
+		BasePath:            s.basePath,
+		CanAddNodes:         s.store != nil,
+		PasskeyAuth:         s.passkey != nil,
+		InvalidToken:        false,
+		FormAction:          s.publicPath("/"),
 	})
 }
 
@@ -97,7 +104,7 @@ func writeBrowserAuthShell(w http.ResponseWriter, r *http.Request, status int, t
 	view := hubShellView{
 		Title:        title,
 		StyleURL:     publicPath("/dist/hub.css") + "?v=" + url.QueryEscape(serveui.HubAssetVersion()),
-		ScriptURL:    publicPath("/dist/hub.js"),
+		ScriptURL:    publicPath("/dist/hub.js") + "?v=" + url.QueryEscape(serveui.HubAssetVersion()),
 		ConfigJSON:   string(encoded),
 		Dashboard:    config.Page == "dashboard",
 		BearerLogin:  config.Page == "bearer-login",
@@ -146,12 +153,12 @@ func handleBrowserAuthAsset(w http.ResponseWriter, r *http.Request) {
 		name = "dist/hub.css"
 		contentType = "text/css; charset=utf-8"
 		cacheControl = "no-cache"
-		if r.URL.Query().Get("v") == serveui.HubAssetVersion() {
-			cacheControl = "public, max-age=31536000, immutable"
-		}
 	default:
 		http.NotFound(w, r)
 		return
+	}
+	if r.URL.Query().Get("v") == serveui.HubAssetVersion() {
+		cacheControl = "public, max-age=31536000, immutable"
 	}
 	data, err := serveui.StaticAsset(name)
 	if err != nil {

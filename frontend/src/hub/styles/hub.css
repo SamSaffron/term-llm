@@ -1298,3 +1298,19 @@ input:focus-visible {
     color: #57606a;
   }
 }
+
+/* Cached navigation stays useful without suggesting verified live health. */
+.hub-cache-marker {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-weight: normal;
+}
+
+.status-dot.last-known {
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.status-last-known {
+  opacity: 0.65;
+}

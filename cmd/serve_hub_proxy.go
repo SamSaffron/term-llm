@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -306,10 +307,16 @@ func hubRewriteProxyRequest(pr *httputil.ProxyRequest) {
 	out.Header.Del("Cookie")
 	out.Header.Del("X-Api-Key")
 
-	// Take ownership of response encoding so ModifyResponse sees decompressed
-	// HTML: with Accept-Encoding cleared, the Transport transparently
-	// negotiates and decodes gzip itself.
-	out.Header.Del("Accept-Encoding")
+	// Keep node compression end to end: JS/CSS/JSON pass through gzip-encoded
+	// (a proxied UI otherwise downloads ~3.4x the bytes). Only gzip is
+	// negotiated because HTML is the one body the Hub must decode to rewrite
+	// (see hubRebaseProxyResponse). Clients without gzip get identity bodies:
+	// with Accept-Encoding cleared, the Transport negotiates and decodes itself.
+	if uiAcceptsGzip(pr.In.Header.Get("Accept-Encoding")) {
+		out.Header.Set("Accept-Encoding", "gzip")
+	} else {
+		out.Header.Del("Accept-Encoding")
+	}
 
 	// Replace spoofable forwarding metadata with the public Hub node mount.
 	out.Header.Del("X-Forwarded-For")
@@ -393,6 +400,9 @@ func hubRebaseProxyResponse(resp *http.Response) error {
 	if resp.Request.Method == http.MethodHead {
 		return nil
 	}
+	if err := hubDecodeGzipBody(resp); err != nil {
+		return err
+	}
 	originalBody := resp.Body
 	body, overLimit, err := hubReadHTMLBodyForRebase(originalBody)
 	if err != nil {
@@ -428,9 +438,28 @@ func hubRebaseProxyResponse(resp *http.Response) error {
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	// The Transport already decoded any gzip (we cleared Accept-Encoding);
-	// make sure no stale encoding header survives the body rewrite.
+	// hubDecodeGzipBody (or the Transport) already decoded the body; make sure
+	// no stale encoding header survives the rewrite.
 	resp.Header.Del("Content-Encoding")
+	return nil
+}
+
+// hubDecodeGzipBody decodes a gzip-encoded HTML body in place so it can be
+// rewritten. The HTML shell is small, uncached, and rewritten per request;
+// every other proxied body keeps the node's compression.
+func hubDecodeGzipBody(resp *http.Response) error {
+	if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Content-Encoding")), "gzip") {
+		return nil
+	}
+	reader, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		resp.Body.Close()
+		return fmt.Errorf("decode node HTML: %w", err)
+	}
+	resp.Body = hubPrefixReadCloser{reader: reader, closer: resp.Body}
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
 	return nil
 }
 

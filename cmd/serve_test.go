@@ -678,7 +678,7 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	}
 
 	// 2. /dist/app.css serves the generated static asset.
-	req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
+	req = httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css"), nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -887,7 +887,7 @@ func TestNormalizeBasePath_ProducesValidRoutes(t *testing.T) {
 		}
 
 		// handleUI serves generated assets after the base path is stripped.
-		req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
+		req = httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css"), nil)
 		rr = httptest.NewRecorder()
 		srv.handleUI(rr, req)
 		if rr.Code != http.StatusOK {
@@ -949,9 +949,9 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 		contentType string
 		bodySnippet string
 	}{
-		{name: "css", path: "/dist/app.css", contentType: "text/css; charset=utf-8", bodySnippet: ".app{"},
-		{name: "module_js", path: "/dist/app.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "term_llm_token"},
-		{name: "lazy_chunk_js", path: "/dist/chunks/katex.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "katex"},
+		{name: "css", path: "/" + uiBuildAsset(t, "dist/app.css"), contentType: "text/css; charset=utf-8", bodySnippet: ".app{"},
+		{name: "module_js", path: "/" + uiBuildAsset(t, "dist/app.js"), contentType: "text/javascript; charset=utf-8", bodySnippet: "term_llm_token"},
+		{name: "lazy_chunk_js", path: "/" + uiBuildAsset(t, "dist/chunks/katex.js"), contentType: "text/javascript; charset=utf-8", bodySnippet: "katex"},
 		{name: "manifest", path: "/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
 	}
 
@@ -994,7 +994,7 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 
 	// Versioned generated asset gets immutable caching.
-	req := httptest.NewRequest(http.MethodGet, "/dist/chunks/katex.js?v="+serveui.AssetVersion(), nil)
+	req := httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/chunks/katex.js")+"?v="+serveui.AssetVersion(), nil)
 	rr := httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -1004,27 +1004,27 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 		t.Errorf("versioned asset cache-control = %q, want immutable", got)
 	}
 
-	// Unversioned asset gets no-cache.
-	req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
+	// Hashed assets are immutable even without a version query.
+	req = httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css"), nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
-		t.Errorf("unversioned asset cache-control = %q, want no-cache", got)
+	if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
+		t.Errorf("hashed asset cache-control = %q, want immutable", got)
 	}
 }
 
 func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 	version := serveui.AssetVersion()
-	wantBody, err := serveui.StaticAsset("dist/app.css")
+	wantBody, err := serveui.StaticAsset(uiBuildAsset(t, "dist/app.css"))
 	if err != nil {
 		t.Fatalf("StaticAsset(dist/app.css): %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
+	req := httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css")+"?v="+version, nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	rr := httptest.NewRecorder()
 	srv.handleUI(rr, req)
@@ -1056,7 +1056,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("decompressed body mismatch")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css")+"?v="+version, nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -1069,7 +1069,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("plain body mismatch")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css")+"?v="+version, nil)
 	req.Header.Set("If-None-Match", etag)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
@@ -1080,7 +1080,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("conditional response body length = %d, want 0", rr.Body.Len())
 	}
 
-	req = httptest.NewRequest(http.MethodHead, "/dist/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodHead, "/"+uiBuildAsset(t, "dist/app.css")+"?v="+version, nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -1129,8 +1129,8 @@ func TestHandleUI_IndexVersionsCacheableAssetsAndKeepsCanonicalModule(t *testing
 	for _, snippet := range []string{
 		`href="manifest.webmanifest?v=` + version + `"`,
 		`href="icon-512.png?v=` + version + `"`,
-		`href="dist/app.css?v=` + version + `"`,
-		`type="module" src="dist/app.js"`,
+		`href="` + uiBuildAsset(t, "dist/app.css") + `"`,
+		`type="module" src="` + uiBuildAsset(t, "dist/app.js") + `"`,
 		`.startup-splash{`,
 		`@keyframes startup-spin{`,
 	} {
@@ -1141,7 +1141,7 @@ func TestHandleUI_IndexVersionsCacheableAssetsAndKeepsCanonicalModule(t *testing
 	if strings.Contains(body, `src="dist/app.js?v=`) {
 		t.Fatal("did not expect a version query on the canonical application module")
 	}
-	if strings.Index(body, `.startup-splash{`) > strings.Index(body, `href="dist/app.css?v=`+version+`"`) {
+	if strings.Index(body, `.startup-splash{`) > strings.Index(body, `href="`+uiBuildAsset(t, "dist/app.css")+`"`) {
 		t.Fatalf("expected inline startup styles before generated CSS link")
 	}
 	for _, snippet := range []string{
@@ -1170,7 +1170,6 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 		`term-llm-shell-` + version,
 		`'./manifest.webmanifest?v=` + version + `'`,
 		`'./icon-512.png?v=` + version + `'`,
-		`'./dist/app.css?v=` + version + `'`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)

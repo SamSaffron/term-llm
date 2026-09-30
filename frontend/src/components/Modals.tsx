@@ -313,6 +313,15 @@ function Settings() {
             />
           </div>
         )}
+        <div class="settings-field">
+          <p class="settings-help">
+            Recent conversations and model lists are kept on this device so the chat opens quickly.
+            They are always refreshed from the server.
+          </p>
+          <button class="btn" type="button" onClick={() => void store.clearLocalCache()}>
+            Clear cached data on this device
+          </button>
+        </div>
       </div>
       <div
         id="settings-extensions-panel"
