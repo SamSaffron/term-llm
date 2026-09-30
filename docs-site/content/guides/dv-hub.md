@@ -51,12 +51,12 @@ term-llm already ships everything a container needs to become a reverse node. Th
 
 ```bash
 term-llm serve web \
-  --token "<node bearer token>" \                 # this node's own web token
-  --hub-url http://host.docker.internal:8090/ \    # the Hub, as seen from the container
-  --hub-node-id   my-agent \                       # unique id on the Hub
-  --hub-node-name my-agent \                       # display name
-  --hub-connect reverse \                          # dial out instead of being dialed
-  --hub-register \                                 # self-register on startup
+  --token "<node bearer token>" \
+  --hub-url http://host.docker.internal:8090/ \
+  --hub-node-id   my-agent \
+  --hub-node-name my-agent \
+  --hub-connect reverse \
+  --hub-register \
   --hub-registration-token devreg                  # MUST equal the Hub --registration-token
 ```
 
