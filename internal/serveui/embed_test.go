@@ -151,7 +151,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Fast reopen restores the last-known workspace before any network
 		// response, so the bounded IndexedDB cache, the workspace/discovery
 		// records and their sanitizers must be in the entry: ~566.8/166.4 kB.
-		"dist/app.js":                {raw: 575_000, gzip: 169_000},
+		// Modals opened by explicit user actions (settings, rename, goal, widgets,
+		// branch paths, skills, project picker/assignment, worktrees) now load on
+		// demand; agent approval/ask-user prompts and the side question stay
+		// eager. That leaves the entry at ~527.3/155.2 kB. Same ~1% rule as above.
+		"dist/app.js":                {raw: 533_000, gzip: 157_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
@@ -274,6 +278,37 @@ func TestMCPDialogAssetsRemainLazy(t *testing.T) {
 		}
 		if !bytes.Contains(lazy, []byte(asset.marker)) {
 			t.Errorf("%s is missing MCP dialog code/styles", asset.lazy)
+		}
+	}
+}
+
+// Modals opened by explicit user actions load on demand; a static import would
+// fold one back into the entry. Agent approval/ask-user prompts stay eager.
+func TestUserOpenedModalsRemainLazy(t *testing.T) {
+	eager, err := testBuildAsset("dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, modal := range []struct{ chunk, marker string }{
+		{"dist/chunks/SettingsModal.js", "Show archived sessions"},
+		{"dist/chunks/RenameModal.js", "Improve title with AI"},
+		{"dist/chunks/GoalModal.js", "Set a persistent objective"},
+		{"dist/chunks/WidgetsModal.js", "Local widgets open in this tab."},
+		{"dist/chunks/BranchModals.js", "Filesystem and tool side effects are not undone."},
+		{"dist/chunks/SkillsModal.js", "skill-provenance"},
+		{"dist/chunks/ProjectPicker.js", "Defaults to the folder name"},
+		{"dist/chunks/ProjectAssignment.js", "Choose a sidebar group."},
+		{"dist/chunks/Worktrees.js", "worktree-intro"},
+	} {
+		lazy, err := testBuildAsset(modal.chunk)
+		if err != nil {
+			t.Fatalf("testBuildAsset(%q): %v", modal.chunk, err)
+		}
+		if bytes.Contains(eager, []byte(modal.marker)) {
+			t.Errorf("dist/app.js unexpectedly contains %s code (%q)", modal.chunk, modal.marker)
+		}
+		if !bytes.Contains(lazy, []byte(modal.marker)) {
+			t.Errorf("%s is missing its dialog code (%q)", modal.chunk, modal.marker)
 		}
 	}
 }

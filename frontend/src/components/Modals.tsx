@@ -1,17 +1,95 @@
-import { SearchField, SettingsSelect } from './FormFields';
-import { ToggleSwitch } from './ToggleSwitch';
+import type { ComponentType } from 'preact';
 import { memo } from './memo';
 import { lazyComponent } from './lazyComponent';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
-import { skillExecutionDescription, skillExecutionLabel } from '../domain/completions';
-import type { ApprovalPrompt, AskUserPrompt, Widget } from '../domain/types';
+import type { ApprovalPrompt, AskUserPrompt } from '../domain/types';
 import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 import { Markdown } from './Markdown';
-import { ProjectAssignment } from './ProjectAssignment';
-import { Worktrees } from './Worktrees';
+
+// Modals opened from explicit user actions load on demand. Agent interactions
+// (approval, ask-user) stay eager: they must appear the moment the server asks,
+// without a chunk round trip. The side question stays here because other
+// surfaces import it directly, so splitting it would not shrink the entry.
+//
+// A failed import resolves to a dismissible error dialog titled like the real
+// one; `onClose` must repeat any cleanup the real dialog does on dismissal.
+function lazyModal(
+  title: string,
+  load: () => Promise<ComponentType>,
+  onClose?: (store: ReturnType<typeof useStore>) => void,
+) {
+  return lazyComponent(() =>
+    load().catch((error: unknown) => {
+      console.error(`Failed to load the ${title} dialog`, error);
+      const ModalLoadError = () => {
+        const store = useStore();
+        return (
+          <Overlay title={title} onClose={onClose && (() => onClose(store))}>
+            <p role="alert">Could not load this dialog. Reload the page to retry.</p>
+          </Overlay>
+        );
+      };
+      return ModalLoadError;
+    }),
+  );
+}
+
+const LazySettings = lazyModal('Settings', () =>
+  import('./SettingsModal').then(({ Settings }) => Settings),
+);
+// Rename's own close clears renameTarget; a stale target would keep the status
+// reconciler from applying server titles to that session.
+const LazyRename = lazyModal(
+  'Rename session',
+  () => import('./RenameModal').then(({ Rename }) => Rename),
+  (store) => {
+    store.renameTarget.value = null;
+    store.modal.value = '';
+  },
+);
+const LazyGoalModal = lazyModal('Session goal', () =>
+  import('./GoalModal').then(({ GoalModal }) => GoalModal),
+);
+const LazyWidgets = lazyModal('Widgets', () =>
+  import('./WidgetsModal').then(({ Widgets }) => Widgets),
+);
+const LazyBranchContext = lazyModal('Start a conversation path', () =>
+  import('./BranchModals').then(({ BranchContext }) => BranchContext),
+);
+const LazyBranchTree = lazyModal('Conversation paths', () =>
+  import('./BranchModals').then(({ BranchTree }) => BranchTree),
+);
+const LazySkills = lazyModal('Skills', () => import('./SkillsModal').then(({ Skills }) => Skills));
+const LazyProjectPicker = lazyModal('Add project', () =>
+  import('./ProjectPicker').then(({ ProjectPicker }) => ProjectPicker),
+);
+const LazyProjectAssignment = lazyModal('Assign project', () =>
+  import('./ProjectAssignment').then(({ ProjectAssignment }) => ProjectAssignment),
+);
+const LazyWorktrees = lazyModal('Worktrees', () =>
+  import('./Worktrees').then(({ Worktrees }) => Worktrees),
+);
+
+/** Resolves once every on-demand modal above can render synchronously. */
+export function preloadDeferredModals(): Promise<unknown> {
+  return Promise.all(
+    [
+      LazySettings,
+      LazyRename,
+      LazyGoalModal,
+      LazyWidgets,
+      LazyBranchContext,
+      LazyBranchTree,
+      LazySkills,
+      LazyProjectPicker,
+      LazyProjectAssignment,
+      LazyWorktrees,
+    ].map((component) => component.preload()),
+  );
+}
 
 const LazyCommitModal = lazyComponent(() =>
   import('./CommitModal').then(({ CommitModal }) => CommitModal).catch(() => CommitModalLoadError),
@@ -19,13 +97,6 @@ const LazyCommitModal = lazyComponent(() =>
 
 const LazyStatsModal = lazyComponent(() =>
   import('./StatsModal').then(({ StatsModal }) => StatsModal),
-);
-const LazyExtensionSettings = lazyComponent(
-  () =>
-    import('./ExtensionSettings')
-      .then(({ ExtensionSettings }) => ExtensionSettings)
-      .catch(() => () => <p>Could not load extension settings. Reload the page to retry.</p>),
-  <p>Loading extension settings…</p>,
 );
 
 const LazyMCP = lazyComponent(() => import('./mcp/MCPModal').then(({ MCP }) => MCP));
@@ -41,458 +112,6 @@ function CommitModalLoadError() {
   return (
     <Overlay title="Git commit" className="commit-modal" onClose={() => store.commitStore.close()}>
       <p role="alert">Could not load commit controls. Reload the page to retry.</p>
-    </Overlay>
-  );
-}
-
-function Settings() {
-  const store = useStore();
-  const [tab, setTab] = useState('model');
-  const [extensionsVisited, setExtensionsVisited] = useState(false);
-  const activeTab = tab;
-  const tabs = ['Model', 'Interface', 'Extensions', 'Connection'];
-  const selectTab = (name: string) => {
-    setTab(name);
-    if (name === 'extensions') setExtensionsVisited(true);
-  };
-  const [token, setToken] = useState(store.token.value);
-  const [provider, setProvider] = useState(store.selectedProvider.value);
-  const [model, setModel] = useState(store.selectedModel.value);
-  const [effort, setEffort] = useState(store.selectedEffort.value);
-  const [reasoning, setReasoning] = useState(store.selectedReasoningMode.value);
-  const [agent, setAgent] = useState(store.selectedAgent.value);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
-  const save = async () => {
-    if (saving) return;
-    setSaving(true);
-    setSaveError('');
-    try {
-      store.setPreference('provider', provider);
-      store.setPreference('model', model);
-      store.setPreference('effort', effort);
-      store.setPreference('reasoning', reasoning);
-      store.setPreference('agent', agent);
-      await store.saveSettings(token);
-    } catch (error) {
-      setSaveError(errorMessage(error));
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Overlay title="Settings" className="settings-modal" dismissDisabled={saving}>
-      <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-        {tabs.map((label, index) => {
-          const name = label.toLowerCase();
-          return (
-            <button
-              type="button"
-              role="tab"
-              id={`settings-${name}-tab`}
-              aria-controls={`settings-${name}-panel`}
-              aria-selected={activeTab === name}
-              tabIndex={activeTab === name ? 0 : -1}
-              onClick={() => selectTab(name)}
-              onKeyDown={(event) => {
-                let next: number;
-                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
-                else if (event.key === 'Home') next = 0;
-                else if (event.key === 'End') next = tabs.length - 1;
-                else return;
-                event.preventDefault();
-                selectTab(tabs[next].toLowerCase());
-                document.getElementById(`settings-${tabs[next].toLowerCase()}-tab`)?.focus();
-              }}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
-      <div
-        id="settings-model-panel"
-        role="tabpanel"
-        aria-labelledby="settings-model-tab"
-        hidden={activeTab !== 'model'}
-        class="settings-panel settings-panel-model"
-      >
-        <SettingsSelect
-          id="providerSelect"
-          label="Provider"
-          value={provider}
-          onChange={(event) => {
-            setProvider(event.currentTarget.value);
-            setModel('');
-            void store.loadModels(event.currentTarget.value).catch(() => undefined);
-          }}
-        >
-          <option value="">Auto (server default)</option>
-          {store.providers.value.map((entry) => (
-            <option value={entry.id} key={entry.id}>
-              {entry.name}
-            </option>
-          ))}
-        </SettingsSelect>
-        <SettingsSelect
-          id="modelSelect"
-          label="Model"
-          value={model}
-          onChange={(event) => setModel(event.currentTarget.value)}
-        >
-          <option value="">Auto (server default)</option>
-          {store.models.value.map((entry) => (
-            <option value={entry.id} key={entry.id}>
-              {entry.name || entry.id}
-            </option>
-          ))}
-        </SettingsSelect>
-        <SettingsSelect
-          id="effortSelect"
-          label="Effort"
-          value={effort}
-          onChange={(event) => setEffort(event.currentTarget.value)}
-        >
-          {['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((value) => (
-            <option value={value} key={value}>
-              {value || 'Auto (server default)'}
-            </option>
-          ))}
-        </SettingsSelect>
-        <SettingsSelect
-          id="reasoningModeSelect"
-          label="Reasoning mode"
-          value={reasoning}
-          onChange={(event) => setReasoning(event.currentTarget.value)}
-        >
-          <option value="standard">Standard</option>
-          <option value="pro">Pro</option>
-        </SettingsSelect>
-        {store.config.agentNames.length > 1 && (
-          <SettingsSelect
-            id="agentSelect"
-            label="Agent"
-            value={agent}
-            onChange={(event) => setAgent(event.currentTarget.value)}
-          >
-            <option value="">Default</option>
-            {store.config.agentNames.map((name) => (
-              <option value={name} key={name}>
-                {name}
-              </option>
-            ))}
-          </SettingsSelect>
-        )}
-      </div>
-      <div
-        id="settings-interface-panel"
-        role="tabpanel"
-        aria-labelledby="settings-interface-tab"
-        hidden={activeTab !== 'interface'}
-        class="settings-panel settings-panel-interface"
-      >
-        <div class="settings-field">
-          <label class="settings-toggle">
-            <span class="settings-label settings-label-inline">Show archived sessions</span>
-            <ToggleSwitch
-              checked={store.showArchived.value}
-              onChange={(event) => {
-                store.showArchived.value = event.currentTarget.checked;
-                store.storage.setItem(
-                  store.keys.showArchivedSessions,
-                  event.currentTarget.checked ? '1' : '0',
-                );
-                void store.refreshSidebar();
-              }}
-            />
-          </label>
-        </div>
-        <div class="settings-field">
-          <label class="settings-toggle">
-            <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
-            <ToggleSwitch
-              checked={store.showWidgets.value}
-              onChange={(event) => {
-                store.showWidgets.value = event.currentTarget.checked;
-                store.storage.setItem(
-                  store.keys.showWidgetsSidebar,
-                  event.currentTarget.checked ? '1' : '0',
-                );
-              }}
-            />
-          </label>
-        </div>
-        <div class="settings-field notification-settings">
-          <span class="settings-label">Notifications</span>
-          <div
-            class={`notification-state notification-state-${store.notifications.value.status}`}
-            role="status"
-            aria-live="polite"
-          >
-            <strong>
-              {store.notifications.value.status === 'subscribed'
-                ? store.notifications.value.verified
-                  ? 'Enabled'
-                  : 'Enabled · verification pending'
-                : store.notifications.value.status === 'blocked'
-                  ? 'Blocked'
-                  : store.notifications.value.status === 'stale'
-                    ? 'Needs repair'
-                    : store.notifications.value.status === 'unsubscribed'
-                      ? 'Not enabled'
-                      : 'Unavailable'}
-            </strong>
-            <span>{store.notifications.value.detail}</span>
-          </div>
-          <div class="notification-actions">
-            {store.notifications.value.status === 'unsubscribed' && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.enableNotifications()}
-              >
-                Enable notifications
-              </button>
-            )}
-            {store.notifications.value.status === 'stale' && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.retryNotifications()}
-              >
-                Retry repair
-              </button>
-            )}
-            {(store.notifications.value.status === 'subscribed' ||
-              store.notifications.value.status === 'stale') && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.disableNotifications()}
-              >
-                Disable
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-      <div
-        id="settings-connection-panel"
-        role="tabpanel"
-        aria-labelledby="settings-connection-tab"
-        hidden={activeTab !== 'connection'}
-        class="settings-panel settings-panel-connection"
-      >
-        {store.config.passkeyAuth ? (
-          <div class="settings-field">
-            <p>Signed in with a passkey. No bearer token is stored in this browser.</p>
-            <a
-              class="btn"
-              onClick={() => store.composer.persist()}
-              href={`${store.config.prefix}/auth/security?return=${encodeURIComponent(location.pathname)}`}
-            >
-              Manage passkeys and sessions
-            </a>
-          </div>
-        ) : (
-          <div class="settings-field">
-            <label class="settings-label" for="authTokenInput">
-              Bearer token
-            </label>
-            <input
-              id="authTokenInput"
-              type="password"
-              value={token}
-              placeholder="paste your bearer token"
-              autoComplete="off"
-              onInput={(event) => setToken(event.currentTarget.value)}
-            />
-          </div>
-        )}
-        <div class="settings-field">
-          <p class="settings-help">
-            Recent conversations and model lists are kept on this device so the chat opens quickly.
-            They are always refreshed from the server.
-          </p>
-          <button class="btn" type="button" onClick={() => void store.clearLocalCache()}>
-            Clear cached data on this device
-          </button>
-        </div>
-      </div>
-      <div
-        id="settings-extensions-panel"
-        role="tabpanel"
-        aria-labelledby="settings-extensions-tab"
-        hidden={activeTab !== 'extensions'}
-        class="settings-panel"
-      >
-        {extensionsVisited && <LazyExtensionSettings />}
-      </div>
-      {saveError && <p role="alert">{saveError}</p>}
-      {(activeTab === 'model' || (activeTab === 'connection' && !store.config.passkeyAuth)) && (
-        <>
-          <div class="modal-actions">
-            <button
-              class="btn"
-              type="button"
-              onClick={() => {
-                store.modal.value = '';
-              }}
-            >
-              Cancel
-            </button>
-            <button class="btn primary" type="button" onClick={save} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </>
-      )}
-    </Overlay>
-  );
-}
-
-function Rename() {
-  const store = useStore();
-  const target = store.renameTarget.value;
-  const [generatedMode, setGeneratedMode] = useState(false);
-  const [name, setName] = useState(target?.name || target?.title || '');
-  const [generatedTitle, setGeneratedTitle] = useState(
-    target?.generatedShortTitle || target?.title || '',
-  );
-  const [generatedDetail, setGeneratedDetail] = useState(
-    target?.generatedLongTitle || target?.longTitle || '',
-  );
-  const [improving, setImproving] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  if (!target) return null;
-  const close = () => {
-    store.renameTarget.value = null;
-    store.modal.value = '';
-  };
-  const improve = async () => {
-    if (improving || saving) return;
-    setGeneratedMode(true);
-    setImproving(true);
-    setError('');
-    setNotice('');
-    try {
-      const suggestion = await store.improveTitle();
-      setGeneratedTitle(suggestion.title);
-      setGeneratedDetail(suggestion.detail);
-      if (suggestion.abstained) {
-        setNotice(
-          "AI couldn't produce a specific title from this session. Edit the current title or try again.",
-        );
-      }
-    } catch (value) {
-      setError(value instanceof Error ? value.message : 'Failed to improve title.');
-    } finally {
-      setImproving(false);
-    }
-  };
-  const save = async () => {
-    if (saving || improving) return;
-    setSaving(true);
-    setError('');
-    try {
-      await store.renameSession(
-        generatedMode
-          ? { generatedShortTitle: generatedTitle, generatedLongTitle: generatedDetail }
-          : { name },
-      );
-    } catch (value) {
-      setError(value instanceof Error ? value.message : 'Failed to rename session.');
-      setSaving(false);
-    }
-  };
-  return (
-    <Overlay title="Rename session" close={false} onEscape={close} className="rename-session-modal">
-      <p>
-        {generatedMode
-          ? 'Review the AI suggestion before saving it as this session title.'
-          : 'Choose the label shown in the sidebar, or let AI suggest a better title from this session.'}
-      </p>
-      {!generatedMode ? (
-        <div class="settings-field">
-          <label class="settings-label" for="renameSessionInput">
-            Session name
-          </label>
-          <input
-            id="renameSessionInput"
-            autoFocus
-            autoComplete="off"
-            value={name}
-            placeholder={target.title || 'Project kickoff notes'}
-            onInput={(event) => setName(event.currentTarget.value)}
-          />
-        </div>
-      ) : (
-        <div class="rename-generated-fields">
-          <div class="settings-field">
-            <label class="settings-label" for="renameGeneratedTitleInput">
-              Title
-            </label>
-            <input
-              id="renameGeneratedTitleInput"
-              autoFocus
-              autoComplete="off"
-              value={generatedTitle}
-              placeholder="vLLM provider docs review"
-              onInput={(event) => setGeneratedTitle(event.currentTarget.value)}
-            />
-          </div>
-          <div class="settings-field">
-            <label class="settings-label" for="renameGeneratedDetailInput">
-              Detail
-            </label>
-            <textarea
-              id="renameGeneratedDetailInput"
-              rows={3}
-              value={generatedDetail}
-              placeholder="A longer description for the conversation"
-              onInput={(event) => setGeneratedDetail(event.currentTarget.value)}
-            />
-          </div>
-          <p class="rename-generated-note">Saving will use this generated title in the sidebar.</p>
-        </div>
-      )}
-      <button
-        class={`btn rename-improve-btn ${improving ? 'is-loading' : ''}`}
-        type="button"
-        disabled={improving || saving}
-        onClick={() => void improve()}
-      >
-        {improving
-          ? 'Improving title…'
-          : generatedMode
-            ? 'Try again with AI'
-            : 'Improve title with AI'}
-      </button>
-      <div
-        class={`modal-error ${notice && !error ? 'modal-notice' : ''}`}
-        role={error ? 'alert' : notice ? 'status' : undefined}
-      >
-        {error || notice}
-      </div>
-      <div class="modal-actions">
-        <button class="btn" type="button" disabled={saving} onClick={close}>
-          Cancel
-        </button>
-        <button
-          class="btn primary"
-          type="button"
-          disabled={saving || improving}
-          onClick={() => void save()}
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
-      </div>
     </Overlay>
   );
 }
@@ -795,833 +414,6 @@ function Approval({ interactionPrompt }: { interactionPrompt?: ApprovalPrompt })
   );
 }
 
-function GoalModal() {
-  const store = useStore();
-  const current = store.goal.value;
-  const [objective, setObjective] = useState(current?.objective || '');
-  const [budget, setBudget] = useState(current?.token_budget ? String(current.token_budget) : '');
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
-  const savingRef = useRef(false);
-  const save = async (goal: Parameters<typeof store.saveGoal>[0]) => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    setSaveError('');
-    try {
-      await store.saveGoal(goal);
-    } catch (error) {
-      setSaveError(errorMessage(error));
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
-  return (
-    <Overlay title="Session goal" dismissDisabled={saving}>
-      <p>Set a persistent objective the agent can keep pursuing across automatic continuations.</p>
-      <label class="settings-label">Objective</label>
-      <textarea
-        class="goal-objective-input"
-        rows={5}
-        value={objective}
-        onInput={(event) => setObjective(event.currentTarget.value)}
-      />
-      <label class="settings-label">Token budget (optional)</label>
-      <input
-        type="number"
-        min={1}
-        value={budget}
-        onInput={(event) => setBudget(event.currentTarget.value)}
-      />
-      {saveError && <p role="alert">{saveError}</p>}
-      <div class="modal-actions goal-actions">
-        {current && (
-          <button class="btn" disabled={saving} onClick={() => void save({ action: 'clear' })}>
-            Clear
-          </button>
-        )}
-        {current?.status === 'paused' ? (
-          <button class="btn" disabled={saving} onClick={() => void save({ action: 'resume' })}>
-            Resume
-          </button>
-        ) : (
-          current && (
-            <button class="btn" disabled={saving} onClick={() => void save({ action: 'pause' })}>
-              Pause
-            </button>
-          )
-        )}
-        <button
-          class="btn primary"
-          disabled={saving || !objective.trim()}
-          onClick={() =>
-            void save({
-              objective: objective.trim(),
-              token_budget: Number(budget) || undefined,
-              status: 'active',
-            })
-          }
-        >
-          {saving ? 'Saving…' : 'Set goal'}
-        </button>
-      </div>
-    </Overlay>
-  );
-}
-const WIDGET_STATUS: Record<string, { label: string; tone: string } | undefined> = {
-  running: { label: 'Running', tone: 'running' },
-  started: { label: 'Running', tone: 'running' },
-  starting: { label: 'Starting', tone: 'starting' },
-  error: { label: 'Unavailable', tone: 'error' },
-};
-
-function widgetStatus(widget: Widget): { label: string; tone: string } | null {
-  const state = String(widget.state || 'stopped').toLowerCase();
-  if (state === 'stopped') return null;
-  return WIDGET_STATUS[state] || { label: state.replace(/[-_]/g, ' '), tone: 'other' };
-}
-
-function Widgets() {
-  const store = useStore();
-  const [query, setQuery] = useState('');
-  const [stopping, setStopping] = useState<Set<string>>(() => new Set());
-  const widgets = [...store.widgets.value].sort((left, right) =>
-    left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }),
-  );
-  const showSearch = widgets.length > 6;
-  const normalizedQuery = query.trim().toLowerCase();
-  const visibleWidgets = normalizedQuery
-    ? widgets.filter((widget) =>
-        [widget.name, widget.description, widget.mount].some((value) =>
-          String(value || '')
-            .toLowerCase()
-            .includes(normalizedQuery),
-        ),
-      )
-    : widgets;
-  const countLabel = `${widgets.length} ${widgets.length === 1 ? 'widget' : 'widgets'}`;
-
-  const stopWidget = async (widget: Widget) => {
-    if (!widget.mount || stopping.has(widget.id)) return;
-    setStopping((current) => new Set(current).add(widget.id));
-    try {
-      await store.widgetStore.stop(widget.mount);
-    } catch (error) {
-      store.toast(error, 'error');
-    } finally {
-      setStopping((current) => {
-        const next = new Set(current);
-        next.delete(widget.id);
-        return next;
-      });
-    }
-  };
-
-  return (
-    <Overlay title="Widgets" className="widgets-modal">
-      <div class="widgets-modal-intro">
-        <p class="widgets-modal-subtitle">Open a local tool without leaving your workspace.</p>
-        {widgets.length > 0 && (
-          <span class="widgets-modal-summary" aria-label={`${countLabel} available`}>
-            {widgets.length} available
-          </span>
-        )}
-      </div>
-      {showSearch && (
-        <SearchField
-          className="widgets-modal-search"
-          aria-label="Filter widgets"
-          value={query}
-          placeholder="Find a widget…"
-          autoFocus
-          onInput={(event) => setQuery(event.currentTarget.value)}
-        />
-      )}
-      <div class="widget-grid">
-        {widgets.length === 0 ? (
-          <div class="widget-empty" role="status">
-            <strong>No widgets available</strong>
-            <span>Loaded local widgets will appear here.</span>
-          </div>
-        ) : visibleWidgets.length === 0 ? (
-          <div class="widget-empty" role="status">
-            <strong>No matching widgets</strong>
-            <span>Try a different name or clear the filter.</span>
-          </div>
-        ) : (
-          visibleWidgets.map((widget, index) => {
-            const isStopping = stopping.has(widget.id);
-            const state = String(widget.state || 'stopped').toLowerCase();
-            const canStop = Boolean(
-              widget.mount && ['running', 'started', 'starting'].includes(state),
-            );
-            const status = isStopping
-              ? { label: 'Stopping', tone: 'starting' }
-              : widgetStatus(widget);
-            const detail =
-              widget.description || (widget.mount ? `/${widget.mount}` : 'Local widget');
-            return (
-              <div
-                class="widget-card"
-                data-state={status?.tone || 'ready'}
-                data-stoppable={canStop ? 'true' : undefined}
-                key={widget.id}
-              >
-                <a
-                  class="widget-card-open"
-                  href={widget.url}
-                  title={widget.description || widget.name}
-                  aria-label={`Open ${widget.name}${status ? `, ${status.label}` : ''}`}
-                  autoFocus={!showSearch && index === 0}
-                >
-                  <span class="widget-card-icon" aria-hidden="true">
-                    <Icon name="widgets" />
-                  </span>
-                  <span class="widget-card-copy">
-                    <span class="widget-card-title-row">
-                      <span class="widget-card-name">{widget.name}</span>
-                      {status && (
-                        <span class="widget-card-status">
-                          <span class="widget-status-dot" aria-hidden="true" />
-                          {status.label}
-                        </span>
-                      )}
-                    </span>
-                    <span class="widget-card-meta">{detail}</span>
-                    {status?.tone === 'error' && widget.error && (
-                      <span class="widget-card-error">{widget.error}</span>
-                    )}
-                  </span>
-                  <Icon class="widget-card-chevron" name="chevron-right" />
-                </a>
-                {canStop && (
-                  <button
-                    class="widget-card-stop"
-                    type="button"
-                    aria-label={`Stop ${widget.name}`}
-                    title={`Stop ${widget.name}`}
-                    disabled={isStopping}
-                    onClick={() => void stopWidget(widget)}
-                  >
-                    Stop
-                  </button>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-      <div class="widgets-modal-footer">
-        <Icon name="info" />
-        <span>Local widgets open in this tab.</span>
-      </div>
-    </Overlay>
-  );
-}
-
-function BranchContext() {
-  const store = useStore();
-  const [focus, setFocus] = useState('');
-  const [mode, setMode] = useState<'choices' | 'focused'>('choices');
-  const anchor = store.branchTarget.value;
-  const prefill = store.branchPrefill.value;
-  const busy = store.branchBusy.value;
-  const error = store.branchError.value;
-  const choose = (context: 'clean' | 'notes' | 'focused') => {
-    if (busy) return;
-    if (context === 'focused' && mode !== 'focused') {
-      setMode('focused');
-      return;
-    }
-    if (prefill) void store.branchFrom(anchor, context, focus.trim(), '', prefill);
-    else void store.branchFrom(anchor, context, focus.trim());
-  };
-  return (
-    <Overlay
-      title="Start a conversation path"
-      dismissDisabled={busy}
-      onEscape={() => {
-        if (!busy)
-          if (mode === 'focused') setMode('choices');
-          else store.modal.value = '';
-      }}
-    >
-      <p>Choose how much context to carry after this turn.</p>
-      <div aria-busy={busy ? 'true' : undefined}>
-        {mode === 'choices' ? (
-          <div class="branch-context-choices">
-            <button type="button" disabled={busy} onClick={() => choose('clean')}>
-              <strong>Clean branch</strong>
-              <small>Continue only with context up to this turn.</small>
-            </button>
-            <button type="button" disabled={busy} onClick={() => choose('notes')}>
-              <strong>Bring concise notes</strong>
-              <small>Prepare a short summary of useful later discoveries.</small>
-            </button>
-            <button type="button" disabled={busy} onClick={() => choose('focused')}>
-              <strong>Focused context</strong>
-              <small>Tell the agent which later information matters.</small>
-            </button>
-          </div>
-        ) : (
-          <div class="branch-context-focus">
-            <label for="branchContextFocus">What should this path carry forward?</label>
-            <textarea
-              id="branchContextFocus"
-              autoFocus
-              rows={5}
-              value={focus}
-              placeholder="For example: preserve the database findings, but not the abandoned UI approach."
-              disabled={busy}
-              onInput={(event) => setFocus(event.currentTarget.value)}
-            />
-            <div class="modal-actions">
-              <button class="btn" disabled={busy} onClick={() => setMode('choices')}>
-                Back
-              </button>
-              <button
-                class="btn primary"
-                disabled={busy || !focus.trim()}
-                onClick={() => choose('focused')}
-              >
-                Create path
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      {busy && (
-        <div role="status" aria-live="polite">
-          Creating path…
-        </div>
-      )}
-      {error && (
-        <div class="modal-error" role="alert">
-          {error}
-        </div>
-      )}
-      <p class="branch-tree-note">Filesystem and tool side effects are not undone.</p>
-    </Overlay>
-  );
-}
-
-const BRANCH_POINT_BATCH_SIZE = 50;
-
-function BranchTree() {
-  const store = useStore();
-  const [query, setQuery] = useState('');
-  const [pointLimit, setPointLimit] = useState(BRANCH_POINT_BATCH_SIZE);
-  const tree = store.branchTree.value;
-  const nodes =
-    tree && Array.isArray(tree.nodes) ? (tree.nodes as Array<Record<string, unknown>>) : [];
-  const points =
-    tree && Array.isArray(tree.branch_points)
-      ? (tree.branch_points as Array<Record<string, unknown>>).filter(
-          (point) => String(point.role || '') === 'user',
-        )
-      : [];
-  const active = String(tree?.active_session_id || store.activeSessionId.value);
-  const root = String(tree?.root_session_id || '');
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const matchesQuery = (...values: unknown[]) =>
-    !normalizedQuery ||
-    values.some((value) =>
-      String(value || '')
-        .toLocaleLowerCase()
-        .includes(normalizedQuery),
-    );
-  const nodeEntries = nodes.map((node, index) => {
-    const id = String(node.session_id || '');
-    const session = store.sessions.value.find(
-      (entry) =>
-        entry.id === id || (node.session_number && entry.number === Number(node.session_number)),
-    );
-    const title = String(node.title || session?.title || `Path ${index + 1}`);
-    return { node, index, id, session, title, current: id === active };
-  });
-  const visibleNodes = nodeEntries.filter(({ node, title, current, id }) =>
-    matchesQuery(
-      title,
-      node.anchor_preview,
-      node.session_number,
-      current && 'current',
-      id === root && 'origin',
-    ),
-  );
-  const pointEntries = points
-    .map((point, index) => ({
-      point,
-      index,
-      sequence: Math.max(1, Number(point.sequence) + 1 || 1),
-      later: Math.max(0, Number(point.later_message_count) || 0),
-      preview: String(point.preview || '(attachment content)'),
-    }))
-    .sort((left, right) => right.sequence - left.sequence);
-  const visiblePoints = pointEntries.filter(({ point, preview, sequence }) =>
-    matchesQuery(preview, point.prefill, sequence, `message ${sequence}`),
-  );
-  const shownPoints = normalizedQuery ? visiblePoints : visiblePoints.slice(0, pointLimit);
-  const hiddenPointCount = visiblePoints.length - shownPoints.length;
-  const showSearch = nodes.length + points.length > 8;
-  const countLabel = (visible: number, total: number) =>
-    normalizedQuery ? `${visible} of ${total}` : String(total);
-
-  return (
-    <Overlay title="Conversation paths" className="branch-tree-modal">
-      <p class="branch-tree-intro">
-        Open an existing path, or start a new one from an earlier message.
-      </p>
-      {showSearch && (
-        <SearchField
-          className="branch-tree-search"
-          aria-label="Filter conversation paths and messages"
-          value={query}
-          placeholder="Find a path or message…"
-          autoFocus
-          onInput={(event) => setQuery(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape' && query) {
-              event.preventDefault();
-              event.stopPropagation();
-              setQuery('');
-            }
-          }}
-        />
-      )}
-      <div class="branch-tree-list">
-        {visibleNodes.length > 0 && (
-          <div class="branch-tree-section-title">
-            <span>Existing paths</span>
-            <span class="branch-tree-section-count">
-              {countLabel(visibleNodes.length, nodeEntries.length)}
-            </span>
-          </div>
-        )}
-        {visibleNodes.map(({ node, index, id, session, title, current }) => {
-          const content = (
-            <div class="branch-tree-item-content">
-              <div class="branch-tree-item-title">
-                <strong>{title}</strong>
-                {id === root && <span class="project-browser-badge">Origin</span>}
-                {current && <span class="project-browser-badge is-added">Current</span>}
-              </div>
-              {node.anchor_preview && (
-                <div class="branch-origin-preview">After “{String(node.anchor_preview)}”</div>
-              )}
-            </div>
-          );
-          if (current)
-            return (
-              <section
-                class="branch-tree-item active"
-                aria-current="true"
-                key={id || String(index)}
-              >
-                {content}
-              </section>
-            );
-          return (
-            <button
-              class="branch-tree-item branch-tree-path"
-              type="button"
-              key={id || String(index)}
-              disabled={!id}
-              title="Open this path"
-              onClick={() => {
-                store.modal.value = '';
-                if (session) void store.selectSession(session);
-                else void store.resolveAndSelectSession(id);
-              }}
-            >
-              {content}
-            </button>
-          );
-        })}
-        {visiblePoints.length > 0 && (
-          <div class="branch-tree-section-title">
-            <span>Branch from a message</span>
-            <span class="branch-tree-section-count">
-              {countLabel(visiblePoints.length, pointEntries.length)} · newest first
-            </span>
-          </div>
-        )}
-        {shownPoints.map(({ point, index, sequence, later, preview }) => (
-          <button
-            class="branch-tree-item branch-tree-point"
-            type="button"
-            key={String(point.message_id || index)}
-            aria-label={`Branch from message ${sequence}: ${preview}`}
-            title={`Start a path from message ${sequence}`}
-            onClick={() =>
-              store.openBranchContext(
-                String(Math.max(0, Number(point.anchor_message_id) || 0)),
-                String(point.prefill || ''),
-              )
-            }
-          >
-            <div class="branch-tree-item-content">
-              <div class="branch-tree-item-title">
-                <strong>{preview}</strong>
-              </div>
-              <small>
-                Message {sequence}
-                {later > 0 ? ` · ${later} later message${later === 1 ? '' : 's'}` : ''}
-              </small>
-            </div>
-          </button>
-        ))}
-        {hiddenPointCount > 0 && (
-          <button
-            class="branch-tree-more"
-            type="button"
-            onClick={() => setPointLimit((limit) => limit + BRANCH_POINT_BATCH_SIZE)}
-          >
-            Show {Math.min(BRANCH_POINT_BATCH_SIZE, hiddenPointCount)} older message
-            {Math.min(BRANCH_POINT_BATCH_SIZE, hiddenPointCount) === 1 ? '' : 's'}
-          </button>
-        )}
-        {normalizedQuery && visibleNodes.length === 0 && visiblePoints.length === 0 && (
-          <div class="branch-tree-empty" role="status">
-            <strong>No matching paths or messages</strong>
-            <span>Try a different phrase or clear the filter.</span>
-          </div>
-        )}
-      </div>
-    </Overlay>
-  );
-}
-
-function Skills() {
-  const store = useStore();
-  const [selected, setSelected] = useState('');
-  const [args, setArgs] = useState('');
-  const selectedSkill = store.skills.value.find(
-    (skill) => String(skill.name || skill.id || '') === selected,
-  );
-  const selectedBlocked = Boolean(
-    selectedSkill && selectedSkill.execution !== 'isolated' && store.streaming.value,
-  );
-  return (
-    <Overlay title="Skills">
-      <div class="skills-list">
-        {store.skills.value.map((skill) => {
-          const name = String(skill.name || skill.id || '');
-          return (
-            <button
-              class={`skill-row ${selected === name ? 'selected' : ''}`}
-              key={name}
-              onClick={() => setSelected(name)}
-            >
-              <strong>{name}</strong>
-              <small>{String(skill.description || '')}</small>
-              <small class="skill-provenance">Source: {String(skill.source || 'unknown')}</small>
-              <small class="skill-execution">
-                <strong>{skillExecutionLabel(skill)}</strong> — {skillExecutionDescription(skill)}
-              </small>
-            </button>
-          );
-        })}
-      </div>
-      {selected && (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!selectedBlocked) void store.invokeSkill(selected, args);
-          }}
-        >
-          <label class="settings-label">Arguments for {selected}</label>
-          <textarea value={args} onInput={(event) => setArgs(event.currentTarget.value)} />
-          {selectedBlocked && (
-            <p class="skill-run-blocked" role="status">
-              This main-conversation skill cannot run until the active response finishes. Isolated
-              skills can run now.
-            </p>
-          )}
-          <button class="btn primary" type="submit" disabled={selectedBlocked}>
-            Run skill
-          </button>
-        </form>
-      )}
-    </Overlay>
-  );
-}
-
-function ProjectPicker() {
-  const store = useStore();
-  const [path, setPath] = useState('');
-  const [name, setName] = useState('');
-  const [browser, setBrowser] = useState(false);
-  const [showHidden, setShowHidden] = useState(false);
-  const [listing, setListing] = useState<Record<string, unknown> | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
-  const [error, setError] = useState('');
-  const changePath = (value: string) => {
-    setPath(value);
-    setPreview(null);
-    setError('');
-  };
-  const changeName = (value: string) => {
-    setName(value);
-    setPreview(null);
-    setError('');
-  };
-  const loadDirectory = async (directory = '') => {
-    setLoading(true);
-    setError('');
-    const controller = new AbortController();
-    try {
-      setListing(
-        await store.endpoints.projectDirectories(directory, showHidden, controller.signal),
-      );
-      setBrowser(true);
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setLoading(false);
-    }
-  };
-  const complete = async (id: string) => {
-    await store.refreshSidebar();
-    store.newChat(true, id);
-    store.modal.value = '';
-  };
-  const submit = async () => {
-    if (!path.trim()) return;
-    setLoading(true);
-    setError('');
-    try {
-      const data = await store.endpoints.createProject(
-        { path: path.trim(), name: name.trim() },
-        !preview,
-      );
-      const project =
-        data.project && typeof data.project === 'object'
-          ? (data.project as Record<string, unknown>)
-          : null;
-      const existing = String(data.existing_project_id || project?.id || '');
-      if (!preview) {
-        if (data.duplicate && existing && !project?.archived_at) {
-          await complete(existing);
-          return;
-        }
-        setPreview(data);
-        return;
-      }
-      await complete(String(project?.id || data.id || existing));
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setLoading(false);
-    }
-  };
-  const entries = Array.isArray(listing?.entries)
-    ? (listing.entries as Array<Record<string, unknown>>)
-    : [];
-  const breadcrumbs = Array.isArray(listing?.breadcrumbs)
-    ? (listing.breadcrumbs as Array<Record<string, unknown>>)
-    : [];
-  return (
-    <Overlay title="Add project" wide>
-      <section class="project-modal-fields">
-        <div class="project-field">
-          <div class="project-field-label-row">
-            <label class="project-field-label" for="projectPathInput">
-              Folder on server
-            </label>
-          </div>
-          <div class="project-path-control">
-            <input
-              id="projectPathInput"
-              class="project-path-input"
-              aria-label="Project path"
-              placeholder="/path/to/project"
-              value={path}
-              autoFocus
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellcheck={false}
-              onInput={(event) => changePath(event.currentTarget.value)}
-            />
-            <button
-              type="button"
-              class="project-browse-button"
-              aria-expanded={browser}
-              onClick={() => (browser ? setBrowser(false) : void loadDirectory(path.trim()))}
-            >
-              {browser ? 'Hide browser' : 'Browse'}
-            </button>
-          </div>
-        </div>
-        {browser && (
-          <section class="project-directory-browser">
-            <div class="project-browser-toolbar">
-              <button
-                class="project-browser-icon-button"
-                type="button"
-                title="Parent folder"
-                disabled={!listing?.parent}
-                onClick={() => void loadDirectory(String(listing?.parent || ''))}
-              >
-                ↑
-              </button>
-              <button
-                class="project-browser-icon-button"
-                type="button"
-                title="Home folder"
-                onClick={() => void loadDirectory(String(listing?.home || ''))}
-              >
-                ⌂
-              </button>
-              <nav class="project-browser-breadcrumbs" aria-label="Folder path">
-                {breadcrumbs.map((item, index) => (
-                  <button
-                    type="button"
-                    aria-current={index === breadcrumbs.length - 1 ? 'page' : undefined}
-                    onClick={() => void loadDirectory(String(item.path || ''))}
-                  >
-                    {String(item.label || item.path || '')}
-                  </button>
-                ))}
-              </nav>
-              <label class="project-browser-hidden">
-                <input
-                  type="checkbox"
-                  checked={showHidden}
-                  onChange={(event) => {
-                    const checked = event.currentTarget.checked;
-                    setShowHidden(checked);
-                    void store.endpoints
-                      .projectDirectories(String(listing?.path || ''), checked)
-                      .then(setListing)
-                      .catch((value) => setError(String(value)));
-                  }}
-                />
-                Hidden
-              </label>
-            </div>
-            <div class="project-browser-list" role="listbox" aria-busy={loading}>
-              {loading ? (
-                <div class="project-browser-skeleton">
-                  <span />
-                  <span />
-                </div>
-              ) : entries.length ? (
-                entries.map((entry) => (
-                  <button
-                    type="button"
-                    class="project-browser-row"
-                    role="option"
-                    onClick={() => void loadDirectory(String(entry.path || ''))}
-                  >
-                    <span class="project-browser-folder-icon">
-                      <Icon name="folder" />
-                    </span>
-                    <span class="project-browser-row-name">
-                      {String(entry.name || entry.path || '')}
-                    </span>
-                    <span class="project-browser-row-meta">
-                      {entry.git && <span class="project-browser-badge">Git</span>}
-                      {entry.existing_project_id && (
-                        <span class="project-browser-badge is-added">Added</span>
-                      )}
-                      <span>›</span>
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <div class="project-browser-empty">
-                  <strong>No subfolders here</strong>
-                </div>
-              )}
-            </div>
-            <div class="project-browser-footer">
-              <div class="project-browser-status">
-                {entries.length} folder{entries.length === 1 ? '' : 's'}
-              </div>
-              <button
-                class="btn project-use-folder"
-                type="button"
-                disabled={!listing?.path}
-                onClick={() => {
-                  changePath(String(listing?.path || ''));
-                  setBrowser(false);
-                }}
-              >
-                Select folder
-              </button>
-            </div>
-          </section>
-        )}
-        <div class="project-field">
-          <div class="project-field-label-row">
-            <label class="project-field-label" for="projectNameInput">
-              Display name
-            </label>
-            <span class="project-field-optional">Optional</span>
-          </div>
-          <input
-            id="projectNameInput"
-            aria-label="Project name"
-            placeholder="Defaults to the folder name"
-            value={name}
-            onInput={(event) => changeName(event.currentTarget.value)}
-          />
-          <div class="project-field-hint">
-            Use a short name that is easy to spot in the sidebar.
-          </div>
-        </div>
-      </section>
-      {preview && (
-        <div class="project-resolution-summary">
-          <div class="project-resolution-top">
-            <strong>{preview.git ? 'Git repository ready' : 'Folder ready'}</strong>
-            {preview.git && <span class="project-browser-badge">Git root</span>}
-          </div>
-          <code>{String(preview.canonical_dir || '')}</code>
-          <span class="project-resolution-note">
-            {preview.duplicate &&
-            (preview.project as Record<string, unknown> | undefined)?.archived_at
-              ? 'This archived project will be restored.'
-              : preview.git
-                ? 'Conversations will use the repository root.'
-                : 'Conversations will use this folder.'}
-          </span>
-        </div>
-      )}
-      {error && (
-        <div class="modal-error" role="alert">
-          {error}
-        </div>
-      )}
-      <div class="modal-actions">
-        <button
-          class="btn"
-          onClick={() => {
-            store.modal.value = '';
-          }}
-        >
-          Cancel
-        </button>
-        <button
-          class="btn primary"
-          disabled={!path.trim() || loading}
-          onClick={() => void submit()}
-        >
-          {loading
-            ? 'Checking…'
-            : preview
-              ? preview.duplicate
-                ? 'Restore project'
-                : 'Add project'
-              : 'Preview'}
-        </button>
-      </div>
-    </Overlay>
-  );
-}
-
 const SideQuestionHistory = memo(function SideQuestionHistory({
   history,
 }: {
@@ -1840,11 +632,11 @@ export function Modals() {
     case 'stats':
       return <LazyStatsModal />;
     case 'settings':
-      return <Settings />;
+      return <LazySettings />;
     case 'rename':
-      return <Rename />;
+      return <LazyRename />;
     case 'project':
-      return store.projectTarget.value ? <ProjectAssignment /> : <ProjectPicker />;
+      return store.projectTarget.value ? <LazyProjectAssignment /> : <LazyProjectPicker />;
     case 'ask-user':
       return (
         <AskUser
@@ -1871,11 +663,11 @@ export function Modals() {
     case 'mcp':
       return <LazyMCP />;
     case 'goal':
-      return <GoalModal />;
+      return <LazyGoalModal />;
     case 'widgets':
-      return <Widgets />;
+      return <LazyWidgets />;
     case 'skills':
-      return <Skills />;
+      return <LazySkills />;
     case 'commit':
       return <LazyCommitModal />;
     case 'share':
@@ -1883,11 +675,11 @@ export function Modals() {
     case 'side':
       return <SideQuestion />;
     case 'branch':
-      return <BranchTree />;
+      return <LazyBranchTree />;
     case 'branch-context':
-      return <BranchContext />;
+      return <LazyBranchContext />;
     case 'worktrees':
-      return <Worktrees />;
+      return <LazyWorktrees />;
     default:
       return null;
   }

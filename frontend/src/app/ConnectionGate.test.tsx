@@ -221,7 +221,7 @@ it('keeps Settings and the working credential intact when a replacement token is
   act(() => {
     store.modal.value = 'settings';
   });
-  fireEvent.click(screen.getByRole('tab', { name: 'Connection' }));
+  fireEvent.click(await screen.findByRole('tab', { name: 'Connection' }));
   fireEvent.input(screen.getByLabelText('Bearer token'), {
     target: { value: 'rejected-replacement' },
   });

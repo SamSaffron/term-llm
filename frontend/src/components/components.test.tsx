@@ -11,7 +11,7 @@ import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { DelegationContext } from './DelegationContext';
 import { Markdown } from './Markdown';
-import { Modals } from './Modals';
+import { Modals, preloadDeferredModals } from './Modals';
 import { Sidebar } from './Sidebar';
 import { LONG_PRESS_MS } from './useReorderableList';
 import { Header } from './Header';
@@ -118,8 +118,14 @@ const expectPasswordManagersIgnored = (element: HTMLElement) => {
 // Rich rendering publishes plain content if its lazy chunks miss a 250 ms
 // deadline. A cold import can exceed that under full-suite load, so load both
 // once up front; the components' own import() then resolves from the cache.
+// On-demand modals are preloaded too, so every test renders them synchronously
+// regardless of which earlier test first opened them.
 beforeAll(async () => {
-  await Promise.all([import('../domain/rich-highlight'), import('../domain/rich-katex')]);
+  await Promise.all([
+    import('../domain/rich-highlight'),
+    import('../domain/rich-katex'),
+    preloadDeferredModals(),
+  ]);
 });
 
 describe('Preact-owned chat surfaces', () => {
