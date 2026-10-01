@@ -4690,6 +4690,35 @@ describe('Preact-owned chat surfaces', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it('keeps the filter unfocused on touch so the keyboard does not cover the list', async () => {
+    const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === '(hover: none) and (pointer: coarse)',
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const options = Array.from({ length: 11 }, (_, index) => ({
+      value: `value-${index}`,
+      label: `Project ${index}`,
+    }));
+    render(
+      <ChipPicker
+        ariaLabel="Touch picker"
+        value="value-3"
+        options={options}
+        triggerClass="new-chat-project-trigger"
+        onChange={vi.fn()}
+        renderTrigger={(selected) => <span>{selected.label}</span>}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Touch picker' }));
+    expect(screen.getByRole('searchbox', { name: 'Filter options' })).not.toHaveFocus();
+    expect(screen.getByRole('option', { name: 'Project 3' })).toHaveFocus();
+    matchMedia.mockRestore();
+  });
+
   it('switches the composer action between send and live voice when the draft changes', async () => {
     const store = createStore();
     store.liveStore.enabled.value = true;

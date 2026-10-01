@@ -403,6 +403,11 @@
   overscroll-behavior: contain;
   font-size: 0.85rem;
   animation: chip-popover-in 0.12s ease-out;
+
+  /* Touch scrolling is driven by containPopoverScroll: iOS otherwise pans the
+     page instead of a scroller nested in a top-layer dialog. Pinch zoom stays
+     native because the handler ignores multi-touch gestures. */
+  touch-action: pinch-zoom;
 }
 
 .chip-popover[hidden] {
@@ -775,6 +780,12 @@ dialog.chip-popover::backdrop {
 
   .chip-popover-item {
     padding: 0.7rem 0.75rem;
+  }
+
+  /* 16px keeps iOS Safari from zooming the page when the filter takes focus. */
+  .chip-popover-filter {
+    min-height: 44px;
+    font-size: 16px;
   }
 }
 

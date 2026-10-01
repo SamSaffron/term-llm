@@ -11,6 +11,7 @@ import {
 } from '../domain/runtime';
 import { planSummary } from '../domain/plan';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
+import { containPopoverScroll } from '../platform/popover-scroll';
 import { Icon } from './Icon';
 
 function EffortMeter() {
@@ -60,7 +61,12 @@ function RuntimePicker() {
     if (!open || !trigger.current || !popover.current) return;
     positionPopover(trigger.current, popover.current);
     initialFocus.current?.focus({ preventScroll: true });
-    return observePopoverPosition(trigger.current, popover.current);
+    const stopPositioning = observePopoverPosition(trigger.current, popover.current);
+    const stopScrollContainment = containPopoverScroll(popover.current);
+    return () => {
+      stopPositioning();
+      stopScrollContainment();
+    };
   }, [open]);
   const close = () => {
     const panel = popover.current;

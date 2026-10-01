@@ -113,7 +113,12 @@ export function ChipPicker({
     positionPopover(trigger.current, panel, true);
     const stopPositioning = observePopoverPosition(trigger.current, panel, true);
     const stopScrollContainment = containPopoverScroll(panel);
-    if (filterable) panel.querySelector<HTMLInputElement>('.chip-popover-filter')?.focus();
+    // Touch devices keep the filter unfocused: an opening keyboard covers most
+    // of the list and, on iOS, leaves the whole window pannable while the user
+    // tries to scroll the options.
+    const touchOnly = globalThis.matchMedia?.('(hover: none) and (pointer: coarse)').matches;
+    if (filterable && !touchOnly)
+      panel.querySelector<HTMLInputElement>('.chip-popover-filter')?.focus();
     else {
       const items = [...panel.querySelectorAll<HTMLButtonElement>('.chip-popover-item')];
       (items.find((item) => item.dataset.value === value) || items[0])?.focus();
