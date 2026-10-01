@@ -3615,8 +3615,18 @@ func (s *serveServer) ensureRuntimeBaseDirForSession(ctx context.Context, sessio
 		cwd := strings.TrimSpace(sess.CWD)
 		trustedRoot := ""
 		if s.cfg.ui && sess.Origin == session.OriginWeb && cwd != "" {
-			if root, rootErr := s.currentGitRoot(); rootErr == nil && sameServePath(cwd, root) {
-				trustedRoot = root
+			// Current Web sessions persist a primary workspace proposal alongside
+			// their immutable CWD. That capability is the durable proof needed to
+			// restore non-Git roots and Git subdirectories after runtime eviction.
+			// The Git-root check remains only as compatibility for older sessions
+			// created before primary workspace capabilities were persisted.
+			if rt.toolMgr.ApprovalMgr.HasDurablePrimaryWorkspace(cwd) {
+				trustedRoot = cwd
+			}
+			if trustedRoot == "" {
+				if root, rootErr := s.currentGitRoot(); rootErr == nil && sameServePath(cwd, root) {
+					trustedRoot = root
+				}
 			}
 		}
 		if trustedRoot != "" {

@@ -597,6 +597,29 @@ func (m *ApprovalManager) WorkspaceCapabilities() []WorkspaceCapability {
 	return capabilities
 }
 
+// HasDurablePrimaryWorkspace reports whether path is the primary workspace
+// proposal or confirmation persisted for the manager's current root session.
+// It deliberately excludes ambient/in-memory proposals supplied by tool
+// configuration, which are not sufficient authority for daemon restoration.
+func (m *ApprovalManager) HasDurablePrimaryWorkspace(path string) bool {
+	root := m.root()
+	if root == nil {
+		return false
+	}
+	canonical, err := canonicalWorkspaceDirectory(path)
+	if err != nil {
+		return false
+	}
+	root.workspaceMu.RLock()
+	defer root.workspaceMu.RUnlock()
+	grant := root.primaryWorkspaceGrant
+	return root.workspaceStore != nil &&
+		strings.TrimSpace(root.workspaceSessionID) != "" &&
+		grant.ID == primaryWorkspaceID &&
+		grant.Path == canonical &&
+		grant.Access == session.WorkspaceAccessWrite
+}
+
 func capabilityFromGrant(grant session.WorkspaceGrant) WorkspaceCapability {
 	return WorkspaceCapability{
 		ID: grant.ID, Path: grant.Path, Access: grant.Access, Status: primaryWorkspaceStatusConfirmed, Provenance: grant.Provenance,
