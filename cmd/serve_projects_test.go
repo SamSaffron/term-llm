@@ -981,6 +981,44 @@ func TestDisabledModeRestoresExistingProjectSessionSnapshot(t *testing.T) {
 	}
 }
 
+func TestEvictedNoProjectRuntimeRestoresPersistedWorkspaceCapability(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	root := t.TempDir()
+	now := time.Now()
+	persisted := &session.Session{ID: "evicted-no-project-runtime", Provider: "mock", Model: "mock", Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}
+	if err := store.Create(ctx, persisted); err != nil {
+		t.Fatal(err)
+	}
+	toolCfg := tools.DefaultToolConfig()
+	first, err := tools.NewToolManager(&toolCfg, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &serveServer{cfg: serveServerConfig{ui: true}, store: store, startupDir: root}
+	if err := srv.bindResolvedWorkspace(ctx, persisted.ID, &serveRuntime{toolMgr: first}, serveWorkspaceBinding{RootDir: root, RuntimeDir: root}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh manager simulates the in-memory runtime being evicted after the
+	// default idle TTL. Non-Git workspaces have no currentGitRoot fallback.
+	resumed, err := tools.NewToolManager(&toolCfg, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ensureRuntimeBaseDirForSession(ctx, persisted.ID, &serveRuntime{toolMgr: resumed}); err != nil {
+		t.Fatal(err)
+	}
+	if !sameServePath(resumed.BaseDir(), root) {
+		t.Fatalf("restored base dir = %q, want %q", resumed.BaseDir(), root)
+	}
+}
+
 func TestEvictedProjectRuntimeRecreatesExactWorkspaceBeforeResponse(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	srv, store := newServeProjectTestServer(t)
