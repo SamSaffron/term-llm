@@ -359,6 +359,7 @@ var keySpecs = []KeySpec{
 
 	def("classify.default_provider", "typesafe"),
 	optional("classify.providers.typesafe.type"),
+	def("classify.providers.typesafe.supports_images", false),
 	optional("classify.providers.typesafe.api_key", sensitive()),
 	def("classify.providers.typesafe.model", DefaultTypeSafeModel),
 	def("classify.providers.typesafe.base_url", DefaultTypeSafeBaseURL),

@@ -33,17 +33,19 @@ const (
 
 // Options configures a TypeSafe API client.
 type Options struct {
-	APIKey  string
-	BaseURL string
-	Timeout time.Duration
+	APIKey         string
+	BaseURL        string
+	Timeout        time.Duration
+	SupportsImages bool
 }
 
 // Client is a native HTTP client for the TypeSafe System One API.
 type Client struct {
-	apiKey  string
-	baseURL *url.URL
-	http    *http.Client
-	timeout time.Duration
+	apiKey         string
+	baseURL        *url.URL
+	http           *http.Client
+	timeout        time.Duration
+	supportsImages bool
 }
 
 // Request is the /v1/systemone classification request.
@@ -51,6 +53,15 @@ type Request struct {
 	State     json.RawMessage     `json:"state"`
 	Model     string              `json:"model"`
 	Questions map[string]Question `json:"questions"`
+	Images    []Image             `json:"images,omitempty"`
+	Samples   int                 `json:"samples,omitempty"`
+}
+
+// Image carries an inline image to a SystemOne-compatible endpoint.
+// Image preprocessing and model-specific limits belong to the server.
+type Image struct {
+	ContentType string `json:"content_type"`
+	Base64      string `json:"base64"`
 }
 
 // Question describes one typed TypeSafe question.
@@ -189,7 +200,8 @@ func NewClient(opts Options) (*Client, error) {
 		http: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}},
-		timeout: timeout,
+		timeout:        timeout,
+		supportsImages: opts.SupportsImages,
 	}, nil
 }
 
@@ -311,6 +323,9 @@ func (q Question) validateScore(prefix string) error {
 func (c *Client) Classify(ctx context.Context, req Request) (*Response, error) {
 	if c == nil {
 		return nil, errors.New("typesafe: nil client")
+	}
+	if len(req.Images) > 0 && !c.supportsImages {
+		return nil, errors.New("typesafe: selected provider does not support images; configure supports_images only for a compatible endpoint")
 	}
 	if err := req.Validate(); err != nil {
 		return nil, err
@@ -671,6 +686,9 @@ func requestSensitiveValues(body []byte) []string {
 	var values []string
 	var req Request
 	if len(body) > 0 && json.Unmarshal(body, &req) == nil {
+		for _, image := range req.Images {
+			values = append(values, image.Base64)
+		}
 		state := bytes.TrimSpace(req.State)
 		if len(state) > 0 {
 			values = append(values, string(state))
