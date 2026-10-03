@@ -657,26 +657,35 @@ func (p *Program) handleSignals() chan struct{} {
 			close(ch)
 		}()
 
-		for {
-			select {
-			case <-p.ctx.Done():
-				return
-
-			case s := <-sig:
-				if atomic.LoadUint32(&p.ignoreSignals) == 0 {
-					switch s {
-					case syscall.SIGINT:
-						p.msgs <- InterruptMsg{}
-					default:
-						p.msgs <- QuitMsg{}
-					}
-					return
-				}
-			}
-		}
+		p.listenForSignals(sig)
 	}()
 
 	return ch
+}
+
+// listenForSignals handles signals until the program exits or a signal is sent
+// to the event loop. Keeping registration separate allows testing without
+// sending process-wide signals.
+func (p *Program) listenForSignals(sig <-chan os.Signal) {
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+
+		case s := <-sig:
+			if atomic.LoadUint32(&p.ignoreSignals) == 0 {
+				var msg Msg = QuitMsg{}
+				if s == syscall.SIGINT {
+					msg = InterruptMsg{}
+				}
+				select {
+				case p.msgs <- msg:
+				case <-p.ctx.Done():
+				}
+				return
+			}
+		}
+	}
 }
 
 // handleResize handles terminal resize events.
@@ -802,7 +811,7 @@ func (p *Program) eventLoop(model Model, cmds chan Cmd) (Model, error) {
 			}
 
 		case backgroundColorMsg:
-			p.execute(ansi.RequestBackgroundColor)
+			p.executeQuery(ansi.RequestBackgroundColor)
 
 		case execMsg:
 			// NB: this blocks.
@@ -1045,7 +1054,7 @@ func (p *Program) Run() (returnModel Model, returnErr error) {
 		// Query for synchronized updates support (mode 2026) and unicode core
 		// (mode 2027). If the terminal supports it, the renderer will enable
 		// it once we get the response.
-		p.execute(ansi.RequestModeSynchronizedOutput +
+		p.executeQuery(ansi.RequestModeSynchronizedOutput +
 			ansi.RequestModeUnicodeCore)
 	}
 
@@ -1150,6 +1159,14 @@ func (p *Program) execute(seq string) {
 	p.mu.Lock()
 	_, _ = p.outputBuf.WriteString(seq)
 	p.mu.Unlock()
+}
+
+// executeQuery skips reply-dependent queries when input is disabled. Otherwise
+// unread terminal replies can leak into the shell after the program exits.
+func (p *Program) executeQuery(seq string) {
+	if !p.disableInput {
+		p.execute(seq)
+	}
 }
 
 // flush flushes the output buffer to the program output.

@@ -661,6 +661,23 @@ func NewRenderBuffer(width, height int) *RenderBuffer {
 	}
 }
 
+// Resize resizes the buffer and touches every cell it creates. Those cells
+// may still hold content from the last frame on the physical screen, even if
+// the frame shrank and grew back to its original size between renders. Embedded
+// ScreenBuffers used by the runtime rely on this damage tracking too.
+func (b *RenderBuffer) Resize(width, height int) {
+	curWidth, curHeight := b.Width(), b.Height()
+	b.Buffer.Resize(width, height)
+	if width > curWidth {
+		for y := range min(curHeight, height) {
+			b.TouchLine(curWidth, y, width-curWidth)
+		}
+	}
+	for y := curHeight; y < height; y++ {
+		b.TouchLine(0, y, width)
+	}
+}
+
 // TouchLine marks a line n times starting at the given x position as touched.
 func (b *RenderBuffer) TouchLine(x, y, n int) {
 	if y < 0 || y >= len(b.Lines) {

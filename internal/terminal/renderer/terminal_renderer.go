@@ -6,6 +6,7 @@ import (
 	"hash/maphash"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
@@ -156,6 +157,7 @@ type TerminalRenderer struct {
 	clear            bool         // whether to force clear the screen
 	caps             capabilities // terminal control sequence capabilities
 	atPhantom        bool         // whether the cursor is out of bounds and at a phantom cell
+	noWrapLine       bool         // whether a wide-row repaint already disabled autowrap
 	skipScrollOptim  bool         // set by HardScroll to skip scrollOptimize on the next Render call
 	logger           Logger       // The logger used for debugging.
 
@@ -502,10 +504,27 @@ func cellEqual(a, b *Cell) bool {
 // putCell draws a cell at the current cursor position.
 func (s *TerminalRenderer) putCell(newbuf *RenderBuffer, cell *Cell) {
 	width, height := newbuf.Width(), newbuf.Height()
-	if s.flags.Contains(tFullscreen) && s.cur.X == width-1 && s.cur.Y == height-1 {
+	// Combining codepoints need the terminal's pending-wrap position to stay
+	// attached to their base at the margin. Corner pending wrap is canceled below.
+	splittable := cell != nil && utf8.RuneCountInString(cell.Content) > 1
+	if s.noWrapLine && splittable && cell.Width == 1 && s.cur.X == width-1 {
+		// Even a guarded row must let a margin combining cluster advance to
+		// pending wrap. It is the final cell, and repaintWideLine cancels that
+		// pending wrap with CR before anything else can print.
+		_, _ = s.buf.WriteString(ansi.SetModeAutoWrap)
+		s.putAttrCell(newbuf, cell)
+		_, _ = s.buf.WriteString(ansi.ResetModeAutoWrap)
+	} else if !s.noWrapLine && !splittable && s.flags.Contains(tFullscreen) && s.cur.X == width-1 && s.cur.Y == height-1 {
 		s.putCellLR(newbuf, cell)
 	} else {
 		s.putAttrCell(newbuf, cell)
+		if splittable && !s.noWrapLine && s.flags.Contains(tFullscreen) && s.cur.Y == height-1 && s.atPhantom {
+			// A corner cluster needs wrap enabled while it is painted, but a
+			// following raw write must not trigger a scroll of the last row.
+			_ = s.buf.WriteByte('\r')
+			s.cur.X = 0
+			s.atPhantom = false
+		}
 	}
 }
 
@@ -569,14 +588,7 @@ func (s *TerminalRenderer) putCellLR(newbuf *RenderBuffer, cell *Cell) {
 // updatePen updates the cursor pen styles.
 func (s *TerminalRenderer) updatePen(cell *Cell) {
 	if cell == nil {
-		if !s.cur.Style.IsZero() {
-			_, _ = s.buf.WriteString(ansi.ResetStyle)
-			s.cur.Style = Style{} // Reset style
-		}
-		if !s.cur.Link.IsZero() {
-			_, _ = s.buf.WriteString(ansi.ResetHyperlink())
-		}
-		return
+		cell = &EmptyCell
 	}
 
 	// Downsample pen when we don't have a [colorprofile.TrueColor],
@@ -887,8 +899,7 @@ func (s *TerminalRenderer) transformLine(newbuf *RenderBuffer, y int) {
 	for x := 0; x < newbuf.Width(); x++ {
 		oldCell, newCell := oldLine.At(x), newLine.At(x)
 		if (oldCell != nil && oldCell.Width > 1) || (newCell != nil && newCell.Width > 1) {
-			s.move(newbuf, 0, y)
-			s.emitRange(newbuf, newLine, newbuf.Width())
+			s.repaintWideLine(newbuf, newLine, y)
 			copy(oldLine, newLine)
 			return
 		}
@@ -1036,6 +1047,23 @@ func (s *TerminalRenderer) transformLine(newbuf *RenderBuffer, y int) {
 	} else {
 		copy(oldLine, newLine)
 	}
+}
+
+// repaintWideLine keeps width disagreements inside their row. Both normal
+// diffs and resize/erase repaints reach this existing wide-cell fallback.
+func (s *TerminalRenderer) repaintWideLine(newbuf *RenderBuffer, line Line, y int) {
+	s.move(newbuf, 0, y)
+	s.noWrapLine = true
+	_, _ = s.buf.WriteString(ansi.ResetModeAutoWrap)
+	s.emitRange(newbuf, line, newbuf.Width())
+	s.noWrapLine = false
+	_, _ = s.buf.WriteString(ansi.SetModeAutoWrap)
+	// With wrap disabled the row cannot change, but the terminal's column
+	// may disagree with the model. CR reanchors even in inline/relative mode
+	// and cancels the model's pending wrap before any following row is painted.
+	_ = s.buf.WriteByte('\r')
+	s.cur.X = 0
+	s.atPhantom = false
 }
 
 // deleteCells deletes the count cells at the current cursor position and moves
@@ -1189,17 +1217,27 @@ func (s *TerminalRenderer) Redraw(newbuf *RenderBuffer) {
 	s.Render(newbuf)
 }
 
+// needsRender includes geometry changes even when a fresh frame reports no
+// touched cells: its blank rows can still replace content from the old frame.
+// Read the touch count after reconciliation, which marks those blank rows.
+func (s *TerminalRenderer) needsRender(newbuf *RenderBuffer) bool {
+	if s.clear || newbuf.TouchedLines() > 0 {
+		return true
+	}
+	return s.curbuf != nil && s.curbuf.Bounds() != newbuf.Bounds()
+}
+
 // Render renders changes of the screen to the internal buffer. Call
 // [terminalWriter.Flush] to flush pending changes to the screen.
 func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	// Do we need to render anything?
-	touchedLines := newbuf.TouchedLines()
-	if !s.clear && touchedLines == 0 {
+	if !s.needsRender(newbuf) {
 		return
 	}
 
-	if s.curbuf == nil || s.curbuf.Bounds().Empty() {
-		// Initialize the current buffer
+	if s.curbuf == nil {
+		// Initialize the current buffer. Retain empty buffers so a later
+		// restoration is still recognized as a geometry change.
 		s.curbuf = NewRenderBuffer(newbuf.Width(), newbuf.Height())
 	}
 
@@ -1211,8 +1249,14 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 
 	if geometryChanged {
 		s.oldhash, s.newhash = nil, nil
-		s.reconcileResize(curWidth, curHeight, newWidth, newHeight)
+		s.reconcileResize(newbuf, curWidth, curHeight)
+		if newbuf.Bounds().Empty() {
+			// Erase the old owned frame before discarding its cells, even if
+			// the empty frame has no rows/columns it can mark as touched.
+			s.clear = true
+		}
 	}
+	touchedLines := newbuf.TouchedLines()
 
 	// TODO: Investigate whether this is necessary. Theoretically, terminals
 	// can add/remove tab stops and we should be able to handle that. We could
@@ -1237,7 +1281,7 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 		curHeight > newHeight
 
 	if !s.clear && partialClear {
-		s.clearBelow(newbuf, nil, newHeight-1)
+		s.clearBelow(newbuf, nil, max(newHeight-1, 0))
 	}
 
 	if s.clear { //nolint:nestif
@@ -1276,7 +1320,7 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 		}
 	}
 
-	if !fullscreen && geometryChanged {
+	if !fullscreen && geometryChanged && !newbuf.Bounds().Empty() {
 		s.move(newbuf, 0, newHeight-1)
 	}
 
@@ -1309,7 +1353,13 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 // mode owns every cell it is about to clear, so it repaints completely; inline
 // mode shares the screen with preceding output and keeps its partial clear plus
 // the post-diff model resize instead.
-func (s *TerminalRenderer) reconcileResize(curWidth, curHeight, newWidth, newHeight int) {
+func (s *TerminalRenderer) reconcileResize(newbuf *RenderBuffer, curWidth, curHeight int) {
+	newWidth, newHeight := newbuf.Width(), newbuf.Height()
+	// A fresh differently-sized frame may leave old rows blank without ever
+	// touching them. Recheck every row in either mode before diffing.
+	for y := range newHeight {
+		newbuf.TouchLine(0, y, newWidth)
+	}
 	if !s.flags.Contains(tFullscreen) {
 		return
 	}

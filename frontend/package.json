@@ -20,7 +20,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@preact/signals": "2.11.2",
+    "@preact/signals": "2.11.3",
     "@taga3s/highlightjs-terraform": "1.0.7",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
@@ -44,14 +44,14 @@
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-react-hooks": "7.1.1",
     "fake-indexeddb": "^6.2.5",
-    "globals": "17.12.0",
+    "globals": "17.13.0",
     "jsdom": "30.1.1",
     "prettier": "3.9.9",
-    "stylelint": "17.15.0",
+    "stylelint": "17.16.0",
     "stylelint-config-standard": "40.0.0",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.70.1",
-    "vite": "8.3.1",
+    "typescript-eslint": "8.71.0",
+    "vite": "8.3.2",
     "vitest": "4.1.11"
   }
 }
