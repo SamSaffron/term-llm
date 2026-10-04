@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -174,21 +175,31 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		detached = ContextWithAgentApprovalScope(detached, scope)
 	}
 	detached = ContextWithSubagentEventCallback(detached, nil)
+	// The child outlives this tool call, whose reload operation is released
+	// when it returns. Take the child's own ownership now, before launching it;
+	// an inherited, already-released operation rejects the child's runner.
+	detached, releaseReload, reloadErr := restart.Detached(detached)
+	if reloadErr != nil {
+		cancel()
+		return nil, fmt.Errorf("agent not started: %w", reloadErr)
+	}
+	abort := func(message string) (*agentEntry, error) {
+		m.mu.Unlock()
+		cancel()
+		releaseReload()
+		return nil, errors.New(message)
+	}
 	processAgentAdmission.Lock()
 	defer processAgentAdmission.Unlock()
 	m.mu.Lock()
 	if m.draining {
-		m.mu.Unlock()
-		cancel()
-		return nil, errors.New("agent manager is shutting down")
+		return abort("agent manager is shutting down")
 	}
 	if previous := m.agents[id]; previous != nil {
 		select {
 		case <-previous.done:
 		default:
-			m.mu.Unlock()
-			cancel()
-			return nil, errors.New("agent is already running")
+			return abort("agent is already running")
 		}
 	}
 	if previousAny, exists := processAgentEntries.Load(id); exists {
@@ -196,16 +207,17 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		select {
 		case <-previous.done:
 		default:
-			m.mu.Unlock()
-			cancel()
-			return nil, errors.New("agent is already running in this process")
+			return abort("agent is already running in this process")
 		}
 	}
 	m.agents[id] = e
 	processAgentEntries.Store(id, e)
 	m.mu.Unlock()
 	m.save(record)
-	go m.run(detached, e, runner, depth, model, resume, instructions)
+	go func() {
+		defer releaseReload()
+		m.run(detached, e, runner, depth, model, resume, instructions)
+	}()
 	return e, nil
 }
 
@@ -215,13 +227,13 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	case m.slots <- struct{}{}:
 		defer func() { <-m.slots }()
 	case <-ctx.Done():
-		m.finish(e, SpawnAgentRunResult{}, ctx.Err())
+		m.finish(e, SpawnAgentRunResult{}, agentStopError(ctx, ctx.Err()))
 		return
 	}
 	m.mu.Lock()
 	if ctx.Err() != nil {
 		m.mu.Unlock()
-		m.finish(e, SpawnAgentRunResult{}, ctx.Err())
+		m.finish(e, SpawnAgentRunResult{}, agentStopError(ctx, ctx.Err()))
 		return
 	}
 	e.queued = false
@@ -278,7 +290,17 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	} else {
 		result, err = runner.RunAgentWithCallback(ctx, e.record.AgentName, e.record.Prompt, depth, e.originCallID, cb)
 	}
-	m.finish(e, result, err)
+	m.finish(e, result, agentStopError(ctx, err))
+}
+
+// agentStopError attributes a stop caused by a reload's grace-period
+// cancellation, so the run ends "interrupted" (resumable after the restart)
+// rather than looking like a user's cancel_agent.
+func agentStopError(ctx context.Context, err error) error {
+	if err == nil || errors.Is(err, restart.ErrInterrupt) || !errors.Is(context.Cause(ctx), restart.ErrInterrupt) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", restart.ErrInterrupt, err)
 }
 
 func isTypedTurnLimit(err error) bool {
@@ -301,6 +323,8 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 		return
 	}
 	switch {
+	case errors.Is(err, restart.ErrInterrupt):
+		e.record.Status = "interrupted"
 	case errors.Is(err, context.Canceled) && e.shutdown:
 		e.record.Status = "interrupted"
 	case errors.Is(err, context.Canceled):

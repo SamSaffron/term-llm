@@ -45,3 +45,23 @@ func Inherit(ctx, owner context.Context) context.Context {
 	}
 	return ctx
 }
+
+// Detached admits work that outlives its caller but cannot be checkpointed in
+// place, such as a background delegated agent. Like Child it retains reload
+// ownership from the caller's live operation and must be acquired before the
+// caller returns. Unlike plain ownership, it opts into the grace-period
+// cancellation policy: a reload interrupts it with ErrInterrupt instead of
+// waiting for it to finish naturally. Unowned callers are unchanged.
+func Detached(ctx context.Context) (context.Context, func(), error) {
+	op, _ := ctx.Value(operationKey{}).(*operation)
+	if op == nil {
+		return ctx, func() {}, nil
+	}
+	c := op.coordinator
+	owned, release, err := c.Enter(ctx)
+	if err != nil {
+		return ctx, nil, err
+	}
+	cancellable, closeCancellable := c.Cancellable(owned)
+	return cancellable, func() { closeCancellable(); release() }, nil
+}

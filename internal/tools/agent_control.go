@@ -54,7 +54,21 @@ func (t *agentControlTool) Spec() llm.ToolSpec {
 	}
 	return llm.ToolSpec{Name: t.name, Description: description, Schema: map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}}
 }
-func (t *agentControlTool) Preview(args json.RawMessage) string { return t.name }
+
+// Preview names the agents a call targets; the tool name is already shown.
+func (t *agentControlTool) Preview(args json.RawMessage) string {
+	var a agentControlArgs
+	if json.Unmarshal(args, &a) != nil {
+		return ""
+	}
+	switch t.name {
+	case WaitAgentToolName:
+		return strings.Join(a.AgentIDs, ", ")
+	case ListAgentsToolName:
+		return a.Status
+	}
+	return a.AgentID
+}
 
 type agentControlArgs struct {
 	AgentID      string   `json:"agent_id"`

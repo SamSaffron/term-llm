@@ -2,12 +2,14 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -117,5 +119,59 @@ func TestAgentControlFailuresAreToolErrors(t *testing.T) {
 		if !out.IsError || !strings.Contains(out.Content, "not found") {
 			t.Fatalf("%s missing agent = %+v, want tool error", name, out)
 		}
+	}
+}
+
+// reloadAwareRunner admits its work like cmdRunner.Run does.
+type reloadAwareRunner struct {
+	*lifecycleRunner
+	coordinator *restart.Coordinator
+	gate        chan struct{}
+	admitErr    chan error
+}
+
+func (r *reloadAwareRunner) RunAgentWithCallbackAndOptions(ctx context.Context, name, prompt string, depth int, id string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	<-r.gate
+	ctx, release, err := r.coordinator.Activity(ctx)
+	r.admitErr <- err
+	if err != nil {
+		return SpawnAgentRunResult{}, err
+	}
+	defer release()
+	return r.lifecycleRunner.RunAgentWithCallbackAndOptions(ctx, name, prompt, depth, id, cb, opts)
+}
+
+func (r *reloadAwareRunner) RunAgentWithCallback(ctx context.Context, name, prompt string, depth int, id string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	return r.RunAgentWithCallbackAndOptions(ctx, name, prompt, depth, id, cb, SpawnAgentRunOptions{})
+}
+
+func TestBackgroundSpawnSurvivesReleaseOfSpawningCallAndReloadInterruptsIt(t *testing.T) {
+	c := &restart.Coordinator{InterruptAfter: time.Millisecond}
+	runner := &reloadAwareRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, coordinator: c, gate: make(chan struct{}), admitErr: make(chan error, 1)}
+	defer close(runner.release)
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
+	spawn.SetRunner(runner)
+	callCtx, releaseCall, err := c.Root(llm.ContextWithSessionID(context.Background(), "reload-parent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawned := lifecycleResult(t, lifecycleCall(t, spawn, callCtx, `{"agent_name":"developer","prompt":"work","wait":0}`))
+	releaseCall() // the tool call's operation ends before the child is admitted
+	close(runner.gate)
+	if err := <-runner.admitErr; err != nil {
+		t.Fatalf("background child rejected: %v", err)
+	}
+	<-runner.entered
+
+	stop, err := c.Bind(context.Background(), func(context.Context) error { return errors.New("fixture exec") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	c.Request()
+	wait := &agentControlTool{name: WaitAgentToolName, spawn: spawn}
+	out := lifecycleCall(t, wait, llm.ContextWithSessionID(context.Background(), "reload-parent"), `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":5}`)
+	if !strings.Contains(out.Content, `"status":"interrupted"`) || !strings.Contains(out.Content, `"resumable":true`) {
+		t.Fatalf("child after reload = %s, want resumable interrupted", out.Content)
 	}
 }
