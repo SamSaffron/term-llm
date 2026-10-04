@@ -151,7 +151,7 @@ Custom tools run from the session working directory when the session is bound to
 | `script` | ✓ | Path to script, relative to the agent directory (e.g. `scripts/foo.sh`) |
 | `call` | | Argument passing mode: `args` (default) passes named flags (`--key value`); `positional` passes positional values; `json` sends JSON on stdin |
 | `input` | | JSON Schema for parameters. Must be `type: object` at root. If omitted, tool takes no parameters |
-| `timeout_seconds` | | Execution timeout (default 30, max 300) |
+| `timeout_seconds` | | Execution timeout in seconds (default 30, max 3600; an earlier parent deadline or cancellation still applies) |
 | `env` | | Extra environment variables to set when running the script |
 
 Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. Symlinks are resolved and containment-checked. Scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.

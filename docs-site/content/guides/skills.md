@@ -327,7 +327,7 @@ This is the recommended pattern for skills that need API keys or other secrets. 
 | `script` | ✓ | Path relative to the skill directory (e.g. `scripts/foo.sh`) |
 | `call` | | Argument passing mode: `args` (default) passes named flags (`--key value`); `positional` passes positional values; `json` sends JSON on stdin |
 | `input` | | JSON Schema for parameters. Must be `type: object` at root |
-| `timeout_seconds` | | Execution timeout (default 30, max 300) |
+| `timeout_seconds` | | Execution timeout in seconds (default 30, max 3600; an earlier parent deadline or cancellation still applies) |
 | `env` | | Extra environment variables when running the script |
 
 Scripts run with `TERM_LLM_AGENT_DIR` set to the skill's directory and `TERM_LLM_TOOL_NAME` set to the tool name. Symlinks are resolved and containment-checked. Scripts cannot escape the skill directory.
