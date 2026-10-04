@@ -66,6 +66,8 @@ term-llm jobs run cancel run_abc123
 
 `jobs runs` defaults to 50 rows, and `jobs run events` defaults to 200; both support `--limit` and `--offset`. With combined `serve web jobs`, include the web base path (normally `/ui`) in `TERM_LLM_JOBS_SERVER`; standalone `serve jobs` exposes these routes at the root.
 
+When `queue_agent` or `wait_for_jobs` runs inside `serve web jobs`, it uses that server's jobs API and bearer token automatically. This keeps `notify_when_done` connected to the originating web session. Outside a combined serve process, these tools use `TERM_LLM_JOBS_SERVER` and `TERM_LLM_JOBS_TOKEN`. Set the server URL to the exact API base: include `/ui` (or a custom `--base-path`) for combined serve, and omit it for standalone `serve jobs`.
+
 ### Trigger Types
 
 - `manual`: run only when manually triggered

@@ -319,6 +319,20 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	return nil
 }
 
+// SetJobsServer binds queued-job tools to the jobs API hosted by this serve process.
+// Other runtimes retain their environment-configured jobs client.
+func (r *LocalToolRegistry) SetJobsServer(baseURL, token string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	client := newJobsBackedAgentClient(baseURL, token)
+	if tool, ok := r.tools[QueueAgentToolName].(*QueueAgentTool); ok {
+		tool.client = client
+	}
+	if tool, ok := r.tools[WaitForJobsToolName].(*WaitForJobsTool); ok {
+		tool.client = client
+	}
+}
+
 // newSessionStateTool constructs non-filesystem, session-bound state controls.
 func (r *LocalToolRegistry) newSessionStateTool(name string) llm.Tool {
 	if name == LiveSettingsToolName {

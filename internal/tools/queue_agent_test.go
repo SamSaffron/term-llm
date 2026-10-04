@@ -80,6 +80,50 @@ func TestQueueAgentCreatesAndTriggersJobsBackedLLMJob(t *testing.T) {
 	}
 }
 
+func TestQueueAgentUsesConfiguredJobsBasePath(t *testing.T) {
+	var created bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ui/v2/jobs":
+			created = true
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_123"})
+		case "/ui/v2/jobs/job_123/trigger":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_123", JobID: "job_123"})
+		default:
+			http.Redirect(w, r, "/ui/", http.StatusTemporaryRedirect)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("TERM_LLM_JOBS_SERVER", server.URL+"/ui")
+
+	out, err := NewQueueAgentTool().Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
+	if err != nil || out.IsError || !created {
+		t.Fatalf("queue against combined jobs route: created=%v result=%+v err=%v", created, out, err)
+	}
+}
+
+func TestWaitForJobsUsesConfiguredJobsBasePath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/v2/runs/run_123" {
+			t.Errorf("request path = %q, want /chat/v2/runs/run_123", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_123", JobID: "job_123", Status: "succeeded", Response: "done"})
+	}))
+	defer server.Close()
+	t.Setenv("TERM_LLM_JOBS_SERVER", server.URL+"/chat")
+
+	out, err := NewWaitForJobsTool().Execute(context.Background(), json.RawMessage(`{"run_ids":["run_123"]}`))
+	if err != nil || out.IsError {
+		t.Fatalf("wait_for_jobs: result=%+v err=%v", out, err)
+	}
+	var results []QueuedJobResult
+	if err := json.Unmarshal([]byte(out.Content), &results); err != nil || len(results) != 1 || results[0].Status != "succeeded" {
+		t.Fatalf("wait_for_jobs result = %+v, decode error = %v", results, err)
+	}
+}
+
 func TestQueueAgentRecoversRunAfterLostTriggerResponse(t *testing.T) {
 	for _, test := range []struct {
 		name              string

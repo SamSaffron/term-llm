@@ -308,8 +308,10 @@ type serveAgentRuntimeOptions struct {
 	collaborationController *serveCollaborativeShellController
 	// childRuns makes delegated runs readable and steerable. It is nil outside
 	// serve, which is what keeps the CLI spawn path unchanged.
-	childRuns *childRunRegistry
-	hasWeb    bool
+	childRuns       *childRunRegistry
+	hasWeb          bool
+	jobsServerURL   string
+	jobsServerToken string
 }
 
 func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *serveServer) func(context.Context, serveRuntimeRequest) (*serveRuntime, error) {
@@ -378,6 +380,28 @@ func childRunObserverOrNil(registry *childRunRegistry) childRunObserver {
 	return registry
 }
 
+func serveJobsToolURL(host string, port int, basePath string, mountedUnderBasePath bool) string {
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		if ip.To4() != nil {
+			host = "127.0.0.1"
+		} else {
+			host = "::1"
+		}
+	}
+	baseURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	if mountedUnderBasePath {
+		baseURL += basePath
+	}
+	return baseURL
+}
+
+func serveJobsToolClientConfig(hasJobs, hasWeb, hasAPI bool, host string, port int, basePath, token string) (string, string) {
+	if !hasJobs {
+		return "", ""
+	}
+	return serveJobsToolURL(host, port, basePath, hasWeb || hasAPI), token
+}
+
 func validateServeRuntimeToolMap(runtime *serveRuntime, toolMap map[string]string) error {
 	for clientName, serverName := range toolMap {
 		if _, ok := runtime.engine.Tools().Get(serverName); ok {
@@ -407,6 +431,9 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 	}
 	runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
 	runtime.toolMgr.Registry.SetMediaPublisher(opts.mediaPublisher)
+	if opts.jobsServerURL != "" {
+		runtime.toolMgr.Registry.SetJobsServer(opts.jobsServerURL, opts.jobsServerToken)
+	}
 	if opts.hasWeb {
 		runtime.toolMgr.Registry.SetCollaborativeShellController(opts.collaborationController, tools.ShellRoutingControllerRequired)
 	} else {
@@ -627,6 +654,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		toolMap: toolMap, mediaPublisher: mediaPublisher, collaborationController: collaborationController,
 		hasWeb: hasWeb,
 	}
+	runtimeOptions.jobsServerURL, runtimeOptions.jobsServerToken = serveJobsToolClientConfig(hasJobs, hasWeb, hasAPI, serveHost, servePort, serveBasePath, token)
 	agentRuntimeFactory := newServeAgentRuntimeFactory(runtimeOptions, func() *serveServer { return s })
 
 	runtimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {

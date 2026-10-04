@@ -788,6 +788,70 @@ func TestServeHTTPHandler_MountsJobsOnlyAtRoot(t *testing.T) {
 	}
 }
 
+func TestQueueAgentCombinedWebJobsCreatesJob(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+	srv := &serveServer{
+		cfg:    serveServerConfig{ui: true, basePath: "/ui", requireAuth: true, token: "local-token"},
+		jobsV2: mgr,
+	}
+	server := httptest.NewServer(srv.httpHandler())
+	defer server.Close()
+
+	toolMgr, err := tools.NewToolManager(&tools.ToolConfig{Enabled: []string{tools.QueueAgentToolName, tools.WaitForJobsToolName}}, nil)
+	if err != nil {
+		t.Fatalf("NewToolManager: %v", err)
+	}
+	runtime := &serveRuntime{toolMgr: toolMgr}
+	configureServeRuntimeTools(runtime, serveAgentRuntimeOptions{
+		hasWeb: true, jobsServerURL: server.URL + "/ui", jobsServerToken: "local-token",
+		approval: resolvedApprovalMode{Mode: tools.ModeYolo},
+	})
+	queue, ok := toolMgr.Registry.Get(tools.QueueAgentToolName)
+	if !ok {
+		t.Fatal("queue_agent was not registered")
+	}
+	ctx := tools.ContextWithQueueAgentOrigin(context.Background(), tools.QueueAgentOriginContext{Origin: tools.QueueAgentOriginWeb, SessionID: "sess-origin"})
+	out, err := queue.Execute(ctx, json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work","notify_when_done":true}`))
+	if err != nil || out.IsError {
+		t.Fatalf("queue_agent: result=%+v err=%v", out, err)
+	}
+	var result tools.QueueAgentResult
+	if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
+		t.Fatalf("decode queue result: %v", err)
+	}
+	job, err := mgr.GetJob(result.JobID)
+	if err != nil {
+		t.Fatalf("queued job was not created: %v", err)
+	}
+	var runnerConfig jobsV2LLMConfig
+	if err := json.Unmarshal(job.RunnerConfig, &runnerConfig); err != nil {
+		t.Fatalf("decode runner config: %v", err)
+	}
+	if runnerConfig.NotifyOrigin == nil || runnerConfig.NotifyOrigin.SessionID != "sess-origin" {
+		t.Fatalf("notify origin = %+v, want originating web session", runnerConfig.NotifyOrigin)
+	}
+}
+
+func TestServeJobsToolURL(t *testing.T) {
+	for _, test := range []struct {
+		name, host, basePath, want string
+		underBasePath              bool
+	}{
+		{name: "combined", host: "127.0.0.1", basePath: "/ui", underBasePath: true, want: "http://127.0.0.1:8080/ui"},
+		{name: "jobs only", host: "127.0.0.1", basePath: "/ui", want: "http://127.0.0.1:8080"},
+		{name: "wildcard bind", host: "0.0.0.0", basePath: "/chat", underBasePath: true, want: "http://127.0.0.1:8080/chat"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := serveJobsToolURL(test.host, 8080, test.basePath, test.underBasePath); got != test.want {
+				t.Fatalf("serveJobsToolURL = %q, want %q", got, test.want)
+			}
+		})
+	}
+	if baseURL, token := serveJobsToolClientConfig(false, true, false, "127.0.0.1", 8080, "/ui", "secret"); baseURL != "" || token != "" {
+		t.Fatalf("web-only client config = (%q, %q), want empty", baseURL, token)
+	}
+}
+
 func TestServeCORSExposesUIVersionHeader(t *testing.T) {
 	srv := &serveServer{
 		cfg: serveServerConfig{

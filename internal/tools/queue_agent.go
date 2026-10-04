@@ -380,10 +380,13 @@ func newJobsBackedAgentClientFromEnv() *jobsBackedAgentClient {
 	if baseURL == "" {
 		baseURL = defaultJobsServerBaseURL
 	}
-	baseURL = strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(baseURL, "/ui"), "/chat"), "/")
+	return newJobsBackedAgentClient(baseURL, strings.TrimSpace(os.Getenv("TERM_LLM_JOBS_TOKEN")))
+}
+
+func newJobsBackedAgentClient(baseURL, token string) *jobsBackedAgentClient {
 	return &jobsBackedAgentClient{
-		baseURL:    baseURL,
-		token:      strings.TrimSpace(os.Getenv("TERM_LLM_JOBS_TOKEN")),
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		token:      token,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
