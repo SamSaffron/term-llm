@@ -168,6 +168,10 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 	run.mu.Lock()
 	run.typedClientTools = runner
 	run.mu.Unlock()
+	pending, ok := run.snapshot()["pending_inline_client_tools"].([]map[string]string)
+	if !ok || len(pending) != 1 || pending[0]["call_id"] != "call/scoped" || pending[0]["name"] != "webmcp__ping" || pending[0]["arguments"] != "{}" {
+		t.Fatalf("recovery snapshot pending inline tools = %#v", pending)
+	}
 	post := func(id, callID, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses/"+id+"/client_tool_calls/"+url.PathEscape(callID)+"/result", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -183,6 +187,9 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 	}
 	if code := post(run.id, "call/scoped", `{"output":"pong"}`); code != http.StatusOK {
 		t.Fatalf("answer status %d", code)
+	}
+	if pending := run.snapshot()["pending_inline_client_tools"].([]map[string]string); len(pending) != 0 {
+		t.Fatalf("answered call still pending in recovery snapshot: %#v", pending)
 	}
 	if code := post(run.id, "call/scoped", `{"output":"pong"}`); code != http.StatusOK {
 		t.Fatalf("replay status %d", code)

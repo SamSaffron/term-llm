@@ -1749,6 +1749,15 @@ export class RunEngine {
         },
       };
       if (!this.supervisors.checkpoint(owner, transportGeneration, snapshotSequence)) return;
+      if (!terminal && !this.locallyStoppedResponses.has(responseId)) {
+        for (const call of listFrom(snapshot, 'pending_inline_client_tools')) {
+          this.clientTools.inlineRequested(sessionId, responseId, {
+            callId: String(call.call_id || ''),
+            name: String(call.name || ''),
+            arguments: String(call.arguments || '{}'),
+          });
+        }
+      }
       if (terminal) this.clearResponseTransport(sessionId, responseId);
       const recoveredClientIDs = new Set(
         projected

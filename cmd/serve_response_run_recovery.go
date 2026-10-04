@@ -294,6 +294,11 @@ func (r *responseRun) snapshot() map[string]any {
 		"run_epoch":            r.runEpoch,
 		"started_rev":          r.startedRev,
 	}
+	if r.status == "in_progress" && r.typedClientTools != nil {
+		// Recovery checkpoints past earlier SSE frames; include outstanding inline
+		// calls so the offering page can answer one missed during reconnection.
+		payload["pending_inline_client_tools"] = r.typedClientTools.pendingSnapshot()
+	}
 	if r.clientMessageID != "" {
 		payload["client_message_id"] = r.clientMessageID
 	}

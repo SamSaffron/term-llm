@@ -16,12 +16,14 @@ import (
 // Typed WebMCP calls belong to the response that offered them, not to a live
 // voice session. The response stream carries the request while an inline CLI
 // provider waits; the page posts its answer back to this response only.
-const typedClientToolTimeout = 60 * time.Second
+const typedClientToolTimeout = 120 * time.Second
 
 type typedClientToolAnswer struct {
-	output   string
-	done     chan struct{}
-	answered bool
+	name      string
+	arguments string
+	output    string
+	done      chan struct{}
+	answered  bool
 }
 
 type typedClientToolRunner struct {
@@ -43,7 +45,11 @@ func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call llm.Tool
 	if r.runtime != nil {
 		defer r.runtime.pauseForInteractiveWait()()
 	}
-	answer := &typedClientToolAnswer{done: make(chan struct{})}
+	args := string(call.Arguments)
+	if strings.TrimSpace(args) == "" {
+		args = "{}"
+	}
+	answer := &typedClientToolAnswer{name: call.Name, arguments: args, done: make(chan struct{})}
 	r.mu.Lock()
 	if r.pending == nil {
 		r.pending = make(map[string]*typedClientToolAnswer)
@@ -64,10 +70,6 @@ func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call llm.Tool
 	r.calls++
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.pending, call.ID); r.mu.Unlock() }()
-	args := string(call.Arguments)
-	if strings.TrimSpace(args) == "" {
-		args = "{}"
-	}
 	if err := r.run.appendEvent("response.client_tool.requested", map[string]any{"call_id": call.ID, "name": call.Name, "arguments": args}); err != nil {
 		return llm.ToolOutput{}, fmt.Errorf("request client tool: %w", err)
 	}
@@ -81,6 +83,18 @@ func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call llm.Tool
 	case <-ctx.Done():
 		return llm.ToolOutput{}, ctx.Err()
 	}
+}
+
+func (r *typedClientToolRunner) pendingSnapshot() []map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	calls := make([]map[string]string, 0, len(r.pending))
+	for callID, answer := range r.pending {
+		if !answer.answered {
+			calls = append(calls, map[string]string{"call_id": callID, "name": answer.name, "arguments": answer.arguments})
+		}
+	}
+	return calls
 }
 
 func (s *serveServer) typedClientToolRunner(runtime *serveRuntime, tools []llm.ToolSpec) func(string) llm.ClientToolRunner {

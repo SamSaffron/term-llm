@@ -171,6 +171,41 @@ describe('client tool continuation', () => {
     store.dispose();
   });
 
+  it('executes a missed inline request from the authoritative reconnect snapshot once', async () => {
+    const context = installDeviceTools(async () => 'pong after reconnect');
+    const store = await chatStore();
+    store.endpoints.createResponse = vi.fn(async () =>
+      sse('r1', [['response.created', { response: { id: 'r1', status: 'in_progress' } }]]),
+    );
+    store.endpoints.response = vi.fn(async () => ({
+      id: 'r1',
+      status: 'in_progress',
+      run_epoch: 1,
+      last_sequence_number: 2,
+      pending_inline_client_tools: [
+        { call_id: 'call_phone', name: 'webmcp__ping', arguments: '{"message":"hi"}' },
+      ],
+      recovery: { sequence_number: 2, messages: [] },
+    }));
+    store.endpoints.responseEvents = vi.fn(async () => new Promise<Response>(() => undefined));
+    store.endpoints.inlineClientToolResult = vi.fn(async () => undefined);
+    store.prompt.value = 'Ping my phone';
+    void store.send();
+    await vi.waitFor(() =>
+      expect(store.endpoints.response).toHaveBeenCalledWith('r1', expect.anything()),
+    );
+    await vi.waitFor(() =>
+      expect(store.endpoints.inlineClientToolResult).toHaveBeenCalledWith(
+        'r1',
+        'call_phone',
+        'pong after reconnect',
+      ),
+    );
+    expect(context.executeTool).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(store.endpoints.responseEvents).mock.calls[0]?.[1]).toBe(2);
+    store.dispose();
+  });
+
   it('runs the page tool the model called and continues with its result', async () => {
     const context = installDeviceTools(async (input) => `pong: ${input.message}`);
     const store = await chatStore();
