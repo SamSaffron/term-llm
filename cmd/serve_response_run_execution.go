@@ -33,6 +33,14 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 
 	defer s.bindResponseRunCallbacks(runCtx, runtime, run, runTimer)()
 
+	// Every execution path of this run, including a model swap, answers inline
+	// client tool calls with the same runner.
+	var clientToolRunner llm.ClientToolRunner
+	if options.clientToolRunner != nil {
+		clientToolRunner = options.clientToolRunner(respID)
+		runCtx = llm.ContextWithClientToolRunner(runCtx, clientToolRunner)
+	}
+
 	if options.modelSwap != nil && options.modelSwap.plan.enabled {
 		s.executeResponseRunModelSwap(runCtx, runtime, run, stateful, replaceHistory, inputMessages, llmReq, sessionID, respID, model, created, options)
 		return
@@ -51,6 +59,10 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 	for {
 		runtimeRunCtx := withServeRuntimeSetup(runCtx, options.runtimeSetup)
 		runtimeRunCtx = s.withLiveSettingsContext(runtimeRunCtx, options.live, sessionID)
+		if clientToolRunner != nil {
+			// A resume replaces runCtx, so the runner is reinstalled on it.
+			runtimeRunCtx = llm.ContextWithClientToolRunner(runtimeRunCtx, clientToolRunner)
+		}
 		result, err = runtime.RunWithEventsAndStart(runtimeRunCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
 			mgr.setActiveRun(sessionID, respID)
 		}, func(ev llm.Event) error {

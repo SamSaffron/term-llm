@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/live"
@@ -43,6 +44,10 @@ const (
 	// liveClientToolRoundLimit bounds consecutive page tool rounds in one
 	// delegation, as the web UI bounds them within one typed turn.
 	liveClientToolRoundLimit = 8
+	// liveClientToolInlineCallLimit bounds page tool calls one delegated run
+	// makes inside an inline tool loop, where each call is its own round. A
+	// passthrough round can batch several calls, so this allows more.
+	liveClientToolInlineCallLimit = 4 * liveClientToolRoundLimit
 	// liveClientToolRequestHistoryLimit bounds the answered rounds kept per call
 	// for idempotent replay, like liveClientDelegationHistoryLimit.
 	liveClientToolRequestHistoryLimit = 64
@@ -537,6 +542,34 @@ func pendingPageToolCalls(run *responseRun, names map[string]bool) []liveClientT
 // tool results that continue the turn. Progress shows the round as tools
 // running on the user's device, so a slow device reads as work, not silence.
 func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string, run *responseRun, calls []liveClientToolCall, progress *liveProgress) ([]llm.Message, error) {
+	var started time.Time
+	published := func() {
+		started = time.Now()
+		observePageTools(progress, "response.tool_exec.start", calls, map[string]any{"started_at": started.UnixMilli()})
+		progress.tick()
+	}
+	outputs, err := d.pageToolRound(ctx, sessionID, run.id, calls, progress, published)
+	// Only a round the client was asked to run is reported as having run.
+	if !started.IsZero() {
+		observePageTools(progress, "response.tool_exec.end", calls, map[string]any{
+			"success": err == nil, "duration_ms": time.Since(started).Milliseconds(),
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]llm.Message, len(calls))
+	for i, call := range calls {
+		messages[i] = llm.ToolResultMessage(call.CallID, call.Name, outputs[i], nil)
+	}
+	return messages, nil
+}
+
+// pageToolRound publishes one round of page tool calls and waits for the
+// client's outputs, one per call in call order. progress may be nil when the
+// run's own event stream already reports the round; published, if set, runs
+// once the round has been published.
+func (d *serveLiveDelegator) pageToolRound(ctx context.Context, sessionID, responseID string, calls []liveClientToolCall, progress *liveProgress, published func()) ([]string, error) {
 	if d.live == nil {
 		return nil, errors.New("the live call is unavailable")
 	}
@@ -545,30 +578,25 @@ func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string,
 	if limit <= 0 {
 		limit = liveClientDelegationTimeout
 	}
-	done, err := d.live.beginClientToolRequest(requestID, sessionID, run.id, calls, time.Now().Add(limit))
+	done, err := d.live.beginClientToolRequest(requestID, sessionID, responseID, calls, time.Now().Add(limit))
 	if err != nil {
 		return nil, err
 	}
-	started := time.Now()
-	observePageTools(progress, "response.tool_exec.start", calls, map[string]any{"started_at": started.UnixMilli()})
-	progress.tick()
+	if published != nil {
+		published()
+	}
 	waitErr := d.awaitPageTools(ctx, done, requestID, progress)
 	result, abandoned := d.live.finishClientToolRequest(requestID)
 	if result == nil && !abandoned {
 		d.live.cancelClientToolRequest(requestID)
 	}
-	observePageTools(progress, "response.tool_exec.end", calls, map[string]any{
-		"success": result != nil && result.Error == "", "duration_ms": time.Since(started).Milliseconds(),
-	})
 	switch {
 	case result != nil && result.Error != "":
 		return nil, errors.New(result.Error)
+	case result != nil && len(result.Outputs) == len(calls):
+		return result.Outputs, nil
 	case result != nil:
-		messages := make([]llm.Message, len(calls))
-		for i, call := range calls {
-			messages[i] = llm.ToolResultMessage(call.CallID, call.Name, result.Outputs[i], nil)
-		}
-		return messages, nil
+		return nil, errors.New("the device answered a different number of tool calls than it was asked")
 	case abandoned:
 		return nil, errors.New("the live call ended before the device ran its tools")
 	case waitErr != nil:
@@ -577,6 +605,78 @@ func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string,
 	// done only closes with a result or an abandonment recorded, so this is
 	// unreachable — but continuing here would answer the calls with nothing.
 	return nil, errors.New("the device tools ended without an answer")
+}
+
+// inlinePageTools answers page tool calls a provider makes inside its own tool
+// loop. Such a provider (claude-bin and the other CLI bridges) blocks on the
+// call instead of ending its turn on it, so the run never stops with the call
+// pending for streamDelegation to hand over. Each call becomes its own round,
+// run while the provider waits, and its output returns as the tool result. The
+// run's events already report the call, so no progress is fed.
+//
+// Unlike a passthrough round, a device failure or timeout does not end the
+// delegation: it becomes the call's tool error, which the model sees and can
+// recover from inside the turn it is still running.
+type inlinePageTools struct {
+	d         *serveLiveDelegator
+	runtime   *serveRuntime
+	sessionID string
+	names     map[string]bool
+	// turn admits one device round at a time. Parallel bridge calls would
+	// otherwise publish overlapping rounds that the page runs concurrently,
+	// where a passthrough turn sends them as one batch the page runs in order.
+	turn  chan struct{}
+	calls atomic.Int32
+}
+
+// inlinePageToolRun is the runner for one run, which names the response its
+// rounds continue.
+type inlinePageToolRun struct {
+	*inlinePageTools
+	responseID string
+}
+
+// inlinePageToolRunner returns the runner factory for one delegated run, or nil
+// when no page tools are declared. The state it shares — the round gate and the
+// call budget — spans every resume of the run.
+func (d *serveLiveDelegator) inlinePageToolRunner(runtime *serveRuntime, sessionID string, tools []json.RawMessage) func(responseID string) llm.ClientToolRunner {
+	names := liveClientToolNames(tools)
+	if len(names) == 0 {
+		return nil
+	}
+	shared := &inlinePageTools{d: d, runtime: runtime, sessionID: sessionID, names: names, turn: make(chan struct{}, 1)}
+	return func(responseID string) llm.ClientToolRunner {
+		return inlinePageToolRun{inlinePageTools: shared, responseID: responseID}
+	}
+}
+
+func (p *inlinePageTools) OwnsClientTool(name string) bool { return p.names[name] }
+
+func (r inlinePageToolRun) RunClientTool(ctx context.Context, call llm.ToolCall) (llm.ToolOutput, error) {
+	if r.calls.Add(1) > liveClientToolInlineCallLimit {
+		return llm.ToolOutput{}, fmt.Errorf("stopped after %d device tool calls", liveClientToolInlineCallLimit)
+	}
+	// The device's time is not the model's: like an approval wait, it does not
+	// count against the run's response timeout.
+	if r.runtime != nil {
+		defer r.runtime.pauseForInteractiveWait()()
+	}
+	select {
+	case r.turn <- struct{}{}:
+		defer func() { <-r.turn }()
+	case <-ctx.Done():
+		return llm.ToolOutput{}, ctx.Err()
+	}
+	arguments := string(call.Arguments)
+	if strings.TrimSpace(arguments) == "" {
+		arguments = "{}"
+	}
+	calls := []liveClientToolCall{{CallID: call.ID, Name: call.Name, Arguments: arguments}}
+	outputs, err := r.d.pageToolRound(ctx, r.sessionID, r.responseID, calls, nil, nil)
+	if err != nil {
+		return llm.ToolOutput{}, err
+	}
+	return llm.TextOutput(outputs[0]), nil
 }
 
 // observePageTools feeds progress the tool events a round would have had if the
@@ -617,7 +717,9 @@ func (d *serveLiveDelegator) awaitPageTools(ctx context.Context, done <-chan str
 		case <-resend.C:
 			d.live.resendClientToolRequest(requestID)
 		case <-tick.C:
-			progress.tick()
+			if progress != nil {
+				progress.tick()
+			}
 		case <-timeout.C:
 			return errors.New("the device did not run its tools in time")
 		case <-ctx.Done():

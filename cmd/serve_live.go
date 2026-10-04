@@ -1890,7 +1890,10 @@ func (d *serveLiveDelegator) previousResponseID(ctx context.Context, runtime *se
 func (d *serveLiveDelegator) startDelegatedRun(runtime *serveRuntime, sessionID, previousResponseID string, messages []llm.Message, tools []json.RawMessage, expectedLatest ...string) (*responseRun, error) {
 	s := d.server
 	req := s.buildResponsesLLMRequest(responsesCreateRequest{Model: runtime.defaultModel, Tools: tools}, runtime, sessionID, true)
-	options := startResponseRunOptions{previousResponseID: previousResponseID, uiSession: true, live: d.live}
+	options := startResponseRunOptions{
+		previousResponseID: previousResponseID, uiSession: true, live: d.live,
+		clientToolRunner: d.inlinePageToolRunner(runtime, sessionID, tools),
+	}
 	if len(expectedLatest) > 0 {
 		expected := expectedLatest[0]
 		options.admissionCheck = func() bool {

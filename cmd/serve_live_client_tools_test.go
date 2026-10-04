@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -382,6 +383,228 @@ func TestLiveDelegationRunsServerToolsThenPageToolsOverSeveralRounds(t *testing.
 	if got := len(requestedToolCalls(record)); got != 2 {
 		t.Fatalf("published rounds = %d, want 2", got)
 	}
+}
+
+// Inline-loop providers (claude-bin and the other CLI bridges) block on a page
+// tool call instead of ending their turn on it. The call is published to the
+// client while the provider waits, and the client's output answers it within
+// the same model turn.
+func TestLiveDelegationAnswersInlinePageToolCallsWithinTheTurn(t *testing.T) {
+	srv, record, provider, delegator := newPageToolDelegation(t, "inline-session", pageToolDefinition("webmcp__ping"))
+	provider.WithCapabilities(llm.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
+	provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_inline")}, InlineTools: true, InlineText: "The phone said pong."})
+
+	done, speech := runPageToolDelegation(context.Background(), delegator, "ping my phone")
+	requestID, calls := requestedCalls(t, waitForRequestedToolCalls(t, record, 1)[0])
+	if len(calls) != 1 || calls[0].CallID != "call_inline" || calls[0].Arguments != `{"message":"hi"}` {
+		t.Fatalf("published calls = %+v", calls)
+	}
+	if status, _ := postLiveToolResult(t, srv, record.id, requestID, `{"outputs":[{"call_id":"call_inline","output":"pong"}]}`); status != http.StatusOK {
+		t.Fatalf("result status = %d", status)
+	}
+	if err := waitForDelegationRun(t, done); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	result, ok := provider.InlineToolResult("call_inline")
+	if !ok || result.Err != nil || result.Result.Content != "pong" {
+		t.Fatalf("inline result = %+v (answered %v)", result, ok)
+	}
+	if !strings.Contains(speech.String(), "The phone said pong.") {
+		t.Fatalf("spoken answer = %q", speech.String())
+	}
+	if got := len(provider.RecordedRequests()); got != 1 {
+		t.Fatalf("model turns = %d, want 1", got)
+	}
+	if got := len(requestedToolCalls(record)); got != 1 {
+		t.Fatalf("published rounds = %d, want 1", got)
+	}
+}
+
+// A device failure inside an inline loop answers the call with a tool error the
+// model continues from, rather than ending the delegation as a passthrough
+// round does: the model is still mid-turn and can recover.
+func TestLiveDelegationInlinePageToolFailureIsAToolError(t *testing.T) {
+	srv, record, provider, delegator := newPageToolDelegation(t, "inline-error-session", pageToolDefinition("webmcp__ping"))
+	provider.WithCapabilities(llm.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
+	provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_inline")}, InlineTools: true, InlineText: "The phone refused."})
+
+	done, speech := runPageToolDelegation(context.Background(), delegator, "ping my phone")
+	requestID, _ := requestedCalls(t, waitForRequestedToolCalls(t, record, 1)[0])
+	if status, _ := postLiveToolResult(t, srv, record.id, requestID, `{"error":"Music access was denied."}`); status != http.StatusOK {
+		t.Fatalf("error result status = %d", status)
+	}
+	if err := waitForDelegationRun(t, done); err != nil {
+		t.Fatalf("Run = %v, want the turn to continue", err)
+	}
+	result, ok := provider.InlineToolResult("call_inline")
+	if !ok || result.Err == nil || !strings.Contains(result.Err.Error(), "Music access was denied.") {
+		t.Fatalf("inline result = %+v (answered %v)", result, ok)
+	}
+	if !strings.Contains(speech.String(), "The phone refused.") {
+		t.Fatalf("spoken answer = %q", speech.String())
+	}
+}
+
+// Parallel inline calls reach the page one round at a time, as a passthrough
+// batch is run in order, never as overlapping rounds.
+func TestLiveDelegationRunsParallelInlinePageToolsOneRoundAtATime(t *testing.T) {
+	srv, record, provider, delegator := newPageToolDelegation(t, "inline-parallel-session", pageToolDefinition("webmcp__ping"))
+	provider.WithCapabilities(llm.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
+	provider.AddTurn(llm.MockTurn{
+		ToolCalls:   []llm.ToolCall{pageToolCall("call_a"), pageToolCall("call_b")},
+		InlineTools: true, InlineParallel: true, InlineText: "Both answered.",
+	})
+
+	done, _ := runPageToolDelegation(context.Background(), delegator, "ping twice")
+	answered := map[string]string{}
+	for round := 1; round <= 2; round++ {
+		requestID, calls := requestedCalls(t, waitForRequestedToolCalls(t, record, round)[round-1])
+		if len(calls) != 1 {
+			t.Fatalf("round %d calls = %+v", round, calls)
+		}
+		if round == 1 {
+			// The other call waits for this round instead of being published
+			// alongside it.
+			time.Sleep(100 * time.Millisecond)
+			if got := len(requestedToolCalls(record)); got != 1 {
+				t.Fatalf("rounds published before the first was answered = %d, want 1", got)
+			}
+		}
+		output := "out_" + calls[0].CallID
+		answered[calls[0].CallID] = output
+		body := `{"outputs":[{"call_id":"` + calls[0].CallID + `","output":"` + output + `"}]}`
+		if status, _ := postLiveToolResult(t, srv, record.id, requestID, body); status != http.StatusOK {
+			t.Fatalf("round %d status = %d", round, status)
+		}
+	}
+	if err := waitForDelegationRun(t, done); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	for _, id := range []string{"call_a", "call_b"} {
+		result, ok := provider.InlineToolResult(id)
+		if !ok || result.Err != nil || result.Result.Content != answered[id] {
+			t.Fatalf("%s result = %+v (answered %v), want %q", id, result, ok, answered[id])
+		}
+	}
+}
+
+// inlineRunnerHarness drives the inline runner directly, with a response
+// timer that counts how often it is paused.
+type inlineRunnerHarness struct {
+	srv     *serveServer
+	record  *liveSession
+	factory func(string) llm.ClientToolRunner
+	paused  atomic.Int32
+}
+
+func newInlineRunnerHarness(t *testing.T, sessionID string) *inlineRunnerHarness {
+	t.Helper()
+	srv, record, _, delegator := newPageToolDelegation(t, sessionID, pageToolDefinition("webmcp__ping"))
+	runtime, _, err := srv.runtimeForRequest(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &inlineRunnerHarness{srv: srv, record: record}
+	runtime.approvalMu.Lock()
+	runtime.pauseResponseTimeout = func() func() {
+		h.paused.Add(1)
+		return func() { h.paused.Add(-1) }
+	}
+	runtime.approvalMu.Unlock()
+	h.factory = delegator.inlinePageToolRunner(runtime, sessionID, record.clientTools)
+	return h
+}
+
+type inlineRunnerResult struct {
+	output llm.ToolOutput
+	err    error
+}
+
+func (h *inlineRunnerHarness) run(ctx context.Context, runner llm.ClientToolRunner) chan inlineRunnerResult {
+	done := make(chan inlineRunnerResult, 1)
+	go func() {
+		output, err := runner.RunClientTool(ctx, pageToolCall("call_direct"))
+		done <- inlineRunnerResult{output: output, err: err}
+	}()
+	return done
+}
+
+func waitInlineRunner(t *testing.T, done chan inlineRunnerResult) inlineRunnerResult {
+	t.Helper()
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(10 * time.Second):
+		t.Fatal("the inline runner never returned")
+		return inlineRunnerResult{}
+	}
+}
+
+func TestInlinePageToolRunner(t *testing.T) {
+	t.Run("pauses the response timer while the device runs", func(t *testing.T) {
+		h := newInlineRunnerHarness(t, "inline-timer-session")
+		done := h.run(context.Background(), h.factory("resp_1"))
+		requestID, _ := requestedCalls(t, waitForRequestedToolCalls(t, h.record, 1)[0])
+		if got := h.paused.Load(); got != 1 {
+			t.Fatalf("timer pauses while waiting = %d, want 1", got)
+		}
+		if status, _ := postLiveToolResult(t, h.srv, h.record.id, requestID, `{"outputs":[{"call_id":"call_direct","output":"pong"}]}`); status != http.StatusOK {
+			t.Fatalf("result status = %d", status)
+		}
+		result := waitInlineRunner(t, done)
+		if result.err != nil || result.output.Content != "pong" {
+			t.Fatalf("result = %+v", result)
+		}
+		if got := h.paused.Load(); got != 0 {
+			t.Fatalf("timer pauses after = %d, want 0", got)
+		}
+	})
+
+	t.Run("stops past the call budget, which spans resumes", func(t *testing.T) {
+		h := newInlineRunnerHarness(t, "inline-limit-session")
+		first := h.factory("resp_1").(inlinePageToolRun)
+		first.calls.Store(liveClientToolInlineCallLimit)
+		// A resume builds a new runner for the run; it shares the budget.
+		result := waitInlineRunner(t, h.run(context.Background(), h.factory("resp_1")))
+		if result.err == nil || !strings.Contains(result.err.Error(), "device tool calls") {
+			t.Fatalf("result = %+v, want the call limit", result)
+		}
+		if got := len(requestedToolCalls(h.record)); got != 0 {
+			t.Fatalf("published rounds past the limit = %d", got)
+		}
+	})
+
+	t.Run("fails when the live call ends mid-wait", func(t *testing.T) {
+		h := newInlineRunnerHarness(t, "inline-ended-session")
+		done := h.run(context.Background(), h.factory("resp_1"))
+		waitForRequestedToolCalls(t, h.record, 1)
+		h.record.mu.Lock()
+		h.record.abandonClientWaitersLocked()
+		h.record.mu.Unlock()
+		if result := waitInlineRunner(t, done); result.err == nil || !strings.Contains(result.err.Error(), "live call ended") {
+			t.Fatalf("result = %+v, want the call to have ended", result)
+		}
+	})
+
+	t.Run("cancellation tells the page to stop", func(t *testing.T) {
+		h := newInlineRunnerHarness(t, "inline-cancel-session")
+		ctx, cancel := context.WithCancel(context.Background())
+		done := h.run(ctx, h.factory("resp_1"))
+		requestID, _ := requestedCalls(t, waitForRequestedToolCalls(t, h.record, 1)[0])
+		cancel()
+		if result := waitInlineRunner(t, done); !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("result = %+v, want cancellation", result)
+		}
+		cancelled := slices.ContainsFunc(liveEventSnapshot(h.record), func(event liveSessionEvent) bool {
+			return event.Type == liveEventToolCallsCancelled && event.Data["request_id"] == requestID
+		})
+		if !cancelled {
+			t.Fatal("cancellation did not tell the page to stop the round")
+		}
+		if got := h.paused.Load(); got != 0 {
+			t.Fatalf("timer pauses after cancellation = %d, want 0", got)
+		}
+	})
 }
 
 // Without declared page tools a delegated turn is exactly what it was: nothing

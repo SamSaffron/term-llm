@@ -205,9 +205,12 @@ type startResponseRunOptions struct {
 	onRuntimeDone              func() // detach borrowed runtime before executor-owned close
 	onAdmissionDone            func() // release request preparation before streaming events
 	runtimeSetup               func(*llm.Request) error
-	parentContext              context.Context
-	onEvent                    func(llm.Event) error
-	onResult                   func(serveRunResult, error)
+	// clientToolRunner answers inline calls to declared client tools for the
+	// run with the given response id; see llm.ClientToolRunner.
+	clientToolRunner func(responseID string) llm.ClientToolRunner
+	parentContext    context.Context
+	onEvent          func(llm.Event) error
+	onResult         func(serveRunResult, error)
 }
 
 type responseRunContextKey struct{}

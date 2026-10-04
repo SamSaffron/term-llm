@@ -16,6 +16,14 @@ type MockTurn struct {
 	Usage     Usage         // Token usage to report
 	Delay     time.Duration // Optional delay before responding (for timeout tests)
 	Error     error         // Return this error instead of responding
+	// InlineTools emits ToolCalls the way inline-loop bridges (claude-bin) do:
+	// each call carries a ToolResponse channel and the turn waits for its
+	// result before continuing. InlineText is emitted after every result.
+	InlineTools bool
+	InlineText  string
+	// InlineParallel sends every inline call before waiting for any result,
+	// as a bridge does when the model issues parallel tool calls.
+	InlineParallel bool
 }
 
 // MockProvider is a configurable provider for testing.
@@ -27,6 +35,8 @@ type MockProvider struct {
 	turnIndex    int
 	Requests     []Request // Recorded requests for verification
 	mu           sync.Mutex
+	// inlineResults records results inline tool calls received, by call ID.
+	inlineResults map[string]ToolExecutionResponse
 }
 
 // NewMockProvider creates a new mock provider with the given name.
@@ -98,12 +108,21 @@ func (m *MockProvider) RecordedRequests() []Request {
 	return append([]Request(nil), m.Requests...)
 }
 
+// InlineToolResult returns the result an inline tool call received.
+func (m *MockProvider) InlineToolResult(callID string) (ToolExecutionResponse, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result, ok := m.inlineResults[callID]
+	return result, ok
+}
+
 // Reset clears recorded requests and resets the turn index.
 func (m *MockProvider) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.turnIndex = 0
 	m.Requests = nil
+	m.inlineResults = nil
 }
 
 // ResetTurns clears the scripted turns and resets the turn index.
@@ -112,6 +131,7 @@ func (m *MockProvider) ResetTurns() {
 	defer m.mu.Unlock()
 	m.turnIndex = 0
 	m.turns = nil
+	m.inlineResults = nil
 }
 
 // TurnCount returns the number of scripted turns.
@@ -166,6 +186,13 @@ func (m *MockProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 			}
 		}
 
+		if turn.InlineTools {
+			if err := m.emitInlineToolCalls(ctx, send, turn); err != nil {
+				return err
+			}
+			return send.Send(Event{Type: EventUsage, Use: &turn.Usage})
+		}
+
 		// Emit tool calls
 		for i := range turn.ToolCalls {
 			if err := send.Send(Event{Type: EventToolCall, Tool: &turn.ToolCalls[i]}); err != nil {
@@ -176,6 +203,51 @@ func (m *MockProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 		// Emit usage
 		return send.Send(Event{Type: EventUsage, Use: &turn.Usage})
 	}), nil
+}
+
+// emitInlineToolCalls sends each call with a response channel, waits for its
+// result, records it, and then emits the turn's InlineText. With
+// InlineParallel every call is sent before any result is awaited.
+func (m *MockProvider) emitInlineToolCalls(ctx context.Context, send eventSender, turn MockTurn) error {
+	responses := make([]chan ToolExecutionResponse, len(turn.ToolCalls))
+	for i := range turn.ToolCalls {
+		call := turn.ToolCalls[i]
+		responses[i] = make(chan ToolExecutionResponse, 1)
+		if err := send.Send(Event{Type: EventToolCall, ToolCallID: call.ID, ToolName: call.Name, Tool: &call, ToolResponse: responses[i]}); err != nil {
+			return err
+		}
+		if !turn.InlineParallel {
+			if err := m.awaitInlineResult(ctx, call.ID, responses[i]); err != nil {
+				return err
+			}
+		}
+	}
+	if turn.InlineParallel {
+		for i, call := range turn.ToolCalls {
+			if err := m.awaitInlineResult(ctx, call.ID, responses[i]); err != nil {
+				return err
+			}
+		}
+	}
+	if turn.InlineText == "" {
+		return nil
+	}
+	return send.Send(Event{Type: EventTextDelta, Text: turn.InlineText})
+}
+
+func (m *MockProvider) awaitInlineResult(ctx context.Context, callID string, response <-chan ToolExecutionResponse) error {
+	select {
+	case result := <-response:
+		m.mu.Lock()
+		if m.inlineResults == nil {
+			m.inlineResults = make(map[string]ToolExecutionResponse)
+		}
+		m.inlineResults[callID] = result
+		m.mu.Unlock()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // chunkText splits text into chunks of approximately the given size.

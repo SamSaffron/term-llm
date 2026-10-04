@@ -2689,6 +2689,7 @@ func restoreToolDiscoveryReplay(messages []Message, replay []Part) []Message {
 }
 
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (returnErr error) {
+	ctx = scopeClientToolRunner(ctx, req.Tools)
 	syncBridgeCtx, cancelSyncBridges := context.WithCancel(ctx)
 	defer cancelSyncBridges()
 	task := restart.CurrentTask(ctx)
@@ -3252,22 +3253,18 @@ func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call ToolCall
 			sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: true})
 			return toolCallOutcome{call: call, output: output}
 		}
-		errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
-		DebugToolResult(debug, call.ID, call.Name, errMsg)
-		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
-		return toolCallOutcome{call: call, err: fmt.Errorf("tool not registered: %s", call.Name)}
-	}
-
-	// Check ordinary execution policy first. A planner may separately authorise
-	// only its exact control tool for this active run; this does not change the
-	// public IsToolAllowed result or grant authority to any self-asserted tool.
-	allowed := e.IsToolAllowed(call.Name)
-	if !allowed {
-		if planner := e.currentToolPlanner(); planner != nil {
-			allowed = planner.AllowsPlannerTool(ToolRunIDFromContext(ctx), call.Name)
+		// A declared client tool answered while an inline provider waits (see
+		// ClientToolRunner) runs like a registered tool, minus the allow-list:
+		// passthrough never applied it, as the client runs its own tools.
+		if tool = clientTool(ctx, call.Name); tool == nil {
+			errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
+			DebugToolResult(debug, call.ID, call.Name, errMsg)
+			sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
+			return toolCallOutcome{call: call, err: fmt.Errorf("tool not registered: %s", call.Name)}
 		}
 	}
-	if !allowed {
+
+	if ok && !e.toolCallAllowed(ctx, call.Name) {
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
@@ -3322,6 +3319,18 @@ func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call ToolCall
 		ToolMedia:                  append([]MediaArtifact(nil), output.Media...),
 	})
 	return toolCallOutcome{call: call, output: output}
+}
+
+// toolCallAllowed applies ordinary execution policy. A planner may separately
+// authorise only its exact control tool for this active run; this does not
+// change the public IsToolAllowed result or grant authority to any
+// self-asserted tool.
+func (e *Engine) toolCallAllowed(ctx context.Context, name string) bool {
+	if e.IsToolAllowed(name) {
+		return true
+	}
+	planner := e.currentToolPlanner()
+	return planner != nil && planner.AllowsPlannerTool(ToolRunIDFromContext(ctx), name)
 }
 
 func (e *Engine) withToolPreview(calls []ToolCall) []ToolCall {
