@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -332,17 +333,33 @@ func (s *serveServer) discardPendingSteeringForResponseRun(run *responseRun) {
 func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request) {
 	mgr := s.ensureResponseRuns()
 
-	path := strings.TrimPrefix(r.URL.Path, "/v1/responses/")
+	// Split the escaped path so provider call IDs containing '/' stay one
+	// component (the page encodes IDs when posting tool results).
+	path := strings.TrimPrefix(r.URL.EscapedPath(), "/v1/responses/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
 		http.NotFound(w, r)
 		return
 	}
 
-	runID := parts[0]
+	runID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	run, ok := mgr.get(runID)
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "response not found")
+		return
+	}
+
+	if len(parts) == 4 && parts[1] == "client_tool_calls" && parts[3] == "result" {
+		callID, err := url.PathUnescape(parts[2])
+		if err != nil || callID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		s.handleTypedClientToolResult(w, r, run, callID)
 		return
 	}
 

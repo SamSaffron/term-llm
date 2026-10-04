@@ -248,6 +248,17 @@ describe('live voice endpoints', () => {
       { policy: 'mutation', auth: 'session', retries: 0 },
     );
 
+    await routes.inlineClientToolResult('resp/one', 'call/phone', 'pong');
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/responses/resp%2Fone/client_tool_calls/call%2Fphone/result',
+      {
+        method: 'POST',
+        headers: { 'Idempotency-Key': 'client_tool_resp%2Fone_call%2Fphone' },
+        body: JSON.stringify({ output: 'pong' }),
+      },
+      { policy: 'idempotent-mutation', auth: 'session', retries: 2 },
+    );
+
     await routes.liveText('live/one', 'hello');
     expect(json).toHaveBeenLastCalledWith(
       '/v1/live/sessions/live%2Fone/text',

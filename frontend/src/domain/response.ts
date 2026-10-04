@@ -968,6 +968,7 @@ export const RESPONSE_EVENT_TYPES = [
   'response.output_item.added',
   'response.function_call_arguments.delta',
   'response.output_item.done',
+  'response.client_tool.requested',
   'response.tool_exec.start',
   'response.tool_exec.progress',
   'response.tool_exec.end',

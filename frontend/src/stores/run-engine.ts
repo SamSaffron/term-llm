@@ -210,6 +210,8 @@ export class RunEngine {
         this.prepareToolContinuation(sessionId, responseId),
       continueWith: (sessionId, responseId, outputs) =>
         this.continueWithToolOutputs(sessionId, responseId, outputs),
+      sendInline: (responseId, callId, output) =>
+        services.endpoints.inlineClientToolResult(responseId, callId, output),
       toast: (message) => services.toast(message, 'error'),
     });
     // The finished response's client tools are still running in this page.
@@ -1125,6 +1127,13 @@ export class RunEngine {
       throw error;
     }
     if (owner) this.supervisors.advance(owner, Number(event.sequence_number));
+    if (event.type === 'response.client_tool.requested') {
+      this.clientTools.inlineRequested(sessionId, current.run.responseId, {
+        callId: String(event.call_id || ''),
+        name: String(event.name || ''),
+        arguments: String(event.arguments || '{}'),
+      });
+    }
     const response = recordValue(event.response) || {};
     const runtimePatch: Partial<Session> = {};
     if (event.type === 'response.created' || event.type === 'response.completed') {
@@ -1740,6 +1749,15 @@ export class RunEngine {
         },
       };
       if (!this.supervisors.checkpoint(owner, transportGeneration, snapshotSequence)) return;
+      if (!terminal && !this.locallyStoppedResponses.has(responseId)) {
+        for (const call of listFrom(snapshot, 'pending_inline_client_tools')) {
+          this.clientTools.inlineRequested(sessionId, responseId, {
+            callId: String(call.call_id || ''),
+            name: String(call.name || ''),
+            arguments: String(call.arguments || '{}'),
+          });
+        }
+      }
       if (terminal) this.clearResponseTransport(sessionId, responseId);
       const recoveredClientIDs = new Set(
         projected

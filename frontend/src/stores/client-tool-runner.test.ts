@@ -35,10 +35,15 @@ const finished = (
 function setup(run: ClientToolBridge['run'] = async () => ({ ok: true, output: 'pong' })) {
   const runs = signal<Record<string, ResponseProjection>>({});
   const host = {
-    bridge: { definitions: () => [], provider: () => 'iPhone', run: vi.fn(run) },
+    bridge: {
+      definitions: (): ReturnType<ClientToolBridge['definitions']> => [],
+      provider: () => 'iPhone',
+      run: vi.fn(run),
+    },
     runs,
     prepareContinuation: vi.fn(async (_sessionId: string, _responseId: string) => true),
     continueWith: vi.fn(async () => undefined),
+    sendInline: vi.fn(async () => undefined),
     toast: vi.fn(),
   };
   const runner = new ClientToolRunner(host);
@@ -50,6 +55,114 @@ function setup(run: ClientToolBridge['run'] = async () => ({ ok: true, output: '
 }
 
 describe('ClientToolRunner', () => {
+  it('answers parallel inline calls by their individual IDs', async () => {
+    const { host, runner } = setup(async (call) => ({ ok: true, output: `pong ${call.callId}` }));
+    host.bridge.definitions = () => [
+      {
+        type: 'function',
+        name: 'webmcp__ping',
+        description: 'ping',
+        parameters: { type: 'object' },
+      },
+    ];
+    runner.recordOffer('r1');
+    for (const callId of ['first', 'second'])
+      runner.inlineRequested('s1', 'r1', { callId, name: 'webmcp__ping', arguments: '{}' });
+    await vi.waitFor(() => expect(host.sendInline).toHaveBeenCalledTimes(2));
+    expect(host.sendInline).toHaveBeenCalledWith('r1', 'first', 'pong first');
+    expect(host.sendInline).toHaveBeenCalledWith('r1', 'second', 'pong second');
+    expect(host.bridge.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops an in-flight inline phone tool without posting a late result', async () => {
+    let signal: AbortSignal | undefined;
+    const { host, runner } = setup(
+      (_call, received) =>
+        new Promise((resolve) => {
+          signal = received;
+          received.addEventListener('abort', () =>
+            resolve({ ok: false, output: 'Error: stopped' }),
+          );
+        }),
+    );
+    host.bridge.definitions = () => [
+      {
+        type: 'function',
+        name: 'webmcp__ping',
+        description: 'ping',
+        parameters: { type: 'object' },
+      },
+    ];
+    runner.recordOffer('r1');
+    runner.inlineRequested('s1', 'r1', { callId: 'c1', name: 'webmcp__ping', arguments: '{}' });
+    await vi.waitFor(() => expect(host.bridge.run).toHaveBeenCalledTimes(1));
+    runner.stop('s1');
+    expect(signal?.aborted).toBe(true);
+    await Promise.resolve();
+    expect(host.sendInline).not.toHaveBeenCalled();
+  });
+
+  it('sends an inline tool failure as a result, not a new response', async () => {
+    const { host, runner } = setup(async () => ({
+      ok: false,
+      output: 'Error: device refused access',
+    }));
+    host.bridge.definitions = () => [
+      {
+        type: 'function',
+        name: 'webmcp__ping',
+        description: 'ping',
+        parameters: { type: 'object' },
+      },
+    ];
+    runner.recordOffer('r1');
+    runner.inlineRequested('s1', 'r1', { callId: 'c1', name: 'webmcp__ping', arguments: '{}' });
+    await vi.waitFor(() =>
+      expect(host.sendInline).toHaveBeenCalledWith('r1', 'c1', 'Error: device refused access'),
+    );
+    expect(host.continueWith).not.toHaveBeenCalled();
+  });
+
+  it('delivers typed inline phone results before the response completes and deduplicates replay', async () => {
+    const { host, runner } = setup();
+    host.bridge.definitions = () => [
+      {
+        type: 'function',
+        name: 'webmcp__ping',
+        description: 'ping',
+        parameters: { type: 'object' },
+      },
+    ];
+    runner.recordOffer('r1');
+    const call = { callId: 'call_phone', name: 'webmcp__ping', arguments: '{"message":"hello"}' };
+    runner.inlineRequested('s1', 'r1', call);
+    runner.inlineRequested('s1', 'r1', call);
+    await vi.waitFor(() =>
+      expect(host.sendInline).toHaveBeenCalledWith('r1', 'call_phone', 'pong'),
+    );
+    expect(host.bridge.run).toHaveBeenCalledTimes(1);
+    expect(host.continueWith).not.toHaveBeenCalled();
+    runner.finished('s1', finished('r1', 'completed', []));
+  });
+
+  it('does not execute an unoffered or disabled inline tool and aborts on stop', async () => {
+    const { host, runner } = setup();
+    const call = { callId: 'call_phone', name: 'webmcp__ping', arguments: '{}' };
+    runner.inlineRequested('s1', 'r1', call);
+    expect(host.bridge.run).not.toHaveBeenCalled();
+    runner.recordOffer('r1');
+    runner.inlineRequested('s1', 'r1', call);
+    await vi.waitFor(() =>
+      expect(host.sendInline).toHaveBeenCalledWith(
+        'r1',
+        'call_phone',
+        expect.stringContaining('not available'),
+      ),
+    );
+    expect(host.bridge.run).not.toHaveBeenCalled();
+    runner.stop('s1');
+  });
+
   it('runs the calls of responses it offered tools on, then continues', async () => {
     const { host, runner, complete, runs } = setup();
     runner.recordOffer('r1');

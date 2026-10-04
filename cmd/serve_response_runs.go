@@ -109,6 +109,7 @@ type responseRunResolvedInteraction struct {
 }
 
 type responseRun struct {
+	typedClientTools        *typedClientToolRunner
 	reloadContinuation      *webRunContinuation
 	settled                 chan struct{}
 	rushStateful            bool

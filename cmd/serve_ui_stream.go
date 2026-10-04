@@ -27,6 +27,7 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 	}
 
 	s.streamResponseRun(r.Context(), w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
+		clientToolRunner:           s.typedClientToolRunner(runtime, llmReq.Tools),
 		previousResponseID:         previousResponseID,
 		uiSession:                  true,
 		resetResponseIDsOnSuccess:  resetResponseIDsOnSuccess,
