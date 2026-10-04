@@ -27,6 +27,7 @@ type webRunContinuation struct {
 	Provider        string
 	Stateful        bool
 	UI              bool
+	ClientTools     bool
 	Notification    string
 	View            webRunView
 	Boundary        runboundary.Snapshot
@@ -111,7 +112,7 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *ll
 	if run.persistence.failed || run.persistence.inflight != 0 {
 		return nil, errors.New("response persistence is not settled for reload")
 	}
-	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, Notification: options.notificationSubscriptionID,
+	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil, Notification: options.notificationSubscriptionID,
 		Ledger: webLedgerView{run.persistence.maxRev, run.persistence.outputKeys, run.persistence.nextOutputID},
 		Stream: webStreamView{stream.outputIndex, stream.toolsSeen, stream.assistantBoundaryPending, stream.assistantSegmentOrdinal, stream.model, stream.reasoningEffort, stream.reasoningEffortSet, stream.toolStartedAt},
 		View: webRunView{
@@ -292,7 +293,11 @@ func (s *serveServer) resumeWebRun(saved *webRunContinuation, owner string) erro
 	rt.cumulativeUsage = saved.CumulativeUsage
 	request := saved.Engine.Request
 	request.Resume = saved.Engine
-	_, err = s.startResponseRun(rt, saved.Stateful, false, nil, request, saved.View.SessionID, startResponseRunOptions{resume: saved, uiSession: saved.UI, notificationSubscriptionID: saved.Notification, previousResponseID: saved.View.PreviousResponseID})
+	options := startResponseRunOptions{resume: saved, uiSession: saved.UI, notificationSubscriptionID: saved.Notification, previousResponseID: saved.View.PreviousResponseID}
+	if saved.ClientTools {
+		options.clientToolRunner = s.typedClientToolRunner(rt, request.Tools)
+	}
+	_, err = s.startResponseRun(rt, saved.Stateful, false, nil, request, saved.View.SessionID, options)
 	if err != nil && !saved.Stateful {
 		rt.Close()
 	}

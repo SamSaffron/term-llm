@@ -869,7 +869,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		if rr.uiStream && stateful {
 			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone, releaseAdmission)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone, releaseAdmission)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, rr.firstParty, claimsDone, releaseAdmission)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -1086,8 +1086,13 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone, onAdmissionDone func()) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, firstParty bool, onDone, onAdmissionDone func()) bool {
+	var runner func(string) llm.ClientToolRunner
+	if firstParty {
+		runner = s.typedClientToolRunner(runtime, llmReq.Tools)
+	}
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
+		clientToolRunner:           runner,
 		previousResponseID:         previousResponseID,
 		resetResponseIDsOnSuccess:  resetResponseIDsOnSuccess,
 		modelSwap:                  modelSwap,

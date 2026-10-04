@@ -1,5 +1,6 @@
 import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import {
+  isClientToolName,
   patchToolCalls,
   pendingClientCalls,
   toolOutputItem,
@@ -39,6 +40,7 @@ export interface ClientToolRunnerHost {
     responseId: string,
     outputs: ClientToolOutputItem[],
   ) => Promise<void>;
+  sendInline: (responseId: string, callId: string, output: string) => Promise<void>;
   toast: (message: string) => void;
 }
 
@@ -53,6 +55,10 @@ export class ClientToolRunner {
   /** Responses this tab created while offering tools; only this tab runs them. */
   private readonly offered = new Set<string>();
   private readonly rounds = new Map<string, number>();
+  private readonly inline = new Map<
+    string,
+    { sessionId: string; controller: AbortController; output?: string }
+  >();
   private disposed = false;
 
   constructor(private readonly host: ClientToolRunnerHost) {}
@@ -74,14 +80,92 @@ export class ClientToolRunner {
 
   /** Abandons the tools running for `sessionId`. Returns whether any were. */
   stop(sessionId: string): boolean {
+    for (const [key, entry] of this.inline) {
+      if (entry.sessionId === sessionId) {
+        entry.controller.abort();
+        this.inline.delete(key);
+      }
+    }
     const controller = this.running.peek()[sessionId];
     controller?.abort(new Error('Stopped by the user'));
     return Boolean(controller);
   }
 
+  /** Executes an inline CLI bridge call while the response remains open. Replayed
+   * SSE frames retry delivery but must never run a device tool twice. */
+  inlineRequested(
+    sessionId: string,
+    responseId: string,
+    call: { callId: string; name: string; arguments: string },
+  ): void {
+    if (
+      this.disposed ||
+      !this.offered.has(responseId) ||
+      !call.callId ||
+      !isClientToolName(call.name)
+    )
+      return;
+    const key = `${responseId}:${call.callId}`;
+    const previous = this.inline.get(key);
+    if (previous) {
+      if (previous.output !== undefined)
+        void this.sendInline(responseId, call.callId, previous.output, previous.controller.signal);
+      return;
+    }
+    const controller = new AbortController();
+    const entry = { sessionId, controller, output: undefined as string | undefined };
+    this.inline.set(key, entry);
+    void (async () => {
+      let output: string;
+      if (!this.host.bridge.definitions(sessionId).some((tool) => tool.name === call.name)) {
+        output = `Error: ${call.name} is not available in this conversation`;
+      } else {
+        try {
+          const result = await this.host.bridge.run(
+            {
+              callId: call.callId,
+              name: call.name.slice('webmcp__'.length),
+              arguments: call.arguments || '{}',
+            },
+            controller.signal,
+          );
+          output = result.output;
+        } catch (error) {
+          output = `Error: ${errorMessage(error)}`;
+        }
+      }
+      if (controller.signal.aborted || this.disposed) return;
+      entry.output = output;
+      await this.sendInline(responseId, call.callId, output, controller.signal);
+    })();
+  }
+
+  private async sendInline(
+    responseId: string,
+    callId: string,
+    output: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (signal.aborted || this.disposed) return;
+    try {
+      await this.host.sendInline(responseId, callId, output);
+    } catch (error) {
+      if (!signal.aborted)
+        this.host.toast(
+          `Could not send the ${this.host.bridge.provider()} tool result: ${errorMessage(error)}`,
+        );
+    }
+  }
+
   /** A response ended. If it stopped on calls this page offered, run them. */
   finished(sessionId: string, projection: ResponseProjection): void {
     const { responseId, status } = projection.run;
+    for (const [key, entry] of this.inline) {
+      if (key.startsWith(`${responseId}:`)) {
+        entry.controller.abort();
+        this.inline.delete(key);
+      }
+    }
     if (!this.offered.delete(responseId) || status !== 'completed' || this.disposed) return;
     // One continuation per conversation at a time.
     if (this.running.peek()[sessionId]) return;
@@ -98,6 +182,8 @@ export class ClientToolRunner {
     this.disposed = true;
     for (const controller of Object.values(this.running.peek()))
       controller.abort(new Error('The chat was closed'));
+    for (const entry of this.inline.values()) entry.controller.abort();
+    this.inline.clear();
     this.running.value = {};
     this.offered.clear();
   }

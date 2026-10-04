@@ -108,6 +108,69 @@ afterEach(() => {
 });
 
 describe('client tool continuation', () => {
+  it('runs an inline native tool while the ordinary typed response is still open', async () => {
+    const context = installDeviceTools(async (input) => `pong: ${input.message}`);
+    const store = await chatStore();
+    const encode = new TextEncoder();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const frame = (type: string, sequence: number, data: Record<string, unknown>) =>
+      encode.encode(
+        `event: ${type}\ndata: ${JSON.stringify({ response_id: 'r1', run_epoch: 1, sequence_number: sequence, ...data })}\n\n`,
+      );
+    store.endpoints.createResponse = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              stream = controller;
+              controller.enqueue(
+                frame('response.created', 1, { response: { id: 'r1', status: 'in_progress' } }),
+              );
+              controller.enqueue(
+                frame('response.client_tool.requested', 2, {
+                  call_id: 'call_phone',
+                  name: 'webmcp__ping',
+                  arguments: '{"message":"hi"}',
+                }),
+              );
+              controller.enqueue(
+                frame('response.client_tool.requested', 3, {
+                  call_id: 'call_phone',
+                  name: 'webmcp__ping',
+                  arguments: '{"message":"hi"}',
+                }),
+              );
+            },
+          }),
+          { headers: { 'x-response-id': 'r1', 'x-session-id': 's1' } },
+        ),
+    );
+    store.endpoints.inlineClientToolResult = vi.fn(async () => {
+      stream.enqueue(
+        frame('response.completed', 4, {
+          response: { id: 'r1', status: 'completed' },
+          final_rev: 1,
+        }),
+      );
+      stream.enqueue(encode.encode('data: [DONE]\n\n'));
+      stream.close();
+      return undefined;
+    });
+    store.prompt.value = 'Ping my phone';
+    await store.send();
+    await vi.waitFor(() =>
+      expect(store.endpoints.inlineClientToolResult).toHaveBeenCalledWith(
+        'r1',
+        'call_phone',
+        'pong: hi',
+      ),
+    );
+    expect(context.executeTool).toHaveBeenCalledTimes(1);
+    expect(store.endpoints.createResponse).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(store.runs.value.s1.run.status).toBe('completed'));
+    store.dispose();
+  });
+
   it('runs the page tool the model called and continues with its result', async () => {
     const context = installDeviceTools(async (input) => `pong: ${input.message}`);
     const store = await chatStore();

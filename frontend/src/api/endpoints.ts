@@ -488,6 +488,18 @@ export const endpoints = (api: APIClient) => ({
       { policy: 'safe-read', retries: 0, timeoutMs: 35_000, auth: 'session' },
     );
   },
+  inlineClientToolResult: (id: string, callId: string, output: string) =>
+    api
+      .json<{ ok: true }>(
+        `/v1/responses/${encoded(id)}/client_tool_calls/${encoded(callId)}/result`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': `client_tool_${encoded(id)}_${encoded(callId)}` },
+          body: JSON.stringify({ output }),
+        },
+        { policy: 'idempotent-mutation', auth: 'session', retries: 2 },
+      )
+      .then(() => undefined),
   cancelResponse: (id: string) =>
     api.post<Record<string, unknown>>(
       `/v1/responses/${encoded(id)}/cancel`,
