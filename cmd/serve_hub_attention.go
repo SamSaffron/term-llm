@@ -28,6 +28,9 @@ const (
 
 var errHubAttentionSnapshotChanged = errors.New("attention snapshot changed during pagination")
 
+// Superseded local collections are retried, but must not degrade node health.
+var errHubAttentionAcknowledged = fmt.Errorf("%w: acknowledged during collection", errHubAttentionSnapshotChanged)
+
 type hubAttentionDiagnostics struct {
 	CollectorSuccesses atomic.Uint64
 	CollectorFailures  atomic.Uint64
@@ -193,7 +196,7 @@ func (s *hubServer) collectAttention(ctx context.Context) int {
 			s.attentionDiagnostics.CollectorLatencyMS.Add(uint64(max(time.Since(started).Milliseconds(), 0)))
 			if err == nil {
 				s.attentionDiagnostics.CollectorSuccesses.Add(1)
-			} else if !errors.Is(err, context.Canceled) {
+			} else if !errors.Is(err, context.Canceled) && !errors.Is(err, errHubAttentionAcknowledged) {
 				s.attentionDiagnostics.CollectorFailures.Add(1)
 				failureMu.Lock()
 				failures++
@@ -232,6 +235,9 @@ func (s *hubServer) collectNodeAttention(ctx context.Context, node hub.Node) err
 }
 
 func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node) error {
+	s.attentionMu.Lock()
+	generation := s.attentionGeneration
+	s.attentionMu.Unlock()
 	previous, previousErr := s.attentionStore.GetSync(ctx, node.ID)
 	etag := ""
 	if previousErr == nil {
@@ -311,6 +317,13 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 	}
 	if storeID == "" {
 		return errors.New("attention endpoint returned no snapshot identity")
+	}
+	// A clear may have acknowledged rows after this fetch began. Retry rather
+	// than reinstalling its older snapshot. Never hold the mutex over node I/O.
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if generation != s.attentionGeneration {
+		return errHubAttentionAcknowledged
 	}
 	return s.attentionStore.ReplaceNode(ctx, node.ID, storeID, responseETag, activities)
 }

@@ -3,7 +3,9 @@ package hub
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -119,5 +121,62 @@ func TestAttentionProjectionCapabilityLostKeepsRows(t *testing.T) {
 	}
 	if len(activities) != 1 || len(syncs) != 1 || syncs[0].Capability != AttentionLost {
 		t.Fatalf("lost capability state = %+v %+v", activities, syncs)
+	}
+}
+
+// TestAttentionProjectionRemoveSeenScopesByStoreSequenceAndKind pins the bulk
+// clear's cache semantics: acknowledging one registration of a store removes
+// that store's acknowledged rows everywhere, while newer completions, other
+// sessions, other kinds, and other stores survive.
+func TestAttentionProjectionRemoveSeenScopesByStoreSequenceAndKind(t *testing.T) {
+	store, err := OpenAttentionProjectionStore(filepath.Join(t.TempDir(), "attention.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.ReplaceNode(ctx, "node-a", "store-a", "", []SessionActivity{
+		{SessionID: "sess", Kind: "terminal_unseen", AttentionSeq: 5},
+		{SessionID: "sess", Kind: "input_required", PendingInteractionCount: 1},
+		{SessionID: "other", Kind: "terminal_unseen", AttentionSeq: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A second registration cached the same sequence; a third cached a newer
+	// completion of the same session; a fourth watches another store.
+	if err := store.ReplaceNode(ctx, "node-b", "store-a", "", []SessionActivity{{SessionID: "sess", Kind: "terminal_unseen", AttentionSeq: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceNode(ctx, "node-c", "store-a", "", []SessionActivity{{SessionID: "sess", Kind: "terminal_unseen", AttentionSeq: 9}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceNode(ctx, "node-d", "store-b", "", []SessionActivity{{SessionID: "sess", Kind: "terminal_unseen", AttentionSeq: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveSeen(ctx, "store-a", "sess", 5); err != nil {
+		t.Fatal(err)
+	}
+	activities, _, err := store.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(activities))
+	for _, activity := range activities {
+		got = append(got, fmt.Sprintf("%s/%s/%s@%d", activity.NodeID, activity.SessionID, activity.Kind, activity.AttentionSeq))
+	}
+	sort.Strings(got)
+	want := []string{
+		"node-a/other/terminal_unseen@5",
+		"node-a/sess/input_required@0",
+		"node-c/sess/terminal_unseen@9",
+		"node-d/sess/terminal_unseen@5",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows after RemoveSeen = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("rows after RemoveSeen = %v, want %v", got, want)
+		}
 	}
 }

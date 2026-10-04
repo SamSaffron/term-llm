@@ -60,9 +60,9 @@ export function AttentionPanels({ store }: { store: HubStore }) {
           </ul>
         </section>
       )}
-      {inbox.length > 0 && (
+      {(inbox.length > 0 || store.clearingAttention.value || store.attentionClearStatus.value) && (
         <section class="attention-panel" aria-label="Ready to review">
-          <div class="delegations-head">
+          <div class="delegations-head review-head">
             <div>
               <h2>
                 Ready to review
@@ -70,37 +70,57 @@ export function AttentionPanels({ store }: { store: HubStore }) {
               </h2>
               <p>Finished conversations not yet visited.</p>
             </div>
-            <span class="delegations-count" aria-live="polite">
-              {store.totalUnseen.value} ready
-              {store.attentionHasMore.value ? ' · showing newest' : ''}
-            </span>
+            <div class="attention-actions">
+              <span class="delegations-count" aria-live="polite">
+                {store.totalUnseen.value} ready
+                {store.attentionHasMore.value ? ' · showing newest' : ''}
+              </span>
+              <button
+                type="button"
+                class="hub-btn small ghost"
+                disabled={stale || store.clearingAttention.value}
+                onClick={() => void store.clearAttention()}
+              >
+                {store.clearingAttention.value ? 'Clearing…' : 'Clear all'}
+              </button>
+            </div>
           </div>
-          <ul class="attention-list">
-            {inbox.map((item) => (
-              <li key={`${item.node_id}:${item.session_id}`}>
-                <a
-                  class={`attention-row${stale ? ' is-stale' : ''}`}
-                  href={item.resume_path || '#'}
-                >
-                  <span class="attention-dot" />
-                  <span class="attention-body">
-                    <strong class="attention-title">
-                      {item.title || item.session_id || 'Untitled conversation'}
-                    </strong>
-                    <span class="attention-meta">
-                      {[
-                        item.node_name || item.node_id,
-                        item.outcome || 'completed',
-                        stale ? 'last known state' : relativeSessionTime(item.terminal_at),
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
+          <div
+            class={store.attentionClearStatus.value ? 'hub-error' : 'attention-meta'}
+            role="status"
+          >
+            {store.clearingAttention.value
+              ? 'Clearing completed review notifications…'
+              : store.attentionClearStatus.value}
+          </div>
+          {inbox.length > 0 && (
+            <ul class="attention-list">
+              {inbox.map((item) => (
+                <li key={`${item.node_id}:${item.session_id}`}>
+                  <a
+                    class={`attention-row${stale ? ' is-stale' : ''}`}
+                    href={item.resume_path || '#'}
+                  >
+                    <span class="attention-dot" />
+                    <span class="attention-body">
+                      <strong class="attention-title">
+                        {item.title || item.session_id || 'Untitled conversation'}
+                      </strong>
+                      <span class="attention-meta">
+                        {[
+                          item.node_name || item.node_id,
+                          item.outcome || 'completed',
+                          stale ? 'last known state' : relativeSessionTime(item.terminal_at),
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
                     </span>
-                  </span>
-                </a>
-              </li>
-            ))}
-          </ul>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
     </>

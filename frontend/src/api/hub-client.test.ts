@@ -36,6 +36,24 @@ describe('HubClient', () => {
     expect((mutation.headers as Headers).get('Content-Type')).toBe('application/json');
   });
 
+  it('clears the full server inbox with an empty operator-authenticated JSON body', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ cleared: 75, failed: 2 }))
+      .mockRejectedValueOnce(new Error('network failed'));
+    const client = new HubClient({ basePath: '/hub', authMode: 'bearer' }, { fetch: fetcher });
+    await expect(client.clearAttention()).resolves.toEqual({ cleared: 75, failed: 2 });
+    const [url, request] = fetcher.mock.calls[0];
+    expect(url).toBe('/hub/api/attention/clear');
+    expect(request).toMatchObject({ method: 'POST', body: '{}', credentials: 'same-origin' });
+    const headers = request!.headers as Headers;
+    expect(headers.get('Content-Type')).toBe('application/json');
+    expect(headers.get('Authorization')).toBeNull();
+    expect(headers.get('X-Term-LLM-Node-ID')).toBeNull();
+    await expect(client.clearAttention()).rejects.toThrow('network failed');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it('saves the node order as the operator, never with node credentials', async () => {
     const fetcher = vi
       .fn<typeof fetch>()

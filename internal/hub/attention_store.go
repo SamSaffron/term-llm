@@ -208,6 +208,15 @@ func (s *AttentionProjectionStore) MarkSuccess(ctx context.Context, nodeID strin
 	return err
 }
 
+// RemoveSeen removes acknowledged completions across registrations of the same
+// store, preserving newer completions and input-required activity. The caller
+// must prevent older collected snapshots from being installed afterward.
+func (s *AttentionProjectionStore) RemoveSeen(ctx context.Context, storeID, sessionID string, throughSeq int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM hub_session_activity
+ WHERE store_instance_id=? AND session_id=? AND kind='terminal_unseen' AND attention_seq<=?`, storeID, sessionID, throughSeq)
+	return err
+}
+
 func (s *AttentionProjectionStore) MarkUnavailable(ctx context.Context, nodeID string, lost bool) error {
 	now := time.Now().UTC().UnixMilli()
 	capability := AttentionUnavailable

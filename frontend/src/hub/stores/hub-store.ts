@@ -76,6 +76,8 @@ export class HubStore {
   readonly nodeError = signal('');
   readonly resolverWarning = signal('');
   readonly attentionError = signal('');
+  readonly clearingAttention = signal(false);
+  readonly attentionClearStatus = signal('');
   readonly delegationError = signal('');
   readonly lastNodesRefresh = signal(0);
   readonly lastAttentionRefresh = signal(0);
@@ -174,6 +176,42 @@ export class HubStore {
     });
     this.currentRefresh = run;
     return run;
+  }
+
+  async clearAttention(): Promise<void> {
+    if (
+      this.disposed ||
+      this.cacheRevoked ||
+      this.clearingAttention.peek() ||
+      !this.attentionVerified.peek()
+    )
+      return;
+    this.clearingAttention.value = true;
+    this.attentionClearStatus.value = '';
+    try {
+      const result = await this.client.clearAttention();
+      if (this.disposed || this.cacheRevoked) return;
+      if (result.failed > 0) {
+        this.attentionClearStatus.value = `Cleared ${result.cleared}; ${result.failed} could not be cleared. Try Clear all again.`;
+      }
+    } catch (error) {
+      if (this.disposed || this.cacheRevoked) return;
+      if (error instanceof HubAPIError && [401, 403].includes(error.status)) {
+        await this.invalidateCache();
+        return;
+      }
+      this.attentionClearStatus.value = `Could not clear notifications: ${message(error)}. Try Clear all again.`;
+    } finally {
+      if (!this.disposed && !this.cacheRevoked) {
+        // Reconcile even after an uncertain network failure. A new generation
+        // rejects pre-mutation polls; only the server decides which rows remain.
+        try {
+          await this.refresh();
+        } finally {
+          if (!this.disposed && !this.cacheRevoked) this.clearingAttention.value = false;
+        }
+      }
+    }
   }
 
   private verified(section: HubCacheSection) {
@@ -383,6 +421,8 @@ export class HubStore {
     this.totalUnseen.value = 0;
     this.nodesVerified.value = false;
     this.attentionVerified.value = false;
+    this.clearingAttention.value = false;
+    this.attentionClearStatus.value = '';
     this.delegationsVerified.value = false;
     this.cachedSections.value = [];
     this.initialLoading.value = false;

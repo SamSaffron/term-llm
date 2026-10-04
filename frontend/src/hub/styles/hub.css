@@ -933,6 +933,17 @@ body {
   margin-bottom: 0.85rem;
 }
 
+.review-head,
+.attention-actions {
+  flex-wrap: wrap;
+}
+
+.attention-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .delegations-head h2 {
   margin: 0;
   font-size: 1.02rem;

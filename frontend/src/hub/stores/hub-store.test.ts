@@ -51,6 +51,147 @@ function fakeClient(overrides: Record<string, unknown> = {}) {
 }
 
 describe('HubStore', () => {
+  it('refreshes after clear, rejects stale polls, and preserves new completions and questions', async () => {
+    let finishClear!: (value: { cleared: number; failed: number }) => void;
+    let finishPoll!: (value: AttentionResponse) => void;
+    const mutation = new Promise<{ cleared: number; failed: number }>(
+      (resolve) => (finishClear = resolve),
+    );
+    const oldPoll = new Promise<AttentionResponse>((resolve) => (finishPoll = resolve));
+    const newer: AttentionResponse = {
+      ...attention('New completion'),
+      total_input_required: 1,
+      input_required: [
+        {
+          node_id: 'alpha',
+          node_name: 'Alpha',
+          session_id: 'question',
+          title: 'Pending question',
+          pending_interaction_count: 1,
+          pending_interaction_kinds: ['ask_user'],
+          resume_path: '/node/alpha/chat/question',
+        },
+      ],
+      inbox: [{ ...attention('New completion').inbox[0], attention_seq: 2 }],
+    };
+    const client = fakeClient({ clearAttention: vi.fn(() => mutation) });
+    const store = new HubStore(client);
+    await store.refresh();
+    const shown = store.inbox.value;
+    vi.mocked(client.listAttention).mockReturnValueOnce(oldPoll).mockResolvedValueOnce(newer);
+    const poll = store.refresh('poll');
+    const clear = store.clearAttention();
+    await store.clearAttention();
+    expect(client.clearAttention).toHaveBeenCalledOnce();
+    expect(store.clearingAttention.value).toBe(true);
+    expect(store.inbox.value).toBe(shown);
+    finishClear({ cleared: 75, failed: 0 });
+    await clear;
+    finishPoll(attention('Stale completion'));
+    await poll;
+    expect(store.inbox.value).toEqual(newer.inbox);
+    expect(store.inputRequired.value).toEqual(newer.input_required);
+    expect(store.totalUnseen.value).toBe(1);
+    expect(store.totalInputRequired.value).toBe(1);
+    expect(store.nodesVerified.value).toBe(true);
+    expect(client.listNodes).toHaveBeenCalledTimes(3);
+    expect(store.clearingAttention.value).toBe(false);
+    store.dispose();
+  });
+
+  it.each(['partial', 'network'] as const)(
+    'refreshes counts and keeps %s failure feedback until a successful retry, even with no inbox',
+    async (failure) => {
+      const clearAttention = vi.fn().mockResolvedValue({ cleared: 0, failed: 0 });
+      if (failure === 'partial') clearAttention.mockResolvedValueOnce({ cleared: 1, failed: 2 });
+      else clearAttention.mockRejectedValueOnce(new Error('connection lost'));
+      const client = fakeClient({ clearAttention });
+      const store = new HubStore(client);
+      await store.refresh();
+      vi.mocked(client.listAttention).mockResolvedValue({
+        ...attention(),
+        inbox: [],
+        total_unseen: 0,
+      });
+      await store.clearAttention();
+      expect(store.inbox.value).toEqual([]);
+      expect(store.totalUnseen.value).toBe(0);
+      expect(store.attentionClearStatus.value).toContain(
+        failure === 'partial' ? 'Cleared 1; 2 could not be cleared' : 'connection lost',
+      );
+      expect(store.attentionClearStatus.value).toContain('Try Clear all again');
+      await store.refresh('poll');
+      expect(store.attentionClearStatus.value).not.toBe('');
+      await store.clearAttention();
+      expect(clearAttention).toHaveBeenCalledTimes(2);
+      expect(client.listNodes).toHaveBeenCalledTimes(4);
+      expect(store.attentionClearStatus.value).toBe('');
+      expect(store.clearingAttention.value).toBe(false);
+      store.dispose();
+    },
+  );
+
+  it('does not clear last-known attention before an authoritative response', async () => {
+    const client = fakeClient({ clearAttention: vi.fn(async () => ({ cleared: 1, failed: 0 })) });
+    const store = new HubStore(client);
+    store.inbox.value = attention().inbox;
+    await store.clearAttention();
+    expect(client.clearAttention).not.toHaveBeenCalled();
+    await store.refresh();
+    await store.clearAttention();
+    expect(client.clearAttention).toHaveBeenCalledOnce();
+    store.dispose();
+  });
+
+  it.each(['disposed', 'revoked'] as const)(
+    'ignores a late clear result when the store is %s',
+    async (lifecycle) => {
+      let finish!: (value: { cleared: number; failed: number }) => void;
+      let revoke!: () => Promise<void>;
+      const client = fakeClient({
+        onUnauthorized: (listener: () => Promise<void>) => {
+          revoke = listener;
+          return () => undefined;
+        },
+        clearAttention: vi.fn(
+          () => new Promise<{ cleared: number; failed: number }>((resolve) => (finish = resolve)),
+        ),
+      });
+      const store = new HubStore(client);
+      await store.refresh();
+      const clearing = store.clearAttention();
+      if (lifecycle === 'disposed') store.dispose();
+      else await revoke();
+      const status = store.attentionClearStatus.value;
+      const inbox = store.inbox.value;
+      finish({ cleared: 0, failed: 1 });
+      await clearing;
+      await store.clearAttention();
+      expect(store.attentionClearStatus.value).toBe(status);
+      expect(store.inbox.value).toBe(inbox);
+      expect(client.listNodes).toHaveBeenCalledOnce();
+      expect(client.clearAttention).toHaveBeenCalledOnce();
+      store.dispose();
+    },
+  );
+
+  it('revokes cached attention on an unauthorized clear without refreshing it back', async () => {
+    const client = fakeClient({
+      clearAttention: vi.fn(async () => {
+        throw new HubAPIError(403, 'expired');
+      }),
+    });
+    const store = new HubStore(client);
+    await store.refresh();
+    await store.clearAttention();
+    expect(store.attentionVerified.value).toBe(false);
+    expect(store.inbox.value).toEqual([]);
+    expect(store.clearingAttention.value).toBe(false);
+    expect(store.attentionClearStatus.value).toBe('');
+    expect(client.listNodes).toHaveBeenCalledOnce();
+    store.dispose();
+  });
+
   it('retains unchanged collections across polls and replaces only changed nodes', async () => {
     let payload = { nodes: [...nodes('alpha').nodes, ...nodes('beta').nodes] };
     const client = fakeClient({ listNodes: vi.fn(async () => structuredClone(payload)) });

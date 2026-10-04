@@ -10,6 +10,7 @@ import type { PasskeyPlatform } from '../platform/passkeys';
 import { AuthStore } from '../stores/auth-store';
 import { HubStore } from '../stores/hub-store';
 import { AddNodeDialog } from './AddNodeDialog';
+import { AttentionPanels } from './AttentionPanels';
 import { AuthApp } from './AuthApp';
 import { BearerLogin } from './BearerLogin';
 import { DelegationsPanel } from './DelegationsPanel';
@@ -44,6 +45,58 @@ function DialogFixture({ value }: { value: HubStore }) {
 }
 
 describe('Hub components', () => {
+  it('gates Clear all on authoritative attention and keeps partial failure retry with an empty inbox', async () => {
+    let finish!: (value: { cleared: number; failed: number }) => void;
+    const clearAttention = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<{ cleared: number; failed: number }>((resolve) => (finish = resolve)),
+      )
+      .mockResolvedValue({ cleared: 0, failed: 0 });
+    const value = store({
+      clearAttention,
+      listNodes: vi.fn(async () => ({ nodes: [] })),
+      listAttention: vi.fn(async () => ({ inbox: [], input_required: [], total_unseen: 0 })),
+      listDelegations: vi.fn(async () => ({ delegations: [] })),
+    });
+    value.inbox.value = [
+      {
+        node_id: 'alpha',
+        node_name: 'Alpha',
+        session_id: 'ready',
+        title: 'Ready conversation',
+        outcome: 'succeeded',
+        attention_seq: 1,
+        resume_path: '/node/alpha/chat/ready',
+      },
+    ];
+    value.totalUnseen.value = 75;
+    value.attentionHasMore.value = true;
+    render(<AttentionPanels store={value} />);
+    expect(screen.getByRole('button', { name: 'Clear all' })).toBeDisabled();
+    expect(screen.getByText('75 ready · showing newest')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
+    expect(clearAttention).not.toHaveBeenCalled();
+    await act(() => {
+      value.attentionVerified.value = true;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Clearing…' })).toBeDisabled());
+    expect(screen.getByRole('status')).toHaveTextContent('Clearing completed review notifications');
+    expect(screen.getByText('Ready conversation')).toBeVisible();
+    await act(() => finish({ cleared: 74, failed: 1 }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Cleared 74; 1'));
+    expect(screen.queryByText('Ready conversation')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Try Clear all again');
+    expect(screen.getByRole('button', { name: 'Clear all' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Ready to review' })).not.toBeInTheDocument(),
+    );
+    expect(clearAttention).toHaveBeenCalledTimes(2);
+    value.dispose();
+  });
+
   it('keeps closed local node cards independent of operations but disables open menu actions', async () => {
     const value = store();
     const node = {

@@ -60,6 +60,8 @@ type hubServer struct {
 	attentionStore       *hub.AttentionProjectionStore
 	attentionCancel      context.CancelFunc
 	attentionWG          sync.WaitGroup
+	attentionMu          sync.Mutex // guards projection replacement against completed acknowledgements
+	attentionGeneration  uint64
 	attentionDiagnostics hubAttentionDiagnostics
 
 	requireAuth       bool
