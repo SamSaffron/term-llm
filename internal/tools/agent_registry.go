@@ -183,6 +183,13 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		cancel()
 		return nil, fmt.Errorf("agent not started: %w", reloadErr)
 	}
+	if errors.Is(context.Cause(detached), restart.ErrInterrupt) {
+		// A reload is already interrupting work; this child would be born
+		// interrupted and look resumable in a loop. Refuse it instead.
+		cancel()
+		releaseReload()
+		return nil, errors.New("agent not started: the host is restarting; retry after it reloads")
+	}
 	abort := func(message string) (*agentEntry, error) {
 		m.mu.Unlock()
 		cancel()
@@ -194,6 +201,11 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 	m.mu.Lock()
 	if m.draining {
 		return abort("agent manager is shutting down")
+	}
+	// The spawning turn may already have been stopped; its stop hook has then
+	// already swept this parent's children and would miss this one.
+	if ctx.Err() != nil {
+		return abort("agent not started: the parent turn was stopped")
 	}
 	if previous := m.agents[id]; previous != nil {
 		select {
@@ -218,6 +230,14 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		defer releaseReload()
 		m.run(detached, e, runner, depth, model, resume, instructions)
 	}()
+	if ctx.Err() != nil {
+		// Stopped between the check above and registration: the stop hook's
+		// sweep may have run before this entry was visible to it.
+		m.mu.Lock()
+		e.shutdown = true
+		m.mu.Unlock()
+		interrupt()
+	}
 	return e, nil
 }
 
@@ -503,7 +523,14 @@ func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOu
 	var admission *AgentRunAdmissionError
 	if errors.As(runErr, &admission) {
 		payload.Error = runErr.Error()
-		payload.Next = fmt.Sprintf("retry continue_agent({\"agent_id\":%q,\"instructions\":%q}); the agent did not run", record.ID, instructions)
+		if e.prior != nil {
+			payload.Next = fmt.Sprintf("retry continue_agent({\"agent_id\":%q,\"instructions\":%q}); the agent did not run", record.ID, instructions)
+		} else {
+			// A fresh spawn that never started is recorded failed, which
+			// continue_agent refuses; spawning again is the only retry.
+			payload.Resumable = false
+			payload.Next = "the agent did not start; call spawn_agent again"
+		}
 		out.IsError = true
 	}
 	if record.Status == "queued" || record.Status == "running" || record.Status == "awaiting_approval" {

@@ -105,7 +105,15 @@ func runStopScenario(t *testing.T, stop bool) (string, *session.SQLiteStore, *st
 	req := env.llmReq
 	req.SessionID = parentID
 	req.MaxTurns = 5
-	_, runErr := env.runtime.RunWithEvents(turnCtx, false, false, []llm.Message{llm.UserText("delegate")}, req, func(llm.Event) error { return nil })
+	onEvent := func(ev llm.Event) error {
+		// A client that disconnects as soon as the turn's final event arrives
+		// cancels the request context after the turn completed normally.
+		if !stop && ev.Type == llm.EventDone {
+			stopTurn()
+		}
+		return nil
+	}
+	_, runErr := env.runtime.RunWithEvents(turnCtx, false, false, []llm.Message{llm.UserText("delegate")}, req, onEvent)
 	if stop && runErr == nil {
 		t.Fatal("stopped turn returned no error")
 	}

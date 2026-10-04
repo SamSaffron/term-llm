@@ -175,3 +175,52 @@ func TestBackgroundSpawnSurvivesReleaseOfSpawningCallAndReloadInterruptsIt(t *te
 		t.Fatalf("child after reload = %s, want resumable interrupted", out.Content)
 	}
 }
+
+func TestSpawnFromStoppedTurnIsRefused(t *testing.T) {
+	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	defer close(runner.release)
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
+	spawn.SetRunner(runner)
+	ctx, stop := context.WithCancel(llm.ContextWithSessionID(context.Background(), "stopped-turn"))
+	stop()
+	out := lifecycleCall(t, spawn, ctx, `{"agent_name":"developer","prompt":"late","wait":0}`)
+	if !out.IsError || !strings.Contains(out.Content, "parent turn was stopped") {
+		t.Fatalf("spawn from stopped turn = %+v", out)
+	}
+	select {
+	case <-runner.entered:
+		t.Fatal("child launched for a stopped turn")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSpawnDuringReloadInterruptionIsRefused(t *testing.T) {
+	c := &restart.Coordinator{InterruptAfter: time.Millisecond}
+	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	defer close(runner.release)
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
+	spawn.SetRunner(runner)
+	callCtx, releaseCall, err := c.Root(llm.ContextWithSessionID(context.Background(), "reload-parent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hold an interruptible step so the drain reaches its interrupting phase.
+	holder, closeHolder := c.Cancellable(callCtx)
+	stopBind, err := c.Bind(context.Background(), func(context.Context) error { return errors.New("fixture exec") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopBind()
+	c.Request()
+	select {
+	case <-holder.Done():
+	case <-time.After(time.Second):
+		t.Fatal("reload never began interrupting")
+	}
+	out := lifecycleCall(t, spawn, callCtx, `{"agent_name":"developer","prompt":"late","wait":0}`)
+	closeHolder()
+	releaseCall()
+	if !out.IsError || !strings.Contains(out.Content, "restarting") {
+		t.Fatalf("spawn during reload interruption = %+v", out)
+	}
+}

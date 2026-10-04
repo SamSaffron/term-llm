@@ -1894,6 +1894,20 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}
+	// stoppedParent is set only when the run stream ended because the turn was
+	// stopped (user stop, rush, interrupt cancel, timeout or lease loss). The
+	// session's detached children then stop with it: they end "interrupted" and
+	// stay resumable. This is registered before rt.mu's unlock so waiting for
+	// them never holds the session lock.
+	var stoppedParent string
+	defer func() {
+		if stoppedParent == "" {
+			return
+		}
+		interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		tools.InterruptAgentsForParent(interruptCtx, stoppedParent)
+	}()
 	defer rt.mu.Unlock()
 	// Publish ownership immediately after this session's runtime is claimed.
 	// Hydration and persistence may block; they must not create a false idle
@@ -1988,18 +2002,6 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	runCtx, activeModel, activeEffort := rt.prepareRunContext(runCtx, collaborationBinding, &req)
-	// Registered after runCancel so it runs first: a cancelled run context here
-	// means the turn was stopped (user stop, rush, interrupt cancel, timeout or
-	// lease loss), never ordinary completion. Detached children of this session
-	// must stop with it; they end "interrupted" and stay resumable.
-	defer func() {
-		if runCtx.Err() == nil || rt.spawnRunner == nil {
-			return
-		}
-		interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		tools.InterruptAgentsForParent(interruptCtx, req.SessionID)
-	}()
 	var requestCancel func()
 	if responseRun := responseRunFromContext(ctx); responseRun != nil {
 		requestCancel = func() { responseRun.cancelRun() }
@@ -2121,6 +2123,11 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	var suspensionHandled bool
 	result, streamErr, suspensionHandled = rt.consumeRunStream(runCtx, ctx, stateful, persisted, req, onEvent)
 	runErr = streamErr
+	// Judge the stop when the stream ends, not at defer time: an HTTP request
+	// context cancelled after a completed turn must not interrupt children.
+	if streamErr != nil && runCtx.Err() != nil {
+		stoppedParent = req.SessionID
+	}
 	if streamErr != nil {
 		if suspensionHandled {
 			var suspended *llm.SuspendedError
