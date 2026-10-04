@@ -20,6 +20,7 @@ binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-browser-smoke.XXXXXX")"
 log="$(mktemp "${TMPDIR:-/tmp}/term-llm-browser-smoke.XXXXXX.log")"
 results="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-browser-results.XXXXXX")"
 home="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-browser-home.XXXXXX")"
+session_db="$(mktemp /tmp/term-llm-browser-smoke.XXXXXX.db)"
 smoke_succeeded=false
 cleanup() {
   if [[ -n "${server_pid:-}" ]] && kill -0 "$server_pid" 2>/dev/null; then
@@ -38,7 +39,7 @@ cleanup() {
     echo "Browser smoke server log:" >&2
     cat "$log" >&2
   fi
-  rm -f "$binary" "$log"
+  rm -f "$binary" "$log" "$session_db" "$session_db-wal" "$session_db-shm"
   rm -rf "$results" "$home"
 }
 trap cleanup EXIT
@@ -67,7 +68,7 @@ git -C "$workspace" -c user.name='Browser Fixture' -c user.email='fixture@exampl
   exec env -u TERM_LLM_PPROF -u TERM_LLM_SERVE_HUB_URL -u TERM_LLM_SERVE_HUB_REGISTER \
   -u TERM_LLM_SERVE_HUB_NODE_ID -u TERM_LLM_SERVE_HUB_NODE_NAME \
   HOME="$home" XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_CACHE_HOME="$home/cache" \
-  "$binary" serve web --no-auth --port "$port" --enable-file-tracking
+  "$binary" serve web --session-db "$session_db" --no-auth --port "$port" --enable-file-tracking
 ) >"$log" 2>&1 &
 server_pid=$!
 for _ in $(seq 1 80); do

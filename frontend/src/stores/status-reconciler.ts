@@ -199,11 +199,11 @@ export class StatusReconciler {
   ): Promise<void> {
     if (!this.statusRequestIsCurrent(metadata)) return;
     const activeSessionId = metadata.selectedSessionId;
-    const previousActiveRevision =
-      this.host.sessionStore.sessions.peek().find((session) => session.id === activeSessionId)
-        ?.transcriptRev || 0;
+    const selected = this.host.sessionStore.activeSession.peek();
+    const previousActiveRevision = selected?.transcriptRev || 0;
     const statuses = listFrom(data, 'sessions', 'items');
     const known = new Set(this.host.sessionStore.sessions.peek().map((session) => session.id));
+    if (selected) known.add(selected.id);
     const unknownActive = new Set(
       statuses.flatMap((status) => {
         const id = String(status.id || status.session_id || '');
@@ -218,10 +218,16 @@ export class StatusReconciler {
       if (!this.statusRequestIsCurrent(metadata)) return;
     }
 
+    const listed = this.host.sessionStore.sessions.peek();
+    const transient =
+      selected && !listed.some((session) => session.id === selected.id) ? selected : null;
     const byID = new Map(statuses.map((entry) => [String(entry.id || entry.session_id), entry]));
     const followUps: Array<() => void> = [];
-    const reconciledSessions = this.host.sessionStore.sessions
+    // The selected delegated transcript is outside the sidebar, but still
+    // needs status reconciliation and attachment to its response stream.
+    const reconciled = this.host.sessionStore.sessions
       .peek()
+      .concat(transient ? [transient] : [])
       .map((session) => {
         const status = byID.get(session.id);
         if (!status) return session.activeRun ? { ...session, activeRun: false } : session;
@@ -488,7 +494,13 @@ export class StatusReconciler {
           : candidate;
       })
       .sort(compareSessionsByActivity);
-    this.host.sessionStore.replace(reconciledSessions);
+    this.host.sessionStore.replace(
+      transient ? reconciled.filter((entry) => entry.id !== transient.id) : reconciled,
+    );
+    if (transient && this.host.sessionStore.activeSessionId.peek() === transient.id)
+      this.host.sessionStore.transientSession.value = reconciled.find(
+        (entry) => entry.id === transient.id,
+      )!;
     if (!this.statusRequestIsCurrent(metadata)) return;
     for (const status of statuses) {
       if (status.interaction_required === undefined) continue;
@@ -508,9 +520,7 @@ export class StatusReconciler {
     this.coordinator.lastAppliedReceivedAt = receivedAt;
     this.coordinator.etag = String(data.__etag || '');
 
-    const activeRevision =
-      this.host.sessionStore.sessions.peek().find((session) => session.id === activeSessionId)
-        ?.transcriptRev || 0;
+    const activeRevision = this.host.sessionStore.activeSession.peek()?.transcriptRev || 0;
     if (
       this.host.diff.peek().open &&
       this.host.diff.peek().sessionId === activeSessionId &&
@@ -538,7 +548,8 @@ export class StatusReconciler {
         this.host.isLocallyStopped(responseId)
       )
         return;
-      const session = this.host.sessionStore.find(sessionId);
+      const session =
+        this.host.sessionStore.find(sessionId) || this.host.sessionStore.activeSession.peek();
       const installedBodiesRev = session?.messageBodiesRev;
       const initiatingMessageInstalled = Boolean(
         clientMessageId &&

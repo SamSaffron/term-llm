@@ -155,6 +155,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// branch paths, skills, project picker/assignment, worktrees) now load on
 		// demand; agent approval/ask-user prompts and the side question stay
 		// eager. That leaves the entry at ~527.3/155.2 kB. Same ~1% rule as above.
+		// Detached-agent wait/continue cards keep validated child links through
+		// live results and durable reloads; their small eager transcript parser
+		// adds a little to the compressed shell.
 		"dist/app.js":                {raw: 533_000, gzip: 157_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},

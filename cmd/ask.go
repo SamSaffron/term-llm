@@ -317,9 +317,27 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// so that session settings can override settings.Tools, settings.MCP, etc.
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
 	var spawnRunner *SpawnAgentRunner
+	// userInterrupted is set when the rich renderer handled Ctrl-C itself: the
+	// signal context is not cancelled in that case, but the user still asked
+	// to stop, so outstanding children are interrupted instead of drained.
+	userInterrupted := false
 	defer func() {
 		if spawnRunner != nil {
-			spawnRunner.Wait()
+			ids := spawnRunner.OutstandingAgentIDs()
+			switch {
+			case ctx.Err() != nil || userInterrupted:
+				if len(ids) > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "interrupting child agents (resumable): %s\n", strings.Join(ids, ", "))
+				}
+				shutdownSpawnAgentRunner(spawnRunner)
+			default:
+				if len(ids) > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "waiting for child agents: %s\n", strings.Join(ids, ", "))
+				}
+				if err := spawnRunner.Drain(ctx); err != nil {
+					shutdownSpawnAgentRunner(spawnRunner)
+				}
+			}
 		}
 		storeCleanup()
 	}()
@@ -644,6 +662,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		jsonFinalPending = execution.jsonFinalPending
 		if executionErr != nil {
 			return executionErr
+		}
+		if execution.interrupted {
+			userInterrupted = true
 		}
 		if execution.skipFinalization {
 			return nil

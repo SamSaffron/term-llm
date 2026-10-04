@@ -15,6 +15,7 @@ type SessionStatus string
 const (
 	StatusActive      SessionStatus = "active"      // Session is open/current (may or may not be streaming)
 	StatusComplete    SessionStatus = "complete"    // Session finished normally
+	StatusTurnLimit   SessionStatus = "turn_limit"  // Child finished cleanly at its turn budget
 	StatusError       SessionStatus = "error"       // Session ended with an error
 	StatusInterrupted SessionStatus = "interrupted" // Session was cancelled by user
 )
