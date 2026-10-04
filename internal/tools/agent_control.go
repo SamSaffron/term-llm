@@ -69,7 +69,7 @@ type agentControlArgs struct {
 func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a agentControlArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(fmt.Sprintf("invalid arguments: %v", err)), nil
+		return agentControlError(fmt.Sprintf("invalid arguments: %v", err)), nil
 	}
 	parent := agentParent(ctx)
 	if parent == "" {
@@ -78,7 +78,7 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 		}
 	}
 	if parent == "" {
-		return llm.TextOutput("agent lifecycle requires a parent session"), nil
+		return agentControlError("agent lifecycle requires a parent session"), nil
 	}
 	var out llm.ToolOutput
 	switch t.name {
@@ -91,7 +91,7 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 	case ContinueAgentToolName:
 		out = t.continueRun(ctx, parent, a)
 	default:
-		out = llm.TextOutput("unknown agent control operation")
+		out = agentControlError("unknown agent control operation")
 	}
 	return out, nil
 }
@@ -99,7 +99,7 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 func (t *agentControlTool) list(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
 	records, err := t.spawn.manager.snapshot(ctx, parent)
 	if err != nil {
-		return llm.TextOutput(err.Error())
+		return agentControlError(err.Error())
 	}
 	filtered := make([]map[string]any, 0, len(records))
 	for _, r := range records {
@@ -119,18 +119,21 @@ func (t *agentControlTool) list(ctx context.Context, parent string, a agentContr
 
 func (t *agentControlTool) wait(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
 	if len(a.AgentIDs) == 0 {
-		return llm.TextOutput("agent_ids is required")
+		return agentControlError("agent_ids is required")
 	}
 	if a.MaxWait < 0 || a.MaxWait > 3600 {
-		return llm.TextOutput("max_wait must be between 0 and 3600")
+		return agentControlError("max_wait must be between 0 and 3600")
 	}
 	m := t.spawn.manager
 	results := make([]json.RawMessage, 0, len(a.AgentIDs))
+	// Media produced by detached children is only delivered when collected;
+	// releaseCollected drops it afterwards, so carry it on this tool result.
+	var media []llm.MediaArtifact
 	deadline := time.Now().Add(time.Duration(a.MaxWait) * time.Second)
 	for _, id := range a.AgentIDs {
 		record, e, err := m.get(ctx, id, parent)
 		if err != nil {
-			return llm.TextOutput(err.Error())
+			return agentControlError(err.Error())
 		}
 		if e != nil && a.MaxWait > 0 {
 			attached := m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))
@@ -144,32 +147,22 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			results = append(results, json.RawMessage(m.output(record, e).Content))
 			continue
 		}
-		if record.CollectedAt.IsZero() {
-			record.CollectedAt = time.Now()
-		}
-		if e != nil {
-			e.manager.mu.Lock()
-			e.record.CollectedAt = record.CollectedAt
-			e.manager.mu.Unlock()
-		}
-		// A detached entry may belong to a prior turn whose store has already
-		// closed. Collect through this turn's live store, never the old owner.
-		if m.store != nil {
-			collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			err := m.store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
-			cancel()
-			if err != nil {
-				return llm.TextOutput(fmt.Sprintf("collect agent run: %v", err))
-			}
+		var collectErr error
+		record, collectErr = m.collect(ctx, record, e)
+		if collectErr != nil {
+			return agentControlError(fmt.Sprintf("collect agent run: %v", collectErr))
 		}
 		out := m.output(record, e)
 		results = append(results, json.RawMessage(out.Content))
+		media = append(media, out.Media...)
 		if e != nil {
 			e.manager.releaseCollected(e)
 		}
 	}
 	data, _ := json.Marshal(results)
-	return llm.TextOutput(string(data))
+	out := llm.TextOutput(string(data))
+	out.Media = llm.NormalizeMedia(media, nil)
+	return out
 }
 
 func agentTerminal(status string) bool {
@@ -184,7 +177,7 @@ func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentCon
 	m := t.spawn.manager
 	record, e, err := m.get(ctx, a.AgentID, parent)
 	if err != nil {
-		return llm.TextOutput(err.Error())
+		return agentControlError(err.Error())
 	}
 	if e != nil {
 		e.cancel()
@@ -198,7 +191,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	m := t.spawn.manager
 	record, e, err := m.get(ctx, a.AgentID, parent)
 	if err != nil {
-		return llm.TextOutput(err.Error())
+		return agentControlError(err.Error())
 	}
 	if e != nil {
 		switch record.Status {
@@ -214,17 +207,17 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 		}
 	}
 	if record.Status == "running_elsewhere" && !a.Force {
-		return llm.TextOutput("agent may still be running on another process; pass force:true to risk duplicate side effects")
+		return agentControlError("agent may still be running on another process; pass force:true to risk duplicate side effects")
 	}
 	if record.Status == "failed" {
-		return llm.TextOutput("failed agent cannot be resumed")
+		return agentControlError("failed agent cannot be resumed")
 	}
 	budget := t.spawn.config.DefaultTimeout
 	if a.Wait != nil {
 		budget = *a.Wait
 	}
 	if budget < 0 || budget > 3600 {
-		return llm.TextOutput("wait must be between 0 and 3600")
+		return agentControlError("wait must be between 0 and 3600")
 	}
 	owner := m
 	if e != nil {
@@ -240,7 +233,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 		owner.mu.Unlock()
 	}
 	if runner == nil {
-		return llm.TextOutput("agent runner unavailable")
+		return agentControlError("agent runner unavailable")
 	}
 	resume := record.Started
 	prompt := record.Prompt
@@ -249,12 +242,12 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	}
 	entry, startErr := owner.start(ctx, record.AgentName, prompt, record.Model, llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
 	if startErr != nil {
-		return llm.TextOutput(startErr.Error())
+		return agentControlError(startErr.Error())
 	}
 	owner.wait(ctx, entry, time.Duration(budget)*time.Second)
 	owner.detachInitial(entry)
 	current, _, _ := owner.get(ctx, a.AgentID, parent)
-	out := owner.output(current, entry)
+	out := m.deliver(ctx, current, entry)
 	if record.Status == "running_elsewhere" {
 		out.Content = strings.TrimSuffix(out.Content, "}") + `,"warning":"possible duplicate side effects: another process may still be running"}`
 	}
@@ -267,10 +260,10 @@ func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agent
 	e.manager.mu.Unlock()
 	continuation, ok := runner.(AgentContinuation)
 	if !ok {
-		return llm.TextOutput("runner does not support steering")
+		return agentControlError("runner does not support steering")
 	}
 	if strings.TrimSpace(a.Instructions) == "" {
-		return llm.TextOutput("instructions required to steer a running agent")
+		return agentControlError("instructions required to steer a running agent")
 	}
 	id, disposition := continuation.SteerAgent(a.AgentID, a.Instructions)
 	result := map[string]any{
@@ -283,4 +276,10 @@ func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agent
 	}
 	data, _ := json.Marshal(result)
 	return llm.TextOutput(string(data))
+}
+
+func agentControlError(message string) llm.ToolOutput {
+	out := llm.TextOutput(message)
+	out.IsError = true
+	return out
 }

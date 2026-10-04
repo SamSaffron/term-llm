@@ -641,3 +641,95 @@ func (m *agentManager) shutdown(ctx context.Context, interrupted bool) error {
 	}
 	return nil
 }
+
+// collect marks a terminal run as delivered to its parent. Delivery happens
+// through spawn_agent, continue_agent or wait_agent, whichever first returns
+// the terminal result; afterwards the process entry can be released.
+func (m *agentManager) collect(ctx context.Context, record session.AgentRun, e *agentEntry) (session.AgentRun, error) {
+	if !agentTerminal(record.Status) {
+		return record, nil
+	}
+	if record.CollectedAt.IsZero() {
+		record.CollectedAt = time.Now()
+	}
+	if e != nil {
+		e.manager.mu.Lock()
+		e.record.CollectedAt = record.CollectedAt
+		e.manager.mu.Unlock()
+	}
+	// A detached entry may belong to a prior turn whose store has already
+	// closed. Collect through this turn's live store, never the old owner.
+	if m.store != nil {
+		collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err := m.store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
+		cancel()
+		if err != nil {
+			return record, err
+		}
+	}
+	return record, nil
+}
+
+// InterruptAgentsForParent interrupts every queued or running agent spawned by
+// parent, in any registry of this process, and waits for them to stop until
+// ctx ends. Hosts call it when the user stops the parent's turn: detached
+// children must not keep working (and spending) after an explicit stop. They
+// finish as "interrupted" and remain resumable with continue_agent.
+func InterruptAgentsForParent(ctx context.Context, parent string) []string {
+	if parent == "" {
+		return nil
+	}
+	var entries []*agentEntry
+	processAgentEntries.Range(func(_, value any) bool {
+		e := value.(*agentEntry)
+		select {
+		case <-e.done:
+			return true
+		default:
+		}
+		e.manager.mu.Lock()
+		match := e.record.ParentSessionID == parent
+		if match {
+			e.shutdown = true
+		}
+		e.manager.mu.Unlock()
+		if match {
+			entries = append(entries, e)
+		}
+		return true
+	})
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		ids = append(ids, e.record.ID)
+		e.interrupt()
+	}
+	for _, e := range entries {
+		select {
+		case <-e.done:
+		case <-ctx.Done():
+			sort.Strings(ids)
+			return ids
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// deliver renders a spawn_agent/continue_agent result. A run that finished
+// within the wait budget is collected here, so its entry (output and media)
+// is released instead of being retained for the life of the process, and a
+// later wait_agent does not deliver the same media again.
+func (m *agentManager) deliver(ctx context.Context, record session.AgentRun, e *agentEntry) llm.ToolOutput {
+	if agentTerminal(record.Status) {
+		if collected, err := m.collect(ctx, record, e); err == nil {
+			record = collected
+		} else {
+			runtimeoutput.Logf("agent run %s collection failed: %v", record.ID, err)
+		}
+	}
+	out := m.output(record, e)
+	if e != nil && agentTerminal(record.Status) {
+		e.manager.releaseCollected(e)
+	}
+	return out
+}

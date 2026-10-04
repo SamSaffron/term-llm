@@ -533,7 +533,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
 	t.manager.detachInitial(entry)
 	record, _, _ := t.manager.get(context.Background(), entry.record.ID, entry.record.ParentSessionID)
-	return t.manager.output(record, entry), nil
+	return t.manager.deliver(ctx, record, entry), nil
 }
 
 // OutstandingAgentIDs lists unfinished runs for one-shot host exit diagnostics.

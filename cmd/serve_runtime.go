@@ -1988,6 +1988,18 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	runCtx, activeModel, activeEffort := rt.prepareRunContext(runCtx, collaborationBinding, &req)
+	// Registered after runCancel so it runs first: a cancelled run context here
+	// means the turn was stopped (user stop, rush, interrupt cancel, timeout or
+	// lease loss), never ordinary completion. Detached children of this session
+	// must stop with it; they end "interrupted" and stay resumable.
+	defer func() {
+		if runCtx.Err() == nil || rt.spawnRunner == nil {
+			return
+		}
+		interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		tools.InterruptAgentsForParent(interruptCtx, req.SessionID)
+	}()
 	var requestCancel func()
 	if responseRun := responseRunFromContext(ctx); responseRun != nil {
 		requestCancel = func() { responseRun.cancelRun() }
