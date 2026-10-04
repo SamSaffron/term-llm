@@ -155,7 +155,12 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 	for _, id := range a.AgentIDs {
 		record, e, err := m.get(ctx, id, parent)
 		if err != nil {
-			return agentControlError(fmt.Sprintf("%s: %v", id, err))
+			// Results already collected above cannot be delivered again;
+			// report this entry's failure alongside them instead of dropping
+			// the whole response.
+			failure, _ := json.Marshal(map[string]string{"agent_id": id, "error": err.Error()})
+			results = append(results, failure)
+			continue
 		}
 		if e != nil && a.MaxWait > 0 {
 			attached := m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))

@@ -218,6 +218,11 @@ func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, on
 	}
 	h.srv.publishChildrenChanged(h.childSessionID, h.parentSessionID, "subagent_ready")
 	<-run.settled
+	if env.runtime != nil {
+		// startResponseRun unregisters response IDs only for runtimes it
+		// closes; this stateful one is closed by env, so release them here.
+		h.srv.unregisterResponseIDs(env.runtime)
+	}
 	return result, executionErr
 }
 

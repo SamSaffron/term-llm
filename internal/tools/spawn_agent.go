@@ -530,27 +530,49 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	if startErr != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}
-	if entry.record.ParentSessionID == "" {
+	sessionless := entry.record.ParentSessionID == ""
+	if sessionless {
 		// Without a parent session no lifecycle tool can ever address this
 		// child (they are scoped to the parent session), so detaching it would
-		// orphan it. Hosts without sessions, such as loop, keep the synchronous
-		// contract: wait for completion, and interrupt the child if the turn
-		// is stopped.
-		select {
-		case <-entry.done:
-		case <-ctx.Done():
+		// orphan it. Hosts without sessions, such as loop, keep the original
+		// synchronous contract: the budget is a hard deadline (clamped to
+		// 10..3600s as before), and the child is interrupted when it expires
+		// or the turn is stopped. Settlement after that is bounded too, in
+		// case a runner ignores cancellation.
+		deadline := budget
+		if deadline < 10 {
+			deadline = 10
+		}
+		if !t.manager.wait(ctx, entry, time.Duration(deadline)*time.Second) {
 			t.manager.mu.Lock()
 			entry.shutdown = true
 			t.manager.mu.Unlock()
 			entry.interrupt()
-			<-entry.done
+			t.manager.wait(context.Background(), entry, 10*time.Second)
 		}
 	} else {
 		t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
 	}
 	t.manager.detachInitial(entry)
 	record, _, _ := t.manager.get(context.Background(), entry.record.ID, entry.record.ParentSessionID)
-	return t.manager.deliver(ctx, record, entry), nil
+	out := t.manager.deliver(ctx, record, entry)
+	if sessionless {
+		out = withoutLifecycleHints(out)
+	}
+	return out, nil
+}
+
+// withoutLifecycleHints drops resume/wait guidance that a session-less host
+// cannot act on: every lifecycle tool requires a parent session.
+func withoutLifecycleHints(out llm.ToolOutput) llm.ToolOutput {
+	var result SpawnAgentResult
+	if json.Unmarshal([]byte(out.Content), &result) != nil {
+		return out
+	}
+	result.Resumable = false
+	result.Next = ""
+	out.Content = marshalAgentResult(result)
+	return out
 }
 
 // OutstandingAgentIDs lists unfinished runs for one-shot host exit diagnostics.

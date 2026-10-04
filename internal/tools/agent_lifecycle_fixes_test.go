@@ -289,7 +289,7 @@ func TestSpawnWithoutParentSessionStaysSynchronous(t *testing.T) {
 	ctx, stop := context.WithCancel(context.Background())
 	go func() { <-stopRunner.entered; stop() }()
 	out, _ := stopSpawn.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
-	if result := lifecycleResult(t, out); result.Status != "interrupted" {
-		t.Fatalf("stopped session-less spawn = %+v, want interrupted", result)
+	if result := lifecycleResult(t, out); result.Status != "interrupted" || result.Resumable || result.Next != "" {
+		t.Fatalf("stopped session-less spawn = %+v, want interrupted without unusable lifecycle hints", result)
 	}
 }

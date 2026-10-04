@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,5 +192,29 @@ func TestStoppedLaterTurnInterruptsEarlierTurnsChildren(t *testing.T) {
 	}
 	if run := agentRunsByPrompt(t, store, parent)["background"]; run.Status != "interrupted" {
 		t.Fatalf("earlier turn's background child after stopping a later turn = %q, want interrupted", run.Status)
+	}
+}
+
+// A cancelled invocation that never owned the session (errServeSessionBusy)
+// must not stop the children of the turn that does.
+func TestBusyCancelledInvocationLeavesOwnersChildrenRunning(t *testing.T) {
+	parent, store, child, env := runStopScenarioEnv(t)
+	select {
+	case <-child.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("background child never started")
+	}
+	env.runtime.mu.Lock() // another turn owns the session
+	stopped, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), parent))
+	cancel()
+	req := env.llmReq
+	req.SessionID = parent
+	_, err := env.runtime.RunWithEvents(stopped, false, false, []llm.Message{llm.UserText("next")}, req, func(llm.Event) error { return nil })
+	env.runtime.mu.Unlock()
+	if !errors.Is(err, errServeSessionBusy) {
+		t.Fatalf("err = %v, want errServeSessionBusy", err)
+	}
+	if run := agentRunsByPrompt(t, store, parent)["background"]; run.Status != "running" {
+		t.Fatalf("owner's background child after a busy, cancelled invocation = %q, want running", run.Status)
 	}
 }
