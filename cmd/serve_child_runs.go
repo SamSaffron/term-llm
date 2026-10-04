@@ -210,8 +210,12 @@ func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, on
 		release()
 		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: err}
 	}
-	// startResponseRun now owns and closes the non-stateful runtime.
-	env.runtime = nil
+	// startResponseRun owns and closes a non-stateful runtime. It never closes
+	// a stateful one, which a resumed child (continue_agent) always is, so env
+	// keeps ownership and closes it after the run settles.
+	if !env.req.Stateful {
+		env.runtime = nil
+	}
 	h.srv.publishChildrenChanged(h.childSessionID, h.parentSessionID, "subagent_ready")
 	<-run.settled
 	return result, executionErr

@@ -530,7 +530,24 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	if startErr != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}
-	t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
+	if entry.record.ParentSessionID == "" {
+		// Without a parent session no lifecycle tool can ever address this
+		// child (they are scoped to the parent session), so detaching it would
+		// orphan it. Hosts without sessions, such as loop, keep the synchronous
+		// contract: wait for completion, and interrupt the child if the turn
+		// is stopped.
+		select {
+		case <-entry.done:
+		case <-ctx.Done():
+			t.manager.mu.Lock()
+			entry.shutdown = true
+			t.manager.mu.Unlock()
+			entry.interrupt()
+			<-entry.done
+		}
+	} else {
+		t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
+	}
 	t.manager.detachInitial(entry)
 	record, _, _ := t.manager.get(context.Background(), entry.record.ID, entry.record.ParentSessionID)
 	return t.manager.deliver(ctx, record, entry), nil

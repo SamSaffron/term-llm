@@ -224,3 +224,72 @@ func TestSpawnDuringReloadInterruptionIsRefused(t *testing.T) {
 		t.Fatalf("spawn during reload interruption = %+v", out)
 	}
 }
+
+func TestWaitAgentUnknownIDDoesNotConsumeOtherResults(t *testing.T) {
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	child := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	runner := &persistentMediaRunner{mediaRunner: &mediaRunner{lifecycleRunner: child, path: "/tmp/batch-child.png"}, store: store}
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
+	spawn.SetRunner(runner)
+	ctx := llm.ContextWithSessionID(context.Background(), "batch-parent")
+	spawned := lifecycleResult(t, lifecycleCall(t, spawn, ctx, `{"agent_name":"artist","prompt":"draw","wait":0}`))
+	<-child.entered
+	close(child.release)
+	wait := &agentControlTool{name: WaitAgentToolName, spawn: spawn}
+	bad := lifecycleCall(t, wait, ctx, `{"agent_ids":["`+spawned.AgentID+`","missing"],"max_wait":5}`)
+	if !bad.IsError || !strings.Contains(bad.Content, "missing") {
+		t.Fatalf("batch with unknown id = %+v", bad)
+	}
+	good := lifecycleCall(t, wait, ctx, `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":5}`)
+	if !strings.Contains(good.Content, `"status":"completed"`) || len(good.Media) != 1 {
+		t.Fatalf("retry after failed batch = %s media=%+v; result or media was consumed", good.Content, good.Media)
+	}
+}
+
+type persistentMediaRunner struct {
+	*mediaRunner
+	store session.AgentRunStore
+}
+
+func (r *persistentMediaRunner) AgentRunStore() session.AgentRunStore { return r.store }
+
+func TestSpawnWithoutParentSessionStaysSynchronous(t *testing.T) {
+	runner := &lifecycleRunner{entered: make(chan string, 2), release: make(chan struct{})}
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
+	spawn.SetRunner(runner)
+	done := make(chan llm.ToolOutput, 1)
+	go func() {
+		out, _ := spawn.Execute(context.Background(), []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
+		done <- out
+	}()
+	<-runner.entered
+	select {
+	case out := <-done:
+		t.Fatalf("session-less spawn detached: %s", out.Content)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(runner.release)
+	select {
+	case out := <-done:
+		if result := lifecycleResult(t, out); result.Status != "completed" || result.Output != "done" {
+			t.Fatalf("session-less spawn = %+v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session-less spawn never returned")
+	}
+
+	stopRunner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	defer close(stopRunner.release)
+	stopSpawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
+	stopSpawn.SetRunner(stopRunner)
+	ctx, stop := context.WithCancel(context.Background())
+	go func() { <-stopRunner.entered; stop() }()
+	out, _ := stopSpawn.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
+	if result := lifecycleResult(t, out); result.Status != "interrupted" {
+		t.Fatalf("stopped session-less spawn = %+v, want interrupted", result)
+	}
+}

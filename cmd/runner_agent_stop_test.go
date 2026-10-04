@@ -64,6 +64,15 @@ func (p *stopScriptProvider) Stream(ctx context.Context, req llm.Request) (llm.S
 }
 
 func runStopScenario(t *testing.T, stop bool) (string, *session.SQLiteStore, *stopChildRunner) {
+	parent, store, child, _ := runStopScenarioWith(t, stop)
+	return parent, store, child
+}
+
+func runStopScenarioEnv(t *testing.T) (string, *session.SQLiteStore, *stopChildRunner, *cmdRunEnvironment) {
+	return runStopScenarioWith(t, false)
+}
+
+func runStopScenarioWith(t *testing.T, stop bool) (string, *session.SQLiteStore, *stopChildRunner, *cmdRunEnvironment) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "sessions.db")
@@ -120,7 +129,7 @@ func runStopScenario(t *testing.T, stop bool) (string, *session.SQLiteStore, *st
 	if !stop && runErr != nil {
 		t.Fatalf("finished turn: %v", runErr)
 	}
-	return parentID, store, child
+	return parentID, store, child, env
 }
 
 func agentRunsByPrompt(t *testing.T, store *session.SQLiteStore, parent string) map[string]session.AgentRun {
@@ -161,5 +170,26 @@ func TestFinishedParentTurnLeavesDetachedChildRunning(t *testing.T) {
 	if !ok || run.Status != "running" {
 		data, _ := json.Marshal(run)
 		t.Fatalf("background child after a normal turn = %s, want running", strings.TrimSpace(string(data)))
+	}
+}
+
+// Stopping a later turn of the session stops children an earlier, completed
+// turn left running in the background.
+func TestStoppedLaterTurnInterruptsEarlierTurnsChildren(t *testing.T) {
+	parent, store, child, env := runStopScenarioEnv(t)
+	select {
+	case <-child.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("background child never started")
+	}
+	stopped, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), parent))
+	cancel()
+	req := env.llmReq
+	req.SessionID = parent
+	if _, err := env.runtime.RunWithEvents(stopped, false, false, []llm.Message{llm.UserText("next")}, req, func(llm.Event) error { return nil }); err == nil {
+		t.Fatal("stopped invocation returned no error")
+	}
+	if run := agentRunsByPrompt(t, store, parent)["background"]; run.Status != "interrupted" {
+		t.Fatalf("earlier turn's background child after stopping a later turn = %q, want interrupted", run.Status)
 	}
 }

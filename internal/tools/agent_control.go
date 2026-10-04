@@ -143,11 +143,19 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 	// Media produced by detached children is only delivered when collected;
 	// releaseCollected drops it afterwards, so carry it on this tool result.
 	var media []llm.MediaArtifact
+	// Resolve every ID before waiting or collecting anything: an unknown ID
+	// must not discard results (and media) already collected for earlier IDs,
+	// which cannot be delivered again once their entries are released.
+	for _, id := range a.AgentIDs {
+		if _, _, err := m.get(ctx, id, parent); err != nil {
+			return agentControlError(fmt.Sprintf("%s: %v", id, err))
+		}
+	}
 	deadline := time.Now().Add(time.Duration(a.MaxWait) * time.Second)
 	for _, id := range a.AgentIDs {
 		record, e, err := m.get(ctx, id, parent)
 		if err != nil {
-			return agentControlError(err.Error())
+			return agentControlError(fmt.Sprintf("%s: %v", id, err))
 		}
 		if e != nil && a.MaxWait > 0 {
 			attached := m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))
@@ -157,21 +165,9 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			m.detach(e, attached)
 			record, _, _ = m.get(ctx, id, parent)
 		}
-		if !agentTerminal(record.Status) {
-			results = append(results, json.RawMessage(m.output(record, e).Content))
-			continue
-		}
-		var collectErr error
-		record, collectErr = m.collect(ctx, record, e)
-		if collectErr != nil {
-			return agentControlError(fmt.Sprintf("collect agent run: %v", collectErr))
-		}
-		out := m.output(record, e)
+		out := m.deliver(ctx, record, e)
 		results = append(results, json.RawMessage(out.Content))
 		media = append(media, out.Media...)
-		if e != nil {
-			e.manager.releaseCollected(e)
-		}
 	}
 	data, _ := json.Marshal(results)
 	out := llm.TextOutput(string(data))

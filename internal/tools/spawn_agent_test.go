@@ -1059,7 +1059,8 @@ func TestSpawnAgentTool_ContextCancellation(t *testing.T) {
 	runner := newMockRunner().SetDelay(5 * time.Second)
 	tool.SetRunner(runner)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Detaching needs a parent session: session-less spawns stay synchronous.
+	ctx, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), "parent"))
 	args := makeSpawnArgs("test-agent", "do something", 60)
 
 	// Cancel after a short delay
@@ -1094,7 +1095,8 @@ func TestSpawnAgentTool_ContextTimeout(t *testing.T) {
 	runner := newMockRunner().SetDelay(5 * time.Second)
 	tool.SetRunner(runner)
 
-	ctx := context.Background()
+	// Detaching needs a parent session: session-less spawns stay synchronous.
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
 	// Use minimum timeout of 10 seconds, but we'll use a pre-expired context
 	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()

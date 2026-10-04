@@ -695,18 +695,15 @@ func (m *agentManager) shutdown(ctx context.Context, interrupted bool) error {
 
 // collect marks a terminal run as delivered to its parent. Delivery happens
 // through spawn_agent, continue_agent or wait_agent, whichever first returns
-// the terminal result; afterwards the process entry can be released.
+// the terminal result; afterwards the process entry can be released. The
+// in-memory mark is set only once it is durable, because it makes the entry
+// eligible for releaseCollected, which discards the result and media.
 func (m *agentManager) collect(ctx context.Context, record session.AgentRun, e *agentEntry) (session.AgentRun, error) {
 	if !agentTerminal(record.Status) {
 		return record, nil
 	}
 	if record.CollectedAt.IsZero() {
 		record.CollectedAt = time.Now()
-	}
-	if e != nil {
-		e.manager.mu.Lock()
-		e.record.CollectedAt = record.CollectedAt
-		e.manager.mu.Unlock()
 	}
 	// A detached entry may belong to a prior turn whose store has already
 	// closed. Collect through this turn's live store, never the old owner.
@@ -718,6 +715,11 @@ func (m *agentManager) collect(ctx context.Context, record session.AgentRun, e *
 			return record, err
 		}
 	}
+	if e != nil {
+		e.manager.mu.Lock()
+		e.record.CollectedAt = record.CollectedAt
+		e.manager.mu.Unlock()
+	}
 	return record, nil
 }
 
@@ -727,8 +729,16 @@ func (m *agentManager) collect(ctx context.Context, record session.AgentRun, e *
 // children must not keep working (and spending) after an explicit stop. They
 // finish as "interrupted" and remain resumable with continue_agent.
 func InterruptAgentsForParent(ctx context.Context, parent string) []string {
+	return StopAgentsForParent(parent)(ctx)
+}
+
+// StopAgentsForParent signals the interruption immediately and returns a
+// function that waits for exactly those agents. Selection and signalling are
+// split from waiting so a host can sweep while it still owns the session, and
+// wait after releasing it, without catching a successor turn's children.
+func StopAgentsForParent(parent string) func(context.Context) []string {
 	if parent == "" {
-		return nil
+		return func(context.Context) []string { return nil }
 	}
 	var entries []*agentEntry
 	processAgentEntries.Range(func(_, value any) bool {
@@ -754,32 +764,35 @@ func InterruptAgentsForParent(ctx context.Context, parent string) []string {
 		ids = append(ids, e.record.ID)
 		e.interrupt()
 	}
-	for _, e := range entries {
-		select {
-		case <-e.done:
-		case <-ctx.Done():
-			sort.Strings(ids)
-			return ids
-		}
-	}
 	sort.Strings(ids)
-	return ids
+	return func(ctx context.Context) []string {
+		for _, e := range entries {
+			select {
+			case <-e.done:
+			case <-ctx.Done():
+				return ids
+			}
+		}
+		return ids
+	}
 }
 
-// deliver renders a spawn_agent/continue_agent result. A run that finished
-// within the wait budget is collected here, so its entry (output and media)
-// is released instead of being retained for the life of the process, and a
-// later wait_agent does not deliver the same media again.
+// deliver renders a lifecycle tool's result for one agent. A terminal run is
+// collected here, so its entry (output and media) is released instead of being
+// retained for the life of the process, and is not delivered twice. The
+// payload is snapshotted before collection: once collected, the run goroutine
+// may release the entry concurrently. If collection fails the result is still
+// returned; it may then be delivered again, which beats losing it.
 func (m *agentManager) deliver(ctx context.Context, record session.AgentRun, e *agentEntry) llm.ToolOutput {
-	if agentTerminal(record.Status) {
-		if collected, err := m.collect(ctx, record, e); err == nil {
-			record = collected
-		} else {
-			runtimeoutput.Logf("agent run %s collection failed: %v", record.ID, err)
-		}
-	}
 	out := m.output(record, e)
-	if e != nil && agentTerminal(record.Status) {
+	if !agentTerminal(record.Status) {
+		return out
+	}
+	if _, err := m.collect(ctx, record, e); err != nil {
+		runtimeoutput.Logf("agent run %s collection failed: %v", record.ID, err)
+		return out
+	}
+	if e != nil {
 		e.manager.releaseCollected(e)
 	}
 	return out

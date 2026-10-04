@@ -450,9 +450,15 @@ func (rt *serveRuntime) CloseContext(ctx context.Context) {
 	rt.closeContext(ctx, false)
 }
 
+// serveRuntimeClosedHook observes runtime closure in tests; nil in production.
+var serveRuntimeClosedHook func(*serveRuntime)
+
 func (rt *serveRuntime) closeContext(ctx context.Context, drain bool) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if hook := serveRuntimeClosedHook; hook != nil {
+		defer hook(rt)
 	}
 	sideCtx, sideCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	rt.sideQuestion.close(sideCtx)
@@ -1894,21 +1900,27 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}
-	// stoppedParent is set only when the run stream ended because the turn was
-	// stopped (user stop, rush, interrupt cancel, timeout or lease loss). The
-	// session's detached children then stop with it: they end "interrupted" and
-	// stay resumable. This is registered before rt.mu's unlock so waiting for
-	// them never holds the session lock.
-	var stoppedParent string
+	// When the run stream ends because the turn was stopped (user stop, rush,
+	// interrupt cancel, timeout or lease loss), the session's detached children
+	// stop with it: they end "interrupted" and stay resumable. They are selected
+	// and signalled while this turn still owns rt.mu, so a successor turn's
+	// children are never caught, and awaited only after the lock is released.
+	var streamStopped bool
+	var awaitStopped func(context.Context) []string
 	defer func() {
-		if stoppedParent == "" {
+		if awaitStopped == nil {
 			return
 		}
-		interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		tools.InterruptAgentsForParent(interruptCtx, stoppedParent)
+		awaitStopped(waitCtx)
 	}()
 	defer rt.mu.Unlock()
+	defer func() {
+		if streamStopped {
+			awaitStopped = tools.StopAgentsForParent(req.SessionID)
+		}
+	}()
 	// Publish ownership immediately after this session's runtime is claimed.
 	// Hydration and persistence may block; they must not create a false idle
 	// window in which same-session boundary work can enter.
@@ -2126,7 +2138,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// Judge the stop when the stream ends, not at defer time: an HTTP request
 	// context cancelled after a completed turn must not interrupt children.
 	if streamErr != nil && runCtx.Err() != nil {
-		stoppedParent = req.SessionID
+		streamStopped = true
 	}
 	if streamErr != nil {
 		if suspensionHandled {

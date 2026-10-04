@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -621,6 +622,10 @@ func TestHostedChildContinuesCompletedSession(t *testing.T) {
 	if !ok {
 		t.Fatal("continue_agent tool missing")
 	}
+	var closedMu sync.Mutex
+	closed := 0
+	serveRuntimeClosedHook = func(*serveRuntime) { closedMu.Lock(); closed++; closedMu.Unlock() }
+	t.Cleanup(func() { serveRuntimeClosedHook = nil })
 	ctx := llm.ContextWithCallID(f.ctx, "continue-drill")
 	output, err := continueTool.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"instructions":"Say hello again","wait":5}`, first.SessionID)))
 	var continued tools.SpawnAgentResult
@@ -642,6 +647,21 @@ func TestHostedChildContinuesCompletedSession(t *testing.T) {
 	}
 	if _, attached := f.srv.sessionMgr.Get(first.SessionID); attached {
 		t.Fatal("continued child runtime remained attached")
+	}
+	// The resumed run is stateful, which startResponseRun never closes; the
+	// child environment must, or every continuation leaks its runtime.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		closedMu.Lock()
+		n := closed
+		closedMu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("continued child runtime was never closed")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

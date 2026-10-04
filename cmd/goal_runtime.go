@@ -116,6 +116,22 @@ func (t *goalToolTracker) commitToolCall(callID, name string, success bool) *goa
 }
 
 func (rt *serveRuntime) runWithGoal(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+	result, err := rt.runWithGoalPasses(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	// runOnce stops a session's detached children when its stream is stopped.
+	// A stop can also land outside a stream: during setup, or between the
+	// passes of an active goal after an earlier pass spawned in the
+	// background. Those return an error with the invocation context cancelled.
+	// A completed invocation (nil error) never stops children, even if its
+	// context is cancelled afterwards.
+	if err != nil && ctx.Err() != nil {
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		toolpkg.InterruptAgentsForParent(waitCtx, req.SessionID)
+		cancel()
+	}
+	return result, err
+}
+
+func (rt *serveRuntime) runWithGoalPasses(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
 	goalStore := rt.goalStateStore()
 	if goalStore == nil || strings.TrimSpace(req.SessionID) == "" {
 		return rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
