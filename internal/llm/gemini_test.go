@@ -452,3 +452,222 @@ func mustJSONMarshal(t *testing.T, value any) []byte {
 	}
 	return data
 }
+
+func TestGeminiStreamEnablesServerSideToolInvocationsWithSearchAndTools(t *testing.T) {
+	var gotRequest geminiGenerateContentRequest
+	var rawRequestBody []byte
+	provider := NewGeminiProvider("test-key", "gemini-3-flash-preview")
+	provider.baseURL = "https://gemini.test/v1beta/models"
+	provider.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		rawRequestBody = body
+		if err := json.Unmarshal(body, &gotRequest); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("search and edit")},
+		Search:   true,
+		Tools: []ToolSpec{
+			{
+				Name:        "edit_file",
+				Description: "edit a file",
+				Schema:      map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+	}
+
+	if gotRequest.ToolConfig == nil {
+		t.Fatal("expected ToolConfig to be set")
+	}
+	if gotRequest.ToolConfig.IncludeServerSideToolInvocations == nil || !*gotRequest.ToolConfig.IncludeServerSideToolInvocations {
+		t.Fatalf("expected IncludeServerSideToolInvocations=true, got %+v", gotRequest.ToolConfig.IncludeServerSideToolInvocations)
+	}
+	if !strings.Contains(string(rawRequestBody), `"includeServerSideToolInvocations":true`) {
+		t.Fatalf("expected raw body to contain includeServerSideToolInvocations:true, got: %s", string(rawRequestBody))
+	}
+
+	// Verify tools list contains both GoogleSearch and FunctionDeclarations
+	var hasSearch, hasFunc bool
+	for _, tool := range gotRequest.Tools {
+		if tool.GoogleSearch != nil {
+			hasSearch = true
+		}
+		if len(tool.FunctionDeclarations) > 0 {
+			hasFunc = true
+		}
+	}
+	if !hasSearch || !hasFunc {
+		t.Fatalf("expected both search and function declarations, got hasSearch=%v, hasFunc=%v", hasSearch, hasFunc)
+	}
+}
+
+func TestGeminiStreamOmitsServerSideToolInvocationsWithoutSearch(t *testing.T) {
+	var gotRequest geminiGenerateContentRequest
+	var rawRequestBody []byte
+	provider := NewGeminiProvider("test-key", "gemini-3-flash-preview")
+	provider.baseURL = "https://gemini.test/v1beta/models"
+	provider.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		rawRequestBody = body
+		if err := json.Unmarshal(body, &gotRequest); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("edit only")},
+		Search:   false,
+		Tools: []ToolSpec{
+			{
+				Name:        "edit_file",
+				Description: "edit a file",
+				Schema:      map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+	}
+
+	if gotRequest.ToolConfig == nil {
+		t.Fatal("expected ToolConfig to be set")
+	}
+	if gotRequest.ToolConfig.IncludeServerSideToolInvocations != nil {
+		t.Fatalf("expected IncludeServerSideToolInvocations to be nil, got %v", *gotRequest.ToolConfig.IncludeServerSideToolInvocations)
+	}
+	if strings.Contains(string(rawRequestBody), "includeServerSideToolInvocations") {
+		t.Fatalf("expected raw body NOT to contain includeServerSideToolInvocations, got: %s", string(rawRequestBody))
+	}
+}
+
+func TestGeminiStreamOmitsServerSideToolInvocationsWithSearchOnly(t *testing.T) {
+	var gotRequest geminiGenerateContentRequest
+	provider := NewGeminiProvider("test-key", "gemini-3-flash-preview")
+	provider.baseURL = "https://gemini.test/v1beta/models"
+	provider.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotRequest); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		respBody := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(respBody)),
+		}, nil
+	})}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("search only")},
+		Search:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+	}
+
+	if gotRequest.ToolConfig != nil {
+		t.Fatalf("expected ToolConfig to be nil for search-only request, got %+v", gotRequest.ToolConfig)
+	}
+	if len(gotRequest.Tools) != 1 || gotRequest.Tools[0].GoogleSearch == nil {
+		t.Fatalf("expected single GoogleSearch tool, got %+v", gotRequest.Tools)
+	}
+}
+
+func TestGeminiStreamIgnoresServerSideToolCallAndResponse(t *testing.T) {
+	events := make(chan Event, 10)
+	var lastThoughtSig []byte
+
+	parts := []*geminiPart{
+		{
+			ToolCall: &geminiServerToolCall{
+				ID:       "search-call-1",
+				ToolType: "GOOGLE_SEARCH",
+				Args:     map[string]any{"query": "golang"},
+			},
+		},
+		{
+			ToolResponse: &geminiServerToolResponse{
+				ID:       "search-call-1",
+				ToolType: "GOOGLE_SEARCH",
+				Response: map[string]any{"result": "go programming language"},
+			},
+		},
+		{
+			Text: "Here is what I found about Go.",
+		},
+	}
+
+	err := emitGeminiParts(eventSender{ctx: context.Background(), ch: events}, parts, &lastThoughtSig)
+	if err != nil {
+		t.Fatalf("emitGeminiParts() error = %v", err)
+	}
+	close(events)
+
+	var gotEvents []Event
+	for ev := range events {
+		gotEvents = append(gotEvents, ev)
+	}
+
+	if len(gotEvents) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(gotEvents), gotEvents)
+	}
+	if gotEvents[0].Type != EventTextDelta || gotEvents[0].Text != "Here is what I found about Go." {
+		t.Fatalf("unexpected event: %+v", gotEvents[0])
+	}
+}
