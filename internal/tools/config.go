@@ -299,6 +299,9 @@ func (c *ToolConfig) IsToolEnabled(specName string) bool {
 	if c == nil {
 		return false
 	}
+	if specName == WaitAgentToolName || specName == ContinueAgentToolName || specName == CancelAgentToolName || specName == ListAgentsToolName {
+		specName = SpawnAgentToolName
+	}
 	mu := c.mutex()
 	mu.RLock()
 	defer mu.RUnlock()

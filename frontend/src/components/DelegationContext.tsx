@@ -9,9 +9,11 @@ export async function returnToParent(store: AppStore): Promise<void> {
   const parent = store.sessions.peek().find((session) => session.id === parentId);
   // Selection starts before provenance is requested. Missing or slow history
   // must never turn the breadcrumb into a loading gate.
+  // A transient server miss must not replace the child with an empty New chat.
+  // The breadcrumb remains available so the parent lookup can be retried.
   const navigation = parent
     ? store.selectSession(parent)
-    : store.resolveAndSelectSession(parentId, false);
+    : store.resolveAndSelectSession(parentId, false, { newChatOnMiss: false });
   const provenance = store.endpoints
     .sessionChildren(parentId)
     .then(

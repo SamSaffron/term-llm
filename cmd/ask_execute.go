@@ -21,6 +21,10 @@ type askExecutionResult struct {
 	jsonTotalTokens  int
 	jsonFinalPending bool
 	skipFinalization bool
+	// interrupted reports a user stop (e.g. Ctrl-C in the rich renderer) that
+	// did not cancel the process context; detached children must be shut down
+	// rather than drained.
+	interrupted bool
 }
 
 type askStreamingExecution struct {
@@ -135,6 +139,7 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 			result.jsonFinalPending = false
 		}
 		result.skipFinalization = true
+		result.interrupted = true
 		return result, nil
 	}
 	interrupted := func(err error) bool {

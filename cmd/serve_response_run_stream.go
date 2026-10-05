@@ -684,7 +684,10 @@ func admitResponseRunError(err error) error {
 }
 
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
-	if stateful && s.sessionMgr != nil && sessionID != "" {
+	// Borrowed child runtimes are already pinned by attachBorrowedRuntime for
+	// the entire response. Pinning again would reject a stateful continuation
+	// because that existing reservation holds the session operation lock.
+	if stateful && options.onRuntimeDone == nil && s.sessionMgr != nil && sessionID != "" {
 		release, err := s.sessionMgr.pinCurrentRuntime(sessionID, runtime)
 		if err != nil {
 			if options.onDone != nil {

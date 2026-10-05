@@ -1395,18 +1395,12 @@ func (r *ContentRenderer) renderToolResultsWithCalls(msg session.Message, msgID 
 
 			currentLine += lineCount + 1 // +1 for the bottom border line
 
-			// Check if this is a spawn_agent result with a session_id
-			if tr.Name == "spawn_agent" {
-				if sessionID := extractSessionIDFromSpawnAgentResult(content); sessionID != "" {
-					// Render the subagent's internal turns
-					subagentContent, subagentItems := r.renderSubagentSession(sessionID, currentLine)
-					if subagentContent != "" {
-						b.WriteString(subagentContent)
-						items = append(items, subagentItems...)
-						currentLine += strings.Count(subagentContent, "\n")
-					}
-				}
+			if subagentContent, subagentItems := r.lifecycleResultSession(tr.Name, content, currentLine); subagentContent != "" {
+				b.WriteString(subagentContent)
+				items = append(items, subagentItems...)
+				currentLine += strings.Count(subagentContent, "\n")
 			}
+
 		}
 	}
 
@@ -1441,9 +1435,25 @@ func truncateID(id string) string {
 	return id[:8] + "..." + id[len(id)-4:]
 }
 
+// lifecycleResultSession resolves links from spawn, wait, and continue without
+// increasing the complexity of general tool-result rendering.
+func (r *ContentRenderer) lifecycleResultSession(name, content string, startLine int) (string, []ContentItem) {
+	if name != "spawn_agent" && name != "wait_agent" && name != "continue_agent" {
+		return "", nil
+	}
+	return r.renderSubagentSession(extractSessionIDFromSpawnAgentResult(content), startLine)
+}
+
 // extractSessionIDFromSpawnAgentResult extracts the child link through the
 // canonical durable spawn_agent result parser.
 func extractSessionIDFromSpawnAgentResult(content string) string {
+	if strings.HasPrefix(strings.TrimSpace(content), "[") {
+		var results []json.RawMessage
+		if err := json.Unmarshal([]byte(content), &results); err != nil || len(results) == 0 {
+			return ""
+		}
+		content = string(results[0])
+	}
 	result, err := tools.ParseSpawnAgentResult(content)
 	if err != nil {
 		return ""

@@ -105,3 +105,46 @@ func TestTaskClaimsOneEngineAndNotifiesPendingBoundary(t *testing.T) {
 		t.Fatal("next engine could not own subsequent execution")
 	}
 }
+
+func TestDetachedOutlivesCallerAndIsInterruptedByReload(t *testing.T) {
+	c := &Coordinator{InterruptAfter: time.Millisecond}
+	caller, releaseCaller, err := c.Root(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, releaseChild, err := Detached(caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseCaller() // the spawning tool call returns before the child runs
+	if _, release, err := c.Activity(child); err != nil {
+		t.Fatalf("detached child rejected after caller released: %v", err)
+	} else {
+		release()
+	}
+	stop, err := c.Bind(context.Background(), func(context.Context) error { return errors.New("fixture") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	c.Request()
+	select {
+	case <-child.Done():
+	case <-time.After(time.Second):
+		t.Fatal("reload did not interrupt the detached child")
+	}
+	if !errors.Is(context.Cause(child), ErrInterrupt) {
+		t.Fatalf("cause = %v, want ErrInterrupt", context.Cause(child))
+	}
+	releaseChild()
+	waitAttempt(t, c)
+}
+
+func TestDetachedWithoutOwnershipIsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	got, release, err := Detached(ctx)
+	if err != nil || got != ctx {
+		t.Fatalf("unowned Detached = %v, %v", got, err)
+	}
+	release()
+}

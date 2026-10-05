@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestEnsureRequestSessionID_GeneratesWithoutPersistence(t *testing.T) {
@@ -112,6 +116,35 @@ func TestInitSessionStore_UsesConfigSessionPath(t *testing.T) {
 
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("expected session database at config path %q: %v", dbPath, err)
+	}
+}
+
+func TestProductionSessionStorePersistsAgentRuns(t *testing.T) {
+	oldNoSession, oldDB := noSession, sessionDBPath
+	t.Cleanup(func() { noSession, sessionDBPath = oldNoSession, oldDB })
+	noSession = false
+	sessionDBPath = filepath.Join(t.TempDir(), "sessions.db")
+	cfg := &config.Config{Sessions: config.SessionsConfig{Enabled: true}}
+	store, cleanup := InitSessionStore(cfg, io.Discard)
+	defer cleanup()
+	if store == nil {
+		t.Fatal("production session store unavailable")
+	}
+	runner, err := NewSpawnAgentRunnerWithStore(cfg, false, tools.NewApprovalManager(tools.NewToolPermissions()), store, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := runner.AgentRunStore()
+	if runs == nil {
+		t.Fatal("production runner lost agent-run persistence")
+	}
+	want := session.AgentRun{ID: "child", ParentSessionID: "parent", AgentName: "developer", Prompt: "test", Status: "completed", OwnerInstanceID: "owner", UpdatedAt: time.Now().UTC()}
+	if err := runs.PutAgentRun(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := runs.GetAgentRun(context.Background(), want.ID)
+	if err != nil || got.Status != want.Status || got.ParentSessionID != want.ParentSessionID {
+		t.Fatalf("round trip = %+v, %v", got, err)
 	}
 }
 

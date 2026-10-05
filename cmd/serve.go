@@ -308,8 +308,9 @@ type serveAgentRuntimeOptions struct {
 	collaborationController *serveCollaborativeShellController
 	// childRuns makes delegated runs readable and steerable. It is nil outside
 	// serve, which is what keeps the CLI spawn path unchanged.
-	childRuns *childRunRegistry
-	hasWeb    bool
+	childRuns  *childRunRegistry
+	agentOwner *agentHostOwner
+	hasWeb     bool
 }
 
 func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *serveServer) func(context.Context, serveRuntimeRequest) (*serveRuntime, error) {
@@ -318,6 +319,7 @@ func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *s
 		// registry at invocation, not construction, or every child inherits nil.
 		requestOpts := opts
 		requestOpts.childRuns = server().ensureChildRuns()
+		requestOpts.agentOwner = server().agentOwner
 		return newServeAgentRuntime(ctx, request, requestOpts)
 	}
 }
@@ -365,7 +367,7 @@ func serveRuntimeRunnerDefaults(opts serveAgentRuntimeOptions, request serveRunt
 		NativeSearch: serveNativeSearch, NoNativeSearch: serveNoNativeSearch, ApprovalMode: approvalMode, ApprovalModeSet: true,
 		ApprovalSource: opts.approval.Source, ApprovalHeadless: true, ApprovalPrepare: true, ApprovalDiagnostics: serveVerbose,
 		Debug: serveDebug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, Store: opts.store,
-		ChildRunObserver: childRunObserverOrNil(opts.childRuns),
+		ChildRunObserver: childRunObserverOrNil(opts.childRuns), AgentOwner: opts.agentOwner,
 	}
 }
 
@@ -615,6 +617,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if serveDebug || serveVerbose {
 		approvalErrWriter = cmd.ErrOrStderr()
 	}
+	// The runner below is built before the server; share one owner pointer.
+	agentOwner := &agentHostOwner{}
 	var s *serveServer
 	collaborationController := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) {
 		if s == nil {
@@ -663,6 +667,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		PlatformMessages:       agentPlatformMsgs,
 		Store:                  store,
 		Runner: newCmdRunner(cfg, cmdRunnerOptions{
+			AgentOwner:          agentOwner,
 			Provider:            serveProvider,
 			Tools:               serveTools,
 			ReadDirs:            append([]string(nil), serveReadDirs...),
@@ -749,6 +754,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		defer stopWidgets()
 
 		s = &serveServer{
+			agentOwner:  agentOwner,
 			browserAuth: browserAuth,
 			cfg: serveServerConfig{
 				host:                    serveHost,
@@ -1409,6 +1415,7 @@ type serveServer struct {
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
+	agentOwner               *agentHostOwner
 	childRunsOnce            sync.Once
 	childRuns                *childRunRegistry
 	responseOwnerOnce        sync.Once
@@ -1721,6 +1728,9 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		}
 	})
 	s.closeLiveSessions(ctx)
+	if err := s.agentOwner.Shutdown(ctx); err != nil {
+		return err
+	}
 	s.closeShellManager()
 	s.stopEventWatcher()
 	// Synchronize with a concurrently starting lifecycle loop, or permanently

@@ -407,18 +407,63 @@ function SubagentQuietPeriod({
   );
 }
 
-function subagentChildSessionId(store: AppStore, tool: ToolCall): string {
-  if (tool.name.toLowerCase() !== 'spawn_agent') return '';
-  return (
-    String(tool.subagent?.childSessionId || '') ||
-    String(
-      store.childSessionStore.children.value.find(
-        (child) =>
-          child.parent_session_id === store.activeSessionId.value &&
-          child.parent_spawn_call_id === tool.id,
-      )?.session_id || '',
-    )
-  );
+function subagentChildSessionIds(store: AppStore, tool: ToolCall): string[] {
+  const name = tool.name.toLowerCase();
+  if (name === 'spawn_agent') {
+    const id =
+      String(tool.subagent?.childSessionId || '') ||
+      String(
+        store.childSessionStore.children.value.find(
+          (child) =>
+            child.parent_session_id === store.activeSessionId.value &&
+            child.parent_spawn_call_id === tool.id,
+        )?.session_id || '',
+      );
+    return id ? [id] : [];
+  }
+  if (name !== 'wait_agent' && name !== 'continue_agent') return [];
+  if (tool.agentSessionIds?.length) return tool.agentSessionIds;
+  try {
+    // Streaming tool results carry JSON; durable history exposes only the
+    // server-validated agent_session_ids rather than the full agent output.
+    const result: unknown = JSON.parse(tool.result || 'null');
+    const entries = name === 'wait_agent' && Array.isArray(result) ? result : [result];
+    const ids = entries.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const item = entry as Record<string, unknown>;
+      const id = item.session_id || item.agent_id;
+      return typeof id === 'string' && id ? [id] : [];
+    });
+    if (ids.length) return [...new Set(ids)].slice(0, 8);
+  } catch {
+    // A not-found or failed control result may be plain text.
+  }
+  try {
+    const args: unknown = JSON.parse(tool.arguments || 'null');
+    if (args && typeof args === 'object') {
+      const input = args as Record<string, unknown>;
+      const agentIds = name === 'wait_agent' ? input.agent_ids : [input.agent_id];
+      if (Array.isArray(agentIds)) {
+        const children = store.childSessionStore.children.value;
+        return [
+          ...new Set(
+            agentIds.filter(
+              (id): id is string =>
+                typeof id === 'string' &&
+                children.some(
+                  (child) =>
+                    child.parent_session_id === store.activeSessionId.value &&
+                    child.session_id === id,
+                ),
+            ),
+          ),
+        ].slice(0, 8);
+      }
+    }
+  } catch {
+    // Malformed arguments cannot establish child provenance.
+  }
+  return [];
 }
 
 function subagentActivity(tool: ToolCall): string {
@@ -454,10 +499,10 @@ function SubagentProgressLine({
       <div class="tool-progress">queued as detached job</div>
     ) : null;
   }
-  if (name !== 'spawn_agent' && name !== 'wait_for_jobs') return null;
+  if (!['spawn_agent', 'wait_agent', 'continue_agent', 'wait_for_jobs'].includes(name)) return null;
   // Result metadata only arrives after completion. While a spawn is running,
   // join its call ID to child provenance instead.
-  const childSessionId = subagentChildSessionId(store, tool);
+  const childSessionIds = subagentChildSessionIds(store, tool);
   const parts: string[] = [];
   const activity = subagentActivity(tool);
   if (name === 'wait_for_jobs') {
@@ -489,7 +534,7 @@ function SubagentProgressLine({
   const running =
     tool.status === 'running' &&
     (!progress || !['completed', 'failed', 'cancelled'].includes(progress.state));
-  return parts.length || childSessionId ? (
+  return parts.length || childSessionIds.length ? (
     <div class="tool-progress">
       {labelled && (
         <strong>
@@ -504,9 +549,9 @@ function SubagentProgressLine({
         active={tickElapsed}
         interrupted={store.runLivenessUnknown.value}
       />
-      {childSessionId && (
-        <>
-          {parts.length > 0 && ' · '}
+      {childSessionIds.map((childSessionId, index) => (
+        <span key={childSessionId}>
+          {(parts.length > 0 || index > 0) && ' · '}
           <button
             class="text-action"
             type="button"
@@ -514,10 +559,10 @@ function SubagentProgressLine({
               void store.resolveAndSelectSession(childSessionId, false, { prepend: false })
             }
           >
-            Open subagent
+            {childSessionIds.length > 1 ? `Open subagent ${index + 1}` : 'Open subagent'}
           </button>
-        </>
-      )}
+        </span>
+      ))}
     </div>
   ) : null;
 }
@@ -707,8 +752,8 @@ function ToolGroup({
     return (
       tool.subagentProgress ||
       name === 'wait_for_jobs' ||
-      (name === 'spawn_agent' &&
-        (tool.status === 'running' || Boolean(subagentChildSessionId(store, tool))))
+      (['spawn_agent', 'wait_agent', 'continue_agent'].includes(name) &&
+        (tool.status === 'running' || subagentChildSessionIds(store, tool).length > 0))
     );
   });
   const previews = delegations.slice(0, 3);

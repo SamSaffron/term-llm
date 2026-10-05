@@ -53,6 +53,7 @@ type serveRuntime struct {
 	engine                 *llm.Engine
 	toolMgr                *tools.ToolManager
 	spawnRunner            *SpawnAgentRunner // drained before provider cleanup and owned session-store closure
+	agentOwner             *agentHostOwner
 	mcpManager             *mcp.Manager
 	toolDiscovery          config.ToolDiscoveryConfig
 	store                  session.Store
@@ -420,7 +421,62 @@ func (rt *serveRuntime) Close() {
 	rt.CloseContext(context.Background())
 }
 
+func (rt *serveRuntime) CloseAfterRun(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if rt.spawnRunner != nil {
+		if err := rt.spawnRunner.Drain(ctx); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if tools.AgentCancelled(ctx) {
+				_ = rt.spawnRunner.CancelDescendants(shutdownCtx)
+			} else {
+				_ = rt.spawnRunner.Shutdown(shutdownCtx)
+			}
+			cancel()
+		}
+	}
+	// Cancellation of the run must not skip provider and store cleanup.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rt.closeContext(closeCtx, false)
+}
+
 func (rt *serveRuntime) CloseContext(ctx context.Context) {
+	if rt.agentOwner != nil && rt.spawnRunner != nil && len(rt.spawnRunner.OutstandingAgentIDs()) > 0 {
+		rt.agentOwner.adopt(rt, nil)
+		return
+	}
+	rt.closeContext(ctx, false)
+}
+
+// sessionChildrenSweep records, per invocation, that runOnce already stopped
+// the session's detached children, so runWithGoal does not sweep again.
+type sessionChildrenSweepKey struct{}
+
+type sessionChildrenSweep struct{ swept atomic.Bool }
+
+func withSessionChildrenSweep(ctx context.Context) (context.Context, *sessionChildrenSweep) {
+	sweep := &sessionChildrenSweep{}
+	return context.WithValue(ctx, sessionChildrenSweepKey{}, sweep), sweep
+}
+
+func markSessionChildrenSwept(ctx context.Context) {
+	if sweep, _ := ctx.Value(sessionChildrenSweepKey{}).(*sessionChildrenSweep); sweep != nil {
+		sweep.swept.Store(true)
+	}
+}
+
+// serveRuntimeClosedHook observes runtime closure in tests; nil in production.
+var serveRuntimeClosedHook func(*serveRuntime)
+
+func (rt *serveRuntime) closeContext(ctx context.Context, drain bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if hook := serveRuntimeClosedHook; hook != nil {
+		defer hook(rt)
+	}
 	sideCtx, sideCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	rt.sideQuestion.close(sideCtx)
 	sideCancel()
@@ -436,7 +492,7 @@ func (rt *serveRuntime) CloseContext(ctx context.Context) {
 	}
 	if ctx == nil || ctx.Done() == nil {
 		defer rt.mu.Unlock()
-		rt.closeLocked()
+		rt.closeLocked(ctx, drain)
 		return
 	}
 
@@ -447,7 +503,7 @@ func (rt *serveRuntime) CloseContext(ctx context.Context) {
 	go func() {
 		defer close(done)
 		defer rt.mu.Unlock()
-		rt.closeLocked()
+		rt.closeLocked(ctx, drain)
 	}()
 	select {
 	case <-done:
@@ -484,7 +540,14 @@ func (rt *serveRuntime) lockForClose(ctx context.Context) bool {
 	}
 }
 
-func (rt *serveRuntime) closeLocked() {
+func (rt *serveRuntime) closeLocked(ctx context.Context, drain bool) {
+	if rt.spawnRunner != nil && drain {
+		if err := rt.spawnRunner.Drain(ctx); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			_ = rt.spawnRunner.Shutdown(shutdownCtx)
+			cancel()
+		}
+	}
 	rt.clearPendingAskUsers()
 	rt.clearPendingApprovals()
 	if rt.mcpManager != nil {
@@ -494,8 +557,10 @@ func (rt *serveRuntime) closeLocked() {
 	if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
 		rt.toolMgr.ApprovalMgr.Close()
 	}
-	if rt.spawnRunner != nil {
-		rt.spawnRunner.Wait()
+	if rt.spawnRunner != nil && !drain {
+		shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
+		_ = rt.spawnRunner.Shutdown(shutdownCtx)
+		cancel()
 	}
 	if !rt.skipProviderCleanup {
 		if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {
@@ -1842,7 +1907,7 @@ func (rt *serveRuntime) collaborationRunBinding(ctx context.Context, sessionID s
 	return binding, rt.toolMgr.Registry.CollaborativeShellActivityController(), nil
 }
 
-func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (_ serveRunResult, runOnceErr error) {
 	releaseRootLease, err := rt.acquireRootCheckoutRunLease(ctx, req)
 	if err != nil {
 		return serveRunResult{}, err
@@ -1852,7 +1917,31 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}
+	// When this turn is stopped (user stop, rush, interrupt cancel, timeout or
+	// lease loss), the session's detached children stop with it: they end
+	// "interrupted" and stay resumable. They are selected and signalled while
+	// this turn still owns rt.mu, so a successor turn's children are never
+	// caught, and awaited only after the lock is released. A stop is either a
+	// stream that ended early with the run context cancelled, or a failure of
+	// this owned invocation with its context cancelled (setup, persistence).
+	// A completed turn (EventDone seen, or a nil error) never stops children.
+	var streamStopped, completedTurn bool
+	var awaitStopped func(context.Context) []string
+	defer func() {
+		if awaitStopped == nil {
+			return
+		}
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		awaitStopped(waitCtx)
+	}()
 	defer rt.mu.Unlock()
+	defer func() {
+		if streamStopped || (!completedTurn && runOnceErr != nil && ctx.Err() != nil) {
+			awaitStopped = tools.StopAgentsForParent(req.SessionID)
+			markSessionChildrenSwept(ctx)
+		}
+	}()
 	// Publish ownership immediately after this session's runtime is claimed.
 	// Hydration and persistence may block; they must not create a false idle
 	// window in which same-session boundary work can enter.
@@ -2065,8 +2154,26 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 
 	var streamErr error
 	var suspensionHandled bool
-	result, streamErr, suspensionHandled = rt.consumeRunStream(runCtx, ctx, stateful, persisted, req, onEvent)
+	// Judge the stop by how the stream ended, not at defer time: a request
+	// context cancelled after the turn completed must not interrupt children,
+	// even while the engine is still cleaning up after EventDone.
+	sawDone := false
+	trackDone := func(event llm.Event) error {
+		if event.Type == llm.EventDone {
+			sawDone = true
+		}
+		if onEvent != nil {
+			return onEvent(event)
+		}
+		return nil
+	}
+	result, streamErr, suspensionHandled = rt.consumeRunStream(runCtx, ctx, stateful, persisted, req, trackDone)
 	runErr = streamErr
+	if streamErr != nil && runCtx.Err() != nil && !sawDone {
+		streamStopped = true
+	} else if sawDone {
+		completedTurn = true
+	}
 	if streamErr != nil {
 		if suspensionHandled {
 			var suspended *llm.SuspendedError
