@@ -9,7 +9,7 @@ import (
 )
 
 func TestAgentAllowedModels(t *testing.T) {
-	agent := &Agent{Name: "reviewer", AllowedModels: []string{"openai:gpt-5.6-sol", "anthropic:claude-sonnet-4-6"}}
+	agent := &Agent{Name: "reviewer", AllowedModels: []string{"openai:gpt-5.6-sol", "anthropic:*"}}
 	if err := agent.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -20,12 +20,17 @@ func TestAgentAllowedModels(t *testing.T) {
 	}{
 		{"openai", "gpt-5.6-sol", true},
 		{"anthropic", "claude-sonnet-4-6", true},
+		{"anthropic", "future-model", true},
+		{"anthropic-other", "future-model", false},
 		{"openai", "claude-sonnet-4-6", false},
 		{"openai", "gpt-5.6-luna", false},
 	} {
 		err := agent.CheckModel(tc.provider, tc.model)
 		if (err == nil) != tc.allowed {
 			t.Errorf("CheckModel(%q, %q) error = %v, allowed = %v", tc.provider, tc.model, err, tc.allowed)
+		}
+		if err != nil && (!strings.Contains(err.Error(), "openai:gpt-5.6-sol") || !strings.Contains(err.Error(), "anthropic:*")) {
+			t.Errorf("denial should name the allowed selections: %v", err)
 		}
 	}
 	if err := (&Agent{Name: "reviewer"}).CheckModel("openai", "anything"); err != nil {
@@ -34,7 +39,7 @@ func TestAgentAllowedModels(t *testing.T) {
 }
 
 func TestAgentAllowedModelsRejectsMalformedEntry(t *testing.T) {
-	for _, entry := range []string{"openai", "openai:", ":model", "openai: model", "openai:model ", "openai:*"} {
+	for _, entry := range []string{"openai", "openai:", ":model", "openai: model", "openai:model ", "*:model", "open*:model", "openai:gpt-*", "openai:**", "openai:*:model"} {
 		agent := &Agent{Name: "reviewer", AllowedModels: []string{entry}}
 		if err := agent.Validate(); err == nil {
 			t.Errorf("Validate() accepted malformed allowed_models entry %q", entry)
