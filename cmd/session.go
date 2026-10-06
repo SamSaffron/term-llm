@@ -111,6 +111,33 @@ type CLIFlags struct {
 	NoSearch         bool
 	Files            []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
 	Platform         string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
+
+	// ActiveProvider and ActiveModel name the provider/model the caller has
+	// resolved for this run after CLI, request, agent, and config overrides.
+	// When ActiveProvider is set the pair wins over the agent's preference for
+	// prompt templating ({{provider}}, {{model}}) and model-gated user
+	// AGENTS.md blocks, so the prompt describes the model that actually runs.
+	ActiveProvider string
+	ActiveModel    string
+}
+
+// activeLLMFlags returns the ActiveProvider/ActiveModel pair for cfg once the
+// caller has applied its provider overrides.
+func activeLLMFlags(cfg *config.Config) (string, string) {
+	if cfg == nil {
+		return "", ""
+	}
+	return strings.TrimSpace(cfg.DefaultProvider), strings.TrimSpace(activeModel(cfg))
+}
+
+// applyActiveLLM replaces provider/model with the caller's resolved pair when
+// one is known. The model travels with its provider: a preferred model name is
+// never paired with a different provider.
+func (cli CLIFlags) applyActiveLLM(provider, model string) (string, string) {
+	if active := strings.TrimSpace(cli.ActiveProvider); active != "" {
+		return active, strings.TrimSpace(cli.ActiveModel)
+	}
+	return provider, model
 }
 
 // LoadAgent loads and validates an agent by name or path.
@@ -206,7 +233,9 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 			s.Model = agent.Model
 		}
 	}
-	// CLI provider flag is handled separately via applyProviderOverridesWithAgent
+	// The CLI provider flag itself is applied to cfg by
+	// applyProviderOverridesWithAgent; callers report the result here.
+	s.Provider, s.Model = cli.applyActiveLLM(s.Provider, s.Model)
 
 	// Read/Write/Shell dirs: CLI > agent
 	if len(cli.ReadDirs) > 0 {
@@ -315,6 +344,7 @@ func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIF
 			s.Model = agent.Model
 		}
 	}
+	s.Provider, s.Model = cli.applyActiveLLM(s.Provider, s.Model)
 	fileTrackingEnabled := cfg != nil && cfg.FileTracking.Enabled
 	if agent != nil {
 		s.AgentName = agent.Name

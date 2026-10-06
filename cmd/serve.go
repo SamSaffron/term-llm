@@ -552,19 +552,22 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return err
 	}
 
+	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
-		Provider:      serveProvider,
-		Tools:         serveTools,
-		ReadDirs:      serveReadDirs,
-		WriteDirs:     serveWriteDirs,
-		ShellAllow:    serveShellAllow,
-		MCP:           serveMCP,
-		SystemMessage: serveSystemMessage,
-		MaxTurns:      serveMaxTurns,
-		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
-		Search:        serveSearch,
-		NoSearch:      serveNoSearch,
-		Platform:      singleServeTemplatePlatform(platformNames),
+		Provider:       serveProvider,
+		ActiveProvider: promptProvider,
+		ActiveModel:    promptModel,
+		Tools:          serveTools,
+		ReadDirs:       serveReadDirs,
+		WriteDirs:      serveWriteDirs,
+		ShellAllow:     serveShellAllow,
+		MCP:            serveMCP,
+		SystemMessage:  serveSystemMessage,
+		MaxTurns:       serveMaxTurns,
+		MaxTurnsSet:    cmd.Flags().Changed("max-turns"),
+		Search:         serveSearch,
+		NoSearch:       serveNoSearch,
+		Platform:       singleServeTemplatePlatform(platformNames),
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return err

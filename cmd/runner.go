@@ -623,8 +623,11 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 	if req.Engine != nil {
 		inputs = &sessionInputSelection{BasePrompt: req.SystemMessage, Prompt: req.SystemMessage, Tools: req.Tools}
 	}
+	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
 		inputs:           inputs,
+		ActiveProvider:   promptProvider,
+		ActiveModel:      promptModel,
 		ToolsSet:         r.defaults.ToolsSet,
 		SystemMessageSet: r.defaults.SystemMessageSet,
 		Provider:         providerFlag,
