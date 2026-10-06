@@ -34,7 +34,7 @@ Raw model reasoning is never included implicitly, even when `reasoning.export: r
 
 Tool output can contain secrets: commands, environment variables, file contents, and diffs all end up there. To share a conversation without any tool calls or tool output, use `/share notools` or `--no-tools`, clear the Web UI's **Include tool activity** checkbox, or set `include_tools: false` in the API.
 
-Your messages and the assistant's replies are kept, and so are images that were shown to you, such as `image_generate` output or media shown with `show_media` (unless images are excluded too). Images that only appeared inside tool output, such as screenshots a tool inspected, are dropped. Response-only shares never include tool activity.
+Your messages and the assistant's replies are kept, and so are images that were shown to you, such as `image_generate` output or media shown with `show_media` (unless images are excluded too). Images that only appeared inside tool output, such as screenshots a tool inspected, are dropped. Response-only shares never include tool activity or earlier progress updates.
 
 Removing tool activity does not redact anything else. The assistant's replies can still repeat something a tool saw, so review a share before sending the link.
 
@@ -53,7 +53,7 @@ How images travel depends on the provider:
 - Providers that list `image/png` or `image/jpeg` in `asset_media_types` (see below) receive each image once as a separate `assets/<hash>.<ext>` file. Each image is at most 2048 px on the longest edge and 8 MiB, with at most 30 images and 24 MiB per share. Both `index.html` and `session.md` reference them with relative URLs.
 - Other providers, including GitHub Gist, get images embedded in `index.html` as `data:` URIs, at most 1600 px on the longest edge and 2 MiB in total. `session.md` omits images, and each `show_media` reference in a reply becomes a short note. Other image links in message text are left as written.
 
-A response-only share contains the assistant's final answer: the text written after the response's last tool call, preceded by any images shown during the response, such as generated images or media shown with `show_media`. Progress updates written between tool calls are left out, as is the tool activity itself. If no text follows the last tool call, the last text written before it is used.
+A response-only share contains any images shown during the response, such as generated images or media shown with `show_media`, followed by the assistant's final answer: the text written after the response's last tool call. Progress updates written before the last tool call are left out, as is the tool activity itself. If no text follows the last tool call, the last text written before it is used.
 
 The Web UI shares either one response or the visible conversation through that response. These point-in-time Web shares are deliberately **not persisted**. A later whole-session update therefore cannot add broader content to a response-only URL.
 

@@ -42,7 +42,7 @@ export const includedSummary = (
   const excluded: string[] = [];
   if (scope === 'response') {
     included.push('the assistant’s final answer');
-    excluded.push('your messages', 'progress updates', 'tool activity');
+    excluded.push('your messages', 'earlier progress updates', 'tool activity');
   } else {
     included.push('your messages', 'the assistant’s replies');
     (includeTools ? included : excluded).push('tool activity');
@@ -229,8 +229,8 @@ export function ShareModal() {
                   <span>
                     <strong>This response</strong>
                     <small>
-                      Just the assistant’s final answer, without the progress updates it wrote along
-                      the way. No prompts or tool activity.
+                      Just the assistant’s final answer. Your messages, tool activity, and earlier
+                      progress updates are left out.
                     </small>
                   </span>
                 </label>
