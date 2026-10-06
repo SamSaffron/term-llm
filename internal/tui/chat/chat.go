@@ -305,6 +305,7 @@ type Model struct {
 	providerKey                string
 	modelName                  string
 	agentName                  string
+	allowedModels              []string
 
 	platformDeveloperMessage string
 	currentOrigin            session.SessionOrigin

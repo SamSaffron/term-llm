@@ -8,6 +8,40 @@ import (
 	"testing"
 )
 
+func TestAgentAllowedModels(t *testing.T) {
+	agent := &Agent{Name: "reviewer", AllowedModels: []string{"openai:gpt-5.6-sol", "anthropic:claude-sonnet-4-6"}}
+	if err := agent.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	for _, tc := range []struct {
+		provider string
+		model    string
+		allowed  bool
+	}{
+		{"openai", "gpt-5.6-sol", true},
+		{"anthropic", "claude-sonnet-4-6", true},
+		{"openai", "claude-sonnet-4-6", false},
+		{"openai", "gpt-5.6-luna", false},
+	} {
+		err := agent.CheckModel(tc.provider, tc.model)
+		if (err == nil) != tc.allowed {
+			t.Errorf("CheckModel(%q, %q) error = %v, allowed = %v", tc.provider, tc.model, err, tc.allowed)
+		}
+	}
+	if err := (&Agent{Name: "reviewer"}).CheckModel("openai", "anything"); err != nil {
+		t.Fatalf("unset allowlist should allow any model: %v", err)
+	}
+}
+
+func TestAgentAllowedModelsRejectsMalformedEntry(t *testing.T) {
+	for _, entry := range []string{"openai", "openai:", ":model", "openai: model", "openai:model ", "openai:*"} {
+		agent := &Agent{Name: "reviewer", AllowedModels: []string{entry}}
+		if err := agent.Validate(); err == nil {
+			t.Errorf("Validate() accepted malformed allowed_models entry %q", entry)
+		}
+	}
+}
+
 func TestAgentTimeGroundingDefaultsOffAndAllowsOptIn(t *testing.T) {
 	enabled := true
 	disabled := false
@@ -42,6 +76,7 @@ func TestLoadFromDir(t *testing.T) {
 description: "A test agent"
 provider: anthropic
 model: claude-sonnet-4-5
+allowed_models: [anthropic:claude-sonnet-4-5, openai:gpt-5.6-sol]
 time_grounding: false
 tools:
   enabled: [read, glob, grep]
@@ -82,6 +117,9 @@ mcp:
 	}
 	if agent.Model != "claude-sonnet-4-5" {
 		t.Errorf("Model = %q, want %q", agent.Model, "claude-sonnet-4-5")
+	}
+	if len(agent.AllowedModels) != 2 || agent.AllowedModels[0] != "anthropic:claude-sonnet-4-5" {
+		t.Errorf("AllowedModels = %#v", agent.AllowedModels)
 	}
 	if agent.TimeGroundingEnabled() {
 		t.Error("TimeGroundingEnabled() = true, want false from YAML")

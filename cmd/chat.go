@@ -584,15 +584,11 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		if model := strings.TrimSpace(sess.Model); model != "" {
 			providerOverride = resumeProvider + ":" + model
 		}
-		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, providerOverride, "", ""); err != nil {
+		if err := applyAgentProviderModelPolicy(cfg, cfg.Chat.Provider, cfg.Chat.Model, providerOverride, agent, false); err != nil {
 			return nil, err
 		}
 	} else {
-		agentProvider, agentModel := "", ""
-		if agent != nil {
-			agentProvider, agentModel = agent.Provider, agent.Model
-		}
-		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agentProvider, agentModel); err != nil {
+		if err := applyAgentProviderModelPolicy(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agent, false); err != nil {
 			return nil, err
 		}
 	}
@@ -810,6 +806,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// the background so opening it never waits on them.
 	llm.DefaultProviderCredentials.Warm()
 	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
+	if agent != nil {
+		model.SetAllowedModels(agent.AllowedModels)
+	}
 	model.SetAgentMentionCapability(runtimeAgentMentionCapability{engine: model.CurrentAgentMentionEngine, manager: toolMgr})
 	if sess != nil {
 		model.SetConversationBranch(sessionIsConversationBranch(context.Background(), store, sess.ID))

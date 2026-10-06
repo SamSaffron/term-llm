@@ -246,13 +246,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Apply provider overrides: CLI > agent > config
-	agentProvider := ""
-	agentModel := ""
-	if agent != nil {
-		agentProvider = agent.Provider
-		agentModel = agent.Model
-	}
-	if err := applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, askProvider, agentProvider, agentModel); err != nil {
+	if err := applyAgentProviderModelPolicy(cfg, cfg.Ask.Provider, cfg.Ask.Model, askProvider, agent, askFast); err != nil {
 		return err
 	}
 
@@ -345,7 +339,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		storeCleanup()
 	}()
 	// Apply persisted settings and refreshable inputs before tool/MCP setup.
-	sess, inputTicket, selectedInputs, resuming, err := prepareAskResume(ctx, cmd, cfg, agent, store, &settings)
+	sess, inputTicket, selectedInputs, resuming, err := prepareAskResumeWithModelPolicy(ctx, cmd, cfg, agent, store, &settings, askFast)
 	if err != nil {
 		return err
 	}

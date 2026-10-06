@@ -14,6 +14,18 @@ import (
 	"github.com/samsaffron/term-llm/internal/skills"
 )
 
+func prepareAskResumeWithModelPolicy(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *SessionSettings, fast bool) (*session.Session, *sessionInputTicket, *sessionInputSelection, bool, error) {
+	sess, ticket, selected, resuming, err := prepareAskResume(ctx, cmd, cfg, agent, store, settings)
+	if err != nil || sess == nil || strings.TrimSpace(sess.Agent) == "" {
+		return sess, ticket, selected, resuming, err
+	}
+	resumedAgent, err := LoadAgent(sess.Agent, cfg)
+	if err == nil {
+		err = checkAgentModel(resumedAgent, cfg, fast)
+	}
+	return sess, ticket, selected, resuming, err
+}
+
 func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *sessionInputSelection, setup *skills.Setup, cfg *config.Config, provider llm.Provider, resuming bool) (string, string) {
 	sessionID := ""
 	if sess != nil {
