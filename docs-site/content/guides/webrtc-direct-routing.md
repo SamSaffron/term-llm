@@ -69,7 +69,7 @@ term-llm serve web --webrtc \
 WebRTC direct routing does not weaken the existing auth model:
 
 - **Auth tokens travel inside the data channel.** Every request frame includes the same `Authorization: Bearer` header that HTTPS requests carry. The existing auth middleware validates it.
-- **DTLS encrypts the data channel.** The ICE connection is upgraded through DTLS with certificate fingerprint verification against the SDP offer, preventing man-in-the-middle attacks even if the signaling server is compromised.
+- **DTLS encrypts the data channel** and verifies peer certificates against fingerprints exchanged through signaling. The signaling service must therefore be trusted: these checks do not prevent interception by a compromised signaling service that substitutes SDP.
 - **Path validation.** Only paths under `{basePath}/v1/` are dispatched. Requests for static assets, admin endpoints, or path-traversal attempts are rejected before reaching the HTTP handler.
 - **Body size limit.** Request bodies larger than 10 MB are rejected.
 - **Connection cap.** The `--webrtc-max-conns` flag limits concurrent WebRTC connections to prevent resource exhaustion.
