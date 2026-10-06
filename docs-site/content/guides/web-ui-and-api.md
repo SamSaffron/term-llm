@@ -513,7 +513,7 @@ Relevant options include:
 - `--tools`, `--read-dir`, `--write-dir`, `--shell-allow`
 - `--base-path`
 - `--title` (overrides the web UI sidebar title; also configurable as `serve.title`)
-- `--response-timeout` (maximum inactivity before the first or next completed LLM response, default `30m`; each completed LLM response refreshes the clock, interactive approval or `ask_user` waits pause it, and verified deadline-bounded subagent or queued delegations pause it for at most one hour plus a 30-second completion grace each; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
+- `--response-timeout` (maximum inactivity before the first or next completed LLM response, default `30m`; each completed LLM response refreshes the clock, interactive approval, `ask_user`, and native `spawn_agent`/`wait_agent`/`continue_agent` collection waits pause it, and verified deadline-bounded **jobs-v2** delegations can pause it for at most one hour plus a 30-second completion grace each; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`). This bounds a web *parent response*, not a `spawn_agent` child: native children have **no execution deadline**, and `wait`/deprecated `timeout` only bound collection.
 - `--cors-origin`
 - `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 

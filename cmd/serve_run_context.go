@@ -31,11 +31,18 @@ func (rt *serveRuntime) prepareRunContext(ctx context.Context, collaboration too
 		ctx = tools.ContextWithAskUserUIFunc(ctx, askUser)
 	}
 	if rt.platform == "web" {
+		if rt.completionWake != nil {
+			ctx = tools.ContextWithAgentCompletionWake(ctx, rt.completionWake)
+		}
 		if callback := rt.subagentProgressCallback(); callback != nil {
 			ctx = tools.ContextWithSubagentEventCallback(ctx, callback)
 		}
 		if strings.TrimSpace(req.SessionID) != "" {
-			ctx = tools.ContextWithQueueAgentOrigin(ctx, tools.QueueAgentOriginContext{Origin: tools.QueueAgentOriginWeb, SessionID: req.SessionID})
+			origin := tools.QueueAgentOriginContext{Origin: tools.QueueAgentOriginWeb, SessionID: req.SessionID}
+			if run := responseRunFromContext(ctx); run != nil {
+				origin.ResponseID = run.id
+			}
+			ctx = tools.ContextWithQueueAgentOrigin(ctx, origin)
 		}
 	}
 	model, effort := strings.TrimSpace(req.Model), strings.TrimSpace(req.ReasoningEffort)

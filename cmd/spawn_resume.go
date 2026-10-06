@@ -15,7 +15,7 @@ import (
 // ContinueAgent starts another execution on the same child session. The
 // transcript is repaired before the runner can sanitize or send it to a model.
 func (r *SpawnAgentRunner) ContinueAgent(ctx context.Context, id, name, instructions string, depth int, callID string, opts tools.SpawnAgentRunOptions, cb tools.SubagentEventCallback) (tools.SpawnAgentRunResult, error) {
-	request := runpkg.ChildRunRequest{Kind: runpkg.ChildRunSpawnAgent, RunID: callID, ChildSessionID: id, AgentName: name, Resume: true, Instructions: instructions, Depth: depth, ModelOverride: opts.ModelOverride}
+	request := runpkg.ChildRunRequest{Kind: runpkg.ChildRunSpawnAgent, RunID: callID, ChildSessionID: id, AgentName: name, Resume: true, Instructions: instructions, Depth: depth, ModelOverride: opts.ModelOverride, BaseDir: opts.BaseDir}
 	callback := func(runID string, event tools.SubagentEvent) { cb(runID, event) }
 	result, err := r.runChildInternal(ctx, request, callback)
 	return tools.SpawnAgentRunResult{Output: result.Output, SessionID: result.ChildSessionID, Interventions: result.Interventions, InterventionDisposition: result.InterventionDisposition, CancelledByUser: result.CancelledByUser}, err

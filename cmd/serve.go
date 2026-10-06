@@ -1445,6 +1445,11 @@ type serveServer struct {
 	sessionToResponse        sync.Map // session_id (string) → latest response_id (string)
 	branchNotes              sync.Map // child session_id → in-flight path-note preparation
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
+	restoringWebRuns         bool
+	agentWakeMu              sync.Mutex
+	agentWakeActive          map[string]bool
+	agentWakeSignals         map[string]uint64
+	agentWakeWG              sync.WaitGroup
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
 	agentOwner               *agentHostOwner
@@ -1762,10 +1767,12 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
+	defer s.agentWakeWG.Wait()
 	s.closeLiveSessions(ctx)
 	if err := s.agentOwner.Shutdown(ctx); err != nil {
 		return err
 	}
+	s.agentWakeWG.Wait()
 	s.closeShellManager()
 	s.stopEventWatcher()
 	// Synchronize with a concurrently starting lifecycle loop, or permanently

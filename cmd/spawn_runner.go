@@ -163,6 +163,8 @@ func (r *SpawnAgentRunner) warn(format string, args ...any) {
 	}
 }
 
+func (r *SpawnAgentRunner) AgentWorkingDir() string { return r.currentBaseDir() }
+
 func (r *SpawnAgentRunner) ParentAgentSessionID() string { return r.parentSessionID }
 
 func (r *SpawnAgentRunner) AgentApprovalScope(parent string) *tools.ApprovalManager {
@@ -286,6 +288,7 @@ func (r *SpawnAgentRunner) buildRunRequest(ctx context.Context, agentName, promp
 		AgentName:      agentName,
 		Prompt:         prompt,
 		ModelOverride:  opts.ModelOverride,
+		BaseDir:        opts.BaseDir,
 		ChildSessionID: opts.ChildSessionID,
 		Depth:          depth,
 	}
@@ -425,6 +428,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		AgentName:      agentName,
 		Prompt:         prompt,
 		ModelOverride:  opts.ModelOverride,
+		BaseDir:        opts.BaseDir,
 		ChildSessionID: opts.ChildSessionID,
 		Depth:          depth,
 	}

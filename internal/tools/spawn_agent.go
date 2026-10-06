@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -17,11 +19,13 @@ import (
 
 // SpawnAgentArgs are the arguments for the spawn_agent tool.
 type SpawnAgentArgs struct {
-	AgentName string `json:"agent_name"`        // Required: name of the agent to spawn
-	Prompt    string `json:"prompt"`            // Required: task/prompt for the sub-agent
-	Timeout   int    `json:"timeout,omitempty"` // Deprecated alias for wait (seconds)
-	Wait      *int   `json:"wait,omitempty"`    // Time to wait, not a child deadline
-	Model     string `json:"model,omitempty"`   // Optional: exact provider:model override
+	AgentName      string `json:"agent_name"`                 // Required: name of the agent to spawn
+	Prompt         string `json:"prompt"`                     // Required: task/prompt for the sub-agent
+	Timeout        int    `json:"timeout,omitempty"`          // Deprecated alias for wait (seconds)
+	Wait           *int   `json:"wait,omitempty"`             // Time to wait, not a child deadline
+	Model          string `json:"model,omitempty"`            // Optional: exact provider:model override
+	CWD            string `json:"cwd,omitempty"`              // Optional: existing child working directory
+	NotifyWhenDone bool   `json:"notify_when_done,omitempty"` // Reactivate parent session after completion
 }
 
 // Interventions carry a delivery disposition because queue acceptance is not
@@ -167,6 +171,7 @@ type SpawnAgentRunner interface {
 type SpawnAgentRunOptions struct {
 	ModelOverride  string
 	ChildSessionID string
+	BaseDir        string
 }
 
 // SpawnAgentRunnerWithOptions can run sub-agents with call-specific overrides.
@@ -186,7 +191,7 @@ const DefaultSubagentMaxTurns = 500
 type SpawnConfig struct {
 	MaxParallel    int               // Max concurrent sub-agents (default 3)
 	MaxDepth       int               // Max nesting level (default 2)
-	DefaultTimeout int               // Default timeout in seconds (default 300)
+	DefaultTimeout int               // Default caller wait budget in seconds (default 300); never a child deadline
 	AllowedAgents  []string          // Optional whitelist of allowed agents
 	AgentModels    map[string]string // Optional per-spawn model overrides by agent name
 }
@@ -321,7 +326,9 @@ Guidelines:
 					"minimum":     0,
 					"maximum":     3600,
 				},
-				"wait": map[string]any{"type": "integer", "description": "Seconds to wait before detaching; 0 returns immediately (default 300)", "minimum": 0, "maximum": 3600},
+				"wait":             map[string]any{"type": "integer", "description": "Seconds to wait before detaching; 0 returns immediately (default 300)", "minimum": 0, "maximum": 3600},
+				"notify_when_done": map[string]any{"type": "boolean", "description": "Wake the original parent agent loop when the child finishes; requires a supported persistent host session"},
+				"cwd":              map[string]any{"type": "string", "description": "Optional existing child working directory; relative paths resolve against the parent's current working directory. Access still requires normal workspace approval."},
 				"model": map[string]any{
 					"type":        "string",
 					"description": "Optional model override in exact provider:model format. If omitted, the sub-agent uses its configured/default model.",
@@ -521,34 +528,36 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	if modelOverride == "" {
 		modelOverride = strings.TrimSpace(t.config.AgentModels[a.AgentName])
 	}
+	baseDir, cwdErr := resolveAgentCWD(runner, a.CWD)
+	if cwdErr != nil {
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, cwdErr.Error()), false), nil
+	}
+	origin := t.trustedCompletionOrigin(ctx)
+	if a.NotifyWhenDone && origin == "" {
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "notify_when_done requires a persistent web parent session with loop reactivation"), false), nil
+	}
 	callID := llm.CallIDFromContext(ctx)
 	executionCallback := SubagentEventCallbackFromContext(ctx)
 	cb := func(eventCallID string, event SubagentEvent) {
 		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
 	}
-	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", session.AgentRun{})
+	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", session.AgentRun{BaseDir: baseDir, NotifyWhenDone: a.NotifyWhenDone, NotifyOrigin: origin})
 	if startErr != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}
 	sessionless := entry.record.ParentSessionID == ""
 	if sessionless {
-		// Without a parent session no lifecycle tool can ever address this
-		// child (they are scoped to the parent session), so detaching it would
-		// orphan it. Hosts without sessions, such as loop, keep the original
-		// synchronous contract: the budget is a hard deadline (clamped to
-		// 10..3600s as before), and the child is interrupted when it expires
-		// or the turn is stopped. Settlement after that is bounded too, in
-		// case a runner ignores cancellation.
-		deadline := budget
-		if deadline < 10 {
-			deadline = 10
-		}
-		if !t.manager.wait(ctx, entry, time.Duration(deadline)*time.Second) {
+		// A sessionless host cannot address a detached child with lifecycle tools.
+		// Keep it synchronous with no execution deadline. Explicit parent stop
+		// interrupts the child; wait is only a collection budget in sessions.
+		select {
+		case <-entry.done:
+		case <-ctx.Done():
 			t.manager.mu.Lock()
 			entry.shutdown = true
 			t.manager.mu.Unlock()
 			entry.interrupt()
-			t.manager.wait(context.Background(), entry, 10*time.Second)
+			<-entry.done
 		}
 	} else {
 		t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
@@ -560,6 +569,42 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		out = withoutLifecycleHints(out)
 	}
 	return out, nil
+}
+
+// resolveAgentCWD snapshots the parent's actual directory before launch. An
+// unbound web session cannot resolve relative paths against the daemon CWD.
+func resolveAgentCWD(runner SpawnAgentRunner, cwd string) (string, error) {
+	baseDir := ""
+	if provider, ok := runner.(interface{ AgentWorkingDir() string }); ok {
+		baseDir = provider.AgentWorkingDir()
+	}
+	if cwd == "" {
+		return baseDir, nil
+	}
+	if !filepath.IsAbs(cwd) {
+		if baseDir == "" {
+			return "", errors.New("relative cwd requires a bound parent working directory")
+		}
+		cwd = filepath.Join(baseDir, cwd)
+	}
+	resolved, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("cwd must be an existing directory")
+	}
+	return resolved, nil
+}
+
+func (t *SpawnAgentTool) trustedCompletionOrigin(ctx context.Context) string {
+	parent := llm.SessionIDFromContext(ctx)
+	origin, ok := QueueAgentOriginFromContext(ctx)
+	if parent != "" && ok && origin.Origin == QueueAgentOriginWeb && origin.SessionID == parent && agentCompletionWake(ctx) != nil && t.manager.store != nil {
+		return QueueAgentOriginWeb
+	}
+	return ""
 }
 
 // withoutLifecycleHints drops resume/wait guidance that a session-less host
@@ -612,20 +657,6 @@ func classifySpawnAgentError(err error, parentCtx, childCtx context.Context) Too
 		return ErrTimeout
 	}
 	return ErrExecutionFailed
-}
-
-// spawnAgentErrorMessage formats runner/context errors without discarding any partial run result.
-func spawnAgentErrorMessage(err error, parentCtx, childCtx context.Context, agentName string, timeout int) string {
-	if llm.IsMaxTurnsExceeded(err) {
-		return fmt.Sprintf("agent '%s' stopped after reaching max turns: %v", agentName, err)
-	}
-	if errors.Is(err, context.DeadlineExceeded) || parentCtx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
-		return fmt.Sprintf("agent '%s' timed out after %d seconds", agentName, timeout)
-	}
-	if errors.Is(err, context.Canceled) || parentCtx.Err() == context.Canceled || childCtx.Err() == context.Canceled {
-		return "agent execution cancelled"
-	}
-	return fmt.Sprintf("agent execution failed: %v", err)
 }
 
 // formatError formats an error result.

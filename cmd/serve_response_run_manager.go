@@ -467,6 +467,7 @@ func (s *serveServer) startResponseLifecycle() {
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			s.sweepAndRenewResponseLifecycle(ctx, lifecycle, ownerID)
+			s.reconcileAgentWakes(ctx)
 			for {
 				select {
 				case <-ctx.Done():
@@ -569,6 +570,7 @@ func (s *serveServer) sweepAndRenewResponseLifecycle(ctx context.Context, lifecy
 	recovered, err := lifecycle.RecoverExpiredResponseRuns(recoverCtx, 100)
 	cancel()
 	if len(recovered) > 0 {
+		s.reconcileAgentWakes(ctx)
 		s.attentionDiagnostics.OrphanRecoveries.Add(uint64(len(recovered)))
 		s.attentionDiagnostics.MarkerWrites.Add(uint64(len(recovered)))
 	}
@@ -982,7 +984,12 @@ func (m *responseRunManager) CloseContext(ctx context.Context) {
 
 	for _, run := range runs {
 		run.cancelPendingInteractions("cancelled-by-agent")
-		_ = run.cancelRun()
+		run.mu.Lock()
+		cancel := run.cancel
+		run.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 	}
 	waitDone := make(chan struct{})
 	go func() {
