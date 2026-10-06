@@ -138,6 +138,7 @@ description: Reviews code for best practices and potential issues
 
 provider: anthropic
 model: claude-sonnet-4-6
+allowed_models: [anthropic:claude-sonnet-4-6, openai:gpt-5.6-sol]
 
 tools:
   enabled: [read_file, grep, glob]
@@ -159,6 +160,8 @@ mcp:
 ```
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`, `contain`.
+
+`allowed_models` is optional. When set, every run of that agent must use one of the exact `provider:model` pairs, including direct sessions, spawned agents, and queued jobs. An explicit model override outside the list fails before a model request. The `model: fast` alias is checked after it resolves to a provider and model. Each reasoning-effort model ID is a separate entry. An empty or omitted list leaves model selection unrestricted. A terminal `/model` switch to a disallowed model is rejected. The web UI may still display disallowed models in its picker; the server rejects those choices when it creates or changes the agent runtime.
 
 ## Time grounding
 

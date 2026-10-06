@@ -268,11 +268,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 	// Apply provider overrides before resolving the prompt so it is built for
 	// the provider/model the loop will actually run.
-	agentProvider, agentModel := "", ""
-	if agent != nil {
-		agentProvider, agentModel = agent.Provider, agent.Model
-	}
-	if err := applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, loopProvider, agentProvider, agentModel); err != nil {
+	if err := applyAgentProviderModelPolicy(cfg, cfg.Ask.Provider, cfg.Ask.Model, loopProvider, agent, false); err != nil {
 		return err
 	}
 

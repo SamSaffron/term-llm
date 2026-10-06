@@ -647,6 +647,9 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 	if err != nil {
 		return SessionSettings{}, err
 	}
+	if err := checkAgentModel(agent, cfg, r.defaults.Fast); err != nil {
+		return SessionSettings{}, err
+	}
 	explicitBinding := strings.TrimSpace(req.Cwd) != ""
 	localLaunch := req.Platform == runpkg.PlatformConsole || req.Platform == runpkg.PlatformChat || req.Platform == runpkg.PlatformExec
 	if explicitBinding || localLaunch {

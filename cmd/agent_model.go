@@ -4,9 +4,36 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func checkAgentModel(agent *agents.Agent, cfg *config.Config, fast bool) error {
+	if agent == nil || len(agent.AllowedModels) == 0 {
+		return nil
+	}
+	provider, model := strings.TrimSpace(cfg.DefaultProvider), strings.TrimSpace(activeModel(cfg))
+	if fast {
+		var err error
+		provider, model, _, err = resolveAgentModelOverride(cfg, agentFastModelAlias)
+		if err != nil {
+			return err
+		}
+	}
+	return agent.CheckModel(provider, model)
+}
+
+func applyAgentProviderModelPolicy(cfg *config.Config, cmdProvider, cmdModel, providerFlag string, agent *agents.Agent, fast bool) error {
+	agentProvider, agentModel := "", ""
+	if agent != nil {
+		agentProvider, agentModel = agent.Provider, agent.Model
+	}
+	if err := applyProviderOverridesWithAgent(cfg, cmdProvider, cmdModel, providerFlag, agentProvider, agentModel); err != nil {
+		return err
+	}
+	return checkAgentModel(agent, cfg, fast)
+}
 
 const agentFastModelAlias = "fast"
 

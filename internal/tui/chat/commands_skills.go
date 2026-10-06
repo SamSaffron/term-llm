@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -203,6 +204,11 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	return m.switchModelWithOptions(providerModel, switchModelOptions{})
 }
 
+// SetAllowedModels installs the current agent's model policy for in-session switches.
+func (m *Model) SetAllowedModels(models []string) {
+	m.allowedModels = append([]string(nil), models...)
+}
+
 func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOptions) (tea.Model, tea.Cmd) {
 	parts := strings.SplitN(providerModel, ":", 2)
 	if len(parts) != 2 {
@@ -211,6 +217,9 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 
 	providerName := parts[0]
 	modelName := parts[1]
+	if err := (&agents.Agent{Name: m.agentName, AllowedModels: m.allowedModels}).CheckModel(providerName, modelName); err != nil {
+		return m.showSystemMessage(err.Error())
+	}
 
 	oldProvider := strings.TrimSpace(m.providerKey)
 	if oldProvider == "" {

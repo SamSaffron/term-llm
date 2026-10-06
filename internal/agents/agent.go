@@ -52,6 +52,8 @@ type Agent struct {
 	// Model preferences (optional)
 	Provider string `yaml:"provider,omitempty"`
 	Model    string `yaml:"model,omitempty"`
+	// AllowedModels restricts this agent to exact provider:model pairs when set.
+	AllowedModels []string `yaml:"allowed_models,omitempty"`
 
 	// Tool configuration
 	Tools ToolsConfig `yaml:"tools,omitempty"`
@@ -435,6 +437,12 @@ func (a *Agent) Validate() error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
+	for _, entry := range a.AllowedModels {
+		provider, model, found := strings.Cut(entry, ":")
+		if !found || provider == "" || model == "" || strings.ContainsAny(entry, "* \t\r\n") {
+			return fmt.Errorf("invalid allowed_models entry %q: expected exact provider:model", entry)
+		}
+	}
 	if a.Workspace != "" && a.Workspace != "auto" && a.Workspace != "none" {
 		return fmt.Errorf("invalid workspace policy %q (valid: auto, none)", a.Workspace)
 	}
@@ -490,6 +498,21 @@ func (a *Agent) Validate() error {
 	}
 
 	return nil
+}
+
+// CheckModel rejects a resolved provider/model pair outside this agent's list.
+// An omitted list preserves the unrestricted behavior of existing agents.
+func (a *Agent) CheckModel(provider, model string) error {
+	if a == nil || len(a.AllowedModels) == 0 {
+		return nil
+	}
+	selected := provider + ":" + model
+	for _, allowed := range a.AllowedModels {
+		if selected == allowed {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q is not allowed for agent %q", selected, a.Name)
 }
 
 func (a *Agent) validateOutputTool() error {

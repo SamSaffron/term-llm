@@ -3340,6 +3340,26 @@ func TestSwitchModel_UpdatesSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestSwitchModelRejectsAgentDisallowedModel(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.agentName = "reviewer"
+	m.SetAllowedModels([]string{"debug:allowed"})
+	m.sess = &session.Session{ID: "restricted", ProviderKey: "debug", Model: "allowed"}
+	m.providerKey, m.modelName = "debug", "allowed"
+	m.engine = llm.NewEngine(llm.NewMockProvider("debug"), nil)
+
+	result, _ := m.switchModel("debug:denied")
+	got := result.(*Model)
+	if got.providerKey != "debug" || got.modelName != "allowed" || got.sess.Model != "allowed" {
+		t.Fatalf("disallowed switch changed model: provider=%q model=%q session=%q", got.providerKey, got.modelName, got.sess.Model)
+	}
+	if store.updated != nil {
+		t.Fatal("disallowed switch persisted session changes")
+	}
+}
+
 func TestSwitchModel_WithExistingHistoryPersistsModelSwapEventMarker(t *testing.T) {
 	store := &mockStore{}
 	m := newCmdTestModel(store)
