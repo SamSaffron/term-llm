@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'preact/hooks';
+import type { RefObject } from 'preact';
+import { useLayoutEffect, useRef } from 'preact/hooks';
 
 type SwipeAxis = 'x' | 'y';
 type SwipeDirection = -1 | 1;
@@ -20,12 +21,12 @@ interface EdgeSwipeOpenOptions {
 }
 
 export function useEdgeSwipeOpen(
-  surface: preact.RefObject<HTMLElement>,
+  surface: RefObject<HTMLElement | null>,
   { enabled, edge = 'left', property, onOpen }: EdgeSwipeOpenOptions,
 ): void {
   const openRef = useRef(onOpen);
   openRef.current = onOpen;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = surface.current;
     if (!enabled || !node) return;
     let pointerID: number | null = null;
@@ -98,13 +99,13 @@ const START_DISTANCE = 10;
 const VELOCITY_THRESHOLD = 0.55;
 
 export function useSwipeDismiss(
-  surface: preact.RefObject<HTMLElement>,
+  surface: RefObject<HTMLElement | null>,
   { enabled, axis, direction, property, onDismiss, handleSelector }: SwipeDismissOptions,
 ): void {
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = surface.current;
     if (!enabled || !node) return;
 

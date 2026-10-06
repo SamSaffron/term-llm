@@ -1,3 +1,4 @@
+import type { TargetedKeyboardEvent } from 'preact';
 import { relativeTime } from '../domain/time';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
@@ -157,7 +158,7 @@ function WorktreeOption({
     if (!mainAhead && !mainBehind) state.push(`Up to date with ${mainLabel}`);
   }
   const disabled = !draft && root && (current || Boolean(actionDisabled));
-  const move = (event: preact.JSX.TargetedKeyboardEvent<HTMLButtonElement>) => {
+  const move = (event: TargetedKeyboardEvent<HTMLButtonElement>) => {
     if (!draft || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const options = [
       ...(event.currentTarget

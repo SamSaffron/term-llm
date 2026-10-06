@@ -70,7 +70,14 @@ function ServerMenu({ server, disabled }: { server: MCPServer; disabled: boolean
         <Icon name="more" />
       </button>
       {position && (
-        <div class="mcp-row-menu-layer" style={{ ...position }}>
+        <div
+          class="mcp-row-menu-layer"
+          style={{
+            top: position.top === undefined ? undefined : `${position.top}px`,
+            bottom: position.bottom === undefined ? undefined : `${position.bottom}px`,
+            right: `${position.right}px`,
+          }}
+        >
           <Menu
             open
             label={`${server.name} actions`}

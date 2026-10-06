@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import type { RefObject } from 'preact';
+import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 /** Mouse travel before a press on a reorderable row becomes a drag instead of a click. */
 const DRAG_THRESHOLD = 5;
@@ -255,7 +256,7 @@ interface DragGesture {
  * counts as a click.
  */
 function useDragReorder(
-  list: preact.RefObject<HTMLElement>,
+  list: RefObject<HTMLElement | null>,
   onReorder: (orderedIds: string[], movedId: string, to: number) => void,
   orderKey: string,
   scrollContainer: string | undefined,
@@ -271,7 +272,7 @@ function useDragReorder(
     active.current?.cancel();
   }, [orderKey]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = list.current;
     if (!root) return;
     // A lifted row owns its touch: moves drag it rather than scroll the
@@ -553,7 +554,7 @@ export function useReorderableList<ListElement extends HTMLElement = HTMLDivElem
     });
     if (focus)
       requestAnimationFrame(() =>
-        focusRow(list.current, id, options.focusTargets[focus], previous),
+        focusRow(list.current, id, options.focusTargets[focus], focus === 'menu' ? null : previous),
       );
   };
   const latest = useRef({ ids, commit });

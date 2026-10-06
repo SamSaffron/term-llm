@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 
 const menuItems = (root: HTMLElement): HTMLElement[] => [
   ...root.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'),
@@ -7,11 +7,15 @@ const menuItems = (root: HTMLElement): HTMLElement[] => [
 export function useMenuKeyboard(
   open: boolean,
   onClose: () => void,
-  triggerRef?: preact.RefObject<HTMLElement>,
+  triggerRef?: preact.RefObject<HTMLElement | null>,
 ) {
   const menu = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const cleanupRef = useRef<(() => void) | null>(null);
+  // Restore focus at close/unmount, before another surface takes focus. Preact
+  // 11 defers passive effect cleanup until after paint.
+  useLayoutEffect(() => () => cleanupRef.current?.(), [open, triggerRef]);
   useEffect(() => {
     if (!open || !menu.current) return;
     const root = menu.current;
@@ -60,7 +64,9 @@ export function useMenuKeyboard(
     const items = menuItems(root);
     items.forEach((item, index) => (item.tabIndex = index === 0 ? 0 : -1));
     const frame = requestAnimationFrame(() => items[0]?.focus());
-    return () => {
+    const cleanup = () => {
+      if (cleanupRef.current !== cleanup) return;
+      cleanupRef.current = null;
       cancelAnimationFrame(frame);
       root.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', outside);
@@ -74,6 +80,8 @@ export function useMenuKeyboard(
       )
         trigger.focus({ preventScroll: true });
     };
+    cleanupRef.current = cleanup;
+    return cleanup;
   }, [open, triggerRef]);
   return menu;
 }
@@ -92,7 +100,7 @@ export function Menu({
   onClose: () => void;
   children: preact.ComponentChildren;
   className?: string;
-  triggerRef?: preact.RefObject<HTMLElement>;
+  triggerRef?: preact.RefObject<HTMLElement | null>;
   id?: string;
 }) {
   const ref = useMenuKeyboard(open, onClose, triggerRef);

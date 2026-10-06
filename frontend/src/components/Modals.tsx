@@ -200,7 +200,9 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
         {question.options?.map((option) => (
           <label class="modal-choice ask-user-option" key={option.label}>
             <input
-              type={question.multi_select ? 'checkbox' : 'radio'}
+              {...(question.multi_select
+                ? { type: 'checkbox' as const }
+                : { type: 'radio' as const })}
               name={`question-${tab}`}
               value={option.label}
               checked={(answers[tab] || []).includes(option.label)}

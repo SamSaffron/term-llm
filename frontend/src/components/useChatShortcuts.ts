@@ -7,7 +7,7 @@ import { overlayManager } from '../platform/overlay-manager';
 // Read the rendered rows so pinning, search, pagination and locally folded
 // groups all share the same order for hints and keyboard navigation. This hook
 // owns only shortcut metadata; Preact owns the rows and their click handlers.
-export function useChatShortcuts(sidebar: RefObject<HTMLElement>) {
+export function useChatShortcuts(sidebar: RefObject<HTMLElement | null>) {
   const store = useStore();
   const standalone = useMediaQuery('(display-mode: standalone)');
   useLayoutEffect(() => {

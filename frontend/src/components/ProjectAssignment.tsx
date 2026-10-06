@@ -1,3 +1,4 @@
+import type { TargetedKeyboardEvent } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
@@ -84,7 +85,7 @@ export function ProjectAssignment() {
       setSubmitting(false);
     }
   };
-  const moveProjectSelection = (event: preact.JSX.TargetedKeyboardEvent<HTMLButtonElement>) => {
+  const moveProjectSelection = (event: TargetedKeyboardEvent<HTMLButtonElement>) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const rows = [
       ...(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
