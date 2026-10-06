@@ -155,7 +155,9 @@ describe('Hub components', () => {
       />,
     );
     await waitFor(() => expect(listNodes).toHaveBeenCalledOnce());
-    view.unmount();
+    await act(() => {
+      view.unmount();
+    });
     expect(clearInterval).toHaveBeenCalledWith(42);
   });
 

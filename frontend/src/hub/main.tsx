@@ -58,12 +58,14 @@ queueMicrotask(() => {
     if (root) {
       const detail = error instanceof Error ? error.message : 'The Hub UI could not start.';
       render(
-        <main class="hub-fatal" role="alert">
-          <h1>Hub could not start</h1>
-          <p>{detail}</p>
-          <button type="button" onClick={() => window.location.reload()}>
-            Reload
-          </button>
+        <main class="hub-fatal">
+          <div role="alert">
+            <h1>Hub could not start</h1>
+            <p>{detail}</p>
+            <button type="button" onClick={() => window.location.reload()}>
+              Reload
+            </button>
+          </div>
         </main>,
         root,
       );

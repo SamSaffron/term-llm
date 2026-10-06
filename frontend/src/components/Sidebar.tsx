@@ -1088,7 +1088,7 @@ export function Sidebar() {
   const mobileOpen = store.sidebarOpen.value;
   const mobile = useMediaQuery('(max-width: 767px)');
   const overlayRoot = useRef<HTMLDivElement>(null);
-  const sidebar = useRef<HTMLElement>(null);
+  const sidebar = useRef<HTMLDivElement>(null);
   useChatShortcuts(sidebar);
   const overlayToken = useRef<symbol | null>(null);
   useSwipeDismiss(sidebar, {
@@ -1164,12 +1164,12 @@ export function Sidebar() {
   };
   return (
     <div ref={overlayRoot} class="sidebar-overlay-root">
-      <aside
+      <div
         ref={sidebar}
         class={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'open' : ''}`}
         id="sidebar"
         aria-label="Sessions"
-        role={mobile && mobileOpen ? 'dialog' : undefined}
+        role={mobile && mobileOpen ? 'dialog' : 'complementary'}
         aria-modal={(mobile && mobileOpen) || undefined}
         tabIndex={mobile && mobileOpen ? -1 : undefined}
         onKeyDown={(event) => {
@@ -1370,7 +1370,7 @@ export function Sidebar() {
             </div>
           )}
         </div>
-      </aside>
+      </div>
       <div
         class={`sidebar-backdrop ${mobileOpen ? 'open' : ''}`}
         id="sidebarBackdrop"

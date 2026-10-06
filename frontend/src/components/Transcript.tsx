@@ -1094,16 +1094,11 @@ function ModelSwapBoundary({
         ? `Switching from ${from} to ${to}${handoverDetail}`
         : `Model changed from ${from} to ${to}${handoverDetail}`
     : legacyModelSwapText(swap.content);
-  const Boundary = transient ? 'div' : 'article';
   const classes = ['message', 'model-swap-divider', failed && 'failed', transient && 'transient']
     .filter(Boolean)
     .join(' ');
-  return (
-    <Boundary
-      class={classes}
-      data-message-id={transient ? undefined : swap.id}
-      role={transient ? 'status' : undefined}
-    >
+  const content = (
+    <>
       <span class="visually-hidden">{accessibleLabel}</span>
       <span class="model-swap-line" aria-hidden="true" />
       <span class="model-swap-label" aria-hidden="true">
@@ -1125,7 +1120,16 @@ function ModelSwapBoundary({
         )}
       </span>
       <span class="model-swap-line" aria-hidden="true" />
-    </Boundary>
+    </>
+  );
+  return transient ? (
+    <div class={classes} role="status">
+      {content}
+    </div>
+  ) : (
+    <article class={classes} data-message-id={swap.id}>
+      {content}
+    </article>
   );
 }
 

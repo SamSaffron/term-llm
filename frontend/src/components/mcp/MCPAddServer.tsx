@@ -315,7 +315,7 @@ function CustomPanel({
           <input
             ref={sourceInput}
             class={isURL ? '' : 'mono'}
-            type={isURL ? 'url' : 'text'}
+            {...(isURL ? { type: 'url' as const } : { type: 'text' as const })}
             inputMode={isURL ? 'url' : undefined}
             spellcheck={false}
             autoComplete="off"

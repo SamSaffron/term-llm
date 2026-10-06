@@ -16,7 +16,7 @@ export function RegistrationHelp({
   clipboard: ClipboardAdapter;
 }) {
   const [copied, setCopied] = useState('');
-  const timer = useRef<number>();
+  const timer = useRef<number | undefined>(undefined);
   const hubURL = currentHubURL(window.location, config.basePath);
   const command = useMemo(() => buildRegistrationCommand(hubURL), [hubURL]);
   const info = store.registrationInfo.value;

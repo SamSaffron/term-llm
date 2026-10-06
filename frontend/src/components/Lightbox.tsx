@@ -1,5 +1,5 @@
 import '../styles/features/lightbox.css';
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { copyText } from '../platform/clipboard';
 import { overlayManager } from '../platform/overlay-manager';
@@ -16,7 +16,7 @@ function CopyMediaURL({ src, onError }: { src: string; onError: (error: unknown)
   const [copied, setCopied] = useState(false);
   const active = useRef(true);
   const timer = useRef<number | undefined>(undefined);
-  useEffect(
+  useLayoutEffect(
     () => () => {
       active.current = false;
       window.clearTimeout(timer.current);

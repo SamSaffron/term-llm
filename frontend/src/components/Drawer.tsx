@@ -23,7 +23,7 @@ export function Drawer({
   const generated = useId();
   const id = providedId || generated;
   const backdrop = useRef<HTMLDivElement>(null);
-  const drawer = useRef<HTMLElement>(null);
+  const drawer = useRef<HTMLDivElement>(null);
   const token = useRef<symbol | null>(null);
   useSwipeDismiss(drawer, {
     enabled: open,
@@ -70,7 +70,7 @@ export function Drawer({
         delete event.currentTarget.dataset.dismissPointer;
       }}
     >
-      <aside
+      <div
         ref={drawer}
         id={id}
         class={`drawer drawer-${side} ${className}`.trim()}
@@ -88,7 +88,7 @@ export function Drawer({
         }}
       >
         {children}
-      </aside>
+      </div>
     </div>
   );
 }

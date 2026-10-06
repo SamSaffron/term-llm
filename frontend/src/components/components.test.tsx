@@ -7914,6 +7914,9 @@ describe('Preact-owned chat surfaces', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'More actions for context7' }));
     const menu = screen.getByRole('menu', { name: 'context7 actions' });
+    // Preact 11 core no longer adds px to numeric styles; the fixed layer must
+    // keep its viewport offsets as explicit CSS lengths.
+    expect(menu.parentElement).toHaveStyle({ top: '6px', right: `${window.innerWidth}px` });
     expect(within(menu).getByRole('menuitem', { name: 'Sign out' })).toBeVisible();
     await userEvent.click(within(menu).getByRole('menuitem', { name: 'Remove server' }));
     expect(store.removeMCPServer).toHaveBeenCalledWith('context7');

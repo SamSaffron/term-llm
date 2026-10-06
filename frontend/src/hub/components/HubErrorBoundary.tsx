@@ -13,12 +13,14 @@ export class HubErrorBoundary extends Component<
   render(props: { children: ComponentChildren }, state: { error: string }) {
     if (!state.error) return props.children;
     return (
-      <main class="hub-fatal" role="alert">
-        <h1>Hub could not start</h1>
-        <p>{state.error}</p>
-        <button type="button" onClick={() => window.location.reload()}>
-          Reload
-        </button>
+      <main class="hub-fatal">
+        <div role="alert">
+          <h1>Hub could not start</h1>
+          <p>{state.error}</p>
+          <button type="button" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
       </main>
     );
   }

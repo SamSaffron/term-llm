@@ -1,4 +1,4 @@
-import type { ComponentChildren, JSX } from 'preact';
+import type { ComponentChildren, TargetedKeyboardEvent } from 'preact';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { containPopoverScroll } from '../platform/popover-scroll';
@@ -91,7 +91,7 @@ export function ChipPicker({
     if (index >= 0 && items.length)
       items[(index + direction + items.length) % items.length].focus();
   };
-  const handleItemKeys = (event: JSX.TargetedKeyboardEvent<HTMLButtonElement>) => {
+  const handleItemKeys = (event: TargetedKeyboardEvent<HTMLButtonElement>) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       moveFrom(event.currentTarget, 1);

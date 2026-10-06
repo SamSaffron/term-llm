@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import 'fake-indexeddb/auto';
-import { cleanup, configure } from '@testing-library/preact';
+import { act, cleanup, configure } from '@testing-library/preact';
 import { afterEach, vi } from 'vitest';
 
 // findBy*/waitFor default to 1 s, which cold lazy-chunk imports exceed when the
@@ -43,8 +43,10 @@ for (const name of ['localStorage', 'sessionStorage'] as const) {
     });
 }
 
-afterEach(() => {
-  cleanup();
+afterEach(async () => {
+  // Preact 11 defers passive unmount cleanup; drain it before restoring mocks
+  // or tearing down jsdom so resources cannot escape into the next test.
+  await act(() => cleanup());
   vi.restoreAllMocks();
   localStorage.clear();
   sessionStorage.clear();
@@ -59,4 +61,12 @@ Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
   value() {
     this.setAttribute('open', '');
   },
+});
+
+// jsdom omits CSS animation event properties. Preact uses them to distinguish
+// native lowercase event names from case-sensitive custom events.
+Object.defineProperty(HTMLElement.prototype, 'onanimationend', {
+  configurable: true,
+  writable: true,
+  value: null,
 });

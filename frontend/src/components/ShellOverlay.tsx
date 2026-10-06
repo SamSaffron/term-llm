@@ -1,4 +1,4 @@
-import type { JSX } from 'preact';
+import type { TargetedKeyboardEvent, TargetedPointerEvent } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -216,7 +216,7 @@ export function ShellOverlay({ store }: { store: AppStore }) {
         : window.innerWidth - clientX + grabOffset;
     store.shellStore.setDockSize(mode, clampDockSize(mode, size), persist);
   };
-  const startDockResize = (event: JSX.TargetedPointerEvent<HTMLDivElement>) => {
+  const startDockResize = (event: TargetedPointerEvent<HTMLDivElement>) => {
     if (effectiveLayout === 'fullscreen') return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -253,7 +253,7 @@ export function ShellOverlay({ store }: { store: AppStore }) {
     addEventListener('pointerup', finish, { once: true });
     addEventListener('pointercancel', finish, { once: true });
   };
-  const resizeDockWithKeyboard = (event: JSX.TargetedKeyboardEvent<HTMLDivElement>) => {
+  const resizeDockWithKeyboard = (event: TargetedKeyboardEvent<HTMLDivElement>) => {
     if (effectiveLayout === 'fullscreen') return;
     const mode = effectiveLayout;
     const step = event.shiftKey ? 64 : 24;

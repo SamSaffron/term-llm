@@ -1,7 +1,7 @@
-import type { JSX } from 'preact';
+import type { InputHTMLAttributes } from 'preact';
 
 type ToggleSwitchProps = Pick<
-  JSX.InputHTMLAttributes<HTMLInputElement>,
+  InputHTMLAttributes<HTMLInputElement>,
   'aria-label' | 'checked' | 'disabled' | 'onChange'
 >;
 

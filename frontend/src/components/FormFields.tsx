@@ -1,4 +1,4 @@
-import type { ComponentChildren, JSX } from 'preact';
+import type { ComponentChildren, InputHTMLAttributes, SelectHTMLAttributes } from 'preact';
 
 export function SettingsSelect({
   id,
@@ -9,7 +9,7 @@ export function SettingsSelect({
   id: string;
   label: string;
   value: string;
-  onChange: JSX.SelectHTMLAttributes<HTMLSelectElement>['onChange'];
+  onChange: SelectHTMLAttributes<HTMLSelectElement>['onChange'];
   children: ComponentChildren;
 }) {
   return (
@@ -25,7 +25,7 @@ export function SettingsSelect({
 }
 
 type SearchFieldProps = Pick<
-  JSX.InputHTMLAttributes<HTMLInputElement>,
+  InputHTMLAttributes<HTMLInputElement>,
   'aria-label' | 'value' | 'placeholder' | 'autoFocus' | 'onInput' | 'onKeyDown'
 > & { className: string; iconPath?: string };
 
