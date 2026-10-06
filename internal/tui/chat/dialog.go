@@ -1259,8 +1259,8 @@ var providerHasLocalCredentials = llm.DefaultProviderCredentials.Has
 
 // GetAvailableProviders returns configured providers with their models in
 // consistent order: the same set the web UI picker and `term-llm providers`
-// treat as configured (config.yaml, default provider, env var, or local login,
-// minus providers disabled with enabled: false).
+// treat as configured under provider_discovery (see
+// config.ProviderConfiguredVia).
 func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 	var providers []ProviderInfo
 	seen := make(map[string]bool)
@@ -1291,7 +1291,7 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 	// Add custom configured providers from config
 	if cfg != nil {
 		for name, providerCfg := range cfg.Providers {
-			if seen[name] || cfg.ProviderDisabled(name) {
+			if seen[name] || cfg.ProviderConfiguredVia(name, nil) == "" {
 				continue
 			}
 			source := providerCfg.Models

@@ -33,10 +33,7 @@ var (
 func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Try to load config for custom provider completions; nil is OK if it fails
 	cfg, _ := config.Load()
-	refreshAgyBinCompletionCache(toComplete, cfg)
-	refreshGrokBinCompletionCache(toComplete, cfg)
-	refreshOllamaCompletionCache(toComplete, cfg)
-	refreshZenCompletionCache(toComplete, cfg)
+	refreshProviderCompletionCaches(toComplete, cfg)
 	completions := llm.GetProviderCompletions(toComplete, false, cfg)
 
 	// A bare provider may still be extended with ":model", so suppress the
@@ -51,6 +48,19 @@ func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string
 		}
 	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+// refreshProviderCompletionCaches refreshes live model lists for the provider
+// being completed, skipping providers that cannot be selected so completion
+// never runs a CLI or network probe for them.
+func refreshProviderCompletionCaches(toComplete string, cfg *config.Config) {
+	if provider, _, completingModel := strings.Cut(toComplete, ":"); completingModel && !llm.ProviderSelectable(cfg, provider) {
+		return
+	}
+	refreshAgyBinCompletionCache(toComplete, cfg)
+	refreshGrokBinCompletionCache(toComplete, cfg)
+	refreshOllamaCompletionCache(toComplete, cfg)
+	refreshZenCompletionCache(toComplete, cfg)
 }
 
 func refreshAgyBinCompletionCache(toComplete string, cfg *config.Config) {
@@ -127,7 +137,7 @@ func refreshOllamaCompletionCache(toComplete string, cfg *config.Config) {
 		provider = ""
 		if cfg != nil {
 			for name, providerCfg := range cfg.Providers {
-				if strings.HasPrefix(toComplete, name+"-") && len(name) > len(provider) && config.InferProviderType(name, providerCfg.Type) == config.ProviderTypeOllama {
+				if strings.HasPrefix(toComplete, name+"-") && len(name) > len(provider) && config.InferProviderType(name, providerCfg.Type) == config.ProviderTypeOllama && llm.ProviderSelectable(cfg, name) {
 					provider = name
 				}
 			}
@@ -138,8 +148,9 @@ func refreshOllamaCompletionCache(toComplete string, cfg *config.Config) {
 	}
 
 	var providerCfg config.ProviderConfig
+	exists := false
 	if cfg != nil {
-		providerCfg = cfg.Providers[provider]
+		providerCfg, exists = cfg.Providers[provider]
 		if len(providerCfg.Models) > 0 {
 			return
 		}
@@ -150,7 +161,9 @@ func refreshOllamaCompletionCache(toComplete string, cfg *config.Config) {
 	if err := providerCfg.ResolveForInference(); err != nil {
 		return
 	}
-	if cfg != nil {
+	// Only cache resolution on existing entries; inventing one would make the
+	// provider look declared in config.yaml.
+	if exists {
 		cfg.Providers[provider] = providerCfg
 	}
 

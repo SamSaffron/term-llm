@@ -1270,6 +1270,9 @@ func configValueCompletions(key, toComplete string) []string {
 	case "live.control_plane":
 		return filterPrefix([]string{"off", "agent", "classify"}, toComplete)
 
+	case "provider_discovery":
+		return filterPrefix([]string{config.ProviderDiscoveryAuto, config.ProviderDiscoveryEnv, config.ProviderDiscoveryConfig}, toComplete)
+
 	case "approval.default_mode", "chat.approval_mode", "ask.approval_mode", "edit.approval_mode", "exec.approval_mode", "loop.approval_mode", "serve.approval_mode", "serve.mcp.approval_mode":
 		return filterPrefix([]string{"prompt", "auto"}, toComplete)
 

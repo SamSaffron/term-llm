@@ -876,6 +876,18 @@ func GetProviderNames(cfg *config.Config) []string {
 	return result
 }
 
+// selectableProviderNames returns GetProviderNames filtered to providers that
+// may be selected with --provider under the current provider_discovery mode.
+func selectableProviderNames(cfg *config.Config) []string {
+	var names []string
+	for _, name := range GetProviderNames(cfg) {
+		if ProviderSelectable(cfg, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // ConfiguredProviderReasoningEfforts returns the effort profiles advertised for
 // a configured provider's selected model. Explicit models[] metadata wins over
 // the legacy provider-wide reasoning switch.
@@ -965,13 +977,16 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 		providerNames = GetConfiguredImageProviderNames(cfg)
 		getModelIDs = func(p string) []string { return GetImageModelIDs(p, cfg) }
 	} else {
-		providerNames = GetProviderNames(cfg)
+		providerNames = selectableProviderNames(cfg)
 		getModelIDs = ProviderModelIDs
 	}
 
 	// Check if user has typed a colon (wants model completion)
 	if strings.Contains(toComplete, ":") {
 		parts := strings.SplitN(toComplete, ":", 2)
+		if !isImage && !ProviderSelectable(cfg, parts[0]) {
+			return nil
+		}
 		return completeProviderModels(parts[0], parts[1], isImage, cfg, getModelIDs)
 	}
 
@@ -1131,6 +1146,9 @@ func completeProviderNames(toComplete string, isImage bool, cfg *config.Config, 
 	}
 	if !isImage && cfg != nil {
 		for provider := range cfg.Providers {
+			if !ProviderSelectable(cfg, provider) {
+				continue
+			}
 			for _, effort := range ConfiguredProviderReasoningEfforts(cfg, provider) {
 				candidate := provider + "-" + effort
 				if strings.HasPrefix(candidate, toComplete) {

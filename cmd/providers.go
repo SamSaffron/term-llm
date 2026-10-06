@@ -28,7 +28,7 @@ type ProviderInfo struct {
 	RequiresKey        bool     `json:"requires_key"`      // Whether API key is required
 	SupportsListModels bool     `json:"supports_list_models"`
 	Models             []string `json:"models,omitempty"`         // Curated model list
-	Configured         bool     `json:"configured"`               // In user config, or enabled by env var / local login
+	Configured         bool     `json:"configured"`               // Enabled under provider_discovery (config, default, env var, or local login)
 	ConfiguredVia      string   `json:"configured_via,omitempty"` // "config", "default", "env", or "login"
 	Disabled           bool     `json:"disabled,omitempty"`       // providers.<name>.enabled: false; never configured
 	IsBuiltin          bool     `json:"is_builtin"`               // Whether this is a built-in provider
@@ -60,8 +60,12 @@ func init() {
 }
 
 func runProviders(cmd *cobra.Command, args []string) error {
-	// Load config (may fail if not set up, that's OK)
-	cfg, _ := config.Load()
+	// A missing config file loads defaults; anything else (such as an invalid
+	// provider_discovery) is reported rather than silently treated as auto.
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
 
 	// Build provider info list
 	providers := buildProviderList(cfg)
@@ -96,8 +100,8 @@ func buildProviderList(cfg *config.Config) []ProviderInfo {
 
 // buildProviderListWith builds the provider list, using hasLocalCredentials to
 // detect local login state for built-ins (so callers can cache the probes).
-// A built-in counts as configured when it has a config block, is the default
-// provider, has an enabling environment variable, or has local credentials.
+// Whether a built-in counts as configured follows provider_discovery; see
+// llm.ProviderConfiguredVia.
 func buildProviderListWith(cfg *config.Config, hasLocalCredentials func(string) bool) []ProviderInfo {
 	var providers []ProviderInfo
 	for _, spec := range config.BuiltinProviders() {
@@ -220,15 +224,48 @@ func outputProvidersText(providers []ProviderInfo, cfg *config.Config) error {
 	if cfg != nil {
 		defaultProvider = cfg.DefaultProvider
 	}
-	writeProvidersText(os.Stdout, providers, defaultProvider)
+	mode := cfg.ProviderDiscoveryMode()
+	var defaultErr error
+	if defaultProvider != "" {
+		defaultErr = llm.ProviderUnavailableError(cfg, defaultProvider)
+	}
+	writeProviderDiscoveryNotice(os.Stdout, mode, defaultErr)
+	writeProvidersText(os.Stdout, providers, defaultProvider, mode)
 	return nil
+}
+
+// writeProviderDiscoveryNotice explains a non-auto provider_discovery mode and
+// warns when default_provider cannot be used under it.
+func writeProviderDiscoveryNotice(w io.Writer, mode string, defaultErr error) {
+	switch mode {
+	case config.ProviderDiscoveryConfig:
+		fmt.Fprintln(w, "Provider discovery: config (only providers named under providers: in config.yaml are enabled)")
+	case config.ProviderDiscoveryEnv:
+		fmt.Fprintln(w, "Provider discovery: env (providers in config.yaml or enabled by environment variables; local logins are not detected)")
+	default:
+		return
+	}
+	if defaultErr != nil {
+		fmt.Fprintf(w, "Warning: default_provider: %v\n", defaultErr)
+	}
+	fmt.Fprintln(w)
+}
+
+// providerNextStep returns the step that would set up an unconfigured
+// provider under provider_discovery mode.
+func providerNextStep(name, mode string) string {
+	spec, ok := config.BuiltinProvider(name)
+	if !ok || mode != config.ProviderDiscoveryAuto {
+		return config.ProviderEnableHint(mode, name)
+	}
+	return spec.SetupHint()
 }
 
 // writeProvidersText renders the provider list as two sections: providers
 // that can be selected (with where their setup came from) and built-ins that
 // are not set up yet (with the step that would set them up). Input order is
 // preserved; buildProviderList sorts by name.
-func writeProvidersText(w io.Writer, providers []ProviderInfo, defaultProvider string) {
+func writeProvidersText(w io.Writer, providers []ProviderInfo, defaultProvider, mode string) {
 	var configured, available, disabled []ProviderInfo
 	nameWidth := len("PROVIDER")
 	for _, p := range providers {
@@ -281,8 +318,7 @@ func writeProvidersText(w io.Writer, providers []ProviderInfo, defaultProvider s
 		fmt.Fprintln(w, "Available (not set up):")
 		row("  ", "PROVIDER", "NEXT STEP")
 		for _, p := range available {
-			spec, _ := config.BuiltinProvider(p.Name)
-			row("  ", p.Name, spec.SetupHint())
+			row("  ", p.Name, providerNextStep(p.Name, mode))
 		}
 	}
 	if len(disabled) > 0 {

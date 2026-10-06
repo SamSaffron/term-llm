@@ -38,6 +38,53 @@ providers:
 
 A disabled provider is removed from the web picker and the chat `/model` picker, listed under **Disabled** by `term-llm providers`, and refused if selected with `--provider` or `default_provider`. Remove the line (or set `enabled: true`) to restore it.
 
+### Restrict providers to config.yaml
+
+By default, term-llm enables any provider it can detect. To enable only the providers you list, set `provider_discovery` at the top level of `config.yaml`:
+
+```yaml
+provider_discovery: config   # auto (default) | env | config
+```
+
+| Mode | A provider is enabled when | Local login/CLI detection |
+|---|---|---|
+| `auto` | It is under `providers:`, is `default_provider`, has an enabling environment variable, or has a local login or CLI | Yes |
+| `env` | It is under `providers:` or has an enabling environment variable (such as `XAI_API_KEY`, `OLLAMA_HOST`) | No |
+| `config` | It is under `providers:` | No |
+
+`providers.<name>.enabled: false` still disables a provider in every mode.
+
+`provider_discovery` decides which providers are enabled, not where their credentials come from. A provider you list still uses its usual credentials, so an empty block is enough to turn on a built-in:
+
+```yaml
+provider_discovery: config
+default_provider: anthropic
+
+providers:
+  anthropic: {}      # API key still read from ANTHROPIC_API_KEY
+  chatgpt: {}        # still uses term-llm's ChatGPT login
+  claude-bin: {}     # still uses the installed claude CLI
+  work-llm:
+    type: openai_compatible
+    url: http://localhost:8080/v1/chat/completions
+```
+
+Any key under `providers:` counts, including a bare `chatgpt:` with nothing after it. Every provider block in the file counts, so remove or disable old blocks you no longer use.
+
+Under `env` and `config`:
+
+- The web picker, chat `/model` picker, and `--provider` shell completion show only enabled providers. `term-llm providers` lists the enabled ones under **Configured**, prints the active mode, and lists the rest under **Available** with the step that would enable each. None of these check local logins or CLIs.
+- `default_provider` only selects a provider; it does not enable one. The schema default is `openrouter`, so set `default_provider` to a provider you enabled. Otherwise `term-llm providers` prints a warning and `term-llm doctor` reports an error.
+- Every way of picking a provider gets the same check: `--provider`, `default_provider`, per-command `provider` settings, agent `provider:` fields, `fast_provider`, `vision_via`, Guardian providers, saved sessions, scheduled jobs, web UI requests, and `term-llm models --provider`. If the selected provider is not enabled, the request stops with an error rather than running on a different provider:
+
+  ```text
+  provider "xai" is not enabled: provider_discovery is "config" and config.yaml has no providers.xai block (add "xai: {}" under providers: to enable it)
+  ```
+
+- `debug`, the local test provider, is always allowed unless you set `providers.debug.enabled: false`.
+
+An unknown value such as `provider_discovery: strict` is a config error, not a silent fallback to `auto`. The setting applies to text and agent providers only. Image, audio, music, video, transcription, embedding, and `live` providers have their own provider settings.
+
 A catalog entry is not a guarantee of capacity, free access, tool support, or access by your account. Use the upstream model ID returned for your provider; the same model family can have different names and limits on different services.
 
 ## Provider categories

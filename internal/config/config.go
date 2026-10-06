@@ -202,8 +202,9 @@ type ProviderConfig struct {
 
 	// FromDefaults is set when the entry exists only because Load registered
 	// built-in schema defaults (e.g. providers.openai.model), not because the
-	// user's config file names the provider. Such entries carry defaults but do
-	// not mean the provider is configured.
+	// user's config file names the provider. ApplyOverrides sets it on entries
+	// it creates for a model override. Such entries carry defaults but do not
+	// mean the provider is configured.
 	FromDefaults bool `mapstructure:"-" yaml:"-"`
 }
 
@@ -480,6 +481,11 @@ type Config struct {
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
 	Serve           ServeConfig               `mapstructure:"serve"`
 	FileTracking    FileTrackingConfig        `mapstructure:"file_tracking"`
+
+	// ProviderDiscovery decides which routes enable a text provider:
+	// auto (config, default_provider, env var, local login), env (config
+	// blocks and env vars), or config (config blocks only).
+	ProviderDiscovery string `mapstructure:"provider_discovery" yaml:"provider_discovery,omitempty"`
 
 	// baseProvider preserves the user's global provider when per-surface,
 	// agent, or CLI overrides mutate DefaultProvider at runtime.
@@ -1527,6 +1533,9 @@ func Load() (*Config, error) {
 	if err := cfg.ValidateToolDiscovery(); err != nil {
 		return nil, err
 	}
+	if err := cfg.ValidateProviderDiscovery(); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateLifecycle(); err != nil {
 		return nil, err
 	}
@@ -2013,15 +2022,49 @@ func (c *Config) ProviderDisabled(name string) bool {
 }
 
 // markProviderConfigPresence flags provider entries that come only from
-// registered defaults rather than the config file.
+// registered defaults rather than the config file. Every key under providers:
+// counts as declared, including "name:" (YAML null) and "name: {}", which
+// viper drops when the provider has no schema defaults.
 func markProviderConfigPresence(cfg *Config, v *viper.Viper) {
 	if cfg == nil || v == nil {
 		return
 	}
+	declared := declaredProviderKeys(v.ConfigFileUsed())
+	if cfg.Providers == nil && len(declared) > 0 {
+		cfg.Providers = make(map[string]ProviderConfig)
+	}
+	for name := range declared {
+		if _, ok := cfg.Providers[name]; !ok {
+			cfg.Providers[name] = ProviderConfig{}
+		}
+	}
 	for name, pc := range cfg.Providers {
-		pc.FromDefaults = !v.InConfig("providers." + name)
+		pc.FromDefaults = !v.InConfig("providers."+name) && !declared[name]
 		cfg.Providers[name] = pc
 	}
+}
+
+// declaredProviderKeys returns every provider name written under providers:
+// in the config file, whatever its value.
+func declaredProviderKeys(configFile string) map[string]bool {
+	if configFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		Providers map[string]any `yaml:"providers"`
+	}
+	if yaml.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	names := make(map[string]bool, len(raw.Providers))
+	for name := range raw.Providers {
+		names[strings.ToLower(name)] = true
+	}
+	return names
 }
 
 // writeConfigPreservingEnvCase calls v.WriteConfig() but preserves the case
@@ -2299,9 +2342,11 @@ func (c *Config) ApplyOverrides(provider, model string) {
 	if model != "" && c.DefaultProvider != "" {
 		cfg, ok := c.Providers[c.DefaultProvider]
 		if !ok {
-			// Initialize new provider config if it doesn't exist
+			// Initialize new provider config if it doesn't exist. It is not
+			// declared in config.yaml, so it must not enable the provider.
 			cfg = ProviderConfig{
-				Model: model,
+				Model:        model,
+				FromDefaults: true,
 			}
 		} else {
 			cfg.Model = model

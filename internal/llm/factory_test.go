@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,6 +26,72 @@ func TestNewProviderRejectsDisabledProvider(t *testing.T) {
 	}
 	if _, err := NewProvider(cfg); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("NewProvider error = %v, want disabled error", err)
+	}
+}
+
+func TestNewProviderByNameFollowsProviderDiscovery(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("XAI_API_KEY", "xai-test")
+	t.Setenv("ZEN_API_KEY", "zen-test")
+
+	for _, tc := range []struct {
+		mode, name, wantErr string
+	}{
+		{config.ProviderDiscoveryAuto, "xai", ""},
+		{config.ProviderDiscoveryEnv, "xai", ""},
+		{config.ProviderDiscoveryConfig, "xai", `provider "xai" is not enabled: provider_discovery is "config"`},
+		{config.ProviderDiscoveryConfig, "zen", ""},
+		{config.ProviderDiscoveryConfig, "debug", ""},
+		{config.ProviderDiscoveryEnv, "grok-bin", `provider "grok-bin" is not enabled: provider_discovery is "env"`},
+	} {
+		cfg := &config.Config{
+			DefaultProvider:   tc.name, // a selector only; it must not enable the provider
+			ProviderDiscovery: tc.mode,
+			Providers:         map[string]config.ProviderConfig{"zen": {}},
+		}
+		_, err := NewProviderByName(cfg, tc.name, "")
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("%s/%s: unexpected error %v", tc.mode, tc.name, err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+			t.Errorf("%s/%s: error = %v, want containing %q", tc.mode, tc.name, err, tc.wantErr)
+		}
+	}
+
+	// A -p provider:model override must not enable the provider either.
+	cfg := &config.Config{ProviderDiscovery: config.ProviderDiscoveryConfig, Providers: map[string]config.ProviderConfig{}}
+	cfg.ApplyOverrides("xai", "grok-4")
+	if _, err := NewProvider(cfg); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("NewProvider after override error = %v, want not enabled", err)
+	}
+	if _, err := NewProviderByNameNoRetry(cfg, "xai", ""); err == nil {
+		t.Fatal("NewProviderByNameNoRetry bypassed provider_discovery")
+	}
+}
+
+func TestGetProviderCompletionsFollowsProviderDiscovery(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := &config.Config{
+		ProviderDiscovery: config.ProviderDiscoveryConfig,
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {},
+			"openai":    {Model: "gpt-5", FromDefaults: true},
+		},
+	}
+	names := GetProviderCompletions("", false, cfg)
+	if !slices.Contains(names, "anthropic") || slices.Contains(names, "openai") || slices.Contains(names, "chatgpt") {
+		t.Fatalf("provider completions = %v, want only enabled providers", names)
+	}
+	if got := GetProviderCompletions("openai:", false, cfg); len(got) != 0 {
+		t.Fatalf("model completions for a provider not enabled = %v, want none", got)
+	}
+	if got := GetProviderCompletions("anthropic:", false, cfg); len(got) == 0 {
+		t.Fatal("model completions for an enabled provider are empty")
+	}
+
+	cfg.ProviderDiscovery = config.ProviderDiscoveryAuto
+	if names := GetProviderCompletions("", false, cfg); !slices.Contains(names, "chatgpt") {
+		t.Fatalf("auto completions = %v, want every built-in", names)
 	}
 }
 

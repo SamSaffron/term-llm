@@ -808,7 +808,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	// The /model picker lists configured providers only; probe local logins in
 	// the background so opening it never waits on them.
-	llm.DefaultProviderCredentials.Warm()
+	llm.DefaultProviderCredentials.Warm(cfg)
 	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
 	model.SetAgentMentionCapability(runtimeAgentMentionCapability{engine: model.CurrentAgentMentionEngine, manager: toolMgr})
 	if sess != nil {

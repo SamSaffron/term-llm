@@ -32,6 +32,7 @@ A typical config has a few major parts:
 
 - `default_provider` for the global LLM default
 - `providers` for model-specific credentials and routing
+- `provider_discovery` (`auto`, `env`, or `config`) to choose whether environment variables and local logins enable providers on their own; see [Restrict providers to config.yaml](/reference/providers-and-models/#restrict-providers-to-configyaml)
 - per-command blocks such as `exec`, `ask`, and `edit`
 - `commit.message_agent` for the native commit workflow's scope/message agent
 - `share` for the built-in GitHub or custom command transcript publisher

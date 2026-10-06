@@ -210,6 +210,44 @@ func TestConfigCheckReportsUnknownDefaultProvider(t *testing.T) {
 	}
 }
 
+func TestConfigCheckReportsDefaultProviderNotEnabledByDiscovery(t *testing.T) {
+	path := writeConfigFixture(t, "provider_discovery: config\ndefault_provider: xai\nproviders:\n  anthropic: {}\n")
+	cfg := &config.Config{
+		DefaultProvider:   "xai",
+		ProviderDiscovery: config.ProviderDiscoveryConfig,
+		Providers:         map[string]config.ProviderConfig{"anthropic": {}},
+	}
+
+	findings := runConfigCheck(t, &ConfigCheck{Path: path, Config: cfg})
+
+	finding, ok := findingWithTitle(findings, "is not enabled by provider_discovery")
+	if !ok {
+		t.Fatalf("expected default_provider not enabled to be reported, got %+v", findings)
+	}
+	if finding.Severity != SeverityError || !strings.Contains(finding.Remedy, "add providers.xai") {
+		t.Fatalf("unexpected finding %+v", finding)
+	}
+	if _, unknown := findingWithTitle(findings, "unknown config key"); unknown {
+		t.Fatalf("provider_discovery reported as unknown: %+v", findings)
+	}
+}
+
+func TestConfigCheckReportsDisabledDefaultProvider(t *testing.T) {
+	disabled := false
+	path := writeConfigFixture(t, "default_provider: xai\nproviders:\n  xai:\n    enabled: false\n")
+	cfg := &config.Config{
+		DefaultProvider: "xai",
+		Providers:       map[string]config.ProviderConfig{"xai": {Enabled: &disabled}},
+	}
+
+	findings := runConfigCheck(t, &ConfigCheck{Path: path, Config: cfg})
+
+	finding, ok := findingWithTitle(findings, `default_provider "xai" is disabled`)
+	if !ok || finding.Severity != SeverityError {
+		t.Fatalf("expected disabled default provider error, got %+v", findings)
+	}
+}
+
 func TestConfigCheckSkipsCredentialCheckForExternallyAuthenticatedProviders(t *testing.T) {
 	path := writeConfigFixture(t, "default_provider: bedrock\nproviders:\n  bedrock:\n    region: us-east-1\n  ollama: {}\n")
 	cfg := &config.Config{

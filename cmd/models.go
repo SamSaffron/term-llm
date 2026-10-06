@@ -88,6 +88,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 	if providerName == "" {
 		providerName = cfg.DefaultProvider
 	}
+	if err := llm.ProviderUnavailableError(cfg, providerName); err != nil {
+		return err
+	}
 
 	// Get provider config - handle built-in providers that may not be explicitly configured
 	providerCfg, configured := cfg.Providers[providerName]

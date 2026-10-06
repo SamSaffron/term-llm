@@ -281,6 +281,7 @@ const (
 
 var keySpecs = []KeySpec{
 	def("default_provider", DefaultConfigProvider),
+	def("provider_discovery", ProviderDiscoveryAuto),
 	def("auto_compact", DefaultAutoCompact),
 
 	optional("approval.default_mode", withoutResetTemplate()),

@@ -136,6 +136,17 @@ func TestRefreshGrokBinCompletionCache(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("inapplicable completion unexpectedly refreshed: calls = %d", calls)
 	}
+
+	// provider_discovery: config never probes a provider it does not enable.
+	cfg.ProviderDiscovery = config.ProviderDiscoveryConfig
+	refreshProviderCompletionCaches("grok-bin:", cfg)
+	if calls != 2 {
+		t.Fatalf("refreshed grok-bin, which provider_discovery does not enable: calls = %d", calls)
+	}
+	refreshProviderCompletionCaches("my-grok:gro", cfg)
+	if calls != 3 {
+		t.Fatalf("declared my-grok refresh calls = %d, want 3", calls)
+	}
 }
 
 func TestRefreshZenCompletionCache(t *testing.T) {

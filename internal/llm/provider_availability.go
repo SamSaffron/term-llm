@@ -11,17 +11,16 @@ import (
 )
 
 // Provider availability answers one question for every provider picker (web
-// UI, `term-llm providers`, chat /model): is this provider configured? A
-// provider is configured when it is named in config.yaml, is the
-// default_provider, has an enabling environment variable, or has local login
-// state — unless providers.<name>.enabled is false.
+// UI, `term-llm providers`, chat /model): is this provider configured? The
+// policy, including provider_discovery, lives in config.ProviderConfiguredVia;
+// this file supplies the local login probes it may consult.
 
 // Reasons returned by ProviderConfiguredVia.
 const (
-	ConfiguredViaConfig  = "config"
-	ConfiguredViaDefault = "default"
-	ConfiguredViaEnv     = "env"
-	ConfiguredViaLogin   = "login"
+	ConfiguredViaConfig  = config.ConfiguredViaConfig
+	ConfiguredViaDefault = config.ConfiguredViaDefault
+	ConfiguredViaEnv     = config.ConfiguredViaEnv
+	ConfiguredViaLogin   = config.ConfiguredViaLogin
 )
 
 // ProviderHasLocalCredentials reports whether a built-in provider has local
@@ -56,30 +55,17 @@ func ProviderHasLocalCredentials(name string) bool {
 // ProviderConfiguredVia reports why provider name is configured (one of the
 // ConfiguredVia* constants), or "" when it is not configured or is disabled.
 // hasLocalCredentials detects local login state for built-ins; pass a cached
-// detector such as ProviderCredentialCache.Has.
+// detector such as ProviderCredentialCache.Has. It is only consulted under
+// provider_discovery: auto.
 func ProviderConfiguredVia(cfg *config.Config, name string, hasLocalCredentials func(string) bool) string {
-	if cfg.ProviderDisabled(name) {
-		return ""
-	}
-	if cfg != nil {
-		if pc, ok := cfg.Providers[name]; ok && !pc.FromDefaults {
-			return ConfiguredViaConfig
-		}
-		if cfg.DefaultProvider == name {
-			return ConfiguredViaDefault
-		}
-	}
-	spec, ok := config.BuiltinProvider(name)
-	if !ok {
-		return ""
-	}
-	if spec.EnabledByEnv() != "" {
-		return ConfiguredViaEnv
-	}
-	if hasLocalCredentials != nil && hasLocalCredentials(name) {
-		return ConfiguredViaLogin
-	}
-	return ""
+	return cfg.ProviderConfiguredVia(name, hasLocalCredentials)
+}
+
+// ProviderSelectable reports whether name may be offered for selection (for
+// example in --provider completion) without running local login probes:
+// any non-disabled provider under auto, otherwise only enabled ones.
+func ProviderSelectable(cfg *config.Config, name string) bool {
+	return !cfg.ProviderDisabled(name) && cfg.ProviderNotEnabledError(name) == nil
 }
 
 // ProviderCredentialCacheTTL bounds how long a sign-in or sign-out of a
@@ -134,8 +120,12 @@ func (c *ProviderCredentialCache) Has(name string) bool {
 }
 
 // Warm refreshes the cache in the background so the first picker does not pay
-// for the probes, without delaying startup.
-func (c *ProviderCredentialCache) Warm() {
+// for the probes, without delaying startup. It does nothing unless cfg uses
+// provider_discovery: auto, the only mode that consults local logins.
+func (c *ProviderCredentialCache) Warm(cfg *config.Config) {
+	if cfg.ProviderDiscoveryMode() != config.ProviderDiscoveryAuto {
+		return
+	}
 	go c.snapshot()
 }
 

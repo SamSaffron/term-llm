@@ -16,16 +16,17 @@ func removedProviderError(name string) error {
 	return nil
 }
 
-// unavailableProviderError reports providers that cannot be created: removed
-// ones, and ones disabled with providers.<name>.enabled: false.
-func unavailableProviderError(cfg *config.Config, name string) error {
+// ProviderUnavailableError reports providers that cannot be created: removed
+// ones, ones disabled with providers.<name>.enabled: false, and ones that
+// provider_discovery does not enable.
+func ProviderUnavailableError(cfg *config.Config, name string) error {
 	if err := removedProviderError(name); err != nil {
 		return err
 	}
 	if cfg.ProviderDisabled(name) {
 		return fmt.Errorf("provider %q is disabled in config (providers.%s.enabled: false)", name, name)
 	}
-	return nil
+	return cfg.ProviderNotEnabledError(name)
 }
 
 // ParseProviderModel parses "provider:model" or just "provider" from a flag value.
@@ -173,7 +174,7 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 
 // newNamedProvider creates provider name without the retry wrapper.
 func newNamedProvider(cfg *config.Config, name string, model string) (Provider, error) {
-	if err := unavailableProviderError(cfg, name); err != nil {
+	if err := ProviderUnavailableError(cfg, name); err != nil {
 		return nil, err
 	}
 	if name == "debug" {

@@ -233,16 +233,41 @@ func (c *ConfigCheck) providerFindings(declared map[string]bool) []Finding {
 		}
 	}
 
-	if cfg.DefaultProvider != "" {
-		if _, configured := cfg.Providers[cfg.DefaultProvider]; !configured && !isBuiltInProvider(cfg.DefaultProvider) {
-			findings = append(findings, Finding{
-				Title:    fmt.Sprintf("default_provider %q is neither configured nor built in", cfg.DefaultProvider),
-				Severity: SeverityError,
-				Remedy:   "set default_provider to a provider listed by: term-llm providers",
-			})
-		}
+	return append(findings, defaultProviderFindings(cfg)...)
+}
+
+// defaultProviderFindings reports a default_provider term-llm cannot create:
+// unknown, or not enabled under provider_discovery.
+func defaultProviderFindings(cfg *config.Config) []Finding {
+	name := cfg.DefaultProvider
+	if name == "" {
+		return nil
 	}
-	return findings
+	if _, configured := cfg.Providers[name]; !configured && !isBuiltInProvider(name) {
+		return []Finding{{
+			Title:    fmt.Sprintf("default_provider %q is neither configured nor built in", name),
+			Severity: SeverityError,
+			Remedy:   "set default_provider to a provider listed by: term-llm providers",
+		}}
+	}
+	if cfg.ProviderDisabled(name) {
+		return []Finding{{
+			Title:    fmt.Sprintf("default_provider %q is disabled", name),
+			Severity: SeverityError,
+			Detail:   fmt.Sprintf("providers.%s.enabled is false, so term-llm refuses to create it", name),
+			Remedy:   fmt.Sprintf("remove providers.%s.enabled: false, or set default_provider to a provider listed by: term-llm providers --configured", name),
+		}}
+	}
+	if err := cfg.ProviderNotEnabledError(name); err != nil {
+		mode := cfg.ProviderDiscoveryMode()
+		return []Finding{{
+			Title:    fmt.Sprintf("default_provider %q is not enabled by provider_discovery %q", name, mode),
+			Severity: SeverityError,
+			Detail:   err.Error(),
+			Remedy:   config.ProviderEnableHint(mode, name) + ", or set default_provider to a provider listed by: term-llm providers --configured",
+		}}
+	}
+	return nil
 }
 
 func (c *ConfigCheck) deferredValueFindings(name string, providerCfg config.ProviderConfig) []Finding {

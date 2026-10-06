@@ -1576,7 +1576,7 @@ func (s *serveServer) Start() (startErr error) {
 	s.mentionsByRoot = nil
 	s.mentionsCacheMu.Unlock()
 	if s.cfg.ui {
-		s.providerCreds.Warm()
+		s.providerCreds.Warm(s.cfgRef)
 	}
 	s.server = &http.Server{
 		Addr:              net.JoinHostPort(s.cfg.host, strconv.Itoa(s.cfg.port)),
