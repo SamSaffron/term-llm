@@ -52,7 +52,7 @@ type Agent struct {
 	// Model preferences (optional)
 	Provider string `yaml:"provider,omitempty"`
 	Model    string `yaml:"model,omitempty"`
-	// AllowedModels restricts this agent to exact provider:model pairs when set.
+	// AllowedModels restricts this agent to provider:model or provider:* entries when set.
 	AllowedModels []string `yaml:"allowed_models,omitempty"`
 
 	// Tool configuration
@@ -438,9 +438,8 @@ func (a *Agent) Validate() error {
 		return fmt.Errorf("agent name is required")
 	}
 	for _, entry := range a.AllowedModels {
-		provider, model, found := strings.Cut(entry, ":")
-		if !found || provider == "" || model == "" || strings.ContainsAny(entry, "* \t\r\n") {
-			return fmt.Errorf("invalid allowed_models entry %q: expected exact provider:model", entry)
+		if !validAllowedModelEntry(entry) {
+			return fmt.Errorf("invalid allowed_models entry %q: expected provider:model or provider:*", entry)
 		}
 	}
 	if a.Workspace != "" && a.Workspace != "auto" && a.Workspace != "none" {
@@ -500,6 +499,14 @@ func (a *Agent) Validate() error {
 	return nil
 }
 
+func validAllowedModelEntry(entry string) bool {
+	provider, model, found := strings.Cut(entry, ":")
+	if !found || provider == "" || model == "" || strings.ContainsAny(entry, " \t\r\n") || strings.Contains(provider, "*") {
+		return false
+	}
+	return model == "*" || !strings.Contains(model, "*")
+}
+
 // CheckModel rejects a resolved provider/model pair outside this agent's list.
 // An omitted list preserves the unrestricted behavior of existing agents.
 func (a *Agent) CheckModel(provider, model string) error {
@@ -508,11 +515,11 @@ func (a *Agent) CheckModel(provider, model string) error {
 	}
 	selected := provider + ":" + model
 	for _, allowed := range a.AllowedModels {
-		if selected == allowed {
+		if selected == allowed || allowed == provider+":*" {
 			return nil
 		}
 	}
-	return fmt.Errorf("model %q is not allowed for agent %q", selected, a.Name)
+	return fmt.Errorf("model %q is not allowed for agent %q (allowed: %s)", selected, a.Name, strings.Join(a.AllowedModels, ", "))
 }
 
 func (a *Agent) validateOutputTool() error {

@@ -158,7 +158,9 @@ mcp:
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`, `contain`.
 
-`allowed_models` is optional. When set, every run of that agent must use one of the exact `provider:model` pairs, including direct sessions, spawned agents, and queued jobs. An explicit model override outside the list fails before a model request. The `model: fast` alias is checked after it resolves to a provider and model. Each reasoning-effort model ID is a separate entry. An empty or omitted list leaves model selection unrestricted. A terminal `/model` switch to a disallowed model is rejected. The web UI may still display disallowed models in its picker; the server rejects those choices when it creates or changes the agent runtime.
+`allowed_models` is optional. Entries accept exact `provider:model` pairs or `provider:*` to allow every model on that configured provider key. For example, `allowed_models: ["chatgpt:*"]` allows any model on `chatgpt` and rejects models on other provider keys. Exact and wildcard entries can be mixed. Matching is case-sensitive, and only the whole model portion can be a wildcard. Bare provider names and partial wildcards such as `openai:gpt-*` are rejected.
+
+Every run of that agent must match an entry, including direct sessions, spawned agents, and queued jobs. An override outside the list fails before a model request, with an error naming the rejected selection and the allowed entries. Queued jobs report this error when the jobs runner attempts execution. The `model: fast` alias is checked after it resolves to a provider and model. Exact entries treat each reasoning-effort model ID separately. An empty or omitted list leaves model selection unrestricted. A terminal `/model` switch to a disallowed model is rejected. The web UI may still display disallowed models in its picker. The server rejects those choices when it creates or changes the agent runtime, preserving the previous runtime after a rejected switch.
 
 ## Time grounding
 
