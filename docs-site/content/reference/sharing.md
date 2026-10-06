@@ -12,7 +12,7 @@ term-llm can publish rendered transcript bundles without coupling the Web UI, TU
 From the chat TUI:
 
 ```text
-/share [new] [raw] [public|unlisted|private]
+/share [new] [raw] [noimages] [public|unlisted|private]
 ```
 
 From the CLI, for a complete saved session:
@@ -22,11 +22,25 @@ term-llm sessions share 42
 term-llm sessions share 42 --visibility private # requires a custom provider advertising private shares
 term-llm sessions share 42 --include-raw-reasoning
 term-llm sessions share 42 --new --json
+term-llm sessions share 42 --no-images
 ```
 
 A compatible whole-session share is updated by default. `new` or `--new` always creates another share. An update is offered only when the stored share has `scope: session`, belongs to the currently configured provider, and that provider advertises `update`. Replacing saved state warns that the old provider link may remain active.
 
 Raw model reasoning is never included implicitly, even when `reasoning.export: raw` is configured. It requires the explicit `/share raw` or `--include-raw-reasoning` opt-in, remains subject to `reasoning.raw` and `reasoning.source`, and is accompanied by a privacy warning because it may contain sensitive information.
+
+## Images
+
+Shares include images by default: user uploads, images returned by tools, `image_generate` output, and media shown with `show_media`. `/share noimages`, `--no-images`, or the Web UI's **Include images** checkbox (`include_images: false` in the API) omit them all.
+
+Every included image is decoded and re-encoded before it leaves the machine. JPEG EXIF orientation is applied, the longest edge is bounded, and only pixel data is written, so EXIF/XMP metadata such as GPS location is removed. Photographic images become JPEG; screenshots, flat graphics, and images with transparency become PNG. Small GIFs are passed through so animation survives. SVG and anything that does not decode as PNG, JPEG, GIF, or WebP is replaced by an "Image omitted" note. Local file paths and `term-llm-media://` URLs never appear in the transcript.
+
+How images travel depends on the provider:
+
+- Providers that advertise `asset_media_types` (see below) receive each image once as a separate `assets/<hash>.<ext>` file, bounded to 2048 px, 8 MiB per image, 24 MiB and 30 files in total. Both `index.html` and `session.md` reference them with relative URLs.
+- Other providers, including GitHub Gist, get images embedded in `index.html` as `data:` URIs, bounded to 1600 px and about 2 MiB in total. `session.md` stays text-only.
+
+A response-only share includes the images displayed in that response, such as generated or shown images, without the tool activity that produced them.
 
 The Web UI shares either one response or the visible conversation through that response. These point-in-time Web shares are deliberately **not persisted**. A later whole-session update therefore cannot add broader content to a response-only URL.
 
@@ -122,6 +136,7 @@ Required fields and semantics:
 | `default_visibility` | Must be one of `visibilities`. |
 | `notes` | At most 16 non-empty entries. Each is at most 1024 UTF-8 bytes and cannot contain control characters. Clients show these notes to users. |
 | `limits` | Optional JSON object with at most 32 keys, at most four nested levels, bounded arrays/objects, and an encoded size of at most 16 KiB. |
+| `asset_media_types` | Optional list of at most 16 unique bare lowercase media types, for example `["image/png", "image/jpeg"]`. Advertising it means the helper accepts files with role `asset` under `assets/` for those types and serves them beside the entrypoint at the same relative path. term-llm currently emits `image/png`, `image/jpeg`, and (when listed) `image/gif`; it uses assets only when PNG or JPEG is listed. Helpers that omit the field keep receiving self-contained bundles. |
 
 Advertising `update` means the helper can replace the bundle associated with its own opaque ID. A helper that cannot safely preserve an existing URL must omit `update`.
 
@@ -132,7 +147,8 @@ For `create` and `update`, term-llm creates a fresh private temporary directory 
 Version 1 transcript bundles contain at most 32 files, with a 16 MiB per-file limit and a 32 MiB total-content limit. The standard bundle contains:
 
 - `index.html` — standalone rendered transcript and the entrypoint;
-- `session.md` — Markdown source transcript.
+- `session.md` — Markdown source transcript;
+- `assets/<hash>.<ext>` — zero or more images with role `asset`, sent only to helpers that advertise `asset_media_types`. The transcript then declares `img-src data: 'self'` in its Content-Security-Policy, so serve assets from the same origin as `index.html`.
 
 The JSON manifest names files relative to the working directory. Helpers must reject absolute paths, traversal, or files not declared by the manifest. File content is read from the working directory and is not duplicated in JSON.
 
@@ -236,7 +252,7 @@ Authenticated clients can discover the active provider with:
 GET /v1/sharing/capabilities
 ```
 
-The response uses `Cache-Control: no-store` and returns `enabled`, `provider`, `operations`, `visibilities`, `default_visibility`, `help`, `notes`, and optional `limits`. Unlike generic `GET /v1/capabilities`, this endpoint may invoke a configured helper. Generic capabilities deliberately omits sharing details so it never waits for or implies readiness of a subprocess.
+The response uses `Cache-Control: no-store` and returns `enabled`, `provider`, `operations`, `visibilities`, `default_visibility`, `help`, `notes`, and optional `limits` and `asset_media_types`. Unlike generic `GET /v1/capabilities`, this endpoint may invoke a configured helper. Generic capabilities deliberately omits sharing details so it never waits for or implies readiness of a subprocess.
 
 Point-in-time creation remains:
 
@@ -244,6 +260,6 @@ Point-in-time creation remains:
 POST /v1/sessions/{id}/shares
 ```
 
-Request fields are `anchor_message_id`, `scope` (`response` or `conversation`), and `visibility`. For one compatibility release, `public: true|false` is accepted only when `visibility` is absent. The generic response fields are `provider`, `id`, `url`, optional `source_url`, `visibility`, `ready`, and `scope`. GitHub responses additionally include legacy `gist_id`, `gist_url`, `preview_url`, and `public` fields for one compatibility release.
+Request fields are `anchor_message_id`, `scope` (`response` or `conversation`), `visibility`, and optional `include_images` (default `true`). For one compatibility release, `public: true|false` is accepted only when `visibility` is absent. The generic response fields are `provider`, `id`, `url`, optional `source_url`, `visibility`, `ready`, and `scope`. GitHub responses additionally include legacy `gist_id`, `gist_url`, `preview_url`, and `public` fields for one compatibility release.
 
 Errors use a stable `error.code` and curated `error.message`; helper stderr is never returned.

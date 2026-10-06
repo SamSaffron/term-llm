@@ -20,6 +20,8 @@ type sessionShareRequest struct {
 	Scope           session.ShareScope `json:"scope"`
 	Visibility      share.Visibility   `json:"visibility,omitempty"`
 	Public          *bool              `json:"public,omitempty"`
+	// IncludeImages defaults to true. False omits every image from the share.
+	IncludeImages *bool `json:"include_images,omitempty"`
 }
 
 type sessionShareResponse struct {
@@ -46,6 +48,7 @@ type sharingCapabilitiesResponse struct {
 	Help              string             `json:"help,omitempty"`
 	Notes             []string           `json:"notes,omitempty"`
 	Limits            map[string]any     `json:"limits,omitempty"`
+	AssetMediaTypes   []string           `json:"asset_media_types,omitempty"`
 }
 
 const (
@@ -166,6 +169,7 @@ func (s *serveServer) handleSharingCapabilities(w http.ResponseWriter, r *http.R
 		Enabled: true, Provider: capabilities.Provider, Operations: capabilities.Operations,
 		Visibilities: capabilities.Visibilities, DefaultVisibility: capabilities.DefaultVisibility,
 		Help: capabilities.Provider.Help, Notes: capabilities.Notes, Limits: capabilities.Limits,
+		AssetMediaTypes: capabilities.AssetMediaTypes,
 	})
 }
 
@@ -194,7 +198,7 @@ func (s *serveServer) handleCreateSessionShare(w http.ResponseWriter, r *http.Re
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load session transcript")
 		return
 	}
-	selected, err := session.SelectShareMessages(messages, req.AnchorMessageID, req.Scope)
+	selection, err := session.SelectShare(messages, req.AnchorMessageID, req.Scope)
 	if errors.Is(err, session.ErrInvalidShareAnchor) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "anchor must identify a visible assistant response in this session")
 		return
@@ -237,8 +241,10 @@ func (s *serveServer) handleCreateSessionShare(w http.ResponseWriter, r *http.Re
 		// Point-in-time web shares deliberately never include raw reasoning and
 		// are never persisted, so a later whole-session update cannot widen them.
 		IncludeRawReasoning: false,
+		Media:               selection.Media,
 	}
-	files, err := session.ShareFiles(sess, selected, opts)
+	opts.Images, opts.AssetMediaTypes = session.ShareImageOptions(capabilities, req.IncludeImages == nil || *req.IncludeImages)
+	files, err := session.ShareBundle(sess, selection.Messages, opts)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to render share")
 		return
@@ -256,7 +262,7 @@ func (s *serveServer) handleCreateSessionShare(w http.ResponseWriter, r *http.Re
 		var createErr error
 		created, createErr = publisher.Create(r.Context(), share.Request{
 			RequestID: share.NewRequestID(), Title: name, Description: description,
-			Visibility: visibility, Entrypoint: "index.html", Files: share.TranscriptFiles(files),
+			Visibility: visibility, Entrypoint: "index.html", Files: files,
 		})
 		return createErr
 	})

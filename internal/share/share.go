@@ -39,7 +39,17 @@ const (
 	maxCapabilityLimitsBytes = 16 << 10
 	maxStructuredErrorBytes  = 1024
 	maxDiagnosticLogBytes    = 4096
+	maxAssetMediaTypes       = 16
+
+	// RoleAsset marks a non-entrypoint file referenced by the rendered
+	// transcript, such as an image under assets/.
+	RoleAsset = "asset"
 )
+
+// AssetImageMediaTypes lists the image media types term-llm may emit as
+// separate bundle assets. Helpers opt in by advertising a subset in
+// capabilities.asset_media_types; SVG is deliberately excluded.
+var AssetImageMediaTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 type ProviderID string
 
@@ -74,6 +84,17 @@ type Capabilities struct {
 	DefaultVisibility Visibility     `json:"default_visibility"`
 	Notes             []string       `json:"notes,omitempty"`
 	Limits            map[string]any `json:"limits,omitempty"`
+	// AssetMediaTypes is optional. When present, the helper accepts files with
+	// role "asset" under assets/ for these media types and serves them beside
+	// the entrypoint, so transcripts may reference them with relative URLs.
+	// Older helpers omit it; term-llm then embeds images inline instead.
+	AssetMediaTypes []string `json:"asset_media_types,omitempty"`
+}
+
+// SupportsAssetMediaType reports whether the helper accepts separate assets of
+// mediaType.
+func (c Capabilities) SupportsAssetMediaType(mediaType string) bool {
+	return slices.Contains(c.AssetMediaTypes, strings.ToLower(strings.TrimSpace(mediaType)))
 }
 
 func (c Capabilities) Supports(operation Operation) bool {
@@ -257,6 +278,22 @@ func ValidateCapabilities(c Capabilities) error {
 	}
 	if err := validateLimits(c.Limits); err != nil {
 		return err
+	}
+	if len(c.AssetMediaTypes) > maxAssetMediaTypes {
+		return fmt.Errorf("asset_media_types must contain at most %d entries", maxAssetMediaTypes)
+	}
+	assetSeen := make(map[string]bool, len(c.AssetMediaTypes))
+	for i, mediaType := range c.AssetMediaTypes {
+		if err := validateDisplayText(fmt.Sprintf("asset_media_types[%d]", i), mediaType, 128, false); err != nil {
+			return err
+		}
+		if mediaType != strings.ToLower(strings.TrimSpace(mediaType)) || strings.ContainsAny(mediaType, " ;") {
+			return fmt.Errorf("asset_media_types[%d] must be a bare lowercase media type", i)
+		}
+		if assetSeen[mediaType] {
+			return fmt.Errorf("duplicate asset media type %q", mediaType)
+		}
+		assetSeen[mediaType] = true
 	}
 	return nil
 }
@@ -510,20 +547,4 @@ func NewRequestID() string {
 		return hex.EncodeToString(data[:])
 	}
 	return fmt.Sprintf("fallback-%d-%d", time.Now().UnixNano(), fallbackRequestID.Add(1))
-}
-
-func TranscriptFiles(files map[string]string) []File {
-	result := make([]File, 0, len(files))
-	for name, content := range files {
-		mediaType, role := "text/plain; charset=utf-8", "attachment"
-		switch name {
-		case "index.html":
-			mediaType, role = "text/html; charset=utf-8", "entrypoint"
-		case "session.md":
-			mediaType, role = "text/markdown; charset=utf-8", "transcript"
-		}
-		result = append(result, File{Name: name, MediaType: mediaType, Role: role, Content: []byte(content)})
-	}
-	slices.SortFunc(result, func(a, b File) int { return strings.Compare(a.Name, b.Name) })
-	return result
 }

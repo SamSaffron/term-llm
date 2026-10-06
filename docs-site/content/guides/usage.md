@@ -129,7 +129,7 @@ Set `TERM_LLM_AT_MENTIONS=0` to disable `@` autocomplete and submit-time textual
 | `/goal` | Set, edit, pause, resume, clear, or show the persistent session goal |
 | `/side <question>` | Ask a private, tool-less one-turn question without interrupting or changing the main conversation |
 | `/commit [intent]` | Review, stage, draft, and create a Git commit in the active checkout |
-| `/share [new] [raw] [public\|unlisted\|private]` | Share the complete session through the configured provider; `raw` explicitly opts into privacy-sensitive raw reasoning |
+| `/share [new] [raw] [noimages] [public\|unlisted\|private]` | Share the complete session through the configured provider; `raw` explicitly opts into privacy-sensitive raw reasoning and `noimages` omits images |
 | `/quit` | Exit chat |
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.

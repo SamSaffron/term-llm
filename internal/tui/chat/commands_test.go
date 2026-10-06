@@ -5362,7 +5362,7 @@ func TestCmdShareRejectsUnknownArgument(t *testing.T) {
 	m.sess = &session.Session{ID: "share-test"}
 	result, cmd := m.ExecuteCommand("/share banana")
 	m = result.(*Model)
-	if cmd == nil || !strings.Contains(m.footerMessage, "Usage: /share [new] [raw] [public|unlisted|private]") {
+	if cmd == nil || !strings.Contains(m.footerMessage, "Usage: /share [new] [raw] [noimages] [public|unlisted|private]") {
 		t.Fatalf("footer = %q, cmd nil = %v", m.footerMessage, cmd == nil)
 	}
 }
@@ -5445,7 +5445,7 @@ func TestCmdShareLoadsCapabilitiesAsynchronouslyBeforeOfferingUpdate(t *testing.
 func TestShareCommandRegistered(t *testing.T) {
 	for _, command := range AllCommands() {
 		if command.Name == "share" {
-			if command.Usage != "/share [new] [raw] [public|unlisted|private]" || len(command.Subcommands) != 5 {
+			if command.Usage != "/share [new] [raw] [noimages] [public|unlisted|private]" || len(command.Subcommands) != 6 {
 				t.Fatalf("share command = %+v", command)
 			}
 			return

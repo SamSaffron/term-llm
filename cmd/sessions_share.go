@@ -102,7 +102,8 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 	if sessionsShareIncludeRawReasoning {
 		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: raw model reasoning was explicitly requested and may contain private or sensitive information.")
 	}
-	files, err := session.ShareFiles(sess, session.VisibleExportMessages(messages), exportOptions)
+	exportOptions.Images, exportOptions.AssetMediaTypes = session.ShareImageOptions(capabilities, !sessionsShareNoImages)
+	files, err := session.ShareBundle(sess, session.VisibleExportMessages(messages), exportOptions)
 	if err != nil {
 		return err
 	}
@@ -113,7 +114,7 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 	request := sharepkg.Request{
 		RequestID: sharepkg.NewRequestID(), Title: name,
 		Description: "term-llm session: " + name, Visibility: visibility,
-		Entrypoint: "index.html", Files: sharepkg.TranscriptFiles(files),
+		Entrypoint: "index.html", Files: files,
 	}
 
 	updated := false

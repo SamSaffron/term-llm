@@ -27,6 +27,7 @@ export function ShareModal() {
   const target = store.shareTarget.value;
   const [scope, setScope] = useState<ShareScope>('response');
   const [visibility, setVisibility] = useState<ShareVisibility | ''>('');
+  const [includeImages, setIncludeImages] = useState(true);
   const [capabilities, setCapabilities] = useState<SharingCapabilitiesResponse | null>(null);
   const [capabilityLoading, setCapabilityLoading] = useState(true);
   const [capabilityError, setCapabilityError] = useState('');
@@ -94,6 +95,7 @@ export function ShareModal() {
         anchor_message_id: target.anchorMessageId,
         scope,
         visibility,
+        include_images: includeImages,
       });
       setResult(response);
       setPhase('success');
@@ -192,7 +194,8 @@ export function ShareModal() {
                   <span>
                     <strong>This response</strong>
                     <small>
-                      Just the assistant’s complete reply text. No prompts or tool activity.
+                      Just the assistant’s complete reply text and the images it showed. No prompts
+                      or tool activity.
                     </small>
                   </span>
                 </label>
@@ -243,12 +246,34 @@ export function ShareModal() {
                 )}
               </fieldset>
 
+              <fieldset class="share-fieldset" disabled={submitting}>
+                <legend>Images</legend>
+                <label class={`share-choice ${includeImages ? 'is-selected' : ''}`}>
+                  <input
+                    type="checkbox"
+                    name="share-images"
+                    checked={includeImages}
+                    onChange={(event) => setIncludeImages(event.currentTarget.checked)}
+                  />
+                  <span>
+                    <strong>Include images</strong>
+                    <small>
+                      {capabilities.asset_media_types?.length
+                        ? 'Uploaded, generated, and shown images are published with the share. They are resized and their metadata (such as location) is removed.'
+                        : 'Uploaded, generated, and shown images are embedded in the page, resized and without metadata, up to about 2 MB in total.'}
+                    </small>
+                  </span>
+                </label>
+              </fieldset>
+
               <div class="share-included">
                 <strong>What’s included</strong>
                 <p>
                   {scope === 'response'
-                    ? 'The assistant reply text only. Prompts, tool activity, and raw reasoning are excluded.'
-                    : 'The conversation through this response. Prompts, code, tool output, filenames, and images may be included; raw reasoning is excluded.'}
+                    ? `The assistant reply text${includeImages ? ' and its images' : ''}. Prompts, tool activity, and raw reasoning are excluded.`
+                    : includeImages
+                      ? 'The conversation through this response. Prompts, code, tool output, filenames, and images may be included; raw reasoning is excluded.'
+                      : 'The conversation through this response. Prompts, code, tool output, and filenames may be included; images and raw reasoning are excluded.'}
                 </p>
               </div>
               {capabilities.notes?.map((note) => (

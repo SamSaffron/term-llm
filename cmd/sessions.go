@@ -189,6 +189,7 @@ var (
 	sessionsShareNew                  bool
 	sessionsShareJSON                 bool
 	sessionsShareIncludeRawReasoning  bool
+	sessionsShareNoImages             bool
 	sessionsResetYes                  bool
 )
 
@@ -213,6 +214,7 @@ func init() {
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareNew, "new", false, "Create a new share instead of updating a compatible session share")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareJSON, "json", false, "Output the share result as JSON")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareIncludeRawReasoning, "include-raw-reasoning", false, "Include raw model reasoning (privacy-sensitive; requires reasoning.raw/source permission)")
+	sessionsShareCmd.Flags().BoolVar(&sessionsShareNoImages, "no-images", false, "Omit images (uploads, generated images, and shown media) from the share")
 
 	// Reset flags
 	sessionsResetCmd.Flags().BoolVarP(&sessionsResetYes, "yes", "y", false, "Delete without interactive confirmation")

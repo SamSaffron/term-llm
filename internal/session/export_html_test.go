@@ -106,7 +106,7 @@ func TestExportToHTMLFooterLinksToTermLLM(t *testing.T) {
 }
 
 func TestExportToHTMLVisibilityReasoningToolsAndMedia(t *testing.T) {
-	png := base64.StdEncoding.EncodeToString([]byte("png bytes"))
+	png := base64.StdEncoding.EncodeToString(testPNG(t, 4, 4, true))
 	sess := &Session{ID: "s", Provider: "p", Model: "m", CreatedAt: time.Now()}
 	messages := []Message{
 		{Role: llm.RoleSystem, TextContent: "secret system", Parts: []llm.Part{{Type: llm.PartText, Text: "secret system"}}},
@@ -206,7 +206,7 @@ func TestHTMLExportPlacesReferencedMediaPlaceholderInAssistantText(t *testing.T)
 			Type: llm.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter",
 		}}},
 	}
-	views, _ := buildHTMLExportMessages(messages, ExportOptions{})
+	views, _ := buildHTMLExportMessages(messages, ExportOptions{}, newExportImages(ExportOptions{}))
 	if len(views) != 2 || len(views[1].Blocks) != 1 {
 		t.Fatalf("unexpected export view: %#v", views)
 	}

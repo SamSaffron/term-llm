@@ -16,6 +16,16 @@ type ExportOptions struct {
 	IncludeRawReasoning       bool // Include raw reasoning; caller must enforce safety gate
 	Partial                   bool // Export is a transcript prefix; omit misleading whole-session metrics
 	ResponseOnly              bool // Export is a standalone assistant response
+
+	// Images selects inline data URIs (default), separate assets (share
+	// bundles only), or omission. AssetMediaTypes lists the asset encodings the
+	// destination accepts.
+	Images          ExportImageMode
+	AssetMediaTypes []string
+	// Media supplies additional term-llm-media:// artifacts for resolving
+	// references when the selected messages omit the producing tool results,
+	// as in response-only shares.
+	Media []llm.MediaArtifact
 }
 
 // escapeTableCell escapes special characters for markdown table cells.
@@ -28,7 +38,37 @@ func escapeTableCell(s string) string {
 
 // ExportToMarkdown exports a session and its messages to a pretty markdown format.
 func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) string {
+	return exportToMarkdown(sess, messages, opts, nil)
+}
+
+// exportToMarkdown renders Markdown. When images is non-nil (asset share
+// bundles), session images and term-llm-media:// references are rewritten to
+// the same bundle assets used by the HTML rendering; otherwise the output
+// matches the historical text-only export.
+func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, images *exportImages) string {
 	var b strings.Builder
+	var mediaReferences map[string]llm.MediaArtifact
+	if images != nil {
+		mediaReferences = htmlMediaReferences(VisibleExportMessages(messages), opts.Media)
+	}
+	writeImage := func(target *strings.Builder, source exportImageSource) {
+		resolved := images.resolve(source)
+		alt := source.Alt
+		if alt == "" {
+			alt = "Image"
+		}
+		if resolved.Omitted {
+			fmt.Fprintf(target, "_%s omitted — %s._\n\n", escapeTableCell(alt), resolved.Reason)
+			return
+		}
+		fmt.Fprintf(target, "![%s](%s)\n\n", escapeMarkdownImageAlt(alt), resolved.URL)
+	}
+	rewriteText := func(text string) string {
+		if images == nil {
+			return text
+		}
+		return replaceHTMLMediaReferences(text, mediaReferences, images)
+	}
 
 	// Title
 	title := sess.PreferredShortTitle()
@@ -156,7 +196,15 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 			flushAssistant()
 			b.WriteString("### User\n\n")
 			b.WriteString(msg.TextContent)
-			b.WriteString("\n\n---\n\n")
+			b.WriteString("\n\n")
+			if images != nil {
+				for _, part := range msg.Parts {
+					if part.Type == llm.PartImage {
+						writeImage(&b, partImageSource(part, "Attached image"))
+					}
+				}
+			}
+			b.WriteString("---\n\n")
 			continue
 		}
 
@@ -172,9 +220,12 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 						pendingText.WriteString(rendered)
 					}
 					if part.Text != "" {
-						pendingText.WriteString(part.Text)
+						pendingText.WriteString(rewriteText(part.Text))
 						pendingText.WriteString("\n\n")
 					}
+				}
+				if part.Type == llm.PartImage && images != nil {
+					writeImage(&pendingText, partImageSource(part, "Image"))
 				}
 				if part.Type == llm.PartToolCall && part.ToolCall != nil {
 					pendingToolCalls = append(pendingToolCalls, part.ToolCall)
@@ -200,6 +251,11 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 						// Write tool call with result
 						writeToolCall(&b, tc, part.ToolResult)
 						delete(toolCalls, part.ToolResult.ID)
+						if images != nil {
+							for _, source := range toolResultDisplayedImages(part.ToolResult) {
+								writeImage(&b, source)
+							}
+						}
 					} else {
 						// Orphan tool result (shouldn't happen, but handle gracefully)
 						b.WriteString("<details>\n")

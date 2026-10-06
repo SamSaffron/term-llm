@@ -127,6 +127,7 @@ export interface SharingCapabilitiesResponse {
   help?: string;
   notes?: string[];
   limits?: Record<string, unknown>;
+  asset_media_types?: string[];
 }
 
 export interface SessionShareResponse {

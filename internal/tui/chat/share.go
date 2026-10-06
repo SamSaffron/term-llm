@@ -17,6 +17,7 @@ import (
 type shareRequest struct {
 	forceNew      bool
 	includeRaw    bool
+	noImages      bool
 	visibility    sharepkg.Visibility
 	visibilitySet bool
 	publisher     sharepkg.Publisher
@@ -52,7 +53,7 @@ type shareDoneMsg struct {
 }
 
 func (m *Model) cmdShare(args []string) (tea.Model, tea.Cmd) {
-	const usage = "Usage: /share [new] [raw] [public|unlisted|private]"
+	const usage = "Usage: /share [new] [raw] [noimages] [public|unlisted|private]"
 	req := shareRequest{}
 	for _, arg := range args {
 		switch strings.ToLower(arg) {
@@ -66,6 +67,11 @@ func (m *Model) cmdShare(args []string) (tea.Model, tea.Cmd) {
 				return m.showFooterError(usage)
 			}
 			req.includeRaw = true
+		case "noimages":
+			if req.noImages {
+				return m.showFooterError(usage)
+			}
+			req.noImages = true
 		case "public", "unlisted", "private":
 			if req.visibilitySet {
 				return m.showFooterError(usage)
@@ -241,7 +247,8 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 			result.err = fmt.Errorf("load session messages: %w", err)
 			return result
 		}
-		files, err := session.ShareFiles(&sessSnapshot, session.VisibleExportMessages(messages), opts)
+		opts.Images, opts.AssetMediaTypes = session.ShareImageOptions(req.capabilities, !req.noImages)
+		files, err := session.ShareBundle(&sessSnapshot, session.VisibleExportMessages(messages), opts)
 		if err != nil {
 			result.err = err
 			return result
@@ -249,7 +256,7 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 		request := sharepkg.Request{
 			RequestID: sharepkg.NewRequestID(), Title: name,
 			Description: "term-llm session: " + name, Visibility: req.visibility,
-			Entrypoint: "index.html", Files: sharepkg.TranscriptFiles(files),
+			Entrypoint: "index.html", Files: files,
 		}
 		if update {
 			result.result, result.err = updater.Update(ctx, updateID, request)
