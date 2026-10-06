@@ -12,7 +12,7 @@ term-llm can publish rendered transcript bundles without coupling the Web UI, TU
 From the chat TUI:
 
 ```text
-/share [new] [raw] [noimages] [public|unlisted|private]
+/share [new] [raw] [noimages] [notools] [public|unlisted|private]
 ```
 
 From the CLI, for a complete saved session:
@@ -23,11 +23,20 @@ term-llm sessions share 42 --visibility private # requires a custom provider adv
 term-llm sessions share 42 --include-raw-reasoning
 term-llm sessions share 42 --new --json
 term-llm sessions share 42 --no-images
+term-llm sessions share 42 --no-tools
 ```
 
 A compatible whole-session share is updated by default. `new` or `--new` always creates another share. An update is offered only when the stored share has `scope: session`, belongs to the currently configured provider, and that provider advertises `update`. Replacing saved state warns that the old provider link may remain active.
 
 Raw model reasoning is never included implicitly, even when `reasoning.export: raw` is configured. It requires the explicit `/share raw` or `--include-raw-reasoning` opt-in, remains subject to `reasoning.raw` and `reasoning.source`, and is accompanied by a privacy warning because it may contain sensitive information.
+
+## Tool activity
+
+Tools can see secrets: commands, environment variables, file contents, and diffs all end up in tool output. `/share notools`, `--no-tools`, or clearing the Web UI's **Include tool activity** checkbox (`include_tools: false` in the API) shares the conversation without any tool calls or tool output. Your messages, the assistant's replies, and images that were shown to you, such as generated images or media shown with `show_media`, are kept. Images that only appeared inside tool output, such as screenshots a tool inspected, are dropped. Response-only shares never include tool activity.
+
+Text the assistant wrote can still repeat something a tool saw, so review a share before sending the link.
+
+A whole-session share created with `notools` or `noimages` remembers that choice. Later updates to the same link keep excluding that content even without the flag, so an update can never widen what an existing link shows. To include it again, create a new share with `new` or `--new`.
 
 ## Images
 
@@ -260,6 +269,6 @@ Point-in-time creation remains:
 POST /v1/sessions/{id}/shares
 ```
 
-Request fields are `anchor_message_id`, `scope` (`response` or `conversation`), `visibility`, and optional `include_images` (default `true`). For one compatibility release, `public: true|false` is accepted only when `visibility` is absent. The generic response fields are `provider`, `id`, `url`, optional `source_url`, `visibility`, `ready`, and `scope`. GitHub responses additionally include legacy `gist_id`, `gist_url`, `preview_url`, and `public` fields for one compatibility release.
+Request fields are `anchor_message_id`, `scope` (`response` or `conversation`), `visibility`, optional `include_images` (default `true`), and optional `include_tools` (default `true`; applies to conversation shares only). For one compatibility release, `public: true|false` is accepted only when `visibility` is absent. The generic response fields are `provider`, `id`, `url`, optional `source_url`, `visibility`, `ready`, and `scope`. GitHub responses additionally include legacy `gist_id`, `gist_url`, `preview_url`, and `public` fields for one compatibility release.
 
 Errors use a stable `error.code` and curated `error.message`; helper stderr is never returned.

@@ -18,6 +18,7 @@ type shareRequest struct {
 	forceNew      bool
 	includeRaw    bool
 	noImages      bool
+	noTools       bool
 	visibility    sharepkg.Visibility
 	visibilitySet bool
 	publisher     sharepkg.Publisher
@@ -46,6 +47,8 @@ type shareDoneMsg struct {
 	providerHelp        string
 	providerNotes       []string
 	includedRaw         bool
+	excludeTools        bool
+	excludeImages       bool
 	copyAttempted       bool
 	copyMethod          clipboard.CopyMethod
 	copyErr             error
@@ -53,7 +56,7 @@ type shareDoneMsg struct {
 }
 
 func (m *Model) cmdShare(args []string) (tea.Model, tea.Cmd) {
-	const usage = "Usage: /share [new] [raw] [noimages] [public|unlisted|private]"
+	const usage = "Usage: /share [new] [raw] [noimages] [notools] [public|unlisted|private]"
 	req := shareRequest{}
 	for _, arg := range args {
 		switch strings.ToLower(arg) {
@@ -72,6 +75,11 @@ func (m *Model) cmdShare(args []string) (tea.Model, tea.Cmd) {
 				return m.showFooterError(usage)
 			}
 			req.noImages = true
+		case "notools":
+			if req.noTools {
+				return m.showFooterError(usage)
+			}
+			req.noTools = true
 		case "public", "unlisted", "private":
 			if req.visibilitySet {
 				return m.showFooterError(usage)
@@ -227,6 +235,12 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 		updateID = sess.Share.ID
 		priorSharedAt = sess.Share.SharedAt
 	}
+	// Updates keep earlier exclusions so the same URL is never widened.
+	excludeTools, excludeImages := req.noTools, req.noImages
+	if update && sess.Share != nil {
+		excludeTools = excludeTools || sess.Share.ExcludeTools
+		excludeImages = excludeImages || sess.Share.ExcludeImages
+	}
 
 	m.pendingShare = nil
 	m.shareInFlight = true
@@ -240,15 +254,19 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 			store: store, sessionID: sessionID, priorSharedAt: priorSharedAt, updated: update,
 			requestedVisibility: requestedVisibility, providerName: req.capabilities.Provider.Name,
 			providerHelp: req.capabilities.Provider.Help, providerNotes: append([]string(nil), req.capabilities.Notes...),
-			includedRaw: opts.IncludeRawReasoning,
+			includedRaw: opts.IncludeRawReasoning, excludeTools: excludeTools, excludeImages: excludeImages,
 		}
 		messages, _, err := session.LoadScrollbackWithBoundary(ctx, store, &sessSnapshot)
 		if err != nil {
 			result.err = fmt.Errorf("load session messages: %w", err)
 			return result
 		}
-		opts.Images, opts.AssetMediaTypes = session.ShareImageOptions(req.capabilities, !req.noImages)
-		files, err := session.ShareBundle(&sessSnapshot, session.VisibleExportMessages(messages), opts)
+		opts.Images, opts.AssetMediaTypes = session.ShareImageOptions(req.capabilities, !excludeImages)
+		visible := session.VisibleExportMessages(messages)
+		if excludeTools {
+			visible, opts.Media = session.StripToolActivity(visible)
+		}
+		files, err := session.ShareBundle(&sessSnapshot, visible, opts)
 		if err != nil {
 			result.err = err
 			return result
@@ -292,6 +310,7 @@ func (m *Model) handleShareDone(msg shareDoneMsg) (tea.Model, tea.Cmd) {
 	state := &session.ShareState{
 		Provider: string(msg.result.Provider), ID: msg.result.ID, URL: msg.result.URL,
 		SourceURL: msg.result.SourceURL, Visibility: string(msg.result.Visibility), Scope: session.ShareScopeSession,
+		ExcludeTools: msg.excludeTools, ExcludeImages: msg.excludeImages,
 		SharedAt: sharedAt, UpdatedAt: now,
 	}
 	state.Normalize()

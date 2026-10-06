@@ -63,9 +63,19 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 		return ShareSelection{}, ErrInvalidShareAnchor
 	}
 
+	// Some providers (for example the Claude CLI) persist a whole response as
+	// one assistant row followed by its tool-result rows. Those results belong
+	// to the anchored response, and their media is referenced by its text.
+	end := anchorIndex
+	anchorResponse := ordered[anchorIndex].ResponseID
+	for end+1 < len(ordered) && ordered[end+1].Role == llm.RoleTool &&
+		(anchorResponse == "" || ordered[end+1].ResponseID == anchorResponse) {
+		end++
+	}
+
 	switch scope {
 	case ShareScopeConversation:
-		return ShareSelection{Messages: VisibleExportMessages(ordered[:anchorIndex+1])}, nil
+		return ShareSelection{Messages: VisibleExportMessages(ordered[:end+1])}, nil
 	case ShareScopeResponse:
 		anchor := ordered[anchorIndex]
 		start := anchorIndex
@@ -84,7 +94,7 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 				pendingText = nil
 			}
 		}
-		for i := start; i <= anchorIndex; i++ {
+		for i := start; i <= end; i++ {
 			msg := ordered[i]
 			if anchor.ResponseID != "" && msg.ResponseID != anchor.ResponseID {
 				continue
@@ -129,4 +139,85 @@ func shareMessageVisible(message Message) bool {
 		return false
 	}
 	return true
+}
+
+// StripToolActivity removes tool calls, tool results, and tool-only output
+// (diffs, tool screenshots) from a transcript so it can be shared without
+// exposing commands, file contents, or credentials seen by tools. Images the
+// client displayed to the user — image_generate output and unreferenced media
+// — are kept as assistant images in their original position, and the returned
+// media resolves term-llm-media:// references in assistant text. Consecutive
+// assistant content from one response is merged into a single message.
+func StripToolActivity(messages []Message) ([]Message, []llm.MediaArtifact) {
+	out := make([]Message, 0, len(messages))
+	var media []llm.MediaArtifact
+	// mergeable is the index in out of the assistant message produced by this
+	// function that later content of the same response may extend.
+	mergeable := -1
+	appendAssistant := func(source Message, parts []llm.Part) {
+		if len(parts) == 0 {
+			return
+		}
+		text := assistantPartsText(parts)
+		if mergeable >= 0 && out[mergeable].ResponseID != "" && out[mergeable].ResponseID == source.ResponseID {
+			target := &out[mergeable]
+			target.Parts = append(target.Parts, parts...)
+			if text != "" {
+				if target.TextContent != "" {
+					target.TextContent += "\n\n"
+				}
+				target.TextContent += text
+			}
+			return
+		}
+		msg := source
+		msg.Role = llm.RoleAssistant
+		msg.Parts = parts
+		msg.TextContent = text
+		out = append(out, msg)
+		mergeable = len(out) - 1
+	}
+	for _, msg := range messages {
+		switch msg.Role {
+		case llm.RoleTool:
+			var images []llm.Part
+			for _, part := range msg.Parts {
+				if part.Type != llm.PartToolResult || part.ToolResult == nil {
+					continue
+				}
+				media = append(media, part.ToolResult.Media...)
+				for _, source := range toolResultDisplayedImages(part.ToolResult) {
+					images = append(images, llm.Part{Type: llm.PartImage, ImagePath: source.Path})
+				}
+			}
+			appendAssistant(msg, images)
+		case llm.RoleAssistant:
+			parts := msg.Parts
+			if len(parts) == 0 && msg.TextContent != "" {
+				parts = []llm.Part{{Type: llm.PartText, Text: msg.TextContent}}
+			}
+			kept := make([]llm.Part, 0, len(parts))
+			for _, part := range parts {
+				if part.Type == llm.PartToolCall || part.Type == llm.PartToolResult {
+					continue
+				}
+				kept = append(kept, part)
+			}
+			appendAssistant(msg, kept)
+		default:
+			out = append(out, msg)
+			mergeable = -1
+		}
+	}
+	return out, media
+}
+
+func assistantPartsText(parts []llm.Part) string {
+	var texts []string
+	for _, part := range parts {
+		if part.Type == llm.PartText && strings.TrimSpace(part.Text) != "" {
+			texts = append(texts, strings.TrimSpace(part.Text))
+		}
+	}
+	return strings.Join(texts, "\n\n")
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/share"
@@ -22,6 +23,9 @@ type sessionShareRequest struct {
 	Public          *bool              `json:"public,omitempty"`
 	// IncludeImages defaults to true. False omits every image from the share.
 	IncludeImages *bool `json:"include_images,omitempty"`
+	// IncludeTools defaults to true. False removes tool calls and output from
+	// conversation shares; response shares never include tool activity.
+	IncludeTools *bool `json:"include_tools,omitempty"`
 }
 
 type sessionShareResponse struct {
@@ -242,6 +246,11 @@ func (s *serveServer) handleCreateSessionShare(w http.ResponseWriter, r *http.Re
 		// are never persisted, so a later whole-session update cannot widen them.
 		IncludeRawReasoning: false,
 		Media:               selection.Media,
+	}
+	if req.Scope == session.ShareScopeConversation && req.IncludeTools != nil && !*req.IncludeTools {
+		var media []llm.MediaArtifact
+		selection.Messages, media = session.StripToolActivity(selection.Messages)
+		opts.Media = append(opts.Media, media...)
 	}
 	opts.Images, opts.AssetMediaTypes = session.ShareImageOptions(capabilities, req.IncludeImages == nil || *req.IncludeImages)
 	files, err := session.ShareBundle(sess, selection.Messages, opts)

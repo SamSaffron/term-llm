@@ -309,7 +309,11 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
 				}
 			case llm.PartImage:
-				image := buildHTMLImage(images, partImageSource(part, "Transcript attachment"))
+				alt := "Transcript attachment"
+				if msg.Role == llm.RoleAssistant {
+					alt = "Image"
+				}
+				image := buildHTMLImage(images, partImageSource(part, alt))
 				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "image", Image: &image})
 			case llm.PartFile:
 				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "file", File: buildHTMLFile(part)})

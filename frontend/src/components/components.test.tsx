@@ -8111,6 +8111,7 @@ describe('Preact-owned chat surfaces', () => {
       scope: 'conversation',
       visibility: 'public',
       include_images: true,
+      include_tools: true,
     });
     expect(screen.getByText('Creating share…')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
@@ -8205,6 +8206,54 @@ describe('Preact-owned chat surfaces', () => {
       scope: 'response',
       visibility: 'unlisted',
       include_images: false,
+    });
+  });
+
+  it('shares a conversation without tool activity', async () => {
+    const store = createStore();
+    store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
+    store.modal.value = 'share';
+    store.endpoints.sharingCapabilities = vi.fn(async () => ({
+      enabled: true,
+      provider: { id: 'acme', name: 'Acme Vault' },
+      operations: ['create'] as Array<'create'>,
+      visibilities: ['unlisted'] as Array<'unlisted'>,
+      default_visibility: 'unlisted' as const,
+    }));
+    store.endpoints.createSessionShare = vi.fn(async () => ({
+      provider: 'acme',
+      id: 'x',
+      url: 'https://share.example/x',
+      visibility: 'unlisted' as const,
+      ready: true,
+      scope: 'conversation' as const,
+    }));
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await screen.findByRole('radio', { name: /This response/ });
+    expect(
+      screen.queryByRole('checkbox', { name: /Include tool activity/ }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: /Conversation up to here/ }));
+    const tools = screen.getByRole('checkbox', { name: /Include tool activity/ });
+    expect(tools).toBeChecked();
+    await userEvent.click(tools);
+    expect(
+      screen.getByText(
+        'The conversation through this response. Prompts, replies, and images may be included; tool activity and raw reasoning are excluded.',
+      ),
+    ).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Create share' }));
+    expect(store.endpoints.createSessionShare).toHaveBeenCalledWith(store.sessions.value[0].id, {
+      anchor_message_id: 42,
+      scope: 'conversation',
+      visibility: 'unlisted',
+      include_images: true,
+      include_tools: false,
     });
   });
 
