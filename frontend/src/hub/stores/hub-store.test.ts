@@ -231,7 +231,7 @@ describe('HubStore', () => {
     expect(client.listNodes).toHaveBeenCalledTimes(1);
     expect(client.listAttention).toHaveBeenCalledTimes(1);
     expect(client.listDelegations).toHaveBeenCalledTimes(1);
-    expect(store.reachableCount.value).toBe(1);
+    expect(store.onlineNodeCount.value).toBe(1);
     expect(store.activeSessionCount.value).toBe(1);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(client.listNodes).toHaveBeenCalledTimes(2);

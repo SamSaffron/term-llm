@@ -190,8 +190,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// The dashboard now paints a persisted last-known snapshot before any
 		// request and applies each section as it lands; the shared IndexedDB
 		// cache plus field allowlists add ~9.8 KiB: 97.9/31.9 KiB.
-		"dist/hub.js":  {raw: 101_000, gzip: 33_000},
-		"dist/hub.css": {raw: 19_000, gzip: 5_500},
+		// The online/offline/all node filter menu, its URL sync, and the
+		// filtered-grid order merge take JS from 97.5/30.9 to 100.7/31.7 KiB
+		// and CSS from 17.9 to 19.3 KiB.
+		"dist/hub.js":  {raw: 105_000, gzip: 34_000},
+		"dist/hub.css": {raw: 20_500, gzip: 5_500},
 	}
 	for name, budget := range budgets {
 		body, err := testBuildAsset(name)

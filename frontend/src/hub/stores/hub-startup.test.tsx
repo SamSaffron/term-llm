@@ -194,7 +194,6 @@ describe('Hub startup cache', () => {
     );
     expect(view.container.querySelector('.status-dot.ok')).toBeNull();
     expect(view.container.querySelector('.status-running')).toBeNull();
-    expect(store.reachableCount.value).toBe(0);
     expect(store.activeSessionCount.value).toBe(0);
     expect(store.lastKnown.value).toBe(true);
     attentionRead.resolve(attention('Fresh review'));
@@ -207,7 +206,7 @@ describe('Hub startup cache', () => {
     await flush();
     expect(view.container.querySelector('.status-dot.ok')).not.toBeNull();
     expect(store.lastKnown.value).toBe(false);
-    expect(store.reachableCount.value).toBe(1);
+    expect(store.onlineNodeCount.value).toBe(1);
   });
 
   it('waits for an authenticated success when shell display permission is missing', async () => {

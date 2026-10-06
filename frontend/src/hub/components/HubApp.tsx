@@ -1,6 +1,7 @@
 import { useEffect } from 'preact/hooks';
 import type { HubConfig } from '../config';
 import type { ClipboardAdapter } from '../platform/clipboard';
+import { bindNodeFilterURL } from '../platform/node-filter-url';
 import type { HubStore } from '../stores/hub-store';
 import { AddNodeDialog } from './AddNodeDialog';
 import { AttentionPanels } from './AttentionPanels';
@@ -22,6 +23,7 @@ export function HubApp({
     store.start();
     return () => store.dispose();
   }, [store]);
+  useEffect(() => bindNodeFilterURL(store.nodeFilter, window), [store]);
   const error =
     store.nodeError.value ||
     (store.resolverWarning.value

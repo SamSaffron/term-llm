@@ -8,8 +8,9 @@ import {
   type HubCacheData,
 } from './hub-cache';
 import { reconcileHubItems } from '../domain/reconcile';
-import { computed, signal } from '@preact/signals';
+import { computed, signal, type Signal } from '@preact/signals';
 import { activeSessionCount as countActiveSessions } from '../domain/formatting';
+import { nodeMatchesFilter, type NodeFilter } from '../domain/node-filter';
 import { HubAPIError, type HubClient } from '../../api/hub-client';
 import { SavedOrder, type OrderRanks } from '../../stores/saved-order';
 import type {
@@ -28,6 +29,8 @@ export interface HubStoreOptions {
   pollMilliseconds?: number;
   setInterval?: typeof window.setInterval;
   clearInterval?: typeof window.clearInterval;
+  /** The node filter to show first, usually read from the page URL. */
+  nodeFilter?: NodeFilter;
 }
 
 function message(error: unknown): string {
@@ -100,9 +103,17 @@ export class HubStore {
   readonly credentials = signal<HubCredential[]>([]);
   readonly activeSessions = signal(0);
 
-  readonly reachableCount = computed(() =>
-    this.nodesVerified.value ? this.nodes.value.filter((node) => node.status.reachable).length : 0,
+  /** Which nodes the grid shows; the dashboard mirrors it in the URL. */
+  readonly nodeFilter: Signal<NodeFilter>;
+  /** Nodes reachable now, or at last sight while the list is still cached. */
+  readonly onlineNodeCount = computed(
+    () => this.nodes.value.filter((node) => nodeMatchesFilter(node, 'online')).length,
   );
+  readonly filteredNodes = computed(() => {
+    const filter = this.nodeFilter.value;
+    const nodes = this.nodes.value;
+    return filter === 'all' ? nodes : nodes.filter((node) => nodeMatchesFilter(node, filter));
+  });
   readonly activeSessionCount = computed(() =>
     this.nodesVerified.value ? countActiveSessions(this.nodes.value) : 0,
   );
@@ -143,6 +154,7 @@ export class HubStore {
     readonly passkeys?: PasskeyPlatform,
     options: HubStoreOptions = {},
   ) {
+    this.nodeFilter = signal(options.nodeFilter ?? 'online');
     this.cache = options.cache ?? new HubCache(client.config ?? { basePath: '' });
     this.unsubscribeUnauthorized = client.onUnauthorized?.(() => this.invalidateCache());
     this.pollMilliseconds = options.pollMilliseconds ?? 15_000;

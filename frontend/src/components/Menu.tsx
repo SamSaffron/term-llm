@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 
 const menuItems = (root: HTMLElement): HTMLElement[] => [
-  ...root.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'),
+  ...root.querySelectorAll<HTMLElement>(
+    ['menuitem', 'menuitemradio', 'menuitemcheckbox']
+      .map((role) => `[role="${role}"]:not([disabled])`)
+      .join(', '),
+  ),
 ];
 
 export function useMenuKeyboard(
@@ -62,8 +66,13 @@ export function useMenuKeyboard(
     };
     document.addEventListener('focusin', focusOutside);
     const items = menuItems(root);
-    items.forEach((item, index) => (item.tabIndex = index === 0 ? 0 : -1));
-    const frame = requestAnimationFrame(() => items[0]?.focus());
+    // A radio menu opens on its chosen item; any other menu on its first.
+    const initial = Math.max(
+      0,
+      items.findIndex((item) => item.matches('[role="menuitemradio"][aria-checked="true"]')),
+    );
+    items.forEach((item, index) => (item.tabIndex = index === initial ? 0 : -1));
+    const frame = requestAnimationFrame(() => items[initial]?.focus());
     const cleanup = () => {
       if (cleanupRef.current !== cleanup) return;
       cleanupRef.current = null;

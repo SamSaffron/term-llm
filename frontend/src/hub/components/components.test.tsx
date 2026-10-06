@@ -779,4 +779,127 @@ describe('Hub node grid order', () => {
       counts.dispose();
     }
   });
+
+  it('shows online nodes by default and moves them around the offline nodes it hides', async () => {
+    const offline = (node: HubNode): HubNode => ({
+      ...node,
+      status: { reachable: false, state: 'disconnected', latency_ms: 0 },
+    });
+    const { value, reorderNodes } = orderStore(undefined, [
+      gridNode('alpha', 'Alpha'),
+      offline(gridNode('beta', 'Beta')),
+      gridNode('gamma', 'Gamma'),
+    ]);
+    const { container } = render(<NodeGrid store={value} />);
+    expect(cardNames(container)).toEqual(['Alpha', 'Gamma']);
+
+    const gammaResume = card(container, 'Gamma').querySelector<HTMLAnchorElement>('a.primary')!;
+    fireEvent.keyDown(gammaResume, { key: 'ArrowUp', altKey: true });
+    // Gamma and Alpha swap the places they held; hidden Beta keeps its own.
+    await waitFor(() => expect(reorderNodes).toHaveBeenCalledWith(['gamma', 'beta', 'alpha']));
+    expect(value.nodes.value.map((node) => node.id)).toEqual(['gamma', 'beta', 'alpha']);
+    expect(cardNames(container)).toEqual(['Gamma', 'Alpha']);
+
+    await act(() => {
+      value.nodeFilter.value = 'offline';
+    });
+    expect(cardNames(container)).toEqual(['Beta']);
+    await act(() => {
+      value.nodeFilter.value = 'all';
+    });
+    expect(cardNames(container)).toEqual(['Gamma', 'Beta', 'Alpha']);
+  });
+
+  it('offers every node when none pass the filter', async () => {
+    const { value } = orderStore(undefined, [
+      { ...gridNode('alpha', 'Alpha'), status: { reachable: false, state: 'down', latency_ms: 0 } },
+    ]);
+    const { container } = render(<NodeGrid store={value} />);
+    expect(cardNames(container)).toEqual([]);
+    expect(screen.getByText('No nodes are online.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all nodes' }));
+    expect(value.nodeFilter.value).toBe('all');
+    await waitFor(() => expect(cardNames(container)).toEqual(['Alpha']));
+    expect(screen.queryByText('No nodes are online.')).not.toBeInTheDocument();
+  });
+});
+
+describe('Hub node filter', () => {
+  const filterNode = (id: string, reachable: boolean): HubNode => ({
+    id,
+    name: id[0].toUpperCase() + id.slice(1),
+    source: 'config',
+    connection: 'direct',
+    url: `http://${id}.test/chat`,
+    base_path: '/chat',
+    proxy_path: `/hub/node/${id}/`,
+    new_session_path: `/hub/node/${id}/?new=1`,
+    has_token: true,
+    status: { reachable, state: reachable ? 'ok' : 'disconnected', latency_ms: 1 },
+    sessions: reachable
+      ? { count_label: '1 session', active_count: 1, resume_path: `/hub/node/${id}/chat/s1` }
+      : undefined,
+  });
+
+  it('chooses nodes from the header count and mirrors the choice in the URL', async () => {
+    window.history.replaceState(null, '', '/hub/?tab=x#top');
+    const listed = [
+      filterNode('alpha', true),
+      filterNode('beta', false),
+      filterNode('gamma', false),
+    ];
+    const value = store({
+      listNodes: vi.fn(async () => ({ nodes: listed })),
+      listAttention: vi.fn(async () => ({ inbox: [], input_required: [], total_unseen: 0 })),
+      listDelegations: vi.fn(async () => ({ delegations: [] })),
+    });
+    const { container } = render(
+      <HubApp config={dashboardConfig} store={value} clipboard={{ writeText: vi.fn() }} />,
+    );
+    const toggle = await screen.findByRole('button', { name: 'Show nodes: 1 online of 3' });
+    expect(container.querySelectorAll('.node-card')).toHaveLength(1);
+    expect(window.location.search).toBe('?tab=x');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const menu = screen.getByRole('menu', { name: 'Show nodes' });
+    expect(menu).toHaveTextContent('1 active session');
+    const online = screen.getByRole('menuitemradio', { name: /Online/ });
+    expect(online).toHaveAttribute('aria-checked', 'true');
+    // The menu opens on the chosen filter.
+    await waitFor(() => expect(online).toHaveFocus());
+    fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    const offline = screen.getByRole('menuitemradio', { name: /Offline/ });
+    expect(offline).toHaveFocus();
+    expect(offline).toHaveTextContent('2');
+    fireEvent.click(offline);
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show nodes: 2 offline of 3' })).toBeVisible();
+    expect(
+      [...container.querySelectorAll('.node-card .node-name')].map((n) => n.textContent),
+    ).toEqual(['Beta', 'Gamma']);
+    expect(window.location.pathname).toBe('/hub/');
+    expect(window.location.search).toBe('?tab=x&nodes=offline');
+    expect(window.location.hash).toBe('#top');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show nodes: 2 offline of 3' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /All nodes/ }));
+    expect(window.location.search).toBe('?tab=x&nodes=all');
+    expect(screen.getByRole('button', { name: 'Show nodes: 3 nodes 1 online' })).toBeVisible();
+    expect(container.querySelectorAll('.node-card')).toHaveLength(3);
+
+    // History navigation to an address carrying a filter applies it.
+    await act(() => {
+      window.history.pushState(null, '', '/hub/?nodes=offline');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    expect(value.nodeFilter.value).toBe('offline');
+
+    fireEvent.click(screen.getByRole('button', { name: /Show nodes/ }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Online/ }));
+    expect(window.location.search).toBe('');
+    value.dispose();
+    window.history.replaceState(null, '', '/');
+  });
 });

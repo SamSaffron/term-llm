@@ -3,6 +3,7 @@ import { useMemo, useRef, useState } from 'preact/hooks';
 import { Menu } from '../../components/Menu';
 import { reorderKeyOffset, useReorderableList } from '../../components/useReorderableList';
 import { nodeResumePath } from '../domain/formatting';
+import { mergeShownOrder } from '../domain/node-filter';
 import type { HubNode } from '../domain/types';
 import type { HubStore } from '../stores/hub-store';
 import { NodeSessions } from './NodeSessions';
@@ -224,13 +225,21 @@ export const NodeCard = memo(function NodeCard({
  * browser and node. Cards slide aside to preview where a dragged card lands.
  */
 export function NodeGrid({ store }: { store: HubStore }) {
-  const nodes = store.nodes.value;
+  // Only the nodes passing the filter show. Moving one among them keeps every
+  // hidden node in its place in the saved order.
+  const nodes = store.filteredNodes.value;
   const { list, reordering, draggingId, announcement, press, move } =
     useReorderableList<HTMLElement>(
       nodes.map((node) => node.id),
       {
         label: (id) => nodes.find((node) => node.id === id)?.name || id,
-        save: (orderedIds) => store.reorderNodes(orderedIds),
+        save: (orderedIds) =>
+          store.reorderNodes(
+            mergeShownOrder(
+              store.nodes.peek().map((node) => node.id),
+              orderedIds,
+            ),
+          ),
         report: (error) => store.reportNodeOrderError(error),
         focusTargets: { row: '.node-menu-toggle', menu: '.node-menu-toggle' },
       },
@@ -259,6 +268,23 @@ export function NodeGrid({ store }: { store: HubStore }) {
       <div class="visually-hidden" role="status" aria-live="polite">
         {announcement}
       </div>
+      <NodeFilterEmpty store={store} />
     </>
+  );
+}
+
+/** Explains an empty grid when nodes exist but none pass the filter. */
+function NodeFilterEmpty({ store }: { store: HubStore }) {
+  const filter = store.nodeFilter.value;
+  if (filter === 'all' || store.filteredNodes.value.length || !store.nodes.value.length) {
+    return null;
+  }
+  return (
+    <div class="hub-empty node-filter-empty">
+      <p>{filter === 'online' ? 'No nodes are online.' : 'Every node is online.'}</p>
+      <button class="hub-btn ghost" type="button" onClick={() => (store.nodeFilter.value = 'all')}>
+        Show all nodes
+      </button>
+    </div>
   );
 }

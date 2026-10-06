@@ -6,6 +6,7 @@ import { BearerLogin } from './components/BearerLogin';
 import { HubApp } from './components/HubApp';
 import { HubErrorBoundary } from './components/HubErrorBoundary';
 import { readHubConfig } from './config';
+import { parseNodeFilter } from './domain/node-filter';
 import { checkPasskeyOrigin } from './domain/origin';
 import { browserClipboard } from './platform/clipboard';
 import { browserPasskeyPlatform } from './platform/passkeys';
@@ -23,7 +24,11 @@ function bootstrap(): void {
     application = (
       <HubApp
         config={config}
-        store={new HubStore(client, config.passkeyAuth ? browserPasskeyPlatform() : undefined)}
+        store={
+          new HubStore(client, config.passkeyAuth ? browserPasskeyPlatform() : undefined, {
+            nodeFilter: parseNodeFilter(window.location.search),
+          })
+        }
         clipboard={browserClipboard()}
       />
     );
