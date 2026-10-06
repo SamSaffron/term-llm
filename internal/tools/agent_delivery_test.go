@@ -102,3 +102,14 @@ func TestAgentNotifyRequiresTrustedHost(t *testing.T) {
 		}
 	}
 }
+
+func TestHostLifecycleNoticeCannotResumeChild(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	tool.SetRunner(&lifecycleRunner{})
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx = ContextWithAgentRecoveryNotice(ctx)
+	out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: tool}, ctx, `{"agent_id":"interrupted-child"}`)
+	if !out.IsError || !strings.Contains(out.Content, "explicit user confirmation") {
+		t.Fatalf("host notice could auto-resume: %+v", out)
+	}
+}

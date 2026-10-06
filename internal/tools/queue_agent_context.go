@@ -21,6 +21,7 @@ const (
 type QueueAgentOriginContext struct {
 	Origin         string
 	SessionID      string
+	ResponseID     string
 	TelegramChatID int64
 }
 
@@ -85,4 +86,12 @@ func QueueAgentOriginFromContext(ctx context.Context) (QueueAgentOriginContext, 
 	origin.Origin = strings.TrimSpace(origin.Origin)
 	origin.SessionID = strings.TrimSpace(origin.SessionID)
 	return origin, true
+}
+
+// Host-initiated lifecycle turns report recovery, but cannot automatically
+// restart side-effectful child work without a subsequent human turn.
+type agentRecoveryNoticeKey struct{}
+
+func ContextWithAgentRecoveryNotice(ctx context.Context) context.Context {
+	return context.WithValue(ctx, agentRecoveryNoticeKey{}, true)
 }

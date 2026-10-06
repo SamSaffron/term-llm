@@ -7,12 +7,27 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, closeTask, cancel func(), runTimer *responseRunTimer, mgr *responseRunManager, runtime *serveRuntime, run *responseRun, stateful, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID, respID, model string, created int64, options startResponseRunOptions) {
 	defer closeTask()
 	defer func() { releaseReload() }()
 	defer close(run.settled)
+	if options.agentCompletion {
+		runCtx = tools.ContextWithAgentRecoveryNotice(runCtx)
+		defer func() {
+			run.mu.Lock()
+			completed := run.status == "completed" && !run.cancelRequested
+			run.mu.Unlock()
+			if completed {
+				if err := tools.AcknowledgeAgentEvents(context.Background(), session.AsAgentRunDeliveryStore(s.store), options.agentEvents); err != nil {
+					log.Printf("[agents] acknowledge wake: %v", err)
+				}
+			}
+		}()
+	}
 	if !options.agentCompletion && sessionID != "" {
 		defer func() {
 			run.mu.Lock()
@@ -220,6 +235,7 @@ func (s *serveServer) bindResponseRunCallbacks(runCtx context.Context, runtime *
 
 	// Wire run-scoped callbacks. Each execution gets a monotonically increasing
 	// owner so a delayed callback cannot target a later run that reused a call ID.
+	progress.pause = runTimer.pause
 	runtime.approvalMu.Lock()
 	runtime.approvalEventFunc = func(event string, data map[string]any) error {
 		return run.appendEvent(event, data)

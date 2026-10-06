@@ -160,6 +160,10 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 	}
 	now := time.Now()
 	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, BaseDir: existing.BaseDir, RunGeneration: existing.RunGeneration + 1, NotifyWhenDone: existing.NotifyWhenDone, NotifyOrigin: existing.NotifyOrigin, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
+	origin, _ := QueueAgentOriginFromContext(ctx)
+	if origin.Origin == QueueAgentOriginWeb && origin.SessionID == parent {
+		record.ParentResponseID = origin.ResponseID
+	}
 	if resume {
 		record.TurnsUsed = existing.TurnsUsed
 		record.TurnsGranted = existing.TurnsGranted + DefaultSubagentMaxTurns
@@ -368,6 +372,9 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 		e.record.Status = "completed"
 	}
 	e.record.StopReason = e.record.Status
+	if e.record.Status == "interrupted" && e.stopReason == "" {
+		e.record.StopReason = "host_restarted"
+	}
 	if e.stopReason != "" {
 		e.record.StopReason = e.stopReason
 	}
@@ -383,7 +390,7 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 	if !m.save(record) {
 		return
 	}
-	if e.wake != nil && record.ParentSessionID != "" && record.StopReason != "parent_stopped" && (record.NotifyWhenDone || record.Status == "interrupted") {
+	if e.wake != nil && record.ParentSessionID != "" && record.StopReason != "parent_stopped" && (record.NotifyWhenDone || record.StopReason == "host_restarted") {
 		// The callback only signals the host to inspect durable pending rows.
 		// It must not inject a message or compete with the current parent turn.
 		e.wake(record.ParentSessionID)
@@ -400,6 +407,7 @@ func (m *agentManager) get(ctx context.Context, id, parent string) (session.Agen
 		e.manager.mu.Lock()
 		record = e.record
 		record.CurrentTool = e.currentTool
+		record.Media = append([]llm.MediaArtifact(nil), e.media...)
 		e.manager.mu.Unlock()
 	}
 	if e == nil && m.store != nil {
@@ -445,6 +453,7 @@ func (m *agentManager) snapshot(ctx context.Context, parent string) ([]session.A
 		e.manager.mu.Lock()
 		record := e.record
 		record.CurrentTool = e.currentTool
+		record.Media = append([]llm.MediaArtifact(nil), e.media...)
 		e.manager.mu.Unlock()
 		if record.ParentSessionID == parent && !seen[record.ID] {
 			runs = append(runs, record)
@@ -735,7 +744,12 @@ func (m *agentManager) collect(ctx context.Context, record session.AgentRun, e *
 	// closed. Collect through this turn's live store, never the old owner.
 	if m.store != nil {
 		collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		err := m.store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
+		var err error
+		if delivery, ok := m.store.(session.AgentRunDeliveryStore); ok {
+			err = delivery.CollectAgentRunGeneration(collectCtx, record.ID, record.RunGeneration, record.CollectedAt)
+		} else {
+			err = m.store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
+		}
 		cancel()
 		if err != nil {
 			return record, err

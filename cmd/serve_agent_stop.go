@@ -29,11 +29,25 @@ func explicitParentStop(ctx context.Context) bool {
 
 func (rt *serveRuntime) signalStoppedChildren(ctx context.Context, parent string) func(context.Context) []string {
 	if !explicitParentStop(ctx) {
-		return tools.InterruptAgentsForParentAsync(parent)
+		if errors.Is(context.Cause(ctx), restart.ErrInterrupt) {
+			return tools.InterruptAgentsForParentAsync(parent)
+		}
+		// A response inactivity timeout/lease loss is not a child deadline.
+		// The detached children remain independently owned by the host.
+		return nil
 	}
 	if delivery := session.AsAgentRunDeliveryStore(rt.store); delivery != nil && parent != "" {
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		if err := delivery.SuppressPendingAgentWakes(persistCtx, parent); err != nil {
+		var err error
+		if run := responseRunFromContext(ctx); run != nil {
+			err = delivery.SuppressAgentWakesForTurn(persistCtx, parent, run.id)
+			if err == nil {
+				err = delivery.SuppressAgentEvents(persistCtx, run.agentEvents)
+			}
+		} else {
+			err = delivery.SuppressPendingAgentWakes(persistCtx, parent)
+		}
+		if err != nil {
 			runtimeoutput.Logf("suppress stopped parent wake %s: %v", parent, err)
 		}
 		cancel()

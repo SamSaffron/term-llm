@@ -415,3 +415,30 @@ func TestServeSubagentProgressPublishesFirstToolCountBeforeChildCompletes(t *tes
 		t.Fatalf("progress root completed before terminal child event: %#v", root)
 	}
 }
+
+func TestNativeAgentCollectionPausesOnlyCallerInactivity(t *testing.T) {
+	for _, name := range []string{tools.SpawnAgentToolName, tools.WaitAgentToolName, tools.ContinueAgentToolName} {
+		t.Run(name, func(t *testing.T) {
+			clock := newFakeResponseRunClock()
+			ctx, timer := newResponseRunTimerWithClock(time.Minute, clock)
+			defer timer.stop()
+			progress := newServeSubagentProgress(clock, nil, timer.holdUntil)
+			progress.pause = timer.pause
+			defer progress.close()
+			progress.begin("native-wait", name)
+			clock.Advance(3 * time.Hour) // no child/queue/collection-execution deadline
+			if ctx.Err() != nil {
+				t.Fatalf("native wait timed out: %v", context.Cause(ctx))
+			}
+			progress.finish("native-wait", true, false)
+			clock.Advance(59 * time.Second)
+			if ctx.Err() != nil {
+				t.Fatal("caller resumed without a fresh inactivity window")
+			}
+			clock.Advance(2 * time.Second)
+			if !responseRunTimedOut(ctx) {
+				t.Fatal("caller timer stayed paused after collection returned")
+			}
+		})
+	}
+}

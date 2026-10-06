@@ -52,7 +52,10 @@ func putWakeRun(t *testing.T, store *session.SQLiteStore, status string) session
 
 func TestAgentCompletionWakesParentLoopAndExecutesFollowOnTool(t *testing.T) {
 	provider := llm.NewMockProvider("debug").AddToolCall("follow-on", "echo", map[string]any{"input": "continue workflow"}).AddTextResponse("synthesized result")
-	srv, store, _ := newAgentWakeFixture(t, provider)
+	srv, store, rt := newAgentWakeFixture(t, provider)
+	rt.maxTurns = 7
+	rt.search = true
+	rt.forceExternalSearch = true
 	putWakeRun(t, store, "completed")
 	srv.wakeAgentParent("wake-parent")
 	waitForServeCondition(t, 3*time.Second, func() bool {
@@ -64,16 +67,22 @@ func TestAgentCompletionWakesParentLoopAndExecutesFollowOnTool(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("parent model turns=%d, want tool and synthesis", len(requests))
 	}
-	foundEvent, foundUser := false, false
+	if len(requests[0].Tools) == 0 || requests[0].MaxTurns != 7 || !requests[0].Search || !requests[0].ForceExternalSearch || !requests[0].ParallelToolCalls {
+		t.Fatalf("wake dropped parent request settings: %+v", requests[0])
+	}
+	foundEvent := false
 	for _, msg := range requests[0].Messages {
+		if strings.Contains(llm.MessageText(msg), "wake-child") {
+			foundEvent = msg.Role == llm.RoleUser
+		}
 		if strings.Contains(llm.MessageText(msg), "child evidence") {
-			foundEvent = msg.Role == llm.RoleDeveloper
-			foundUser = msg.Role == llm.RoleUser
+			t.Fatal("wake elevated untrusted child output")
 		}
 	}
-	if !foundEvent || foundUser {
-		t.Fatalf("internal completion was not developer provenance: %#v", requests[0].Messages)
+	if !foundEvent {
+		t.Fatalf("missing provider-visible internal event: %#v", requests[0].Messages)
 	}
+
 	msgs, err := store.GetMessages(context.Background(), "wake-parent", 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +172,7 @@ func TestAgentWakeFailureAndExplicitStopSuppression(t *testing.T) {
 	}, "failure event")
 	srv.agentWakeWG.Wait()
 	requests := provider.RecordedRequests()
-	if len(requests) != 1 || !strings.Contains(llm.MessageText(requests[0].Messages[len(requests[0].Messages)-1]), "child failed") {
+	if len(requests) != 1 || !strings.Contains(llm.MessageText(requests[0].Messages[len(requests[0].Messages)-1]), `"status":"failed"`) {
 		t.Fatalf("failure context=%#v", requests)
 	}
 	other := run
@@ -182,7 +191,7 @@ func TestAgentWakeFailureAndExplicitStopSuppression(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, err := store.GetAgentRun(context.Background(), other.ID)
-	if err != nil || row.StopReason != "parent_stopped" {
+	if err != nil || !row.WakeSuppressed || row.StopReason != "completed" {
 		t.Fatalf("late completion bypassed stop: %+v %v", row, err)
 	}
 	srv.wakeAgentParent("wake-parent")

@@ -27,6 +27,7 @@ type serveSubagentProgress struct {
 	emitMu sync.Mutex
 	clock  responseRunClock
 	emit   func(string, map[string]any) error
+	pause  func() func()
 	hold   func(time.Time) responseRunTimerHold
 	roots  map[string]*subagentProgressRoot
 	closed bool
@@ -67,13 +68,16 @@ func newServeSubagentProgress(clock responseRunClock, emit func(string, map[stri
 }
 
 func (s *serveSubagentProgress) begin(callID, toolName string) {
-	if s == nil || callID == "" || (toolName != tools.SpawnAgentToolName && toolName != tools.WaitForJobsToolName) {
+	if s == nil || callID == "" || (toolName != tools.SpawnAgentToolName && toolName != tools.WaitForJobsToolName && toolName != tools.WaitAgentToolName && toolName != tools.ContinueAgentToolName) {
 		return
 	}
 	s.mu.Lock()
 	root := s.rootLocked(callID)
 	if root != nil {
 		root.toolName = toolName
+		if toolName != tools.WaitForJobsToolName && s.pause != nil && root.hold == nil {
+			root.hold = &responseRunTimerHold{extend: func(time.Time) {}, release: s.pause()}
+		}
 		if toolName == tools.WaitForJobsToolName {
 			root.state, root.phase = "waiting", "waiting"
 		} else if root.state == "" {

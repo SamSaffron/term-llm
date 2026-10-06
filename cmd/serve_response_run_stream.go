@@ -768,6 +768,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			closeTask()
 		}
 	}()
+	run.agentEvents = append([]session.AgentRun(nil), options.agentEvents...)
 	run.settled = make(chan struct{})
 	run.rushStateful = stateful && !replaceHistory
 	run.rushRequest = llmReq
@@ -844,6 +845,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			lease, admitErr = lifecycle.RenewResponseRunLease(admitCtx, respID, ownerID, run.fencingToken)
 		} else {
 			lease, admitErr = lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
+				AgentEvents:     options.agentEvents,
 				ResponseID:      respID,
 				SessionID:       sessionID,
 				RunEpoch:        run.runEpoch,

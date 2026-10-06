@@ -2245,6 +2245,7 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 	h.Provider.AddTextResponse("final answer")
 
 	var cleanupCalls atomic.Int32
+	cleanupDone := make(chan struct{})
 	mgr := &telegramSessionMgr{
 		sessions:       make(map[int64]*telegramSession),
 		tickerInterval: 5 * time.Millisecond,
@@ -2266,6 +2267,7 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 			ModelName:    "test",
 			Cleanup: func() {
 				cleanupCalls.Add(1)
+				close(cleanupDone)
 			},
 		},
 	}
@@ -2319,6 +2321,14 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 		t.Fatal("streamReply did not stop after session reset")
 	}
 
+	// streamDone establishes frontend completion, not deferred runner cleanup.
+	// shutdownSession deliberately transfers cleanup to a goroutine when the
+	// runner still owns the runtime; synchronize with that owner, not scheduling.
+	select {
+	case <-cleanupDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner cleanup did not finish")
+	}
 	if cleanupCalls.Load() != 1 {
 		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls.Load())
 	}

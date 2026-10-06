@@ -103,6 +103,9 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 	case CancelAgentToolName:
 		out = t.cancel(ctx, parent, a)
 	case ContinueAgentToolName:
+		if notice, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool); notice {
+			return agentControlError("A host lifecycle notice cannot resume child work; obtain explicit user confirmation in a subsequent turn."), nil
+		}
 		out = t.continueRun(ctx, parent, a)
 	default:
 		out = agentControlError("unknown agent control operation")

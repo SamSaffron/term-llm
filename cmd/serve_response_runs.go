@@ -109,6 +109,7 @@ type responseRunResolvedInteraction struct {
 }
 
 type responseRun struct {
+	agentEvents             []session.AgentRun // immutable host-offered lifecycle generations
 	typedClientTools        *typedClientToolRunner
 	reloadContinuation      *webRunContinuation
 	settled                 chan struct{}
@@ -202,6 +203,7 @@ type startResponseRunOptions struct {
 	idempotencyScope           string
 	requestFingerprint         string
 	notificationSubscriptionID string
+	agentEvents                []session.AgentRun
 	agentCompletion            bool // host-owned wake, never user-authored input
 	onDone                     func()
 	onRuntimeDone              func() // detach borrowed runtime before executor-owned close

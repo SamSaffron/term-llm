@@ -14,13 +14,13 @@ func PendingAgentEvents(ctx context.Context, store session.AgentRunDeliveryStore
 	if store == nil || parent == "" {
 		return nil, nil
 	}
-	rows, err := store.ListPendingAgentRuns(ctx)
+	rows, err := store.ListPendingAgentRunsForParent(ctx, parent)
 	if err != nil {
 		return nil, err
 	}
 	var pending []session.AgentRun
 	for _, record := range rows {
-		if record.ParentSessionID != parent || record.NotifyOrigin != QueueAgentOriginWeb || record.StopReason == "parent_stopped" {
+		if record.ParentSessionID != parent || record.NotifyOrigin != QueueAgentOriginWeb || record.WakeSuppressed || record.StopReason == "parent_stopped" {
 			continue
 		}
 		if !agentTerminal(record.Status) {
@@ -34,7 +34,7 @@ func PendingAgentEvents(ctx context.Context, store session.AgentRunDeliveryStore
 			record.Status = "interrupted"
 			record.StopReason = "host_restarted"
 		}
-		if record.NotifyWhenDone || record.Status == "interrupted" {
+		if record.NotifyWhenDone || record.StopReason == "host_restarted" {
 			pending = append(pending, record)
 		}
 	}

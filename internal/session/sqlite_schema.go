@@ -1316,11 +1316,13 @@ var migrations = []migration{
 		up: func(db schemaExecutor) error {
 			for _, column := range []struct{ name, ddl string }{
 				{"base_dir", "base_dir TEXT NOT NULL DEFAULT ''"},
+				{"parent_response_id", "parent_response_id TEXT NOT NULL DEFAULT ''"},
 				{"run_generation", "run_generation INTEGER NOT NULL DEFAULT 0"},
 				{"notify_when_done", "notify_when_done INTEGER NOT NULL DEFAULT 0"},
 				{"notify_origin", "notify_origin TEXT NOT NULL DEFAULT ''"},
 				{"media_json", "media_json TEXT NOT NULL DEFAULT '[]'"},
 				{"notified_at", "notified_at DATETIME"},
+				{"wake_suppressed", "wake_suppressed INTEGER NOT NULL DEFAULT 0"},
 			} {
 				exists, err := sqliteutil.ColumnExists(db, "session_agent_runs", column.name)
 				if err != nil {
@@ -1332,7 +1334,8 @@ var migrations = []migration{
 					}
 				}
 			}
-			return nil
+			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_session_agent_runs_pending ON session_agent_runs(parent_session_id, updated_at) WHERE notify_origin != '' AND notified_at IS NULL AND collected_at IS NULL AND wake_suppressed=0`)
+			return err
 		},
 	},
 }
