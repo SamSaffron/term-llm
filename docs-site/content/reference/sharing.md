@@ -12,7 +12,7 @@ term-llm can publish rendered transcript bundles without coupling the Web UI, TU
 From the chat TUI:
 
 ```text
-/share [new] [raw] [noimages] [public|unlisted|private]
+/share [new] [raw] [noimages] [notools] [public|unlisted|private]
 ```
 
 From the CLI, for a complete saved session:
@@ -23,22 +23,35 @@ term-llm sessions share 42 --visibility private # requires a custom provider adv
 term-llm sessions share 42 --include-raw-reasoning
 term-llm sessions share 42 --new --json
 term-llm sessions share 42 --no-images
+term-llm sessions share 42 --no-tools
 ```
 
 A compatible whole-session share is updated by default. `new` or `--new` always creates another share. An update is offered only when the stored share has `scope: session`, belongs to the currently configured provider, and that provider advertises `update`. Replacing saved state warns that the old provider link may remain active.
 
 Raw model reasoning is never included implicitly, even when `reasoning.export: raw` is configured. It requires the explicit `/share raw` or `--include-raw-reasoning` opt-in, remains subject to `reasoning.raw` and `reasoning.source`, and is accompanied by a privacy warning because it may contain sensitive information.
 
+## Tool activity
+
+Tool output can contain secrets: commands, environment variables, file contents, and diffs all end up there. To share a conversation without any tool calls or tool output, use `/share notools` or `--no-tools`, clear the Web UI's **Include tool activity** checkbox, or set `include_tools: false` in the API.
+
+Your messages and the assistant's replies are kept, and so are images that were shown to you, such as `image_generate` output or media shown with `show_media` (unless images are excluded too). Images that only appeared inside tool output, such as screenshots a tool inspected, are dropped. Response-only shares never include tool activity.
+
+Removing tool activity does not redact anything else. The assistant's replies can still repeat something a tool saw, so review a share before sending the link.
+
+A whole-session share created with `notools`/`--no-tools` or `noimages`/`--no-images` remembers that choice. Later updates to the same link keep those exclusions even without the flag. They still add new messages, and `raw` still adds raw reasoning. To include tool activity or images again, create a new share with `new` or `--new`.
+
 ## Images
 
-Shares include images by default: user uploads, images returned by tools, `image_generate` output, and media shown with `show_media`. `/share noimages`, `--no-images`, or the Web UI's **Include images** checkbox (`include_images: false` in the API) omit them all.
+Shares include images by default: your uploads, images returned by tools, `image_generate` output, and media shown with `show_media`. To omit them all, use `/share noimages` or `--no-images`, clear the Web UI's **Include images** checkbox, or set `include_images: false` in the API.
 
-Every included image is decoded and re-encoded before it leaves the machine. JPEG EXIF orientation is applied, the longest edge is bounded, and only pixel data is written, so EXIF/XMP metadata such as GPS location is removed. Photographic images become JPEG; screenshots, flat graphics, and images with transparency become PNG. Small GIFs are passed through so animation survives. SVG and anything that does not decode as PNG, JPEG, GIF, or WebP is replaced by an "Image omitted" note. Local file paths and `term-llm-media://` URLs never appear in the transcript.
+Every included image is decoded and re-encoded before it leaves the machine, so metadata such as EXIF, XMP, GPS location, and GIF comments is removed. JPEG orientation is applied first, and the longest edge is bounded. Each image uses a format the provider accepts: usually JPEG for photos and PNG for screenshots, flat graphics, and transparent images. GIFs keep their animation when the provider accepts GIF and the image fits the pixel limit; otherwise only the first frame is used. SVG and anything that does not decode as PNG, JPEG, GIF, or WebP is replaced by an "Image omitted" note.
+
+Images never point at local file paths or `term-llm-media://` URLs; references to shown media are rewritten or replaced by a note. Message text and tool output are shared as written, so they can still contain paths, private URLs, or secrets.
 
 How images travel depends on the provider:
 
-- Providers that advertise `asset_media_types` (see below) receive each image once as a separate `assets/<hash>.<ext>` file, bounded to 2048 px, 8 MiB per image, 24 MiB and 30 files in total. Both `index.html` and `session.md` reference them with relative URLs.
-- Other providers, including GitHub Gist, get images embedded in `index.html` as `data:` URIs, bounded to 1600 px and about 2 MiB in total. `session.md` stays text-only.
+- Providers that list `image/png` or `image/jpeg` in `asset_media_types` (see below) receive each image once as a separate `assets/<hash>.<ext>` file. Each image is at most 2048 px on the longest edge and 8 MiB, with at most 30 images and 24 MiB per share. Both `index.html` and `session.md` reference them with relative URLs.
+- Other providers, including GitHub Gist, get images embedded in `index.html` as `data:` URIs, at most 1600 px on the longest edge and 2 MiB in total. `session.md` omits images, and each `show_media` reference in a reply becomes a short note. Other image links in message text are left as written.
 
 A response-only share includes the images displayed in that response, such as generated or shown images, without the tool activity that produced them.
 
@@ -148,7 +161,7 @@ Version 1 transcript bundles contain at most 32 files, with a 16 MiB per-file li
 
 - `index.html` — standalone rendered transcript and the entrypoint;
 - `session.md` — Markdown source transcript;
-- `assets/<hash>.<ext>` — zero or more images with role `asset`, sent only to helpers that advertise `asset_media_types`. The transcript then declares `img-src data: 'self'` in its Content-Security-Policy, so serve assets from the same origin as `index.html`.
+- `assets/<hash>.<ext>` — zero or more images with role `asset`, sent only to helpers whose `asset_media_types` includes `image/png` or `image/jpeg`. The transcript then declares `img-src data: 'self'` in its Content-Security-Policy, so serve assets from the same origin as `index.html`.
 
 The JSON manifest names files relative to the working directory. Helpers must reject absolute paths, traversal, or files not declared by the manifest. File content is read from the working directory and is not duplicated in JSON.
 
@@ -260,6 +273,6 @@ Point-in-time creation remains:
 POST /v1/sessions/{id}/shares
 ```
 
-Request fields are `anchor_message_id`, `scope` (`response` or `conversation`), `visibility`, and optional `include_images` (default `true`). For one compatibility release, `public: true|false` is accepted only when `visibility` is absent. The generic response fields are `provider`, `id`, `url`, optional `source_url`, `visibility`, `ready`, and `scope`. GitHub responses additionally include legacy `gist_id`, `gist_url`, `preview_url`, and `public` fields for one compatibility release.
+Request fields are `anchor_message_id`, `scope` (`response` or `conversation`), `visibility`, optional `include_images` (default `true`), and optional `include_tools` (default `true`; applies to conversation shares only). For one compatibility release, `public: true|false` is accepted only when `visibility` is absent. The generic response fields are `provider`, `id`, `url`, optional `source_url`, `visibility`, `ready`, and `scope`. GitHub responses additionally include legacy `gist_id`, `gist_url`, `preview_url`, and `public` fields for one compatibility release.
 
 Errors use a stable `error.code` and curated `error.message`; helper stderr is never returned.

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -360,5 +361,165 @@ func TestEncodeExportImageChoosesFormatByContent(t *testing.T) {
 	}
 	if _, mediaType, err := encodeExportImage(noisy, allImageTypes); err != nil || mediaType != "image/jpeg" {
 		t.Fatalf("photographic image encoded as %q, err %v", mediaType, err)
+	}
+}
+
+// Claude CLI sessions persist a response as one assistant row holding every
+// tool call and text part, followed by its tool-result rows.
+func TestShareIncludesToolResultsPersistedAfterAnchor(t *testing.T) {
+	_, fixture, _ := imageShareFixture(t)
+	generated := fixture[2].Parts[0].ToolResult
+	shown := fixture[4].Parts[0].ToolResult
+	text := fixture[5].Parts[0].Text
+	messages := []Message{
+		fixture[0],
+		{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: text, Parts: []llm.Part{
+			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "image_generate", Arguments: []byte(`{}`)}},
+			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c2", Name: "show_media", Arguments: []byte(`{}`)}},
+			{Type: llm.PartText, Text: text},
+		}},
+		{ID: 3, Sequence: 3, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: generated}}},
+		{ID: 4, Sequence: 4, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: shown}}},
+		{ID: 5, Sequence: 5, Role: llm.RoleUser, TextContent: "later prompt", Parts: []llm.Part{{Type: llm.PartText, Text: "later prompt"}}},
+	}
+	sess := &Session{ID: "sess", CreatedAt: time.Now()}
+	for _, scope := range []ShareScope{ShareScopeResponse, ShareScopeConversation} {
+		selection, err := SelectShare(messages, 2, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, msg := range selection.Messages {
+			if msg.ID == 5 {
+				t.Fatalf("%s share included a later prompt", scope)
+			}
+		}
+		files, err := ShareBundle(sess, selection.Messages, ExportOptions{ResponseOnly: scope == ShareScopeResponse, Images: ExportImagesAssets, AssetMediaTypes: []string{"image/png"}, Media: selection.Media})
+		if err != nil {
+			t.Fatal(err)
+		}
+		html := string(bundleByName(files)["index.html"].Content)
+		if strings.Contains(html, "unavailable in exported transcript") || !strings.Contains(html, `alt="A chart"`) {
+			t.Fatalf("%s share did not resolve the shown image", scope)
+		}
+		assets := 0
+		for _, file := range files {
+			if strings.HasPrefix(file.Name, "assets/") {
+				assets++
+				if !strings.Contains(html, `src="`+file.Name+`"`) {
+					t.Fatalf("%s share does not reference %s", scope, file.Name)
+				}
+			}
+		}
+		// The upload belongs to the prompt, which response shares exclude.
+		want := map[ShareScope]int{ShareScopeResponse: 2, ShareScopeConversation: 3}[scope]
+		if assets != want {
+			t.Fatalf("%s share has %d assets, want %d", scope, assets, want)
+		}
+	}
+}
+
+func TestStripToolActivityKeepsConversationAndDisplayedImages(t *testing.T) {
+	_, fixture, dir := imageShareFixture(t)
+	secretCall := Message{ID: 10, Sequence: 10, Role: llm.RoleAssistant, ResponseID: "r1", Parts: []llm.Part{
+		{Type: llm.PartText, Text: "Checking the config."},
+		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "s1", Name: "shell", Arguments: []byte(`{"command":"cat ~/.secret-token"}`)}},
+	}}
+	secretResult := Message{ID: 11, Sequence: 11, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+		ID: "s1", Name: "shell", Content: "TOKEN=sk-live-SECRET", Diffs: []llm.DiffData{{File: "config.yaml", Old: "a", New: "SECRET-DIFF"}},
+	}}}}
+	messages := append([]Message{fixture[0], secretCall, secretResult}, fixture[1:]...)
+
+	stripped, media := StripToolActivity(messages)
+	if len(media) != 1 {
+		t.Fatalf("media = %d, want the shown artifact", len(media))
+	}
+	for _, msg := range stripped {
+		if msg.Role == llm.RoleTool {
+			t.Fatal("tool row survived")
+		}
+		for _, part := range msg.Parts {
+			if part.Type == llm.PartToolCall || part.Type == llm.PartToolResult {
+				t.Fatal("tool part survived")
+			}
+		}
+	}
+	// One user prompt plus one merged assistant message for response r1.
+	if len(stripped) != 2 || stripped[1].Role != llm.RoleAssistant {
+		t.Fatalf("stripped = %+v", stripped)
+	}
+	if !strings.Contains(stripped[1].TextContent, "Checking the config.") || !strings.Contains(stripped[1].TextContent, "Here:") {
+		t.Fatalf("assistant text lost: %q", stripped[1].TextContent)
+	}
+
+	sess := &Session{ID: "sess", CreatedAt: time.Now()}
+	files, err := ShareBundle(sess, stripped, ExportOptions{Partial: true, Images: ExportImagesAssets, AssetMediaTypes: []string{"image/png"}, Media: media})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := bundleByName(files)
+	for _, name := range []string{"index.html", "session.md"} {
+		content := string(byName[name].Content)
+		for _, leaked := range []string{"sk-live-SECRET", "SECRET-DIFF", ".secret-token", "image_generate", "show_media", dir} {
+			if strings.Contains(content, leaked) {
+				t.Fatalf("%s leaked %q", name, leaked)
+			}
+		}
+	}
+	assets := 0
+	for _, file := range files {
+		if strings.HasPrefix(file.Name, "assets/") {
+			assets++
+		}
+	}
+	if assets != 3 { // upload, generated image, shown image
+		t.Fatalf("assets = %d, want 3", assets)
+	}
+	if !strings.Contains(string(byName["index.html"].Content), `alt="A chart"`) {
+		t.Fatal("shown image reference was not resolved")
+	}
+}
+
+func TestNormalizeExportImageReencodesGIFWithoutMetadata(t *testing.T) {
+	palette := color.Palette{color.Black, color.White}
+	frames := []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 4, 4), palette), image.NewPaletted(image.Rect(0, 0, 4, 4), palette)}
+	frames[1].SetColorIndex(1, 1, 1)
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{Image: frames, Delay: []int{10, 10}}); err != nil {
+		t.Fatal(err)
+	}
+	// Insert a comment extension (0x21 0xFE) after the global colour table.
+	raw := encoded.Bytes()
+	header := 13
+	if flags := raw[10]; flags&0x80 != 0 {
+		header += 3 << ((flags & 0x07) + 1)
+	}
+	comment := append([]byte{0x21, 0xFE, 17}, []byte("SECRET-GIF-NOTE!!")...)
+	comment = append(comment, 0x00)
+	withComment := append(append(append([]byte{}, raw[:header]...), comment...), raw[header:]...)
+	if _, err := gif.DecodeAll(bytes.NewReader(withComment)); err != nil {
+		t.Fatalf("fixture is not a valid GIF: %v", err)
+	}
+	data, mediaType, err := normalizeExportImage(withComment, 2048, allImageTypes)
+	if err != nil || mediaType != "image/gif" {
+		t.Fatalf("mediaType = %q, err %v", mediaType, err)
+	}
+	if bytes.Contains(data, []byte("SECRET-GIF-NOTE")) {
+		t.Fatal("GIF comment survived")
+	}
+	animation, err := gif.DecodeAll(bytes.NewReader(data))
+	if err != nil || len(animation.Image) != 2 {
+		t.Fatalf("animation lost: frames=%d err=%v", len(animation.Image), err)
+	}
+}
+
+func TestInlineShareMarkdownHasNoPrivateMediaURLs(t *testing.T) {
+	sess, messages, _ := imageShareFixture(t)
+	files, err := ShareBundle(sess, messages, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markdown := string(bundleByName(files)["session.md"].Content)
+	if strings.Contains(markdown, "term-llm-media://") || !strings.Contains(markdown, "Image: A chart — not embedded in exported transcript") {
+		t.Fatalf("inline Markdown kept a private media URL: %s", markdown)
 	}
 }

@@ -142,7 +142,7 @@ func (e *exportImages) assetsMode() bool {
 
 func (e *exportImages) resolve(source exportImageSource) exportImageResult {
 	if e == nil || e.mode == ExportImagesNone {
-		return exportImageResult{Omitted: true, MediaType: normalizedMediaType(source.MediaType), Reason: "not included"}
+		return exportImageResult{Omitted: true, MediaType: normalizedMediaType(source.MediaType), Reason: "excluded from this share"}
 	}
 	key := source.key()
 	if key == "" {
@@ -248,8 +248,7 @@ func readExportImageSource(source exportImageSource) ([]byte, error) {
 // normalizeExportImage decodes untrusted image bytes, applies JPEG EXIF
 // orientation, bounds the longest edge, and re-encodes without metadata. Only
 // pixel data survives, so EXIF/XMP fields such as GPS location are dropped.
-// Small static-size GIFs are passed through so animations survive; GIF has no
-// EXIF block.
+// GIFs within the edge bound are re-encoded as GIF so animations survive.
 func normalizeExportImage(raw []byte, maxEdge int, allowed map[string]bool) ([]byte, string, error) {
 	config, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
@@ -265,8 +264,15 @@ func normalizeExportImage(raw []byte, maxEdge int, allowed map[string]bool) ([]b
 		return nil, "", fmt.Errorf("image dimensions are out of range")
 	}
 	if format == "gif" && allowed["image/gif"] && config.Width <= maxEdge && config.Height <= maxEdge {
-		if _, err := gif.DecodeAll(bytes.NewReader(raw)); err == nil {
-			return raw, "image/gif", nil
+		// Re-encode frame by frame: animation survives, while comment and
+		// application extensions (GIF's only metadata) are dropped.
+		if animation, err := gif.DecodeAll(bytes.NewReader(raw)); err == nil {
+			clean := &gif.GIF{Image: animation.Image, Delay: animation.Delay, Disposal: animation.Disposal,
+				LoopCount: animation.LoopCount, Config: animation.Config, BackgroundIndex: animation.BackgroundIndex}
+			var out bytes.Buffer
+			if err := gif.EncodeAll(&out, clean); err == nil {
+				return out.Bytes(), "image/gif", nil
+			}
 		}
 	}
 	decoded, _, err := image.Decode(bytes.NewReader(raw))

@@ -113,3 +113,29 @@ func mapKeys(values map[string]string) []string {
 	}
 	return keys
 }
+
+func TestCreateSessionShareConversationWithoutTools(t *testing.T) {
+	server, anchor := newServeShareImageFixture(t)
+	mock := assetProviderMock()
+	server.sharePublisherFactory = func() (share.Publisher, error) { return mock, nil }
+	rr := serveShareRequest(t, server, `{"anchor_message_id":`+formatInt64(anchor)+`,"scope":"conversation","include_tools":false}`)
+	if rr.Code != 201 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	html := mock.files["index.html"]
+	if strings.Contains(html, "image_generate") || strings.Contains(html, "Generated image successfully") {
+		t.Fatal("tool activity was included")
+	}
+	if !strings.Contains(html, "draw a dot") || !strings.Contains(html, "Here is your dot.") {
+		t.Fatal("conversation text was dropped")
+	}
+	assets := 0
+	for name := range mock.files {
+		if strings.HasPrefix(name, "assets/") {
+			assets++
+		}
+	}
+	if assets != 1 {
+		t.Fatalf("generated image assets = %d, want 1", assets)
+	}
+}

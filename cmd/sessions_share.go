@@ -102,8 +102,26 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 	if sessionsShareIncludeRawReasoning {
 		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: raw model reasoning was explicitly requested and may contain private or sensitive information.")
 	}
-	exportOptions.Images, exportOptions.AssetMediaTypes = session.ShareImageOptions(capabilities, !sessionsShareNoImages)
-	files, err := session.ShareBundle(sess, session.VisibleExportMessages(messages), exportOptions)
+	hadExistingShare := sess.Share != nil && sess.Share.Exists()
+	if hadExistingShare {
+		sess.Share.Normalize()
+	}
+	updateUpdater, canUpdate := publisher.(sharepkg.Updater)
+	willUpdate := !sessionsShareNew && hadExistingShare && canUpdate &&
+		sess.Share.Provider == string(capabilities.Provider.ID) &&
+		sess.Share.Scope == session.ShareScopeSession && capabilities.Supports(sharepkg.OperationUpdate)
+	// Updates keep earlier exclusions so the same URL is never widened.
+	excludeTools, excludeImages := sessionsShareNoTools, sessionsShareNoImages
+	if willUpdate {
+		excludeTools = excludeTools || sess.Share.ExcludeTools
+		excludeImages = excludeImages || sess.Share.ExcludeImages
+	}
+	exportOptions.Images, exportOptions.AssetMediaTypes = session.ShareImageOptions(capabilities, !excludeImages)
+	visible := session.VisibleExportMessages(messages)
+	if excludeTools {
+		visible, exportOptions.Media = session.StripToolActivity(visible)
+	}
+	files, err := session.ShareBundle(sess, visible, exportOptions)
 	if err != nil {
 		return err
 	}
@@ -119,18 +137,9 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 
 	updated := false
 	var result sharepkg.Result
-	hadExistingShare := sess.Share != nil && sess.Share.Exists()
-	if hadExistingShare {
-		sess.Share.Normalize()
-	}
-	if !sessionsShareNew && hadExistingShare {
-		updater, canUpdate := publisher.(sharepkg.Updater)
-		compatible := canUpdate && sess.Share.Provider == string(capabilities.Provider.ID) &&
-			sess.Share.Scope == session.ShareScopeSession && capabilities.Supports(sharepkg.OperationUpdate)
-		if compatible {
-			result, err = updater.Update(ctx, sess.Share.ID, request)
-			updated = err == nil
-		}
+	if willUpdate {
+		result, err = updateUpdater.Update(ctx, sess.Share.ID, request)
+		updated = err == nil
 	}
 	if !updated && err == nil {
 		if hadExistingShare {
@@ -153,6 +162,7 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 	state := &session.ShareState{
 		Provider: string(result.Provider), ID: result.ID, URL: result.URL, SourceURL: result.SourceURL,
 		Visibility: string(result.Visibility), Scope: session.ShareScopeSession,
+		ExcludeTools: excludeTools, ExcludeImages: excludeImages,
 		SharedAt: sharedAt, UpdatedAt: now,
 	}
 	state.Normalize()

@@ -16,6 +16,11 @@ type ShareState struct {
 	SourceURL  string     `json:"source_url,omitempty"`
 	Visibility string     `json:"visibility,omitempty"`
 	Scope      ShareScope `json:"scope,omitempty"`
+	// ExcludeTools and ExcludeImages record content omitted from the share.
+	// Updates keep these exclusions so a later share cannot silently widen an
+	// existing URL; creating a new share is required to include them again.
+	ExcludeTools  bool `json:"exclude_tools,omitempty"`
+	ExcludeImages bool `json:"exclude_images,omitempty"`
 
 	GistID     string `json:"gist_id,omitempty"`
 	GistURL    string `json:"gist_url,omitempty"`

@@ -36,11 +36,7 @@ func ShareBundle(sess *Session, messages []Message, opts ExportOptions) ([]share
 	if err != nil {
 		return nil, fmt.Errorf("render HTML transcript: %w", err)
 	}
-	var markdownImages *exportImages
-	if images.assetsMode() {
-		markdownImages = images
-	}
-	markdown := exportToMarkdown(sess, messages, opts, markdownImages)
+	markdown := exportToMarkdown(sess, messages, opts, images)
 	files := []share.File{
 		{Name: "index.html", MediaType: "text/html; charset=utf-8", Role: "entrypoint", Content: []byte(html)},
 		{Name: "session.md", MediaType: "text/markdown; charset=utf-8", Role: "transcript", Content: []byte(markdown)},

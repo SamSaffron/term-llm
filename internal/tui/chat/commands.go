@@ -87,11 +87,12 @@ func AllCommands() []Command {
 		{
 			Name:        "share",
 			Description: "Share this complete session (unlisted is not private)",
-			Usage:       "/share [new] [raw] [noimages] [public|unlisted|private]",
+			Usage:       "/share [new] [raw] [noimages] [notools] [public|unlisted|private]",
 			Subcommands: []Subcommand{
 				{Name: "new", Description: "Create a new share"},
 				{Name: "raw", Description: "Explicitly include privacy-sensitive raw model reasoning"},
 				{Name: "noimages", Description: "Omit images from the share"},
+				{Name: "notools", Description: "Omit tool calls and tool output, which can contain secrets"},
 				{Name: "public", Description: "Request public visibility"},
 				{Name: "unlisted", Description: "Request unlisted visibility"},
 				{Name: "private", Description: "Request private visibility"},
