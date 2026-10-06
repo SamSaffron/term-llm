@@ -70,6 +70,9 @@ func init() {
 	for _, action := range []string{"status", "open", "start", "stop", "restart", "uninstall", "setup", "recover", "token"} {
 		action := action
 		c := &cobra.Command{Use: action + " [web|hub]", Short: serviceActionDescription(action), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error { return manageUserService(cmd, action, args) }}
+		if action == "start" || action == "restart" {
+			c.Flags().Bool("debug", false, "Trace startup checks and native commands; include status and recent logs on failure")
+		}
 		if action == "setup" || action == "recover" {
 			c.Flags().Bool("print-setup-code", false, "Explicitly print the temporary enrollment code even to redirected output")
 		}
@@ -503,20 +506,27 @@ func waitUserService(ctx context.Context, s userservice.Spec, native userservice
 	defer timer.Stop()
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
+	last := "no health response"
 	for {
 		req, _ := http.NewRequestWithContext(ctx, "GET", target, nil)
 		resp, err := client.Do(req)
-		if err == nil {
+		if err != nil {
+			last = err.Error()
+		} else {
+			last = resp.Status
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK && native.Running(ctx, s.Kind) {
 				return nil
+			}
+			if resp.StatusCode == http.StatusOK {
+				last += "; native manager reports no running PID"
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			return fmt.Errorf("backend did not answer health checks at %s", target)
+			return fmt.Errorf("backend did not answer health checks at %s (last observation: %s)", target, last)
 		case <-tick.C:
 		}
 	}

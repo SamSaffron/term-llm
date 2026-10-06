@@ -195,6 +195,21 @@ term-llm service restart web        # enabled service only; interrupts active wo
 term-llm service uninstall hub      # preserve user data and saved setup
 ```
 
+For startup failures, enable diagnostics:
+
+```bash
+term-llm service start web --debug
+term-llm service restart hub --debug
+```
+
+`--debug` writes startup checks, executable and working-directory paths, and
+native service-manager commands and their outcomes to stderr. On failure it also
+collects native lifecycle status and the last 60 service log lines. Readiness
+errors include the last HTTP health-check result. Debug mode does not change the
+saved service configuration or enable server debug logging. Credentials and the
+native environment are not dumped, but service logs may contain sensitive data;
+review the output before sharing it.
+
 If exactly one native service is installed, commands can infer its kind. When
 both exist, specify `web` or `hub` for individual operations.
 

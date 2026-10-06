@@ -12,7 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func manageUserService(cmd *cobra.Command, action string, args []string) error {
+func manageUserService(cmd *cobra.Command, action string, args []string) (result error) {
+	serviceDebug(cmd, "Preparing %s service management", action)
 	e, err := newServiceEnvironment()
 	if err != nil {
 		return err
@@ -25,6 +26,10 @@ func manageUserService(cmd *cobra.Command, action string, args []string) error {
 		}
 		return nil
 	}
+	debug, _ := cmd.Flags().GetBool("debug")
+	if debug {
+		e.native.Trace = cmd.ErrOrStderr()
+	}
 	kind, err := e.selectKind(args)
 	if err != nil {
 		return err
@@ -32,11 +37,19 @@ func manageUserService(cmd *cobra.Command, action string, args []string) error {
 	if action == "status" {
 		return showUserService(cmd, e, kind)
 	}
+	defer func() {
+		if debug && result != nil {
+			reportServiceDebugFailure(cmd, e, kind)
+		}
+	}()
 	path := e.specPath(kind)
+	serviceDebug(cmd, "Specification: %s; native definition: %s", path, e.native.Path(kind))
 	spec, err := userservice.Load(path)
 	if err != nil {
 		return fmt.Errorf("service %s is not installed: %w", kind, err)
 	}
+	serviceDebug(cmd, "Executable: %s; working directory: %s; auth: %s; bind: %s:%d", spec.Binary, spec.Directory, spec.Auth, spec.Host, spec.Port)
+	serviceDebug(cmd, "Checking native definition ownership")
 	if err = e.native.CheckOwned(kind, path); err != nil {
 		return err
 	}
@@ -49,11 +62,13 @@ func manageUserService(cmd *cobra.Command, action string, args []string) error {
 	if _, err := os.Stat(e.native.Path(kind)); err != nil {
 		return fmt.Errorf("%s is not registered; run service install %s", kind, kind)
 	}
+	serviceDebug(cmd, "Acquiring service management lock")
 	unlock, err := e.lock(kind)
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	serviceDebug(cmd, "Checking user service manager and loaded definition")
 	if err = e.native.Check(cmd.Context()); err != nil {
 		return err
 	}
@@ -127,10 +142,12 @@ func startUserService(cmd *cobra.Command, e serviceEnvironment, spec userservice
 			return fmt.Errorf("%s autostart is disabled; use service start %s", kind, kind)
 		}
 	}
+	serviceDebug(cmd, "Checking stored credentials (values omitted)")
 	if _, err := e.credentials(kind).Load(cmd.Context(), spec.Secrets); err != nil {
 		return err
 	}
 	if spec.Auth == "passkey" {
+		serviceDebug(cmd, "Checking passkey enrollment")
 		count, err := serviceCredentialCount(spec)
 		if err != nil {
 			return err
@@ -146,6 +163,7 @@ func startUserService(cmd *cobra.Command, e serviceEnvironment, spec userservice
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Starting %s service.\n", kind)
 	}
+	serviceDebug(cmd, "Checking running PID and port availability")
 	if !e.native.Running(cmd.Context(), kind) {
 		if err := checkUserServicePort(spec); err != nil {
 			return err
@@ -153,6 +171,7 @@ func startUserService(cmd *cobra.Command, e serviceEnvironment, spec userservice
 	}
 	err := e.native.Start(cmd.Context(), kind, action == "restart")
 	if err == nil {
+		serviceDebug(cmd, "Waiting up to 15s for local health endpoint and native running PID")
 		err = waitUserService(cmd.Context(), spec, e.native)
 	}
 	if err != nil {

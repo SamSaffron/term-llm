@@ -23,6 +23,8 @@ type Native struct {
 	OS, Home, ConfigHome string
 	UID                  int
 	Run                  func(context.Context, string, ...string) ([]byte, error)
+	// Trace receives command names and outcomes, never command output (which may contain credentials).
+	Trace io.Writer
 }
 
 func Command(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -66,7 +68,14 @@ func (n Native) run(ctx context.Context, name string, args ...string) ([]byte, e
 	if f == nil {
 		f = Command
 	}
+	if n.Trace != nil {
+		fmt.Fprintf(n.Trace, "[service debug] exec: %s %s\n", name, strings.Join(args, " "))
+	}
+	started := time.Now()
 	out, err := f(ctx, name, args...)
+	if n.Trace != nil {
+		fmt.Fprintf(n.Trace, "[service debug] completed in %s (error: %v)\n", time.Since(started).Round(time.Millisecond), err)
+	}
 	if err != nil {
 		if detail := strings.TrimSpace(string(out)); detail != "" {
 			return out, fmt.Errorf("%s %s failed: %w\n%s", name, strings.Join(args, " "), err, detail)
@@ -319,6 +328,18 @@ func (n Native) Logs(ctx context.Context, kind, specPath string, follow bool, ou
 	cmd.Stdout = out
 	cmd.Stderr = errOut
 	return cmd.Run()
+}
+
+// RecentLogs retrieves a bounded snapshot without following the service.
+func (n Native) RecentLogs(ctx context.Context, kind, specPath string) (string, error) {
+	var out []byte
+	var err error
+	if n.OS == "linux" {
+		out, err = n.run(ctx, "journalctl", "--user", "-u", n.Label(kind), "-n", "60", "--no-pager")
+	} else {
+		out, err = n.run(ctx, "/usr/bin/tail", "-n", "60", filepath.Join(filepath.Dir(specPath), "service.log"))
+	}
+	return string(out), err
 }
 
 func (n Native) Enabled(ctx context.Context, kind string) (bool, error) {

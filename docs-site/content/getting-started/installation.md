@@ -48,6 +48,12 @@ make build
 
 `make build` generates the embedded web UI and packages its readable source archive before compiling the Go binary. Those generated bundles are not checked into Git, so plain `go build` from a fresh checkout is not sufficient. Use the one-line installer for a self-contained release binary without source-build dependencies.
 
+On macOS, `make build` also ad-hoc signs macOS binaries with the explicit identifier
+`com.term-llm.cli`, replacing Go's default `a.out` identifier after each rebuild.
+This requires no signing certificate. It is not Developer ID signing or
+notarization, and does not guarantee that Local Network permissions survive
+rebuilds. Cross-builds on other operating systems are not signed by this step.
+
 ### Shell completions
 
 Generate completion scripts for Bash, Zsh, Fish, or PowerShell with `term-llm config completion`. The easiest setup is to let term-llm install the script in the shell's standard user location:

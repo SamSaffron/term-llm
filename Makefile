@@ -11,6 +11,9 @@ TERM_LLM_LDFLAGS := -s -w \
 
 build: frontend
 	go build -ldflags "$(TERM_LLM_LDFLAGS)" -o term-llm .
+	@if [ "$$(go env GOHOSTOS)" = "darwin" ] && [ "$$(go env GOOS)" = "darwin" ]; then \
+		codesign --force --sign - --identifier com.term-llm.cli ./term-llm; \
+	fi
 
 frontend: frontend-deps
 	npm --prefix frontend run build
