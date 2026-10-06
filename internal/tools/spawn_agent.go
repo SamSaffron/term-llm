@@ -172,6 +172,9 @@ type SpawnAgentRunOptions struct {
 	ModelOverride  string
 	ChildSessionID string
 	BaseDir        string
+	// RemainingDepth is the parent budget after spending one level. Nil means
+	// no parent cap (for standalone runs). Zero is an exhausted child budget.
+	RemainingDepth *int
 }
 
 // SpawnAgentRunnerWithOptions can run sub-agents with call-specific overrides.
@@ -190,7 +193,7 @@ const DefaultSubagentMaxTurns = 500
 // SpawnConfig configures spawn_agent behavior.
 type SpawnConfig struct {
 	MaxParallel    int               // Max concurrent sub-agents (default 3)
-	MaxDepth       int               // Max nesting level (default 2)
+	MaxDepth       int               // Levels below this agent (default 2), capped by its parent budget
 	DefaultTimeout int               // Default caller wait budget in seconds (default 300); never a child deadline
 	AllowedAgents  []string          // Optional whitelist of allowed agents
 	AgentModels    map[string]string // Optional per-spawn model overrides by agent name
@@ -211,7 +214,8 @@ type SpawnAgentTool struct {
 	mediaPublisher MediaPublisher
 	config         SpawnConfig
 	semaphore      chan struct{}         // Limits concurrent agents
-	depth          int                   // Current nesting depth
+	depth          int                   // Absolute nesting depth for child run metadata
+	remainingDepth int                   // Levels this agent may still spawn
 	mu             sync.Mutex            // Protects runner updates
 	eventCallback  SubagentEventCallback // Optional callback for event bubbling
 	manager        *agentManager
@@ -230,10 +234,11 @@ func NewSpawnAgentTool(config SpawnConfig, depth int) *SpawnAgentTool {
 	}
 
 	return &SpawnAgentTool{
-		config:    config,
-		semaphore: make(chan struct{}, config.MaxParallel),
-		manager:   newAgentManager(config),
-		depth:     depth,
+		config:         config,
+		semaphore:      make(chan struct{}, config.MaxParallel),
+		manager:        newAgentManager(config),
+		depth:          depth,
+		remainingDepth: config.MaxDepth,
 	}
 }
 
@@ -271,7 +276,7 @@ func (t *SpawnAgentTool) SetMediaPublisher(publisher MediaPublisher) {
 	}
 }
 
-// SetDepth sets the current nesting depth for this tool.
+// SetDepth sets the absolute nesting depth for child run metadata.
 // Used when creating tools for sub-agents to track depth.
 func (t *SpawnAgentTool) SetDepth(depth int) {
 	t.mu.Lock()
@@ -280,6 +285,29 @@ func (t *SpawnAgentTool) SetDepth(depth int) {
 	t.manager.mu.Lock()
 	t.manager.depth = depth
 	t.manager.mu.Unlock()
+}
+
+// SetRemainingDepth caps this agent's own spawn allowance by its parent's
+// remaining budget. Unlike depth, zero is an explicit exhausted budget.
+func (t *SpawnAgentTool) SetRemainingDepth(parentBudget int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if parentBudget < 0 {
+		parentBudget = 0
+	}
+	if parentBudget < t.remainingDepth {
+		t.remainingDepth = parentBudget
+	}
+	t.manager.mu.Lock()
+	t.manager.remainingDepth = t.remainingDepth
+	t.manager.mu.Unlock()
+}
+
+// RemainingDepth reports the current effective spawn allowance.
+func (t *SpawnAgentTool) RemainingDepth() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.remainingDepth
 }
 
 // SetEventCallback sets the callback for receiving subagent progress events.
@@ -356,28 +384,28 @@ type spawnAgentPolicyError struct {
 func (e *spawnAgentPolicyError) Error() string { return e.message }
 
 type localSpawnPolicySnapshot struct {
-	runner        SpawnAgentRunner
-	depth         int
-	maxDepth      int
-	allowedAgents []string
+	runner         SpawnAgentRunner
+	depth          int
+	remainingDepth int
+	allowedAgents  []string
 }
 
 func (t *SpawnAgentTool) snapshotLocalSpawnPolicy() localSpawnPolicySnapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return localSpawnPolicySnapshot{
-		runner:        t.runner,
-		depth:         t.depth,
-		maxDepth:      t.config.MaxDepth,
-		allowedAgents: append([]string(nil), t.config.AllowedAgents...),
+		runner:         t.runner,
+		depth:          t.depth,
+		remainingDepth: t.remainingDepth,
+		allowedAgents:  append([]string(nil), t.config.AllowedAgents...),
 	}
 }
 
 func (p localSpawnPolicySnapshot) authorize(agentName string, listing bool) error {
-	if p.depth >= p.maxDepth {
+	if p.remainingDepth < 1 {
 		return &spawnAgentPolicyError{
 			typeName: ErrPermissionDenied,
-			message:  fmt.Sprintf("max agent depth exceeded (current: %d, max: %d)", p.depth, p.maxDepth),
+			message:  "spawn depth budget exhausted (this agent may spawn 0 more levels)",
 		}
 	}
 	if !listing {

@@ -347,7 +347,7 @@ func TestSpawnRunnerNestedDeveloperCanDelegateWithinParentBudget(t *testing.T) {
 		Spawn: agents.SpawnConfig{MaxDepth: 1, AllowedAgents: []string{"codebase"}},
 	}
 	// A top-level parent with two levels left spawned this developer at depth 1.
-	toolMgr, err := runner.setupAgentTools(cfg, engine, developer, 1, "developer-session")
+	toolMgr, err := runner.setupAgentToolsWithBudget(cfg, engine, developer, 1, "developer-session", 1)
 	if err != nil {
 		t.Fatalf("setupAgentTools() error = %v", err)
 	}
@@ -366,6 +366,15 @@ func TestSpawnRunnerNestedDeveloperCanDelegateWithinParentBudget(t *testing.T) {
 	}
 	if capture.lastDepth != 2 {
 		t.Fatalf("child absolute depth = %d, want 2", capture.lastDepth)
+	}
+}
+
+func TestSpawnRunnerCarriesBudgetThroughChildRequest(t *testing.T) {
+	budget := 0
+	runner := &SpawnAgentRunner{}
+	request := runner.buildRunRequest(context.Background(), "developer", "task", "child", 2, false, tools.SpawnAgentRunOptions{RemainingDepth: &budget})
+	if request.Depth != 2 || request.RemainingDepth == nil || *request.RemainingDepth != 0 {
+		t.Fatalf("child execution depth/budget = %d/%v", request.Depth, request.RemainingDepth)
 	}
 }
 

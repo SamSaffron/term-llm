@@ -316,6 +316,9 @@ func TestServeSessionSkillInvokeEnforcesPolicyAndStartsIsolatedRun(t *testing.T)
 	if runner.callCount() != 1 {
 		t.Fatalf("isolated child invocation count = %d, want 1", runner.callCount())
 	}
+	if childRequest.Depth != 1 || childRequest.RemainingDepth == nil || *childRequest.RemainingDepth != 1 {
+		t.Fatalf("isolated child depth/budget = %d/%v, want 1/1", childRequest.Depth, childRequest.RemainingDepth)
+	}
 	if childRequest.Kind != runpkg.ChildRunIsolatedSkill || !strings.Contains(childRequest.Prompt, "Review internal/config.") || !strings.Contains(childRequest.Prompt, "# Skill: forked") || !strings.Contains(childRequest.Prompt, "**Description:** Forked review") || childRequest.ParentSessionID != "sess-a" {
 		t.Fatalf("isolated child request = %#v", childRequest)
 	}

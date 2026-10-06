@@ -801,8 +801,28 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 	if baseDir == "" {
 		baseDir = strings.TrimSpace(sess.CWD)
 	}
+	// A direct skill child spends one level of its hosting agent's budget too.
+	// Prefer the live tool's cap (which includes any ancestor cap), then the
+	// persisted agent's own setting for a session without a live runtime.
+	remaining := tools.DefaultSpawnConfig().MaxDepth
+	if runtime != nil && runtime.toolMgr != nil && runtime.toolMgr.GetSpawnAgentTool() != nil {
+		remaining = runtime.toolMgr.GetSpawnAgentTool().RemainingDepth()
+	} else if s.cfgRef != nil && sess.Agent != "" {
+		if parentAgent, err := LoadAgent(sess.Agent, s.cfgRef); err == nil && parentAgent != nil && parentAgent.Spawn.MaxDepth > 0 {
+			remaining = parentAgent.Spawn.MaxDepth
+		}
+	}
+	if sess.IsSubagent && (runtime == nil || runtime.toolMgr == nil || runtime.toolMgr.GetSpawnAgentTool() == nil) {
+		remaining = 0 // An absent ancestor cap must not be reconstructed from the agent's own config.
+	}
+	remaining--
+	if remaining < 0 {
+		remaining = 0
+	}
 	request := runpkg.ChildRunRequest{
 		Kind:            runpkg.ChildRunIsolatedSkill,
+		Depth:           1,
+		RemainingDepth:  &remaining,
 		RunID:           runID,
 		ChildSessionID:  childSessionID,
 		AgentName:       activation.Metadata.Agent,

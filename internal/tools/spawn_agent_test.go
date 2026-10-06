@@ -571,34 +571,38 @@ func TestSpawnAgentTool_TimeoutEnforcement(t *testing.T) {
 	}
 }
 
-func TestSpawnAgentTool_DepthLimitEnforcement(t *testing.T) {
+func TestSpawnAgentTool_RemainingDepthLimitEnforcement(t *testing.T) {
 	tests := []struct {
 		name        string
-		currentDep  int
+		remaining   int
+		capParent   bool
 		maxDepth    int
 		expectError bool
 	}{
 		{
-			name:        "depth at limit returns error",
-			currentDep:  2,
+			name:        "exhausted budget returns error",
+			remaining:   0,
+			capParent:   true,
 			maxDepth:    2,
 			expectError: true,
 		},
 		{
-			name:        "depth exceeds limit returns error",
-			currentDep:  5,
+			name:        "parent cap cannot increase budget",
+			remaining:   0,
+			capParent:   true,
 			maxDepth:    3,
 			expectError: true,
 		},
 		{
-			name:        "depth below limit succeeds",
-			currentDep:  1,
+			name:        "remaining budget succeeds",
+			remaining:   1,
+			capParent:   true,
 			maxDepth:    3,
 			expectError: false,
 		},
 		{
-			name:        "depth at zero with max 1 succeeds",
-			currentDep:  0,
+			name:        "standalone with max 1 succeeds",
+			remaining:   0,
 			maxDepth:    1,
 			expectError: false,
 		},
@@ -611,7 +615,10 @@ func TestSpawnAgentTool_DepthLimitEnforcement(t *testing.T) {
 				MaxDepth:       tt.maxDepth,
 				DefaultTimeout: 300,
 			}
-			tool := NewSpawnAgentTool(config, tt.currentDep)
+			tool := NewSpawnAgentTool(config, 5)
+			if tt.capParent {
+				tool.SetRemainingDepth(tt.remaining)
+			}
 
 			runner := newMockRunner()
 			tool.SetRunner(runner)
@@ -785,7 +792,7 @@ func TestSpawnAgentToolCapabilityEmptyWhitelistDepthAndCatalogFailures(t *testin
 		t.Fatalf("unrestricted names = %#v, err=%v", names, err)
 	}
 
-	tool.SetDepth(1)
+	tool.SetRemainingDepth(0)
 	if _, err := tool.PermittedAgentNames(); err == nil || !strings.Contains(err.Error(), "depth") {
 		t.Fatalf("depth-exhausted list error = %v", err)
 	}
@@ -864,7 +871,7 @@ func TestSpawnAgentToolModelCallStillEnforcesPolicyAfterMentionValidation(t *tes
 		{
 			name: "depth exhausted",
 			mutate: func(_ *llm.Engine, tool *SpawnAgentTool) {
-				tool.SetDepth(1)
+				tool.SetRemainingDepth(0)
 			},
 		},
 	}
@@ -1302,6 +1309,35 @@ func TestSpawnAgentTool_DepthPassedToRunner(t *testing.T) {
 	}
 }
 
+func TestSpawnAgentRelativeDepthBudget(t *testing.T) {
+	for _, tt := range []struct {
+		name                     string
+		own, parent, depth, want int
+	}{
+		{"nested developer", 1, 1, 1, 1},
+		{"standalone developer", 1, 2, 0, 1},
+		{"first developer child", 1, 0, 1, 0},
+		{"recursive developer bounded", 1, 0, 2, 0},
+		{"larger child cannot expand budget", 9, 1, 3, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: tt.own}, tt.depth)
+			tool.SetRunner(newMockCatalogRunner("developer"))
+			if tt.depth != 0 {
+				tool.SetRemainingDepth(tt.parent)
+			}
+			got := tool.snapshotLocalSpawnPolicy().remainingDepth
+			if got != tt.want {
+				t.Fatalf("remaining budget = %d, want %d", got, tt.want)
+			}
+			err := tool.CanSpawnAgent("developer")
+			if (err == nil) != (tt.want > 0) {
+				t.Fatalf("CanSpawnAgent() = %v; remaining=%d", err, got)
+			}
+		})
+	}
+}
+
 func TestSpawnAgentTool_SetDepth(t *testing.T) {
 	config := SpawnConfig{
 		MaxParallel:    3,
@@ -1323,8 +1359,9 @@ func TestSpawnAgentTool_SetDepth(t *testing.T) {
 		t.Errorf("unexpected error at depth 0: %s", r.Error)
 	}
 
-	// Set depth to max, should fail
+	// Exhaust the parent budget; absolute depth alone does not deny spawning.
 	tool.SetDepth(3)
+	tool.SetRemainingDepth(0)
 
 	result, _ = tool.Execute(ctx, args)
 	r = parseResult(t, result.Content)

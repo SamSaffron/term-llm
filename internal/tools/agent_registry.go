@@ -34,37 +34,39 @@ type agentAttachment struct {
 }
 
 type agentEntry struct {
-	record       session.AgentRun
-	prior        *session.AgentRun
-	instructions string
-	done         chan struct{}
-	cancel       context.CancelFunc
-	interrupt    context.CancelFunc
-	attachment   *agentAttachment
-	initial      *agentAttachment
-	external     SubagentEventCallback
-	originCallID string
-	result       SpawnAgentRunResult
-	startedAt    time.Time
-	media        []llm.MediaArtifact
-	currentTool  string
-	err          error
-	queued       bool
-	shutdown     bool
-	stopReason   string
-	wake         func(string)
-	manager      *agentManager
+	record              session.AgentRun
+	prior               *session.AgentRun
+	instructions        string
+	done                chan struct{}
+	cancel              context.CancelFunc
+	interrupt           context.CancelFunc
+	attachment          *agentAttachment
+	initial             *agentAttachment
+	external            SubagentEventCallback
+	originCallID        string
+	result              SpawnAgentRunResult
+	startedAt           time.Time
+	media               []llm.MediaArtifact
+	currentTool         string
+	err                 error
+	queued              bool
+	childRemainingDepth int
+	shutdown            bool
+	stopReason          string
+	wake                func(string)
+	manager             *agentManager
 }
 
 type agentManager struct {
-	mu       sync.Mutex
-	agents   map[string]*agentEntry
-	slots    chan struct{}
-	store    session.AgentRunStore
-	owner    string
-	draining bool
-	runner   SpawnAgentRunner
-	depth    int
+	mu             sync.Mutex
+	agents         map[string]*agentEntry
+	slots          chan struct{}
+	store          session.AgentRunStore
+	owner          string
+	draining       bool
+	runner         SpawnAgentRunner
+	depth          int
+	remainingDepth int
 }
 
 var processAgentEntries sync.Map // agent_id -> *agentEntry, across host-owned tool registries
@@ -78,7 +80,7 @@ func AgentCancelled(ctx context.Context) bool {
 }
 
 func newAgentManager(config SpawnConfig) *agentManager {
-	return &agentManager{agents: make(map[string]*agentEntry), slots: make(chan struct{}, config.MaxParallel), owner: processAgentOwner()}
+	return &agentManager{agents: make(map[string]*agentEntry), slots: make(chan struct{}, config.MaxParallel), owner: processAgentOwner(), remainingDepth: config.MaxDepth}
 }
 
 var processStartedAt = time.Now().UnixNano()
@@ -234,6 +236,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 			return abort("agent is already running in this process")
 		}
 	}
+	e.childRemainingDepth = m.remainingDepth - 1 // Snapshot before a queued run can detach.
 	m.agents[id] = e
 	processAgentEntries.Store(id, e)
 	m.mu.Unlock()
@@ -312,7 +315,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	}
 	var result SpawnAgentRunResult
 	var err error
-	opts := SpawnAgentRunOptions{ModelOverride: model, ChildSessionID: e.record.ID, BaseDir: e.record.BaseDir}
+	opts := SpawnAgentRunOptions{ModelOverride: model, ChildSessionID: e.record.ID, BaseDir: e.record.BaseDir, RemainingDepth: &e.childRemainingDepth}
 	if resume {
 		if continuation, ok := runner.(AgentContinuation); ok {
 			result, err = continuation.ContinueAgent(ctx, e.record.ID, e.record.AgentName, instructions, depth, e.originCallID, opts, cb)

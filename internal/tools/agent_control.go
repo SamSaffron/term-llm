@@ -237,10 +237,12 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if budget < 0 || budget > 3600 {
 		return agentControlError("wait must be between 0 and 3600")
 	}
-	owner := m
-	if e != nil {
-		owner = e.manager
+	// Resumed and never-started runs take their depth allowance from the
+	// resuming parent, not the manager that originally created the record.
+	if _, _, err := t.spawn.localSpawnPolicy(record.AgentName); err != nil {
+		return agentControlError(err.Error())
 	}
+	owner := m
 	owner.mu.Lock()
 	runner, depth, draining := owner.runner, owner.depth, owner.draining
 	owner.mu.Unlock()

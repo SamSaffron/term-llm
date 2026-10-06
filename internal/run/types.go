@@ -123,6 +123,7 @@ type Request struct {
 	ParentSessionID          string
 	IsSubagent               bool
 	Depth                    int
+	RemainingDepth           *int // Child budget cap; nil for top-level runs
 	ApprovalRole             string
 	ApprovalTranscriptPrefix []llm.Message
 

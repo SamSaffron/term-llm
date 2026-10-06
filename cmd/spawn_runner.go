@@ -291,6 +291,7 @@ func (r *SpawnAgentRunner) buildRunRequest(ctx context.Context, agentName, promp
 		BaseDir:        opts.BaseDir,
 		ChildSessionID: opts.ChildSessionID,
 		Depth:          depth,
+		RemainingDepth: opts.RemainingDepth,
 	}
 	return r.buildChildExecutionRequest(ctx, request, childSessionID, search)
 }
@@ -336,6 +337,7 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 		ParentSessionID:          parentSessionID,
 		IsSubagent:               true,
 		Depth:                    request.Depth,
+		RemainingDepth:           request.RemainingDepth,
 		ApprovalRole:             approvalRole,
 		ApprovalTranscriptPrefix: subagentApprovalTranscriptPrefix(ctx),
 		ChildSkill:               request.Skill,
@@ -431,6 +433,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		BaseDir:        opts.BaseDir,
 		ChildSessionID: opts.ChildSessionID,
 		Depth:          depth,
+		RemainingDepth: opts.RemainingDepth,
 	}
 	var callback runpkg.ChildRunEventCallback
 	if cb != nil {
@@ -849,6 +852,14 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 // setupAgentTools keeps the historical spawn-agent tool wiring path available for
 // focused tests while delegating to the shared SessionSettings tool setup.
 func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
+	remaining := agent.Spawn.MaxDepth
+	if remaining <= 0 {
+		remaining = tools.DefaultSpawnConfig().MaxDepth
+	}
+	return r.setupAgentToolsWithBudget(cfg, engine, agent, depth, childSessionID, remaining)
+}
+
+func (r *SpawnAgentRunner) setupAgentToolsWithBudget(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string, remaining int) (*tools.ToolManager, error) {
 	baseDir := r.currentBaseDir()
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, tools.DefaultSubagentMaxTurns, baseDir)
 	if err != nil {
@@ -871,7 +882,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 			return nil, fmt.Errorf("failed to set parent approval manager: %w", err)
 		}
 	}
-	nested, err := WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, r.yoloMode, r.store, childSessionID, depth)
+	nested, err := wireSpawnAgentWithBudget(cfg, toolMgr, r.yoloMode, r.store, childSessionID, depth, &remaining)
 	if err != nil {
 		return nil, err
 	}

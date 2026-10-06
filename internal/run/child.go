@@ -52,6 +52,7 @@ type ChildRunRequest struct {
 	ParentSessionID string
 	BaseDir         string
 	Depth           int
+	RemainingDepth  *int // Parent allowance after spending this child level; nil for standalone
 	Skill           *SkillRunMetadata
 
 	// Specialized host-owned child runs use these overlays without mutating the
