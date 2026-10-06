@@ -57,9 +57,17 @@ async function resetOrder() {
 }
 
 async function openDashboard(page: Page) {
-  await page.goto(`${hubRoot}?token=${encodeURIComponent(hubToken)}`);
-  await expect(page).toHaveURL(new RegExp(`${hubRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+  // Ordering fixtures include unreachable nodes; the default filter is online only.
+  const dashboardURL = `${hubRoot}?nodes=all`;
+  await page.goto(`${dashboardURL}&token=${encodeURIComponent(hubToken)}`);
+  await expect(page).toHaveURL(dashboardURL);
   await expect(page.locator('.node-grid > .node-card')).not.toHaveCount(0);
+}
+
+/** Back to Hub opens the default online view; include offline ordering fixtures again. */
+async function showAllNodes(page: Page) {
+  await page.getByRole('button', { name: /^Show nodes:/ }).click();
+  await page.getByRole('menuitemradio', { name: /^All nodes/ }).click();
 }
 
 /** The known node cards' IDs, in dashboard order. */
@@ -281,6 +289,7 @@ test.describe('Hub node order', () => {
     releaseSave();
     const pending = await pendingResponse;
     expect(pending.status()).toBe(200);
+    await showAllNodes(page);
     await expectShown(page, [beta, production, alpha]);
 
     await page.goto(`${hubRoot}node/${production}/?new=1`);
@@ -288,6 +297,7 @@ test.describe('Hub node order', () => {
     await page.reload();
     await expect.poll(shown).toEqual([beta, production, alpha]);
     await page.getByRole('link', { name: 'Back to Hub' }).click();
+    await showAllNodes(page);
     await expectShown(page, [beta, production, alpha]);
   });
 

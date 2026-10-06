@@ -11,7 +11,7 @@ func TestWriteProvidersText_SplitsConfiguredFromSetupHints(t *testing.T) {
 
 	providers := []ProviderInfo{
 		{Name: "chatgpt", IsBuiltin: true, Configured: true, ConfiguredVia: "default"},
-		{Name: "claude-bin", IsBuiltin: true, Configured: true, ConfiguredVia: "login"},
+		{Name: "claude-bin", Credential: "none", IsBuiltin: true, Configured: true, ConfiguredVia: "login"},
 		{Name: "copilot", IsBuiltin: true, Disabled: true},
 		{Name: "grok", IsBuiltin: true},
 		{Name: "lmstudio", Configured: true, ConfiguredVia: "config"},
@@ -32,7 +32,7 @@ func TestWriteProvidersText_SplitsConfiguredFromSetupHints(t *testing.T) {
 Available (not set up):
   PROVIDER    NEXT STEP
   grok        run term-llm auth login grok
-  vllm        add providers.vllm to config.yaml
+  vllm        add providers.vllm (base_url) to config.yaml
   xai         set XAI_API_KEY
 
 Disabled:
