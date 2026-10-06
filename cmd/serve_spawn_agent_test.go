@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -10,6 +11,28 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
+
+func TestSessionMessageEntriesProjectsAgentLifecycleLinks(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	store.sessions["child-1"] = &session.Session{ID: "child-1", ParentID: "parent"}
+	store.sessions["child-2"] = &session.Session{ID: "child-2", ParentID: "parent"}
+	store.sessions["foreign"] = &session.Session{ID: "foreign", ParentID: "other"}
+	messages := []session.Message{
+		*session.NewMessage("parent", llm.ToolResultMessage("wait", tools.WaitAgentToolName, `[{"agent_id":"child-1","status":"running"},{"session_id":"child-2"},{"agent_id":"foreign"},{"agent_id":"child-1"}]`, nil), 0),
+		*session.NewMessage("parent", llm.ToolResultMessage("resume", tools.ContinueAgentToolName, `{"agent_id":"child-2","status":"running"}`, nil), 1),
+		*session.NewMessage("parent", llm.ToolResultMessage("malformed", tools.WaitAgentToolName, `not JSON`, nil), 2),
+	}
+	entries := (&serveServer{store: store}).sessionMessageEntries(messages)
+	if len(entries) != 3 || len(entries[0].Parts) != 1 || len(entries[1].Parts) != 1 || len(entries[2].Parts) != 0 {
+		t.Fatalf("lifecycle result projection = %+v", entries)
+	}
+	if got := entries[0].Parts[0].AgentSessionIDs; !slices.Equal(got, []string{"child-1", "child-2"}) {
+		t.Fatalf("wait_agent child IDs = %v", got)
+	}
+	if got := entries[1].Parts[0].AgentSessionIDs; !slices.Equal(got, []string{"child-2"}) {
+		t.Fatalf("continue_agent child IDs = %v", got)
+	}
+}
 
 func TestSessionMessageEntriesProjectsSuccessfulSpawnAgentResult(t *testing.T) {
 	content, err := json.Marshal(tools.SpawnAgentResult{

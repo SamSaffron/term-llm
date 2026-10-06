@@ -59,11 +59,14 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	// intentionally not required here because exact grants are restored later.
 	deriveAskResumeAutoTools(ctx, store, sess, settings)
 
+	// ask applied its provider overrides to cfg before resuming; build the
+	// prompt for that provider/model rather than the agent's preference.
+	promptProvider, promptModel := activeLLMFlags(cfg)
 	_ = store.SetCurrent(ctx, sess.ID)
 	_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
 	if _, supported := session.AsSessionInputRefresher(store); !supported {
 		var err error
-		settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, agent, CLIFlags{Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console"}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
+		settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, agent, CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console"}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
@@ -112,7 +115,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 				return nil, ticket, nil, true, err
 			}
 			settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
-				Provider: askProvider, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
+				Provider: askProvider, ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
 				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console",
 			}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
 			if err != nil {

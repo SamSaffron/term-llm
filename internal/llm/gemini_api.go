@@ -54,12 +54,26 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text             string                  `json:"text,omitempty"`
-	InlineData       *geminiBlob             `json:"inlineData,omitempty"`
-	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
-	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
-	Thought          bool                    `json:"thought,omitempty"`
-	ThoughtSignature []byte                  `json:"thoughtSignature,omitempty"`
+	Text             string                    `json:"text,omitempty"`
+	InlineData       *geminiBlob               `json:"inlineData,omitempty"`
+	FunctionCall     *geminiFunctionCall       `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse   `json:"functionResponse,omitempty"`
+	Thought          bool                      `json:"thought,omitempty"`
+	ThoughtSignature []byte                    `json:"thoughtSignature,omitempty"`
+	ToolCall         *geminiServerToolCall     `json:"toolCall,omitempty"`
+	ToolResponse     *geminiServerToolResponse `json:"toolResponse,omitempty"`
+}
+
+type geminiServerToolCall struct {
+	ID       string         `json:"id,omitempty"`
+	ToolType string         `json:"toolType,omitempty"`
+	Args     map[string]any `json:"args,omitempty"`
+}
+
+type geminiServerToolResponse struct {
+	ID       string         `json:"id,omitempty"`
+	ToolType string         `json:"toolType,omitempty"`
+	Response map[string]any `json:"response,omitempty"`
 }
 
 type geminiBlob struct {
@@ -93,7 +107,8 @@ type geminiFunctionDeclaration struct {
 }
 
 type geminiToolConfig struct {
-	FunctionCallingConfig *geminiFunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+	FunctionCallingConfig            *geminiFunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+	IncludeServerSideToolInvocations *bool                        `json:"includeServerSideToolInvocations,omitempty"`
 }
 
 type geminiFunctionCallingMode string

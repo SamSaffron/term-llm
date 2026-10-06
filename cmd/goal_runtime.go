@@ -116,6 +116,25 @@ func (t *goalToolTracker) commitToolCall(callID, name string, success bool) *goa
 }
 
 func (rt *serveRuntime) runWithGoal(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+	ctx, sweep := withSessionChildrenSweep(ctx)
+	result, err := rt.runWithGoalPasses(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	// runOnce stops the session's detached children, under rt.mu, when a turn
+	// it owns is stopped. This fallback covers a stop that never reached an
+	// owned runOnce, such as one between the passes of an active goal after an
+	// earlier pass spawned in the background. It must not run after runOnce
+	// already swept (that sweep was race-free; a second, unlocked one could
+	// catch a successor turn's children), nor for errServeSessionBusy, where
+	// another turn owns the session and its children are not ours to stop. A
+	// completed invocation (nil error) never stops children.
+	if err != nil && ctx.Err() != nil && !sweep.swept.Load() && !errors.Is(err, errServeSessionBusy) {
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		toolpkg.InterruptAgentsForParent(waitCtx, req.SessionID)
+		cancel()
+	}
+	return result, err
+}
+
+func (rt *serveRuntime) runWithGoalPasses(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
 	goalStore := rt.goalStateStore()
 	if goalStore == nil || strings.TrimSpace(req.SessionID) == "" {
 		return rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)

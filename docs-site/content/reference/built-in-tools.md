@@ -32,9 +32,15 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `manage_workspace` | Grant, list, or revoke session-scoped local workspaces. Added automatically whenever a local path-capable file/search/image tool is enabled. |
 | `ask_user` | Prompt user for input |
 | `create_goal` / `get_goal` / `update_goal` | Create/read or complete/block a persistent `/goal` (goal tools are injected automatically while a goal is active) |
-| `spawn_agent` | Spawn child agents for parallel tasks |
+| `spawn_agent` | Start a child agent; `wait`/deprecated `timeout` is a wait budget, not a child deadline. Returns an `agent_id` if it keeps running. |
+| `wait_agent` | Wait for or inspect child agents without cancelling them. |
+| `continue_agent` | Steer a running child or resume a stopped child with a fresh turn budget. |
+| `cancel_agent` | Cancel an agent (which can be resumed later). |
+| `list_agents` | Recover child agent IDs and statuses for the current parent session. |
 | `run_agent_script` | Run a script bundled in the agent directory |
 | `activate_skill` | Activate a skill by name |
+
+Lifecycle tools are enabled together whenever `spawn_agent` is enabled. `spawn_agent` returns `queued` when waiting for a parallel slot, `running` when its wait budget expires, or `completed` when it finishes in time; in every case `agent_id` is the child session ID. The turn limit is a child's only budget: the agent's `max_turns` if set, otherwise 500; `continue_agent` grants the same allotment again. `wait_agent` and `list_agents` are scoped to the parent session, including after reloading it. `turn_limit`, `cancelled`, and `interrupted` agents can be resumed with `continue_agent`; steering a running child may be reported as `undelivered` when it finishes before consuming the instruction. A turn that ends normally leaves its detached children running so a later turn can collect them. Stopping a turn (the stop button, a steering interrupt, Esc in chat, or a cancelled job) interrupts every running child of that session; they end `interrupted` and stay resumable. On exit, one-shot `ask` waits for outstanding children (Ctrl-C interrupts them); chat and serve interrupt them and leave them resumable. Media produced by a detached child is returned with the `wait_agent` or `continue_agent` result that collects it. Detached approvals continue through the host's approval UI when available; headless hosts without a prompt transport deny operations rather than waiting silently.
 
 For `term-llm ask`, staged stdin or `-f` text/binary data transiently enables `read_file`; PNG/JPEG/GIF/WebP sources transiently enable both `read_file` and `view_image`. These additions are merged with explicit session tools and do not rewrite the saved tool list. The staged attachment receives an exact-file grant—nearby files, paths mentioned only in text, and symlink escapes receive no automatic access and remain subject to normal approval policy.
 
@@ -151,7 +157,7 @@ Custom tools run from the session working directory when the session is bound to
 | `script` | ✓ | Path to script, relative to the agent directory (e.g. `scripts/foo.sh`) |
 | `call` | | Argument passing mode: `args` (default) passes named flags (`--key value`); `positional` passes positional values; `json` sends JSON on stdin |
 | `input` | | JSON Schema for parameters. Must be `type: object` at root. If omitted, tool takes no parameters |
-| `timeout_seconds` | | Execution timeout (default 30, max 300) |
+| `timeout_seconds` | | Execution timeout in seconds (default 30, max 3600; an earlier parent deadline or cancellation still applies) |
 | `env` | | Extra environment variables to set when running the script |
 
 Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. Symlinks are resolved and containment-checked. Scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.

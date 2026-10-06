@@ -266,9 +266,22 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Apply provider overrides before resolving the prompt so it is built for
+	// the provider/model the loop will actually run.
+	agentProvider, agentModel := "", ""
+	if agent != nil {
+		agentProvider, agentModel = agent.Provider, agent.Model
+	}
+	if err := applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, loopProvider, agentProvider, agentModel); err != nil {
+		return err
+	}
+
 	// Resolve all settings: CLI > agent > config
+	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:        loopProvider,
+		ActiveProvider:  promptProvider,
+		ActiveModel:     promptModel,
 		Tools:           loopTools,
 		ReadDirs:        loopReadDirs,
 		WriteDirs:       loopWriteDirs,
@@ -286,15 +299,6 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	settings.PrimaryWorkspace = settings.BaseDir
-
-	// Apply provider overrides
-	agentProvider, agentModel := "", ""
-	if agent != nil {
-		agentProvider, agentModel = agent.Provider, agent.Model
-	}
-	if err := applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, loopProvider, agentProvider, agentModel); err != nil {
-		return err
-	}
 
 	initThemeFromConfig(cfg)
 

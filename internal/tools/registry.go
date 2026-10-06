@@ -290,8 +290,19 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	case AskUserToolName:
 		tool = NewAskUserTool()
 	case SpawnAgentToolName:
-		// SpawnAgentTool requires a runner to be set later via SetRunner
-		tool = NewSpawnAgentTool(r.config.Spawn, 0)
+		// Register the lifecycle bundle together even for explicit spawn-only lists.
+		spawn := NewSpawnAgentTool(r.config.Spawn, 0)
+		for _, name := range []string{WaitAgentToolName, ContinueAgentToolName, CancelAgentToolName, ListAgentsToolName} {
+			r.tools[name] = &agentControlTool{name: name, spawn: spawn}
+		}
+		tool = spawn
+	case WaitAgentToolName, ContinueAgentToolName, CancelAgentToolName, ListAgentsToolName:
+		// Controls cannot be installed without their spawn manager.
+		if spawn, ok := r.tools[SpawnAgentToolName].(*SpawnAgentTool); ok {
+			tool = &agentControlTool{name: specName, spawn: spawn}
+		} else {
+			return NewToolErrorf(ErrInvalidParams, "%s requires spawn_agent", specName)
+		}
 	case QueueAgentToolName:
 		tool = NewQueueAgentTool(r.config)
 	case WaitForJobsToolName:

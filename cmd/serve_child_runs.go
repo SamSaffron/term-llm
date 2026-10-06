@@ -178,17 +178,17 @@ func truncateChildText(text string, limit int) string {
 // ordinary session state, steering, approvals and ask-user handlers address it.
 func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, onEvent func(llm.Event) error) (serveRunResult, error) {
 	if h == nil || h.srv == nil || env == nil || env.runtime == nil {
-		return serveRunResult{}, errors.New("hosted child runtime is unavailable")
+		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child runtime is unavailable")}
 	}
 	if h.srv.sessionMgr == nil {
-		return serveRunResult{}, errors.New("hosted child session manager is unavailable")
+		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child session manager is unavailable")}
 	}
 	// The local Prompt mode delegates enforcement to the parent; it is not
 	// the configured default shown by the web approval controls.
 	env.runtime.approvalDefault = h.srv.approvalDefault
 	release, err := h.srv.sessionMgr.attachBorrowedRuntime(env.req.SessionID, env.runtime)
 	if err != nil {
-		return serveRunResult{}, err
+		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: err}
 	}
 	var result serveRunResult
 	var executionErr error
@@ -208,12 +208,21 @@ func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, on
 	})
 	if err != nil {
 		release()
-		return serveRunResult{}, err
+		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: err}
 	}
-	// startResponseRun now owns and closes the non-stateful runtime.
-	env.runtime = nil
+	// startResponseRun owns and closes a non-stateful runtime. It never closes
+	// a stateful one, which a resumed child (continue_agent) always is, so env
+	// keeps ownership and closes it after the run settles.
+	if !env.req.Stateful {
+		env.runtime = nil
+	}
 	h.srv.publishChildrenChanged(h.childSessionID, h.parentSessionID, "subagent_ready")
 	<-run.settled
+	if env.runtime != nil {
+		// startResponseRun unregisters response IDs only for runtimes it
+		// closes; this stateful one is closed by env, so release them here.
+		h.srv.unregisterResponseIDs(env.runtime)
+	}
 	return result, executionErr
 }
 

@@ -690,6 +690,10 @@ export function convertServerMessages(
             );
           tool.media = [...byKey.values()];
         }
+        const agentSessionIds = Array.isArray(part.agent_session_ids)
+          ? part.agent_session_ids.filter((id): id is string => typeof id === 'string' && !!id)
+          : [];
+        if (agentSessionIds.length) tool.agentSessionIds = agentSessionIds;
         const spawn = record(part.spawn_agent);
         if (spawn) {
           const durationMs = Math.max(0, Number(spawn.duration_ms) || 0);

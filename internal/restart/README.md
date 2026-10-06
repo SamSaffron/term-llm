@@ -57,6 +57,10 @@ use explicit root admission.
 - Hub/reverse forwarding accounts for request completion, while explicit passive
   event subscriptions and reverse connections reconnect after successful exec.
   WebRTC requests use the same operation admission as HTTP requests.
+- Background delegated agents (`spawn_agent` with an expired wait budget) take
+  `restart.Detached` ownership before launch, so they outlive the spawning tool
+  call. A reload interrupts them after the grace period; they end `interrupted`
+  and can be resumed with `continue_agent` after the restart.
 - Idle MCP subprocesses and widgets are stopped and joined only after quiescence.
   Failed exec restores MCP availability; widgets remain available for lazy start.
   An interactive shell is owned work and must exit before the pending restart can proceed.

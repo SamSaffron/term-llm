@@ -98,6 +98,8 @@ export interface ToolCall {
   media?: MediaArtifact[];
   guardianReviews?: GuardianReview[];
   subagent?: Record<string, unknown>;
+  /** Validated child IDs projected from durable wait_agent / continue_agent results. */
+  agentSessionIds?: string[];
   subagentProgress?: SubagentProgress;
   /** Execution timing in milliseconds. Running recovery snapshots are re-anchored locally. */
   startedAt?: number;

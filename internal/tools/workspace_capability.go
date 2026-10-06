@@ -287,6 +287,22 @@ func (m *ApprovalManager) ConfigureWorkspacePersistence(ctx context.Context, sto
 
 	root.workspaceMu.Lock()
 	scopeChanged := root.workspaceSessionID != "" && sessionID != "" && root.workspaceSessionID != sessionID
+	if scopeChanged {
+		// Session-local approvals must not be snapshotted into another parent's child.
+		root.cache.Clear()
+		root.dirCache.mu.Lock()
+		root.dirCache.readDirs = make(map[string]ConfirmOutcome)
+		root.dirCache.writeDirs = make(map[string]ConfirmOutcome)
+		root.dirCache.mu.Unlock()
+		root.shellCache.mu.Lock()
+		root.shellCache.patterns = nil
+		root.shellCache.commands = nil
+		root.shellCache.mu.Unlock()
+		root.sharedShellCache.mu.Lock()
+		root.sharedShellCache.patterns = nil
+		root.sharedShellCache.commands = nil
+		root.sharedShellCache.mu.Unlock()
+	}
 	root.workspaceStore = workspaceStore
 	root.workspaceSessionID = sessionID
 	if workspaceStore != nil && sessionID != "" {

@@ -924,6 +924,35 @@ describe('transcript domain', () => {
     });
   });
 
+  it('restores validated child IDs from lifecycle tool results', () => {
+    const messages = convertServerMessages([
+      {
+        id: 1,
+        sequence: 0,
+        role: 'assistant',
+        parts: [{ type: 'tool_call', tool_call_id: 'wait-1', tool_name: 'wait_agent' }],
+      },
+      {
+        id: 2,
+        sequence: 1,
+        role: 'tool',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: 'wait-1',
+            tool_name: 'wait_agent',
+            agent_session_ids: ['child-1', 'child-2'],
+          },
+        ],
+      },
+    ]);
+    expect(messages[0].tools?.[0]).toMatchObject({
+      name: 'wait_agent',
+      agentSessionIds: ['child-1', 'child-2'],
+      status: 'done',
+    });
+  });
+
   it('keeps durable ask_user answers on their matching tool calls', () => {
     const messages = convertServerMessages([
       {

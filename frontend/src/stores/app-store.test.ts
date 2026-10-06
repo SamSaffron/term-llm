@@ -3699,6 +3699,47 @@ describe('AppStore compatibility behavior', () => {
     expect(internals.locallyStoppedResponses.has('old-response')).toBe(false);
   });
 
+  it('reconciles and reattaches a selected detached child without adding it to the sidebar', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.sessionStore.transientSession.value = {
+        ...session(),
+        id: 'child-1',
+        parentSessionId: 's1',
+        delegated: true,
+        activeRun: true,
+        activeResponseId: 'old-response',
+      };
+      store.activeSessionId.value = 'child-1';
+      const internals = store as unknown as {
+        refreshStatus(): Promise<void>;
+        resumeResponse(sessionId: string, responseId: string): Promise<void>;
+      };
+      internals.resumeResponse = vi.fn(async () => undefined);
+      store.endpoints.sessionStatus = vi.fn(async () => ({
+        sessions: [
+          { id: 's1' },
+          { id: 'child-1', active_run: true, active_response_id: 'next-response' },
+        ],
+      }));
+      store.endpoints.sessions = vi.fn(async () => ({ data: [] }));
+
+      await internals.refreshStatus();
+
+      expect(store.activeSession.value).toMatchObject({
+        id: 'child-1',
+        activeRun: true,
+        activeResponseId: 'next-response',
+      });
+      expect(internals.resumeResponse).toHaveBeenCalledWith('child-1', 'next-response');
+      expect(store.sessions.value.map((entry) => entry.id)).toEqual(['s1']);
+      expect(store.endpoints.sessions).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('marks a turn owned by another process active without attaching to a stream', async () => {
     const store = new AppStore(config);
     try {

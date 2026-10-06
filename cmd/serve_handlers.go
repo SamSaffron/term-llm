@@ -20,6 +20,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -992,6 +993,7 @@ type sessionMessagePartEntry struct {
 	GuardianReviews     []llm.GuardianReview           `json:"guardian_reviews,omitempty"`
 	SpawnAgent          *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
 	SpawnAgentToolCalls *int                           `json:"spawn_agent_tool_calls,omitempty"`
+	AgentSessionIDs     []string                       `json:"agent_session_ids,omitempty"`
 	MimeType            string                         `json:"mime_type,omitempty"`
 	FileURL             string                         `json:"file_url,omitempty"`
 	SizeBytes           int64                          `json:"size_bytes,omitempty"`
@@ -2054,7 +2056,8 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 	if isSpawnAgentResult {
 		spawnResult, spawnToolCalls = s.sessionMessageSpawnResult(index.parentSessionID, result)
 	}
-	includeResult := result.IsError || len(result.Images) > 0 || len(result.Media) > 0 || len(result.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
+	agentIDs := s.agentResultSessionIDs(index.parentSessionID, result.Name, result.Content)
+	includeResult := result.IsError || len(result.Images) > 0 || len(result.Media) > 0 || len(result.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil || len(agentIDs) > 0
 	if !includeResult {
 		return
 	}
@@ -2070,6 +2073,7 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 		GuardianReviews:     append([]llm.GuardianReview(nil), result.GuardianReviews...),
 		SpawnAgent:          spawnResult,
 		SpawnAgentToolCalls: spawnToolCalls,
+		AgentSessionIDs:     agentIDs,
 	}
 	if isAskUserResult {
 		pe.AskUserSummary = askUserResultSummary(result.Content)
@@ -2081,6 +2085,45 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 		pe.Media = s.toolMediaEntries(result.Media)
 	}
 	entry.Parts = append(entry.Parts, pe)
+}
+
+func (s *serveServer) agentResultSessionIDs(parentSessionID, name, content string) []string {
+	if name != tools.WaitAgentToolName && name != tools.ContinueAgentToolName {
+		return nil
+	}
+	var results []struct {
+		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
+	}
+	if name == tools.WaitAgentToolName {
+		if json.Unmarshal([]byte(content), &results) != nil {
+			return nil
+		}
+	} else {
+		var result struct {
+			AgentID   string `json:"agent_id"`
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal([]byte(content), &result) != nil {
+			return nil
+		}
+		results = append(results, result)
+	}
+	ids := make([]string, 0, min(len(results), 8))
+	for _, result := range results {
+		id := strings.TrimSpace(result.SessionID)
+		if id == "" {
+			id = strings.TrimSpace(result.AgentID)
+		}
+		id = s.validatedSpawnChildID(parentSessionID, id)
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+			if len(ids) == 8 {
+				break
+			}
+		}
+	}
+	return ids
 }
 
 func (s *serveServer) sessionMessageSpawnResult(parentSessionID string, result *llm.ToolResult) (*tools.SpawnAgentResult, *int) {

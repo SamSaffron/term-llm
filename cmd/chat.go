@@ -824,7 +824,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		model.SetFooterWarning("agent output_tool is ignored in chat; use ask for tool-captured output")
 	}
 	model.SetRootContext(ctx)
+	agentOwner := &agentHostOwner{}
 	model.SetRunner(newCmdRunner(cfg, cmdRunnerOptions{
+		AgentOwner:         agentOwner,
 		Provider:           chatProvider,
 		ConfigSet:          true,
 		ConfigProvider:     cfg.Chat.Provider,
@@ -908,8 +910,11 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	cleanupResources := func() {
 		cleanupOnce.Do(func() {
 			if spawnRunner != nil {
-				spawnRunner.Wait()
+				shutdownSpawnAgentRunner(spawnRunner)
 			}
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = agentOwner.Shutdown(shutdownCtx)
+			cancel()
 			mcpManager.StopAll()
 			if approvalMgr != nil {
 				approvalMgr.Close()
