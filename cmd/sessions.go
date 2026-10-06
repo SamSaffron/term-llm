@@ -215,7 +215,7 @@ func init() {
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareNew, "new", false, "Create a new share instead of updating a compatible session share")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareJSON, "json", false, "Output the share result as JSON")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareIncludeRawReasoning, "include-raw-reasoning", false, "Include raw model reasoning (privacy-sensitive; requires reasoning.raw/source permission)")
-	sessionsShareCmd.Flags().BoolVar(&sessionsShareNoImages, "no-images", false, "Omit images (uploads, generated images, and shown media) from the share")
+	sessionsShareCmd.Flags().BoolVar(&sessionsShareNoImages, "no-images", false, "Omit images (uploads, generated images, and shown images) from the share")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareNoTools, "no-tools", false, "Omit tool calls and tool output (which may contain secrets) from the share")
 
 	// Reset flags

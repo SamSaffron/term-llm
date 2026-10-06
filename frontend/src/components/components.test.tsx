@@ -8244,7 +8244,7 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(tools);
     expect(
       screen.getByText(
-        'The conversation through this response. Prompts, replies, and images may be included; tool activity and raw reasoning are excluded.',
+        'Your messages, the assistant’s replies, and images are included. Tool activity and raw reasoning are excluded.',
       ),
     ).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Create share' }));

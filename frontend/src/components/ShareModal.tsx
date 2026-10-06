@@ -27,23 +27,33 @@ const joinList = (items: string[]): string => {
   return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
 };
 
-const sentenceCase = (value: string): string => value.charAt(0).toUpperCase() + value.slice(1);
+const sentence = (items: string[], verb: string): string => {
+  const text = joinList(items);
+  const plural = items.length > 1 || items[0] === 'images';
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)} ${plural ? 'are' : 'is'} ${verb}.`;
+};
 
 export const includedSummary = (
   scope: ShareScope,
   includeTools: boolean,
   includeImages: boolean,
 ): string => {
-  if (scope === 'response') {
-    return `The assistant reply text${includeImages ? ' and its images' : ''}. Prompts, tool activity, and raw reasoning are excluded.`;
-  }
-  const included = ['prompts', 'replies'];
+  const included: string[] = [];
   const excluded: string[] = [];
-  (includeTools ? included : excluded).push('tool activity');
+  if (scope === 'response') {
+    included.push('the assistant’s reply');
+    excluded.push('your messages', 'tool activity');
+  } else {
+    included.push('your messages', 'the assistant’s replies');
+    (includeTools ? included : excluded).push('tool activity');
+  }
   (includeImages ? included : excluded).push('images');
   excluded.push('raw reasoning');
-  return `The conversation through this response. ${sentenceCase(joinList(included))} may be included; ${joinList(excluded)} ${excluded.length > 1 ? 'are' : 'is'} excluded.`;
+  return `${sentence(included, 'included')} ${sentence(excluded, 'excluded')}`;
 };
+
+const supportsImageAssets = (types: string[] | undefined): boolean =>
+  !!types?.some((type) => type === 'image/png' || type === 'image/jpeg');
 
 export function ShareModal() {
   const store = useStore();
@@ -218,10 +228,7 @@ export function ShareModal() {
                   />
                   <span>
                     <strong>This response</strong>
-                    <small>
-                      Just the assistant’s complete reply text and the images it showed. No prompts
-                      or tool activity.
-                    </small>
+                    <small>Just the assistant’s complete reply. No prompts or tool activity.</small>
                   </span>
                 </label>
                 <label class={`share-choice ${scope === 'conversation' ? 'is-selected' : ''}`}>
@@ -235,8 +242,7 @@ export function ShareModal() {
                   <span>
                     <strong>Conversation up to here</strong>
                     <small>
-                      The visible transcript, including your messages and tool activity, up to and
-                      including this response.
+                      Your messages and the assistant’s replies, up to and including this response.
                     </small>
                   </span>
                 </label>
@@ -255,13 +261,34 @@ export function ShareModal() {
                     <span>
                       <strong>Include tool activity</strong>
                       <small>
-                        Tool calls and their output, such as commands, file contents, and diffs.
-                        Turn this off if tools may have seen secrets; images shown to you are kept.
+                        Commands, file contents, diffs, and other tool output, which can contain
+                        secrets. Your messages and the assistant’s replies are shared as written
+                        either way.
                       </small>
                     </span>
                   </label>
                 </fieldset>
               )}
+
+              <fieldset class="share-fieldset" disabled={submitting}>
+                <legend>Images</legend>
+                <label class={`share-choice ${includeImages ? 'is-selected' : ''}`}>
+                  <input
+                    type="checkbox"
+                    name="share-images"
+                    checked={includeImages}
+                    onChange={(event) => setIncludeImages(event.currentTarget.checked)}
+                  />
+                  <span>
+                    <strong>Include images</strong>
+                    <small>
+                      {supportsImageAssets(capabilities.asset_media_types)
+                        ? 'Images in the shared messages, such as uploads and generated images, are published with the share. They are resized, and metadata such as location is removed.'
+                        : 'Images in the shared messages, such as uploads and generated images, are embedded in the page, up to 2 MB in total. They are resized, and metadata such as location is removed.'}
+                    </small>
+                  </span>
+                </label>
+              </fieldset>
 
               <fieldset class="share-fieldset share-visibility" disabled={submitting}>
                 <legend>Visibility</legend>
@@ -290,26 +317,6 @@ export function ShareModal() {
                     </label>
                   ))
                 )}
-              </fieldset>
-
-              <fieldset class="share-fieldset" disabled={submitting}>
-                <legend>Images</legend>
-                <label class={`share-choice ${includeImages ? 'is-selected' : ''}`}>
-                  <input
-                    type="checkbox"
-                    name="share-images"
-                    checked={includeImages}
-                    onChange={(event) => setIncludeImages(event.currentTarget.checked)}
-                  />
-                  <span>
-                    <strong>Include images</strong>
-                    <small>
-                      {capabilities.asset_media_types?.length
-                        ? 'Uploaded, generated, and shown images are published with the share. They are resized and their metadata (such as location) is removed.'
-                        : 'Uploaded, generated, and shown images are embedded in the page, resized and without metadata, up to about 2 MB in total.'}
-                    </small>
-                  </span>
-                </label>
               </fieldset>
 
               <div class="share-included">

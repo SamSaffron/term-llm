@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -475,5 +476,50 @@ func TestStripToolActivityKeepsConversationAndDisplayedImages(t *testing.T) {
 	}
 	if !strings.Contains(string(byName["index.html"].Content), `alt="A chart"`) {
 		t.Fatal("shown image reference was not resolved")
+	}
+}
+
+func TestNormalizeExportImageReencodesGIFWithoutMetadata(t *testing.T) {
+	palette := color.Palette{color.Black, color.White}
+	frames := []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 4, 4), palette), image.NewPaletted(image.Rect(0, 0, 4, 4), palette)}
+	frames[1].SetColorIndex(1, 1, 1)
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{Image: frames, Delay: []int{10, 10}}); err != nil {
+		t.Fatal(err)
+	}
+	// Insert a comment extension (0x21 0xFE) after the global colour table.
+	raw := encoded.Bytes()
+	header := 13
+	if flags := raw[10]; flags&0x80 != 0 {
+		header += 3 << ((flags & 0x07) + 1)
+	}
+	comment := append([]byte{0x21, 0xFE, 17}, []byte("SECRET-GIF-NOTE!!")...)
+	comment = append(comment, 0x00)
+	withComment := append(append(append([]byte{}, raw[:header]...), comment...), raw[header:]...)
+	if _, err := gif.DecodeAll(bytes.NewReader(withComment)); err != nil {
+		t.Fatalf("fixture is not a valid GIF: %v", err)
+	}
+	data, mediaType, err := normalizeExportImage(withComment, 2048, allImageTypes)
+	if err != nil || mediaType != "image/gif" {
+		t.Fatalf("mediaType = %q, err %v", mediaType, err)
+	}
+	if bytes.Contains(data, []byte("SECRET-GIF-NOTE")) {
+		t.Fatal("GIF comment survived")
+	}
+	animation, err := gif.DecodeAll(bytes.NewReader(data))
+	if err != nil || len(animation.Image) != 2 {
+		t.Fatalf("animation lost: frames=%d err=%v", len(animation.Image), err)
+	}
+}
+
+func TestInlineShareMarkdownHasNoPrivateMediaURLs(t *testing.T) {
+	sess, messages, _ := imageShareFixture(t)
+	files, err := ShareBundle(sess, messages, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markdown := string(bundleByName(files)["session.md"].Content)
+	if strings.Contains(markdown, "term-llm-media://") || !strings.Contains(markdown, "Image: A chart — not embedded in exported transcript") {
+		t.Fatalf("inline Markdown kept a private media URL: %s", markdown)
 	}
 }

@@ -41,16 +41,18 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 	return exportToMarkdown(sess, messages, opts, nil)
 }
 
-// exportToMarkdown renders Markdown. When images is non-nil (asset share
-// bundles), session images and term-llm-media:// references are rewritten to
-// the same bundle assets used by the HTML rendering; otherwise the output
-// matches the historical text-only export.
+// exportToMarkdown renders Markdown. Share bundles pass images: in asset mode,
+// session images and term-llm-media:// references become the same bundle
+// assets used by the HTML rendering; otherwise references become textual
+// placeholders and images stay in the HTML only. A nil images keeps the
+// historical text-only local export.
 func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, images *exportImages) string {
 	var b strings.Builder
 	var mediaReferences map[string]llm.MediaArtifact
 	if images != nil {
 		mediaReferences = htmlMediaReferences(VisibleExportMessages(messages), opts.Media)
 	}
+	assets := images.assetsMode()
 	writeImage := func(target *strings.Builder, source exportImageSource) {
 		resolved := images.resolve(source)
 		alt := source.Alt
@@ -66,6 +68,9 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 	rewriteText := func(text string) string {
 		if images == nil {
 			return text
+		}
+		if !assets {
+			return replaceHTMLMediaReferences(text, mediaReferences, nil)
 		}
 		return replaceHTMLMediaReferences(text, mediaReferences, images)
 	}
@@ -197,7 +202,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 			b.WriteString("### User\n\n")
 			b.WriteString(msg.TextContent)
 			b.WriteString("\n\n")
-			if images != nil {
+			if assets {
 				for _, part := range msg.Parts {
 					if part.Type == llm.PartImage {
 						writeImage(&b, partImageSource(part, "Attached image"))
@@ -224,7 +229,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 						pendingText.WriteString("\n\n")
 					}
 				}
-				if part.Type == llm.PartImage && images != nil {
+				if part.Type == llm.PartImage && assets {
 					writeImage(&pendingText, partImageSource(part, "Image"))
 				}
 				if part.Type == llm.PartToolCall && part.ToolCall != nil {
@@ -251,7 +256,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 						// Write tool call with result
 						writeToolCall(&b, tc, part.ToolResult)
 						delete(toolCalls, part.ToolResult.ID)
-						if images != nil {
+						if assets {
 							for _, source := range toolResultDisplayedImages(part.ToolResult) {
 								writeImage(&b, source)
 							}

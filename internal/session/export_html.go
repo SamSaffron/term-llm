@@ -309,7 +309,7 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
 				}
 			case llm.PartImage:
-				alt := "Transcript attachment"
+				alt := "Attached image"
 				if msg.Role == llm.RoleAssistant {
 					alt = "Image"
 				}
@@ -482,7 +482,7 @@ func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, images *exportIma
 				if part.ImageData != nil {
 					tool.Images = append(tool.Images, buildHTMLImage(images, exportImageSource{Base64: part.ImageData.Base64, MediaType: part.ImageData.MediaType, Alt: "Tool image"}))
 				} else {
-					tool.Images = append(tool.Images, htmlExportImage{Omitted: true, Alt: "Tool image", Reason: "unavailable"})
+					tool.Images = append(tool.Images, buildHTMLImage(images, exportImageSource{Alt: "Tool image"}))
 				}
 			}
 		}
@@ -512,7 +512,7 @@ func buildHTMLImage(images *exportImages, source exportImageSource) htmlExportIm
 	resolved := images.resolve(source)
 	image := htmlExportImage{MediaType: resolved.MediaType, Alt: source.Alt, Reason: resolved.Reason, Omitted: resolved.Omitted}
 	if image.Alt == "" {
-		image.Alt = "Transcript image"
+		image.Alt = "Image"
 	}
 	if !resolved.Omitted {
 		// resolve only yields data:image/(png|jpeg|gif) URIs of re-encoded
