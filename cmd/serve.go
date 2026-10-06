@@ -337,6 +337,9 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 	}
 	runner := &cmdRunner{baseCfg: opts.cfg, defaults: serveRuntimeRunnerDefaults(opts, request, approvalMode)}
 	env, err := runner.prepare(ctx, runpkg.Request{
+		// Live session switching rejects child sessions in resolveLiveSwitchTarget;
+		// this factory therefore only prepares top-level runtimes. Subagents use
+		// the child runner path, which supplies Depth and RemainingDepth.
 		SessionID: request.SessionID, Cwd: request.RuntimeDir, Platform: runpkg.PlatformWeb,
 		AgentName: runtimeAgent, Provider: strings.TrimSpace(request.Provider), Model: strings.TrimSpace(request.Model), DeferSession: true,
 	}, nil)

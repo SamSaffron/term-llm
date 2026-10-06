@@ -1010,7 +1010,7 @@ When edit retries fail, diagnostics can capture prompts, partial responses, and 
 
 ### Agent spawn depth
 
-In an agent's `agent.yaml`, `spawn.max_depth` sets the number of levels **below that agent** it may spawn (default `2`). A child starts with `min(child.spawn.max_depth, parent_remaining - 1)` remaining levels, so a child's own setting cannot expand its caller's budget. A top-level `developer` with `max_depth: 1` can spawn one child; a `developer` spawned by a parent with two levels remaining can also spawn one child, but its child cannot spawn again. Resumed children and queued children relaunched with `continue_agent` take the cap from the resuming parent.
+In an agent's `agent.yaml`, `spawn.max_depth` sets the number of levels **below that agent** it may spawn (`0` or unset uses the default `2`). A child starts with `min(child.spawn.max_depth, max(parent_remaining - 1, 0))` remaining levels, so a child's own setting cannot expand its caller's budget. A top-level `developer` with `max_depth: 1` can spawn one child; a `developer` spawned by a parent with two levels remaining can also spawn one child, but its child cannot spawn again. Resumed children and queued children relaunched with `continue_agent` take the cap from the resuming parent. Isolated skill children are exempt from the agent spawn limit: they can run even at zero remaining budget, but inherit `max(parent_remaining - 1, 0)` and cannot spawn agents at zero.
 
 ### Host-scoped agents
 
