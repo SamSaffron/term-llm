@@ -236,7 +236,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 			return abort("agent is already running in this process")
 		}
 	}
-	e.childRemainingDepth = m.remainingDepth - 1 // Snapshot before a queued run can detach.
+	e.childRemainingDepth = max(m.remainingDepth-1, 0) // Snapshot before a queued run can detach.
 	m.agents[id] = e
 	processAgentEntries.Store(id, e)
 	m.mu.Unlock()

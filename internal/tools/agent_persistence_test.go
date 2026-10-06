@@ -164,7 +164,9 @@ func TestAgentLifecycleReloadListInterruptedAndResume(t *testing.T) {
 	if err := firstTool.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	replacement := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
+	// The resuming parent's allowlist no longer names developer; an existing
+	// child is still resumable while the parent's depth budget permits it.
+	replacement := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300, AllowedAgents: []string{"codebase"}}, 0)
 	replacement.SetRemainingDepth(1)
 	budgetRunner := &budgetRecordingRunner{persistentLifecycleRunner: &persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, store: store}, budget: make(chan int, 1)}
 	replacement.SetRunner(budgetRunner)
