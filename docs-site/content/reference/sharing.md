@@ -53,7 +53,7 @@ How images travel depends on the provider:
 - Providers that list `image/png` or `image/jpeg` in `asset_media_types` (see below) receive each image once as a separate `assets/<hash>.<ext>` file. Each image is at most 2048 px on the longest edge and 8 MiB, with at most 30 images and 24 MiB per share. Both `index.html` and `session.md` reference them with relative URLs.
 - Other providers, including GitHub Gist, get images embedded in `index.html` as `data:` URIs, at most 1600 px on the longest edge and 2 MiB in total. `session.md` omits images, and each `show_media` reference in a reply becomes a short note. Other image links in message text are left as written.
 
-A response-only share includes the images displayed in that response, such as generated or shown images, without the tool activity that produced them.
+A response-only share contains the assistant's final answer: the text written after the response's last tool call, preceded by any images shown during the response, such as generated images or media shown with `show_media`. Progress updates written between tool calls are left out, as is the tool activity itself. If no text follows the last tool call, the last text written before it is used.
 
 The Web UI shares either one response or the visible conversation through that response. These point-in-time Web shares are deliberately **not persisted**. A later whole-session update therefore cannot add broader content to a response-only URL.
 
