@@ -8110,6 +8110,7 @@ describe('Preact-owned chat surfaces', () => {
       anchor_message_id: 42,
       scope: 'conversation',
       visibility: 'public',
+      include_images: true,
     });
     expect(screen.getByText('Creating share…')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
@@ -8165,6 +8166,46 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('Private')).toBeVisible();
     expect(screen.queryByRole('radio', { name: /Private/ })).not.toBeInTheDocument();
     expect(container).not.toHaveTextContent(/GitHub|Gist|\bgh\b|gisthost/i);
+  });
+
+  it('lets the user exclude images and describes asset uploads', async () => {
+    const store = createStore();
+    store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
+    store.modal.value = 'share';
+    store.endpoints.sharingCapabilities = vi.fn(async () => ({
+      enabled: true,
+      provider: { id: 'acme', name: 'Acme Vault' },
+      operations: ['create'] as Array<'create'>,
+      visibilities: ['unlisted'] as Array<'unlisted'>,
+      default_visibility: 'unlisted' as const,
+      asset_media_types: ['image/png', 'image/jpeg'],
+    }));
+    store.endpoints.createSessionShare = vi.fn(async () => ({
+      provider: 'acme',
+      id: 'x',
+      url: 'https://share.example/x',
+      visibility: 'unlisted' as const,
+      ready: true,
+      scope: 'response' as const,
+    }));
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const images = await screen.findByRole('checkbox', { name: /Include images/ });
+    expect(images).toBeChecked();
+    expect(screen.getByText(/published with the share/)).toBeVisible();
+    await userEvent.click(images);
+    expect(images).not.toBeChecked();
+    await userEvent.click(screen.getByRole('button', { name: 'Create share' }));
+    expect(store.endpoints.createSessionShare).toHaveBeenCalledWith(store.sessions.value[0].id, {
+      anchor_message_id: 42,
+      scope: 'response',
+      visibility: 'unlisted',
+      include_images: false,
+    });
   });
 
   it('preserves share choices and shows a curated generic provider failure', async () => {

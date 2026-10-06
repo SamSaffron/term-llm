@@ -3,7 +3,6 @@ package session
 import (
 	"bytes"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -53,6 +52,7 @@ type htmlExportView struct {
 	DetailCount  int
 	Partial      bool
 	ResponseOnly bool
+	AssetImages  bool
 }
 
 type htmlExportMessage struct {
@@ -100,6 +100,8 @@ type htmlExportDiff struct {
 type htmlExportImage struct {
 	URL       template.URL
 	MediaType string
+	Alt       string
+	Reason    string
 	Omitted   bool
 }
 
@@ -133,7 +135,18 @@ func ExportToHTML(sess *Session, messages []Message, opts ExportOptions) (string
 		return "", fmt.Errorf("session is required")
 	}
 
-	view := buildHTMLExportView(sess, messages, opts)
+	if opts.Images == ExportImagesAssets {
+		// Standalone HTML has nowhere to put separate assets.
+		opts.Images = ExportImagesInline
+	}
+	return exportToHTML(sess, messages, opts, newExportImages(opts))
+}
+
+func exportToHTML(sess *Session, messages []Message, opts ExportOptions, images *exportImages) (string, error) {
+	if sess == nil {
+		return "", fmt.Errorf("session is required")
+	}
+	view := buildHTMLExportView(sess, messages, opts, images)
 	tmpl, err := template.New("export_html.tmpl").ParseFS(exportHTMLTemplateFS, "export_html.tmpl")
 	if err != nil {
 		return "", fmt.Errorf("parse HTML export template: %w", err)
@@ -145,7 +158,7 @@ func ExportToHTML(sess *Session, messages []Message, opts ExportOptions) (string
 	return out.String(), nil
 }
 
-func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions) htmlExportView {
+func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions, images *exportImages) htmlExportView {
 	title := strings.TrimSpace(sess.PreferredLongTitle())
 	if title == "" {
 		title = strings.TrimSpace(sess.PreferredShortTitle())
@@ -172,9 +185,9 @@ func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions) 
 		CWD: sess.CWD, Worktree: sess.WorktreeDir, Tools: sess.Tools, MCP: sess.MCP, Tags: sess.Tags,
 		UserTurns: formatHTMLCount(sess.UserTurns), LLMTurns: formatHTMLCount(sess.LLMTurns), ToolCalls: formatHTMLCount(sess.ToolCalls),
 		Input: formatHTMLCount(sess.InputTokens), Cached: formatHTMLCount(sess.CachedInputTokens), CacheWrite: formatHTMLCount(sess.CacheWriteTokens), Output: formatHTMLCount(sess.OutputTokens),
-		Partial: opts.Partial, ResponseOnly: opts.ResponseOnly,
+		Partial: opts.Partial, ResponseOnly: opts.ResponseOnly, AssetImages: images.assetsMode(),
 	}
-	view.Messages, view.DetailCount = buildHTMLExportMessages(VisibleExportMessages(messages), opts)
+	view.Messages, view.DetailCount = buildHTMLExportMessages(VisibleExportMessages(messages), opts, images)
 	return view
 }
 
@@ -195,8 +208,13 @@ func htmlProviderModelLabel(provider, model string) string {
 
 var htmlMediaReferencePattern = regexp.MustCompile(`!\[([^\]\n]*)\]\(term-llm-media://([A-Fa-f0-9]{32})\)`)
 
-func htmlMediaReferences(messages []Message) map[string]llm.MediaArtifact {
+func htmlMediaReferences(messages []Message, extra []llm.MediaArtifact) map[string]llm.MediaArtifact {
 	media := make(map[string]llm.MediaArtifact)
+	for _, item := range extra {
+		if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
+			media[reference] = item
+		}
+	}
 	for _, message := range messages {
 		for _, part := range message.Parts {
 			if part.Type != llm.PartToolResult || part.ToolResult == nil {
@@ -212,7 +230,12 @@ func htmlMediaReferences(messages []Message) map[string]llm.MediaArtifact {
 	return media
 }
 
-func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact) string {
+// replaceHTMLMediaReferences rewrites term-llm-media:// Markdown images. Image
+// artifacts that resolve within the export budget become ordinary Markdown
+// images pointing at a data: URI or bundle asset; everything else becomes a
+// textual placeholder because the private media URL is meaningless outside
+// the originating server.
+func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact, images *exportImages) string {
 	return htmlMediaReferencePattern.ReplaceAllStringFunc(value, func(token string) string {
 		match := htmlMediaReferencePattern.FindStringSubmatch(token)
 		if len(match) != 3 {
@@ -235,6 +258,12 @@ func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact
 			label = strings.TrimSpace(item.Name)
 		}
 		label = strings.Join(strings.Fields(label), " ")
+		if kind == "Image" && images != nil {
+			resolved := images.resolve(exportImageSource{Path: item.Path(), MediaType: item.MediaType, Alt: label})
+			if !resolved.Omitted {
+				return "![" + escapeMarkdownImageAlt(label) + "](" + resolved.URL + ")"
+			}
+		}
 		if label != "" {
 			return kind + ": " + label + " — not embedded in exported transcript"
 		}
@@ -242,12 +271,16 @@ func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact
 	})
 }
 
-func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExportMessage, int) {
+func escapeMarkdownImageAlt(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`)
+	return replacer.Replace(value)
+}
+
+func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exportImages) ([]htmlExportMessage, int) {
 	markdown := goldmark.New(goldmark.WithExtensions(extension.GFM))
-	mediaReferences := htmlMediaReferences(messages)
+	mediaReferences := htmlMediaReferences(messages, opts.Media)
 	views := make([]htmlExportMessage, 0, len(messages))
 	pending := make(map[string]pendingHTMLTool)
-	inlineBytes := 0
 	detailCount := 0
 
 	for _, msg := range messages {
@@ -272,11 +305,11 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExpo
 					detailCount++
 				}
 				if part.Text != "" {
-					text := replaceHTMLMediaReferences(part.Text, mediaReferences)
+					text := replaceHTMLMediaReferences(part.Text, mediaReferences, images)
 					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
 				}
 			case llm.PartImage:
-				image := buildHTMLImage(part.ImageData, &inlineBytes)
+				image := buildHTMLImage(images, partImageSource(part, "Transcript attachment"))
 				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "image", Image: &image})
 			case llm.PartFile:
 				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "file", File: buildHTMLFile(part)})
@@ -285,7 +318,7 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExpo
 					continue
 				}
 				if part.ToolCall.ID == "" {
-					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "tool", Tool: buildHTMLTool(part.ToolCall, nil, &inlineBytes)})
+					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "tool", Tool: buildHTMLTool(part.ToolCall, nil, images)})
 					detailCount++
 				} else {
 					pending[part.ToolCall.ID] = pendingHTMLTool{call: part.ToolCall, messageIdx: messageIdx}
@@ -299,12 +332,18 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExpo
 					call = match.call
 					delete(pending, part.ToolResult.ID)
 				}
-				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "tool", Tool: buildHTMLTool(call, part.ToolResult, &inlineBytes)})
+				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "tool", Tool: buildHTMLTool(call, part.ToolResult, images)})
 				detailCount++
+				// Clients show these images outside the collapsed tool card, so
+				// keep them visible in the transcript as well.
+				for _, source := range toolResultDisplayedImages(part.ToolResult) {
+					image := buildHTMLImage(images, source)
+					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "image", Image: &image})
+				}
 			}
 		}
 		if compaction && len(view.Blocks) == 0 && msg.TextContent != "" {
-			text := replaceHTMLMediaReferences(msg.TextContent, mediaReferences)
+			text := replaceHTMLMediaReferences(msg.TextContent, mediaReferences, images)
 			view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
 		}
 		views = append(views, view)
@@ -312,7 +351,7 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExpo
 
 	for _, orphan := range pending {
 		if orphan.messageIdx >= 0 && orphan.messageIdx < len(views) {
-			views[orphan.messageIdx].Blocks = append(views[orphan.messageIdx].Blocks, htmlExportBlock{Kind: "tool", Tool: buildHTMLTool(orphan.call, nil, &inlineBytes)})
+			views[orphan.messageIdx].Blocks = append(views[orphan.messageIdx].Blocks, htmlExportBlock{Kind: "tool", Tool: buildHTMLTool(orphan.call, nil, images)})
 			detailCount++
 		}
 	}
@@ -408,7 +447,7 @@ func renderSafeMarkdown(markdown goldmark.Markdown, source string) template.HTML
 	return template.HTML(out.String()) // #nosec G203 -- output comes from Goldmark in safe mode.
 }
 
-func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, inlineBytes *int) *htmlExportTool {
+func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, images *exportImages) *htmlExportTool {
 	tool := &htmlExportTool{}
 	if call != nil {
 		tool.HasCall = true
@@ -436,7 +475,11 @@ func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, inlineBytes *int)
 					tool.ExtraTexts = append(tool.ExtraTexts, part.Text)
 				}
 			case llm.ToolContentPartImageData:
-				tool.Images = append(tool.Images, buildHTMLImage(part.ImageData, inlineBytes))
+				if part.ImageData != nil {
+					tool.Images = append(tool.Images, buildHTMLImage(images, exportImageSource{Base64: part.ImageData.Base64, MediaType: part.ImageData.MediaType, Alt: "Tool image"}))
+				} else {
+					tool.Images = append(tool.Images, htmlExportImage{Omitted: true, Alt: "Tool image", Reason: "unavailable"})
+				}
 			}
 		}
 	}
@@ -461,25 +504,17 @@ func prettyJSON(raw json.RawMessage) string {
 	return string(pretty)
 }
 
-func buildHTMLImage(data *llm.ToolImageData, inlineBytes *int) htmlExportImage {
-	image := htmlExportImage{Omitted: true}
-	if data == nil {
-		return image
+func buildHTMLImage(images *exportImages, source exportImageSource) htmlExportImage {
+	resolved := images.resolve(source)
+	image := htmlExportImage{MediaType: resolved.MediaType, Alt: source.Alt, Reason: resolved.Reason, Omitted: resolved.Omitted}
+	if image.Alt == "" {
+		image.Alt = "Transcript image"
 	}
-	mediaType := strings.ToLower(strings.TrimSpace(data.MediaType))
-	image.MediaType = mediaType
-	switch mediaType {
-	case "image/png", "image/jpeg", "image/gif", "image/webp":
-	default:
-		return image
+	if !resolved.Omitted {
+		// resolve only yields data:image/(png|jpeg|gif) URIs of re-encoded
+		// bytes or relative assets/<hash>.<ext> names.
+		image.URL = template.URL(resolved.URL) // #nosec G203 -- constructed above from validated, re-encoded image data.
 	}
-	decoded, err := base64.StdEncoding.DecodeString(data.Base64)
-	if err != nil || len(decoded) == 0 || *inlineBytes+len(decoded) > maxHTMLExportInlineImageBytes {
-		return image
-	}
-	*inlineBytes += len(decoded)
-	image.URL = template.URL("data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(decoded))
-	image.Omitted = false
 	return image
 }
 
