@@ -801,27 +801,31 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 	if baseDir == "" {
 		baseDir = strings.TrimSpace(sess.CWD)
 	}
-	// A direct skill child spends one level of its hosting agent's budget too.
-	// Prefer the live tool's cap (which includes any ancestor cap), then the
-	// persisted agent's own setting for a session without a live runtime.
+	// Skill children are not agent spawns and are allowed at zero budget.
+	// They still inherit a capped budget so they cannot spawn agents there.
+	// Prefer the live tool's cap (including ancestor caps); without one, an
+	// offline subagent's ancestor cap cannot be recovered from its own config.
 	remaining := tools.DefaultSpawnConfig().MaxDepth
-	if runtime != nil && runtime.toolMgr != nil && runtime.toolMgr.GetSpawnAgentTool() != nil {
-		remaining = runtime.toolMgr.GetSpawnAgentTool().RemainingDepth()
+	depth := 1
+	var liveSpawn *tools.SpawnAgentTool
+	if runtime != nil && runtime.toolMgr != nil {
+		liveSpawn = runtime.toolMgr.GetSpawnAgentTool()
+	}
+	if liveSpawn != nil {
+		remaining = liveSpawn.RemainingDepth()
+		depth = liveSpawn.Depth() + 1
 	} else if s.cfgRef != nil && sess.Agent != "" {
 		if parentAgent, err := LoadAgent(sess.Agent, s.cfgRef); err == nil && parentAgent != nil && parentAgent.Spawn.MaxDepth > 0 {
 			remaining = parentAgent.Spawn.MaxDepth
 		}
 	}
-	if sess.IsSubagent && (runtime == nil || runtime.toolMgr == nil || runtime.toolMgr.GetSpawnAgentTool() == nil) {
-		remaining = 0 // An absent ancestor cap must not be reconstructed from the agent's own config.
+	if sess.IsSubagent && liveSpawn == nil {
+		remaining = 0 // Session rows do not store the absolute depth or ancestor cap; depth 1 is only a fallback for metadata.
 	}
-	remaining--
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining = max(remaining-1, 0)
 	request := runpkg.ChildRunRequest{
 		Kind:            runpkg.ChildRunIsolatedSkill,
-		Depth:           1,
+		Depth:           depth,
 		RemainingDepth:  &remaining,
 		RunID:           runID,
 		ChildSessionID:  childSessionID,

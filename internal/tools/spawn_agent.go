@@ -303,6 +303,13 @@ func (t *SpawnAgentTool) SetRemainingDepth(parentBudget int) {
 	t.manager.mu.Unlock()
 }
 
+// Depth reports the absolute nesting depth used for child run metadata.
+func (t *SpawnAgentTool) Depth() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.depth
+}
+
 // RemainingDepth reports the current effective spawn allowance.
 func (t *SpawnAgentTool) RemainingDepth() int {
 	t.mu.Lock()
