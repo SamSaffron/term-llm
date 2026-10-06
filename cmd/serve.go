@@ -312,8 +312,7 @@ type serveAgentRuntimeOptions struct {
 	hasWeb          bool
 	jobsServerURL   string
 	jobsServerToken string
-	childRuns  *childRunRegistry
-	agentOwner *agentHostOwner
+	agentOwner      *agentHostOwner
 }
 
 func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *serveServer) func(context.Context, serveRuntimeRequest) (*serveRuntime, error) {
