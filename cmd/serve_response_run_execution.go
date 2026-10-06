@@ -13,6 +13,16 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 	defer closeTask()
 	defer func() { releaseReload() }()
 	defer close(run.settled)
+	if !options.agentCompletion && sessionID != "" {
+		defer func() {
+			run.mu.Lock()
+			completed := run.status == "completed" && !run.cancelRequested
+			run.mu.Unlock()
+			if completed {
+				s.wakeAgentParent(sessionID)
+			}
+		}()
+	}
 	defer cancel()
 	if options.onDone != nil {
 		defer options.onDone()

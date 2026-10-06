@@ -3437,6 +3437,9 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRun
 		return nil, err
 	}
 	applyRequestRuntimeState(rt, request)
+	if rt != nil && rt.platform == "web" && request.SessionID != "" {
+		rt.completionWake = s.wakeAgentParent
+	}
 	if !runtimeHasAgent(rt, agentName) {
 		if rt != nil {
 			rt.Close()

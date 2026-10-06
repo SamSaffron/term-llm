@@ -103,6 +103,7 @@ type serveRuntime struct {
 	subagentProgress       *serveSubagentProgress
 	subagentProgressOwner  uint64
 	lastUIRunError         string
+	completionWake         func(string) // trusted host-owned parent-session signal
 	platform               string
 	platformMessages       agents.PlatformMessagesConfig
 	lastInjectedPlatform   string
@@ -1938,7 +1939,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	defer rt.mu.Unlock()
 	defer func() {
 		if streamStopped || (!completedTurn && runOnceErr != nil && ctx.Err() != nil) {
-			awaitStopped = tools.StopAgentsForParent(req.SessionID)
+			awaitStopped = rt.signalStoppedChildren(ctx, req.SessionID)
 			markSessionChildrenSwept(ctx)
 		}
 	}()

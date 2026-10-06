@@ -26,6 +26,18 @@ type QueueAgentOriginContext struct {
 
 type queueAgentOriginContextKey struct{}
 type subagentEventCallbackContextKey struct{}
+type agentCompletionWakeKey struct{}
+
+// ContextWithAgentCompletionWake installs a trusted host callback. A child may
+// opt into waking its own parent, but cannot select another session or target.
+func ContextWithAgentCompletionWake(ctx context.Context, wake func(string)) context.Context {
+	return context.WithValue(ctx, agentCompletionWakeKey{}, wake)
+}
+
+func agentCompletionWake(ctx context.Context) func(string) {
+	wake, _ := ctx.Value(agentCompletionWakeKey{}).(func(string))
+	return wake
+}
 
 // ContextWithSubagentEventCallback installs a request-scoped, trusted progress
 // sink. It is used by spawn_agent and wait_for_jobs; arguments cannot replace it.

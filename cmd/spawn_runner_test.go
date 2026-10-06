@@ -235,6 +235,22 @@ func TestCompleteChildAgentUsesOutputToolAndRunsHookInChildDirectory(t *testing.
 	}
 }
 
+func TestSpawnRunnerChildUsesRequestedCWD(t *testing.T) {
+	fixture := newChildRunFixture(t, false)
+	childDir := t.TempDir()
+	result, err := fixture.env.runtime.spawnRunner.RunAgentWithCallbackAndOptions(fixture.ctx, "drill-child", "Say hello", 0, "cwd-child", nil, tools.SpawnAgentRunOptions{BaseDir: childDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := fixture.store.Get(fixture.ctx, result.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.CWD != childDir {
+		t.Fatalf("persisted child CWD=%q, want %q", child.CWD, childDir)
+	}
+}
+
 func TestSpawnRunnerBuildRunRequestInheritsParentBaseDir(t *testing.T) {
 	runner := &SpawnAgentRunner{}
 	runner.SetBaseDir("  /tmp/parent-worktree  ")

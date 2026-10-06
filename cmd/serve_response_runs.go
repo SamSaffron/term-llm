@@ -202,6 +202,7 @@ type startResponseRunOptions struct {
 	idempotencyScope           string
 	requestFingerprint         string
 	notificationSubscriptionID string
+	agentCompletion            bool // host-owned wake, never user-authored input
 	onDone                     func()
 	onRuntimeDone              func() // detach borrowed runtime before executor-owned close
 	onAdmissionDone            func() // release request preparation before streaming events

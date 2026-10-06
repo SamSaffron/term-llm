@@ -31,6 +31,9 @@ func (rt *serveRuntime) prepareRunContext(ctx context.Context, collaboration too
 		ctx = tools.ContextWithAskUserUIFunc(ctx, askUser)
 	}
 	if rt.platform == "web" {
+		if rt.completionWake != nil {
+			ctx = tools.ContextWithAgentCompletionWake(ctx, rt.completionWake)
+		}
 		if callback := rt.subagentProgressCallback(); callback != nil {
 			ctx = tools.ContextWithSubagentEventCallback(ctx, callback)
 		}

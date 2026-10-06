@@ -51,6 +51,8 @@ type agentEntry struct {
 	err          error
 	queued       bool
 	shutdown     bool
+	stopReason   string
+	wake         func(string)
 	manager      *agentManager
 }
 
@@ -126,15 +128,17 @@ func ownerTerminated(owner string) bool {
 	return len(fields) > 19 && fields[19] != parts[2]
 }
 
-func (m *agentManager) save(record session.AgentRun) {
+func (m *agentManager) save(record session.AgentRun) bool {
 	if m.store == nil {
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := m.store.PutAgentRun(ctx, record); err != nil {
 		runtimeoutput.Logf("agent run %s status persistence failed: %v", record.ID, err)
+		return false
 	}
+	return true
 }
 
 func (m *agentManager) start(ctx context.Context, name, prompt, model, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, existing session.AgentRun) (*agentEntry, error) {
@@ -155,7 +159,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		ctx = llm.ContextWithSessionID(ctx, parent)
 	}
 	now := time.Now()
-	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
+	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, BaseDir: existing.BaseDir, RunGeneration: existing.RunGeneration + 1, NotifyWhenDone: existing.NotifyWhenDone, NotifyOrigin: existing.NotifyOrigin, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
 	if resume {
 		record.TurnsUsed = existing.TurnsUsed
 		record.TurnsGranted = existing.TurnsGranted + DefaultSubagentMaxTurns
@@ -163,10 +167,14 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 	detached, cancelCause := context.WithCancelCause(context.WithoutCancel(ctx))
 	cancel := func() { cancelCause(errAgentCancelled) }
 	interrupt := func() { cancelCause(context.Canceled) }
-	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, interrupt: interrupt, attachment: &agentAttachment{callback: cb, callID: callID}, external: external, originCallID: callID, queued: true, startedAt: now, manager: m}
+	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, interrupt: interrupt, attachment: &agentAttachment{callback: cb, callID: callID}, external: external, originCallID: callID, queued: true, startedAt: now, manager: m, wake: agentCompletionWake(ctx)}
 	if resume {
 		e.prior = &existing
 		e.instructions = instructions
+		if existing.CollectedAt.IsZero() {
+			e.media = append([]llm.MediaArtifact(nil), existing.Media...)
+			e.record.Media = append([]llm.MediaArtifact(nil), existing.Media...)
+		}
 	}
 	e.initial = e.attachment
 	if scoped, ok := runner.(interface{ AgentApprovalScope(string) *ApprovalManager }); ok {
@@ -261,6 +269,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	e.record.Started = true
 	e.record.UpdatedAt = time.Now()
 	record := e.record
+	record.Media = append([]llm.MediaArtifact(nil), e.media...)
 	m.mu.Unlock()
 	m.save(record)
 	cb := func(eventCallID string, event SubagentEvent) {
@@ -281,6 +290,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 			attachment.inFlight.Add(1)
 		}
 		record := e.record
+		record.Media = append([]llm.MediaArtifact(nil), e.media...)
 		m.mu.Unlock()
 		if attachment != nil && attachment.callback != nil {
 			func() {
@@ -298,7 +308,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	}
 	var result SpawnAgentRunResult
 	var err error
-	opts := SpawnAgentRunOptions{ModelOverride: model, ChildSessionID: e.record.ID}
+	opts := SpawnAgentRunOptions{ModelOverride: model, ChildSessionID: e.record.ID, BaseDir: e.record.BaseDir}
 	if resume {
 		if continuation, ok := runner.(AgentContinuation); ok {
 			result, err = continuation.ContinueAgent(ctx, e.record.ID, e.record.AgentName, instructions, depth, e.originCallID, opts, cb)
@@ -337,6 +347,7 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 		// The child never entered execution: restore the resumable record rather
 		// than making a transient admission failure terminal.
 		e.record = *e.prior
+		e.record.RunGeneration++ // rollback admission on the new durable generation
 		record := e.record
 		m.mu.Unlock()
 		m.save(record)
@@ -357,6 +368,9 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 		e.record.Status = "completed"
 	}
 	e.record.StopReason = e.record.Status
+	if e.stopReason != "" {
+		e.record.StopReason = e.stopReason
+	}
 	e.currentTool = ""
 	e.record.Output = result.Output
 	if err != nil {
@@ -364,8 +378,16 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 	}
 	e.record.UpdatedAt = time.Now()
 	record := e.record
+	record.Media = append([]llm.MediaArtifact(nil), e.media...)
 	m.mu.Unlock()
-	m.save(record)
+	if !m.save(record) {
+		return
+	}
+	if e.wake != nil && record.ParentSessionID != "" && record.StopReason != "parent_stopped" && (record.NotifyWhenDone || record.Status == "interrupted") {
+		// The callback only signals the host to inspect durable pending rows.
+		// It must not inject a message or compete with the current parent turn.
+		e.wake(record.ParentSessionID)
+	}
 }
 
 func (m *agentManager) get(ctx context.Context, id, parent string) (session.AgentRun, *agentEntry, error) {
@@ -396,6 +418,7 @@ func (m *agentManager) get(ctx context.Context, id, parent string) (session.Agen
 	if e == nil && (record.Status == "queued" || record.Status == "running" || record.Status == "awaiting_approval") {
 		if record.OwnerInstanceID == m.owner || ownerTerminated(record.OwnerInstanceID) {
 			record.Status = "interrupted"
+			record.StopReason = "host_restarted"
 		} else {
 			record.Status = "running_elsewhere"
 		}
@@ -504,6 +527,9 @@ func agentOutput(a session.AgentRun) llm.ToolOutput {
 func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOutput {
 	out := agentOutput(record)
 	if e == nil {
+		if record.CollectedAt.IsZero() {
+			out.Media = llm.NormalizeMedia(record.Media, nil)
+		}
 		return out
 	}
 	e.manager.mu.Lock()
@@ -723,20 +749,26 @@ func (m *agentManager) collect(ctx context.Context, record session.AgentRun, e *
 	return record, nil
 }
 
-// InterruptAgentsForParent interrupts every queued or running agent spawned by
-// parent, in any registry of this process, and waits for them to stop until
-// ctx ends. Hosts call it when the user stops the parent's turn: detached
-// children must not keep working (and spending) after an explicit stop. They
-// finish as "interrupted" and remain resumable with continue_agent.
+// InterruptAgentsForParent interrupts running children without suppressing
+// restart/recovery visibility. Hosts use it when the parent was interrupted
+// by reload or timeout rather than an explicit human stop.
 func InterruptAgentsForParent(ctx context.Context, parent string) []string {
-	return StopAgentsForParent(parent)(ctx)
+	return InterruptAgentsForParentAsync(parent)(ctx)
 }
 
-// StopAgentsForParent signals the interruption immediately and returns a
-// function that waits for exactly those agents. Selection and signalling are
-// split from waiting so a host can sweep while it still owns the session, and
-// wait after releasing it, without catching a successor turn's children.
+// InterruptAgentsForParentAsync signals now and lets the caller await after
+// releasing its parent turn lock.
+func InterruptAgentsForParentAsync(parent string) func(context.Context) []string {
+	return interruptAgentsForParent(parent, false)
+}
+
+// StopAgentsForParent signals an explicit parent stop and suppresses a prompt
+// automatic reactivation by the same child interruption.
 func StopAgentsForParent(parent string) func(context.Context) []string {
+	return interruptAgentsForParent(parent, true)
+}
+
+func interruptAgentsForParent(parent string, suppressWake bool) func(context.Context) []string {
 	if parent == "" {
 		return func(context.Context) []string { return nil }
 	}
@@ -752,6 +784,9 @@ func StopAgentsForParent(parent string) func(context.Context) []string {
 		match := e.record.ParentSessionID == parent
 		if match {
 			e.shutdown = true
+			if suppressWake {
+				e.stopReason = "parent_stopped"
+			}
 		}
 		e.manager.mu.Unlock()
 		if match {

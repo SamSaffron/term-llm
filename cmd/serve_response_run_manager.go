@@ -467,6 +467,7 @@ func (s *serveServer) startResponseLifecycle() {
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			s.sweepAndRenewResponseLifecycle(ctx, lifecycle, ownerID)
+			s.reconcileAgentWakes(ctx)
 			for {
 				select {
 				case <-ctx.Done():

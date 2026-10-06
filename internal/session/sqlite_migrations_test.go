@@ -15,6 +15,49 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestAgentRunMigrationFromV62PreservesRowsAndAddsNoDeadline(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	v62 := schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58 + agentRunSchemaV62
+	if _, err := db.Exec(v62); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id=1),version INTEGER NOT NULL); INSERT INTO schema_version(id,version) VALUES(1,62); INSERT INTO session_agent_runs(child_session_id,parent_session_id,agent_name,prompt,run_status,owner_instance_id,updated_at) VALUES('child','parent','developer','work','interrupted','old-host:1:1',CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	row, err := scanAgentRun(db.QueryRow(`SELECT ` + agentRunColumns + ` FROM session_agent_runs WHERE child_session_id='child'`))
+	if err != nil || row.Status != "interrupted" || row.BaseDir != "" || row.NotifyWhenDone || len(row.Media) != 0 {
+		t.Fatalf("migrated run=%+v %v", row, err)
+	}
+	// The v63 migration adds only cwd, delivery and media metadata. It must
+	// never install an execution deadline or revive a child.
+	columns, err := db.Query(`PRAGMA table_info(session_agent_runs)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer columns.Close()
+	for columns.Next() {
+		var number int
+		var name, kind string
+		var notNull int
+		var def sql.NullString
+		var key int
+		if err := columns.Scan(&number, &name, &kind, &notNull, &def, &key); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(name, "deadline") || strings.Contains(name, "execution_timeout") {
+			t.Fatalf("unexpected child execution deadline: %s", name)
+		}
+	}
+}
+
 func TestSessionMigrationListInvariants(t *testing.T) {
 	list := make([]sqliteutil.Migration, len(migrations))
 	for i, migration := range migrations {

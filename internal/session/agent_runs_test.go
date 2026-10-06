@@ -7,6 +7,55 @@ import (
 	"time"
 )
 
+func TestAgentRunContinuationResetsCollectionAndWakeGeneration(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	first := AgentRun{ID: "child", ParentSessionID: "parent", AgentName: "developer", Prompt: "work", Status: "completed", OwnerInstanceID: "host:1:1", RunGeneration: 1, NotifyWhenDone: true, NotifyOrigin: "web", UpdatedAt: time.Now()}
+	if err := store.PutAgentRun(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.MarkAgentRunNotified(ctx, first.ID, 1, time.Now()); err != nil || !ok {
+		t.Fatalf("mark first generation: %t %v", ok, err)
+	}
+	if err := store.CollectAgentRun(ctx, first.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	first.Status = "queued"
+	first.RunGeneration = 2
+	if err := store.PutAgentRun(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetAgentRun(ctx, first.ID)
+	if err != nil || got.RunGeneration != 2 || !got.NotifiedAt.IsZero() || !got.CollectedAt.IsZero() {
+		t.Fatalf("continuation stale delivery state: %+v %v", got, err)
+	}
+	if ok, err := store.MarkAgentRunNotified(ctx, first.ID, 1, time.Now()); err != nil || ok {
+		t.Fatalf("stale generation acknowledged: %t %v", ok, err)
+	}
+	first.RunGeneration = 1
+	first.Status = "completed"
+	if err := store.PutAgentRun(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	first.RunGeneration = 2
+	first.Status = "completed"
+	if err := store.PutAgentRun(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	first.Status = "running"
+	if err := store.PutAgentRun(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.GetAgentRun(ctx, first.ID)
+	if err != nil || got.Status != "completed" || got.RunGeneration != 2 {
+		t.Fatalf("stale persistence rewrote terminal run: %+v %v", got, err)
+	}
+}
+
 func TestAsAgentRunStoreUnsupported(t *testing.T) {
 	if got := AsAgentRunStore(NewLoggingStore(&NoopStore{}, nil)); got != nil {
 		t.Fatalf("unsupported store gained persistence: %T", got)

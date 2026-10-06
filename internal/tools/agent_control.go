@@ -123,7 +123,7 @@ func (t *agentControlTool) list(ctx context.Context, parent string, a agentContr
 		resumable := r.Status == "completed" || r.Status == "turn_limit" || r.Status == "cancelled" || r.Status == "interrupted"
 		filtered = append(filtered, map[string]any{
 			"agent_id": r.ID, "agent_name": r.AgentName, "prompt_summary": session.TruncateSummary(r.Prompt),
-			"status": r.Status, "resumable": resumable, "turns_used": r.TurnsUsed,
+			"status": r.Status, "stop_reason": r.StopReason, "resumable": resumable, "turns_used": r.TurnsUsed,
 			"turns_granted": r.TurnsGranted, "last_activity": r.UpdatedAt, "collected": !r.CollectedAt.IsZero(), "current_tool": r.CurrentTool,
 		})
 	}
