@@ -92,7 +92,7 @@ func AllCommands() []Command {
 				{Name: "new", Description: "Create a new share"},
 				{Name: "raw", Description: "Explicitly include privacy-sensitive raw model reasoning"},
 				{Name: "noimages", Description: "Omit images from the share"},
-				{Name: "notools", Description: "Omit tool calls and tool output, which may contain secrets"},
+				{Name: "notools", Description: "Omit tool calls and tool output, which can contain secrets"},
 				{Name: "public", Description: "Request public visibility"},
 				{Name: "unlisted", Description: "Request unlisted visibility"},
 				{Name: "private", Description: "Request private visibility"},

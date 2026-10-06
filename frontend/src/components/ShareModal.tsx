@@ -283,8 +283,8 @@ export function ShareModal() {
                     <strong>Include images</strong>
                     <small>
                       {supportsImageAssets(capabilities.asset_media_types)
-                        ? 'Images in the shared messages, such as uploads and generated images, are published with the share. They are resized, and metadata such as location is removed.'
-                        : 'Images in the shared messages, such as uploads and generated images, are embedded in the page, up to 2 MB in total. They are resized, and metadata such as location is removed.'}
+                        ? 'Images in the shared messages, such as uploads and generated images, are published with the share. They are resized when needed, and metadata such as location is removed.'
+                        : 'Images in the shared messages, such as uploads and generated images, are embedded in the page, up to 2 MB in total. They are resized when needed, and metadata such as location is removed.'}
                     </small>
                   </span>
                 </label>
