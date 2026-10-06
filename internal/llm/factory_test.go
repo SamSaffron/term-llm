@@ -12,6 +12,22 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestNewProviderRejectsDisabledProvider(t *testing.T) {
+	disabled := false
+	cfg := &config.Config{
+		DefaultProvider: "xai",
+		Providers:       map[string]config.ProviderConfig{"xai": {Enabled: &disabled}},
+	}
+	t.Setenv("XAI_API_KEY", "xai-test") // credentials alone must not override enabled: false
+
+	if _, err := NewProviderByName(cfg, "xai", ""); err == nil || !strings.Contains(err.Error(), "providers.xai.enabled: false") {
+		t.Fatalf("NewProviderByName error = %v, want disabled error", err)
+	}
+	if _, err := NewProvider(cfg); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("NewProvider error = %v, want disabled error", err)
+	}
+}
+
 func TestCreateProviderFromConfigKeyProviderEnvFallback(t *testing.T) {
 	cases := []struct {
 		name   string

@@ -847,7 +847,7 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "grok", "copilot", "openrouter", "gemini", "zen", "opencode-go", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return config.GetBuiltInProviderNames()
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

@@ -327,6 +327,51 @@ providers:
 	}
 }
 
+func TestLoad_MarksProvidersPresentOnlyFromDefaults(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configYAML := `default_provider: chatgpt
+providers:
+  openai:
+    use_websocket: true
+  copilot:
+    enabled: false
+  work-llm:
+    type: openai_compatible
+    url: http://localhost:1234/v1
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for name, wantDefaultsOnly := range map[string]bool{"openai": false, "work-llm": false, "anthropic": true, "gemini": true} {
+		pc, ok := cfg.Providers[name]
+		if !ok {
+			t.Fatalf("provider %q missing from loaded config", name)
+		}
+		if pc.FromDefaults != wantDefaultsOnly {
+			t.Errorf("providers[%q].FromDefaults = %v, want %v", name, pc.FromDefaults, wantDefaultsOnly)
+		}
+	}
+	if !cfg.ProviderDisabled("copilot") {
+		t.Error("copilot with enabled: false should be disabled")
+	}
+	if cfg.ProviderDisabled("openai") || cfg.ProviderDisabled("anthropic") || cfg.ProviderDisabled("missing") {
+		t.Error("providers without enabled: false must stay enabled")
+	}
+}
+
 func TestLoad_ProviderUseWebSocketExplicitFalseOverridesDefault(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()

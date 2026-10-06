@@ -3,47 +3,15 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/cobra"
 )
-
-// builtinHasOAuthCredentials reports whether a built-in OAuth provider has
-// usable credentials stashed on disk. OAuth providers don't require a
-// [providers.<name>] block in config, so without this check the web picker
-// hides them even when the user is signed in.
-func builtinHasOAuthCredentials(name string) bool {
-	switch name {
-	case "chatgpt":
-		return credentials.ChatGPTCredentialsExist()
-	case "grok":
-		return credentials.GrokCredentialsExist()
-	case "copilot":
-		return credentials.CopilotCredentialsExist()
-	case "grok-bin":
-		authPath := strings.TrimSpace(os.Getenv("GROK_AUTH_PATH"))
-		if authPath == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return false
-			}
-			authPath = filepath.Join(home, ".grok", "auth.json")
-		}
-		_, err := os.Stat(authPath)
-		return err == nil
-	case "cursor-bin":
-		return llm.CursorBinHasCredentials()
-	case "agy-bin":
-		return llm.AgyBinHasCredentials()
-	}
-	return false
-}
 
 var (
 	providersJSON       bool
@@ -59,159 +27,11 @@ type ProviderInfo struct {
 	EnvVar             string   `json:"env_var,omitempty"` // Environment variable for API key
 	RequiresKey        bool     `json:"requires_key"`      // Whether API key is required
 	SupportsListModels bool     `json:"supports_list_models"`
-	Models             []string `json:"models,omitempty"` // Curated model list
-	Configured         bool     `json:"configured"`       // Whether provider is in user config
-	IsBuiltin          bool     `json:"is_builtin"`       // Whether this is a built-in provider
-}
-
-// builtinProviderMeta contains metadata about built-in providers
-var builtinProviderMeta = map[string]struct {
-	credential         string
-	envVar             string
-	requiresKey        bool
-	supportsListModels bool
-	description        string
-}{
-	"anthropic": {
-		credential:         "api_key",
-		envVar:             "ANTHROPIC_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "Anthropic API (Claude models)",
-	},
-	"bedrock": {
-		credential:         "aws",
-		envVar:             "AWS_ACCESS_KEY_ID",
-		requiresKey:        false,
-		supportsListModels: false,
-		description:        "AWS Bedrock (Anthropic Claude models via AWS credentials)",
-	},
-	"openai": {
-		credential:         "api_key",
-		envVar:             "OPENAI_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "OpenAI Responses API",
-	},
-	"chatgpt": {
-		credential:         "oauth",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
-	},
-	"grok": {
-		credential:         "oauth",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "Grok subscription via native xAI device OAuth and Responses API",
-	},
-	"copilot": {
-		credential:         "oauth",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "GitHub Copilot API (chat via OAuth; usage via GITHUB_TOKEN/GH_TOKEN)",
-	},
-	"gemini": {
-		credential:         "api_key",
-		envVar:             "GEMINI_API_KEY",
-		requiresKey:        true,
-		supportsListModels: false,
-		description:        "Google Gemini API (consumer API key)",
-	},
-	"openrouter": {
-		credential:         "api_key",
-		envVar:             "OPENROUTER_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "OpenRouter API (access to many providers)",
-	},
-	"zen": {
-		credential:         "api_key",
-		envVar:             "ZEN_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "OpenCode Zen API (paid models)",
-	},
-	"opencode-go": {
-		credential:         "api_key",
-		envVar:             "OPENCODE_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "OpenCode Go subscription (dynamic Chat Completions, Responses, and Messages routing)",
-	},
-	"claude-bin": {
-		credential:         "none",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: false,
-		description:        "Local Claude Code credentials (claude-bin CLI)",
-	},
-	"grok-bin": {
-		credential:         "oauth",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "Grok Build CLI via local grok.com OAuth login",
-	},
-	"cursor-bin": {
-		credential:         "oauth",
-		envVar:             "CURSOR_API_KEY",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "Cursor Agent via local Cursor login or CURSOR_API_KEY",
-	},
-	"agy-bin": {
-		credential:         "oauth",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "Antigravity subscription through the local agy CLI",
-	},
-	"vllm": {
-		credential:         "api_key",
-		envVar:             "VLLM_API_KEY",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "vLLM OpenAI-compatible server with Qwen thinking controls",
-	},
-	"xai": {
-		credential:         "api_key",
-		envVar:             "XAI_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "xAI API (Grok models)",
-	},
-	"venice": {
-		credential:         "api_key",
-		envVar:             "VENICE_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "Venice AI (private, uncensored inference — OpenAI-compatible)",
-	},
-	"nearai": {
-		credential:         "api_key",
-		envVar:             "NEARAI_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "NEAR AI Cloud (TEE-backed private inference — OpenAI-compatible)",
-	},
-	"sambanova": {
-		credential:         "api_key",
-		envVar:             "SAMBANOVA_API_KEY",
-		requiresKey:        true,
-		supportsListModels: true,
-		description:        "SambaNova Cloud (RDU-hosted inference — OpenAI-compatible)",
-	},
-	"ollama": {
-		credential:         "none",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: true,
-		description:        "Ollama local inference (native /api/chat, supports think/options.*)",
-	},
+	Models             []string `json:"models,omitempty"`         // Curated model list
+	Configured         bool     `json:"configured"`               // In user config, or enabled by env var / local login
+	ConfiguredVia      string   `json:"configured_via,omitempty"` // "config", "default", "env", or "login"
+	Disabled           bool     `json:"disabled,omitempty"`       // providers.<name>.enabled: false; never configured
+	IsBuiltin          bool     `json:"is_builtin"`               // Whether this is a built-in provider
 }
 
 var providersCmd = &cobra.Command{
@@ -271,85 +91,63 @@ func runProviders(cmd *cobra.Command, args []string) error {
 }
 
 func buildProviderList(cfg *config.Config) []ProviderInfo {
-	seen := make(map[string]bool)
+	return buildProviderListWith(cfg, llm.ProviderHasLocalCredentials)
+}
+
+// buildProviderListWith builds the provider list, using hasLocalCredentials to
+// detect local login state for built-ins (so callers can cache the probes).
+// A built-in counts as configured when it has a config block, is the default
+// provider, has an enabling environment variable, or has local credentials.
+func buildProviderListWith(cfg *config.Config, hasLocalCredentials func(string) bool) []ProviderInfo {
 	var providers []ProviderInfo
-
-	// Add built-in providers
-	builtinNames := llm.GetBuiltInProviderNames()
-	for _, name := range builtinNames {
-		meta := builtinProviderMeta[name]
-		info := ProviderInfo{
-			Name:               name,
-			Type:               name,
-			Credential:         meta.credential,
-			EnvVar:             meta.envVar,
-			RequiresKey:        meta.requiresKey,
-			SupportsListModels: meta.supportsListModels,
-			Models:             llm.ProviderModelIDs(name),
-			IsBuiltin:          true,
-		}
-
-		// Check if configured
-		if cfg != nil {
-			if _, ok := cfg.Providers[name]; ok {
-				info.Configured = true
-			}
-			// Also check if it's the default provider
-			if cfg.DefaultProvider == name {
-				info.Configured = true
-			}
-		}
-		if !info.Configured && builtinHasOAuthCredentials(name) {
-			info.Configured = true
-		}
-
+	for _, spec := range config.BuiltinProviders() {
+		info := newProviderInfo(cfg, spec.Name, spec, hasLocalCredentials)
+		info.IsBuiltin = true
+		info.Models = llm.ProviderModelIDs(spec.Name)
 		providers = append(providers, info)
-		seen[name] = true
 	}
-
-	// Add custom configured providers
 	if cfg != nil {
 		for name, provCfg := range cfg.Providers {
-			if seen[name] {
+			if _, builtin := config.BuiltinProvider(name); builtin {
 				continue
 			}
-
-			provType := string(config.InferProviderType(name, provCfg.Type))
-			credential := "api_key"
-			requiresKey := true
-			supportsListModels := provType == "openai_compatible" || provType == "vllm"
-			if provType == string(config.ProviderTypeGrok) {
-				credential = "oauth"
-				requiresKey = false
-				supportsListModels = true
+			// A custom provider describes itself like the built-in type it
+			// names; anything else is a generic OpenAI-compatible endpoint.
+			providerType := config.InferProviderType(name, provCfg.Type)
+			spec, ok := config.BuiltinProvider(string(providerType))
+			if !ok {
+				spec = config.ProviderSpec{Type: providerType, Credential: config.CredentialAPIKey, ListModels: true}
 			}
-			info := ProviderInfo{
-				Name:               name,
-				Type:               provType,
-				Credential:         credential,
-				RequiresKey:        requiresKey,
-				SupportsListModels: supportsListModels,
-				Configured:         true,
-				IsBuiltin:          false,
-			}
-
-			// Get models from config or provider type
+			info := newProviderInfo(cfg, name, spec, hasLocalCredentials)
+			info.EnvVar = ""
 			if len(provCfg.Models) > 0 {
 				info.Models = provCfg.Models
 			} else if provCfg.Model != "" {
 				info.Models = []string{provCfg.Model}
 			}
-
 			providers = append(providers, info)
 		}
 	}
-
-	// Sort by name
 	sort.Slice(providers, func(i, j int) bool {
 		return providers[i].Name < providers[j].Name
 	})
-
 	return providers
+}
+
+// newProviderInfo describes provider name, which behaves like spec.
+func newProviderInfo(cfg *config.Config, name string, spec config.ProviderSpec, hasLocalCredentials func(string) bool) ProviderInfo {
+	info := ProviderInfo{
+		Name:               name,
+		Type:               string(spec.Type),
+		Credential:         string(spec.Credential),
+		EnvVar:             spec.APIKeyEnv,
+		RequiresKey:        spec.RequiresAPIKey(),
+		SupportsListModels: spec.ListModels,
+		Disabled:           cfg.ProviderDisabled(name),
+		ConfiguredVia:      llm.ProviderConfiguredVia(cfg, name, hasLocalCredentials),
+	}
+	info.Configured = info.ConfiguredVia != ""
+	return info
 }
 
 func showProviderDetails(name string, providers []ProviderInfo) error {
@@ -375,9 +173,8 @@ func showProviderDetails(name string, providers []ProviderInfo) error {
 	fmt.Printf("Provider: %s\n", provider.Name)
 	fmt.Printf("  Type:           %s\n", provider.Type)
 
-	if provider.IsBuiltin {
-		meta := builtinProviderMeta[provider.Name]
-		fmt.Printf("  Description:    %s\n", meta.description)
+	if spec, ok := config.BuiltinProvider(provider.Name); ok {
+		fmt.Printf("  Description:    %s\n", spec.Description)
 	}
 
 	fmt.Printf("  Credential:     %s\n", provider.Credential)
@@ -394,7 +191,13 @@ func showProviderDetails(name string, providers []ProviderInfo) error {
 	} else {
 		fmt.Printf("  List models:    no\n")
 	}
-	fmt.Printf("  Configured:     %v\n", provider.Configured)
+	if provider.Disabled {
+		fmt.Printf("  Configured:     no (disabled: providers.%s.enabled: false)\n", provider.Name)
+	} else if provider.Configured {
+		fmt.Printf("  Configured:     yes (%s)\n", provider.ConfiguredVia)
+	} else {
+		fmt.Printf("  Configured:     no\n")
+	}
 
 	if len(provider.Models) > 0 {
 		fmt.Printf("\n  Available models:\n")
@@ -413,87 +216,113 @@ func outputProvidersJSON(providers []ProviderInfo) error {
 }
 
 func outputProvidersText(providers []ProviderInfo, cfg *config.Config) error {
-	// Group by builtin vs custom
-	var builtin, custom []ProviderInfo
-	for _, p := range providers {
-		if p.IsBuiltin {
-			builtin = append(builtin, p)
-		} else {
-			custom = append(custom, p)
-		}
-	}
-
-	// Find max name length for alignment
-	maxLen := 0
-	for _, p := range providers {
-		if len(p.Name) > maxLen {
-			maxLen = len(p.Name)
-		}
-	}
-
-	// Show default provider
 	defaultProvider := ""
 	if cfg != nil {
 		defaultProvider = cfg.DefaultProvider
 	}
-
-	if len(builtin) > 0 && !providersConfigured {
-		fmt.Println("Built-in providers:")
-		for _, p := range builtin {
-			printProviderLine(p, maxLen, defaultProvider)
-		}
-	}
-
-	if len(custom) > 0 {
-		if len(builtin) > 0 && !providersConfigured {
-			fmt.Println()
-		}
-		fmt.Println("Custom providers:")
-		for _, p := range custom {
-			printProviderLine(p, maxLen, defaultProvider)
-		}
-	}
-
-	if len(providers) == 0 {
-		fmt.Println("No providers found.")
-		return nil
-	}
-
-	fmt.Println()
-	fmt.Println("Use 'term-llm providers <name>' for details about a specific provider.")
-	fmt.Println("Use 'term-llm models --provider <name>' to list available models.")
-
+	writeProvidersText(os.Stdout, providers, defaultProvider)
 	return nil
 }
 
-func printProviderLine(p ProviderInfo, maxLen int, defaultProvider string) {
-	marker := "  "
-	if p.Name == defaultProvider {
-		marker = "* "
-	}
-
-	var details []string
-
-	if p.EnvVar != "" {
-		if p.RequiresKey {
-			details = append(details, fmt.Sprintf("%s (required)", p.EnvVar))
-		} else {
-			details = append(details, fmt.Sprintf("%s (optional)", p.EnvVar))
+// writeProvidersText renders the provider list as two sections: providers
+// that can be selected (with where their setup came from) and built-ins that
+// are not set up yet (with the step that would set them up). Input order is
+// preserved; buildProviderList sorts by name.
+func writeProvidersText(w io.Writer, providers []ProviderInfo, defaultProvider string) {
+	var configured, available, disabled []ProviderInfo
+	nameWidth := len("PROVIDER")
+	for _, p := range providers {
+		switch {
+		case p.Disabled:
+			disabled = append(disabled, p)
+		case p.Configured:
+			configured = append(configured, p)
+		default:
+			available = append(available, p)
 		}
-	} else if p.Credential == "oauth" {
-		details = append(details, "OAuth")
-	} else if p.Credential == "none" {
-		details = append(details, "no credentials needed")
+		nameWidth = max(nameWidth, len(p.Name))
+	}
+	if len(providers) == 0 {
+		if providersConfigured {
+			fmt.Fprintln(w, "No configured providers found.")
+		} else {
+			fmt.Fprintln(w, "No providers found.")
+		}
+		return
 	}
 
-	if p.Configured && p.Name != defaultProvider {
-		details = append(details, "configured")
+	row := func(marker, name string, cols ...string) {
+		line := marker + name + strings.Repeat(" ", nameWidth-len(name))
+		for _, col := range cols {
+			line += "  " + col
+		}
+		fmt.Fprintln(w, strings.TrimRight(line, " "))
 	}
 
-	padding := strings.Repeat(" ", maxLen-len(p.Name))
-	if len(details) > 0 {
-		fmt.Printf("%s%s%s  %s\n", marker, p.Name, padding, strings.Join(details, ", "))
+	if len(configured) > 0 {
+		fmt.Fprintln(w, "Configured:")
+		row("  ", "PROVIDER", fmt.Sprintf("%-8s", "KIND"), "SOURCE")
+		for _, p := range configured {
+			marker := "  "
+			if p.Name == defaultProvider {
+				marker = "* "
+			}
+			kind := "custom"
+			if p.IsBuiltin {
+				kind = "built-in"
+			}
+			row(marker, p.Name, fmt.Sprintf("%-8s", kind), providerSourceLabel(p))
+		}
+	}
+	if len(available) > 0 {
+		if len(configured) > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, "Available (not set up):")
+		row("  ", "PROVIDER", "NEXT STEP")
+		for _, p := range available {
+			spec, _ := config.BuiltinProvider(p.Name)
+			row("  ", p.Name, spec.SetupHint())
+		}
+	}
+	if len(disabled) > 0 {
+		if len(configured)+len(available) > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, "Disabled:")
+		row("  ", "PROVIDER", "TO ENABLE")
+		for _, p := range disabled {
+			row("  ", p.Name, "remove providers."+p.Name+".enabled: false")
+		}
+	}
+
+	fmt.Fprintln(w)
+	if defaultProvider != "" {
+		fmt.Fprintln(w, "* default provider; configured does not verify connectivity or credentials.")
 	} else {
-		fmt.Printf("%s%s\n", marker, p.Name)
+		fmt.Fprintln(w, "Configured does not verify connectivity or credentials.")
 	}
+	fmt.Fprintln(w, "Details: term-llm providers <name>")
+	fmt.Fprintln(w, "Models:  term-llm models --provider <name>")
+}
+
+// providerSourceLabel describes, in user terms, why a provider is configured.
+func providerSourceLabel(p ProviderInfo) string {
+	switch p.ConfiguredVia {
+	case llm.ConfiguredViaConfig:
+		return "config.yaml"
+	case llm.ConfiguredViaDefault:
+		return "default"
+	case llm.ConfiguredViaEnv:
+		spec, _ := config.BuiltinProvider(p.Name)
+		return "$" + spec.EnabledByEnv()
+	case llm.ConfiguredViaLogin:
+		// A provider without credentials of its own (claude-bin) is detected
+		// by its installed CLI, not by a sign-in.
+		if p.Credential == string(config.CredentialNone) {
+			return "CLI installed"
+		}
+		return "signed in"
+	}
+	return p.ConfiguredVia
 }

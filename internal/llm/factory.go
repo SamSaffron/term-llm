@@ -16,6 +16,18 @@ func removedProviderError(name string) error {
 	return nil
 }
 
+// unavailableProviderError reports providers that cannot be created: removed
+// ones, and ones disabled with providers.<name>.enabled: false.
+func unavailableProviderError(cfg *config.Config, name string) error {
+	if err := removedProviderError(name); err != nil {
+		return err
+	}
+	if cfg.ProviderDisabled(name) {
+		return fmt.Errorf("provider %q is disabled in config (providers.%s.enabled: false)", name, name)
+	}
+	return nil
+}
+
 // ParseProviderModel parses "provider:model" or just "provider" from a flag value.
 // Returns (provider, model, error). Model will be empty if not specified.
 // For the new config format, we validate against configured providers or built-in types.
@@ -145,153 +157,60 @@ func trimDeclaredModelEffort(model string, entry config.ProviderModelConfig) str
 // NewProvider creates a new LLM provider based on the config.
 // Providers are wrapped with automatic retry for rate limits (429) and transient errors.
 func NewProvider(cfg *config.Config) (Provider, error) {
-	provider, err := newProviderInternal(cfg)
-	if err != nil {
-		return nil, err
-	}
-	// Wrap with retry logic (enabled by default)
-	return WrapWithRetry(provider, DefaultRetryConfig()), nil
+	return NewProviderByName(cfg, cfg.DefaultProvider, "")
 }
 
 // NewProviderByName creates a provider by name from the config, with an optional model override.
 // This is useful for per-command provider overrides.
-// If the provider is a built-in type but not explicitly configured,
-// it will be created with default settings.
+// A built-in provider without a providers.<name> block runs with an empty one.
 func NewProviderByName(cfg *config.Config, name string, model string) (Provider, error) {
-	if err := removedProviderError(name); err != nil {
-		return nil, err
-	}
-
-	// Handle hidden debug provider first
-	if name == "debug" {
-		provider := NewDebugProvider(model)
-		return WrapWithRetry(provider, DefaultRetryConfig()), nil
-	}
-
-	providerCfg, ok := cfg.Providers[name]
-	if !ok {
-		// Check if it's a built-in provider type that can work without config
-		providerType := config.InferProviderType(name, "")
-		switch providerType {
-		case config.ProviderTypeAnthropic:
-			// anthropic uses API key, env var, or OAuth token with interactive setup
-			provider, err := NewAnthropicProvider("", model, "")
-			if err != nil {
-				return nil, fmt.Errorf("provider anthropic: %w", err)
-			}
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeClaudeBin, config.ProviderTypeGrokBin, config.ProviderTypeCursorBin, config.ProviderTypeAgyBin:
-			provider, err := newBinProvider(providerType, model, nil, false)
-			if err != nil {
-				return nil, err
-			}
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeOpenRouter:
-			provider, err := createProviderFromConfig(name, &config.ProviderConfig{Type: config.ProviderTypeOpenRouter, Model: model, ResolvedAPIKey: os.Getenv("OPENROUTER_API_KEY")})
-			if err != nil {
-				return nil, err
-			}
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeZen:
-			apiKey := strings.TrimSpace(os.Getenv("ZEN_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires ZEN_API_KEY or explicit config", name)
-			}
-			provider := NewZenProvider(apiKey, model)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeOpenCodeGo:
-			apiKey := strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires OPENCODE_API_KEY or explicit config", name)
-			}
-			return WrapWithRetry(NewOpenCodeGoProvider(apiKey, model), DefaultRetryConfig()), nil
-		case config.ProviderTypeBedrock:
-			provider, err := NewBedrockProvider(model, "", "", "", "", "", nil)
-			if err != nil {
-				return nil, fmt.Errorf("provider bedrock: %w", err)
-			}
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeXAI:
-			// xai can use XAI_API_KEY env var
-			apiKey := os.Getenv("XAI_API_KEY")
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires XAI_API_KEY environment variable or explicit config", name)
-			}
-			provider := NewXAIProvider(apiKey, model)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeVenice:
-			apiKey := strings.TrimSpace(os.Getenv("VENICE_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires VENICE_API_KEY or explicit config", name)
-			}
-			provider := NewVeniceProvider(apiKey, model)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeNearAI:
-			apiKey := strings.TrimSpace(os.Getenv("NEARAI_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires NEARAI_API_KEY or explicit config", name)
-			}
-			provider := NewNearAIProvider(apiKey, model)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeSambaNova:
-			apiKey := strings.TrimSpace(os.Getenv("SAMBANOVA_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires SAMBANOVA_API_KEY or explicit config", name)
-			}
-			provider := NewSambaNovaProvider(apiKey, model)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeGemini:
-			// gemini can use GEMINI_API_KEY env var
-			apiKey := os.Getenv("GEMINI_API_KEY")
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires GEMINI_API_KEY environment variable or explicit config", name)
-			}
-			provider := NewGeminiProvider(apiKey, model)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeChatGPT:
-			// chatgpt uses native OAuth with interactive authentication
-			provider, err := NewChatGPTProvider(model)
-			if err != nil {
-				return nil, fmt.Errorf("provider chatgpt: %w", err)
-			}
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeGrok:
-			provider, err := NewGrokProvider(model)
-			if err != nil {
-				return nil, fmt.Errorf("provider grok: %w", err)
-			}
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeCopilot:
-			// copilot uses GitHub device code OAuth with interactive authentication
-			provider, err := NewCopilotProvider(model)
-			if err != nil {
-				return nil, fmt.Errorf("provider copilot: %w", err)
-			}
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeOllama:
-			// ollama connects to a local server; no credentials needed
-			provider := NewOllamaChatProvider("", model, OllamaOptions{})
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		default:
-			return nil, fmt.Errorf("provider %q not configured", name)
-		}
-	}
-
-	if err := cfg.ResolveProviderCredentials(name); err != nil {
-		return nil, fmt.Errorf("provider %q: %w", name, err)
-	}
-	providerCfg = cfg.Providers[name]
-
-	// Apply model override if provided
-	if model != "" {
-		providerCfg.Model = model
-	}
-
-	provider, err := createProviderFromConfig(name, &providerCfg)
+	provider, err := newNamedProvider(cfg, name, model)
 	if err != nil {
 		return nil, err
 	}
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
+}
+
+// newNamedProvider creates provider name without the retry wrapper.
+func newNamedProvider(cfg *config.Config, name string, model string) (Provider, error) {
+	if err := unavailableProviderError(cfg, name); err != nil {
+		return nil, err
+	}
+	if name == "debug" {
+		if model == "" {
+			model = cfg.Providers["debug"].Model
+		}
+		return NewDebugProvider(model), nil
+	}
+	providerCfg, err := resolvedProviderConfig(cfg, name)
+	if err != nil {
+		return nil, err
+	}
+	if model != "" {
+		providerCfg.Model = model
+	}
+	return createProviderFromConfig(name, &providerCfg)
+}
+
+// resolvedProviderConfig returns provider name's config with credentials
+// resolved. A built-in provider without a providers.<name> block gets an empty
+// one, so its API key comes from the registry environment variable.
+func resolvedProviderConfig(cfg *config.Config, name string) (config.ProviderConfig, error) {
+	if _, ok := cfg.Providers[name]; ok {
+		if err := cfg.ResolveProviderCredentials(name); err != nil {
+			return config.ProviderConfig{}, fmt.Errorf("provider %q: %w", name, err)
+		}
+		return cfg.Providers[name], nil
+	}
+	spec, ok := config.BuiltinProvider(name)
+	if !ok {
+		return config.ProviderConfig{}, fmt.Errorf("provider %q not configured", name)
+	}
+	providerCfg := config.ProviderConfig{Type: spec.Type}
+	if err := providerCfg.ResolveCredentials(name); err != nil {
+		return config.ProviderConfig{}, fmt.Errorf("provider %q: %w", name, err)
+	}
+	return providerCfg, nil
 }
 
 // newBinProvider validates model overrides before creating a CLI-backed provider.
@@ -329,14 +248,7 @@ func newBinProvider(providerType config.ProviderType, model string, env map[stri
 // intended for controlled callers such as benchmarks where an implicit retry
 // would hide attempt boundaries and could reuse a now-cacheable payload.
 func NewProviderByNameNoRetry(cfg *config.Config, name string, model string) (Provider, error) {
-	provider, err := NewProviderByName(cfg, name, model)
-	if err != nil {
-		return nil, err
-	}
-	if retryProvider, ok := provider.(*RetryProvider); ok {
-		return retryProvider.inner, nil
-	}
-	return provider, nil
+	return newNamedProvider(cfg, name, model)
 }
 
 // NewFastProvider creates a lightweight provider instance for the specified provider key.
@@ -372,133 +284,39 @@ func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
 	return NewProviderByName(cfg, targetName, targetModel)
 }
 
-// newProviderInternal creates the underlying provider without retry wrapper.
-func newProviderInternal(cfg *config.Config) (Provider, error) {
-	if err := removedProviderError(cfg.DefaultProvider); err != nil {
-		return nil, err
+// newAPIKeyProvider creates a built-in provider that authenticates with an
+// API key: the resolved config value, else the registry environment variable.
+func newAPIKeyProvider(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	spec, _ := config.BuiltinProviderOfType(providerType)
+	key := strings.TrimSpace(cfg.ResolvedAPIKey)
+	if key == "" && spec.APIKeyEnv != "" {
+		key = strings.TrimSpace(os.Getenv(spec.APIKeyEnv))
 	}
-
-	// Handle hidden debug provider first
-	if cfg.DefaultProvider == "debug" {
-		variant := ""
-		if providerCfg, ok := cfg.Providers["debug"]; ok {
-			variant = providerCfg.Model
-		}
-		return NewDebugProvider(variant), nil
+	if key == "" {
+		return nil, fmt.Errorf("provider %q requires %s or explicit config", name, spec.APIKeyEnv)
 	}
-
-	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]
-	if !ok {
-		// Check if it's a built-in provider type that can work without config
-		providerType := config.InferProviderType(cfg.DefaultProvider, "")
-		switch providerType {
-		case config.ProviderTypeAnthropic:
-			// anthropic uses API key, env var, or OAuth token with interactive setup
-			return NewAnthropicProvider("", "", "")
-		case config.ProviderTypeClaudeBin:
-			// claude-bin doesn't need API key, can create directly
-			return NewClaudeBinProvider("", nil), nil
-		case config.ProviderTypeGrokBin:
-			return NewGrokBinProvider("", nil), nil
-		case config.ProviderTypeCursorBin:
-			return NewCursorBinProvider("", nil), nil
-		case config.ProviderTypeAgyBin:
-			return NewAgyBinProvider("", nil), nil
-		case config.ProviderTypeOpenRouter:
-			return createProviderFromConfig(cfg.DefaultProvider, &config.ProviderConfig{Type: config.ProviderTypeOpenRouter, ResolvedAPIKey: os.Getenv("OPENROUTER_API_KEY")})
-		case config.ProviderTypeZen:
-			apiKey := strings.TrimSpace(os.Getenv("ZEN_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires ZEN_API_KEY or explicit config", cfg.DefaultProvider)
-			}
-			return NewZenProvider(apiKey, ""), nil
-		case config.ProviderTypeOpenCodeGo:
-			apiKey := strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires OPENCODE_API_KEY or explicit config", cfg.DefaultProvider)
-			}
-			return NewOpenCodeGoProvider(apiKey, ""), nil
-		case config.ProviderTypeBedrock:
-			// bedrock uses AWS credential chain (env vars, ~/.aws/credentials, instance roles)
-			return NewBedrockProvider("", "", "", "", "", "", nil)
-		case config.ProviderTypeXAI:
-			// xai can use XAI_API_KEY env var
-			apiKey := os.Getenv("XAI_API_KEY")
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires XAI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
-			}
-			return NewXAIProvider(apiKey, ""), nil
-		case config.ProviderTypeVenice:
-			apiKey := strings.TrimSpace(os.Getenv("VENICE_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires VENICE_API_KEY environment variable or explicit config", cfg.DefaultProvider)
-			}
-			return NewVeniceProvider(apiKey, ""), nil
-		case config.ProviderTypeNearAI:
-			apiKey := strings.TrimSpace(os.Getenv("NEARAI_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires NEARAI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
-			}
-			return NewNearAIProvider(apiKey, ""), nil
-		case config.ProviderTypeSambaNova:
-			apiKey := strings.TrimSpace(os.Getenv("SAMBANOVA_API_KEY"))
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires SAMBANOVA_API_KEY environment variable or explicit config", cfg.DefaultProvider)
-			}
-			return NewSambaNovaProvider(apiKey, ""), nil
-		case config.ProviderTypeChatGPT:
-			// chatgpt uses native OAuth with interactive authentication
-			return NewChatGPTProvider("")
-		case config.ProviderTypeGrok:
-			return NewGrokProvider("")
-		case config.ProviderTypeCopilot:
-			// copilot uses GitHub device code OAuth with interactive authentication
-			return NewCopilotProvider("")
-		case config.ProviderTypeGemini:
-			// gemini can use GEMINI_API_KEY env var
-			apiKey := os.Getenv("GEMINI_API_KEY")
-			if apiKey == "" {
-				return nil, fmt.Errorf("provider %q requires GEMINI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
-			}
-			return NewGeminiProvider(apiKey, ""), nil
-		case config.ProviderTypeOllama:
-			// ollama connects to a local server; no credentials needed
-			return NewOllamaChatProvider("", "", OllamaOptions{}), nil
-		default:
-			return nil, fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
-		}
-	}
-	if err := cfg.ResolveProviderCredentials(cfg.DefaultProvider); err != nil {
-		return nil, fmt.Errorf("provider %q: %w", cfg.DefaultProvider, err)
-	}
-	providerCfg = cfg.Providers[cfg.DefaultProvider]
-	return createProviderFromConfig(cfg.DefaultProvider, &providerCfg)
-}
-
-// newConfiguredKeyProvider handles providers whose configured keys can fall back to an env var.
-func newConfiguredKeyProvider(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-	var envKey string
-	var constructor func(string, string) Provider
 	switch providerType {
+	case config.ProviderTypeOpenRouter:
+		return NewOpenRouterProvider(key, cfg.Model, cfg.AppURL, cfg.AppTitle), nil
+	case config.ProviderTypeGemini:
+		return NewGeminiProvider(key, cfg.Model), nil
+	case config.ProviderTypeXAI:
+		return NewXAIProvider(key, cfg.Model), nil
 	case config.ProviderTypeZen:
-		envKey, constructor = "ZEN_API_KEY", func(key, model string) Provider { return NewZenProvider(key, model) }
+		return NewZenProvider(key, cfg.Model), nil
 	case config.ProviderTypeVenice:
-		envKey, constructor = "VENICE_API_KEY", func(key, model string) Provider { return NewVeniceProvider(key, model) }
+		return NewVeniceProvider(key, cfg.Model), nil
 	case config.ProviderTypeNearAI:
-		envKey, constructor = "NEARAI_API_KEY", func(key, model string) Provider { return NewNearAIProvider(key, model) }
+		return NewNearAIProvider(key, cfg.Model), nil
 	case config.ProviderTypeSambaNova:
-		envKey, constructor = "SAMBANOVA_API_KEY", func(key, model string) Provider { return NewSambaNovaProvider(key, model) }
-	default:
-		return nil, fmt.Errorf("unsupported key provider type %q", providerType)
+		return NewSambaNovaProvider(key, cfg.Model), nil
+	case config.ProviderTypeOpenCodeGo:
+		if strings.TrimSpace(cfg.URL) != "" {
+			return nil, fmt.Errorf("provider %q does not support url overrides; use base_url", name)
+		}
+		return NewOpenCodeGoProviderWithBaseURL(key, cfg.Model, cfg.BaseURL), nil
 	}
-	apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv(envKey))
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("provider %q requires %s or explicit config", name, envKey)
-	}
-	return constructor(apiKey, cfg.Model), nil
+	return nil, fmt.Errorf("unsupported API-key provider type %q", providerType)
 }
 
 // createProviderFromConfig creates a provider from a ProviderConfig.
@@ -536,34 +354,10 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		provider.fileUploadPolicy = cloneFileUploadPolicy(FileUploadPolicyOverrideForProviderConfig(name, *cfg))
 		return provider, nil
 
-	case config.ProviderTypeOpenRouter:
-		if strings.TrimSpace(cfg.ResolvedAPIKey) == "" {
-			return nil, fmt.Errorf("provider %q requires OPENROUTER_API_KEY or explicit config", name)
-		}
-		return NewOpenRouterProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.AppURL, cfg.AppTitle), nil
-
-	case config.ProviderTypeGemini:
-		return NewGeminiProvider(cfg.ResolvedAPIKey, cfg.Model), nil
-
-	case config.ProviderTypeZen, config.ProviderTypeVenice, config.ProviderTypeNearAI, config.ProviderTypeSambaNova:
-		return newConfiguredKeyProvider(name, providerType, cfg)
-
-	case config.ProviderTypeOpenCodeGo:
-		if strings.TrimSpace(cfg.URL) != "" {
-			return nil, fmt.Errorf("provider %q does not support url overrides; use base_url", name)
-		}
-		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
-		if apiKey == "" {
-			return nil, fmt.Errorf("provider %q requires OPENCODE_API_KEY or explicit config", name)
-		}
-		return NewOpenCodeGoProviderWithBaseURL(apiKey, cfg.Model, cfg.BaseURL), nil
-
-	case config.ProviderTypeXAI:
-		apiKey := cfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("XAI_API_KEY")
-		}
-		return NewXAIProvider(apiKey, cfg.Model), nil
+	case config.ProviderTypeOpenRouter, config.ProviderTypeGemini, config.ProviderTypeXAI,
+		config.ProviderTypeZen, config.ProviderTypeVenice, config.ProviderTypeNearAI,
+		config.ProviderTypeSambaNova, config.ProviderTypeOpenCodeGo:
+		return newAPIKeyProvider(name, providerType, cfg)
 
 	case config.ProviderTypeBedrock:
 		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap)

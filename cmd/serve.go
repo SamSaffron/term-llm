@@ -1417,6 +1417,7 @@ type serveServer struct {
 	sessionMgr               *serveSessionManager
 	jobsV2                   *jobsV2Manager
 	cfgRef                   *config.Config
+	providerCreds            llm.ProviderCredentialCache
 	store                    session.Store
 	mediaPublisher           *serveMediaPublisher
 	approvalDefault          tools.ApprovalMode
@@ -1569,6 +1570,9 @@ func (s *serveServer) Start() (startErr error) {
 	s.mentionsCacheMu.Lock()
 	s.mentionsByRoot = nil
 	s.mentionsCacheMu.Unlock()
+	if s.cfg.ui {
+		s.providerCreds.Warm()
+	}
 	s.server = &http.Server{
 		Addr:              net.JoinHostPort(s.cfg.host, strconv.Itoa(s.cfg.port)),
 		Handler:           s.httpHandler(),

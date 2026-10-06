@@ -26,6 +26,18 @@ term-llm models --provider opencode-go --json
 
 `providers` describes term-llm's integrations and local configuration. It is not a connectivity or account-entitlement check. `models` queries the selected backend when its adapter supports discovery; the default provider is used when `--provider` is omitted. `gemini`, `bedrock`, and `claude-bin` currently show curated model names rather than a live account catalog. Other adapters may use cached or fallback metadata when offline.
 
+`term-llm providers` lists **configured** providers first, with where their setup came from: `config.yaml` (named under `providers:`), `default` (`default_provider`), `$ENV_VAR` (an API-key variable such as `OPENROUTER_API_KEY`), `signed in` (term-llm OAuth or a logged-in companion CLI), or `CLI installed` (`claude` on `PATH`). Built-ins that are not set up follow with the step that would set them up. The web UI provider picker and the chat `/model` picker show only configured providers.
+
+To hide a provider even though credentials are detected — for example a Copilot login without inference access — disable it:
+
+```yaml
+providers:
+  copilot:
+    enabled: false
+```
+
+A disabled provider is removed from the web picker and the chat `/model` picker, listed under **Disabled** by `term-llm providers`, and refused if selected with `--provider` or `default_provider`. Remove the line (or set `enabled: true`) to restore it.
+
 A catalog entry is not a guarantee of capacity, free access, tool support, or access by your account. Use the upstream model ID returned for your provider; the same model family can have different names and limits on different services.
 
 ## Provider categories
@@ -483,6 +495,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `base_url` | string | Base URL (e.g., `http://localhost:11434/v1`). `/chat/completions` is appended automatically. Supports `srv://` and `$()` resolution. |
 | `url` | string | Full chat completions URL, used as-is. Use this when your endpoint path differs from the standard. Supports `srv://` for DNS SRV discovery and `$()` for command-based resolution. |
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
+| `enabled` | bool | Set `false` to disable this provider (built-in or custom) even when credentials are detected. Default `true`. |
 | `model` | string | Default model name. For configured model objects, this may be either the upstream `id` or the friendly `alias`. |
 | `models` | list | Optional list for model pickers and shell completion. Entries may be strings or objects with `id`, optional `alias`, `context_window`, `max_output_tokens`, `parse_reasoning`, `include_reasoning`, `thinking_param`, `reasoning_efforts`, and `default_reasoning_effort`. |
 | `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation) and the agent `model: fast` alias. This is separate from service-tier fast mode. Usually this is all you need. |

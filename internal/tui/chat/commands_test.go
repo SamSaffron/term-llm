@@ -2129,7 +2129,7 @@ func TestResolveProviderModelArg_PrefersRecentModels(t *testing.T) {
 		t.Fatalf("RecordModelUse: %v", err)
 	}
 
-	resolved, ok := resolveProviderModelArg("gpt-5.4", &config.Config{DefaultProvider: "chatgpt"}, "")
+	resolved, ok := resolveProviderModelArg("gpt-5.4", &config.Config{DefaultProvider: "chatgpt", Providers: map[string]config.ProviderConfig{"openai": {}}}, "")
 	if !ok {
 		t.Fatal("expected gpt-5.4 to resolve")
 	}
@@ -2146,7 +2146,7 @@ func TestProviderModelCompletionItems_PrefersRecentModels(t *testing.T) {
 		t.Fatalf("RecordModelUse: %v", err)
 	}
 
-	items := providerModelCompletionItems("model ", "gpt-5.4", &config.Config{DefaultProvider: "chatgpt"})
+	items := providerModelCompletionItems("model ", "gpt-5.4", &config.Config{DefaultProvider: "chatgpt", Providers: map[string]config.ProviderConfig{"openai": {}}})
 	if len(items) == 0 {
 		t.Fatal("expected provider model completions")
 	}

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestMain(m *testing.M) {
@@ -25,6 +27,14 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "set XDG_DATA_HOME: %v\n", err)
 		os.Exit(1)
 	}
+	// Provider pickers list only configured providers; keep that independent
+	// of the developer's API keys and signed-in CLIs.
+	for _, spec := range config.BuiltinProviders() {
+		for _, v := range spec.EnablingEnv() {
+			_ = os.Unsetenv(v)
+		}
+	}
+	providerHasLocalCredentials = func(string) bool { return false }
 	code := m.Run()
 	_ = os.RemoveAll(dataHome)
 	os.Exit(code)

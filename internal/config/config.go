@@ -43,38 +43,14 @@ const (
 	ProviderTypeOllama       ProviderType = "ollama"
 )
 
-// builtInProviderTypes maps known provider names to their types
-var builtInProviderTypes = map[string]ProviderType{
-	"anthropic":   ProviderTypeAnthropic,
-	"openai":      ProviderTypeOpenAI,
-	"chatgpt":     ProviderTypeChatGPT,
-	"grok":        ProviderTypeGrok,
-	"copilot":     ProviderTypeCopilot,
-	"gemini":      ProviderTypeGemini,
-	"openrouter":  ProviderTypeOpenRouter,
-	"zen":         ProviderTypeZen,
-	"opencode-go": ProviderTypeOpenCodeGo,
-	"claude-bin":  ProviderTypeClaudeBin,
-	"grok-bin":    ProviderTypeGrokBin,
-	"cursor-bin":  ProviderTypeCursorBin,
-	"agy-bin":     ProviderTypeAgyBin,
-	"vllm":        ProviderTypeVLLM,
-	"xai":         ProviderTypeXAI,
-	"venice":      ProviderTypeVenice,
-	"nearai":      ProviderTypeNearAI,
-	"sambanova":   ProviderTypeSambaNova,
-	"bedrock":     ProviderTypeBedrock,
-	"ollama":      ProviderTypeOllama,
-}
-
-// InferProviderType returns the provider type for a given provider name
-// Explicit type takes precedence, then built-in names, then defaults to openai_compatible
+// InferProviderType returns the provider type for a given provider name.
+// An explicit type takes precedence, then built-in names, then openai_compatible.
 func InferProviderType(name string, explicit ProviderType) ProviderType {
 	if explicit != "" {
 		return explicit
 	}
-	if t, ok := builtInProviderTypes[name]; ok {
-		return t
+	if spec, ok := BuiltinProvider(name); ok {
+		return spec.Type
 	}
 	return ProviderTypeOpenAICompat
 }
@@ -169,6 +145,7 @@ type ProviderConfig struct {
 	Env          map[string]string     `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
 	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
+	Enabled      *bool                 `mapstructure:"enabled"`       // false disables the provider even when credentials are detected; nil means enabled
 	Responses    ResponsesConfig       `mapstructure:"responses"`     // Advanced Responses API execution controls
 	FileUpload   *FileUploadConfig     `mapstructure:"file_upload"`   // Optional upload/native-file support overrides
 	VisionVia    string                `mapstructure:"vision_via"`    // Optional provider:model route for indirect image understanding
@@ -222,6 +199,12 @@ type ProviderConfig struct {
 	// and expensive values are resolved lazily before inference.
 	credentialsResolved bool `mapstructure:"-"`
 	needsLazyResolution bool `mapstructure:"-"`
+
+	// FromDefaults is set when the entry exists only because Load registered
+	// built-in schema defaults (e.g. providers.openai.model), not because the
+	// user's config file names the provider. Such entries carry defaults but do
+	// not mean the provider is configured.
+	FromDefaults bool `mapstructure:"-" yaml:"-"`
 }
 
 // Reasoning display policy values.
@@ -1525,6 +1508,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
+	markProviderConfigPresence(&cfg, viper.GetViper())
 	if err := cfg.ValidateCommit(); err != nil {
 		return nil, err
 	}
@@ -2019,6 +2003,27 @@ func markReasoningConfigPresence(reasoning *ReasoningConfig, v *viper.Viper) {
 	reasoning.PersistSummariesSet = v.InConfig("reasoning.persist_summaries")
 }
 
+// ProviderDisabled reports whether providers.<name>.enabled is explicitly false.
+func (c *Config) ProviderDisabled(name string) bool {
+	if c == nil {
+		return false
+	}
+	pc, ok := c.Providers[name]
+	return ok && pc.Enabled != nil && !*pc.Enabled
+}
+
+// markProviderConfigPresence flags provider entries that come only from
+// registered defaults rather than the config file.
+func markProviderConfigPresence(cfg *Config, v *viper.Viper) {
+	if cfg == nil || v == nil {
+		return
+	}
+	for name, pc := range cfg.Providers {
+		pc.FromDefaults = !v.InConfig("providers." + name)
+		cfg.Providers[name] = pc
+	}
+}
+
 // writeConfigPreservingEnvCase calls v.WriteConfig() but preserves the case
 // of keys under providers.<name>.env. Viper unconditionally lowercases YAML
 // keys (see github.com/spf13/viper#411), which silently breaks env vars like
@@ -2271,11 +2276,11 @@ func overlayProviderEnvFromRawConfig(cfg *Config) error {
 	return nil
 }
 
-// GetBuiltInProviderNames returns a list of all built-in provider type names.
+// GetBuiltInProviderNames returns the built-in provider names in display order.
 func GetBuiltInProviderNames() []string {
-	names := make([]string, 0, len(builtInProviderTypes))
-	for name := range builtInProviderTypes {
-		names = append(names, name)
+	names := make([]string, 0, len(providerSpecs))
+	for _, spec := range providerSpecs {
+		names = append(names, spec.Name)
 	}
 	return names
 }
@@ -2327,11 +2332,18 @@ func (c *Config) ResolveProviderCredentials(name string) error {
 	if !ok {
 		return nil
 	}
-	if err := resolveProviderCredentials(name, &providerCfg); err != nil {
+	if err := providerCfg.ResolveCredentials(name); err != nil {
 		return err
 	}
 	c.Providers[name] = providerCfg
 	return nil
+}
+
+// ResolveCredentials resolves the credentials of provider name's config;
+// expensive sources (op://, file://, srv://, $()) stay deferred until
+// ResolveForInference.
+func (cfg *ProviderConfig) ResolveCredentials(name string) error {
+	return resolveProviderCredentials(name, cfg)
 }
 
 // GetResolvedProviderConfig returns the config for the specified provider name
@@ -2409,68 +2421,15 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		cfg.needsLazyResolution = true
 	}
 
-	// Provider-specific credential resolution (non-lazy)
-	switch providerType {
-	case ProviderTypeAnthropic:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("ANTHROPIC_API_KEY")
-		}
-
-	case ProviderTypeOpenAI:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("OPENAI_API_KEY")
-		}
-
-	case ProviderTypeGemini:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("GEMINI_API_KEY")
-		}
-
-	case ProviderTypeOpenRouter:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("OPENROUTER_API_KEY")
-		}
-
-	case ProviderTypeZen:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("ZEN_API_KEY")
-		}
-
-	case ProviderTypeOpenCodeGo:
+	// Provider-specific credential resolution (non-lazy). Built-in API-key
+	// providers fall back to their registry environment variable.
+	if spec, ok := BuiltinProviderOfType(providerType); ok && spec.RequiresAPIKey() {
 		cfg.ResolvedAPIKey = strings.TrimSpace(expandEnv(cfg.APIKey))
 		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
+			cfg.ResolvedAPIKey = strings.TrimSpace(os.Getenv(spec.APIKeyEnv))
 		}
-
-	case ProviderTypeXAI:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("XAI_API_KEY")
-		}
-
-	case ProviderTypeVenice:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("VENICE_API_KEY")
-		}
-
-	case ProviderTypeNearAI:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("NEARAI_API_KEY")
-		}
-
-	case ProviderTypeSambaNova:
-		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-		if cfg.ResolvedAPIKey == "" {
-			cfg.ResolvedAPIKey = os.Getenv("SAMBANOVA_API_KEY")
-		}
-
+	}
+	switch providerType {
 	case ProviderTypeBedrock:
 		// Expand env vars in non-lazy credential fields (skip $() which is resolved later)
 		if !needsLazyResolve(cfg.AccessKey) {

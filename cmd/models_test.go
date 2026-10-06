@@ -28,19 +28,19 @@ func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
 }
 
 func TestModelListSupportedTypesIncludesSambaNova(t *testing.T) {
-	if !modelListSupportedTypes[config.ProviderTypeSambaNova] {
+	if !supportsModelListing(config.ProviderTypeSambaNova) {
 		t.Fatal("SambaNova should be wired for dynamic model listing")
 	}
 }
 
 func TestModelListSupportedTypesIncludesNearAI(t *testing.T) {
-	if !modelListSupportedTypes[config.ProviderTypeNearAI] {
+	if !supportsModelListing(config.ProviderTypeNearAI) {
 		t.Fatal("NEAR AI should be wired for dynamic model listing")
 	}
 }
 
 func TestModelListSupportedTypesIncludesOllama(t *testing.T) {
-	if !modelListSupportedTypes[config.ProviderTypeOllama] {
+	if !supportsModelListing(config.ProviderTypeOllama) {
 		t.Fatal("Ollama should be wired for dynamic model listing")
 	}
 }
@@ -188,96 +188,51 @@ func TestModelsRefreshFlag(t *testing.T) {
 }
 
 func TestModelListSupportedTypesIncludesChatGPT(t *testing.T) {
-	if !modelListSupportedTypes[config.ProviderTypeChatGPT] {
+	if !supportsModelListing(config.ProviderTypeChatGPT) {
 		t.Fatal("chatgpt should be wired for authenticated dynamic model listing")
 	}
 }
 
-func TestBuiltinProviderMetaChatGPT(t *testing.T) {
-	meta, ok := builtinProviderMeta["chatgpt"]
-	if !ok {
-		t.Fatal("chatgpt provider metadata missing")
-	}
-	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
-		t.Fatalf("chatgpt metadata = %+v", meta)
+func TestBuiltinProviderRegistryDescribesListingProviders(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		credential config.ProviderCredential
+		apiKeyEnv  string
+	}{
+		{"chatgpt", config.CredentialOAuth, ""},
+		{"grok", config.CredentialOAuth, ""},
+		{"grok-bin", config.CredentialOAuth, ""},
+		{"cursor-bin", config.CredentialOAuth, "CURSOR_API_KEY"},
+		{"sambanova", config.CredentialAPIKey, "SAMBANOVA_API_KEY"},
+		{"nearai", config.CredentialAPIKey, "NEARAI_API_KEY"},
+	} {
+		spec, ok := config.BuiltinProvider(tc.name)
+		if !ok {
+			t.Fatalf("%s missing from the provider registry", tc.name)
+		}
+		if spec.Credential != tc.credential || spec.APIKeyEnv != tc.apiKeyEnv || !spec.ListModels {
+			t.Errorf("%s registry entry = %+v, want %s credential, env %q, model listing", tc.name, spec, tc.credential, tc.apiKeyEnv)
+		}
 	}
 }
 
 func TestModelListSupportedTypesIncludesGrok(t *testing.T) {
 	isolateGrokCmdTestEnv(t)
-	if !modelListSupportedTypes[config.ProviderTypeGrok] {
+	if !supportsModelListing(config.ProviderTypeGrok) {
 		t.Fatal("grok should be wired for authenticated dynamic model listing")
-	}
-}
-
-func TestBuiltinProviderMetaGrok(t *testing.T) {
-	isolateGrokCmdTestEnv(t)
-	meta, ok := builtinProviderMeta["grok"]
-	if !ok {
-		t.Fatal("grok provider metadata missing")
-	}
-	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
-		t.Fatalf("grok metadata = %+v", meta)
-	}
-}
-
-func TestBuiltinProviderMetaGrokBin(t *testing.T) {
-	isolateGrokCmdTestEnv(t)
-	meta, ok := builtinProviderMeta["grok-bin"]
-	if !ok {
-		t.Fatal("grok-bin provider metadata missing")
-	}
-	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
-		t.Fatalf("grok-bin metadata = %+v, want OAuth listing without required API key", meta)
 	}
 }
 
 func TestModelListSupportedTypesIncludesGrokBin(t *testing.T) {
 	isolateGrokCmdTestEnv(t)
-	if !modelListSupportedTypes[config.ProviderTypeGrokBin] {
+	if !supportsModelListing(config.ProviderTypeGrokBin) {
 		t.Fatal("grok-bin should be wired for dynamic model listing")
 	}
 }
 
 func TestModelListSupportedTypesIncludesCursorBin(t *testing.T) {
-	if !modelListSupportedTypes[config.ProviderTypeCursorBin] {
+	if !supportsModelListing(config.ProviderTypeCursorBin) {
 		t.Fatal("cursor-bin should be wired for dynamic model listing")
-	}
-}
-
-func TestBuiltinProviderMetaCursorBin(t *testing.T) {
-	meta, ok := builtinProviderMeta["cursor-bin"]
-	if !ok {
-		t.Fatal("cursor-bin provider metadata missing")
-	}
-	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
-		t.Fatalf("cursor-bin metadata = %+v", meta)
-	}
-}
-
-func TestBuiltinProviderMetaSambaNovaSupportsListModels(t *testing.T) {
-	meta, ok := builtinProviderMeta["sambanova"]
-	if !ok {
-		t.Fatal("SambaNova provider metadata missing")
-	}
-	if !meta.supportsListModels {
-		t.Fatal("SambaNova should advertise model listing support")
-	}
-	if meta.envVar != "SAMBANOVA_API_KEY" {
-		t.Fatalf("SambaNova env var = %q, want SAMBANOVA_API_KEY", meta.envVar)
-	}
-}
-
-func TestBuiltinProviderMetaNearAISupportsListModels(t *testing.T) {
-	meta, ok := builtinProviderMeta["nearai"]
-	if !ok {
-		t.Fatal("NEAR AI provider metadata missing")
-	}
-	if !meta.supportsListModels {
-		t.Fatal("NEAR AI should advertise model listing support")
-	}
-	if meta.envVar != "NEARAI_API_KEY" {
-		t.Fatalf("NEAR AI env var = %q, want NEARAI_API_KEY", meta.envVar)
 	}
 }
 

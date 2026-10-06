@@ -56,32 +56,21 @@ type ModelLister interface {
 	ListModels(ctx context.Context) ([]llm.ModelInfo, error)
 }
 
-var modelListSupportedTypes = map[config.ProviderType]bool{
-	config.ProviderTypeAnthropic:    true,
-	config.ProviderTypeOpenAI:       true,
-	config.ProviderTypeChatGPT:      true,
-	config.ProviderTypeCopilot:      true,
-	config.ProviderTypeOpenRouter:   true,
-	config.ProviderTypeOpenAICompat: true,
-	config.ProviderTypeVLLM:         true,
-	config.ProviderTypeZen:          true,
-	config.ProviderTypeOpenCodeGo:   true,
-	config.ProviderTypeXAI:          true,
-	config.ProviderTypeGrok:         true,
-	config.ProviderTypeVenice:       true,
-	config.ProviderTypeNearAI:       true,
-	config.ProviderTypeSambaNova:    true,
-	config.ProviderTypeOllama:       true,
-	config.ProviderTypeCursorBin:    true,
-	config.ProviderTypeGrokBin:      true,
-	config.ProviderTypeAgyBin:       true,
+// supportsModelListing reports whether providerType can list models upstream:
+// built-ins per the provider registry, plus generic OpenAI-compatible servers.
+func supportsModelListing(providerType config.ProviderType) bool {
+	if providerType == config.ProviderTypeOpenAICompat {
+		return true
+	}
+	spec, ok := config.BuiltinProviderOfType(providerType)
+	return ok && spec.ListModels
 }
 
 func supportedModelListProviderTypes() []string {
-	types := make([]string, 0, len(modelListSupportedTypes))
-	for providerType, supported := range modelListSupportedTypes {
-		if supported {
-			types = append(types, string(providerType))
+	types := []string{string(config.ProviderTypeOpenAICompat)}
+	for _, spec := range config.BuiltinProviders() {
+		if spec.ListModels {
+			types = append(types, string(spec.Type))
 		}
 	}
 	sort.Strings(types)
@@ -181,7 +170,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 }
 
 func handleUnsupportedModelListProvider(providerName string, providerType config.ProviderType, configured bool) (bool, error) {
-	if modelListSupportedTypes[providerType] {
+	if supportsModelListing(providerType) {
 		return false, nil
 	}
 

@@ -2998,6 +2998,18 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// offeredProviders lists the providers this server offers to clients: the
+// configured ones, by the same rules as `term-llm providers` and chat /model.
+func (s *serveServer) offeredProviders() []ProviderInfo {
+	var offered []ProviderInfo
+	for _, p := range buildProviderListWith(s.cfgRef, s.providerCreds.Has) {
+		if p.Configured {
+			offered = append(offered, p)
+		}
+	}
+	return offered
+}
+
 func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -3005,12 +3017,9 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providers := buildProviderList(s.cfgRef)
+	providers := s.offeredProviders()
 	items := make([]map[string]any, 0, len(providers))
 	for _, p := range providers {
-		if !p.Configured && !p.IsBuiltin {
-			continue
-		}
 		models := p.Models
 		if models == nil {
 			models = []string{}

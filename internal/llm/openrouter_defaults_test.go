@@ -17,7 +17,13 @@ func TestOpenRouterDefaultRequiresKey(t *testing.T) {
 			}
 			for _, build := range []func() (Provider, error){
 				func() (Provider, error) { return NewProviderByNameNoRetry(cfg, "openrouter", "") },
-				func() (Provider, error) { return newProviderInternal(cfg) },
+				func() (Provider, error) {
+					p, err := NewProvider(cfg)
+					if retry, ok := p.(*RetryProvider); ok {
+						return retry.inner, err
+					}
+					return p, err
+				},
 			} {
 				p, err := build()
 				if key == "" {

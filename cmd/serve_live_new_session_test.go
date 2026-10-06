@@ -296,9 +296,19 @@ func TestLiveNewSessionInheritsTheBoundConversationsModel(t *testing.T) {
 			source:       session.Session{Provider: "Retired", ProviderKey: "retired-provider", Model: "old-model", ReasoningEffort: "high"},
 			wantProvider: "mock", wantModel: "mock-model",
 		},
+		{
+			name:         "unconfigured built-in is not offered",
+			args:         `{}`,
+			source:       session.Session{Provider: "Gemini", ProviderKey: "gemini", Model: "gemini-pro", ReasoningEffort: "high"},
+			wantProvider: "mock", wantModel: "mock-model",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// openai is offered through its env var; gemini has no credentials.
+			clearProviderCredentialEnv(t)
+			t.Setenv("OPENAI_API_KEY", "sk-test")
 			h := newVoiceNewSessionHarness(t, "voice-model", "reviewer", "researcher")
+			h.server.providerCreds.Detect = func(string) bool { return false }
 			h.server.cfgRef.Providers = map[string]config.ProviderConfig{"work-claude": {Type: "claude-bin"}}
 			store := h.store
 			h.server.agentRuntimeFactory = func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {

@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -136,17 +135,9 @@ func (s *serveServer) inheritLiveNewSessionRuntime(create *createWebSessionReque
 	create.ReasoningMode = strings.TrimSpace(source.ReasoningMode)
 }
 
-// offersProvider reports whether name is a provider /v1/providers lists: every
-// built-in, and every provider named in the configuration.
+// offersProvider reports whether name is a provider /v1/providers lists.
 func (s *serveServer) offersProvider(name string) bool {
-	if slices.Contains(llm.GetBuiltInProviderNames(), name) {
-		return true
-	}
-	if s.cfgRef == nil {
-		return false
-	}
-	_, ok := s.cfgRef.Providers[name]
-	return ok
+	return slices.ContainsFunc(s.offeredProviders(), func(p ProviderInfo) bool { return p.Name == name })
 }
 
 // resolveLiveNewSessionAgent decides which agent the new conversation runs. A

@@ -532,13 +532,21 @@ func (p *GrokBinProvider) buildCommandEnv() []string {
 	return p.buildCommandEnvForHome(p.grokHome)
 }
 
-func (p *GrokBinProvider) buildCommandEnvForHome(grokHome string) []string {
-	authPath := strings.TrimSpace(p.extraEnv["GROK_AUTH_PATH"])
-	if authPath == "" {
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			authPath = filepath.Join(home, ".grok", "auth.json")
-		}
+// grokBinAuthPath returns the Grok Build CLI login file: override when set,
+// else ~/.grok/auth.json. It returns "" when no home directory is known.
+func grokBinAuthPath(override string) string {
+	if path := strings.TrimSpace(override); path != "" {
+		return path
 	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".grok", "auth.json")
+}
+
+func (p *GrokBinProvider) buildCommandEnvForHome(grokHome string) []string {
+	authPath := grokBinAuthPath(p.extraEnv["GROK_AUTH_PATH"])
 
 	forced := map[string]string{
 		"GROK_HOME":                grokHome,
@@ -906,8 +914,8 @@ func (p *GrokBinProvider) commandEnvDebugFields() (map[string]string, []string) 
 	}
 	if authPath := strings.TrimSpace(p.extraEnv["GROK_AUTH_PATH"]); authPath != "" {
 		env["GROK_AUTH_PATH"] = redactEnvValue("GROK_AUTH_PATH", authPath)
-	} else if home, err := os.UserHomeDir(); err == nil {
-		env["GROK_AUTH_PATH"] = filepath.Join(home, ".grok", "auth.json")
+	} else if authPath := grokBinAuthPath(""); authPath != "" {
+		env["GROK_AUTH_PATH"] = authPath
 	}
 	var removed []string
 	if p.preferOAuth {
