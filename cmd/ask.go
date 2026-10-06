@@ -289,9 +289,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		deferredInputs = &sessionInputSelection{}
 	}
 	// Resolve all settings: CLI > agent > config
+	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		inputs:           deferredInputs,
 		Provider:         askProvider,
+		ActiveProvider:   promptProvider,
+		ActiveModel:      promptModel,
 		ToolsSet:         cmd.Flags().Changed("tools"),
 		SystemMessageSet: cmd.Flags().Changed("system"),
 		Tools:            askTools,
