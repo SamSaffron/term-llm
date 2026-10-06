@@ -37,14 +37,14 @@ func parseGeminiModelThinking(model string) (string, geminiThinkingConfig) {
 
 	switch {
 	// Gemini 3 Flash - use minimal thinking by default and high with -thinking.
-	case strings.HasPrefix(baseModel, "gemini-3-flash"):
+	case strings.HasPrefix(baseModel, "gemini-3-flash") || (strings.HasPrefix(baseModel, "gemini-3.") && strings.Contains(baseModel, "flash")):
 		if hasThinkingSuffix {
 			return baseModel, geminiThinkingConfig{level: geminiThinkingLevelHigh}
 		}
 		return baseModel, geminiThinkingConfig{level: geminiThinkingLevelMinimal}
 
 	// Gemini 3 Pro - only supports LOW and HIGH (not MINIMAL)
-	case strings.HasPrefix(baseModel, "gemini-3-pro"):
+	case strings.HasPrefix(baseModel, "gemini-3-pro") || (strings.HasPrefix(baseModel, "gemini-3.") && strings.Contains(baseModel, "pro")):
 		if hasThinkingSuffix {
 			return baseModel, geminiThinkingConfig{level: geminiThinkingLevelHigh}
 		}
@@ -134,14 +134,7 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 			apiReq.GenerationConfig = generation
 		}
 
-		if req.Search {
-			apiReq.Tools = append(apiReq.Tools, &geminiTool{GoogleSearch: &geminiGoogleSearch{}})
-		}
-
-		if len(req.Tools) > 0 {
-			apiReq.Tools = append(apiReq.Tools, buildGeminiTools(req.Tools)...)
-			apiReq.ToolConfig = buildGeminiToolConfig(req.ToolChoice)
-		}
+		configureGeminiTools(&apiReq, req)
 
 		if req.Debug {
 			userPreview := collectGeminiUserPreview(contents)
@@ -279,6 +272,43 @@ func emitGeminiUsage(send eventSender, resp *geminiGenerateContentResponse) erro
 		}})
 	}
 	return nil
+}
+
+func configureGeminiTools(apiReq *geminiGenerateContentRequest, req Request) {
+	if req.Search {
+		apiReq.Tools = append(apiReq.Tools, &geminiTool{GoogleSearch: &geminiGoogleSearch{}})
+	}
+
+	if len(req.Tools) > 0 {
+		apiReq.Tools = append(apiReq.Tools, buildGeminiTools(req.Tools)...)
+		apiReq.ToolConfig = buildGeminiToolConfig(req.ToolChoice)
+	}
+
+	if hasGeminiBuiltinTools(apiReq.Tools) && hasGeminiFunctionDeclarations(apiReq.Tools) {
+		if apiReq.ToolConfig == nil {
+			apiReq.ToolConfig = &geminiToolConfig{}
+		}
+		includeServerSide := true
+		apiReq.ToolConfig.IncludeServerSideToolInvocations = &includeServerSide
+	}
+}
+
+func hasGeminiBuiltinTools(tools []*geminiTool) bool {
+	for _, t := range tools {
+		if t != nil && t.GoogleSearch != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGeminiFunctionDeclarations(tools []*geminiTool) bool {
+	for _, t := range tools {
+		if t != nil && len(t.FunctionDeclarations) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func buildGeminiTools(specs []ToolSpec) []*geminiTool {

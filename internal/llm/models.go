@@ -111,6 +111,8 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "openrouter/free"},
 	},
 	"gemini": {
+		{ID: "gemini-3.8-flash", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "gemini-3.8-flash-thinking", InputLimit: 983_000, OutputLimit: 65_536},
 		{ID: "gemini-3-pro-preview", InputLimit: 936_000, OutputLimit: 65_536},
 		{ID: "gemini-3-pro-preview-thinking", InputLimit: 936_000, OutputLimit: 65_536},
 		{ID: "gemini-3-flash-preview", InputLimit: 983_000, OutputLimit: 65_536},
