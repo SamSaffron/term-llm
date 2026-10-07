@@ -41,8 +41,8 @@ export const includedSummary = (
   const included: string[] = [];
   const excluded: string[] = [];
   if (scope === 'response') {
-    included.push('the assistant’s reply');
-    excluded.push('your messages', 'tool activity');
+    included.push('the assistant’s final answer');
+    excluded.push('your messages', 'earlier progress updates', 'tool activity');
   } else {
     included.push('your messages', 'the assistant’s replies');
     (includeTools ? included : excluded).push('tool activity');
@@ -228,7 +228,10 @@ export function ShareModal() {
                   />
                   <span>
                     <strong>This response</strong>
-                    <small>Just the assistant’s complete reply. No prompts or tool activity.</small>
+                    <small>
+                      Just the assistant’s final answer. Your messages, tool activity, and earlier
+                      progress updates are left out.
+                    </small>
                   </span>
                 </label>
                 <label class={`share-choice ${scope === 'conversation' ? 'is-selected' : ''}`}>

@@ -32,7 +32,7 @@ type ShareSelection struct {
 
 // SelectShareMessages validates anchorMessageID and returns an authoritative,
 // human-visible subset for a point-in-time share. Response shares contain only
-// the assistant's rendered text and displayed images; conversation shares
+// the assistant's final answer and displayed images; conversation shares
 // include the transcript up to and including the anchored row.
 func SelectShareMessages(messages []Message, anchorMessageID int64, scope ShareScope) ([]Message, error) {
 	selection, err := SelectShare(messages, anchorMessageID, scope)
@@ -82,16 +82,19 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 		for start > 0 && ordered[start-1].Role != llm.RoleUser {
 			start--
 		}
-		parts := make([]string, 0, anchorIndex-start+1)
-		// Keep images the client displayed in this response, in order, without
-		// exposing the tool activity that produced them.
-		var responseParts []llm.Part
-		var pendingText []string
+		// A response share is the answer, not the work: only text written
+		// after the response's last tool call, preceded by the images shown
+		// to the user during the response. Interim narration between tool
+		// calls is dropped. If nothing follows the last tool call, the last
+		// text written before it is used instead.
+		var segments [][]string
+		current := []string{}
+		var images []llm.Part
 		var media []llm.MediaArtifact
-		flushText := func() {
-			if len(pendingText) > 0 {
-				responseParts = append(responseParts, llm.Part{Type: llm.PartText, Text: strings.Join(pendingText, "\n\n")})
-				pendingText = nil
+		closeSegment := func() {
+			if len(current) > 0 {
+				segments = append(segments, current)
+				current = []string{}
 			}
 		}
 		for i := start; i <= end; i++ {
@@ -106,8 +109,7 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 					}
 					media = append(media, part.ToolResult.Media...)
 					for _, source := range toolResultDisplayedImages(part.ToolResult) {
-						flushText()
-						responseParts = append(responseParts, llm.Part{Type: llm.PartImage, ImagePath: source.Path})
+						images = append(images, llm.Part{Type: llm.PartImage, ImagePath: source.Path})
 					}
 				}
 				continue
@@ -115,18 +117,29 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 			if msg.Role != llm.RoleAssistant || !shareMessageVisible(msg) {
 				continue
 			}
-			if text := strings.TrimSpace(msg.TextContent); text != "" {
-				parts = append(parts, text)
-				pendingText = append(pendingText, text)
+			parts := msg.Parts
+			if len(parts) == 0 && msg.TextContent != "" {
+				parts = []llm.Part{{Type: llm.PartText, Text: msg.TextContent}}
+			}
+			for _, part := range parts {
+				switch part.Type {
+				case llm.PartToolCall:
+					closeSegment()
+				case llm.PartText:
+					if text := strings.TrimSpace(part.Text); text != "" {
+						current = append(current, text)
+					}
+				}
 			}
 		}
-		if len(parts) == 0 {
+		closeSegment()
+		if len(segments) == 0 {
 			return ShareSelection{}, ErrInvalidShareAnchor
 		}
-		flushText()
+		finalText := strings.Join(segments[len(segments)-1], "\n\n")
 		response := anchor
-		response.Parts = responseParts
-		response.TextContent = strings.Join(parts, "\n\n")
+		response.Parts = append(images, llm.Part{Type: llm.PartText, Text: finalText})
+		response.TextContent = finalText
 		response.CompactionTail = false
 		return ShareSelection{Messages: []Message{response}, Media: media}, nil
 	default:

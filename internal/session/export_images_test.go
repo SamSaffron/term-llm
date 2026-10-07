@@ -523,3 +523,75 @@ func TestInlineShareMarkdownHasNoPrivateMediaURLs(t *testing.T) {
 		t.Fatalf("inline Markdown kept a private media URL: %s", markdown)
 	}
 }
+
+func responseShareText(t *testing.T, messages []Message, anchor int64) (ShareSelection, string) {
+	t.Helper()
+	selection, err := SelectShare(messages, anchor, ShareScopeResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selection.Messages) != 1 {
+		t.Fatalf("messages = %d", len(selection.Messages))
+	}
+	return selection, selection.Messages[0].TextContent
+}
+
+func TestResponseShareKeepsOnlyTextAfterLastToolCall(t *testing.T) {
+	_, fixture, _ := imageShareFixture(t)
+	generated := fixture[2].Parts[0].ToolResult
+	shown := fixture[4].Parts[0].ToolResult
+	call := func(id, name string) llm.Part {
+		return llm.Part{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: id, Name: name, Arguments: []byte(`{}`)}}
+	}
+	text := func(value string) llm.Part { return llm.Part{Type: llm.PartText, Text: value} }
+	toolRow := func(id, seq int64, result *llm.ToolResult) Message {
+		return Message{ID: id, Sequence: int(seq), Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: result}}}
+	}
+	final := "Final answer:\n\n![A chart](term-llm-media://0123456789abcdef0123456789abcdef)"
+
+	t.Run("claude cli single row", func(t *testing.T) {
+		messages := []Message{
+			fixture[0],
+			{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Interim A\n\nInterim B\n\n" + final, Parts: []llm.Part{
+				text("Interim A"), call("c1", "image_generate"), text("Interim B"), call("c2", "show_media"), text(final),
+			}},
+			toolRow(3, 3, generated),
+			toolRow(4, 4, shown),
+		}
+		selection, got := responseShareText(t, messages, 2)
+		if got != final {
+			t.Fatalf("text = %q, want only the final answer", got)
+		}
+		parts := selection.Messages[0].Parts
+		if len(parts) != 3 || parts[0].Type != llm.PartImage || parts[1].Type != llm.PartImage || parts[2].Type != llm.PartText {
+			t.Fatalf("parts = %+v, want displayed images then the final text", parts)
+		}
+		if len(selection.Media) != 1 {
+			t.Fatalf("media = %d, want the shown artifact for reference resolution", len(selection.Media))
+		}
+	})
+
+	t.Run("separate rows", func(t *testing.T) {
+		messages := []Message{
+			fixture[0],
+			{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Let me look.", Parts: []llm.Part{text("Let me look."), call("c1", "image_generate")}},
+			toolRow(3, 3, generated),
+			{ID: 4, Sequence: 4, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Here it is.", Parts: []llm.Part{text("Here it is.")}},
+		}
+		if _, got := responseShareText(t, messages, 4); got != "Here it is." {
+			t.Fatalf("text = %q", got)
+		}
+	})
+
+	t.Run("ends with a tool call", func(t *testing.T) {
+		messages := []Message{
+			fixture[0],
+			{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Early\n\nThe answer.", Parts: []llm.Part{
+				text("Early"), call("c1", "shell"), text("The answer."), call("c2", "shell"),
+			}},
+		}
+		if _, got := responseShareText(t, messages, 2); got != "The answer." {
+			t.Fatalf("text = %q, want the last text before the final tool call", got)
+		}
+	})
+}
