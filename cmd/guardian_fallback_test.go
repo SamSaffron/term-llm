@@ -14,11 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 )
 
 // guardianFallbackClassifyStub answers every question with one confidence so a
@@ -33,11 +34,11 @@ type guardianFallbackClassifyStub struct {
 	state []byte
 }
 
-func (s *guardianFallbackClassifyStub) ListModels(context.Context) (*typesafe.ModelsResponse, error) {
+func (s *guardianFallbackClassifyStub) ListModels(context.Context) (*classify.ModelsResponse, error) {
 	panic("not used")
 }
 
-func (s *guardianFallbackClassifyStub) Classify(ctx context.Context, req typesafe.Request) (*typesafe.Response, error) {
+func (s *guardianFallbackClassifyStub) Classify(ctx context.Context, req classify.Request) (*classify.Response, error) {
 	s.mu.Lock()
 	s.calls++
 	s.state = append([]byte(nil), req.State...)
@@ -48,12 +49,12 @@ func (s *guardianFallbackClassifyStub) Classify(ctx context.Context, req typesaf
 	if s.err != nil {
 		return nil, s.err
 	}
-	answers := map[string]typesafe.Answer{}
+	answers := map[string]classify.Answer{}
 	for id, choice := range map[string]string{"risk_level": "low", "user_authorization": "explicit", "outcome": "allow"} {
 		c, confidence := choice, s.confidence
-		answers[id] = typesafe.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
+		answers[id] = classify.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
 	}
-	return &typesafe.Response{Model: req.Model, Answers: answers}, nil
+	return &classify.Response{Model: req.Model, Answers: answers}, nil
 }
 
 func (s *guardianFallbackClassifyStub) callCount() int {
@@ -87,11 +88,11 @@ func (s *guardianEscalationStub) snapshot() []guardian.Escalation {
 	return append([]guardian.Escalation(nil), s.records...)
 }
 
-func withGuardianClassifyClient(t *testing.T, stub classifyClient) {
+func withGuardianClassifyClient(t *testing.T, stub classify.Backend) {
 	t.Helper()
-	original := newGuardianClassifyClient
-	newGuardianClassifyClient = func(typesafe.Options) (classifyClient, error) { return stub, nil }
-	t.Cleanup(func() { newGuardianClassifyClient = original })
+	original := newGuardianClassifyBackend
+	newGuardianClassifyBackend = func(backends.Connection) (classify.Backend, error) { return stub, nil }
+	t.Cleanup(func() { newGuardianClassifyBackend = original })
 }
 
 func withGuardianEscalationLogger(t *testing.T, logger guardian.EscalationLogger) {

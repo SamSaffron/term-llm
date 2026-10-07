@@ -155,6 +155,37 @@ func TestClassifyProviderSelection(t *testing.T) {
 	}
 }
 
+func TestClassifyOpenAIProviderResolutionAndKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-openai")
+	t.Setenv("TYPESAFE_API_KEY", "env-typesafe")
+	c := ClassifyConfig{Providers: map[string]ClassifyProviderConfig{
+		"decide": {Type: "openai", Model: "custom"},
+		"proxy":  {Type: "openai", BaseURL: "https://proxy.example/v1"},
+	}}
+	for _, tc := range []struct {
+		name, model, baseURL, key string
+	}{
+		{"openai", DefaultOpenAIDecisionsModel, DefaultOpenAIDecisionsBaseURL, "env-openai"},
+		{"decide", "custom", DefaultOpenAIDecisionsBaseURL, "env-openai"},
+		{"proxy", DefaultOpenAIDecisionsModel, "https://proxy.example/v1", ""},
+	} {
+		p, err := c.ResolveProvider(tc.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Type != ClassifyProviderOpenAI || p.Model != tc.model || p.BaseURL != tc.baseURL || p.TimeoutSeconds != DefaultOpenAIDecisionsTimeoutSeconds {
+			t.Fatalf("%s: %#v", tc.name, p)
+		}
+		// A foreign base_url must never receive the shared OPENAI_API_KEY.
+		if got, err := p.Key().Resolve(); err != nil || got != tc.key {
+			t.Fatalf("%s key = %q, %v; want %q", tc.name, got, err, tc.key)
+		}
+	}
+	if got := c.ProviderNames(); strings.Join(got, ",") != "decide,openai,proxy,typesafe" {
+		t.Fatalf("ProviderNames = %v", got)
+	}
+}
+
 func TestClassifyAliasSchema(t *testing.T) {
 	for _, field := range []string{"type", "api_key", "model", "base_url", "timeout_seconds"} {
 		if !IsKnownKey("classify.providers.custom." + field) {

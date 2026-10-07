@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 )
 
 const (
@@ -35,9 +35,8 @@ const (
 	liveDecisionErrorResolver          = "resolver_error"
 )
 
-var newLiveClassifyClient = func(options typesafe.Options) (classifyClient, error) {
-	return typesafe.NewClient(options)
-}
+// newLiveClassifyBackend constructs the live router's classification backend.
+var newLiveClassifyBackend backends.Factory = backends.New
 
 // closeLiveDecisionStore closes the decision store on server shutdown. A nil
 // store (logging disabled or classify not selected) is a no-op.
@@ -58,27 +57,23 @@ func prepareLiveClassify(cfg *config.Config) (*liveclassify.Classifier, *livecla
 	if err != nil {
 		return nil, nil, fmt.Errorf("live classify provider: %w", err)
 	}
-	options := &classifyOptions{provider: cfg.Live.Classify.Provider}
-	if provider.TimeoutSeconds < 0 {
-		return nil, nil, errors.New("classify provider timeout_seconds must not be negative")
-	}
-	const maxTimeoutSeconds = int64(1<<63-1) / int64(time.Second)
-	if int64(provider.TimeoutSeconds) > maxTimeoutSeconds {
-		return nil, nil, errors.New("classify provider timeout_seconds is too large")
+	timeout, err := backends.ProviderTimeout(provider)
+	if err != nil {
+		return nil, nil, err
 	}
 	// The classifier and the optional switch resolver share the controller's
 	// routing deadline. Leave enough budget for the resolver and a small handoff
 	// margin even when the selected provider has a longer explicit timeout.
-	timeout := time.Duration(provider.TimeoutSeconds) * time.Second
-	if provider.TimeoutSeconds == config.DefaultTypeSafeTimeoutSeconds {
+	// The provider type's default timeout is not an explicit choice, so it
+	// yields to the live default.
+	if provider.TimeoutSeconds == provider.DefaultTimeoutSeconds() {
 		timeout = liveClassifyDefaultTimeout
 	}
 	if timeout > liveClassifyMaxTimeout {
 		log.Printf("[serve] live classify timeout %s exceeds routing budget; clamping to %s", timeout, liveClassifyMaxTimeout)
 		timeout = liveClassifyMaxTimeout
 	}
-	options.timeout = timeout
-	client, err := newTypeSafeClient(cfg, options, classifyDeps{newClient: newLiveClassifyClient})
+	client, err := backends.Open(provider, backends.Overrides{Timeout: timeout}, newLiveClassifyBackend)
 	if err != nil {
 		return nil, nil, fmt.Errorf("live classify provider: %w", err)
 	}

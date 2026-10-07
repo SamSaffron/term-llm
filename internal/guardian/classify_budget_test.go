@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/typesafe"
+	"github.com/samsaffron/term-llm/internal/classify"
 )
 
 type classifyBudgetEntry struct {
@@ -41,17 +41,17 @@ type classifyBudgetAction struct {
 	ApprovalScope   string `json:"approval_scope"`
 }
 
-func captureClassifyBudgetRequest(t *testing.T, reviewer ClassifyReviewer, request Request) (typesafe.Request, Decision) {
+func captureClassifyBudgetRequest(t *testing.T, reviewer ClassifyReviewer, request Request) (classify.Request, Decision) {
 	t.Helper()
-	var captured typesafe.Request
+	var captured classify.Request
 	calls := 0
-	reviewer.Client = classifyStub(func(_ context.Context, request typesafe.Request) (*typesafe.Response, error) {
+	reviewer.Client = classifyStub(func(_ context.Context, request classify.Request) (*classify.Response, error) {
 		calls++
 		if err := request.Validate(); err != nil {
 			t.Fatalf("invalid TypeSafe request: %v", err)
 		}
 		captured = request
-		return &typesafe.Response{Answers: testAnswers()}, nil
+		return &classify.Response{Answers: testAnswers()}, nil
 	})
 	decision, err := reviewer.Review(context.Background(), request)
 	if err != nil {
@@ -70,7 +70,7 @@ func captureClassifyBudgetRequest(t *testing.T, reviewer ClassifyReviewer, reque
 	return captured, decision
 }
 
-func decodeClassifyBudgetState(t *testing.T, request typesafe.Request) (classifyBudgetState, map[string]json.RawMessage) {
+func decodeClassifyBudgetState(t *testing.T, request classify.Request) (classifyBudgetState, map[string]json.RawMessage) {
 	t.Helper()
 	var state classifyBudgetState
 	if err := json.Unmarshal(request.State, &state); err != nil {
@@ -287,13 +287,13 @@ func TestClassifyEvidenceIsRecentTypedAndBounded(t *testing.T) {
 
 func TestClassifyBudgetAccountsForCompleteEscapedRequest(t *testing.T) {
 	model := "model-<>&-\u2028"
-	var captured []typesafe.Request
-	reviewer := ClassifyReviewer{Model: model, Policy: "small exact policy", Client: classifyStub(func(_ context.Context, request typesafe.Request) (*typesafe.Response, error) {
+	var captured []classify.Request
+	reviewer := ClassifyReviewer{Model: model, Policy: "small exact policy", Client: classifyStub(func(_ context.Context, request classify.Request) (*classify.Response, error) {
 		if err := request.Validate(); err != nil {
 			t.Fatalf("invalid TypeSafe request: %v", err)
 		}
 		captured = append(captured, request)
-		return &typesafe.Response{Answers: testAnswers()}, nil
+		return &classify.Response{Answers: testAnswers()}, nil
 	})}
 	if decision, err := reviewer.Review(context.Background(), Request{Command: "echo baseline"}); err != nil || !decision.Allowed() {
 		t.Fatalf("baseline decision=%+v err=%v", decision, err)
@@ -388,9 +388,9 @@ func TestClassifyRequiredOversizeFailsClosedWithoutClassify(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			test.reviewer.Client = classifyStub(func(context.Context, typesafe.Request) (*typesafe.Response, error) {
+			test.reviewer.Client = classifyStub(func(context.Context, classify.Request) (*classify.Response, error) {
 				calls++
-				return &typesafe.Response{Answers: testAnswers()}, nil
+				return &classify.Response{Answers: testAnswers()}, nil
 			})
 			decision, err := test.reviewer.Review(context.Background(), test.req)
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "manual approval") {
@@ -415,13 +415,13 @@ func TestClassifyBudgetExactBoundary(t *testing.T) {
 	for _, extra := range []int{-1, 0, 1} {
 		t.Run(fmt.Sprint(extra), func(t *testing.T) {
 			calls := 0
-			reviewer := ClassifyReviewer{Model: "jev-test", Client: classifyStub(func(_ context.Context, request typesafe.Request) (*typesafe.Response, error) {
+			reviewer := ClassifyReviewer{Model: "jev-test", Client: classifyStub(func(_ context.Context, request classify.Request) (*classify.Response, error) {
 				calls++
 				body, err := json.Marshal(request)
 				if err != nil || len(body) != 24000+extra {
 					t.Fatalf("request size=%d error=%v", len(body), err)
 				}
-				return &typesafe.Response{Answers: testAnswers()}, nil
+				return &classify.Response{Answers: testAnswers()}, nil
 			})}
 			decision, err := reviewer.Review(context.Background(), Request{Command: strings.Repeat("x", 24000-len(wire)+1+extra)})
 			if extra <= 0 {

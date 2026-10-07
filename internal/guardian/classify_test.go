@@ -9,19 +9,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/typesafe"
+	"github.com/samsaffron/term-llm/internal/classify"
 )
 
-type classifyStub func(context.Context, typesafe.Request) (*typesafe.Response, error)
+type classifyStub func(context.Context, classify.Request) (*classify.Response, error)
 
-func (f classifyStub) Classify(ctx context.Context, req typesafe.Request) (*typesafe.Response, error) {
+func (f classifyStub) Classify(ctx context.Context, req classify.Request) (*classify.Response, error) {
 	return f(ctx, req)
 }
-func testAnswers() map[string]typesafe.Answer {
-	result := map[string]typesafe.Answer{}
+func testAnswers() map[string]classify.Answer {
+	result := map[string]classify.Answer{}
 	for id, choice := range map[string]string{"risk_level": "low", "user_authorization": "explicit", "outcome": "allow"} {
 		c, confidence := choice, 0.9
-		result[id] = typesafe.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
+		result[id] = classify.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
 	}
 	return result
 }
@@ -73,14 +73,14 @@ func TestClassifyAnswerGates(t *testing.T) {
 func TestClassifyMalformedAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		mutate func(map[string]typesafe.Answer)
+		mutate func(map[string]classify.Answer)
 	}{
-		{"missing answer", func(a map[string]typesafe.Answer) { delete(a, "outcome") }},
-		{"unknown choice", func(a map[string]typesafe.Answer) { v := a["outcome"]; s := "ALLOW"; v.Choice = &s; a["outcome"] = v }},
-		{"missing choice", func(a map[string]typesafe.Answer) { v := a["outcome"]; v.Choice = nil; a["outcome"] = v }},
-		{"missing confidence", func(a map[string]typesafe.Answer) { v := a["outcome"]; v.Confidence = nil; a["outcome"] = v }},
-		{"wrong type", func(a map[string]typesafe.Answer) { v := a["outcome"]; v.Type = "noul"; a["outcome"] = v }},
-		{"mixed type", func(a map[string]typesafe.Answer) { v := a["outcome"]; v.Score = v.Confidence; a["outcome"] = v }},
+		{"missing answer", func(a map[string]classify.Answer) { delete(a, "outcome") }},
+		{"unknown choice", func(a map[string]classify.Answer) { v := a["outcome"]; s := "ALLOW"; v.Choice = &s; a["outcome"] = v }},
+		{"missing choice", func(a map[string]classify.Answer) { v := a["outcome"]; v.Choice = nil; a["outcome"] = v }},
+		{"missing confidence", func(a map[string]classify.Answer) { v := a["outcome"]; v.Confidence = nil; a["outcome"] = v }},
+		{"wrong type", func(a map[string]classify.Answer) { v := a["outcome"]; v.Type = "noul"; a["outcome"] = v }},
+		{"mixed type", func(a map[string]classify.Answer) { v := a["outcome"]; v.Score = v.Confidence; a["outcome"] = v }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := testAnswers()
@@ -124,7 +124,7 @@ func TestClassifyRequestShapes(t *testing.T) {
 			}
 			calls := 0
 			stateBytes := 0
-			reviewer := ClassifyReviewer{Model: "jev-test", Policy: "custom policy", MinConfidence: 0.5, Timeout: time.Second, Client: classifyStub(func(ctx context.Context, req typesafe.Request) (*typesafe.Response, error) {
+			reviewer := ClassifyReviewer{Model: "jev-test", Policy: "custom policy", MinConfidence: 0.5, Timeout: time.Second, Client: classifyStub(func(ctx context.Context, req classify.Request) (*classify.Response, error) {
 				calls++
 				if err := req.Validate(); err != nil {
 					t.Fatal(err)
@@ -161,7 +161,7 @@ func TestClassifyRequestShapes(t *testing.T) {
 					t.Fatalf("%+v", a)
 				}
 				stateBytes = len(req.State)
-				return &typesafe.Response{Answers: testAnswers()}, nil
+				return &classify.Response{Answers: testAnswers()}, nil
 			})}
 			d, err := reviewer.Review(context.Background(), tc.req)
 			if err != nil || !d.Allowed() || calls != 1 || d.StateBytes != stateBytes {
@@ -173,12 +173,12 @@ func TestClassifyRequestShapes(t *testing.T) {
 
 func TestClassifyReviewFailureMetadata(t *testing.T) {
 	sentinel := errors.New("transport failed")
-	r := ClassifyReviewer{Model: "jev-test", Client: classifyStub(func(context.Context, typesafe.Request) (*typesafe.Response, error) { return nil, sentinel })}
+	r := ClassifyReviewer{Model: "jev-test", Client: classifyStub(func(context.Context, classify.Request) (*classify.Response, error) { return nil, sentinel })}
 	d, err := r.Review(context.Background(), Request{Command: "echo ok"})
 	if !errors.Is(err, sentinel) || d.StateBytes == 0 || d.Model != "jev-test" || d.Allowed() {
 		t.Fatalf("%+v %v", d, err)
 	}
-	r.Client = classifyStub(func(context.Context, typesafe.Request) (*typesafe.Response, error) { return nil, nil })
+	r.Client = classifyStub(func(context.Context, classify.Request) (*classify.Response, error) { return nil, nil })
 	if _, err := r.Review(context.Background(), Request{}); err == nil {
 		t.Fatal("accepted nil response")
 	}

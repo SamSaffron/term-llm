@@ -1,12 +1,13 @@
 package typesafe
 
 import (
+	"github.com/samsaffron/term-llm/internal/classify"
+
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,7 +34,7 @@ func TestClassifySendsAuthAndParsesPrimitives(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
 			t.Fatalf("Content-Type = %q", got)
 		}
-		var req Request
+		var req classify.Request
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -97,7 +98,7 @@ func TestClassifyClientDoesNotApplyGuardianBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request Request
+		var request classify.Request
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 			w.WriteHeader(http.StatusBadRequest)
@@ -114,7 +115,7 @@ func TestClassifyClientDoesNotApplyGuardianBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Classify(context.Background(), Request{Model: "jev-latest", State: state, Questions: validQuestions()}); err != nil {
+	if _, err := client.Classify(context.Background(), classify.Request{Model: "jev-latest", State: state, Questions: validQuestions()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -163,44 +164,6 @@ func TestListModelsAllowsMissingMetadata(t *testing.T) {
 	}
 }
 
-func TestRequestValidateErrors(t *testing.T) {
-	tests := []struct {
-		name string
-		req  Request
-		want string
-	}{
-		{name: "missing state", req: Request{Model: "jev-latest", Questions: validQuestions()}, want: "state is required"},
-		{name: "malformed state", req: Request{State: json.RawMessage(`{"x"`), Model: "jev-latest", Questions: validQuestions()}, want: "state must be valid JSON"},
-		{name: "null state", req: Request{State: json.RawMessage(`null`), Model: "jev-latest", Questions: validQuestions()}, want: ""},
-		{name: "missing model", req: Request{State: json.RawMessage(`"hello"`), Questions: validQuestions()}, want: "model is required"},
-		{name: "missing questions", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest"}, want: "at least one question"},
-		{name: "bad type", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "bad", Instructions: json.RawMessage(`"?"`)}}}, want: "unsupported type"},
-		{name: "numeric instructions", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`1`)}}}, want: "instructions must be"},
-		{name: "boolean instructions", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`true`)}}}, want: "instructions must be"},
-		{name: "choice missing criteria", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "choice", Instructions: json.RawMessage(`"?"`)}}}, want: "criteria are required"},
-		{name: "choice empty criteria", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{}`)}}}, want: "at least one choice"},
-		{name: "choice numeric description", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":1}`)}}}, want: "must be a JSON string"},
-		{name: "score short criteria", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "score", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`["one"]`)}}}, want: "at least two"},
-		{name: "score invalid description", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "score", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`["one", false]`)}}}, want: "must be a JSON string"},
-		{name: "noul invalid key", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"true_description":"yes"}`)}}}, want: "true and false"},
-		{name: "noul invalid description", req: Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"true":false}`)}}}, want: "must be a JSON string"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.req.Validate()
-			if tt.want == "" {
-				if err != nil {
-					t.Fatalf("Validate error = %v, want nil", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Validate error = %v, want containing %q", err, tt.want)
-			}
-		})
-	}
-}
-
 func TestNewClientValidationAndDefaults(t *testing.T) {
 	if _, err := NewClient(Options{}); err == nil || !strings.Contains(err.Error(), "API key") {
 		t.Fatalf("missing key error = %v", err)
@@ -241,7 +204,7 @@ func TestRetries429And529WithRetryAfterMS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if _, err := client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}}); err != nil {
+	if _, err := client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}}); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 	if got := attempts.Load(); got != 3 {
@@ -263,7 +226,7 @@ func TestRetryExhaustionReturnsLastError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, err = client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
+	_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("Classify error = %v, want 429 APIError", err)
@@ -296,7 +259,7 @@ func TestRetryCancellation(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	start := time.Now()
-	_, err = client.Classify(ctx, Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}})
+	_, err = client.Classify(ctx, classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Classify error = %v, want context.Canceled", err)
 	}
@@ -317,7 +280,7 @@ func TestErrorsAreUsefulAndRedacted(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	state := `"private customer text"`
-	_, err = client.Classify(context.Background(), Request{State: json.RawMessage(state), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}})
+	_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(state), Model: "jev-latest", Questions: map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}})
 	if err == nil {
 		t.Fatal("Classify succeeded unexpectedly")
 	}
@@ -340,7 +303,7 @@ func TestErrorsRedactStructuredStateEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, err = client.Classify(context.Background(), Request{State: json.RawMessage(`{"account":12345,"customer":"Ada"}`), Model: "jev-latest", Questions: validQuestions()})
+	_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(`{"account":12345,"customer":"Ada"}`), Model: "jev-latest", Questions: validQuestions()})
 	if err == nil {
 		t.Fatal("Classify succeeded unexpectedly")
 	}
@@ -353,11 +316,11 @@ func TestMalformedResponseFields(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
-		q    Question
+		q    classify.Question
 		want string
 	}{
-		{name: "missing answer field", body: `{"model":"jev-latest","answers":{"q":{"type":"noul"}},"usage":{}}`, q: Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: "missing noul"},
-		{name: "bad confidence", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":1},"confidence":2}},"usage":{}}`, q: Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: "confidence"},
+		{name: "missing answer field", body: `{"model":"jev-latest","answers":{"q":{"type":"noul"}},"usage":{}}`, q: classify.Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: "missing noul"},
+		{name: "bad confidence", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":1},"confidence":2}},"usage":{}}`, q: classify.Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: "confidence"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -367,7 +330,7 @@ func TestMalformedResponseFields(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewClient: %v", err)
 			}
-			_, err = client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": tt.q}})
+			_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]classify.Question{"q": tt.q}})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want %q", err, tt.want)
 			}
@@ -380,16 +343,16 @@ func TestResponseValidationAgainstRequest(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
-		q    Question
+		q    classify.Question
 		want string
 	}{
-		{name: "missing usage", body: `{"model":"jev-latest","answers":{"q":{"type":"noul","noul":0.5}}}`, q: Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: ""},
-		{name: "missing confidence", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":1}}},"usage":{}}`, q: Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: ""},
-		{name: "nullable confidence allowed", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":1},"confidence":null}},"usage":{}}`, q: Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: ""},
-		{name: "probability null rejected", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":null},"confidence":null}},"usage":{}}`, q: Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: "probability"},
-		{name: "noul out of range", body: `{"model":"jev-latest","answers":{"q":{"type":"noul","noul":1.1}},"usage":{}}`, q: Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: "noul must be between"},
-		{name: "answer id mismatch", body: `{"model":"jev-latest","answers":{"other":{"type":"noul","noul":0.5}},"usage":{}}`, q: Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: "missing answer"},
-		{name: "answer type mismatch", body: `{"model":"jev-latest","answers":{"q":{"type":"score","score":1,"legend":{"0":"no","1":"yes"},"probabilities":{"0":0.5,"1":0.5},"confidence":0.5}},"usage":{}}`, q: Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: "does not match"},
+		{name: "missing usage", body: `{"model":"jev-latest","answers":{"q":{"type":"noul","noul":0.5}}}`, q: classify.Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: ""},
+		{name: "missing confidence", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":1}}},"usage":{}}`, q: classify.Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: ""},
+		{name: "nullable confidence allowed", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":1},"confidence":null}},"usage":{}}`, q: classify.Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: ""},
+		{name: "probability null rejected", body: `{"model":"jev-latest","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":null},"confidence":null}},"usage":{}}`, q: classify.Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: "probability"},
+		{name: "noul out of range", body: `{"model":"jev-latest","answers":{"q":{"type":"noul","noul":1.1}},"usage":{}}`, q: classify.Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: "noul must be between"},
+		{name: "answer id mismatch", body: `{"model":"jev-latest","answers":{"other":{"type":"noul","noul":0.5}},"usage":{}}`, q: classify.Question{Type: "noul", Instructions: json.RawMessage(`"?"`)}, want: "missing answer"},
+		{name: "answer type mismatch", body: `{"model":"jev-latest","answers":{"q":{"type":"score","score":1,"legend":{"0":"no","1":"yes"},"probabilities":{"0":0.5,"1":0.5},"confidence":0.5}},"usage":{}}`, q: classify.Question{Type: "choice", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`{"a":null}`)}, want: "does not match"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -399,7 +362,7 @@ func TestResponseValidationAgainstRequest(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewClient: %v", err)
 			}
-			_, err = client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": tt.q}})
+			_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]classify.Question{"q": tt.q}})
 			if tt.want == "" {
 				if err != nil {
 					t.Fatalf("Classify error = %v, want nil", err)
@@ -437,7 +400,7 @@ func TestRejectsRedirectsAndUnsafeBaseURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, err = client.Classify(context.Background(), Request{State: json.RawMessage(`"private"`), Model: "jev-latest", Questions: validQuestions()})
+	_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"private"`), Model: "jev-latest", Questions: validQuestions()})
 	if err == nil || !strings.Contains(err.Error(), "302") {
 		t.Fatalf("redirect error = %v", err)
 	}
@@ -459,7 +422,7 @@ func TestOverallTimeoutBoundsRetries(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	start := time.Now()
-	_, err = client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
+	_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
 	var status *providerhttp.StatusError
 	if !errors.As(err, &status) || status.StatusCode != 429 {
 		t.Fatalf("Classify error = %v, want last status error", err)
@@ -489,7 +452,7 @@ func TestRequestCancellationDuringActualRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := client.Classify(ctx, Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
+		_, err := client.Classify(ctx, classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
 		done <- err
 	}()
 	<-started
@@ -513,45 +476,9 @@ func TestResponseBodyLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, err = client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
+	_, err = client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
 	if err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("Classify error = %v, want body limit", err)
-	}
-}
-
-// TestAnswerRejectsNonFiniteScore pins that a score is validated like every
-// other numeric answer field. encoding/json already refuses an out-of-range
-// literal on the wire, so this is the defence-in-depth layer for any caller
-// that builds an Answer directly; without it a NaN score reaches CLI output as
-// "NaN" and silently defeats numeric comparisons.
-func TestAnswerRejectsNonFiniteScore(t *testing.T) {
-	for name, score := range map[string]float64{
-		"NaN":  math.NaN(),
-		"+Inf": math.Inf(1),
-		"-Inf": math.Inf(-1),
-	} {
-		answer := Answer{Type: "score", Score: &score}
-		if err := answer.validate("tone"); err == nil || !strings.Contains(err.Error(), "finite") {
-			t.Fatalf("%s score error = %v, want a finite-number rejection", name, err)
-		}
-	}
-	finite := 1.5
-	if err := (Answer{Type: "score", Score: &finite}).validate("tone"); err != nil {
-		t.Fatalf("finite score rejected: %v", err)
-	}
-
-	// The wire path refuses the same value earlier, at decode.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"jev-latest","answers":{"tone":{"type":"score","score":1e999}}}`))
-	}))
-	defer server.Close()
-	client, err := NewClient(Options{APIKey: "secret-key", BaseURL: server.URL})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	if _, err := client.Classify(context.Background(), validRequest()); err == nil {
-		t.Fatal("out-of-range score literal was accepted")
 	}
 }
 
@@ -578,11 +505,11 @@ func TestNewClientTrimsAPIKey(t *testing.T) {
 	}
 }
 
-func validRequest() Request {
-	return Request{
+func validRequest() classify.Request {
+	return classify.Request{
 		State: json.RawMessage(`{"ticket":"Help!"}`),
 		Model: "jev-latest",
-		Questions: map[string]Question{
+		Questions: map[string]classify.Question{
 			"urgent": {Type: "noul", Instructions: json.RawMessage(`"Does this convey urgency?"`)},
 			"team":   {Type: "choice", Instructions: json.RawMessage(`"Which team?"`), Criteria: json.RawMessage(`{"billing":"Billing","technical":"Technical"}`)},
 			"tone":   {Type: "score", Instructions: json.RawMessage(`"How upset?"`), Criteria: json.RawMessage(`["Calm","Angry"]`)},
@@ -590,8 +517,8 @@ func validRequest() Request {
 	}
 }
 
-func validQuestions() map[string]Question {
-	return map[string]Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}
+func validQuestions() map[string]classify.Question {
+	return map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}
 }
 
 func TestErrorsRedactShortRequestValues(t *testing.T) {
@@ -618,43 +545,10 @@ func TestRedactionMatchesWholeValuesWithoutChangingMarkers(t *testing.T) {
 	}
 }
 
-func TestAnswerRequiredFields(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		body string
-		want string
-	}{
-		{"missing choice", `{"type":"choice"}`, "missing choice"},
-		{"null choice", `{"type":"choice","choice":null}`, "missing choice"},
-		{"missing score", `{"type":"score"}`, "missing score"},
-		{"null score", `{"type":"score","score":null}`, "missing score"},
-		{"missing noul", `{"type":"noul"}`, "missing noul"},
-		{"null noul", `{"type":"noul","noul":null}`, "missing noul"},
-		{"zero noul", `{"type":"noul","noul":0}`, ""},
-		{"null probabilities", `{"type":"choice","choice":"yes","probabilities":null,"confidence":null}`, ""},
-		{"null legend", `{"type":"score","score":0,"probabilities":{"0":1},"legend":null,"confidence":null}`, ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			var answer Answer
-			if err := json.Unmarshal([]byte(tt.body), &answer); err != nil {
-				t.Fatal(err)
-			}
-			err := answer.validate("q")
-			if tt.want == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("validation = %v, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
 func Test422DiagnosticsPreserveSchema(t *testing.T) {
 	for _, state := range []json.RawMessage{json.RawMessage(`"Al"`), json.RawMessage(`{"private": "Al"}`)} {
 		t.Run(string(state), func(t *testing.T) {
-			req := Request{State: state, Model: "jev-latest", Questions: validQuestions()}
+			req := classify.Request{State: state, Model: "jev-latest", Questions: validQuestions()}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(422)
 				json.NewEncoder(w).Encode(map[string]any{"detail": []any{
@@ -689,7 +583,7 @@ func TestResponseEvolution(t *testing.T) {
 		body := `{"model":"jev-latest","answers":{"q":{"type":"score","score":0},"extra":{"type":"future","value":true}}` + suffix + `}`
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
 		client, _ := NewClient(Options{APIKey: "test-key", BaseURL: server.URL})
-		resp, err := client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]Question{"q": {Type: "score", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`["no","yes"]`)}}})
+		resp, err := client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: map[string]classify.Question{"q": {Type: "score", Instructions: json.RawMessage(`"?"`), Criteria: json.RawMessage(`["no","yes"]`)}}})
 		server.Close()
 		if err != nil {
 			t.Fatal(err)
@@ -716,7 +610,7 @@ func TestRetryDelaysDoNotRetryEarly(t *testing.T) {
 			}))
 			defer server.Close()
 			client, _ := NewClient(Options{APIKey: "test-key", BaseURL: server.URL, Timeout: tt.timeout})
-			_, err := client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
+			_, err := client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
 			var status *providerhttp.StatusError
 			if !errors.As(err, &status) || status.StatusCode != 429 || attempts.Load() != 1 {
 				t.Fatalf("error=%v attempts=%d", err, attempts.Load())
@@ -745,7 +639,7 @@ func TestTransientStatusRetriesRespectDelay(t *testing.T) {
 			}))
 			defer server.Close()
 			client, _ := NewClient(Options{APIKey: "test-key", BaseURL: server.URL})
-			_, err := client.Classify(context.Background(), Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
+			_, err := client.Classify(context.Background(), classify.Request{State: json.RawMessage(`"hello"`), Model: "jev-latest", Questions: validQuestions()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -757,5 +651,37 @@ func TestTruncateUTF8(t *testing.T) {
 	got := truncate(strings.Repeat("界", 200))
 	if !utf8.ValidString(got) || !strings.HasSuffix(got, "...") {
 		t.Fatalf("invalid truncation %q", got)
+	}
+}
+
+func TestClassifyRejectsImagesWithoutRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("image request must not reach TypeSafe")
+	}))
+	defer srv.Close()
+	c, err := NewClient(Options{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Classify(context.Background(), classify.Request{State: json.RawMessage(`"s"`), Model: "m", Images: []string{"data:image/png;base64,AA=="},
+		Questions: map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}})
+	if !errors.Is(err, classify.ErrImagesUnsupported) {
+		t.Fatalf("err = %v, want ErrImagesUnsupported", err)
+	}
+}
+
+func TestOutOfRangeScoreLiteralIsRejected(t *testing.T) {
+	// The wire path refuses the same value earlier, at decode.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-latest","answers":{"tone":{"type":"score","score":1e999}}}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(Options{APIKey: "secret-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.Classify(context.Background(), validRequest()); err == nil {
+		t.Fatal("out-of-range score literal was accepted")
 	}
 }

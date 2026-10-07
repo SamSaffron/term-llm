@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 )
 
 // recordingEscalationLogger captures escalation records for assertions.
@@ -34,9 +34,9 @@ func (l *recordingEscalationLogger) snapshot() []Escalation {
 
 // fallbackClassifyStub stands in for the TypeSafe client and records what was sent.
 type fallbackClassifyStub struct {
-	answers map[string]typesafe.Answer
+	answers map[string]classify.Answer
 	model   string
-	usage   typesafe.Usage
+	usage   classify.Usage
 	err     error
 	onCall  func(context.Context)
 
@@ -45,7 +45,7 @@ type fallbackClassifyStub struct {
 	state []byte
 }
 
-func (s *fallbackClassifyStub) Classify(ctx context.Context, req typesafe.Request) (*typesafe.Response, error) {
+func (s *fallbackClassifyStub) Classify(ctx context.Context, req classify.Request) (*classify.Response, error) {
 	s.mu.Lock()
 	s.calls++
 	s.state = append([]byte(nil), req.State...)
@@ -56,7 +56,7 @@ func (s *fallbackClassifyStub) Classify(ctx context.Context, req typesafe.Reques
 	if s.err != nil {
 		return nil, s.err
 	}
-	return &typesafe.Response{Model: s.model, Answers: s.answers, Usage: s.usage}, nil
+	return &classify.Response{Model: s.model, Answers: s.answers, Usage: s.usage}, nil
 }
 
 func (s *fallbackClassifyStub) callCount() int {
@@ -71,7 +71,7 @@ func (s *fallbackClassifyStub) stateBytes() int {
 	return len(s.state)
 }
 
-func deniedAnswers() map[string]typesafe.Answer {
+func deniedAnswers() map[string]classify.Answer {
 	answers := testAnswers()
 	for id, answer := range answers {
 		confidence := 0.4
@@ -143,7 +143,7 @@ func TestFallbackReviewerEscalation(t *testing.T) {
 		},
 	}, {
 		name:          "classify denial escalates to fallback allow",
-		client:        &fallbackClassifyStub{answers: deniedAnswers(), model: "jev-live", usage: typesafe.Usage{InputTokens: ptrInt(11), OutputTokens: ptrInt(5)}},
+		client:        &fallbackClassifyStub{answers: deniedAnswers(), model: "jev-live", usage: classify.Usage{InputTokens: ptrInt(11), OutputTokens: ptrInt(5)}},
 		minConfidence: 0.5,
 		fallback: func(*testing.T) ReviewFunc {
 			return func(context.Context, Request) (Decision, error) { return llmAllow, nil }
@@ -534,7 +534,7 @@ func TestFallbackReviewerEscalation(t *testing.T) {
 
 func ptrInt(value int) *int { return &value }
 
-func malformedAnswers() map[string]typesafe.Answer {
+func malformedAnswers() map[string]classify.Answer {
 	answers := testAnswers()
 	delete(answers, "outcome")
 	return answers

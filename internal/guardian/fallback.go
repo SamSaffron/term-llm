@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 )
 
 // ReviewFunc is the shape shared by every Guardian backend.
@@ -26,11 +26,11 @@ type Escalation struct {
 
 	// Classifier input, exactly as constructed. Request is nil when the request
 	// could not be built (e.g. state over budget) and nothing was sent.
-	ClassifyRequest     *typesafe.Request          `json:"classify_request,omitempty"` // State, Model, Questions
+	ClassifyRequest     *classify.Request          `json:"classify_request,omitempty"` // State, Model, Questions
 	ClassifyRequestSent bool                       `json:"classify_request_sent"`
 	MinConfidence       float64                    `json:"min_confidence"`
 	ClassifyStage       string                     `json:"classify_stage"` // "build" | "transport" | "validate" | "decision"
-	ClassifyAnswers     map[string]typesafe.Answer `json:"classify_answers,omitempty"`
+	ClassifyAnswers     map[string]classify.Answer `json:"classify_answers,omitempty"`
 	ClassifyDecision    *Decision                  `json:"classify_decision,omitempty"` // set when stage == "decision" (a deny)
 	ClassifyError       string                     `json:"classify_error,omitempty"`
 	ClassifyModel       string                     `json:"classify_model,omitempty"` // the response model when the provider reported one

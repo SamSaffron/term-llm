@@ -6,12 +6,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/typesafe"
+	"github.com/samsaffron/term-llm/internal/classify"
 )
 
-// These budgets apply only to TypeSafe Guardian reviews, not to LLM Guardian
-// prompts or the standalone classify client. Count serialized bytes, including
-// questions, model, metadata and JSON escaping.
+// These budgets apply to every classify-backed Guardian review, whatever the
+// classify provider type, but not to LLM Guardian prompts or the standalone
+// classify command. Count serialized bytes, including questions, model,
+// metadata and JSON escaping.
 const (
 	maxClassifyRequestBytes       = 24000
 	maxClassifyUserBytes          = 8000
@@ -44,7 +45,7 @@ type classifyPacket struct {
 // authorization history, current permissions and supporting evidence. History
 // and accumulated approvals must not make an ordinary short action unreviewable.
 // Only an oversized exact action/policy/model/questions can fail the size guard.
-func buildClassifyRequest(req Request, policy, model string) (typesafe.Request, error) {
+func buildClassifyRequest(req Request, policy, model string) (classify.Request, error) {
 	packet := classifyPacket{Policy: policy, Transcript: make([]classifyTranscriptEntry, 0), Action: classifyRequestAction(req)}
 	approvalContext := req.ApprovalContext
 	if packet.Action.Type == "shell" && (req.ApprovalScope == "" || req.ApprovalScope == "local") {
@@ -61,13 +62,13 @@ func buildClassifyRequest(req Request, policy, model string) (typesafe.Request, 
 		}
 	}
 
-	request := typesafe.Request{Model: model, Questions: classifyQuestions()}
+	request := classify.Request{Model: model, Questions: classifyQuestions()}
 	request, size, err := marshalClassifyPacket(request, packet)
 	if err != nil {
 		return request, err
 	}
 	if size > maxClassifyRequestBytes {
-		return request, fmt.Errorf("exact action, policy and classification schema require %d bytes, exceeding the %d-byte TypeSafe Guardian request limit; use manual approval", size, maxClassifyRequestBytes)
+		return request, fmt.Errorf("exact action, policy and classification schema require %d bytes, exceeding the %d-byte classify Guardian request limit; use manual approval", size, maxClassifyRequestBytes)
 	}
 
 	userBytes := 2 // JSON array brackets
@@ -98,7 +99,7 @@ func buildClassifyRequest(req Request, policy, model string) (typesafe.Request, 
 		return request, err
 	}
 	if size > maxClassifyRequestBytes {
-		return request, fmt.Errorf("encoded TypeSafe Guardian request exceeds %d bytes; use manual approval", maxClassifyRequestBytes)
+		return request, fmt.Errorf("encoded classify Guardian request exceeds %d bytes; use manual approval", maxClassifyRequestBytes)
 	}
 
 	evidenceBytes, considered := 2, 0 // JSON array brackets
@@ -194,7 +195,7 @@ func compactClassifyApprovalContext(text string, budget int) (string, bool) {
 	return kept.String(), text != kept.String()
 }
 
-func appendClassifyEntry(request *typesafe.Request, packet *classifyPacket, entry classifyTranscriptEntry) (bool, int, error) {
+func appendClassifyEntry(request *classify.Request, packet *classifyPacket, entry classifyTranscriptEntry) (bool, int, error) {
 	candidate := *packet
 	candidate.Transcript = append(append([]classifyTranscriptEntry(nil), packet.Transcript...), entry)
 	sort.Slice(candidate.Transcript, func(i, j int) bool { return candidate.Transcript[i].Index < candidate.Transcript[j].Index })
@@ -231,13 +232,13 @@ func classifyRequestAction(req Request) classifyAction {
 	}
 }
 
-func marshalClassifyPacket(request typesafe.Request, packet classifyPacket) (typesafe.Request, int, error) {
+func marshalClassifyPacket(request classify.Request, packet classifyPacket) (classify.Request, int, error) {
 	state, err := json.Marshal(packet)
 	if err != nil {
 		return request, 0, fmt.Errorf("encode state: %w", err)
 	}
 	request.State = state
-	body, err := json.Marshal(request) // Same encoder as typesafe.Client.Classify.
+	body, err := json.Marshal(request) // Same encoder as classify.Client.Classify.
 	if err != nil {
 		return request, 0, fmt.Errorf("encode request: %w", err)
 	}

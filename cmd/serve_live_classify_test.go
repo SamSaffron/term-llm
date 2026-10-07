@@ -15,11 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/backends"
+	classifytypesafe "github.com/samsaffron/term-llm/internal/classify/typesafe"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 )
 
 type recordingDecisionLog struct {
@@ -78,10 +80,10 @@ func (s *countingLiveStateStore) counts() (int, int) {
 
 type noOpClassifyClient struct{}
 
-func (noOpClassifyClient) Classify(context.Context, typesafe.Request) (*typesafe.Response, error) {
+func (noOpClassifyClient) Classify(context.Context, classify.Request) (*classify.Response, error) {
 	return nil, nil
 }
-func (noOpClassifyClient) ListModels(context.Context) (*typesafe.ModelsResponse, error) {
+func (noOpClassifyClient) ListModels(context.Context) (*classify.ModelsResponse, error) {
 	return nil, nil
 }
 
@@ -93,10 +95,10 @@ func TestPrepareLiveClassifyUsesThreeSecondDefault(t *testing.T) {
 		Live: classifyLiveConfig(),
 	}
 	cfg.Live.Classify.LogDecisions = false
-	old := newLiveClassifyClient
-	defer func() { newLiveClassifyClient = old }()
-	var captured typesafe.Options
-	newLiveClassifyClient = func(options typesafe.Options) (classifyClient, error) {
+	old := newLiveClassifyBackend
+	defer func() { newLiveClassifyBackend = old }()
+	var captured backends.Connection
+	newLiveClassifyBackend = func(options backends.Connection) (classify.Backend, error) {
 		captured = options
 		return noOpClassifyClient{}, nil
 	}
@@ -117,10 +119,10 @@ func TestPrepareLiveClassifyClampsConfiguredTimeoutToRoutingBudget(t *testing.T)
 		Live: classifyLiveConfig(),
 	}
 	cfg.Live.Classify.LogDecisions = false
-	old := newLiveClassifyClient
-	defer func() { newLiveClassifyClient = old }()
-	var captured typesafe.Options
-	newLiveClassifyClient = func(options typesafe.Options) (classifyClient, error) {
+	old := newLiveClassifyBackend
+	defer func() { newLiveClassifyBackend = old }()
+	var captured backends.Connection
+	newLiveClassifyBackend = func(options backends.Connection) (classify.Backend, error) {
 		captured = options
 		return noOpClassifyClient{}, nil
 	}
@@ -148,9 +150,9 @@ func TestPrepareLiveClassifySecuresExistingDiagnosticsDirectory(t *testing.T) {
 		}},
 		Live: classifyLiveConfig(),
 	}
-	old := newLiveClassifyClient
-	defer func() { newLiveClassifyClient = old }()
-	newLiveClassifyClient = func(typesafe.Options) (classifyClient, error) { return noOpClassifyClient{}, nil }
+	old := newLiveClassifyBackend
+	defer func() { newLiveClassifyBackend = old }()
+	newLiveClassifyBackend = func(backends.Connection) (classify.Backend, error) { return noOpClassifyClient{}, nil }
 	_, store, err := prepareLiveClassify(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -657,7 +659,7 @@ func testLiveClassifier(t *testing.T, body string, delay, timeout time.Duration)
 		}
 		_, _ = w.Write([]byte(body))
 	}))
-	client, err := typesafe.NewClient(typesafe.Options{APIKey: "test", BaseURL: server.URL, Timeout: timeout})
+	client, err := classifytypesafe.NewClient(classifytypesafe.Options{APIKey: "test", BaseURL: server.URL, Timeout: timeout})
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

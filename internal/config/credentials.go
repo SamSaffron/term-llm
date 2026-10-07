@@ -325,15 +325,27 @@ func (c SearchConfig) GoogleCXRef() CredentialRef {
 
 // --- Classification ------------------------------------------------------
 
-// Key returns the classification credential. TypeSafe is the supported provider type.
+// Key returns the classification credential.
 //
-// The shared TYPESAFE_API_KEY fallback applies only to providers that talk to
-// the default TypeSafe endpoint. A provider pointed at another host must carry
-// its own api_key, so redirecting base_url cannot silently ship the primary
-// TypeSafe credential to a third party.
+// The shared environment fallback (TYPESAFE_API_KEY, or OPENAI_API_KEY for
+// openai providers) applies only to providers that talk to their type's
+// default endpoint. A provider pointed at another host must carry its own
+// api_key, so redirecting base_url cannot silently ship the primary
+// credential to a third party.
 func (c ClassifyProviderConfig) Key() CredentialRef {
-	if baseURL := strings.TrimSpace(c.BaseURL); baseURL != "" && baseURL != DefaultTypeSafeBaseURL {
+	return c.KeyFor(c.BaseURL)
+}
+
+// KeyFor returns the credential for requests sent to baseURL, which may be a
+// per-invocation override of the configured endpoint. The shared environment
+// fallback applies only when baseURL is empty or the type's default endpoint.
+func (c ClassifyProviderConfig) KeyFor(baseURL string) CredentialRef {
+	normalize := func(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/") }
+	if baseURL := normalize(baseURL); baseURL != "" && baseURL != normalize(c.DefaultBaseURL()) {
 		return Cred(c.APIKey)
+	}
+	if strings.TrimSpace(c.Type) == ClassifyProviderOpenAI {
+		return Cred(c.APIKey, "OPENAI_API_KEY")
 	}
 	return Cred(c.APIKey, "TYPESAFE_API_KEY")
 }

@@ -15,15 +15,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
 type classifyTestServer struct {
 	server   *httptest.Server
-	requests []typesafe.Request
+	requests []classify.Request
 }
 
 func newClassifyTestServer(t *testing.T) *classifyTestServer {
@@ -35,7 +36,7 @@ func newClassifyTestServer(t *testing.T) *classifyTestServer {
 		}
 		switch r.URL.Path {
 		case "/v1/systemone":
-			var req typesafe.Request
+			var req classify.Request
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Errorf("decode request: %v", err)
 			}
@@ -75,8 +76,8 @@ func executeClassifyTest(t *testing.T, args []string, in string, stdinData bool,
 	}
 	cmd := newClassifyCmd(classifyDeps{
 		loadConfig: func() (*config.Config, error) { return cfg, nil },
-		newClient: func(opts typesafe.Options) (classifyClient, error) {
-			return typesafe.NewClient(opts)
+		newBackend: func(opts backends.Connection) (classify.Backend, error) {
+			return backends.New(opts)
 		},
 		stdinData: func(*cobra.Command) bool { return stdinData },
 	})
@@ -174,7 +175,7 @@ func TestClassifyRejectsAmbiguousStateBeforeConfigOrNetwork(t *testing.T) {
 	calledClient := false
 	cmd := newClassifyCmd(classifyDeps{
 		loadConfig: func() (*config.Config, error) { calledConfig = true; return nil, nil },
-		newClient:  func(typesafe.Options) (classifyClient, error) { calledClient = true; return nil, nil },
+		newBackend: func(backends.Connection) (classify.Backend, error) { calledClient = true; return nil, nil },
 		stdinData:  func(*cobra.Command) bool { return true },
 	})
 	cmd.SetIn(strings.NewReader("stdin"))
@@ -197,7 +198,7 @@ func TestClassifyRejectsMutuallyExclusiveQuestionFlagsBeforeConfigOrNetwork(t *t
 		calledConfig := false
 		cmd := newClassifyCmd(classifyDeps{
 			loadConfig: func() (*config.Config, error) { calledConfig = true; return nil, nil },
-			newClient: func(typesafe.Options) (classifyClient, error) {
+			newBackend: func(backends.Connection) (classify.Backend, error) {
 				t.Fatal("client should not be created")
 				return nil, nil
 			},
@@ -326,7 +327,7 @@ func TestClassifyTimeoutFromConfigAndFlags(t *testing.T) {
 		loadConfig: func() (*config.Config, error) {
 			return &config.Config{Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"typesafe": {APIKey: "test-key", BaseURL: "http://example.test", Model: "jev", TimeoutSeconds: 7}}}}, nil
 		},
-		newClient: func(opts typesafe.Options) (classifyClient, error) {
+		newBackend: func(opts backends.Connection) (classify.Backend, error) {
 			got = append(got, opts.Timeout)
 			return fakeClassifyClient{}, nil
 		},
@@ -361,7 +362,7 @@ func TestClassifyRejectsInvalidFlagsBeforeReadingStdinOrConfig(t *testing.T) {
 			calledConfig := false
 			cmd := newClassifyCmd(classifyDeps{
 				loadConfig: func() (*config.Config, error) { calledConfig = true; return nil, nil },
-				newClient: func(typesafe.Options) (classifyClient, error) {
+				newBackend: func(backends.Connection) (classify.Backend, error) {
 					t.Fatal("client should not be created")
 					return nil, nil
 				},
@@ -393,7 +394,7 @@ func TestClassifyRejectsAnswerBeforeNetwork(t *testing.T) {
 			calledConfig := false
 			cmd := newClassifyCmd(classifyDeps{
 				loadConfig: func() (*config.Config, error) { calledConfig = true; return nil, nil },
-				newClient: func(typesafe.Options) (classifyClient, error) {
+				newBackend: func(backends.Connection) (classify.Backend, error) {
 					t.Fatal("client should not be created")
 					return nil, nil
 				},
@@ -476,7 +477,7 @@ func TestClassifyYAMLNumericKeysArePreservedAsStrings(t *testing.T) {
 }
 
 func TestClassifyTableEscapesUntrustedFields(t *testing.T) {
-	resp := &typesafe.Response{Answers: map[string]typesafe.Answer{"bad\n\x1b[31m": {Type: "choice", Choice: strPtr("yes\nno"), Confidence: floatPtr(1)}}}
+	resp := &classify.Response{Answers: map[string]classify.Answer{"bad\n\x1b[31m": {Type: "choice", Choice: strPtr("yes\nno"), Confidence: floatPtr(1)}}}
 	out, err := formatClassifyResponse(resp, &classifyOptions{format: "table"})
 	if err != nil {
 		t.Fatal(err)
@@ -492,7 +493,7 @@ func TestClassifyRejectsNegativeConfigTimeout(t *testing.T) {
 		loadConfig: func() (*config.Config, error) {
 			return &config.Config{Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"typesafe": {APIKey: "test-key", BaseURL: "http://example.test", Model: "jev", TimeoutSeconds: -1}}}}, nil
 		},
-		newClient: func(typesafe.Options) (classifyClient, error) {
+		newBackend: func(backends.Connection) (classify.Backend, error) {
 			t.Fatal("client should not be created")
 			return nil, nil
 		},
@@ -513,12 +514,12 @@ func floatPtr(f float64) *float64 { return &f }
 
 type fakeClassifyClient struct{}
 
-func (fakeClassifyClient) Classify(context.Context, typesafe.Request) (*typesafe.Response, error) {
+func (fakeClassifyClient) Classify(context.Context, classify.Request) (*classify.Response, error) {
 	choice := "yes"
-	return &typesafe.Response{Model: "jev", Answers: map[string]typesafe.Answer{"result": {Type: "choice", Choice: &choice, Probabilities: map[string]float64{"yes": 1}}}}, nil
+	return &classify.Response{Model: "jev", Answers: map[string]classify.Answer{"result": {Type: "choice", Choice: &choice, Probabilities: map[string]float64{"yes": 1}}}}, nil
 }
-func (fakeClassifyClient) ListModels(context.Context) (*typesafe.ModelsResponse, error) {
-	return &typesafe.ModelsResponse{Models: []typesafe.Model{{Name: "m", Description: "d", ReleaseDate: "2026"}}}, nil
+func (fakeClassifyClient) ListModels(context.Context) (*classify.ModelsResponse, error) {
+	return &classify.ModelsResponse{Models: []classify.Model{{Name: "m", Description: "d", ReleaseDate: "2026"}}}, nil
 }
 
 func TestClassifyQuestionParserRejectsUnsafeYAML(t *testing.T) {
@@ -708,7 +709,7 @@ func TestClassifyEnvironmentOnlyAndUnsupportedProviders(t *testing.T) {
 		for _, provider := range []string{"typesafe", "unsupported", "missing"} {
 			cfg := &config.Config{Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"unsupported": {Type: "other", APIKey: "$(exit 1)"}}}}
 			called := false
-			c := newClassifyCmd(classifyDeps{loadConfig: func() (*config.Config, error) { return cfg, nil }, newClient: func(o typesafe.Options) (classifyClient, error) {
+			c := newClassifyCmd(classifyDeps{loadConfig: func() (*config.Config, error) { return cfg, nil }, newBackend: func(o backends.Connection) (classify.Backend, error) {
 				called = true
 				if o.APIKey != "env-key" || o.BaseURL != config.DefaultTypeSafeBaseURL || o.Timeout != 10*time.Second {
 					t.Fatalf("options: %#v", o)
@@ -812,7 +813,13 @@ func TestClassifyProviderModelAndBaseURLCompletions(t *testing.T) {
 	}
 
 	got, directive := classifyCompletions(t, "classify", "state", "--provider", "")
-	assertClassifyCompletions(t, got, directive, []string{"custom", "typesafe"})
+	assertClassifyCompletions(t, got, directive, []string{"custom", "openai", "typesafe"})
+
+	got, directive = classifyCompletions(t, "classify", "state", "--provider", "openai", "--model", "")
+	assertClassifyCompletions(t, got, directive, []string{config.DefaultOpenAIDecisionsModel})
+
+	got, directive = classifyCompletions(t, "classify", "state", "--provider", "openai", "--base-url", "")
+	assertClassifyCompletions(t, got, directive, []string{config.DefaultOpenAIDecisionsBaseURL})
 
 	got, directive = classifyCompletions(t, "classify", "state", "--provider", "custom", "--model", "")
 	assertClassifyCompletions(t, got, directive, []string{"custom-model", config.DefaultTypeSafeModel})
@@ -847,4 +854,113 @@ func TestClassifyAnswerCompletionUsesRequestedQuestions(t *testing.T) {
 	// A directory is not readable as questions and must not suggest anything.
 	got, directive = classifyCompletions(t, "classify", "state", "--questions", t.TempDir(), "--answer", "")
 	assertClassifyCompletions(t, got, directive, nil)
+}
+
+func TestClassifyOpenAIProviderSendsImages(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-openai-key")
+	t.Setenv("TYPESAFE_API_KEY", "")
+	png := filepath.Join(t.TempDir(), "red.png")
+	if err := os.WriteFile(png, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		state  string
+		images int
+	}{
+		{"image only", []string{"--image", png}, "", 1},
+		{"text and images", []string{"a photo", "--image", png, "--image", "data:image/webp;base64,UklGRg=="}, `"a photo"`, 2},
+		{"text only", []string{"a photo"}, `"a photo"`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got classify.Request
+			client := &recordingClassifyClient{onClassify: func(req classify.Request) { got = req }}
+			c := newClassifyCmd(classifyDeps{
+				loadConfig: func() (*config.Config, error) { return &config.Config{}, nil },
+				newBackend: func(o backends.Connection) (classify.Backend, error) {
+					if o.Type != config.ClassifyProviderOpenAI || o.APIKey != "env-openai-key" || o.BaseURL != config.DefaultOpenAIDecisionsBaseURL || o.Timeout != 10*time.Second {
+						t.Fatalf("options: %#v", o)
+					}
+					return client, nil
+				},
+				stdinData: func(*cobra.Command) bool { return false },
+			})
+			c.SetArgs(append(tc.args, "-p", "openai", "--type", "noul", "--question", "Is it red?", "--format", "value"))
+			var out bytes.Buffer
+			c.SetOut(&out)
+			c.SetErr(&bytes.Buffer{})
+			if err := c.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if got.Model != config.DefaultOpenAIDecisionsModel || string(got.State) != tc.state || len(got.Images) != tc.images {
+				t.Fatalf("request: model=%q state=%s images=%d", got.Model, got.State, len(got.Images))
+			}
+			if tc.images > 0 && !strings.HasPrefix(got.Images[0], "data:image/png;base64,") {
+				t.Fatalf("image not encoded as PNG data URL: %.40s", got.Images[0])
+			}
+			if out.String() != "0.9\n" {
+				t.Fatalf("output = %q", out.String())
+			}
+		})
+	}
+}
+
+func TestClassifyImageRejections(t *testing.T) {
+	text := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(text, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, provider, image, want string
+	}{
+		{"typesafe provider", "typesafe", "data:image/png;base64,iVBO", "requires a classify provider with type openai"},
+		{"not an image", "openai", text, "unsupported image type"},
+		{"hosted url", "openai", "https://example.com/a.png", "hosted image URLs are not supported"},
+		{"bad data url", "openai", "data:text/plain;base64,aGk=", "data URL must be"},
+		{"stdin", "openai", "-", "does not read stdin"},
+		{"empty data url", "openai", "data:image/png;base64,", "data URL is empty"},
+		{"typesafe checked before reading", "typesafe", text, "requires a classify provider with type openai"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newClassifyCmd(classifyDeps{
+				loadConfig: func() (*config.Config, error) { return &config.Config{}, nil },
+				newBackend: func(backends.Connection) (classify.Backend, error) {
+					t.Fatal("client must not be built")
+					return nil, nil
+				},
+				stdinData: func(*cobra.Command) bool { return false },
+			})
+			c.SetArgs([]string{"--image", tc.image, "-p", tc.provider, "--type", "noul", "--question", "?"})
+			c.SetOut(&bytes.Buffer{})
+			c.SetErr(&bytes.Buffer{})
+			if err := c.Execute(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+type recordingClassifyClient struct {
+	onClassify func(classify.Request)
+}
+
+func (c *recordingClassifyClient) Classify(_ context.Context, req classify.Request) (*classify.Response, error) {
+	c.onClassify(req)
+	value := 0.9
+	return &classify.Response{Model: req.Model, Answers: map[string]classify.Answer{"result": {Type: "noul", Noul: &value}}}, nil
+}
+
+func (c *recordingClassifyClient) ListModels(context.Context) (*classify.ModelsResponse, error) {
+	return &classify.ModelsResponse{}, nil
+}
+
+func TestClassifyImageDataURLNormalization(t *testing.T) {
+	got, err := classifyImageDataURL("DATA:IMAGE/PNG;BASE64,iVBO\nRw0K\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "data:image/png;base64,iVBORw0K" {
+		t.Fatalf("normalized = %q", got)
+	}
 }

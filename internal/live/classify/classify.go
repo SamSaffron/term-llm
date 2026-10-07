@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/typesafe"
+	"github.com/samsaffron/term-llm/internal/classify"
 )
 
 const (
@@ -105,12 +105,12 @@ type Decision struct {
 	BoundedStateJSON json.RawMessage    `json:"-"`
 }
 
-// Client is the subset of typesafe.Client used by the live classifier.
+// Client is the subset of classify.Backend used by the live classifier.
 type Client interface {
-	Classify(context.Context, typesafe.Request) (*typesafe.Response, error)
+	Classify(context.Context, classify.Request) (*classify.Response, error)
 }
 
-// Classifier performs one stateless TypeSafe classification.
+// Classifier performs one stateless classification.
 type Classifier struct {
 	Client Client
 	Model  string
@@ -131,7 +131,7 @@ func (c *Classifier) Classify(ctx context.Context, state State) (Decision, error
 		return decision, err
 	}
 	decision.BoundedStateJSON = append(json.RawMessage(nil), stateJSON...)
-	response, err := c.Client.Classify(ctx, typesafe.Request{
+	response, err := c.Client.Classify(ctx, classify.Request{
 		State: stateJSON, Model: c.Model, Questions: Questions(),
 	})
 	if err != nil {
@@ -151,7 +151,7 @@ func (c *Classifier) Classify(ctx context.Context, state State) (Decision, error
 
 // Questions returns a fresh map because callers and HTTP test servers may retain
 // or mutate request values.
-func Questions() map[string]typesafe.Question {
+func Questions() map[string]classify.Question {
 	choiceCriteria := map[string]string{
 		IntentSteer:         "Ordinary work, a question, guidance, or conversation for the bound session. Praise plus an ask, comments inviting a reply, and instructions such as 'say ok' are steer. General questions such as 'is it working?' about a feature are steer, not status.",
 		IntentStatus:        "A request to report what term-llm sessions or scheduled jobs are currently running or recently completed, not whether a feature generally works.",
@@ -172,14 +172,14 @@ func Questions() map[string]typesafe.Question {
 		"true":  "The user clearly and directly asks to stop or cancel the active task now.",
 		"false": "The request is guidance, ordinary work, ambiguous, or does not clearly ask for an immediate stop.",
 	})
-	return map[string]typesafe.Question{
+	return map[string]classify.Question{
 		IntentQuestionID:          {Type: "choice", Instructions: intentInstructions, Criteria: intentCriteria},
 		AlsoRequestQuestionID:     {Type: "noul", Instructions: alsoInstructions, Criteria: alsoCriteria},
 		UnambiguousStopQuestionID: {Type: "noul", Instructions: stopInstructions, Criteria: stopCriteria},
 	}
 }
 
-func validateAnswers(answers map[string]typesafe.Answer, decision *Decision) error {
+func validateAnswers(answers map[string]classify.Answer, decision *Decision) error {
 	intent, ok := answers[IntentQuestionID]
 	if !ok {
 		return errors.New("live classify response missing intent")
@@ -224,7 +224,7 @@ func validateAnswers(answers map[string]typesafe.Answer, decision *Decision) err
 	return nil
 }
 
-func validatedNoul(answers map[string]typesafe.Answer, id string) (float64, error) {
+func validatedNoul(answers map[string]classify.Answer, id string) (float64, error) {
 	answer, ok := answers[id]
 	if !ok {
 		return 0, fmt.Errorf("live classify response missing %s", id)

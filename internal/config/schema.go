@@ -241,6 +241,10 @@ const (
 	DefaultTypeSafeBaseURL        = "https://api.typesafe.ai"
 	DefaultTypeSafeTimeoutSeconds = 10
 
+	DefaultOpenAIDecisionsModel          = "gpt-6-luna"
+	DefaultOpenAIDecisionsBaseURL        = "https://api.openai.com/v1"
+	DefaultOpenAIDecisionsTimeoutSeconds = 10
+
 	DefaultReasoningMaxSummaryChars = 12000
 	DefaultReasoningMaxRawChars     = 20000
 	DefaultReasoningHiddenLabel     = "Thinking..."

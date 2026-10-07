@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -21,29 +22,29 @@ type guardianClassifyStub struct {
 	state []byte
 }
 
-func (s *guardianClassifyStub) ListModels(context.Context) (*typesafe.ModelsResponse, error) {
+func (s *guardianClassifyStub) ListModels(context.Context) (*classify.ModelsResponse, error) {
 	panic("not used")
 }
-func (s *guardianClassifyStub) Classify(ctx context.Context, req typesafe.Request) (*typesafe.Response, error) {
+func (s *guardianClassifyStub) Classify(ctx context.Context, req classify.Request) (*classify.Response, error) {
 	s.calls++
 	s.state = append([]byte(nil), req.State...)
 	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 2*time.Second {
 		panic("missing guardian deadline")
 	}
-	answers := map[string]typesafe.Answer{}
+	answers := map[string]classify.Answer{}
 	for id, choice := range map[string]string{"risk_level": "low", "user_authorization": "explicit", "outcome": "allow"} {
 		c, confidence := choice, 0.4
-		answers[id] = typesafe.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
+		answers[id] = classify.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
 	}
-	return &typesafe.Response{Model: req.Model, Answers: answers}, nil
+	return &classify.Response{Model: req.Model, Answers: answers}, nil
 }
 
 func TestGuardianClassifySetupAndConfidenceBreaker(t *testing.T) {
 	stub := &guardianClassifyStub{}
-	orig := newGuardianClassifyClient
-	t.Cleanup(func() { newGuardianClassifyClient = orig })
+	orig := newGuardianClassifyBackend
+	t.Cleanup(func() { newGuardianClassifyBackend = orig })
 	factories := 0
-	newGuardianClassifyClient = func(opts typesafe.Options) (classifyClient, error) {
+	newGuardianClassifyBackend = func(opts backends.Connection) (classify.Backend, error) {
 		factories++
 		if opts.APIKey != "test-key" || opts.BaseURL != "http://localhost:1234" || opts.Timeout != 3*time.Second {
 			t.Fatalf("unexpected options (key omitted): %s %v", opts.BaseURL, opts.Timeout)
@@ -151,9 +152,9 @@ func TestGuardianClassifyConfigRenderingAndCompletion(t *testing.T) {
 
 func TestGuardianClassifyOversizeFailsClosedWithoutCallingProvider(t *testing.T) {
 	stub := &guardianClassifyStub{}
-	original := newGuardianClassifyClient
-	newGuardianClassifyClient = func(typesafe.Options) (classifyClient, error) { return stub, nil }
-	t.Cleanup(func() { newGuardianClassifyClient = original })
+	original := newGuardianClassifyBackend
+	newGuardianClassifyBackend = func(backends.Connection) (classify.Backend, error) { return stub, nil }
+	t.Cleanup(func() { newGuardianClassifyBackend = original })
 	cfg := &config.Config{
 		Guardian: config.GuardianConfig{Backend: "classify", TimeoutSeconds: 2},
 		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"typesafe": {APIKey: "test-key"}}},
@@ -186,9 +187,9 @@ func TestGuardianClassifyOversizeFailsClosedWithoutCallingProvider(t *testing.T)
 
 func TestGuardianClassifyLongHistoryStillReviewsShell(t *testing.T) {
 	stub := &guardianClassifyStub{}
-	original := newGuardianClassifyClient
-	newGuardianClassifyClient = func(typesafe.Options) (classifyClient, error) { return stub, nil }
-	t.Cleanup(func() { newGuardianClassifyClient = original })
+	original := newGuardianClassifyBackend
+	newGuardianClassifyBackend = func(backends.Connection) (classify.Backend, error) { return stub, nil }
+	t.Cleanup(func() { newGuardianClassifyBackend = original })
 	cfg := &config.Config{
 		Guardian: config.GuardianConfig{Backend: "classify", TimeoutSeconds: 2},
 		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"typesafe": {APIKey: "test-key"}}},
@@ -218,9 +219,9 @@ func TestGuardianClassifyLongHistoryStillReviewsShell(t *testing.T) {
 
 func TestGuardianClassifyWiringPreservesActions(t *testing.T) {
 	stub := &guardianClassifyStub{}
-	original := newGuardianClassifyClient
-	newGuardianClassifyClient = func(typesafe.Options) (classifyClient, error) { return stub, nil }
-	t.Cleanup(func() { newGuardianClassifyClient = original })
+	original := newGuardianClassifyBackend
+	newGuardianClassifyBackend = func(backends.Connection) (classify.Backend, error) { return stub, nil }
+	t.Cleanup(func() { newGuardianClassifyBackend = original })
 	cfg := &config.Config{Guardian: config.GuardianConfig{Backend: "classify", TimeoutSeconds: 2, Classify: config.GuardianClassifyConfig{MinConfidence: 0.5}}, Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"typesafe": {APIKey: "test-key"}}}}
 	mgr := tools.NewApprovalManager(nil)
 	defer mgr.Close()

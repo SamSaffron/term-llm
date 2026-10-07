@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,23 +13,21 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
 const maxClassifyInputBytes = 16 << 20
 
-type classifyClient interface {
-	Classify(context.Context, typesafe.Request) (*typesafe.Response, error)
-	ListModels(context.Context) (*typesafe.ModelsResponse, error)
-}
-
 type classifyDeps struct {
 	loadConfig func() (*config.Config, error)
-	newClient  func(typesafe.Options) (classifyClient, error)
+	// newBackend constructs the selected provider's backend; nil uses
+	// backends.New.
+	newBackend backends.Factory
 	stdinData  func(*cobra.Command) bool
 }
 
@@ -53,6 +50,7 @@ type classifyOptions struct {
 	format           string
 	prettyPrint      bool
 	answer           string
+	images           []string
 }
 
 func init() {
@@ -63,9 +61,6 @@ func newClassifyCmd(deps classifyDeps) *cobra.Command {
 	if deps.loadConfig == nil {
 		deps.loadConfig = config.Load
 	}
-	if deps.newClient == nil {
-		deps.newClient = func(opts typesafe.Options) (classifyClient, error) { return typesafe.NewClient(opts) }
-	}
 	if deps.stdinData == nil {
 		deps.stdinData = defaultClassifyStdinData
 	}
@@ -73,17 +68,20 @@ func newClassifyCmd(deps classifyDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "classify [state]",
 		Short: "Classify state with a classification provider",
-		Long: `Evaluate text or structured JSON with a classification provider (TypeSafe System One).
+		Long: `Evaluate text, structured JSON, or images with a classification provider
+(TypeSafe System One or the OpenAI Decisions API).
 
 Select classify.default_provider from classify.providers, or override it with --provider/-p.
 
 Questions can be supplied together in a JSON/YAML file, or defined inline for
-a single choice, score, or noul. State and questions are sent to the configured endpoint. TypeSafe may also
-be used for automatic approvals when guardian.backend is set to classify.`,
+a single choice, score, or noul. State and questions are sent to the configured endpoint. Images
+(--image) are supported only by providers with type openai, which ask noul questions as Decisions
+predicates. Classification may also be used for automatic approvals when guardian.backend is set to classify.`,
 		Example: `  term-llm classify "Production is down" --type noul --question "Is this urgent?" --format value
   term-llm classify "Sam is eating ice cream" --type choice --question "Am I happy?" --option yes --option no --pretty-print
   term-llm classify "My invoice is wrong" -q routing.yaml --format table
   term-llm classify --state-json -f event.json -q checks.yaml
+  term-llm classify -p openai --image product.png --type noul --question "Is the product damaged?"
   term-llm classify models`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -117,6 +115,7 @@ func addClassifyFlags(cmd *cobra.Command, opts *classifyOptions) {
 	cmd.Flags().StringVar(&opts.trueDescription, "true-description", "", "NOUL true description")
 	cmd.Flags().StringVar(&opts.falseDescription, "false-description", "", "NOUL false description")
 	cmd.Flags().StringVar(&opts.answer, "answer", "", "Answer id for --format value")
+	cmd.Flags().StringArrayVar(&opts.images, "image", nil, "Image file (PNG, JPEG, GIF, or WebP) or data:image URL to evaluate with the state; requires an openai provider (repeatable)")
 	registerClassifyCompletion(cmd, "type", classifyStaticCompletion(classifyQuestionTypes))
 	registerClassifyCompletion(cmd, "answer", classifyAnswerCompletion)
 	// Free-text flags: suggest nothing instead of unrelated file names.
@@ -130,11 +129,11 @@ func addClassifyConnectionOutputFlags(cmd *cobra.Command, opts *classifyOptions,
 	cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Classification provider (defaults to classify.default_provider)")
 	registerClassifyCompletion(cmd, "provider", classifyProviderCompletion)
 	if valueFormat {
-		cmd.Flags().StringVar(&opts.model, "model", "", "TypeSafe model (defaults to selected provider model)")
+		cmd.Flags().StringVar(&opts.model, "model", "", "Classification model (defaults to selected provider model)")
 		registerClassifyCompletion(cmd, "model", classifyModelCompletion)
 	}
-	cmd.Flags().StringVar(&opts.baseURL, "base-url", "", "TypeSafe API base URL (defaults to selected provider base_url)")
-	cmd.Flags().DurationVar(&opts.timeout, "timeout", 0, "TypeSafe request timeout (defaults to selected provider timeout_seconds)")
+	cmd.Flags().StringVar(&opts.baseURL, "base-url", "", "Classification API base URL (defaults to selected provider base_url)")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", 0, "Classification request timeout (defaults to selected provider timeout_seconds)")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "", "Write output to file instead of stdout")
 	cmd.Flags().BoolVar(&opts.prettyPrint, "pretty-print", false, "Indent JSON output (requires --format json)")
 	registerClassifyCompletion(cmd, "base-url", classifyBaseURLCompletion)
@@ -190,8 +189,15 @@ func runClassify(cmd *cobra.Command, args []string, opts *classifyOptions, deps 
 	if model == "" {
 		model = strings.TrimSpace(provider.Model)
 	}
-	req := typesafe.Request{State: state, Model: model, Questions: questions}
-	client, err := newTypeSafeClient(cfg, opts, deps)
+	if len(opts.images) > 0 && provider.Type != config.ClassifyProviderOpenAI {
+		return fmt.Errorf("--image requires a classify provider with type openai (provider type is %q); try --provider openai", provider.Type)
+	}
+	images, err := loadClassifyImages(opts.images)
+	if err != nil {
+		return err
+	}
+	req := classify.Request{State: state, Model: model, Questions: questions, Images: images}
+	client, err := openClassifyBackend(cfg, opts, deps.newBackend)
 	if err != nil {
 		return err
 	}
@@ -217,7 +223,7 @@ func runClassifyModels(cmd *cobra.Command, opts *classifyOptions, deps classifyD
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	client, err := newTypeSafeClient(cfg, opts, deps)
+	client, err := openClassifyBackend(cfg, opts, deps.newBackend)
 	if err != nil {
 		return err
 	}
@@ -232,34 +238,14 @@ func runClassifyModels(cmd *cobra.Command, opts *classifyOptions, deps classifyD
 	return writeClassifyOutput(cmd, opts.output, out)
 }
 
-func newTypeSafeClient(cfg *config.Config, opts *classifyOptions, deps classifyDeps) (classifyClient, error) {
+// openClassifyBackend resolves the selected provider, applies the
+// invocation's --base-url/--timeout overrides, and constructs its backend.
+func openClassifyBackend(cfg *config.Config, opts *classifyOptions, factory backends.Factory) (classify.Backend, error) {
 	provider, err := cfg.Classify.ResolveProvider(opts.provider)
 	if err != nil {
 		return nil, err
 	}
-	apiKey, err := provider.Key().Resolve()
-	if err != nil {
-		return nil, fmt.Errorf("resolve classify provider API key: %w", err)
-	}
-	baseURL := strings.TrimSpace(opts.baseURL)
-	if baseURL == "" {
-		baseURL, err = provider.BaseURLRef().Resolve()
-		if err != nil {
-			return nil, fmt.Errorf("resolve classify provider base URL: %w", err)
-		}
-	}
-	timeout := opts.timeout
-	if timeout == 0 && provider.TimeoutSeconds != 0 {
-		if provider.TimeoutSeconds < 0 {
-			return nil, errors.New("classify provider timeout_seconds must not be negative")
-		}
-		const maxTimeoutSeconds = int64(1<<63-1) / int64(time.Second)
-		if int64(provider.TimeoutSeconds) > maxTimeoutSeconds {
-			return nil, errors.New("classify provider timeout_seconds is too large")
-		}
-		timeout = time.Duration(provider.TimeoutSeconds) * time.Second
-	}
-	return deps.newClient(typesafe.Options{APIKey: apiKey, BaseURL: baseURL, Timeout: timeout})
+	return backends.Open(provider, backends.Overrides{BaseURL: opts.baseURL, Timeout: opts.timeout}, factory)
 }
 
 func validateClassifyEarlyFlags(cmd *cobra.Command, opts *classifyOptions) error {
@@ -302,7 +288,10 @@ func classifyState(cmd *cobra.Command, args []string, opts *classifyOptions, dep
 		}
 	}
 	if sources == 0 {
-		return nil, false, errors.New("state is required as positional text, --file, or stdin")
+		if len(opts.images) > 0 {
+			return nil, false, nil // Image-only request.
+		}
+		return nil, false, errors.New("state is required as positional text, --file, stdin, or --image")
 	}
 	if sources > 1 {
 		if stdin && positional && cmd.Flags().Changed("question") {
@@ -354,7 +343,7 @@ func encodeClassifyState(data []byte, stateJSON bool) (json.RawMessage, error) {
 	return encoded, nil
 }
 
-func classifyQuestions(cmd *cobra.Command, opts *classifyOptions, stateFromStdin bool) (map[string]typesafe.Question, error) {
+func classifyQuestions(cmd *cobra.Command, opts *classifyOptions, stateFromStdin bool) (map[string]classify.Question, error) {
 	questionsChanged := cmd.Flags().Changed("questions")
 	sugarChanged := classifySugarChanged(cmd)
 	if questionsChanged && sugarChanged {
@@ -388,7 +377,7 @@ func classifySugarChanged(cmd *cobra.Command) bool {
 	return false
 }
 
-func buildSugarQuestion(cmd *cobra.Command, opts *classifyOptions) (map[string]typesafe.Question, error) {
+func buildSugarQuestion(cmd *cobra.Command, opts *classifyOptions) (map[string]classify.Question, error) {
 	if !cmd.Flags().Changed("type") || strings.TrimSpace(opts.sugarType) == "" {
 		return nil, errors.New("--type is required for single-question mode")
 	}
@@ -398,7 +387,7 @@ func buildSugarQuestion(cmd *cobra.Command, opts *classifyOptions) (map[string]t
 	if strings.TrimSpace(opts.sugarName) == "" {
 		return nil, errors.New("--name must not be empty")
 	}
-	q := typesafe.Question{Type: strings.ToLower(strings.TrimSpace(opts.sugarType))}
+	q := classify.Question{Type: strings.ToLower(strings.TrimSpace(opts.sugarType))}
 	instructions, _ := json.Marshal(opts.sugarQuestion)
 	q.Instructions = instructions
 	var err error
@@ -415,10 +404,10 @@ func buildSugarQuestion(cmd *cobra.Command, opts *classifyOptions) (map[string]t
 	if err != nil {
 		return nil, err
 	}
-	return map[string]typesafe.Question{opts.sugarName: q}, nil
+	return map[string]classify.Question{opts.sugarName: q}, nil
 }
 
-func buildSugarChoice(cmd *cobra.Command, opts *classifyOptions, q *typesafe.Question) error {
+func buildSugarChoice(cmd *cobra.Command, opts *classifyOptions, q *classify.Question) error {
 	if len(opts.sugarOptions) == 0 {
 		return errors.New("--type choice requires at least one --option")
 	}
@@ -445,7 +434,7 @@ func buildSugarChoice(cmd *cobra.Command, opts *classifyOptions, q *typesafe.Que
 	return nil
 }
 
-func buildSugarScore(cmd *cobra.Command, opts *classifyOptions, q *typesafe.Question) error {
+func buildSugarScore(cmd *cobra.Command, opts *classifyOptions, q *classify.Question) error {
 	if len(opts.sugarLevels) < 2 {
 		return errors.New("--type score requires at least two --level values")
 	}
@@ -456,7 +445,7 @@ func buildSugarScore(cmd *cobra.Command, opts *classifyOptions, q *typesafe.Ques
 	return nil
 }
 
-func buildSugarNoul(cmd *cobra.Command, opts *classifyOptions, q *typesafe.Question) error {
+func buildSugarNoul(cmd *cobra.Command, opts *classifyOptions, q *classify.Question) error {
 	if cmd.Flags().Changed("option") || cmd.Flags().Changed("level") {
 		return errors.New("noul questions do not accept --option or --level")
 	}
@@ -466,7 +455,7 @@ func buildSugarNoul(cmd *cobra.Command, opts *classifyOptions, q *typesafe.Quest
 	return nil
 }
 
-func parseQuestions(data []byte) (map[string]typesafe.Question, error) {
+func parseQuestions(data []byte) (map[string]classify.Question, error) {
 	node, err := decodeSingleYAMLDocument(data)
 	if err != nil {
 		return nil, err
@@ -494,7 +483,7 @@ func parseQuestions(data []byte) (map[string]typesafe.Question, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode questions: %w", err)
 	}
-	var questions map[string]typesafe.Question
+	var questions map[string]classify.Question
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&questions); err != nil {
@@ -620,7 +609,7 @@ func validateClassifyFormat(format string, value bool) error {
 	return errors.New("--format must be json or table")
 }
 
-func formatClassifyResponse(resp *typesafe.Response, opts *classifyOptions) ([]byte, error) {
+func formatClassifyResponse(resp *classify.Response, opts *classifyOptions) ([]byte, error) {
 	switch opts.format {
 	case "json":
 		return formatClassifyJSON(resp.Raw, resp, opts.prettyPrint)
@@ -654,7 +643,7 @@ func formatClassifyResponse(resp *typesafe.Response, opts *classifyOptions) ([]b
 	}
 }
 
-func sortedAnswerIDs(m map[string]typesafe.Answer) []string {
+func sortedAnswerIDs(m map[string]classify.Answer) []string {
 	ids := make([]string, 0, len(m))
 	for id := range m {
 		ids = append(ids, id)
@@ -663,7 +652,7 @@ func sortedAnswerIDs(m map[string]typesafe.Answer) []string {
 	return ids
 }
 
-func answerValue(a typesafe.Answer) string {
+func answerValue(a classify.Answer) string {
 	if a.Choice != nil {
 		return *a.Choice
 	}
@@ -680,7 +669,7 @@ func floatValue(v *float64) string {
 	return fmt.Sprintf("%g", *v)
 }
 
-func formatClassifyModels(resp *typesafe.ModelsResponse, format string, pretty bool) ([]byte, error) {
+func formatClassifyModels(resp *classify.ModelsResponse, format string, pretty bool) ([]byte, error) {
 	switch format {
 	case "json":
 		return formatClassifyJSON(resp.Raw, resp, pretty)
@@ -688,7 +677,7 @@ func formatClassifyModels(resp *typesafe.ModelsResponse, format string, pretty b
 		var b strings.Builder
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "MODEL\tRELEASE\tDESCRIPTION")
-		models := append([]typesafe.Model(nil), resp.Models...)
+		models := append([]classify.Model(nil), resp.Models...)
 		sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 		for _, m := range models {
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", classifyTableCell(m.Name), classifyTableCell(m.ReleaseDate), classifyTableCell(m.Description))
@@ -784,6 +773,7 @@ func classifyModelCompletion(cmd *cobra.Command, _ []string, prefix string) ([]s
 	models := []string{config.DefaultTypeSafeModel}
 	selected, _ := cmd.Flags().GetString("provider")
 	if provider, err := cfg.Classify.ResolveProvider(selected); err == nil {
+		models = []string{provider.DefaultModel()}
 		if model := strings.TrimSpace(provider.Model); model != "" {
 			models = append(models, model)
 		}
@@ -796,6 +786,7 @@ func classifyBaseURLCompletion(cmd *cobra.Command, _ []string, prefix string) ([
 	if cfg, err := config.Load(); err == nil {
 		selected, _ := cmd.Flags().GetString("provider")
 		if provider, err := cfg.Classify.ResolveProvider(selected); err == nil {
+			urls = []string{provider.DefaultBaseURL()}
 			if base := strings.TrimSpace(provider.BaseURL); base != "" {
 				urls = append(urls, base)
 			}
@@ -832,7 +823,7 @@ func classifyAnswerCompletion(cmd *cobra.Command, _ []string, prefix string) ([]
 // the runtime path it refuses anything that is not an ordinary readable file:
 // opening a FIFO blocks until a writer appears, which would hang the user's
 // shell on every <TAB>, and a character device would be read to the input cap.
-func readCompletionQuestions(path string) (map[string]typesafe.Question, error) {
+func readCompletionQuestions(path string) (map[string]classify.Question, error) {
 	path = strings.TrimSpace(path)
 	if path == "" || path == "-" {
 		return nil, errors.New("questions are not readable during completion")

@@ -9,19 +9,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/pathutil"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/typesafe"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 var newGuardianProviderByName = llm.NewProviderByName
 
-var newGuardianClassifyClient = func(opts typesafe.Options) (classifyClient, error) { return typesafe.NewClient(opts) }
+// newGuardianClassifyBackend constructs the Guardian classification backend.
+var newGuardianClassifyBackend backends.Factory = backends.New
 
 const guardianReviewerPoolSize = 3
 
@@ -254,7 +255,7 @@ func newClassifyGuardianReview(cfg *config.Config, policy string) (guardian.Revi
 	if err != nil {
 		return nil, nil, err
 	}
-	client, err := newTypeSafeClient(cfg, &classifyOptions{provider: cfg.Guardian.Classify.Provider}, classifyDeps{newClient: newGuardianClassifyClient})
+	client, err := backends.Open(provider, backends.Overrides{}, newGuardianClassifyBackend)
 	if err != nil {
 		return nil, nil, fmt.Errorf("guardian classify provider: %w", err)
 	}

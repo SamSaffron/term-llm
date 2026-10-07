@@ -12,7 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/typesafe"
+	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/typesafe"
 )
 
 func TestGatePhaseOneTable(t *testing.T) {
@@ -52,7 +53,7 @@ func TestGatePhaseOneTable(t *testing.T) {
 }
 
 func TestClassifierSendsBoundedStateAndValidatesAnswer(t *testing.T) {
-	var request typesafe.Request
+	var request classify.Request
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
@@ -182,8 +183,8 @@ func responseWithProbabilities(choice string, probabilities map[string]float64, 
 	return string(body)
 }
 
-func validAnswers(choice string, probability, also, stop float64) map[string]typesafe.Answer {
-	var response typesafe.Response
+func validAnswers(choice string, probability, also, stop float64) map[string]classify.Answer {
+	var response classify.Response
 	_ = json.Unmarshal([]byte(validResponse(choice, probability, also, stop)), &response)
 	return response.Answers
 }
