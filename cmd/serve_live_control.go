@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -602,16 +603,48 @@ func newLiveToolEngine(provider llm.Provider, registered []llm.Tool) (*llm.Engin
 // factory for tests.
 func (s *serveServer) newLiveControlProvider(ctx context.Context, sessionID string) (llm.Provider, error) {
 	providerKey, _ := s.persistedRuntimeIdentity(ctx, sessionID)
-	if s.liveControlProviderFactory != nil {
-		return s.liveControlProviderFactory(providerKey)
-	}
 	defaultProvider := ""
 	if s.cfgRef != nil {
 		defaultProvider = s.cfgRef.DefaultProvider
 	}
+	var policy modelpolicy.Policy
+	main := modelSelection{Provider: providerKey}
+	if s.sessionMgr != nil {
+		if rt, ok := s.sessionMgr.Get(sessionID); ok {
+			policy = rt.modelPolicy
+			main = modelSelection{Provider: rt.providerKey, Model: rt.defaultModel}
+			providerKey = rt.providerKey
+		}
+	}
+	if main.Model == "" && s.store != nil && sessionID != "" {
+		sess, err := s.store.Get(ctx, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("load live control session: %w", err)
+		}
+		if sess == nil {
+			return nil, fmt.Errorf("live control session %q is unavailable", sessionID)
+		}
+		policy, err = s.sessionModelPolicy(sess)
+		if err != nil {
+			return nil, err
+		}
+		main = modelSelection{Provider: resolveSessionProviderKey(s.cfgRef, sess), Model: sess.Model}
+		providerKey = main.Provider
+	}
+	if s.liveControlProviderFactory != nil && !policy.Restricted() {
+		return s.liveControlProviderFactory(providerKey)
+	}
 	provider, model, useFast := liveControlTarget(s.liveConfig(), providerKey, defaultProvider)
 	if useFast {
-		return s.fastProvider(providerKey)
+		if !policy.Restricted() {
+			return s.fastProvider(providerKey)
+		}
+		return auxProviderForPolicy(s.cfgRef, policy, main, providerKey, defaultProvider)
+	}
+	if policy.Restricted() {
+		if err := policy.CheckWithConfig(s.cfgRef, "auxiliary", provider, model); err != nil {
+			return mainProviderForPolicy(s.cfgRef, policy, main)
+		}
 	}
 	chosen, err := llm.NewProviderByName(s.cfgRef, provider, model)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
@@ -113,7 +114,17 @@ func (s *serveServer) runAutoTitle(ctx context.Context, sessionID, providerKey s
 		return
 	}
 
-	provider, err := s.newAutoTitleProvider(providerKey)
+	policy, err := s.sessionModelPolicy(sess)
+	if err != nil {
+		log.Printf("[serve] auto-title policy unavailable for %s: %v", sessionID, err)
+		return
+	}
+	var provider llm.Provider
+	if !policy.Restricted() {
+		provider, err = s.newAutoTitleProvider(providerKey)
+	} else {
+		provider, err = auxProviderForPolicy(s.cfgRef, policy, modelSelection{Provider: resolveSessionProviderKey(s.cfgRef, sess), Model: sess.Model}, providerKey, s.cfgRef.DefaultProvider)
+	}
 	if err != nil || provider == nil {
 		return
 	}
@@ -209,4 +220,21 @@ func (s *serveServer) stopAutoTitles() {
 	}
 	s.autoTitleMu.Unlock()
 	s.autoTitleWG.Wait()
+}
+
+func (s *serveServer) sessionModelPolicy(sess *session.Session) (modelpolicy.Policy, error) {
+	if sess == nil {
+		return modelpolicy.Policy{}, fmt.Errorf("session is unavailable")
+	}
+	if strings.TrimSpace(sess.Agent) == "" {
+		return sess.ModelPolicy, nil
+	}
+	if s.cfgRef == nil {
+		return modelpolicy.Policy{}, fmt.Errorf("load session agent %q: configuration is unavailable", sess.Agent)
+	}
+	agent, err := loadPersistedAgent(sess.Agent, s.cfgRef)
+	if err != nil {
+		return modelpolicy.Policy{}, fmt.Errorf("load session agent %q for model policy: %w", sess.Agent, err)
+	}
+	return modelPolicyForSession(sess, agent), nil
 }

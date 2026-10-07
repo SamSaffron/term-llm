@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
 func TestQueueAgentCreatesAndTriggersJobsBackedLLMJob(t *testing.T) {
@@ -870,5 +871,47 @@ func TestWaitForJobsTerminalReplayHonorsCancellation(t *testing.T) {
 	}
 	if eventRequests.Load() != 1 || starts != 1 || done != 0 {
 		t.Fatalf("requests=%d starts=%d done=%d", eventRequests.Load(), starts, done)
+	}
+}
+
+func TestQueueAgentDeniesBeforeCreatingJobAndCarriesParentPolicy(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path == "/v2/jobs" {
+			var payload jobsV2AgentJobPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			inherited, ok := payload.RunnerConfig["model_policy"].(map[string]any)
+			if !ok || len(inherited["rules"].([]any)) != 1 {
+				t.Fatalf("inherited=%#v", payload.RunnerConfig["model_policy"])
+			}
+			parent := payload.RunnerConfig["parent_model"].(map[string]any)
+			if parent["model"] != "live" {
+				t.Fatalf("parent=%#v", parent)
+			}
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_1"})
+			return
+		}
+		writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_1", JobID: "job_1"})
+	}))
+	defer server.Close()
+	tool := NewQueueAgentToolWithClient(&jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()})
+	tool.SetModelAdmission(func() (modelpolicy.Policy, modelpolicy.ParentModel) {
+		return modelpolicy.Policy{}.With("boss", []string{"debug:*"}), modelpolicy.ParentModel{Provider: "debug", Model: "live"}
+	}, func(_ context.Context, _, model string, _ modelpolicy.Policy, _ modelpolicy.ParentModel) error {
+		if model == "other:denied" {
+			return errors.New("parent agent boss rejected model")
+		}
+		return nil
+	})
+	denied, err := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"child","prompt":"work","model":"other:denied"}`))
+	if err != nil || !denied.IsError || calls != 0 {
+		t.Fatalf("denied=%+v err=%v calls=%d", denied, err, calls)
+	}
+	ok, err := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"child","prompt":"work"}`))
+	if err != nil || ok.IsError || calls != 2 {
+		t.Fatalf("allowed=%+v err=%v calls=%d", ok, err, calls)
 	}
 }

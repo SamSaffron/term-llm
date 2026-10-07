@@ -40,7 +40,7 @@ var builtinAgentNames = []string{
 func getBuiltinAgent(name string) (*Agent, error) {
 	agentYAML, err := builtinFS.ReadFile(fmt.Sprintf("builtin/%s/agent.yaml", name))
 	if err != nil {
-		return nil, fmt.Errorf("builtin agent %s not found", name)
+		return nil, fmt.Errorf("read builtin agent %s: %w", name, err)
 	}
 
 	systemMD, _ := builtinFS.ReadFile(fmt.Sprintf("builtin/%s/system.md", name))

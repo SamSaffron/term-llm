@@ -1,7 +1,9 @@
 package agents
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -101,6 +103,10 @@ func (r *Registry) SetPreferences(prefs map[string]config.AgentPreference) {
 	r.preferences = prefs
 }
 
+// ErrNotFound identifies a genuinely missing agent definition, distinct from
+// invalid definitions or failures reading an existing one.
+var ErrNotFound = errors.New("agent not found")
+
 // Get retrieves an agent by name.
 // Resolution order: local > user > search paths > builtin
 // Preferences are applied on top of the loaded agent config.
@@ -135,12 +141,15 @@ func (r *Registry) Get(name string) (*Agent, error) {
 	if agent == nil && r.useBuiltin {
 		agent, err = getBuiltinAgent(name)
 		if err != nil {
-			return nil, fmt.Errorf("agent not found: %s", name)
+			if !errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf("load builtin agent %s: %w", name, err)
+			}
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 		}
 	}
 
 	if agent == nil {
-		return nil, fmt.Errorf("agent not found: %s", name)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
 
 	// Apply preferences on top of agent config

@@ -268,7 +268,8 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 	// Apply provider overrides before resolving the prompt so it is built for
 	// the provider/model the loop will actually run.
-	if err := applyAgentProviderModelPolicy(cfg, cfg.Ask.Provider, cfg.Ask.Model, loopProvider, agent, false); err != nil {
+	loopSelected, loopPolicy, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Ask.Provider, CmdModel: cfg.Ask.Model, ProviderFlag: loopProvider})
+	if err != nil {
 		return err
 	}
 
@@ -337,9 +338,11 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		}
 
 		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, resolvedYolo); err != nil {
+		spawnRunner, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, nil, "")
+		if err != nil {
 			return err
 		}
+		wireStaticAgentModelAdmission(cfg, toolMgr, spawnRunner, loopPolicy, loopSelected)
 	}
 
 	// Initialize MCP servers

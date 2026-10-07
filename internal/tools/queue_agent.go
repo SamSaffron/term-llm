@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
 const (
@@ -141,6 +142,8 @@ type QueueAgentTool struct {
 	client                  *jobsBackedAgentClient
 	config                  *ToolConfig
 	triggerReconcileTimeout time.Duration
+	admission               func(context.Context, string, string, modelpolicy.Policy, modelpolicy.ParentModel) error
+	parentState             func() (modelpolicy.Policy, modelpolicy.ParentModel)
 }
 
 func NewQueueAgentTool(configs ...*ToolConfig) *QueueAgentTool {
@@ -149,6 +152,11 @@ func NewQueueAgentTool(configs ...*ToolConfig) *QueueAgentTool {
 
 func NewQueueAgentToolWithClient(client *jobsBackedAgentClient, configs ...*ToolConfig) *QueueAgentTool {
 	return &QueueAgentTool{client: client, config: optionalToolConfig(configs)}
+}
+
+// SetModelAdmission configures a frozen parent snapshot and launch preflight.
+func (t *QueueAgentTool) SetModelAdmission(state func() (modelpolicy.Policy, modelpolicy.ParentModel), check func(context.Context, string, string, modelpolicy.Policy, modelpolicy.ParentModel) error) {
+	t.parentState, t.admission = state, check
 }
 
 func (t *QueueAgentTool) Spec() llm.ToolSpec {
@@ -218,8 +226,18 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, err.Error())), nil
 	}
 
+	var policy modelpolicy.Policy
+	var parent modelpolicy.ParentModel
+	if t.parentState != nil {
+		policy, parent = t.parentState()
+	}
+	if t.admission != nil {
+		if err := t.admission(ctx, agentName, strings.TrimSpace(a.Model), policy, parent); err != nil {
+			return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, err.Error())), nil
+		}
+	}
 	origin, _ := QueueAgentOriginFromContext(ctx)
-	job, err := t.client.createAgentJob(ctx, agentName, a.Prompt, strings.TrimSpace(a.Model), cwd, timeout, a.NotifyWhenDone, origin)
+	job, err := t.client.createAgentJob(ctx, agentName, a.Prompt, strings.TrimSpace(a.Model), cwd, timeout, a.NotifyWhenDone, origin, policy, parent)
 	if err != nil {
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
@@ -391,7 +409,7 @@ func newJobsBackedAgentClient(baseURL, token string) *jobsBackedAgentClient {
 	}
 }
 
-func (c *jobsBackedAgentClient) createAgentJob(ctx context.Context, agentName, prompt, model, cwd string, timeout int, notifyWhenDone bool, origin QueueAgentOriginContext) (jobsV2AgentJobResponse, error) {
+func (c *jobsBackedAgentClient) createAgentJob(ctx context.Context, agentName, prompt, model, cwd string, timeout int, notifyWhenDone bool, origin QueueAgentOriginContext, policy modelpolicy.Policy, parent modelpolicy.ParentModel) (jobsV2AgentJobResponse, error) {
 	instructions := prompt + `
 
 ---
@@ -412,6 +430,13 @@ Choose COMPLETE only if you fully accomplished the task. Do not omit this line.`
 	if model != "" {
 		runnerConfig["model"] = model
 	}
+	if policy.Restricted() {
+		runnerConfig["model_policy"] = policy
+	}
+	if parent.Provider != "" {
+		runnerConfig["parent_model"] = parent
+	}
+
 	requestHeaders := map[string]string(nil)
 	if notifyWhenDone {
 		runnerConfig["notify_when_done"] = true

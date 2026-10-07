@@ -18,5 +18,7 @@ The terminal manager owns the same freeze and settlement handoff. Without a sess
 
 Migration 56 renames the pending table/index, backfills deterministic historical `(created_at,id)` order, and adds monotonic acceptance sequence/provenance/ownership. Historical order backfill is best effort; it cannot recover true acceptance order from timestamp ties. Migration 57 adds the rush ledger. Migrations preserve pending structured payloads and foreign-key cascades. Fresh and upgraded schemas are checked for equivalence.
 
+Migration 64 adds the nullable inherited agent `model_policy` JSON column to sessions. Existing sessions without a policy are unrestricted by inheritance. Branches and handover sessions copy the inherited chain; new child sessions store their ancestors' rules separately from their own agent definition. As with earlier migrations, do not run old and new binaries concurrently against this database.
+
 Do not run old and new binaries concurrently against this database. Older binaries are not supported after schema upgrade. Back up the database before upgrading; downgrade by stopping the server and restoring the backup, not by a destructive reverse migration.
 

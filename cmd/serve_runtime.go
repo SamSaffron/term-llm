@@ -20,6 +20,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -45,6 +46,8 @@ type serveRuntime struct {
 	compactionIdentityMu sync.Mutex
 	provider             llm.Provider
 	providerKey          string
+	modelPolicy          modelpolicy.Policy
+	modelPolicyConfig    *config.Config
 	// swapCandidate marks the runtime a model swap is installing. It runs a
 	// provider the session row does not name until its first turn persists, so
 	// it must survive a status poll in that window. Request handlers read it
@@ -823,6 +826,13 @@ func (rt *serveRuntime) QueueActiveRunRuntimeSwitch(model, reasoningEffort strin
 	model, reasoningEffort = normalizeProviderModelEffort(runtimeProviderKey(rt), model, reasoningEffort)
 	if activeModel != "" && model != activeModel {
 		return fmt.Errorf("runtime effort switch can only target active model %q", activeModel)
+	}
+	selected := model
+	if reasoningEffort != "" {
+		selected += "-" + reasoningEffort
+	}
+	if err := rt.modelPolicy.CheckWithConfig(rt.modelPolicyConfig, rt.agentName, runtimeProviderKey(rt), selected); err != nil {
+		return err
 	}
 	rt.engine.QueueRequestRuntimeSwitch(model, reasoningEffort)
 	return nil

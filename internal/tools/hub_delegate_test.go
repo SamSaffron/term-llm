@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
 // fakeHub fakes the Hub delegation API the node tools talk to.
@@ -348,5 +349,14 @@ func TestAllToolNamesIncludesHubDelegationOnlyWhenConfigured(t *testing.T) {
 	}
 	if !seen[HubDelegateToolName] || !seen[HubCheckDelegationToolName] {
 		t.Fatalf("hub delegation tools missing after hub config: %v", StandardToolNames())
+	}
+}
+
+func TestHubDelegateRefusesRestrictedParent(t *testing.T) {
+	tool := NewHubDelegateTool()
+	tool.SetModelPolicySource(func() modelpolicy.Policy { return modelpolicy.Policy{}.With("parent", []string{"debug:*"}) })
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"target_node":"remote","prompt":"hello"}`))
+	if err != nil || !strings.Contains(out.Content, "unavailable to agents restricted by allowed_models") {
+		t.Fatalf("out=%+v err=%v", out, err)
 	}
 }

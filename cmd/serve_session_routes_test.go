@@ -28,6 +28,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/widgets"
@@ -3314,5 +3315,37 @@ func TestHandleTranscribe_RejectsUnsupportedType(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "unsupported") {
 		t.Fatalf("body = %q, want unsupported error", rr.Body.String())
+	}
+}
+
+func TestActiveRuntimeEffortPolicyRejectsBeforeQueue(t *testing.T) {
+	provider := newStagedProvider("ok", "")
+	close(provider.releaseSecond)
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "openai", defaultModel: "gpt-5.4", agentName: "boss", modelPolicy: modelpolicy.Policy{}.With("boss", []string{"openai:gpt-5.4-medium"})}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{}), model: "gpt-5.4", reasoningEffort: "medium"}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+	if err := rt.QueueActiveRunRuntimeSwitch("gpt-5.4", "high"); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected policy denial before queue: %v", err)
+	}
+	stream, err := engine.Stream(context.Background(), llm.Request{Model: "gpt-5.4", ReasoningEffort: "medium", Messages: []llm.Message{llm.UserText("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) != 1 || provider.requests[0].ReasoningEffort != "medium" {
+		t.Fatalf("denied effort queued: %+v", provider.requests)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -71,9 +72,11 @@ type Request struct {
 	Stateful                  bool
 	ReplaceHistory            bool
 
-	Provider string
-	Model    string
-	Cwd      string
+	Provider    string
+	Model       string
+	ModelPolicy modelpolicy.Policy // inherited restrictions; own agent rule is added at admission
+	ParentModel ParentModel        // frozen live parent selection
+	Cwd         string
 
 	Tools      string
 	ReadDirs   []string
@@ -206,3 +209,6 @@ type Result struct {
 type Runner interface {
 	Run(ctx context.Context, req Request, sink EventSink) (Result, error)
 }
+
+// ParentModel identifies the live model of the caller at child admission.
+type ParentModel = modelpolicy.ParentModel

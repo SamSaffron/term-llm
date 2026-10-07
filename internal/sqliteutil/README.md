@@ -48,6 +48,8 @@ Use version-named, immutable table SQL. Create the replacement table, copy an ex
 
 - Session v63 adds child working directories, originating parent response IDs, generation-scoped delivery/collection, retained media, and independent wake suppression, with a partial pending-event index. The immediately previous v62 binary rejects v63 for read-write use. Its read-only lifecycle queries can read the original columns but do not understand completion delivery or retained media; do not share write access across versions.
 
+- Session v64 adds nullable `sessions.model_policy` for inherited agent-model restrictions. Legacy rows remain unrestricted by inheritance; new child sessions carry the rules that applied at creation. The previous binary rejects the newer marker for read-write use. Stop older writers before upgrading and restore a backup to downgrade.
+
 A process running an older binary concurrently with a new migrator is not granted write coordination beyond SQLite locking. Deploy one write-capable version at a time during these first marker transitions.
 
 ## Errors and operations

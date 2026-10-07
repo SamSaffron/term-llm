@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -400,9 +401,13 @@ func (s *serveServer) handleCreateCommitRun(w http.ResponseWriter, r *http.Reque
 	}
 	var runtime *serveRuntime
 	if s.sessionMgr != nil {
-		runtime, _, _ = s.runtimeForRequest(r.Context(), sessionID)
+		var runtimeErr error
+		runtime, _, runtimeErr = s.runtimeForRequest(r.Context(), sessionID)
+		if runtimeErr != nil {
+			log.Printf("[serve] commit runtime unavailable for %s; using durable parent model: %v", sessionID, runtimeErr)
+		}
 	}
-	runner, err := s.serveSkillChildRunner(sessionID, runtime)
+	runner, err := s.serveSkillChildRunner(r.Context(), sessionID, runtime)
 	if err != nil {
 		writeCommitError(w, err)
 		return

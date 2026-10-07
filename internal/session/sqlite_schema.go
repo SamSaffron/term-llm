@@ -148,7 +148,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 63
+	schemaVersion        = 64
 )
 
 // migration represents a schema migration.
@@ -1336,6 +1336,22 @@ var migrations = []migration{
 			}
 			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_session_agent_runs_pending ON session_agent_runs(parent_session_id, updated_at) WHERE notify_origin != '' AND notified_at IS NULL AND collected_at IS NULL AND wake_suppressed=0`)
 			return err
+		},
+	},
+	{
+		version:     64,
+		description: "persist inherited agent model policy",
+		up: func(db schemaExecutor) error {
+			exists, err := sqliteutil.ColumnExists(db, "sessions", "model_policy")
+			if err != nil {
+				return fmt.Errorf("inspect sessions.model_policy: %w", err)
+			}
+			if !exists {
+				if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN model_policy TEXT"); err != nil {
+					return fmt.Errorf("add sessions.model_policy: %w", err)
+				}
+			}
+			return nil
 		},
 	},
 }

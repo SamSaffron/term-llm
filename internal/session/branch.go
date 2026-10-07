@@ -220,6 +220,10 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 				FROM sessions WHERE id = ?`
 		}
 		inserted, err := conn.ExecContext(ctx, insertSession, childID, now, now, childCompactionSeq, childCompactionCount, sourceSessionID)
+		if err == nil && s.hasModelPolicy {
+			_, err = conn.ExecContext(ctx, `UPDATE sessions SET model_policy = (SELECT model_policy FROM sessions WHERE id = ?) WHERE id = ?`, sourceSessionID, childID)
+		}
+
 		if err != nil {
 			return fmt.Errorf("insert branch session: %w", err)
 		}

@@ -17,7 +17,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/process"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -584,11 +586,11 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		if model := strings.TrimSpace(sess.Model); model != "" {
 			providerOverride = resumeProvider + ":" + model
 		}
-		if err := applyAgentProviderModelPolicy(cfg, cfg.Chat.Provider, cfg.Chat.Model, providerOverride, agent, false); err != nil {
+		if _, _, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Chat.Provider, CmdModel: cfg.Chat.Model, ProviderFlag: providerOverride, Inherited: sess.ModelPolicy}); err != nil {
 			return nil, err
 		}
 	} else {
-		if err := applyAgentProviderModelPolicy(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agent, false); err != nil {
+		if _, _, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Chat.Provider, CmdModel: cfg.Chat.Model, ProviderFlag: chatProvider}); err != nil {
 			return nil, err
 		}
 	}
@@ -610,7 +612,8 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	if err != nil {
 		return nil, err
 	}
-	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
+	effectivePolicy := modelPolicyForSession(sess, agent)
+	fastProvider, fastErr := auxProviderForPolicy(cfg, effectivePolicy, modelSelection{Provider: cfg.DefaultProvider, Model: activeModel(cfg)}, cfg.DefaultProvider)
 	if fastErr != nil {
 		fmt.Fprintf(warnings, "warning: fast provider setup failed: %v\n", fastErr)
 	}
@@ -806,9 +809,35 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// the background so opening it never waits on them.
 	llm.DefaultProviderCredentials.Warm(cfg)
 	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
-	if agent != nil {
-		model.SetAllowedModels(agent.AllowedModels)
+	model.SetModelPolicy(effectivePolicy)
+	var liveModelMu sync.RWMutex
+	liveModel := runpkg.ParentModel{Provider: providerKey, Model: modelName}
+	liveState := func() (modelpolicy.Policy, runpkg.ParentModel) {
+		liveModelMu.RLock()
+		defer liveModelMu.RUnlock()
+		return effectivePolicy, liveModel
 	}
+	if spawnRunner != nil {
+		spawnRunner.SetModelPolicySource(func() ParentModelState {
+			p, parent := liveState()
+			return ParentModelState{Policy: p, Provider: parent.Provider, Model: parent.Model}
+		})
+	}
+	if toolMgr != nil && toolMgr.Registry != nil {
+		toolMgr.Registry.SetAgentModelAdmission(liveState, func(ctx context.Context, name, override string, inherited modelpolicy.Policy, parent runpkg.ParentModel) error {
+			checker := &cmdRunner{baseCfg: cfg}
+			_, _, _, _, err := checker.resolveRunModel(ctx, runpkg.Request{AgentName: name, Model: override, ModelPolicy: inherited, ParentModel: parent})
+			return err
+		})
+	}
+	model.SetModelSwitchHook(func(key, name string) {
+		liveModelMu.Lock()
+		liveModel = runpkg.ParentModel{Provider: key, Model: name}
+		liveModelMu.Unlock()
+	})
+	model.SetFastProviderResolver(func(key, name string) (llm.Provider, error) {
+		return auxProviderForPolicy(cfg, effectivePolicy, modelSelection{Provider: key, Model: name}, key, cfg.DefaultProvider)
+	})
 	model.SetAgentMentionCapability(runtimeAgentMentionCapability{engine: model.CurrentAgentMentionEngine, manager: toolMgr})
 	if sess != nil {
 		model.SetConversationBranch(sessionIsConversationBranch(context.Background(), store, sess.ID))
@@ -880,6 +909,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (llm.Provider, error) {
 		if strings.TrimSpace(providerKey) == "" {
 			providerKey = provider.Name()
+		}
+		if err := effectivePolicy.CheckWithConfig(cfg, agentName, providerKey, modelName); err != nil {
+			return nil, err
 		}
 		return llm.NewProviderByName(cfg, providerKey, modelName)
 	})

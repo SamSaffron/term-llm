@@ -2208,6 +2208,18 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	s.handleSessionMessagesRoute(w, r, sessionID, suffix)
 }
 
+func interruptFastProvider(cfg *config.Config, rt *serveRuntime) (llm.Provider, error) {
+	if cfg == nil || rt == nil {
+		return nil, nil
+	}
+	if !rt.modelPolicy.Restricted() {
+		// Keep the original session-provider-only candidate list for all users
+		// without allowed_models, even if the default provider has a fast model.
+		return llm.NewFastProvider(cfg, rt.providerKey)
+	}
+	return auxProviderForPolicy(cfg, rt.modelPolicy, modelSelection{Provider: rt.providerKey, Model: rt.defaultModel}, rt.providerKey, cfg.DefaultProvider)
+}
+
 func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {
 	var req sessionInterruptRequest
 	if err := decodeJSONBody(r, &req); err != nil {
@@ -2297,7 +2309,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	var fastProvider llm.Provider
 	if delivery == interruptDeliveryAuto {
 		var fastErr error
-		fastProvider, fastErr = llm.NewFastProvider(s.cfgRef, rt.providerKey)
+		fastProvider, fastErr = interruptFastProvider(s.cfgRef, rt)
 		if fastErr != nil {
 			log.Printf("[serve] fast provider unavailable for interrupt: %v", fastErr)
 		}
@@ -2668,8 +2680,21 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	provider, err := s.newTitleProvider()
-	if err != nil {
+	policy, policyErr := s.sessionModelPolicy(sess)
+	if policyErr != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "title model policy unavailable: "+policyErr.Error())
+		return
+	}
+	var provider llm.Provider
+	if !policy.Restricted() {
+		provider, err = s.newTitleProvider()
+	} else {
+		provider, err = auxProviderForPolicy(s.cfgRef, policy, modelSelection{Provider: resolveSessionProviderKey(s.cfgRef, sess), Model: sess.Model}, resolveSessionProviderKey(s.cfgRef, sess), s.cfgRef.DefaultProvider)
+	}
+	if err != nil || provider == nil {
+		if err == nil {
+			err = fmt.Errorf("no allowed title provider is available")
+		}
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to create fast title provider: "+err.Error())
 		return
 	}

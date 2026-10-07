@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
 func TestAgentAllowedModels(t *testing.T) {
@@ -25,7 +27,7 @@ func TestAgentAllowedModels(t *testing.T) {
 		{"openai", "claude-sonnet-4-6", false},
 		{"openai", "gpt-5.6-luna", false},
 	} {
-		err := agent.CheckModel(tc.provider, tc.model)
+		err := modelpolicy.Policy{}.With(agent.Name, agent.AllowedModels).Check(agent.Name, tc.provider, tc.model)
 		if (err == nil) != tc.allowed {
 			t.Errorf("CheckModel(%q, %q) error = %v, allowed = %v", tc.provider, tc.model, err, tc.allowed)
 		}
@@ -33,7 +35,7 @@ func TestAgentAllowedModels(t *testing.T) {
 			t.Errorf("denial should name the allowed selections: %v", err)
 		}
 	}
-	if err := (&Agent{Name: "reviewer"}).CheckModel("openai", "anything"); err != nil {
+	if err := (modelpolicy.Policy{}).Check("reviewer", "openai", "anything"); err != nil {
 		t.Fatalf("unset allowlist should allow any model: %v", err)
 	}
 }

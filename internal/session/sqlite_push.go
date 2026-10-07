@@ -270,6 +270,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasOrigin = true
 	s.hasPinned = true
 	s.hasPinOrder = true
+	s.hasModelPolicy = true
 	s.hasTitleSkippedAt = true
 	s.hasLastUserMessageAt = true
 	s.hasLastMessageAt = true
@@ -358,6 +359,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasOrigin = true
 		case "pinned":
 			s.hasPinned = true
+		case "model_policy":
+			s.hasModelPolicy = true
 		case "pin_order":
 			s.hasPinOrder = true
 		case "title_skipped_at":
@@ -497,6 +500,11 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	if s.hasCompactionCount {
 		base += ", compaction_count"
 	}
+	if s.hasModelPolicy {
+		base += ", model_policy"
+	} else {
+		base += ", NULL AS model_policy"
+	}
 	return base
 }
 
@@ -510,6 +518,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
 	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw, shareRaw sql.NullString
 	var pinOrder sql.NullInt64
+	var modelPolicyRaw sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -544,6 +553,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		scanArgs = append(scanArgs, &sess.CompactionCount)
 	}
 
+	scanArgs = append(scanArgs, &modelPolicyRaw)
 	err := row.Scan(scanArgs...)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -552,6 +562,11 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		return nil, fmt.Errorf("scan session: %w", err)
 	}
 
+	if modelPolicyRaw.Valid && modelPolicyRaw.String != "" {
+		if err := json.Unmarshal([]byte(modelPolicyRaw.String), &sess.ModelPolicy); err != nil {
+			return nil, fmt.Errorf("decode session model policy: %w", err)
+		}
+	}
 	// Default compaction_seq when column is absent
 	if !hasCompactionSeq {
 		sess.CompactionSeq = -1

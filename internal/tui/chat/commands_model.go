@@ -259,6 +259,9 @@ func (m *Model) markPendingStreamModelSwitchApplied(model string) bool {
 	if strings.TrimSpace(m.pendingStreamModelSwitch.model) != strings.TrimSpace(model) {
 		return false
 	}
+	if err := m.admitModelSelection(m.pendingStreamModelSwitch.provider, model, true); err != nil {
+		return false
+	}
 	m.pendingStreamModelSwitch.applied = true
 	return true
 }
@@ -270,12 +273,16 @@ func (m *Model) clearPendingStreamModelSwitch() {
 	}
 }
 
-func (m *Model) queuePendingStreamModelSwitch(provider, model string) {
+func (m *Model) queuePendingStreamModelSwitch(provider, model string) error {
+	if err := m.admitModelSelection(provider, model, false); err != nil {
+		return err
+	}
 	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: provider, model: model}
 	currentProvider, _ := m.currentProviderAndModel()
 	if m.engine != nil && provider == currentProvider {
 		m.engine.QueueRequestModelSwitch(model)
 	}
+	return nil
 }
 
 func (m *Model) cmdPro(args []string) (tea.Model, tea.Cmd) {
@@ -359,7 +366,9 @@ func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.streaming {
-		m.queuePendingStreamModelSwitch(provider, resolved.targetModel)
+		if err := m.queuePendingStreamModelSwitch(provider, resolved.targetModel); err != nil {
+			return m.showSystemMessage(err.Error())
+		}
 		return m.showFooterMuted(fmt.Sprintf("Effort %s queued; will apply at the next model turn.", resolved.label))
 	}
 
@@ -402,7 +411,9 @@ func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
 		if !resolved.ok {
 			return m.showEffortResolutionMessage(resolved)
 		}
-		m.queuePendingStreamModelSwitch(provider, resolved.targetModel)
+		if err := m.queuePendingStreamModelSwitch(provider, resolved.targetModel); err != nil {
+			return m.showSystemMessage(err.Error())
+		}
 		_, cmd := m.showFooterMuted(fmt.Sprintf("Effort %s queued; will apply at the next model turn.", resolved.label))
 		m.restoreComposerSnapshot(draft)
 		return m, cmd
@@ -518,6 +529,9 @@ func (m *Model) switchEffortResolved(resolved effortSwitchResolution, deferMarke
 }
 
 func (m *Model) switchEffortStateOnly(resolved effortSwitchResolution, deferMarker bool) (tea.Model, tea.Cmd) {
+	if err := m.admitModelSelection(resolved.provider, resolved.targetModel, false); err != nil {
+		return m.showSystemMessage(err.Error())
+	}
 	oldProvider := strings.TrimSpace(m.providerKey)
 	if oldProvider == "" {
 		oldProvider = strings.TrimSpace(m.providerName)
@@ -531,6 +545,7 @@ func (m *Model) switchEffortStateOnly(resolved effortSwitchResolution, deferMark
 
 	m.providerKey = resolved.provider
 	m.modelName = resolved.targetModel
+	_ = m.admitModelSelection(resolved.provider, resolved.targetModel, true)
 	m.refreshEffectiveFastMode()
 
 	if m.sess != nil {

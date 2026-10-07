@@ -10,6 +10,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
@@ -234,6 +235,52 @@ func includeConfiguredRunnerTools(req runpkg.Request) bool {
 	return req.IncludeConfiguredTools == nil || *req.IncludeConfiguredTools
 }
 
+// resolveRunModel admits the same immutable request used to build the runtime.
+// Child preflight calls this before emitting a started event.
+// runModelPolicies separates the rules inherited from ancestors (persisted on
+// the session) from the effective chain that also includes the agent's own rule.
+type runModelPolicies struct{ Effective, Inherited modelpolicy.Policy }
+
+func (r *cmdRunner) resolveRunModel(ctx context.Context, req runpkg.Request) (*config.Config, *agents.Agent, modelSelection, runModelPolicies, error) {
+	cfg := cloneConfigForServeJob(r.baseCfg)
+	agent, err := LoadAgent(req.AgentName, cfg)
+	if err != nil {
+		return nil, nil, modelSelection{}, runModelPolicies{}, err
+	}
+	if strings.TrimSpace(req.AgentName) != "" && agent == nil {
+		return nil, nil, modelSelection{}, runModelPolicies{}, fmt.Errorf("agent %q not found", req.AgentName)
+	}
+	inherited := req.ModelPolicy
+	resume := runpkg.ParentModel{}
+	if req.SessionID != "" && r.defaults.Store != nil {
+		sess, err := r.defaults.Store.Get(ctx, req.SessionID)
+		if err != nil {
+			return nil, nil, modelSelection{}, runModelPolicies{}, fmt.Errorf("load resumed session policy: %w", err)
+		}
+		if sess != nil {
+			inherited = sess.ModelPolicy.Append(inherited)
+			if req.Resume {
+				resume = runpkg.ParentModel{Provider: resolveSessionProviderKey(cfg, sess), Model: sess.Model}
+			}
+		}
+	}
+	providerFlag := strings.TrimSpace(req.Provider)
+	if providerFlag == "" && req.ParentModel.Provider == "" && !req.IsSubagent {
+		providerFlag = strings.TrimSpace(r.defaults.Provider)
+	}
+	cmdProvider, cmdModel, _, _ := r.commandConfig(cfg)
+	selected, effective, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cmdProvider, CmdModel: cmdModel, ProviderFlag: providerFlag, ModelOverride: req.Model, Fast: r.defaults.Fast, Inherited: inherited, Parent: req.ParentModel, ResumeModel: resume})
+	if err != nil {
+		return nil, nil, modelSelection{}, runModelPolicies{}, err
+	}
+	if r.defaults.Fast {
+		// Provider construction, session metadata and child inheritance must all
+		// describe the concrete fast target that was checked above.
+		cfg.ApplyOverrides(selected.Provider, selected.Model)
+	}
+	return cfg, agent, selected, runModelPolicies{Effective: effective, Inherited: inherited}, nil
+}
+
 func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (*cmdRunEnvironment, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -241,31 +288,19 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if req.Platform == "" {
 		req.Platform = runpkg.PlatformConsole
 	}
-	cfg := cloneConfigForServeJob(r.baseCfg)
-
-	agent, err := LoadAgent(req.AgentName, cfg)
+	cfg, agent, selected, policies, err := r.resolveRunModel(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(req.AgentName) != "" && agent == nil {
-		return nil, fmt.Errorf("agent %q not found", req.AgentName)
-	}
-
-	agent, agentProvider, agentModel, agentSkills, agentName := prepareRunnerAgent(agent, req)
+	policy := policies.Effective
+	req.ModelPolicy = policies.Inherited
+	agent, _, _, agentSkills, agentName := prepareRunnerAgent(agent, req)
 	providerFlag := strings.TrimSpace(req.Provider)
-	if providerFlag == "" {
+	if providerFlag == "" && req.ParentModel.Provider == "" && !req.IsSubagent {
 		providerFlag = strings.TrimSpace(r.defaults.Provider)
 	}
-	cmdProvider, cmdModel, _, _ := r.commandConfig(cfg)
-	if err := applyProviderOverridesWithAgent(cfg, cmdProvider, cmdModel, providerFlag, agentProvider, agentModel); err != nil {
-		return nil, err
-	}
-	if model := strings.TrimSpace(req.Model); model != "" {
-		if err := applyAgentModelOverride(cfg, model); err != nil {
-			return nil, fmt.Errorf("apply model override %q: %w", model, err)
-		}
-	}
-
+	// Injected engines/providers reuse an admitted runtime for one turn; they are
+	// never a new model admission. In-place model changes are checked by the host.
 	if strings.TrimSpace(req.SessionID) == "" && !req.DeferSession {
 		req.SessionID = session.NewID()
 	}
@@ -300,23 +335,13 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		settings.SystemPrompt = r.defaults.Inputs.Prompt
 	}
 
-	modelName := activeModel(cfg)
+	modelName := selected.Model
 	provider := req.ProviderInstance
 	providerOwned := provider == nil
 	if provider == nil {
-		if r.defaults.Fast {
-			provider, err = llm.NewFastProvider(cfg, cfg.DefaultProvider)
-			if err != nil {
-				return nil, fmt.Errorf("fast provider: %w", err)
-			}
-			if provider == nil {
-				return nil, fmt.Errorf("no fast provider configured for %q", cfg.DefaultProvider)
-			}
-		} else {
-			provider, err = llm.NewProvider(cfg)
-			if err != nil {
-				return nil, err
-			}
+		provider, err = llm.NewProviderByName(cfg, selected.Provider, selected.Model)
+		if err != nil {
+			return nil, fmt.Errorf("create selected provider %s:%s: %w", selected.Provider, selected.Model, err)
 		}
 	}
 	alignSettingsToActiveProvider(&settings, cfg, provider)
@@ -355,7 +380,12 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			// Propagate the host observer down the nesting chain here rather than
 			// inside the wiring helper: a grandchild runner is built by a child's
 			// own cmdRunner, which would otherwise lose the host entirely.
-			spawnRunner.SetChildRunObserver(r.defaults.ChildRunObserver)
+			if err == nil && spawnRunner != nil {
+				spawnRunner.SetChildRunObserver(r.defaults.ChildRunObserver)
+				spawnRunner.SetModelPolicySource(func() ParentModelState {
+					return ParentModelState{Policy: policy, Provider: selected.Provider, Model: selected.Model}
+				})
+			}
 			return err
 		}
 	}
@@ -378,6 +408,14 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			return nil, err
 		}
 		if toolMgr != nil {
+			state := func() (modelpolicy.Policy, runpkg.ParentModel) {
+				return policy, runpkg.ParentModel{Provider: selected.Provider, Model: selected.Model}
+			}
+			toolMgr.Registry.SetAgentModelAdmission(state, func(ctx context.Context, name, model string, inherited modelpolicy.Policy, parent runpkg.ParentModel) error {
+				checker := &cmdRunner{baseCfg: r.baseCfg}
+				_, _, _, _, err := checker.resolveRunModel(ctx, runpkg.Request{AgentName: name, Model: model, ModelPolicy: inherited, ParentModel: parent})
+				return err
+			})
 			toolMgr.Registry.SetPlanStore(store)
 		}
 		if agent != nil && agent.OutputTool.IsConfigured() && req.Platform != runpkg.PlatformChat {
@@ -419,6 +457,8 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		agentSkills:         agentSkills,
 		provider:            provider,
 		providerKey:         cfg.DefaultProvider,
+		modelPolicy:         policy,
+		modelPolicyConfig:   cfg,
 		engine:              engine,
 		toolMgr:             toolMgr,
 		toolDiscovery:       cfg.ToolDiscovery,
@@ -647,9 +687,6 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 	if err != nil {
 		return SessionSettings{}, err
 	}
-	if err := checkAgentModel(agent, cfg, r.defaults.Fast); err != nil {
-		return SessionSettings{}, err
-	}
 	explicitBinding := strings.TrimSpace(req.Cwd) != ""
 	localLaunch := req.Platform == runpkg.PlatformConsole || req.Platform == runpkg.PlatformChat || req.Platform == runpkg.PlatformExec
 	if explicitBinding || localLaunch {
@@ -737,6 +774,7 @@ func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, r
 		Provider:    providerName,
 		ProviderKey: strings.TrimSpace(providerKey),
 		Model:       modelName,
+		ModelPolicy: req.ModelPolicy,
 		Mode:        sessionModeForPlatform(req.Platform),
 		Origin:      sessionOriginForPlatform(req.Platform),
 		Agent:       agentName,

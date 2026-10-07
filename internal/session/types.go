@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
 // SessionStatus represents the current state of a session.
@@ -71,6 +72,7 @@ type Session struct {
 	Provider        string              `json:"provider"`               // Provider display label
 	ProviderKey     string              `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
 	Model           string              `json:"model"`
+	ModelPolicy     modelpolicy.Policy  `json:"model_policy,omitempty"`
 	ReasoningEffort string              `json:"reasoning_effort,omitempty"` // Reasoning effort pinned at session creation (web only)
 	ReasoningMode   string              `json:"reasoning_mode,omitempty"`   // Explicit Responses reasoning mode override (standard/pro).
 	Mode            SessionMode         `json:"mode,omitempty"`             // Session mode (chat, ask, plan, exec)

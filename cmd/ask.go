@@ -77,14 +77,11 @@ var (
 
 	newAskProvider = func(cfg *config.Config, fast bool) (llm.Provider, error) {
 		if fast {
-			provider, err := llm.NewFastProvider(cfg, cfg.DefaultProvider)
-			if err != nil {
-				return nil, fmt.Errorf("fast provider: %w", err)
-			}
-			if provider == nil {
+			key, model, ok := llm.ResolveFastTarget(cfg, cfg.DefaultProvider)
+			if !ok {
 				return nil, fmt.Errorf("no fast provider configured for %q", cfg.DefaultProvider)
 			}
-			return provider, nil
+			return llm.NewProviderByName(cfg, key, model)
 		}
 		return llm.NewProvider(cfg)
 	}
@@ -246,7 +243,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Apply provider overrides: CLI > agent > config
-	if err := applyAgentProviderModelPolicy(cfg, cfg.Ask.Provider, cfg.Ask.Model, askProvider, agent, askFast); err != nil {
+	askSelected, askPolicy, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Ask.Provider, CmdModel: cfg.Ask.Model, ProviderFlag: askProvider, Fast: askFast})
+	if err != nil {
 		return err
 	}
 
@@ -339,9 +337,30 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		storeCleanup()
 	}()
 	// Apply persisted settings and refreshable inputs before tool/MCP setup.
-	sess, inputTicket, selectedInputs, resuming, err := prepareAskResumeWithModelPolicy(ctx, cmd, cfg, agent, store, &settings, askFast)
+	sess, inputTicket, selectedInputs, resuming, err := prepareAskResume(ctx, cmd, cfg, agent, store, &settings)
 	if err != nil {
 		return err
+	}
+	if sess != nil {
+		// The model was selected above; a resumed session only adds its persisted
+		// inherited rules and the rule of the agent it was created for.
+		askPolicy = modelPolicyForSession(sess, agent)
+		if sessAgent := strings.TrimSpace(sess.Agent); sessAgent != "" && (agent == nil || sessAgent != agent.Name) {
+			resumedAgent, err := loadPersistedAgent(sessAgent, cfg)
+			if err != nil {
+				return err
+			}
+			if resumedAgent != nil {
+				askPolicy = askPolicy.With(resumedAgent.Name, resumedAgent.AllowedModels)
+			}
+		}
+		agentName := ""
+		if agent != nil {
+			agentName = agent.Name
+		}
+		if err := askPolicy.CheckWithConfig(cfg, agentName, askSelected.Provider, askSelected.Model); err != nil {
+			return err
+		}
 	}
 	if inputTicket != nil {
 		defer inputTicket.fail()
@@ -383,6 +402,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	wireStaticAgentModelAdmission(cfg, toolMgr, spawnRunner, askPolicy, askSelected)
 	var outputTool *tools.SetOutputTool
 
 	if agent != nil && agent.OutputTool.IsConfigured() {

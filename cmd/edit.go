@@ -203,9 +203,15 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		toolMgr.SetupEngine(engine)
 
 		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, resolvedYolo); err != nil {
+		spawnRunner, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, nil, "")
+		if err != nil {
 			return err
 		}
+		selected, policy, err := selectRunModel(cloneConfigForServeJob(cfg), modelSelectionInput{})
+		if err != nil {
+			return err
+		}
+		wireStaticAgentModelAdmission(cfg, toolMgr, spawnRunner, policy, selected)
 	}
 
 	// Initialize MCP servers if --mcp flag is set

@@ -161,9 +161,38 @@ mcp:
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`, `contain`.
 
-`allowed_models` is optional. Entries accept exact `provider:model` pairs or `provider:*` to allow every model on that configured provider key. For example, `allowed_models: ["chatgpt:*"]` allows any model on `chatgpt` and rejects models on other provider keys. Exact and wildcard entries can be mixed. Matching is case-sensitive, and only the whole model portion can be a wildcard. Bare provider names and partial wildcards such as `openai:gpt-*` are rejected.
+### Model allowlists
 
-Every run of that agent must match an entry, including direct sessions, spawned agents, and queued jobs. An override outside the list fails before a model request, with an error naming the rejected selection and the allowed entries. Queued jobs report this error when the jobs runner attempts execution. The `model: fast` alias is checked after it resolves to a provider and model. Exact entries treat each reasoning-effort model ID separately. An empty or omitted list leaves model selection unrestricted. A terminal `/model` switch to a disallowed model is rejected. The web UI may still display disallowed models in its picker. The server rejects those choices when it creates or changes the agent runtime, preserving the previous runtime after a rejected switch.
+`allowed_models` restricts which models an agent may run on. It is optional; an empty or omitted list leaves model selection unrestricted.
+
+```yaml
+allowed_models:
+  - anthropic:*            # any model on the `anthropic` provider key
+  - chatgpt:gpt-6-sol      # gpt-6-sol and every reasoning-effort variant
+  - claude-bin:opus-high   # exactly this variant
+```
+
+- Entries are `provider:model` or `provider:*`. The provider is the configured provider key, not the backend type. Matching is case-sensitive. Bare provider names and partial wildcards such as `openai:gpt-*` are invalid.
+- A base model allows its reasoning-effort variants: `chatgpt:gpt-6-sol` permits `gpt-6-sol-low`, `gpt-6-sol-high`, `gpt-6-sol-max` and so on, but not a different model such as `gpt-6-sol-mini`. When term-llm knows the model's efforts (built-in catalog, cached provider catalog, or a configured `reasoning_efforts` list) only those efforts match; for an unknown model the standard suffixes (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) match. An entry that names a variant (`claude-bin:opus-high`) matches only that variant.
+- The `fast` alias (`model: fast`, `--fast`, or a spawn override of `fast`) is resolved to its concrete provider and model before it is checked.
+
+Every launch of the agent is checked before a model request is made: direct `ask`/`chat`/`loop` runs, resumed sessions, web sessions, jobs, and in-session switches (`/model` in the terminal, the web model picker). A rejected selection fails with an error naming the model and the allowed entries; a rejected switch keeps the current model.
+
+#### Subagents: the parent always wins
+
+A child run may only use a model that **every ancestor's list and its own list** allow. This covers `spawn_agent`, `continue_agent`, isolated skills, commit drafting children, `queue_agent` jobs, and all deeper descendants.
+
+- If the child's selection — its own `provider`/`model`, a `model` argument to `spawn_agent` or `queue_agent`, or the parent's `spawn.agent_models` entry — is outside a parent's list, the child is rejected at launch with an error naming that parent agent.
+- If the child specifies no model, it runs on the parent's current model (including after a `/model` switch in the parent).
+- A continued child keeps its own model unless the continuation overrides it, and that model is rechecked.
+- The inherited restrictions are stored with the child session, so they still apply when the child is resumed later or opened directly in the terminal or web UI. Branches and handovers of a restricted session keep them.
+- `hub_delegate` is unavailable to restricted agents, because provider keys on a remote node cannot be checked locally.
+
+#### Auxiliary models and limits
+
+Automatic auxiliary calls for a restricted session — titles, interrupt classification, and live control — use the provider's fast model only when the list allows it, and otherwise fall back to the session's allowed main model. Explicitly chosen auxiliary models, such as a side question on a different model, must be allowed.
+
+The guardian reviewer, memory batch commands, `sessions autotitle`, Telegram interrupt classification, and tools that call other services (`view_image` routing, `image_generate`, search) are configured by the operator and are not governed by `allowed_models`. The list governs term-llm's own model launches; it does not stop an agent from reaching another model through `shell` or HTTP. Restrict those with tool permissions.
 
 ## Time grounding
 

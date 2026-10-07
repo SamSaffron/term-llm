@@ -21,6 +21,7 @@ type SQLiteStore struct {
 	hasCacheWriteTokens      bool // true if sessions table has cache_write_tokens column
 	hasOrigin                bool // true if sessions table has origin column
 	hasPinned                bool // true if sessions table has pinned column
+	hasModelPolicy           bool
 	hasPinOrder              bool // true if sessions table has pin_order column
 	hasTitleSkippedAt        bool // true if sessions table has title_skipped_at column
 	hasLastUserMessageAt     bool // true if sessions table has last_user_message_at column
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	provider TEXT NOT NULL,
 	provider_key TEXT,
 	model TEXT NOT NULL,
+	model_policy TEXT,
 	reasoning_effort TEXT,
 	reasoning_mode TEXT,
 	mode TEXT DEFAULT 'chat',

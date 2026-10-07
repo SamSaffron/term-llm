@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -298,6 +299,8 @@ type jobsV2NotifyOrigin struct {
 
 type jobsV2LLMConfig struct {
 	AgentName      string              `json:"agent_name"`
+	ModelPolicy    *modelpolicy.Policy `json:"model_policy,omitempty"`
+	ParentModel    *runpkg.ParentModel `json:"parent_model,omitempty"`
 	Instructions   string              `json:"instructions"`
 	Progressive    bool                `json:"progressive,omitempty"`
 	StopWhen       string              `json:"stop_when,omitempty"`
@@ -3164,6 +3167,8 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode)
 		result, err := runner.Run(ctx, runpkg.Request{
 			Platform:        runpkg.PlatformJob,
 			AgentName:       cfg.AgentName,
+			ModelPolicy:     policyOrEmpty(cfg.ModelPolicy),
+			ParentModel:     parentModelOrEmpty(cfg.ParentModel),
 			Prompt:          cfg.Instructions,
 			SessionID:       cfg.SessionID,
 			SessionName:     cfg.SessionName,
@@ -3183,4 +3188,17 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode)
 		}, eventSinkFunc(onEvent))
 		return serveJobsExecResult{Progressive: progressiveFromRunResult(result.Progressive)}, err
 	}
+}
+
+func policyOrEmpty(p *modelpolicy.Policy) modelpolicy.Policy {
+	if p != nil {
+		return *p
+	}
+	return modelpolicy.Policy{}
+}
+func parentModelOrEmpty(p *runpkg.ParentModel) runpkg.ParentModel {
+	if p != nil {
+		return *p
+	}
+	return runpkg.ParentModel{}
 }

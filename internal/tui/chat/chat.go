@@ -25,6 +25,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/mentions"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -305,7 +306,9 @@ type Model struct {
 	providerKey                string
 	modelName                  string
 	agentName                  string
-	allowedModels              []string
+	modelPolicy                modelpolicy.Policy
+	modelSwitchHook            func(providerKey, model string)
+	fastProviderResolver       func(providerKey, model string) (llm.Provider, error)
 
 	platformDeveloperMessage string
 	currentOrigin            session.SessionOrigin

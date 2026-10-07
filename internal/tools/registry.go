@@ -11,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -819,4 +820,17 @@ func (r *LocalToolRegistry) GetSkillTool() *ActivateSkillTool {
 		return skillTool
 	}
 	return nil
+}
+
+// SetAgentModelAdmission wires both background and remote agent tools to the
+// same runtime policy source used by spawn_agent.
+func (r *LocalToolRegistry) SetAgentModelAdmission(state func() (modelpolicy.Policy, modelpolicy.ParentModel), check func(context.Context, string, string, modelpolicy.Policy, modelpolicy.ParentModel) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.tools[QueueAgentToolName].(*QueueAgentTool); ok {
+		t.SetModelAdmission(state, check)
+	}
+	if t, ok := r.tools[HubDelegateToolName].(*HubDelegateTool); ok {
+		t.SetModelPolicySource(func() modelpolicy.Policy { p, _ := state(); return p })
+	}
 }

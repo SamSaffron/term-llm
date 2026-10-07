@@ -350,6 +350,9 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 	runtime.toolMap = opts.toolMap
 	runtime.platform = "web"
 	runtime.sideProviderFactory = func(providerKey, model string) (llm.Provider, error) {
+		if err := runtime.modelPolicy.CheckWithConfig(opts.cfg, runtime.agentName, providerKey, model); err != nil {
+			return nil, err
+		}
 		return llm.NewProviderByName(opts.cfg, providerKey, model)
 	}
 	runtime.configureSideQuestionContext()

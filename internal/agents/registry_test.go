@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -465,5 +466,26 @@ func TestRegistry_GetConcurrentColdBuiltin(t *testing.T) {
 			}(i)
 		}
 		wg.Wait()
+	}
+}
+
+func TestRegistryDistinguishesMissingAgentFromInvalidDefinition(t *testing.T) {
+	root := t.TempDir()
+	bad := filepath.Join(root, "bad")
+	if err := os.Mkdir(bad, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "agent.yaml"), []byte("name: bad\nallowed_models: [\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(RegistryConfig{SearchPaths: []string{root}, UseBuiltin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Get("gone"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing agent = %v", err)
+	}
+	if _, err := registry.Get("bad"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("invalid agent misclassified as missing: %v", err)
 	}
 }

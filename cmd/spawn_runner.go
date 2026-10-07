@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -29,6 +30,7 @@ var errChildRunAbandoned = errors.New("delegated run ended without a terminal st
 // It loads and runs sub-agents for the spawn_agent tool.
 type SpawnAgentRunner struct {
 	cfg               *config.Config
+	policySource      func() ParentModelState
 	registry          *agents.Registry
 	yoloMode          bool // Auto-approve all tool operations in sub-agents
 	parentApprovalMgr *tools.ApprovalManager
@@ -47,6 +49,22 @@ type SpawnAgentRunner struct {
 	runMu             sync.Mutex
 	draining          bool
 	wg                sync.WaitGroup // tracks admitted agent runs so callers can drain before closing the store
+}
+
+// ParentModelState is a snapshot of the parent's live model and effective rules.
+type ParentModelState struct {
+	Policy          modelpolicy.Policy
+	Provider, Model string
+}
+
+func (r *SpawnAgentRunner) SetModelPolicySource(source func() ParentModelState) {
+	r.policySource = source
+}
+func (r *SpawnAgentRunner) modelPolicyState() ParentModelState {
+	if r.policySource != nil {
+		return r.policySource()
+	}
+	return ParentModelState{}
 }
 
 // NewSpawnAgentRunner creates a new SpawnAgentRunner.
@@ -485,12 +503,28 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		}
 	}
 	request.AgentName = agentName
+	state := r.modelPolicyState()
 
 	childSessionID := strings.TrimSpace(request.ChildSessionID)
 	if childSessionID == "" {
 		childSessionID = session.NewID()
 	}
-	providerName, modelName := r.previewAgentProviderModel(agent)
+	executionRequest, approvalScope, err := r.prepareLifecycleChildRequest(ctx, request, childSessionID, agent.Search)
+	if err != nil {
+		return emptyResult, &tools.AgentRunAdmissionError{Err: err}
+	}
+	executionRequest.ModelPolicy = state.Policy
+	executionRequest.ParentModel = runpkg.ParentModel{Provider: state.Provider, Model: state.Model}
+	runner := &cmdRunner{baseCfg: r.cfg, defaults: cmdRunnerOptions{
+		ConfigSet: true, Yolo: r.yoloMode, DefaultMaxTurns: tools.DefaultSubagentMaxTurns,
+		ErrWriter: io.Discard, Store: r.store, ParentApprovalMgr: approvalScope,
+		ChildRunObserver: r.currentChildRunObserver(),
+	}}
+	_, _, selected, _, err := runner.resolveRunModel(ctx, executionRequest)
+	if err != nil {
+		return emptyResult, &tools.AgentRunAdmissionError{Err: err}
+	}
+	providerName, modelName := selected.Provider, selected.Model
 	sinkCallback := tools.SubagentEventCallback(nil)
 	if callback != nil {
 		sinkCallback = func(runID string, event tools.SubagentEvent) { callback(runID, event) }
@@ -498,11 +532,6 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	sink := &spawnRunSink{callID: request.RunID, cb: sinkCallback, provider: providerName, model: modelName}
 	sink.Start()
 	defer sink.Done()
-
-	executionRequest, approvalScope, err := r.prepareLifecycleChildRequest(ctx, request, childSessionID, agent.Search)
-	if err != nil {
-		return emptyResult, &tools.AgentRunAdmissionError{Err: err}
-	}
 
 	var handle childRunSession
 	if observer := r.currentChildRunObserver(); observer != nil {
@@ -519,15 +548,6 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		}
 	}
 
-	runner := newCmdRunner(r.cfg, cmdRunnerOptions{
-		ConfigSet:         true,
-		Yolo:              r.yoloMode,
-		DefaultMaxTurns:   tools.DefaultSubagentMaxTurns,
-		ErrWriter:         io.Discard,
-		Store:             r.store,
-		ParentApprovalMgr: approvalScope,
-		ChildRunObserver:  r.currentChildRunObserver(),
-	})
 	result, err := runner.Run(ctx, executionRequest, sink)
 
 	output, completionErr := completeChildAgent(agent, result, sink.Output(), executionRequest.Cwd, request.SkipOnComplete)
@@ -636,16 +656,6 @@ func completeChildAgent(agent *agents.Agent, result runpkg.Result, streamedOutpu
 	}
 	_, err := runOnCompleteCaptureInDir(agent.OnComplete, output, baseDir)
 	return output, err
-}
-
-func (r *SpawnAgentRunner) previewAgentProviderModel(agent *agents.Agent) (string, string) {
-	cfg := cloneConfigForServeJob(r.cfg)
-	if agent != nil {
-		_ = applyProviderOverridesWithAgent(cfg, "", "", "", agent.Provider, agent.Model)
-	} else {
-		cfg.ApplyOverrides(cfg.Ask.Provider, cfg.Ask.Model)
-	}
-	return strings.TrimSpace(cfg.DefaultProvider), strings.TrimSpace(activeModel(cfg))
 }
 
 type spawnRunSink struct {
@@ -886,7 +896,9 @@ func (r *SpawnAgentRunner) setupAgentToolsWithBudget(cfg *config.Config, engine 
 	if err != nil {
 		return nil, err
 	}
-	nested.SetChildRunObserver(r.currentChildRunObserver())
+	if nested != nil {
+		nested.SetChildRunObserver(r.currentChildRunObserver())
+	}
 	return toolMgr, nil
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	sharepkg "github.com/samsaffron/term-llm/internal/share"
@@ -3345,7 +3346,7 @@ func TestSwitchModelRejectsAgentDisallowedModel(t *testing.T) {
 	m := newCmdTestModel(store)
 	m.config = &config.Config{}
 	m.agentName = "reviewer"
-	m.SetAllowedModels([]string{"debug:allowed"})
+	m.SetModelPolicy(modelpolicy.Policy{}.With(m.agentName, []string{"debug:allowed"}))
 	m.sess = &session.Session{ID: "restricted", ProviderKey: "debug", Model: "allowed"}
 	m.providerKey, m.modelName = "debug", "allowed"
 	m.engine = llm.NewEngine(llm.NewMockProvider("debug"), nil)
@@ -5726,5 +5727,142 @@ func TestSanitizeFooterMessageRemovesTerminalControls(t *testing.T) {
 	got := sanitizeFooterMessage(" **remote**\x1b[31m failure\x1b[0m\u009b2J\nspoofed\tline ")
 	if want := "remote failure spoofed line"; got != want {
 		t.Fatalf("sanitizeFooterMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestSwitchModelEffortVariantAndHook(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{"debug": {Model: "gpt-6-sol"}}}
+	m.agentName = "boss"
+	m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"debug:gpt-6-sol"}))
+	m.providerKey, m.modelName = "debug", "gpt-6-sol"
+	m.engine = llm.NewEngine(llm.NewMockProvider("debug"), nil)
+	called := 0
+	m.SetModelSwitchHook(func(provider, model string) {
+		called++
+		if provider != "debug" || model != "gpt-6-sol-high" {
+			t.Errorf("hook %s:%s", provider, model)
+		}
+	})
+	result, _ := m.switchModel("debug:gpt-6-sol-high")
+	if got := result.(*Model); got.modelName != "gpt-6-sol-high" || called != 1 {
+		t.Fatalf("switch got=%q hook calls=%d", got.modelName, called)
+	}
+}
+
+func TestHandoverDenialBeforeSessionCreation(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "old", ProviderKey: "debug", Model: "allowed", ModelPolicy: modelpolicy.Policy{}.With("ancestor", []string{"debug:*"})}
+	m.providerKey, m.modelName = "debug", "allowed"
+	target := &agents.Agent{Name: "target", Provider: "other", Model: "denied", AllowedModels: []string{"other:denied"}}
+	m.pendingHandover = &handoverDoneMsg{agentName: target.Name, result: llm.HandoverFromFile("doc", "target", "source", target.Name)}
+	m.agentResolver = func(string, *config.Config) (*agents.Agent, error) { return target, nil }
+	result, _ := m.executeHandover()
+	if len(store.created) != 0 || !strings.Contains(result.(*Model).footerMessage, "ancestor") {
+		t.Fatalf("created=%d footer=%q", len(store.created), result.(*Model).footerMessage)
+	}
+}
+
+func TestEffortPolicyRejectsBeforeIdleOrStreamSwitch(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
+			m, store := newEffortCmdTestModel("claude-bin", "opus-high")
+			m.agentName = "boss"
+			m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"claude-bin:opus-high"}))
+			provider := llm.NewMockProvider("claude-bin").AddTextResponse("ok")
+			m.engine = llm.NewEngine(provider, nil)
+			m.streaming = streaming
+			hookCalls := 0
+			m.SetModelSwitchHook(func(string, string) { hookCalls++ })
+			result, _ := m.cmdEffort([]string{"max"})
+			got := result.(*Model)
+			if got.modelName != "opus-high" || got.sess.Model != "opus-high" || got.pendingStreamModelSwitch != nil || store.updated != nil || hookCalls != 0 || !strings.Contains(got.footerMessage, "not allowed") {
+				t.Fatalf("denied switch changed state: model=%s pending=%+v updated=%+v hooks=%d footer=%q", got.modelName, got.pendingStreamModelSwitch, store.updated, hookCalls, got.footerMessage)
+			}
+			// A rejected streaming request must also leave the engine queue empty.
+			if streaming {
+				stream, err := got.engine.Stream(context.Background(), llm.Request{Model: "opus-high", Messages: []llm.Message{llm.UserText("hi")}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stream.Close()
+				for {
+					if _, recvErr := stream.Recv(); recvErr != nil {
+						break
+					}
+				}
+				if requests := provider.RecordedRequests(); len(requests) != 1 || requests[0].Model != "opus-high" {
+					t.Fatalf("engine had disallowed switch queued: %+v", requests)
+				}
+			}
+		})
+	}
+}
+
+func TestEffortPolicyBaseAllowsVariantAndNotifiesLiveModel(t *testing.T) {
+	m, _ := newEffortCmdTestModel("claude-bin", "opus")
+	m.agentName = "boss"
+	m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"claude-bin:opus"}))
+	var selected string
+	m.SetModelSwitchHook(func(provider, model string) { selected = provider + ":" + model })
+	m.SetFastProviderResolver(func(provider, model string) (llm.Provider, error) { return llm.NewMockProvider(provider), nil })
+	result, _ := m.cmdEffort([]string{"high"})
+	if got := result.(*Model); got.modelName != "opus-high" || selected != "claude-bin:opus-high" || got.fastProvider == nil {
+		t.Fatalf("variant=%s hook=%s fast=%v", got.modelName, selected, got.fastProvider)
+	}
+}
+
+func TestUnrestrictedModelSwitchKeepsInitialFastProviderAndNotifiesHook(t *testing.T) {
+	m, _ := newEffortCmdTestModel("debug", "old")
+	initial := llm.NewMockProvider("initial-fast")
+	m.fastProvider = initial
+	resolverCalls := 0
+	m.SetFastProviderResolver(func(string, string) (llm.Provider, error) {
+		resolverCalls++
+		return llm.NewMockProvider("different"), nil
+	})
+	var selected string
+	m.SetModelSwitchHook(func(provider, model string) { selected = provider + ":" + model })
+	result, _ := m.switchModel("debug:new")
+	got := result.(*Model)
+	if got.modelName != "new" || got.fastProvider != initial || resolverCalls != 0 || selected != "debug:new" {
+		t.Fatalf("unrestricted switch model=%q fast=%p resolver=%d hook=%q", got.modelName, got.fastProvider, resolverCalls, selected)
+	}
+}
+
+func TestStreamingEffortPolicyNotifiesOnlyAfterAllowedSwitchApplies(t *testing.T) {
+	m, _ := newEffortCmdTestModel("claude-bin", "opus")
+	m.agentName = "boss"
+	m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"claude-bin:opus"}))
+	m.streaming = true
+	var selected string
+	m.SetModelSwitchHook(func(provider, model string) { selected = provider + ":" + model })
+	result, _ := m.cmdEffort([]string{"high"})
+	got := result.(*Model)
+	if got.pendingStreamModelSwitch == nil || selected != "" {
+		t.Fatalf("stream switched before application: pending=%v hook=%q", got.pendingStreamModelSwitch, selected)
+	}
+	if !got.markPendingStreamModelSwitchApplied("opus-high") || selected != "claude-bin:opus-high" {
+		t.Fatalf("applied stream switch hook=%q", selected)
+	}
+}
+
+func TestCtrlREffortPolicyRejectsIdleAndStreamingBeforeQueue(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
+			m, store := newEffortCmdTestModel("openai", "gpt-5.4-low")
+			prepareEffortShortcutTestModel(m)
+			m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"openai:gpt-5.4-low"}))
+			m.streaming = streaming
+			called := 0
+			m.SetModelSwitchHook(func(string, string) { called++ })
+			result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+			got := result.(*Model)
+			if got.modelName != "gpt-5.4-low" || got.pendingStreamModelSwitch != nil || store.updated != nil || called != 0 || !strings.Contains(got.footerMessage, "not allowed") {
+				t.Fatalf("Ctrl+R bypassed policy: model=%q pending=%v persisted=%v hooks=%d footer=%q", got.modelName, got.pendingStreamModelSwitch, store.updated, called, got.footerMessage)
+			}
+		})
 	}
 }

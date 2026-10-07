@@ -13,6 +13,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
 // hub_delegate / hub_check_delegation let an agent on one term-llm node run
@@ -230,7 +231,8 @@ func resolveHubDelegationClient(injected *hubDelegationClient) (*hubDelegationCl
 }
 
 type HubDelegateTool struct {
-	client *hubDelegationClient
+	client            *hubDelegationClient
+	modelPolicySource func() modelpolicy.Policy
 	// pollIntervalOverride lets tests poll sub-second.
 	pollIntervalOverride time.Duration
 }
@@ -239,6 +241,10 @@ func NewHubDelegateTool() *HubDelegateTool { return &HubDelegateTool{} }
 
 func NewHubDelegateToolWithClient(client *hubDelegationClient) *HubDelegateTool {
 	return &HubDelegateTool{client: client}
+}
+
+func (t *HubDelegateTool) SetModelPolicySource(source func() modelpolicy.Policy) {
+	t.modelPolicySource = source
 }
 
 func (t *HubDelegateTool) Spec() llm.ToolSpec {
@@ -299,6 +305,9 @@ func (t *HubDelegateTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	}
 	if strings.TrimSpace(a.Prompt) == "" {
 		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
+	}
+	if t.modelPolicySource != nil && t.modelPolicySource().Restricted() {
+		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "hub delegation is unavailable to agents restricted by allowed_models")), nil
 	}
 	// A trusted delegation id on the context (set by the jobs-v2 runner from
 	// the hub-written job label) always wins over the model-provided argument:

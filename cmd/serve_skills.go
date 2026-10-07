@@ -762,9 +762,13 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 	}
 	var runtime *serveRuntime
 	if s.sessionMgr != nil {
-		runtime, _, _ = s.runtimeForRequest(r.Context(), sess.ID)
+		var runtimeErr error
+		runtime, _, runtimeErr = s.runtimeForRequest(r.Context(), sess.ID)
+		if runtimeErr != nil {
+			log.Printf("[serve] skill runtime unavailable for %s; using durable parent model: %v", sess.ID, runtimeErr)
+		}
 	}
-	runner, err := s.serveSkillChildRunner(sess.ID, runtime)
+	runner, err := s.serveSkillChildRunner(r.Context(), sess.ID, runtime)
 	if err != nil {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
 		return
@@ -866,7 +870,7 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 	writeServeIsolatedSkillResponse(w, sess.ID, run)
 }
 
-func (s *serveServer) serveSkillChildRunner(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error) {
+func (s *serveServer) serveSkillChildRunner(ctx context.Context, sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error) {
 	if s.skillChildRunnerFactory != nil {
 		return s.skillChildRunnerFactory(sessionID, runtime)
 	}
@@ -885,6 +889,36 @@ func (s *serveServer) serveSkillChildRunner(sessionID string, runtime *serveRunt
 	if err != nil {
 		return nil, err
 	}
+	state := ParentModelState{}
+	if runtime != nil {
+		state = ParentModelState{Policy: runtime.modelPolicy, Provider: runtime.providerKey, Model: runtime.defaultModel}
+	} else {
+		if s.store == nil {
+			return nil, fmt.Errorf("parent session store is unavailable")
+		}
+		sess, err := s.store.Get(ctx, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("load parent session for child: %w", err)
+		}
+		if sess == nil {
+			return nil, fmt.Errorf("parent session %q is unavailable", sessionID)
+		}
+		policy, err := s.sessionModelPolicy(sess)
+		if err != nil {
+			return nil, err
+		}
+		state = ParentModelState{Policy: policy, Provider: resolveSessionProviderKey(s.cfgRef, sess), Model: sess.Model}
+	}
+	if state.Provider == "" || state.Model == "" {
+		return nil, fmt.Errorf("parent session %q has no model identity", sessionID)
+	}
+	parent := state
+	runner.SetModelPolicySource(func() ParentModelState {
+		if runtime != nil {
+			return ParentModelState{Policy: runtime.modelPolicy, Provider: runtime.providerKey, Model: runtime.defaultModel}
+		}
+		return parent
+	})
 	if runtime != nil && runtime.toolMgr != nil {
 		runner.SetBaseDirFunc(runtime.toolMgr.BaseDir)
 	}

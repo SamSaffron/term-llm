@@ -258,31 +258,33 @@ func NewProviderByNameNoRetry(cfg *config.Config, name string, model string) (Pr
 // 2. providers.<name>.fast_model on the same provider key
 // 3. built-in ProviderFastModels fallback for inferred provider type
 // Returns nil, nil if no fast model can be resolved.
-func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
+func ResolveFastTarget(cfg *config.Config, name string) (string, string, bool) {
 	if cfg == nil {
-		return nil, nil
+		return "", "", false
 	}
-
-	targetName := name
-	targetModel := ""
-
+	targetName, targetModel := name, ""
 	if pc, ok := cfg.Providers[name]; ok {
 		if strings.TrimSpace(pc.FastProvider) != "" {
 			targetName = strings.TrimSpace(pc.FastProvider)
 		}
 		targetModel = strings.TrimSpace(pc.FastModel)
 	}
-
 	if targetModel == "" {
-		providerType := string(config.InferProviderType(targetName, ""))
-		targetModel = ProviderFastModels[providerType]
+		var explicitType config.ProviderType
+		if pc, ok := cfg.Providers[targetName]; ok {
+			explicitType = pc.Type
+		}
+		targetModel = ProviderFastModels[string(config.InferProviderType(targetName, explicitType))]
 	}
+	return targetName, targetModel, targetModel != ""
+}
 
-	if targetModel == "" {
+func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
+	target, model, ok := ResolveFastTarget(cfg, name)
+	if !ok {
 		return nil, nil
 	}
-
-	return NewProviderByName(cfg, targetName, targetModel)
+	return NewProviderByName(cfg, target, model)
 }
 
 // newAPIKeyProvider creates a built-in provider that authenticates with an

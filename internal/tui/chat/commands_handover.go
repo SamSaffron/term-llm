@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -542,6 +543,26 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	// the current session: the new agent gets a clean DB session whose history is
 	// only the reconstructed handover context.
 	newSess := m.buildHandoverSession(pending, targetAgent)
+
+	// A handover replaces the agent; only the inherited rules of its session
+	// survive. Reject before creating any durable target session.
+	inherited := modelpolicy.Policy{}
+	if m.sess != nil {
+		inherited = m.sess.ModelPolicy
+	}
+	if strings.EqualFold(newSess.Model, "fast") {
+		key, name, ok := llm.ResolveFastTarget(m.config, newSess.ProviderKey)
+		if !ok {
+			m.cancelHandoverTool()
+			return m.showFooterError("Handover rejected: no fast model configured")
+		}
+		newSess.ProviderKey, newSess.Model = key, name
+	}
+	newSess.ModelPolicy = inherited
+	if err := inherited.With(targetAgent.Name, targetAgent.AllowedModels).CheckWithConfig(m.config, targetAgent.Name, newSess.ProviderKey, newSess.Model); err != nil {
+		m.cancelHandoverTool()
+		return m.showFooterError(fmt.Sprintf("Handover rejected: %v", err))
+	}
 
 	var targetSystemPrompt string
 	var err error

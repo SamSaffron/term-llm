@@ -507,21 +507,6 @@ func validAllowedModelEntry(entry string) bool {
 	return model == "*" || !strings.Contains(model, "*")
 }
 
-// CheckModel rejects a resolved provider/model pair outside this agent's list.
-// An omitted list preserves the unrestricted behavior of existing agents.
-func (a *Agent) CheckModel(provider, model string) error {
-	if a == nil || len(a.AllowedModels) == 0 {
-		return nil
-	}
-	selected := provider + ":" + model
-	for _, allowed := range a.AllowedModels {
-		if selected == allowed || allowed == provider+":*" {
-			return nil
-		}
-	}
-	return fmt.Errorf("model %q is not allowed for agent %q (allowed: %s)", selected, a.Name, strings.Join(a.AllowedModels, ", "))
-}
-
 func (a *Agent) validateOutputTool() error {
 	if a.OutputTool.Schema != nil && a.OutputTool.Name == "" {
 		return fmt.Errorf("output_tool.name is required when output_tool.schema is configured")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/sqlitefts"
@@ -96,6 +97,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			sharePlaceholder = ", ?"
 			shareArgs = []any{shareJSONString(sess.Share)}
 		}
+		modelPolicyCol := ""
+		modelPolicyPlaceholder := ""
+		var modelPolicyArgs []any
+		if s.hasModelPolicy {
+			modelPolicyCol = ", model_policy"
+			modelPolicyPlaceholder = ", ?"
+			modelPolicyArgs = []any{sessionModelPolicyJSON(sess.ModelPolicy)}
+		}
 		pinOrderCol := ""
 		pinOrderPlaceholder := ""
 		var pinOrderArgs []any
@@ -127,12 +136,13 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
 		insertArgs = append(insertArgs, reasoningModeArgs...)
 		insertArgs = append(insertArgs, pinOrderArgs...)
+		insertArgs = append(insertArgs, modelPolicyArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 				                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+projectIDCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+reasoningEffortCol+reasoningModeCol+pinOrderCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+projectIDPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+pinOrderPlaceholder+`)`,
+				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+reasoningEffortCol+reasoningModeCol+pinOrderCol+modelPolicyCol+`)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+projectIDPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+pinOrderPlaceholder+modelPolicyPlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -278,6 +288,10 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasGoal {
 		goalClause = ", goal = ?"
 	}
+	modelPolicyClause := ""
+	if s.hasModelPolicy {
+		modelPolicyClause = ", model_policy = COALESCE(?, model_policy)"
+	}
 	shareClause := ""
 	if s.hasShare {
 		shareClause = ", share = ?"
@@ -288,7 +302,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?,
 		       agent = CASE WHEN COALESCE(agent, '') <> '' AND COALESCE(?, '') = '' THEN agent ELSE ? END, ` + cwdAssignment + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
-		       status = ?, tags = ?` + goalClause + shareClause + `
+		       status = ?, tags = ?` + goalClause + shareClause + modelPolicyClause + `
 		WHERE id = ?`
 
 	args := []any{
@@ -328,6 +342,9 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	}
 	if s.hasShare {
 		args = append(args, shareJSONString(sess.Share))
+	}
+	if s.hasModelPolicy {
+		args = append(args, sessionModelPolicyJSON(sess.ModelPolicy))
 	}
 	args = append(args, sess.ID)
 
@@ -1235,6 +1252,17 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		results = append(results, r)
 	}
 	return results, rows.Err()
+}
+
+func sessionModelPolicyJSON(policy modelpolicy.Policy) any {
+	if !policy.Restricted() {
+		return nil
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		return nil
+	}
+	return string(encoded)
 }
 
 // AddMessage adds a message to a session.

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
@@ -204,9 +204,37 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	return m.switchModelWithOptions(providerModel, switchModelOptions{})
 }
 
-// SetAllowedModels installs the current agent's model policy for in-session switches.
-func (m *Model) SetAllowedModels(models []string) {
-	m.allowedModels = append([]string(nil), models...)
+// SetModelPolicy installs the effective inherited and own model rules.
+func (m *Model) SetModelPolicy(policy modelpolicy.Policy) { m.modelPolicy = policy }
+func (m *Model) SetFastProviderResolver(resolver func(providerKey, model string) (llm.Provider, error)) {
+	m.fastProviderResolver = resolver
+}
+
+func (m *Model) SetModelSwitchHook(hook func(providerKey, model string)) { m.modelSwitchHook = hook }
+
+// admitModelSelection checks before any model is queued or switched. Once a
+// selection becomes live it refreshes the restricted auxiliary provider and
+// notifies child admission sources; queuing alone must not change live state.
+func (m *Model) admitModelSelection(provider, model string, applied bool) error {
+	if err := m.modelPolicy.CheckWithConfig(m.config, m.agentName, provider, model); err != nil {
+		return err
+	}
+	if !applied {
+		return nil
+	}
+	// Unrestricted sessions preserve the fast provider chosen at launch.
+	if m.modelPolicy.Restricted() && m.fastProviderResolver != nil {
+		fast, err := m.fastProviderResolver(provider, model)
+		if err != nil {
+			m.fastProvider = nil
+		} else {
+			m.fastProvider = fast
+		}
+	}
+	if m.modelSwitchHook != nil {
+		m.modelSwitchHook(provider, model)
+	}
+	return nil
 }
 
 func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOptions) (tea.Model, tea.Cmd) {
@@ -217,7 +245,7 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 
 	providerName := parts[0]
 	modelName := parts[1]
-	if err := (&agents.Agent{Name: m.agentName, AllowedModels: m.allowedModels}).CheckModel(providerName, modelName); err != nil {
+	if err := m.admitModelSelection(providerName, modelName, false); err != nil {
 		return m.showSystemMessage(err.Error())
 	}
 
@@ -248,6 +276,7 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	m.providerName = provider.Name()
 	m.providerKey = providerName
 	m.modelName = modelName
+	_ = m.admitModelSelection(providerName, modelName, true)
 
 	// Cached model capabilities are provider-scoped. Never carry one provider's
 	// metadata into another provider's effort parser.
