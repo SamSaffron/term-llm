@@ -56,6 +56,22 @@ func TestAgentCollectAcrossTurnStoreHandles(t *testing.T) {
 	}
 }
 
+// budgetRecordingRunner observes the budget passed to a queued relaunch or resume.
+type budgetRecordingRunner struct {
+	*persistentLifecycleRunner
+	budget chan int
+}
+
+func (r *budgetRecordingRunner) RunAgentWithCallbackAndOptions(ctx context.Context, name, prompt string, depth int, id string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	r.budget <- *opts.RemainingDepth
+	return r.lifecycleRunner.RunAgentWithCallbackAndOptions(ctx, name, prompt, depth, id, cb, opts)
+}
+
+func (r *budgetRecordingRunner) ContinueAgent(ctx context.Context, id, name, instructions string, depth int, callID string, opts SpawnAgentRunOptions, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	r.budget <- *opts.RemainingDepth
+	return r.lifecycleRunner.ContinueAgent(ctx, id, name, instructions, depth, callID, opts, cb)
+}
+
 func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
@@ -98,7 +114,9 @@ func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 	processAgentEntries.Delete(queued.AgentID)
 	fresh := &persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, store: store}
 	replacement := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
-	replacement.SetRunner(fresh)
+	replacement.SetRemainingDepth(1) // The resuming parent now has only one level.
+	budgetRunner := &budgetRecordingRunner{persistentLifecycleRunner: fresh, budget: make(chan int, 1)}
+	replacement.SetRunner(budgetRunner)
 	continued := lifecycleResult(t, lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: replacement}, ctx, `{"agent_id":"`+queued.AgentID+`","wait":0}`))
 	if continued.AgentID != queued.AgentID || continued.Status == "failed" {
 		t.Fatalf("queued continuation = %+v", continued)
@@ -110,6 +128,9 @@ func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("queued child never started")
+	}
+	if got := <-budgetRunner.budget; got != 0 {
+		t.Fatalf("queued child budget = %d, want 0 from resuming parent", got)
 	}
 	close(fresh.release)
 	if err := replacement.Drain(context.Background()); err != nil {
@@ -143,8 +164,12 @@ func TestAgentLifecycleReloadListInterruptedAndResume(t *testing.T) {
 	if err := firstTool.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	replacement := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
-	replacement.SetRunner(&persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, store: store})
+	// The resuming parent's allowlist no longer names developer; an existing
+	// child is still resumable while the parent's depth budget permits it.
+	replacement := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300, AllowedAgents: []string{"codebase"}}, 0)
+	replacement.SetRemainingDepth(1)
+	budgetRunner := &budgetRecordingRunner{persistentLifecycleRunner: &persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, store: store}, budget: make(chan int, 1)}
+	replacement.SetRunner(budgetRunner)
 	listed := lifecycleCall(t, &agentControlTool{name: ListAgentsToolName, spawn: replacement}, ctx, `{}`)
 	if !strings.Contains(listed.Content, `"status":"interrupted"`) || !strings.Contains(listed.Content, first.AgentID) {
 		t.Fatalf("reloaded agents = %s", listed.Content)
@@ -157,6 +182,14 @@ func TestAgentLifecycleReloadListInterruptedAndResume(t *testing.T) {
 	continued := lifecycleResult(t, lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: replacement}, ctx, `{"agent_id":"`+first.AgentID+`","wait":1}`))
 	if continued.Status != "completed" || continued.AgentID != first.AgentID {
 		t.Fatalf("resumed record = %+v", continued)
+	}
+	if got := <-budgetRunner.budget; got != 0 {
+		t.Fatalf("resumed child budget = %d, want 0 from resuming parent", got)
+	}
+	replacement.SetRemainingDepth(0)
+	denied := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: replacement}, ctx, `{"agent_id":"`+first.AgentID+`","wait":0}`)
+	if !strings.Contains(denied.Content, "spawn depth budget exhausted") {
+		t.Fatalf("exhausted parent resumed child: %s", denied.Content)
 	}
 }
 

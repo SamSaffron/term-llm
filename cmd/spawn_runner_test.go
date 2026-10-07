@@ -337,6 +337,47 @@ func TestSpawnRunnerSetupAgentToolsUsesCurrentBaseDir(t *testing.T) {
 	}
 }
 
+func TestSpawnRunnerNestedDeveloperCanDelegateWithinParentBudget(t *testing.T) {
+	cfg := &config.Config{}
+	runner := &SpawnAgentRunner{cfg: cfg}
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	developer := &agents.Agent{
+		Name:  "developer",
+		Tools: agents.ToolsConfig{Enabled: []string{tools.SpawnAgentToolName}},
+		Spawn: agents.SpawnConfig{MaxDepth: 1, AllowedAgents: []string{"codebase"}},
+	}
+	// A top-level parent with two levels left spawned this developer at depth 1.
+	toolMgr, err := runner.setupAgentToolsWithBudget(cfg, engine, developer, 1, "developer-session", 1)
+	if err != nil {
+		t.Fatalf("setupAgentTools() error = %v", err)
+	}
+	spawnTool := toolMgr.GetSpawnAgentTool()
+	if spawnTool == nil {
+		t.Fatal("developer spawn_agent tool missing")
+	}
+	capture := &capturingSpawnRunner{}
+	spawnTool.SetRunner(capture)
+	out, err := spawnTool.Execute(context.Background(), json.RawMessage(`{"agent_name":"codebase","prompt":"inspect"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture.lastAgentName != "codebase" {
+		t.Fatalf("developer could not spawn codebase: output=%q", out.Content)
+	}
+	if capture.lastDepth != 2 {
+		t.Fatalf("child absolute depth = %d, want 2", capture.lastDepth)
+	}
+}
+
+func TestSpawnRunnerCarriesBudgetThroughChildRequest(t *testing.T) {
+	budget := 0
+	runner := &SpawnAgentRunner{}
+	request := runner.buildRunRequest(context.Background(), "developer", "task", "child", 2, false, tools.SpawnAgentRunOptions{RemainingDepth: &budget})
+	if request.Depth != 2 || request.RemainingDepth == nil || *request.RemainingDepth != 0 {
+		t.Fatalf("child execution depth/budget = %d/%v", request.Depth, request.RemainingDepth)
+	}
+}
+
 func TestSpawnRunnerSetupAgentToolsPropagatesAgentModels(t *testing.T) {
 	cfg := &config.Config{}
 	runner := &SpawnAgentRunner{cfg: cfg}

@@ -749,6 +749,17 @@ func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManage
 	return WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, 0)
 }
 
+// wireSpawnAgentWithBudget wires a child runner and caps its spawn allowance.
+func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, remaining *int) (*SpawnAgentRunner, error) {
+	runner, err := WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, depth)
+	if err == nil && remaining != nil && toolMgr != nil {
+		if spawn := toolMgr.GetSpawnAgentTool(); spawn != nil {
+			spawn.SetRemainingDepth(*remaining)
+		}
+	}
+	return runner, err
+}
+
 // WireSpawnAgentRunnerWithStoreAndDepth is WireSpawnAgentRunnerWithStore with an
 // explicit current depth for nested spawn_agent tools.
 func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int) (*SpawnAgentRunner, error) {

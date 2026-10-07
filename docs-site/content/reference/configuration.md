@@ -1009,6 +1009,10 @@ When edit retries fail, diagnostics can capture prompts, partial responses, and 
 - [Skills](/guides/skills/)
 - [Text embeddings](/guides/text-embeddings/)
 
+### Agent spawn depth
+
+In an agent's `agent.yaml`, `spawn.max_depth` sets the number of levels **below that agent** it may spawn (`0` or unset uses the default `2`). A child starts with `min(child.spawn.max_depth, max(parent_remaining - 1, 0))` remaining levels, so a child's own setting cannot expand its caller's budget. A top-level `developer` with `max_depth: 1` can spawn one child; a `developer` spawned by a parent with two levels remaining can also spawn one child, but its child cannot spawn again. Resumed children and queued children relaunched with `continue_agent` take the cap from the resuming parent. Isolated skill children are exempt from the agent spawn limit: they can run even at zero remaining budget, but inherit `max(parent_remaining - 1, 0)` and cannot spawn agents at zero.
+
 ### Host-scoped agents
 
 An agent bundle may set `workspace: none` to retain its execution directory without treating it as a primary workspace. This suppresses primary-workspace confirmation and `manage_workspace`, but does not remove independent read, write, shell, project, Guardian, or yolo authority.

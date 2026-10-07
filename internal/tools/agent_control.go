@@ -237,19 +237,14 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if budget < 0 || budget > 3600 {
 		return agentControlError("wait must be between 0 and 3600")
 	}
-	owner := m
-	if e != nil {
-		owner = e.manager
+	// Resumption only needs a remaining level; the agent already belongs to
+	// this parent, so a changed allowed_agents list must not revoke it.
+	if t.spawn.RemainingDepth() < 1 {
+		return agentControlError("spawn depth budget exhausted (this agent may spawn 0 more levels)")
 	}
-	owner.mu.Lock()
-	runner, depth, draining := owner.runner, owner.depth, owner.draining
-	owner.mu.Unlock()
-	if draining {
-		owner = m
-		owner.mu.Lock()
-		runner, depth = owner.runner, owner.depth
-		owner.mu.Unlock()
-	}
+	m.mu.Lock()
+	runner, depth := m.runner, m.depth
+	m.mu.Unlock()
 	if runner == nil {
 		return agentControlError("agent runner unavailable")
 	}
@@ -258,13 +253,13 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if !resume && strings.TrimSpace(a.Instructions) != "" {
 		prompt += "\n\nAdditional instructions: " + a.Instructions
 	}
-	entry, startErr := owner.start(ctx, record.AgentName, prompt, record.Model, llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
+	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
 	if startErr != nil {
 		return agentControlError(startErr.Error())
 	}
-	owner.wait(ctx, entry, time.Duration(budget)*time.Second)
-	owner.detachInitial(entry)
-	current, _, _ := owner.get(ctx, a.AgentID, parent)
+	m.wait(ctx, entry, time.Duration(budget)*time.Second)
+	m.detachInitial(entry)
+	current, _, _ := m.get(ctx, a.AgentID, parent)
 	out := m.deliver(ctx, current, entry)
 	if record.Status == "running_elsewhere" {
 		out.Content = strings.TrimSuffix(out.Content, "}") + `,"warning":"possible duplicate side effects: another process may still be running"}`

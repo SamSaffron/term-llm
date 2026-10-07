@@ -351,7 +351,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if wireSpawn == nil {
 		wireSpawn = func(cfg *config.Config, toolMgr *tools.ToolManager, _ bool) error {
 			var err error
-			spawnRunner, err = WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, req.SessionID, req.Depth)
+			spawnRunner, err = wireSpawnAgentWithBudget(cfg, toolMgr, yoloMode, store, req.SessionID, req.Depth, req.RemainingDepth)
 			// Propagate the host observer down the nesting chain here rather than
 			// inside the wiring helper: a grandchild runner is built by a child's
 			// own cmdRunner, which would otherwise lose the host entirely.

@@ -120,11 +120,14 @@ Built-in `developer` can spawn up to three subagents in parallel. Its built-in s
 
 ```yaml
 spawn:
+  max_depth: 1
   agent_models:
     codebase: fast
 ```
 
 ## Agent configuration
+
+`spawn.max_depth` sets how many levels **below this agent** it may spawn (`0` or unset uses the default 2). Each child receives at most its parent's remaining budget minus one level, even when the child's own `max_depth` is higher. For example, a top-level agent with 2 levels remaining can spawn `developer` (`max_depth: 1`), which can spawn one `codebase` child; that child cannot spawn further. A top-level `developer` can also spawn once. The cap is recalculated from the resuming parent for `continue_agent`. Isolated skill children are not agent spawns and remain available even when the parent has no spawn budget; they inherit `max(parent_remaining - 1, 0)` and cannot call `spawn_agent` when that is zero.
 
 Agents are YAML files stored in `~/.config/term-llm/agents/`:
 

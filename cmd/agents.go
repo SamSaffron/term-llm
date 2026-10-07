@@ -155,7 +155,7 @@ Valid preference keys:
   shell_allow               - Comma-separated shell patterns to allow
   shell_auto_run            - Auto-approve shell commands (true/false)
   spawn_max_parallel        - Max parallel sub-agents
-  spawn_max_depth           - Max spawn nesting depth
+  spawn_max_depth           - Levels below this agent (default 2 if 0/unset; capped by caller's remaining budget)
   spawn_timeout             - Spawn timeout in seconds
   spawn_allowed_agents      - Comma-separated list of allowed agents
 

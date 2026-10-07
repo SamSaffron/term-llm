@@ -62,7 +62,7 @@ func TestRuntimeAgentMentionCapabilityTracksRegisteredToolAndLiveEngineFilter(t 
 		t.Fatalf("deny-to-allow replacement used stale engine: %v", err)
 	}
 
-	manager.GetSpawnAgentTool().SetDepth(2)
+	manager.GetSpawnAgentTool().SetRemainingDepth(0)
 	if err := capability.ValidateAgentMention("codebase"); err == nil || !strings.Contains(err.Error(), "depth") {
 		t.Fatalf("depth validation = %v", err)
 	}
