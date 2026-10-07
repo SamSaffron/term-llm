@@ -214,6 +214,77 @@ func TestSessionMessagesETagIgnoresSessionMetadataOnlyUpdates(t *testing.T) {
 	}
 }
 
+func TestHandleSessionsStatusExcludesSubagentsFromCriticalSessions(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, sess := range []*session.Session{
+		{ID: "parent", Provider: "test", Model: "test", Mode: session.ModeChat},
+		{ID: "child-active", ParentID: "parent", IsSubagent: true, Provider: "test", Model: "test", Mode: session.ModeChat},
+		{ID: "child-selected", ParentID: "parent", IsSubagent: true, Provider: "test", Model: "test", Mode: session.ModeChat},
+		{ID: "child-interaction", ParentID: "parent", IsSubagent: true, Provider: "test", Model: "test", Mode: session.ModeChat},
+	} {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs := newServeResponseRunManager()
+	defer runs.Close()
+	runs.setActiveRun("parent", "parent-response")
+	runs.setActiveRun("child-active", "child-response")
+	runs.setActiveRun("child-selected", "selected-response")
+	manager := &serveSessionManager{sessions: map[string]*serveRuntime{
+		"child-interaction": {
+			pendingAskUsers: map[string]*servePendingAskUser{
+				"ask-child": {CallID: "ask-child", CreatedAt: time.Now()},
+			},
+		},
+	}}
+	srv := &serveServer{store: store, responseRuns: runs, sessionMgr: manager}
+	for _, selected := range []string{"", "child-selected"} {
+		t.Run("selected="+selected, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			srv.handleSessionsStatus(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/status?selected_session="+selected, nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			var payload struct {
+				Sessions []struct {
+					ID               string `json:"id"`
+					ActiveRun        bool   `json:"active_run"`
+					ActiveResponseID string `json:"active_response_id"`
+				} `json:"sessions"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			wantCount := 1
+			if selected != "" {
+				wantCount++
+			}
+			if len(payload.Sessions) != wantCount {
+				t.Fatalf("want %d sessions, got %s", wantCount, rr.Body.String())
+			}
+			seen := make(map[string]bool)
+			for _, entry := range payload.Sessions {
+				wantResponse := "parent-response"
+				if entry.ID == "child-selected" && selected != "" {
+					wantResponse = "selected-response"
+				} else if entry.ID != "parent" {
+					t.Fatalf("unexpected session %q", entry.ID)
+				}
+				if seen[entry.ID] || !entry.ActiveRun || entry.ActiveResponseID != wantResponse {
+					t.Fatalf("invalid status entry: %+v", entry)
+				}
+				seen[entry.ID] = true
+			}
+		})
+	}
+}
+
 func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t *testing.T) {
 	ctx := context.Background()
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})

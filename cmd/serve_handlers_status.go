@@ -96,10 +96,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	if s.sessionMgr != nil {
 		runtimeInteractions = s.sessionMgr.UnresolvedInteractionSummaries()
 	}
-	criticalIDs := make(map[string]bool, len(activeIDs)+1)
-	if selected := strings.TrimSpace(r.URL.Query().Get("selected_session")); selected != "" {
-		criticalIDs[selected] = true
-	}
+	selected := strings.TrimSpace(r.URL.Query().Get("selected_session"))
+	criticalIDs := make(map[string]bool, len(activeIDs))
 	for id := range activeIDs {
 		criticalIDs[id] = true
 	}
@@ -117,11 +115,14 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if len(missing) > 0 {
+		// Critical sessions bypass the polling window, not the top-level-only
+		// filter: spawned agents can also be running or awaiting interaction.
 		critical, listErr := s.store.List(r.Context(), session.ListOptions{
-			IDs:            missing,
-			Limit:          -1,
-			Archived:       true,
-			SortByActivity: true,
+			IDs:              missing,
+			Limit:            -1,
+			Archived:         true,
+			SortByActivity:   true,
+			ExcludeSubagents: true,
 		})
 		if listErr != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load active sessions")
@@ -133,6 +134,19 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 				listed[sess.ID] = true
 			}
 		}
+	}
+
+	// An explicitly opened child transcript still needs status reconciliation
+	// and response-stream attachment, even though it is not a sidebar/Hub row.
+	if selected != "" && !listed[selected] {
+		selectedSessions, listErr := s.store.List(r.Context(), session.ListOptions{
+			IDs: []string{selected}, Limit: -1, Archived: true,
+		})
+		if listErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load selected session")
+			return
+		}
+		sessions = append(sessions, selectedSessions...)
 	}
 
 	attentionBySession := make(map[string]session.AttentionState)
