@@ -45,6 +45,48 @@ function DialogFixture({ value }: { value: HubStore }) {
 }
 
 describe('Hub components', () => {
+  it('isolates a broken node card and recovers when its data changes', async () => {
+    const healthy = {
+      id: 'healthy',
+      name: 'Healthy node',
+      source: 'local',
+      status: { reachable: true, state: 'ok', latency_ms: 1 },
+    } as HubNode;
+    const broken = {
+      ...healthy,
+      id: 'broken',
+      name: 'Broken node',
+      sessions: { count_label: '', recent: [null] },
+    } as unknown as HubNode;
+    const value = store({
+      listNodes: vi.fn(async () => ({ nodes: [broken, healthy] })),
+      listAttention: vi.fn(async () => ({ inbox: [], input_required: [] })),
+      listDelegations: vi.fn(async () => ({ delegations: [] })),
+    });
+    render(
+      <HubApp
+        config={dashboardConfig}
+        store={value}
+        clipboard={{ writeText: vi.fn(async () => undefined) }}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Node Broken node could not be displayed',
+      ),
+    );
+    expect(screen.getByText('Healthy node')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+    expect(screen.getByRole('heading', { name: 'Delegations' })).toBeVisible();
+
+    await act(() => {
+      value.nodes.value = [{ ...broken, sessions: { count_label: '', recent: [] } }, healthy];
+    });
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(screen.getByText('Broken node')).toBeVisible();
+    expect(screen.getByText('Healthy node')).toBeVisible();
+  });
+
   it('gates Clear all on authoritative attention and keeps partial failure retry with an empty inbox', async () => {
     let finish!: (value: { cleared: number; failed: number }) => void;
     const clearAttention = vi

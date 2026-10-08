@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
@@ -95,35 +94,51 @@ func (s *hubServer) handleHubHealth(w http.ResponseWriter, r *http.Request) {
 func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 	nodes, err := s.registry.Nodes()
 	nodes = s.arrangeNodes(nodes)
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	collectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	statuses := s.prober.ProbeAll(probeCtx, nodes)
-	views := make([]hubNodeView, 0, len(nodes))
-	for _, n := range nodes {
-		proxyPath := s.hubPath("/node/" + n.ID + "/")
-		view := hubNodeView{
-			ID:             n.ID,
-			Name:           n.Name,
-			Source:         n.Source,
-			Connection:     n.Connection,
-			URL:            n.URL,
-			BasePath:       n.BasePath,
-			ProxyPath:      proxyPath,
-			NewSessionPath: proxyPath + "?new=1",
-			HasToken:       n.Token != "",
-			Status:         statuses[n.ID],
-		}
-		if n.UsesReverseConnection() {
-			connected, connectedAt, lastSeen := s.reverse.status(n.ID)
-			if connected {
-				view.Status = s.probeReverseNode(probeCtx, n, connectedAt, lastSeen)
-			} else {
-				view.Status = hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
-			}
-		}
-		views = append(views, view)
+	views := make([]hubNodeView, len(nodes))
+	type result struct {
+		index int
+		view  hubNodeView
 	}
-	s.collectNodeSessionViews(probeCtx, nodes, views)
+	// Buffer one result per node: even a transport that ignores cancellation
+	// can finish later without blocking or mutating the returned dashboard.
+	results := make(chan result, len(nodes))
+	pending := make([]bool, len(nodes))
+	for i, n := range nodes {
+		views[i] = s.pendingNodeView(n)
+		pending[i] = true
+		go func() {
+			results <- result{index: i, view: s.collectNodeView(collectCtx, n)}
+		}()
+	}
+collect:
+	for range nodes {
+		select {
+		case res := <-results:
+			views[res.index] = res.view
+			pending[res.index] = false
+		case <-collectCtx.Done():
+			// Prefer already completed results over timeout placeholders when
+			// cancellation and a worker's result become ready together.
+		drain:
+			for {
+				select {
+				case res := <-results:
+					views[res.index] = res.view
+					pending[res.index] = false
+				default:
+					break drain
+				}
+			}
+			for i := range views {
+				if pending[i] {
+					views[i].Status.Error = collectCtx.Err().Error()
+				}
+			}
+			break collect
+		}
+	}
 	s.applyHubAttentionViews(ctx, views)
 	for i := range views {
 		views[i].Diagnostics = hubNodeDiagnostics(nodes[i], views[i], nodes)
@@ -176,43 +191,52 @@ type hubNodeSessionStatus struct {
 	MessageCount            int      `json:"message_count"`
 }
 
-// collectNodeSessionViews enriches reachable nodes with a bounded session
-// summary. The node endpoint already caps itself at 100 rows, so the Hub can
-// show "100+ sessions" without issuing exact count queries on every refresh.
-func (s *hubServer) collectNodeSessionViews(ctx context.Context, nodes []hub.Node, views []hubNodeView) {
-	if len(nodes) == 0 || len(nodes) != len(views) {
-		return
+// pendingNodeView retains node identity and reverse connection state if a
+// worker cannot finish before the dashboard's deadline.
+func (s *hubServer) pendingNodeView(n hub.Node) hubNodeView {
+	proxyPath := s.hubPath("/node/" + n.ID + "/")
+	view := hubNodeView{
+		ID: n.ID, Name: n.Name, Source: n.Source, Connection: n.Connection,
+		URL: n.URL, BasePath: n.BasePath, ProxyPath: proxyPath,
+		NewSessionPath: proxyPath + "?new=1", HasToken: n.Token != "",
+		Status: hub.Status{State: "unreachable"},
 	}
-	sessionCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	type result struct {
-		index    int
-		sessions *hubNodeSessionsView
-	}
-	results := make(chan result, len(nodes))
-	var wg sync.WaitGroup
-	for i, n := range nodes {
-		if !views[i].Status.Reachable {
-			continue
+	if n.UsesReverseConnection() {
+		connected, connectedAt, lastSeen := s.reverse.status(n.ID)
+		view.Status = hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
+		if connected {
+			view.Status = hub.Status{Reachable: true, State: "connected", Details: hubReverseNodeDetails(connectedAt, lastSeen)}
 		}
-		wg.Add(1)
-		go func(i int, n hub.Node) {
-			defer wg.Done()
-			sessions, err := s.fetchHubNodeSessions(sessionCtx, n)
-			if err != nil || sessions == nil {
-				return
-			}
-			results <- result{index: i, sessions: sessions}
-		}(i, n)
 	}
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-	for res := range results {
-		views[res.index].Sessions = res.sessions
+	return view
+}
+
+// collectNodeView gives each node its own bounded health-and-session workflow.
+// A slow node cannot consume another node's budget or delay its session fetch.
+func (s *hubServer) collectNodeView(ctx context.Context, n hub.Node) hubNodeView {
+	nodeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	view := s.pendingNodeView(n)
+	healthCtx, cancelHealth := context.WithTimeout(nodeCtx, 3*time.Second)
+	if n.UsesReverseConnection() {
+		connected, connectedAt, lastSeen := s.reverse.status(n.ID)
+		if connected {
+			view.Status = s.probeReverseNode(healthCtx, n, connectedAt, lastSeen)
+		} else {
+			view.Status = hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
+		}
+	} else {
+		view.Status = s.prober.Probe(healthCtx, n)
 	}
+	cancelHealth()
+	// Session summaries are best-effort. Older nodes may not expose the
+	// endpoint, and a failure must not discard a successful health result.
+	if view.Status.Reachable {
+		sessionCtx, cancelSessions := context.WithTimeout(nodeCtx, 3*time.Second)
+		defer cancelSessions()
+		view.Sessions, _ = s.fetchHubNodeSessions(sessionCtx, n)
+	}
+	return view
 }
 
 func (s *hubServer) fetchHubNodeSessions(ctx context.Context, n hub.Node) (*hubNodeSessionsView, error) {
@@ -405,12 +429,16 @@ func hubNodeSessionCountLabel(n int) string {
 	return fmt.Sprintf("%d sessions", n)
 }
 
-func (s *hubServer) probeReverseNode(ctx context.Context, n hub.Node, connectedAt, lastSeen time.Time) hub.Status {
-	details := map[string]string{
+func hubReverseNodeDetails(connectedAt, lastSeen time.Time) map[string]string {
+	return map[string]string{
 		"connection":   "reverse",
 		"connected_at": connectedAt.Format(time.RFC3339),
 		"last_seen":    lastSeen.Format(time.RFC3339),
 	}
+}
+
+func (s *hubServer) probeReverseNode(ctx context.Context, n hub.Node, connectedAt, lastSeen time.Time) hub.Status {
+	details := hubReverseNodeDetails(connectedAt, lastSeen)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://reverse.local"+hubJoinBasePath(n.BasePath, "/healthz"), nil)
 	if err != nil {
 		return hub.Status{Reachable: true, State: "connected", Details: details, Error: err.Error()}
@@ -434,7 +462,7 @@ func (s *hubServer) probeReverseNode(ctx context.Context, n hub.Node, connectedA
 		Agent        string   `json:"agent"`
 		Capabilities []string `json:"capabilities"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, hub.HealthResponseMaxBytes)).Decode(&body); err == nil {
 		st.Version = body.Version
 		st.Agent = body.Agent
 		st.Capabilities = body.Capabilities

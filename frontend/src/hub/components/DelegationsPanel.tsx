@@ -1,6 +1,83 @@
 import type { HubConfig } from '../config';
 import { firstDelegationArtifact } from '../domain/links';
+import type { HubDelegation, HubNode } from '../domain/types';
 import type { HubStore } from '../stores/hub-store';
+import { HubRenderBoundary } from './HubRenderBoundary';
+
+/** One delegated run, including the artifact its response may point at. */
+function DelegationRow({
+  config,
+  delegation,
+  nodes,
+  stale,
+}: {
+  config: HubConfig;
+  delegation: HubDelegation;
+  nodes: Pick<HubNode, 'id' | 'base_path'>[];
+  stale: boolean;
+}) {
+  const artifact = delegation.response
+    ? firstDelegationArtifact(
+        delegation.response,
+        delegation,
+        nodes,
+        config.basePath,
+        window.location.href,
+      )
+    : null;
+  return (
+    <article class="delegation-row">
+      <div class="delegation-route">
+        <strong>{delegation.origin_node || 'unknown'}</strong>
+        <span class="route-arrow">→</span>
+        <strong>{delegation.target_node || 'unknown'}</strong>
+        <span
+          class={`delegation-status status-${stale ? 'last-known' : delegation.status || 'unknown'}`}
+        >
+          {stale ? `last known: ${delegation.status || 'unknown'}` : delegation.status || 'unknown'}
+        </span>
+      </div>
+      <div class="delegation-meta">
+        {delegation.agent_name || 'agent'} · depth {delegation.depth || 1}
+        {delegation.job_id ? ` · ${delegation.job_id}` : ''}
+      </div>
+      {delegation.prompt && <div class="delegation-prompt">{delegation.prompt}</div>}
+      {delegation.response && (
+        <div class="delegation-response">
+          {artifact?.type === 'image' && (
+            <>
+              <img
+                class="delegation-artifact-img"
+                src={artifact.url}
+                alt={artifact.label || 'Delegated artifact'}
+              />
+              <a
+                class="delegation-artifact-link"
+                href={artifact.url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {artifact.label}
+              </a>
+            </>
+          )}
+          {artifact?.type === 'link' && (
+            <a
+              class="delegation-artifact-link"
+              href={artifact.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {artifact.label}
+            </a>
+          )}
+          <pre class="delegation-response-text">{delegation.response}</pre>
+        </div>
+      )}
+      {delegation.error && <div class="node-error">{delegation.error}</div>}
+    </article>
+  );
+}
 
 export function DelegationsPanel({ config, store }: { config: HubConfig; store: HubStore }) {
   const stale = !store.delegationsVerified.value;
@@ -26,71 +103,16 @@ export function DelegationsPanel({ config, store }: { config: HubConfig; store: 
         </span>
       </div>
       <div class="delegations-list">
-        {delegations.slice(0, 8).map((delegation) => {
-          const artifact = delegation.response
-            ? firstDelegationArtifact(
-                delegation.response,
-                delegation,
-                store.nodes.value,
-                config.basePath,
-                window.location.href,
-              )
-            : null;
-          return (
-            <article class="delegation-row" key={delegation.id}>
-              <div class="delegation-route">
-                <strong>{delegation.origin_node || 'unknown'}</strong>
-                <span class="route-arrow">→</span>
-                <strong>{delegation.target_node || 'unknown'}</strong>
-                <span
-                  class={`delegation-status status-${stale ? 'last-known' : delegation.status || 'unknown'}`}
-                >
-                  {stale
-                    ? `last known: ${delegation.status || 'unknown'}`
-                    : delegation.status || 'unknown'}
-                </span>
-              </div>
-              <div class="delegation-meta">
-                {delegation.agent_name || 'agent'} · depth {delegation.depth || 1}
-                {delegation.job_id ? ` · ${delegation.job_id}` : ''}
-              </div>
-              {delegation.prompt && <div class="delegation-prompt">{delegation.prompt}</div>}
-              {delegation.response && (
-                <div class="delegation-response">
-                  {artifact?.type === 'image' && (
-                    <>
-                      <img
-                        class="delegation-artifact-img"
-                        src={artifact.url}
-                        alt={artifact.label || 'Delegated artifact'}
-                      />
-                      <a
-                        class="delegation-artifact-link"
-                        href={artifact.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {artifact.label}
-                      </a>
-                    </>
-                  )}
-                  {artifact?.type === 'link' && (
-                    <a
-                      class="delegation-artifact-link"
-                      href={artifact.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      {artifact.label}
-                    </a>
-                  )}
-                  <pre class="delegation-response-text">{delegation.response}</pre>
-                </div>
-              )}
-              {delegation.error && <div class="node-error">{delegation.error}</div>}
-            </article>
-          );
-        })}
+        {delegations.slice(0, 8).map((delegation) => (
+          <HubRenderBoundary key={delegation.id} resetKey={delegation} label="Delegation">
+            <DelegationRow
+              config={config}
+              delegation={delegation}
+              nodes={store.nodes.value}
+              stale={stale}
+            />
+          </HubRenderBoundary>
+        ))}
       </div>
       {(store.delegationsVerified.value || !store.initialLoading.value) &&
         store.delegationError.value && (

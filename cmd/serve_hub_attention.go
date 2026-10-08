@@ -24,7 +24,18 @@ import (
 const (
 	hubAttentionMaxBytes   = 2 << 20
 	hubAttentionStaleAfter = 3 * time.Minute
+
+	// Bound one node sync across all kinds and snapshot retries. At the requested
+	// 200 items/page, 10,000 activities need 50 full pages; 100 requests allow
+	// sparse pages and protocol-v1 fallbacks without unbounded pagination. The
+	// cumulative body cap also bounds retained titles/metadata from large pages.
+	hubAttentionPageSize     = 200
+	hubAttentionMaxPages     = 100
+	hubAttentionMaxItems     = 10_000
+	hubAttentionMaxSyncBytes = 16 << 20
 )
+
+var errHubAttentionCollectionLimit = errors.New("attention collection exceeded resource limits")
 
 var errHubAttentionSnapshotChanged = errors.New("attention snapshot changed during pagination")
 
@@ -60,6 +71,34 @@ type hubAttentionPage struct {
 	Items           []hubAttentionPageItem `json:"items"`
 	NextCursor      string                 `json:"next_cursor"`
 	HasMore         bool                   `json:"has_more"`
+	payloadBytes    int
+}
+
+// The budget belongs to a whole node sync, not a kind or a retry attempt.
+type hubAttentionBudget struct {
+	pages int
+	items int
+	bytes int
+}
+
+func (b *hubAttentionBudget) nextPage() error {
+	if b.pages >= hubAttentionMaxPages {
+		return fmt.Errorf("%w: maximum %d page requests", errHubAttentionCollectionLimit, hubAttentionMaxPages)
+	}
+	b.pages++
+	return nil
+}
+
+func (b *hubAttentionBudget) accept(page hubAttentionPage) error {
+	if len(page.Items) > hubAttentionMaxItems-b.items {
+		return fmt.Errorf("%w: maximum %d activities", errHubAttentionCollectionLimit, hubAttentionMaxItems)
+	}
+	if page.payloadBytes > hubAttentionMaxSyncBytes-b.bytes {
+		return fmt.Errorf("%w: maximum %d payload bytes", errHubAttentionCollectionLimit, hubAttentionMaxSyncBytes)
+	}
+	b.items += len(page.Items)
+	b.bytes += page.payloadBytes
+	return nil
 }
 
 type hubAttentionPageItem struct {
@@ -153,6 +192,8 @@ func hubAttentionErrorSummary(err error) string {
 	}
 	message := strings.ToLower(err.Error())
 	switch {
+	case errors.Is(err, errHubAttentionCollectionLimit):
+		return "node attention collection exceeded resource limits"
 	case errors.Is(err, errHubAttentionSnapshotChanged):
 		return "snapshot changed during collection"
 	case strings.Contains(message, "decode"), strings.Contains(message, "invalid identity"), strings.Contains(message, "pagination cursor"):
@@ -222,8 +263,9 @@ func (s *hubServer) collectAttention(ctx context.Context) int {
 func (s *hubServer) collectNodeAttention(ctx context.Context, node hub.Node) error {
 	const maxAttempts = 2
 	var err error
+	var budget hubAttentionBudget
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		err = s.collectNodeAttentionOnce(ctx, node)
+		err = s.collectNodeAttentionOnce(ctx, node, &budget)
 		if !errors.Is(err, errHubAttentionSnapshotChanged) {
 			return err
 		}
@@ -234,7 +276,7 @@ func (s *hubServer) collectNodeAttention(ctx context.Context, node hub.Node) err
 	return err
 }
 
-func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node) error {
+func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node, budget *hubAttentionBudget) error {
 	s.attentionMu.Lock()
 	generation := s.attentionGeneration
 	s.attentionMu.Unlock()
@@ -252,6 +294,9 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 		kind := kinds[kindIndex]
 		cursor := ""
 		for {
+			if err := budget.nextPage(); err != nil {
+				return err
+			}
 			page, pageETag, notModified, status, err := s.fetchNodeAttentionPage(ctx, node, kind, cursor, version, etag)
 			if err != nil {
 				return err
@@ -272,6 +317,9 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 			}
 			if status != http.StatusOK {
 				return fmt.Errorf("attention endpoint returned HTTP %d", status)
+			}
+			if err := budget.accept(page); err != nil {
+				return err
 			}
 			if (page.ProtocolVersion != 1 && page.ProtocolVersion != 2) || page.StoreInstanceID == "" {
 				return errors.New("attention endpoint returned invalid identity")
@@ -342,7 +390,7 @@ func (s *hubServer) fetchNodeAttentionPage(ctx context.Context, node hub.Node, k
 	}
 	query := req.URL.Query()
 	query.Set("kind", kind)
-	query.Set("limit", "200")
+	query.Set("limit", strconv.Itoa(hubAttentionPageSize))
 	if cursor != "" {
 		query.Set("cursor", cursor)
 	}
@@ -368,10 +416,18 @@ func (s *hubServer) fetchNodeAttentionPage(ctx context.Context, node hub.Node, k
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return hubAttentionPage{}, resp.Header.Get("ETag"), false, resp.StatusCode, nil
 	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, hubAttentionMaxBytes+1))
+	if err != nil {
+		return hubAttentionPage{}, "", false, resp.StatusCode, fmt.Errorf("read attention page: %w", err)
+	}
+	if len(body) > hubAttentionMaxBytes {
+		return hubAttentionPage{}, "", false, resp.StatusCode, fmt.Errorf("%w: maximum %d page bytes", errHubAttentionCollectionLimit, hubAttentionMaxBytes)
+	}
 	var page hubAttentionPage
-	if err := json.NewDecoder(io.LimitReader(resp.Body, hubAttentionMaxBytes)).Decode(&page); err != nil {
+	if err := json.Unmarshal(body, &page); err != nil {
 		return hubAttentionPage{}, "", false, resp.StatusCode, fmt.Errorf("decode attention page: %w", err)
 	}
+	page.payloadBytes = len(body)
 	return page, resp.Header.Get("ETag"), false, resp.StatusCode, nil
 }
 

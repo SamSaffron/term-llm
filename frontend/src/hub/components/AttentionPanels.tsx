@@ -1,5 +1,64 @@
 import { relativeSessionTime } from '../domain/formatting';
+import type { HubAttentionInboxItem, HubInputRequiredItem } from '../domain/types';
 import type { HubStore } from '../stores/hub-store';
+import { HubRenderBoundary } from './HubRenderBoundary';
+
+/** One conversation waiting on a question or approval. */
+function InputRequiredRow({ item, stale }: { item: HubInputRequiredItem; stale: boolean }) {
+  const count = Number(item.pending_interaction_count) || 1;
+  const kinds = item.pending_interaction_kinds ?? [];
+  const label = kinds.some((kind) => kind.startsWith('approval'))
+    ? kinds.includes('ask_user')
+      ? 'Question and approval waiting'
+      : 'Approval waiting'
+    : 'Question waiting';
+  const when = relativeSessionTime(item.required_since);
+  return (
+    <a
+      class={`attention-row input-required-row${stale || item.stale ? ' is-stale' : ''}`}
+      href={item.resume_path || '#'}
+    >
+      <span class="attention-dot" />
+      <span class="attention-body">
+        <strong class="attention-title">
+          {item.title || item.session_id || 'Untitled conversation'}
+        </strong>
+        <span class="attention-meta">
+          {[
+            item.node_name || item.node_id,
+            count > 1 ? `${count} decisions waiting` : label,
+            stale || item.stale ? 'last known state' : when,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </span>
+      </span>
+    </a>
+  );
+}
+
+/** One finished conversation not visited yet. */
+function InboxRow({ item, stale }: { item: HubAttentionInboxItem; stale: boolean }) {
+  return (
+    <a class={`attention-row${stale ? ' is-stale' : ''}`} href={item.resume_path || '#'}>
+      <span class="attention-dot" />
+      <span class="attention-body">
+        <strong class="attention-title">
+          {item.title || item.session_id || 'Untitled conversation'}
+        </strong>
+        <span class="attention-meta">
+          {[
+            item.node_name || item.node_id,
+            item.outcome || 'completed',
+            stale ? 'last known state' : relativeSessionTime(item.terminal_at),
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </span>
+      </span>
+    </a>
+  );
+}
 
 export function AttentionPanels({ store }: { store: HubStore }) {
   const stale = !store.attentionVerified.value;
@@ -23,40 +82,13 @@ export function AttentionPanels({ store }: { store: HubStore }) {
             </span>
           </div>
           <ul class="attention-list">
-            {waiting.map((item) => {
-              const count = Number(item.pending_interaction_count) || 1;
-              const kinds = item.pending_interaction_kinds ?? [];
-              const label = kinds.some((kind) => kind.startsWith('approval'))
-                ? kinds.includes('ask_user')
-                  ? 'Question and approval waiting'
-                  : 'Approval waiting'
-                : 'Question waiting';
-              const when = relativeSessionTime(item.required_since);
-              return (
-                <li key={`${item.node_id}:${item.session_id}`}>
-                  <a
-                    class={`attention-row input-required-row${stale || item.stale ? ' is-stale' : ''}`}
-                    href={item.resume_path || '#'}
-                  >
-                    <span class="attention-dot" />
-                    <span class="attention-body">
-                      <strong class="attention-title">
-                        {item.title || item.session_id || 'Untitled conversation'}
-                      </strong>
-                      <span class="attention-meta">
-                        {[
-                          item.node_name || item.node_id,
-                          count > 1 ? `${count} decisions waiting` : label,
-                          stale || item.stale ? 'last known state' : when,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </span>
-                    </span>
-                  </a>
-                </li>
-              );
-            })}
+            {waiting.map((item) => (
+              <li key={`${item.node_id}:${item.session_id}`}>
+                <HubRenderBoundary resetKey={item} label="Conversation">
+                  <InputRequiredRow item={item} stale={stale} />
+                </HubRenderBoundary>
+              </li>
+            ))}
           </ul>
         </section>
       )}
@@ -97,26 +129,9 @@ export function AttentionPanels({ store }: { store: HubStore }) {
             <ul class="attention-list">
               {inbox.map((item) => (
                 <li key={`${item.node_id}:${item.session_id}`}>
-                  <a
-                    class={`attention-row${stale ? ' is-stale' : ''}`}
-                    href={item.resume_path || '#'}
-                  >
-                    <span class="attention-dot" />
-                    <span class="attention-body">
-                      <strong class="attention-title">
-                        {item.title || item.session_id || 'Untitled conversation'}
-                      </strong>
-                      <span class="attention-meta">
-                        {[
-                          item.node_name || item.node_id,
-                          item.outcome || 'completed',
-                          stale ? 'last known state' : relativeSessionTime(item.terminal_at),
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </span>
-                    </span>
-                  </a>
+                  <HubRenderBoundary resetKey={item} label="Conversation">
+                    <InboxRow item={item} stale={stale} />
+                  </HubRenderBoundary>
                 </li>
               ))}
             </ul>

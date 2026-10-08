@@ -7,6 +7,7 @@ import { mergeShownOrder } from '../domain/node-filter';
 import type { HubNode } from '../domain/types';
 import type { HubStore } from '../stores/hub-store';
 import { NodeSessions } from './NodeSessions';
+import { HubRenderBoundary } from './HubRenderBoundary';
 
 /** Reordering callbacks shared, unchanged, by every card of the grid. */
 interface NodeReorder {
@@ -254,15 +255,20 @@ export function NodeGrid({ store }: { store: HubStore }) {
         aria-busy={store.initialLoading.value}
       >
         {nodes.map((node, position) => (
-          <NodeCard
+          <HubRenderBoundary
             key={node.id}
-            node={node}
-            store={store}
-            position={position}
-            count={nodes.length}
-            dragging={draggingId === node.id}
-            reorder={reorder}
-          />
+            resetKey={node}
+            label={typeof node.name === 'string' && node.name ? `Node ${node.name}` : 'Node'}
+          >
+            <NodeCard
+              node={node}
+              store={store}
+              position={position}
+              count={nodes.length}
+              dragging={draggingId === node.id}
+              reorder={reorder}
+            />
+          </HubRenderBoundary>
         ))}
       </section>
       <div class="visually-hidden" role="status" aria-live="polite">

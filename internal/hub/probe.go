@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -52,6 +53,11 @@ func NewProber(transport http.RoundTripper) *Prober {
 	}}
 }
 
+// HealthResponseMaxBytes bounds best-effort health JSON decoding for both
+// direct HTTP probes and reverse connections. Health payloads are small;
+// malformed or oversized bodies must not consume unbounded memory.
+const HealthResponseMaxBytes = 64 << 10
+
 // healthzResponse mirrors the term-llm serve healthz payload. The extended
 // fields are only present when the serve trusts the request (see
 // cmd/serve_handlers.go handleHealth).
@@ -88,7 +94,7 @@ func (p *Prober) Probe(ctx context.Context, n Node) Status {
 	}
 	st := Status{Reachable: true, State: "ok", LatencyMS: latency}
 	var body healthzResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, HealthResponseMaxBytes)).Decode(&body); err == nil {
 		st.Version = body.Version
 		st.Agent = body.Agent
 		st.Capabilities = body.Capabilities

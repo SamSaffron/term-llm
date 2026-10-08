@@ -72,8 +72,9 @@ term-llm serve web \\
 export function activeSessionCount(nodes: HubNode[]): number {
   return nodes.reduce((total, node) => {
     if (!node.sessions) return total;
-    const explicit = Number(node.sessions.active_count);
-    if (Number.isFinite(explicit) && explicit > 0) return total + explicit;
-    return total + (node.sessions.active?.length ?? 0);
+    const explicit = node.sessions.active_count;
+    if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0)
+      return total + explicit;
+    return total + (Array.isArray(node.sessions.active) ? node.sessions.active.length : 0);
   }, 0);
 }

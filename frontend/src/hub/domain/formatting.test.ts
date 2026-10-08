@@ -58,6 +58,15 @@ describe('Hub formatting', () => {
     ).toBe(4);
   });
 
+  it('ignores malformed counts and lists in cross-node totals', () => {
+    const malformed = node({
+      count_label: '',
+      active_count: { toString: null },
+      active: { length: 100 },
+    } as unknown as NonNullable<HubNode['sessions']>);
+    expect(activeSessionCount([malformed, node({ count_label: '', active_count: 2 })])).toBe(2);
+  });
+
   it('shell-quotes apostrophes and builds a reverse registration command', () => {
     expect(shellQuote("https://hub.test/o'connor/")).toBe("'https://hub.test/o'\\''connor/'");
     const command = buildRegistrationCommand("https://hub.test/o'connor/");

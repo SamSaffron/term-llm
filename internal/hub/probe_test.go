@@ -2,8 +2,10 @@ package hub
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -106,5 +108,62 @@ func TestProbeAllKeysByID(t *testing.T) {
 	}
 	if statuses["b"].Reachable {
 		t.Errorf("b = %+v, want unreachable", statuses["b"])
+	}
+}
+
+// probeTestBody tracks consumption so the bound is checked without allocating
+// or serving an arbitrarily large response over the network.
+type probeTestBody struct {
+	io.Reader
+	read   int
+	closed bool
+}
+
+func (b *probeTestBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	b.read += n
+	return n, err
+}
+
+func (b *probeTestBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+type probeTestTransport func(*http.Request) (*http.Response, error)
+
+func (f probeTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestProbeHealthBodyBoundAndBestEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"malformed", `{"agent":"partial","capabilities":`},
+		{"oversized identity", `{"agent":"` + strings.Repeat("a", HealthResponseMaxBytes) + `"}`},
+		{"oversized unknown field", `{"agent":"partial","unknown":"` + strings.Repeat("a", HealthResponseMaxBytes) + `"}`},
+		{"oversized whitespace", strings.Repeat(" ", HealthResponseMaxBytes) + `{"agent":"hidden"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &probeTestBody{Reader: strings.NewReader(tc.body)}
+			p := NewProber(probeTestTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+			}))
+			st := p.Probe(context.Background(), Node{ID: "n", URL: "http://node"})
+			if !st.Reachable || st.State != "ok" || st.Error != "" {
+				t.Fatalf("invalid health JSON changed best-effort reachability: %+v", st)
+			}
+			if st.Agent != "" || st.Version != "" || len(st.Capabilities) != 0 {
+				t.Fatalf("invalid health JSON published partial identity: %+v", st)
+			}
+			if body.read > HealthResponseMaxBytes {
+				t.Fatalf("health body consumed %d bytes, limit %d", body.read, HealthResponseMaxBytes)
+			}
+			if !body.closed {
+				t.Fatal("health body was not closed")
+			}
+		})
 	}
 }
