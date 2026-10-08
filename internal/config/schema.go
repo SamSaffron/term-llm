@@ -245,6 +245,11 @@ const (
 	DefaultOpenAIDecisionsBaseURL        = "https://api.openai.com/v1"
 	DefaultOpenAIDecisionsTimeoutSeconds = 10
 
+	DefaultCloudflareClassifyModel = "clef"
+	// {account_id} is replaced with CLOUDFLARE_ACCOUNT_ID when the request is built.
+	DefaultCloudflareClassifyBaseURL        = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run"
+	DefaultCloudflareClassifyTimeoutSeconds = 10
+
 	DefaultReasoningMaxSummaryChars = 12000
 	DefaultReasoningMaxRawChars     = 20000
 	DefaultReasoningHiddenLabel     = "Thinking..."

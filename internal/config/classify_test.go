@@ -181,7 +181,7 @@ func TestClassifyOpenAIProviderResolutionAndKey(t *testing.T) {
 			t.Fatalf("%s key = %q, %v; want %q", tc.name, got, err, tc.key)
 		}
 	}
-	if got := c.ProviderNames(); strings.Join(got, ",") != "decide,openai,proxy,typesafe" {
+	if got := c.ProviderNames(); strings.Join(got, ",") != "cloudflare,decide,openai,proxy,typesafe" {
 		t.Fatalf("ProviderNames = %v", got)
 	}
 }

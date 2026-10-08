@@ -29,7 +29,7 @@ const (
 
 // ErrImagesUnsupported reports image inputs sent to a backend that cannot
 // evaluate them.
-var ErrImagesUnsupported = errors.New("classify: image inputs are not supported by this provider; use a classify provider with type openai")
+var ErrImagesUnsupported = errors.New("classify: image inputs are not supported by this provider; use a classify provider with type openai or cloudflare")
 
 // Backend evaluates classification requests.
 type Backend interface {

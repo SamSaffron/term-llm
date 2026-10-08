@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/transport"
 )
 
 const redPNG = "data:image/png;base64,iVBORw0KGgo="
@@ -199,8 +200,8 @@ func TestClassifyRetriesAndRedactsErrors(t *testing.T) {
 	if strings.Contains(err.Error(), "secret-state") || strings.Contains(err.Error(), "sk-test") {
 		t.Fatalf("error leaks sensitive values: %v", err)
 	}
-	if calls.Load() != maxRetries+1 {
-		t.Fatalf("calls = %d, want %d", calls.Load(), maxRetries+1)
+	if calls.Load() != transport.MaxRetries+1 {
+		t.Fatalf("calls = %d, want %d", calls.Load(), transport.MaxRetries+1)
 	}
 }
 

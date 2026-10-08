@@ -69,19 +69,19 @@ func newClassifyCmd(deps classifyDeps) *cobra.Command {
 		Use:   "classify [state]",
 		Short: "Classify state with a classification provider",
 		Long: `Evaluate text, structured JSON, or images with a classification provider
-(TypeSafe System One or the OpenAI Decisions API).
+(TypeSafe System One, the OpenAI Decisions API, or Cloudflare Workers AI Clef).
 
 Select classify.default_provider from classify.providers, or override it with --provider/-p.
 
 Questions can be supplied together in a JSON/YAML file, or defined inline for
 a single choice, score, or noul. State and questions are sent to the configured endpoint. Images
-(--image) are supported only by providers with type openai, which ask noul questions as Decisions
-predicates. Classification may also be used for automatic approvals when guardian.backend is set to classify.`,
+(--image) are supported by providers with type openai or cloudflare. Classification may also be used for automatic approvals when guardian.backend is set to classify.`,
 		Example: `  term-llm classify "Production is down" --type noul --question "Is this urgent?" --format value
   term-llm classify "Sam is eating ice cream" --type choice --question "Am I happy?" --option yes --option no --pretty-print
   term-llm classify "My invoice is wrong" -q routing.yaml --format table
   term-llm classify --state-json -f event.json -q checks.yaml
   term-llm classify -p openai --image product.png --type noul --question "Is the product damaged?"
+  term-llm classify -p cloudflare --model clef-flash "Checkout is down" --type noul --question "Is this urgent?"
   term-llm classify models`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -115,7 +115,7 @@ func addClassifyFlags(cmd *cobra.Command, opts *classifyOptions) {
 	cmd.Flags().StringVar(&opts.trueDescription, "true-description", "", "NOUL true description")
 	cmd.Flags().StringVar(&opts.falseDescription, "false-description", "", "NOUL false description")
 	cmd.Flags().StringVar(&opts.answer, "answer", "", "Answer id for --format value")
-	cmd.Flags().StringArrayVar(&opts.images, "image", nil, "Image file (PNG, JPEG, GIF, or WebP) or data:image URL to evaluate with the state; requires an openai provider (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.images, "image", nil, "Image file (PNG, JPEG, GIF, or WebP) or data:image URL to evaluate with the state; requires an openai or cloudflare provider (repeatable)")
 	registerClassifyCompletion(cmd, "type", classifyStaticCompletion(classifyQuestionTypes))
 	registerClassifyCompletion(cmd, "answer", classifyAnswerCompletion)
 	// Free-text flags: suggest nothing instead of unrelated file names.
@@ -189,8 +189,8 @@ func runClassify(cmd *cobra.Command, args []string, opts *classifyOptions, deps 
 	if model == "" {
 		model = strings.TrimSpace(provider.Model)
 	}
-	if len(opts.images) > 0 && provider.Type != config.ClassifyProviderOpenAI {
-		return fmt.Errorf("--image requires a classify provider with type openai (provider type is %q); try --provider openai", provider.Type)
+	if len(opts.images) > 0 && !provider.SupportsImages() {
+		return fmt.Errorf("--image requires a classify provider with type openai or cloudflare (provider type is %q); try --provider openai or --provider cloudflare", provider.Type)
 	}
 	images, err := loadClassifyImages(opts.images)
 	if err != nil {
@@ -773,7 +773,7 @@ func classifyModelCompletion(cmd *cobra.Command, _ []string, prefix string) ([]s
 	models := []string{config.DefaultTypeSafeModel}
 	selected, _ := cmd.Flags().GetString("provider")
 	if provider, err := cfg.Classify.ResolveProvider(selected); err == nil {
-		models = []string{provider.DefaultModel()}
+		models = provider.KnownModels()
 		if model := strings.TrimSpace(provider.Model); model != "" {
 			models = append(models, model)
 		}

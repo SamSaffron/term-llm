@@ -10,13 +10,52 @@ import (
 
 // Classification provider types. Built-in provider names match their type.
 const (
-	ClassifyProviderTypeSafe = "typesafe"
-	ClassifyProviderOpenAI   = "openai" // OpenAI Decisions API
+	ClassifyProviderTypeSafe   = "typesafe"
+	ClassifyProviderOpenAI     = "openai"     // OpenAI Decisions API
+	ClassifyProviderCloudflare = "cloudflare" // Cloudflare Workers AI (Clef)
 )
+
+// classifyTypeDefaults holds each provider type's built-in settings.
+type classifyTypeDefaults struct {
+	model          string
+	baseURL        string
+	timeoutSeconds int
+	// keyEnv lists environment fallbacks for api_key, used only with baseURL.
+	keyEnv []string
+	images bool
+	// models lists known models beyond the default, for completion.
+	models []string
+}
+
+var classifyTypes = map[string]classifyTypeDefaults{
+	ClassifyProviderTypeSafe: {
+		model: DefaultTypeSafeModel, baseURL: DefaultTypeSafeBaseURL, timeoutSeconds: DefaultTypeSafeTimeoutSeconds,
+		keyEnv: []string{"TYPESAFE_API_KEY"},
+	},
+	ClassifyProviderOpenAI: {
+		model: DefaultOpenAIDecisionsModel, baseURL: DefaultOpenAIDecisionsBaseURL, timeoutSeconds: DefaultOpenAIDecisionsTimeoutSeconds,
+		keyEnv: []string{"OPENAI_API_KEY"}, images: true,
+	},
+	ClassifyProviderCloudflare: {
+		model: DefaultCloudflareClassifyModel, baseURL: DefaultCloudflareClassifyBaseURL, timeoutSeconds: DefaultCloudflareClassifyTimeoutSeconds,
+		keyEnv: []string{"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN"}, images: true,
+		models: []string{"clef-flash"},
+	},
+}
+
+// ClassifyProviderTypes returns the supported provider types, sorted.
+func ClassifyProviderTypes() []string {
+	types := make([]string, 0, len(classifyTypes))
+	for t := range classifyTypes {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+	return types
+}
 
 // ProviderNames returns configured classification providers plus the built-in providers.
 func (c ClassifyConfig) ProviderNames() []string {
-	names := []string{ClassifyProviderOpenAI, ClassifyProviderTypeSafe}
+	names := ClassifyProviderTypes()
 	for name := range c.Providers {
 		if !isBuiltinClassifyProvider(name) {
 			names = append(names, name)
@@ -27,7 +66,8 @@ func (c ClassifyConfig) ProviderNames() []string {
 }
 
 func isBuiltinClassifyProvider(name string) bool {
-	return name == ClassifyProviderTypeSafe || name == ClassifyProviderOpenAI
+	_, ok := classifyTypes[name]
+	return ok
 }
 
 // ResolveProvider selects and validates a provider without resolving credentials.
@@ -47,56 +87,51 @@ func (c ClassifyConfig) ResolveProvider(name string) (ClassifyProviderConfig, er
 	if p.Type == "" && isBuiltinClassifyProvider(name) {
 		p.Type = name
 	}
-	model, baseURL, timeout := DefaultTypeSafeModel, DefaultTypeSafeBaseURL, DefaultTypeSafeTimeoutSeconds
-	switch p.Type {
-	case ClassifyProviderTypeSafe:
-	case ClassifyProviderOpenAI:
-		model, baseURL, timeout = DefaultOpenAIDecisionsModel, DefaultOpenAIDecisionsBaseURL, DefaultOpenAIDecisionsTimeoutSeconds
-	default:
-		return p, fmt.Errorf("classify provider %q has unsupported type %q; set classify.providers.%s.type to typesafe or openai", name, p.Type, name)
+	defaults, ok := classifyTypes[p.Type]
+	if !ok {
+		return p, fmt.Errorf("classify provider %q has unsupported type %q; set classify.providers.%s.type to one of %s", name, p.Type, name, strings.Join(ClassifyProviderTypes(), ", "))
 	}
 	if strings.TrimSpace(p.Model) == "" {
-		p.Model = model
+		p.Model = defaults.model
 	}
 	if strings.TrimSpace(p.BaseURL) == "" {
-		p.BaseURL = baseURL
+		p.BaseURL = defaults.baseURL
 	}
 	if p.TimeoutSeconds == 0 {
-		p.TimeoutSeconds = timeout
+		p.TimeoutSeconds = defaults.timeoutSeconds
 	}
 	return p, nil
 }
 
-// DefaultModel returns the built-in model for the provider's type.
-func (p ClassifyProviderConfig) DefaultModel() string {
-	if strings.TrimSpace(p.Type) == ClassifyProviderOpenAI {
-		return DefaultOpenAIDecisionsModel
+func (p ClassifyProviderConfig) typeDefaults() classifyTypeDefaults {
+	if defaults, ok := classifyTypes[strings.TrimSpace(p.Type)]; ok {
+		return defaults
 	}
-	return DefaultTypeSafeModel
+	return classifyTypes[ClassifyProviderTypeSafe]
+}
+
+// KnownModels returns the built-in models for the provider's type, default
+// first.
+func (p ClassifyProviderConfig) KnownModels() []string {
+	defaults := p.typeDefaults()
+	return append([]string{defaults.model}, defaults.models...)
 }
 
 // DefaultTimeoutSeconds returns the built-in timeout for the provider's type.
-func (p ClassifyProviderConfig) DefaultTimeoutSeconds() int {
-	if strings.TrimSpace(p.Type) == ClassifyProviderOpenAI {
-		return DefaultOpenAIDecisionsTimeoutSeconds
-	}
-	return DefaultTypeSafeTimeoutSeconds
-}
+func (p ClassifyProviderConfig) DefaultTimeoutSeconds() int { return p.typeDefaults().timeoutSeconds }
 
 // DefaultBaseURL returns the built-in endpoint for the provider's type.
-func (p ClassifyProviderConfig) DefaultBaseURL() string {
-	if strings.TrimSpace(p.Type) == ClassifyProviderOpenAI {
-		return DefaultOpenAIDecisionsBaseURL
-	}
-	return DefaultTypeSafeBaseURL
-}
+func (p ClassifyProviderConfig) DefaultBaseURL() string { return p.typeDefaults().baseURL }
+
+// SupportsImages reports whether the provider's type accepts image inputs.
+func (p ClassifyProviderConfig) SupportsImages() bool { return p.typeDefaults().images }
 
 // ClassifyKeySpecs expands the canonical provider fields for configured aliases.
 // Alias fields have runtime type defaults, not persisted built-in defaults.
 func ClassifyKeySpecs(names []string) []KeySpec {
 	var specs []KeySpec
 	for _, name := range names {
-		if name == "typesafe" {
+		if name == ClassifyProviderTypeSafe {
 			continue
 		}
 		for _, spec := range ConfigKeySpecs() {

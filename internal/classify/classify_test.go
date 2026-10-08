@@ -110,3 +110,25 @@ func TestAnswerRequiredFields(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactShortStateValues(t *testing.T) {
+	for _, value := range []string{"x", "Al", "Ada", "  x  "} {
+		t.Run(value, func(t *testing.T) {
+			state, _ := json.Marshal(value)
+			got := Redact("invalid: "+value, state)
+			if strings.Contains(got, strings.TrimSpace(value)) || !strings.Contains(got, "[redacted]") {
+				t.Fatalf("short state leaked: %q", got)
+			}
+		})
+	}
+	if got := Redact("unchanged", json.RawMessage(`""`)); got != "unchanged" {
+		t.Fatalf("empty value changed message: %q", got)
+	}
+}
+
+func TestRedactMatchesWholeValuesWithoutChangingMarkers(t *testing.T) {
+	got := Redact(`bad {"account":12345,"customer":"Ada"} key=secret a`, json.RawMessage(`{"account":12345,"customer":"Ada"}`), "secret")
+	if want := `bad [redacted] key=[redacted] a`; got != want {
+		t.Fatalf("redaction = %q, want %q", got, want)
+	}
+}

@@ -2,6 +2,7 @@ package typesafe
 
 import (
 	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/transport"
 
 	"bytes"
 	"context"
@@ -175,8 +176,8 @@ func TestNewClientValidationAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient defaults: %v", err)
 	}
-	if client.baseURL.String() != DefaultBaseURL || client.timeout != DefaultTimeout || client.http.Timeout != 0 {
-		t.Fatalf("defaults = %s timeout %s http timeout %s", client.baseURL, client.timeout, client.http.Timeout)
+	if client.http.BaseURL() != DefaultBaseURL || client.http.Timeout() != DefaultTimeout {
+		t.Fatalf("defaults = %s timeout %s", client.http.BaseURL(), client.http.Timeout())
 	}
 }
 
@@ -231,8 +232,8 @@ func TestRetryExhaustionReturnsLastError(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("Classify error = %v, want 429 APIError", err)
 	}
-	if got := attempts.Load(); got != maxRetries+1 {
-		t.Fatalf("attempts = %d, want %d", got, maxRetries+1)
+	if got := attempts.Load(); got != transport.MaxRetries+1 {
+		t.Fatalf("attempts = %d, want %d", got, transport.MaxRetries+1)
 	}
 }
 
@@ -240,7 +241,7 @@ func TestRetryAfterHeaderOverflowIsBounded(t *testing.T) {
 	header := http.Header{}
 	header.Set("retry-after-ms", "9223372036854775807")
 	delay, ok := providerhttp.ParseRetryAfter(header, time.Now())
-	if !ok || delay <= backoffMax {
+	if !ok || delay <= transport.BackoffMax {
 		t.Fatalf("delay = %v, want above cap", delay)
 	}
 }
@@ -469,7 +470,7 @@ func TestRequestCancellationDuringActualRequest(t *testing.T) {
 
 func TestResponseBodyLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(bytes.Repeat([]byte("x"), maxBodyBytes+1))
+		_, _ = w.Write(bytes.Repeat([]byte("x"), transport.MaxBodyBytes+1))
 	}))
 	defer server.Close()
 	client, err := NewClient(Options{APIKey: "secret-key", BaseURL: server.URL})
@@ -519,30 +520,6 @@ func validRequest() classify.Request {
 
 func validQuestions() map[string]classify.Question {
 	return map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}
-}
-
-func TestErrorsRedactShortRequestValues(t *testing.T) {
-	for _, value := range []string{"x", "Al", "Ada", "  x  "} {
-		t.Run(value, func(t *testing.T) {
-			// Include surrounding text to exercise substring redaction too.
-			body, _ := json.Marshal(map[string]any{"state": value})
-			got := errorMessage([]byte("invalid: "+value), "", body)
-			if strings.Contains(got, strings.TrimSpace(value)) || !strings.Contains(got, "[redacted]") {
-				t.Fatalf("short state leaked: %q", got)
-			}
-		})
-	}
-	if got := redactMessage("unchanged", "", []byte(`{"state":""}`)); got != "unchanged" {
-		t.Fatalf("empty value changed message: %q", got)
-	}
-}
-
-func TestRedactionMatchesWholeValuesWithoutChangingMarkers(t *testing.T) {
-	body := []byte(`{"state":{"account":12345,"customer":"Ada"},"instructions":"a"}`)
-	got := redactMessage(`bad {"account":12345,"customer":"Ada"} key=secret a`, "secret", body)
-	if want := `bad [redacted] key=[redacted] a`; got != want {
-		t.Fatalf("redaction = %q, want %q", got, want)
-	}
 }
 
 func Test422DiagnosticsPreserveSchema(t *testing.T) {
@@ -648,7 +625,7 @@ func TestTransientStatusRetriesRespectDelay(t *testing.T) {
 }
 
 func TestTruncateUTF8(t *testing.T) {
-	got := truncate(strings.Repeat("界", 200))
+	got := transport.Truncate(strings.Repeat("界", 200))
 	if !utf8.ValidString(got) || !strings.HasSuffix(got, "...") {
 		t.Fatalf("invalid truncation %q", got)
 	}

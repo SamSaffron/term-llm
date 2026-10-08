@@ -1425,7 +1425,7 @@ func capabilityConfigValueCompletions(cfg *config.Config, key, toComplete string
 		return filterPrefix(cfg.Classify.ProviderNames(), toComplete)
 	}
 	if strings.HasPrefix(key, "classify.providers.") && strings.HasSuffix(key, ".type") {
-		return filterPrefix([]string{config.ClassifyProviderOpenAI, config.ClassifyProviderTypeSafe}, toComplete)
+		return filterPrefix(config.ClassifyProviderTypes(), toComplete)
 	}
 
 	// Image model completions. Venice distinguishes generation from editing.

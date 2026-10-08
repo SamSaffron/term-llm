@@ -38,23 +38,35 @@ A typical config has a few major parts:
 - `share` for the built-in GitHub or custom command transcript publisher
 - feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `classify`, `sessions`, `file_tracking`, `tools`, and `skills`
 
-### Classification (TypeSafe and OpenAI Decisions)
+### Classification
 
-The standalone [`classify` command](/guides/classify/) uses `classify.providers`, separate from chat `providers`:
+The [`classify` command](/guides/classify/) uses `classify.providers`, separate from chat `providers`. Three providers are built in and work from environment variables alone (Cloudflare also needs `CLOUDFLARE_ACCOUNT_ID`):
+
+| Provider | `type` | Default `model` | Default `base_url` | API key fallback |
+| --- | --- | --- | --- | --- |
+| `typesafe` (default) | `typesafe` | `jev-latest` | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
+| `openai` | `openai` | `gpt-6-luna` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `cloudflare` | `cloudflare` | `clef` | `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_AUTH_TOKEN` |
 
 ```yaml
 classify:
   default_provider: typesafe
   providers:
     typesafe:
-      type: typesafe # Optional for the built-in key
+      type: typesafe # Optional for built-in providers
       api_key: ${TYPESAFE_API_KEY}
       model: jev-latest
       base_url: https://api.typesafe.ai
       timeout_seconds: 10
 ```
 
-`classify.providers.typesafe.api_key` is a sensitive credential resolved when the command runs, or eagerly during classify-backed Guardian setup, with `TYPESAFE_API_KEY` as its environment fallback. The fallback applies only to requests sent to the default TypeSafe endpoint; a provider with a custom `base_url`, or an invocation with a `--base-url` override pointing elsewhere, sends only its configured `api_key`. `--provider/-p` overrides `classify.default_provider` for both `classify` and `classify models`. The built-in `openai` provider (or any alias with `type: openai`) uses the OpenAI Decisions API with model `gpt-6-luna`, base URL `https://api.openai.com/v1`, and an `OPENAI_API_KEY` fallback under the same default-endpoint rule; it is the only type that accepts `classify --image`. Aliases under `classify.providers` declare `type: typesafe` or `type: openai`; only the selected provider’s credentials are resolved. Configured aliases expand into their own keys for `term-llm config show`, `config get`, and key completion, and each alias `api_key` inherits the sensitive flag, so alias credentials are redacted in `config show` like the built-in one. With no config file, `TYPESAFE_API_KEY` is sufficient. `--model`, `--base-url`, and `--timeout` override these settings for `classify`. Other commands use a classification provider for Guardian reviews or live routing only when `guardian.backend: classify` or `live.control_plane: classify` is explicitly configured. State and questions are sent to the configured endpoint; see the [privacy and input guidance](/guides/classify/#setup-and-privacy).
+- **Aliases:** other names under `classify.providers` must declare one of the types and inherit its defaults. They expand into their own keys for `config show`, `config get`, and completion, and their `api_key` is redacted like the built-in ones.
+- **Credentials:** `api_key` is sensitive and resolved only for the selected provider, when a command runs or when a classify-backed Guardian starts. The environment fallback is used only with the type's default endpoint; a custom `base_url` or a `--base-url` override sends only the configured `api_key`.
+- **Cloudflare account:** `{account_id}` is filled from `CLOUDFLARE_ACCOUNT_ID`; or write the account ID into `base_url`.
+- **Images:** `openai` and `cloudflare` accept `classify --image`.
+- **Overrides:** `--provider/-p` replaces `classify.default_provider`; `--model`, `--base-url`, and `--timeout` override one run.
+
+Other commands call a classification provider only when `guardian.backend: classify` or `live.control_plane: classify` is set. State and questions are sent to the configured endpoint; see the [privacy guidance](/guides/classify/#privacy).
 
 ## Example
 
@@ -289,9 +301,9 @@ guardian:
 
 Unknown backend values fail Guardian installation. The selected classify provider, endpoint and API key are resolved eagerly at setup; no review call is made until an action requires it. `guardian.provider`/`model` are LLM-only; classify uses the selected `classify.providers` model and transport timeout. Both backends retain `policy_path`, Guardian's review timeout, yolo bypass, callbacks, breaker and interactive/headless behavior. The earlier of the Guardian and classify transport deadlines wins.
 
-Classification submits three choice questions together. Allow requires outcome `allow`, risk `low`/`medium`, authorization evidence `explicit`/`implied` (mapped to Guardian's existing `high`/`medium` values), and every confidence present and at least `min_confidence`. Malformed answers, unknown choices and missing confidence are review errors; without a fallback, low confidence is a deterministic policy denial and counts toward the breaker. Only actual `user`/`parent_user` roles supply trusted authorization. Successful first-party `ask_user` answers are explicitly marked by the runtime as trusted user input, carrying only the displayed question and the user's own selection; model-authored option descriptions are never quoted as user speech, and no other tool can mint a trusted user turn. See [Classification](/guides/classify/#optional-guardian-backend) for details. Both backends expose callback latency as `duration_ms` in Guardian JSON events; classify also supplies `state_bytes` for serialized state. Classification model costs (TypeSafe or OpenAI Decisions) remain unpriced, never borrowed from the chat model.
+Classification submits three choice questions together. Allow requires outcome `allow`, risk `low`/`medium`, authorization evidence `explicit`/`implied` (mapped to Guardian's existing `high`/`medium` values), and every confidence present and at least `min_confidence`. Malformed answers, unknown choices and missing confidence are review errors; without a fallback, low confidence is a deterministic policy denial and counts toward the breaker. Only actual `user`/`parent_user` roles supply trusted authorization. Successful first-party `ask_user` answers are explicitly marked by the runtime as trusted user input, carrying only the displayed question and the user's own selection; model-authored option descriptions are never quoted as user speech, and no other tool can mint a trusted user turn. See [Classification](/guides/classify/#guardian-backend) for details. Both backends expose callback latency as `duration_ms` in Guardian JSON events; classify also supplies `state_bytes` for serialized state. Classification model costs (TypeSafe, OpenAI Decisions, or Clef) remain unpriced, never borrowed from the chat model.
 
-> Privacy note: Guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` or the selected `fast_provider` differs from the chat provider, that evidence is sent to the resolved Guardian provider as well. With `guardian.backend: classify`, the policy, compact role-labelled transcript, omitted count, approval context and exact shell/file/directory/workspace action are sent to the selected classification provider's endpoint (TypeSafe or OpenAI), even without running the `classify` command. With `guardian.fallback`, an escalated action sends the same evidence to the resolved fallback provider too, and the classifier request and both verdicts are written to the escalation log on disk. Compaction is not redaction; only enable this if sending that evidence is authorized.
+> Privacy note: Guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` or the selected `fast_provider` differs from the chat provider, that evidence is sent to the resolved Guardian provider as well. With `guardian.backend: classify`, the policy, compact role-labelled transcript, omitted count, approval context and exact shell/file/directory/workspace action are sent to the selected classification provider's endpoint (TypeSafe, OpenAI, or Cloudflare), even without running the `classify` command. With `guardian.fallback`, an escalated action sends the same evidence to the resolved fallback provider too, and the classifier request and both verdicts are written to the escalation log on disk. Compaction is not redaction; only enable this if sending that evidence is authorized.
 
 ### Classify with an LLM fallback
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/cloudflare"
 	"github.com/samsaffron/term-llm/internal/classify/openai"
 	"github.com/samsaffron/term-llm/internal/classify/typesafe"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -14,10 +15,13 @@ import (
 func TestOpenDispatchesByProviderType(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "openai-key")
 	t.Setenv("TYPESAFE_API_KEY", "typesafe-key")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "cf-token")
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "acc123")
 	cfg := config.ClassifyConfig{}
 	for name, isWant := range map[string]func(classify.Backend) bool{
-		config.ClassifyProviderTypeSafe: func(b classify.Backend) bool { _, ok := b.(*typesafe.Client); return ok },
-		config.ClassifyProviderOpenAI:   func(b classify.Backend) bool { _, ok := b.(*openai.Client); return ok },
+		config.ClassifyProviderTypeSafe:   func(b classify.Backend) bool { _, ok := b.(*typesafe.Client); return ok },
+		config.ClassifyProviderOpenAI:     func(b classify.Backend) bool { _, ok := b.(*openai.Client); return ok },
+		config.ClassifyProviderCloudflare: func(b classify.Backend) bool { _, ok := b.(*cloudflare.Client); return ok },
 	} {
 		provider, err := cfg.ResolveProvider(name)
 		if err != nil {
@@ -61,6 +65,7 @@ func TestResolveAppliesProviderSettingsAndOverrides(t *testing.T) {
 // the shared environment credential to another host.
 func TestResolveWithholdsEnvKeyFromOverrideHost(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "openai-key")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "cf-token")
 	t.Setenv("TYPESAFE_API_KEY", "typesafe-key")
 	cfg := config.ClassifyConfig{}
 	for _, tc := range []struct {
@@ -70,6 +75,8 @@ func TestResolveWithholdsEnvKeyFromOverrideHost(t *testing.T) {
 		{config.ClassifyProviderTypeSafe, "", "https://proxy.example", ""},
 		{config.ClassifyProviderOpenAI, "explicit", "https://proxy.example/v1", "explicit"},
 		{config.ClassifyProviderOpenAI, "", config.DefaultOpenAIDecisionsBaseURL + "/", "openai-key"},
+		{config.ClassifyProviderCloudflare, "", "", "cf-token"},
+		{config.ClassifyProviderCloudflare, "", "https://gateway.ai.cloudflare.com/v1/acc/gw/workers-ai", ""},
 	} {
 		provider, err := cfg.ResolveProvider(tc.name)
 		if err != nil {
@@ -99,5 +106,21 @@ func TestOpenUsesFactoryAndRejectsBadTimeouts(t *testing.T) {
 	}
 	if _, err := New(Connection{Type: "other"}); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported type err = %v", err)
+	}
+}
+
+func TestResolveCloudflareAccountID(t *testing.T) {
+	t.Setenv("CLOUDFLARE_API_TOKEN", "cf-token")
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "acc123")
+	provider, err := config.ClassifyConfig{}.ResolveProvider(config.ClassifyProviderCloudflare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := Resolve(provider, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.AccountID != "acc123" || conn.BaseURL != config.DefaultCloudflareClassifyBaseURL || conn.APIKey != "cf-token" {
+		t.Fatalf("conn = %#v", conn)
 	}
 }

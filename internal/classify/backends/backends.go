@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/samsaffron/term-llm/internal/classify/cloudflare"
 	"github.com/samsaffron/term-llm/internal/classify/openai"
 	"github.com/samsaffron/term-llm/internal/classify/typesafe"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -21,7 +22,9 @@ type Connection struct {
 	Type    string
 	APIKey  string
 	BaseURL string
-	Timeout time.Duration
+	// AccountID fills {account_id} in a cloudflare BaseURL.
+	AccountID string
+	Timeout   time.Duration
 }
 
 // Overrides are per-invocation settings that take precedence over the
@@ -49,6 +52,11 @@ func Resolve(provider config.ClassifyProviderConfig, overrides Overrides) (Conne
 	}
 	if conn.APIKey, err = provider.KeyFor(conn.BaseURL).Resolve(); err != nil {
 		return conn, fmt.Errorf("resolve classify provider API key: %w", err)
+	}
+	if provider.Type == config.ClassifyProviderCloudflare {
+		if conn.AccountID, err = provider.AccountIDRef().Resolve(); err != nil {
+			return conn, fmt.Errorf("resolve classify provider account ID: %w", err)
+		}
 	}
 	if conn.Timeout == 0 && provider.TimeoutSeconds != 0 {
 		if conn.Timeout, err = ProviderTimeout(provider); err != nil {
@@ -78,6 +86,8 @@ func New(conn Connection) (classify.Backend, error) {
 		return typesafe.NewClient(typesafe.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout})
 	case config.ClassifyProviderOpenAI:
 		return openai.NewClient(openai.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout})
+	case config.ClassifyProviderCloudflare:
+		return cloudflare.NewClient(cloudflare.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, AccountID: conn.AccountID, Timeout: conn.Timeout})
 	default:
 		return nil, fmt.Errorf("unsupported classify provider type %q", conn.Type)
 	}

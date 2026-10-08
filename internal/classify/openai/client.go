@@ -9,16 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/samsaffron/term-llm/internal/classify/transport"
 )
 
 const (
@@ -27,11 +24,6 @@ const (
 	DefaultTimeout = 10 * time.Second
 
 	decisionsPath = "/decisions"
-
-	maxBodyBytes = 1 << 20
-	maxRetries   = 2
-	backoffBase  = 200 * time.Millisecond
-	backoffMax   = 2 * time.Second
 )
 
 // Options configures a Decisions API client.
@@ -43,62 +35,28 @@ type Options struct {
 
 // Client calls the OpenAI Decisions API. It implements classify.Backend.
 type Client struct {
-	apiKey  string
-	baseURL *url.URL
-	http    *http.Client
-	timeout time.Duration
+	http *transport.Client
 }
 
 // APIError reports a non-successful Decisions API response.
-type APIError struct {
-	*providerhttp.StatusError
-	Message string
-}
-
-func (e *APIError) Unwrap() error { return e.StatusError }
-
-func (e *APIError) Error() string {
-	if e.Message == "" {
-		return fmt.Sprintf("openai decisions request failed: %s", e.Status)
-	}
-	return fmt.Sprintf("openai decisions request failed: %s: %s", e.Status, e.Message)
-}
+type APIError = transport.APIError
 
 // NewClient creates a Decisions API client.
 func NewClient(opts Options) (*Client, error) {
-	if strings.TrimSpace(opts.APIKey) == "" {
-		return nil, errors.New("openai decisions: API key is required; set OPENAI_API_KEY (used only with the default endpoint) or classify.providers.<name>.api_key")
-	}
-	base := strings.TrimSpace(opts.BaseURL)
-	if base == "" {
-		base = DefaultBaseURL
-	}
-	baseURL, err := url.Parse(base)
+	http, err := transport.New(transport.Config{
+		Provider:       "openai decisions",
+		APIKey:         opts.APIKey,
+		BaseURL:        opts.BaseURL,
+		Timeout:        opts.Timeout,
+		DefaultBaseURL: DefaultBaseURL,
+		DefaultTimeout: DefaultTimeout,
+		MissingKeyHint: "set OPENAI_API_KEY (used only with the default endpoint) or classify.providers.<name>.api_key",
+		ErrorMessage:   errorMessage,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("openai decisions: parse base URL: %w", redactURLError(err))
+		return nil, err
 	}
-	if !baseURL.IsAbs() || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" {
-		return nil, errors.New("openai decisions: base URL must be an absolute http or https URL")
-	}
-	if baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
-		return nil, errors.New("openai decisions: base URL must not include credentials, query, or fragment")
-	}
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
-	timeout := opts.Timeout
-	if timeout == 0 {
-		timeout = DefaultTimeout
-	}
-	if timeout < 0 {
-		return nil, errors.New("openai decisions: timeout must not be negative")
-	}
-	return &Client{
-		apiKey:  strings.TrimSpace(opts.APIKey),
-		baseURL: baseURL,
-		http: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}},
-		timeout: timeout,
-	}, nil
+	return &Client{http: http}, nil
 }
 
 // ListModels reports the models the Decisions API accepts. The endpoint has
@@ -123,7 +81,7 @@ func (c *Client) Classify(ctx context.Context, req classify.Request) (*classify.
 	if err != nil {
 		return nil, fmt.Errorf("openai decisions: encode request: %w", err)
 	}
-	respBody, err := c.do(ctx, body, req.State)
+	respBody, err := c.http.Do(ctx, http.MethodPost, decisionsPath, body, req.State)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +324,7 @@ func convertResponse(body []byte, req classify.Request) (*classify.Response, err
 			if msg == "" {
 				msg = "no reason given"
 			}
-			return nil, fmt.Errorf("openai decisions: question %q was refused: %s", a.Name, truncate(msg))
+			return nil, fmt.Errorf("openai decisions: question %q was refused: %s", a.Name, transport.Truncate(msg))
 		}
 		answer, err := convertAnswer(a)
 		if err != nil {
@@ -434,148 +392,15 @@ func convertProbabilities(a wireAnswer, out *classify.Answer) error {
 	return nil
 }
 
-// --- transport ---------------------------------------------------------------
-
-func (c *Client) do(ctx context.Context, body []byte, state json.RawMessage) ([]byte, error) {
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-	}
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		respBody, delayOverride, err := c.doOnce(ctx, body, state)
-		if err == nil {
-			return respBody, nil
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if !isRetryable(err) || attempt == maxRetries {
-			return nil, err
-		}
-		delay := backoffBase << attempt
-		if delay > backoffMax {
-			delay = backoffMax
-		}
-		if delayOverride != nil {
-			delay = *delayOverride
-		}
-		if delay > backoffMax {
-			return nil, err
-		}
-		if deadline, ok := ctx.Deadline(); ok && delay >= time.Until(deadline) {
-			return nil, err
-		}
-		if err := sleepContext(ctx, delay); err != nil {
-			return nil, err
-		}
-	}
-	return nil, lastErr
-}
-
-func (c *Client) doOnce(ctx context.Context, body []byte, state json.RawMessage) ([]byte, *time.Duration, error) {
-	u := *c.baseURL
-	u.Path = c.baseURL.Path + decisionsPath
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
-	if err != nil {
-		return nil, nil, fmt.Errorf("openai decisions: create request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, nil, err
-		}
-		return nil, nil, fmt.Errorf("openai decisions request failed: %w", redactURLError(err))
-	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		defer resp.Body.Close()
-		respBody, err := readBounded(resp.Body)
-		if err != nil {
-			return nil, nil, fmt.Errorf("openai decisions: read response: %w", err)
-		}
-		return respBody, nil, nil
-	}
-	respBody := providerhttp.ReadBodyAndClose(resp, maxBodyBytes)
-	message := errorMessage(respBody, c.apiKey, state)
-	status := providerhttp.NewStatusErrorString("openai", resp.StatusCode, resp.Status, resp.Header, message)
-	var delay *time.Duration
-	if d, ok := status.RetryAfterDelay(); ok {
-		delay = &d
-	}
-	return nil, delay, &APIError{StatusError: status, Message: message}
-}
-
-func isRetryable(err error) bool {
-	var apiErr *APIError
-	return errors.As(err, &apiErr) && providerhttp.RetryableStatus(apiErr.StatusCode)
-}
-
-func sleepContext(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return ctx.Err()
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func readBounded(r io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r, maxBodyBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > maxBodyBytes {
-		return nil, errors.New("response body too large")
-	}
-	return body, nil
-}
-
-// errorMessage extracts OpenAI's error.message, redacting the key and state.
-func errorMessage(body []byte, apiKey string, state json.RawMessage) string {
-	if len(body) == 0 {
-		return ""
-	}
-	msg := string(body)
+// errorMessage extracts OpenAI's error.message.
+func errorMessage(body []byte) string {
 	var obj struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &obj) == nil && obj.Error.Message != "" {
-		msg = obj.Error.Message
+	if json.Unmarshal(body, &obj) != nil {
+		return ""
 	}
-	return truncate(classify.Redact(msg, state, apiKey))
-}
-
-func redactURLError(err error) error {
-	var urlErr *url.Error
-	if !errors.As(err, &urlErr) {
-		return err
-	}
-	copy := *urlErr
-	copy.URL = "[redacted]"
-	return &copy
-}
-
-func truncate(s string) string {
-	s = strings.TrimSpace(s)
-	const max = 512
-	if len(s) <= max {
-		return s
-	}
-	end := max
-	for !utf8.RuneStart(s[end]) {
-		end--
-	}
-	return s[:end] + "..."
+	return obj.Error.Message
 }

@@ -813,10 +813,13 @@ func TestClassifyProviderModelAndBaseURLCompletions(t *testing.T) {
 	}
 
 	got, directive := classifyCompletions(t, "classify", "state", "--provider", "")
-	assertClassifyCompletions(t, got, directive, []string{"custom", "openai", "typesafe"})
+	assertClassifyCompletions(t, got, directive, []string{"cloudflare", "custom", "openai", "typesafe"})
 
 	got, directive = classifyCompletions(t, "classify", "state", "--provider", "openai", "--model", "")
 	assertClassifyCompletions(t, got, directive, []string{config.DefaultOpenAIDecisionsModel})
+
+	got, directive = classifyCompletions(t, "classify", "state", "--provider", "cloudflare", "--model", "")
+	assertClassifyCompletions(t, got, directive, []string{"clef", "clef-flash"})
 
 	got, directive = classifyCompletions(t, "classify", "state", "--provider", "openai", "--base-url", "")
 	assertClassifyCompletions(t, got, directive, []string{config.DefaultOpenAIDecisionsBaseURL})
@@ -914,13 +917,13 @@ func TestClassifyImageRejections(t *testing.T) {
 	for _, tc := range []struct {
 		name, provider, image, want string
 	}{
-		{"typesafe provider", "typesafe", "data:image/png;base64,iVBO", "requires a classify provider with type openai"},
+		{"typesafe provider", "typesafe", "data:image/png;base64,iVBO", "requires a classify provider with type openai or cloudflare"},
 		{"not an image", "openai", text, "unsupported image type"},
 		{"hosted url", "openai", "https://example.com/a.png", "hosted image URLs are not supported"},
 		{"bad data url", "openai", "data:text/plain;base64,aGk=", "data URL must be"},
 		{"stdin", "openai", "-", "does not read stdin"},
 		{"empty data url", "openai", "data:image/png;base64,", "data URL is empty"},
-		{"typesafe checked before reading", "typesafe", text, "requires a classify provider with type openai"},
+		{"typesafe checked before reading", "typesafe", text, "requires a classify provider with type openai or cloudflare"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newClassifyCmd(classifyDeps{
@@ -962,5 +965,31 @@ func TestClassifyImageDataURLNormalization(t *testing.T) {
 	}
 	if got != "data:image/png;base64,iVBORw0K" {
 		t.Fatalf("normalized = %q", got)
+	}
+}
+
+func TestClassifyCloudflareProviderAcceptsImages(t *testing.T) {
+	t.Setenv("CLOUDFLARE_API_TOKEN", "cf-token")
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "acc123")
+	var got classify.Request
+	client := &recordingClassifyClient{onClassify: func(req classify.Request) { got = req }}
+	c := newClassifyCmd(classifyDeps{
+		loadConfig: func() (*config.Config, error) { return &config.Config{}, nil },
+		newBackend: func(o backends.Connection) (classify.Backend, error) {
+			if o.Type != config.ClassifyProviderCloudflare || o.APIKey != "cf-token" || o.AccountID != "acc123" {
+				t.Fatalf("connection: %#v", o)
+			}
+			return client, nil
+		},
+		stdinData: func(*cobra.Command) bool { return false },
+	})
+	c.SetArgs([]string{"--image", "data:image/png;base64,iVBORw0KGgo=", "-p", "cloudflare", "--type", "noul", "--question", "Is it red?", "--format", "value"})
+	c.SetOut(&bytes.Buffer{})
+	c.SetErr(&bytes.Buffer{})
+	if err := c.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != config.DefaultCloudflareClassifyModel || len(got.Images) != 1 {
+		t.Fatalf("request: model=%q images=%d", got.Model, len(got.Images))
 	}
 }
