@@ -116,7 +116,7 @@ term-llm agents set reviewer provider=openai model=gpt-5.2
 
 The special agent model value `fast` resolves through the active provider's fast-model settings: `providers.<active>.fast_model`, or `providers.<active>.fast_provider` plus `fast_model` when the lightweight model should run on a different provider key. It is not sent to the provider as a literal model named `fast`.
 
-Built-in `developer` can spawn up to three subagents in parallel. Its built-in spawn configuration runs spawned `codebase` subagents with `model: fast`, so developer-led repository investigations use the lightweight model without changing direct `@codebase` sessions:
+Built-in `developer` can spawn up to five subagents in parallel. Its built-in spawn configuration runs spawned `codebase` subagents with `model: fast`, so developer-led repository investigations use the lightweight model without changing direct `@codebase` sessions:
 
 ```yaml
 spawn:
