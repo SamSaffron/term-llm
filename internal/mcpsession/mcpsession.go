@@ -12,6 +12,7 @@ package mcpsession
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -41,12 +42,20 @@ const DisableEnvVar = "TERM_LLM_MCP_SESSION_SOCKET"
 const socketPrefix = "mcp-"
 const socketSuffix = ".sock"
 
+// labelSep separates the session label from the per-manager nonce. It is not
+// in the sanitized label alphabet, so labels can be recovered unambiguously.
+const labelSep = "@"
+
 // maxSocketPath keeps paths under the smallest common sun_path limit (104 on
 // macOS/BSD, 108 on Linux).
 const maxSocketPath = 100
 
-// Disabled reports whether the session socket has been switched off.
+// Disabled reports whether the session socket has been switched off, either
+// explicitly or because the platform lacks support.
 func Disabled() bool {
+	if !supported {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(DisableEnvVar))) {
 	case "0", "false", "off", "no":
 		return true
@@ -58,6 +67,9 @@ func Disabled() bool {
 // 0700 permissions. It prefers $XDG_RUNTIME_DIR and falls back to a per-user
 // directory under the system temp dir.
 func Dir() (string, error) {
+	if !supported {
+		return "", errUnsupported
+	}
 	var dir string
 	if runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); runtimeDir != "" {
 		dir = filepath.Join(runtimeDir, "term-llm")
@@ -75,32 +87,54 @@ func Dir() (string, error) {
 
 var unsafeLabel = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
-// SocketPath returns the socket path for a session label (usually a session ID).
-func SocketPath(label string) (string, error) {
-	dir, err := Dir()
-	if err != nil {
-		return "", err
-	}
+// cleanLabel maps a session label to its filename form. Long labels are
+// hashed so the socket path stays within sun_path limits.
+func cleanLabel(label string) (string, error) {
 	clean := strings.Trim(unsafeLabel.ReplaceAllString(strings.TrimSpace(label), "_"), "._")
 	if clean == "" {
 		return "", errors.New("empty MCP session label")
 	}
-	path := filepath.Join(dir, socketPrefix+clean+socketSuffix)
-	if len(path) > maxSocketPath {
+	if len(clean) > 48 {
 		sum := sha256.Sum256([]byte(label))
-		path = filepath.Join(dir, socketPrefix+hex.EncodeToString(sum[:8])+socketSuffix)
+		clean = "h" + hex.EncodeToString(sum[:8])
+	}
+	return clean, nil
+}
+
+// NewSocketPath returns a fresh, unique socket path for a session label.
+// Every manager gets its own path, so a replacement runtime for the same
+// session never collides with the one it is replacing.
+func NewSocketPath(label string) (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	clean, err := cleanLabel(label)
+	if err != nil {
+		return "", err
+	}
+	var nonce [4]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, socketPrefix+clean+labelSep+hex.EncodeToString(nonce[:])+socketSuffix)
+	if len(path) > maxSocketPath {
+		return "", fmt.Errorf("MCP session socket path %q exceeds %d bytes; set XDG_RUNTIME_DIR to a shorter directory", path, maxSocketPath)
 	}
 	return path, nil
 }
 
 // LabelFromPath extracts the session label from a socket path.
 func LabelFromPath(path string) string {
-	base := filepath.Base(path)
-	return strings.TrimSuffix(strings.TrimPrefix(base, socketPrefix), socketSuffix)
+	base := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), socketPrefix), socketSuffix)
+	if i := strings.LastIndex(base, labelSep); i >= 0 {
+		return base[:i]
+	}
+	return base
 }
 
-// ResolveTarget turns a --session argument (socket path or session label) into
-// a socket path.
+// ResolveTarget turns a --session argument (socket path or session ID) into a
+// socket path. For a session ID it picks the newest live socket bound to it.
 func ResolveTarget(target string) (string, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -109,7 +143,36 @@ func ResolveTarget(target string) (string, error) {
 	if strings.ContainsRune(target, os.PathSeparator) || strings.HasSuffix(target, socketSuffix) {
 		return target, nil
 	}
-	return SocketPath(target)
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	clean, err := cleanLabel(target)
+	if err != nil {
+		return "", err
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, socketPrefix+clean+labelSep+"*"+socketSuffix))
+	if err != nil {
+		return "", err
+	}
+	var best string
+	var bestMod time.Time
+	for _, m := range matches {
+		if Stale(m) {
+			continue
+		}
+		info, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if best == "" || info.ModTime().After(bestMod) {
+			best, bestMod = m, info.ModTime()
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("MCP session %q is not running (no live socket in %s)", target, dir)
+	}
+	return best, nil
 }
 
 // ListSockets returns the session sockets currently present in Dir.
@@ -124,6 +187,20 @@ func ListSockets() ([]string, error) {
 	}
 	sort.Strings(matches)
 	return matches, nil
+}
+
+// SweepStale removes sockets whose owner is definitively gone (connection
+// refused on an existing socket file). Ambiguous failures are left alone.
+func SweepStale() {
+	paths, err := ListSockets()
+	if err != nil {
+		return
+	}
+	for _, path := range paths {
+		if Stale(path) {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 // ---- in-process registry: session ID -> socket path ------------------------
@@ -154,15 +231,17 @@ func register(reg registration) (unregister func()) {
 }
 
 // Register records that sessionID's MCP manager listens on path. Bound sockets
-// are only ever handed to shell commands of that exact session.
+// are only ever handed to shell commands of that exact session. When a session
+// has several (a replacement runtime overlapping the one it replaces), the
+// most recent registration wins; unregistering it restores the previous one.
 func Register(sessionID, path string) (unregister func()) {
 	return register(registration{sessionID: strings.TrimSpace(sessionID), path: path})
 }
 
-// RegisterProcessDefault records the socket of a process that owns a single
-// MCP manager (one-shot CLI runs such as ask/chat). Lookup falls back to it
-// only when it is the sole process default, so multi-session servers, which
-// never register one, cannot leak a socket across sessions.
+// RegisterProcessDefault records the socket of a process whose single MCP
+// manager runs without a session (e.g. `ask --no-session`). It is returned
+// only to callers that have no session ID themselves, never to another
+// session such as an in-process subagent.
 func RegisterProcessDefault(path string) (unregister func()) {
 	return register(registration{path: path, processDefault: true})
 }
@@ -172,17 +251,21 @@ func Lookup(sessionID string) string {
 	sessionID = strings.TrimSpace(sessionID)
 	registryMu.Lock()
 	defer registryMu.Unlock()
+	bestID := -1
+	var best string
 	var defaults []string
-	for _, reg := range registry {
-		if reg.processDefault {
+	for id, reg := range registry {
+		switch {
+		case reg.processDefault:
 			defaults = append(defaults, reg.path)
-			continue
-		}
-		if sessionID != "" && reg.sessionID == sessionID {
-			return reg.path
+		case sessionID != "" && reg.sessionID == sessionID && id > bestID:
+			bestID, best = id, reg.path
 		}
 	}
-	if len(defaults) == 1 {
+	if best != "" {
+		return best
+	}
+	if sessionID == "" && len(defaults) == 1 {
 		return defaults[0]
 	}
 	return ""
@@ -317,14 +400,13 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 
 // ---- server helpers --------------------------------------------------------
 
-// Listen creates the unix socket at path with 0600 permissions. A stale socket
-// left by a crashed process is removed; a live one is an error.
+// Listen creates the unix socket at path with 0600 permissions. Paths are
+// unique per manager; an existing file is only replaced when it is a socket
+// whose owner is definitively gone.
 func Listen(path string) (net.Listener, error) {
 	if _, err := os.Lstat(path); err == nil {
-		conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond)
-		if dialErr == nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("MCP session socket %s is already in use", path)
+		if !Stale(path) {
+			return nil, fmt.Errorf("MCP session socket %s already exists", path)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, fmt.Errorf("remove stale MCP session socket: %w", err)

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -705,51 +706,23 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	serverName := args[0]
 
-	// Parse remaining args into tool calls
-	var calls []mcpToolCall
-	var current *mcpToolCall
-
-	for _, arg := range args[1:] {
-		if strings.HasPrefix(arg, "{") {
-			// JSON object — set as args for current tool
-			if current == nil {
-				return fmt.Errorf("JSON argument without a tool name")
-			}
-			var obj map[string]any
-			if err := json.Unmarshal([]byte(arg), &obj); err != nil {
-				return fmt.Errorf("invalid JSON argument: %w", err)
-			}
-			current.args = obj
-		} else if strings.Contains(arg, "=") {
-			// key=value pair
-			if current == nil {
-				return fmt.Errorf("key=value argument without a tool name")
-			}
-			key, val, _ := strings.Cut(arg, "=")
-			if strings.HasPrefix(val, "@") {
-				// @path reads file contents, @- reads stdin
-				content, err := readFileArg(val[1:])
-				if err != nil {
-					return fmt.Errorf("read %s: %w", val, err)
-				}
-				current.args[key] = content
-			} else {
-				current.args[key] = parseValue(val)
-				current.raw[key] = val
-			}
-		} else {
-			// New tool name
-			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any), raw: make(map[string]string)})
-			current = &calls[len(calls)-1]
-		}
+	calls, err := parseMCPRunCalls(args[1:])
+	if err != nil {
+		return err
 	}
 
 	if len(calls) == 0 {
 		return fmt.Errorf("no tool name provided")
 	}
 
-	if target := mcpRunSessionTarget(); target != "" {
-		return mcpRunInSession(cmd, target, serverName, calls)
+	if target, explicit := mcpRunSessionTarget(); target != "" {
+		err := mcpRunInSession(cmd, target, serverName, calls)
+		if err == nil || explicit || !errors.Is(err, errMCPSessionUnavailable) {
+			return err
+		}
+		// An inherited TERM_LLM_MCP_SESSION whose session has ended must not
+		// break scripts that worked before session routing existed.
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: %v; spawning a fresh %s server\n", err, serverName)
 	}
 
 	// Load config and start client
@@ -807,6 +780,53 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// parseMCPRunCalls parses `mcp run` arguments after the server name into tool
+// calls: bare words start a call, key=value pairs and JSON objects set args.
+func parseMCPRunCalls(args []string) ([]mcpToolCall, error) {
+	var calls []mcpToolCall
+	var current *mcpToolCall
+
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "{") {
+			// JSON object — set as args for current tool
+			if current == nil {
+				return nil, fmt.Errorf("JSON argument without a tool name")
+			}
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(arg), &obj); err != nil {
+				return nil, fmt.Errorf("invalid JSON argument: %w", err)
+			}
+			current.args = obj
+			// The object replaces earlier key=value pairs entirely.
+			current.raw = make(map[string]string)
+		} else if strings.Contains(arg, "=") {
+			// key=value pair
+			if current == nil {
+				return nil, fmt.Errorf("key=value argument without a tool name")
+			}
+			key, val, _ := strings.Cut(arg, "=")
+			if strings.HasPrefix(val, "@") {
+				// @path reads file contents, @- reads stdin
+				content, err := readFileArg(val[1:])
+				if err != nil {
+					return nil, fmt.Errorf("read %s: %w", val, err)
+				}
+				current.args[key] = content
+				delete(current.raw, key)
+			} else {
+				current.args[key] = parseValue(val)
+				current.raw[key] = val
+			}
+		} else {
+			// New tool name
+			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any), raw: make(map[string]string)})
+			current = &calls[len(calls)-1]
+		}
+	}
+
+	return calls, nil
 }
 
 func mcpToolResultError(name string, result llm.ToolOutput) error {

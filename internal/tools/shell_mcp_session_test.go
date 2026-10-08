@@ -28,8 +28,8 @@ func TestShellToolExportsSessionMCPSocket(t *testing.T) {
 	if got := run("sess-mcp", nil); !strings.Contains(got, "[/run/test/mcp-sess-mcp.sock]") {
 		t.Fatalf("session shell should see its MCP socket, got %q", got)
 	}
-	if got := run("other-session", nil); !strings.Contains(got, "[/inherited/should-be-shadowed.sock]") {
-		t.Fatalf("other session must keep inherited env untouched, got %q", got)
+	if got := run("other-session", nil); !strings.Contains(got, "[]") {
+		t.Fatalf("a session without MCP must not see an inherited socket, got %q", got)
 	}
 	if got := run("sess-mcp", EnvMap{mcpsession.EnvVar: "/explicit.sock"}); !strings.Contains(got, "[/explicit.sock]") {
 		t.Fatalf("explicit env must win, got %q", got)

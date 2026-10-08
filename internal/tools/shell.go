@@ -540,12 +540,13 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (llm
 		overrides[key] = struct{}{}
 	}
 	// Point `term-llm mcp run` at this session's live MCP servers so stateful
-	// servers (browsers, REPLs) keep their state across shell commands.
+	// servers (browsers, REPLs) keep their state across shell commands. An
+	// inherited value (from a parent session) is always dropped: commands only
+	// ever see their own session's socket, or none.
 	mcpSessionSocket := ""
 	if _, explicit := a.Env[mcpsession.EnvVar]; !explicit {
-		if mcpSessionSocket = mcpsession.Lookup(llm.SessionIDFromContext(ctx)); mcpSessionSocket != "" {
-			overrides[mcpsession.EnvVar] = struct{}{}
-		}
+		overrides[mcpsession.EnvVar] = struct{}{}
+		mcpSessionSocket = mcpsession.Lookup(llm.SessionIDFromContext(ctx))
 	}
 	cmd.Env = make([]string, 0, len(os.Environ())+len(a.Env)+1)
 	for _, e := range os.Environ() {

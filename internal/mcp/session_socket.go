@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +10,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/mcpsession"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
-
-var sessionSocketSeq atomic.Uint64
 
 // sessionSocket serves this manager's live MCP servers on a private unix socket
 // so shell commands in the same session can call them without spawning new
@@ -40,7 +36,8 @@ type sessionSocketState struct {
 
 // SetSessionID binds the manager to a session and enables its socket. Only the
 // shell tool of that exact session is pointed at it. Managers that are neither
-// bound nor marked with UseAsProcessSession never listen.
+// bound nor marked with UseAsProcessSession never listen. Rebinding a manager
+// that already listens restarts the socket under the new label.
 func (m *Manager) SetSessionID(sessionID string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -53,16 +50,18 @@ func (m *Manager) SetSessionID(sessionID string) {
 		return
 	}
 	st.sessionID = sessionID
-	if st.socket != nil {
-		st.socket.unregister()
-		st.socket.unregister = st.registerLocked(st.socket.path)
-	}
+	st.failed = false
+	old := st.socket
+	st.socket = nil
 	st.mu.Unlock()
+	old.close()
 	m.ensureSessionSocketIfRunning()
 }
 
-// UseAsProcessSession marks the process's single MCP manager (one-shot CLI
-// runs) as the default target for shell commands without a bound session.
+// UseAsProcessSession marks the manager of a session-less, single-manager
+// process (e.g. `ask --no-session`) as the target for shell commands that
+// carry no session ID. A manager that is also bound to a session registers
+// under that session only.
 func (m *Manager) UseAsProcessSession() {
 	st := &m.sessionSocket
 	st.mu.Lock()
@@ -71,6 +70,7 @@ func (m *Manager) UseAsProcessSession() {
 		return
 	}
 	st.processDefault = true
+	st.failed = false
 	if st.socket != nil {
 		st.socket.unregister()
 		st.socket.unregister = st.registerLocked(st.socket.path)
@@ -109,8 +109,8 @@ func (m *Manager) SessionSocketPath() string {
 	return st.socket.path
 }
 
-// ensureSessionSocket starts the socket on first use. Failures are logged once
-// and never block MCP itself.
+// ensureSessionSocket starts the socket on first use. Failures are reported
+// once per binding and never block MCP itself.
 func (m *Manager) ensureSessionSocket() {
 	if mcpsession.Disabled() {
 		return
@@ -123,8 +123,9 @@ func (m *Manager) ensureSessionSocket() {
 	}
 	label := st.sessionID
 	if label == "" {
-		label = fmt.Sprintf("pid%d-%d", os.Getpid(), sessionSocketSeq.Add(1))
+		label = fmt.Sprintf("pid%d", os.Getpid())
 	}
+	mcpsession.SweepStale()
 	sock, err := m.startSessionSocket(label)
 	if err != nil {
 		st.failed = true
@@ -136,7 +137,7 @@ func (m *Manager) ensureSessionSocket() {
 }
 
 func (m *Manager) startSessionSocket(label string) (*sessionSocket, error) {
-	path, err := mcpsession.SocketPath(label)
+	path, err := mcpsession.NewSocketPath(label)
 	if err != nil {
 		return nil, err
 	}
@@ -153,15 +154,21 @@ func (m *Manager) startSessionSocket(label string) (*sessionSocket, error) {
 			runtimeoutput.Warn("MCP session socket stopped", "socket", path, "error", err)
 		}
 	}()
-	return &sessionSocket{
-		path:       path,
-		listener:   ln,
-		server:     srv,
-		unregister: func() {},
-	}, nil
+	return &sessionSocket{path: path, listener: ln, server: srv, unregister: func() {}}, nil
 }
 
-// closeSessionSocket stops serving and removes the socket file.
+// close unregisters, stops serving and removes the socket. The path is unique
+// to this socket, so removal cannot affect another manager's listener.
+func (sock *sessionSocket) close() {
+	if sock == nil {
+		return
+	}
+	sock.unregister()
+	_ = sock.server.Close()
+	_ = os.Remove(sock.path)
+}
+
+// closeSessionSocket stops serving for this manager (StopAll).
 func (m *Manager) closeSessionSocket() {
 	st := &m.sessionSocket
 	st.mu.Lock()
@@ -169,14 +176,7 @@ func (m *Manager) closeSessionSocket() {
 	st.socket = nil
 	st.failed = false
 	st.mu.Unlock()
-	if sock == nil {
-		return
-	}
-	sock.unregister()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = sock.server.Shutdown(ctx)
-	_ = os.Remove(sock.path)
+	sock.close()
 }
 
 func (m *Manager) handleSessionInfo(w http.ResponseWriter, r *http.Request) {

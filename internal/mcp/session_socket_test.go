@@ -1,3 +1,5 @@
+//go:build unix
+
 package mcp
 
 import (
@@ -119,7 +121,111 @@ func TestUnboundManagerNeverListens(t *testing.T) {
 	if path == "" {
 		t.Fatal("process-session manager should listen once marked")
 	}
-	if got := mcpsession.Lookup("any-session"); got != path {
+	if got := mcpsession.Lookup(""); got != path {
 		t.Fatalf("process default lookup = %q, want %q", got, path)
+	}
+	if got := mcpsession.Lookup("subagent-session"); got != "" {
+		t.Fatalf("process default leaked to a caller with its own session: %q", got)
+	}
+}
+
+func startNoopMCP(t *testing.T) string {
+	t.Helper()
+	srv := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "noop", Version: "1"}, nil)
+	httpSrv := httptest.NewServer(sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return srv }, nil))
+	t.Cleanup(httpSrv.Close)
+	return httpSrv.URL
+}
+
+func enabledManager(t *testing.T, url string) *Manager {
+	t.Helper()
+	m := NewManagerWithConfig(&Config{Servers: map[string]ServerConfig{"noop": {Type: "http", URL: url}}})
+	t.Cleanup(m.StopAll)
+	if err := m.Enable(context.Background(), "noop"); err != nil {
+		t.Fatal(err)
+	}
+	waitForServerStatus(t, m, "noop", StatusReady, 10*time.Second)
+	return m
+}
+
+// Serve builds a replacement runtime (model swap, idle refresh) while the old
+// one for the same session is still alive. Both must listen, the candidate
+// must win, and retiring the old runtime must not disturb the candidate.
+func TestSessionSocketSurvivesRuntimeReplacement(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "mcps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	url := startNoopMCP(t)
+
+	old := enabledManager(t, url)
+	old.SetSessionID("swap-session")
+	oldPath := old.SessionSocketPath()
+
+	candidate := enabledManager(t, url)
+	candidate.SetSessionID("swap-session")
+	newPath := candidate.SessionSocketPath()
+	if oldPath == "" || newPath == "" || oldPath == newPath {
+		t.Fatalf("both runtimes must listen on distinct sockets: old=%q new=%q", oldPath, newPath)
+	}
+	if got := mcpsession.Lookup("swap-session"); got != newPath {
+		t.Fatalf("candidate should win during overlap, got %q", got)
+	}
+	old.StopAll() // commit: retire the previous runtime
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("retiring the old runtime removed the candidate socket: %v", err)
+	}
+	if got := mcpsession.Lookup("swap-session"); got != newPath {
+		t.Fatalf("candidate lost its registration after retirement, got %q", got)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old socket should be removed, stat err = %v", err)
+	}
+}
+
+func TestSessionSocketRollbackRestoresRetainedRuntime(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "mcps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	url := startNoopMCP(t)
+
+	retained := enabledManager(t, url)
+	retained.SetSessionID("rollback-session")
+	candidate := enabledManager(t, url)
+	candidate.SetSessionID("rollback-session")
+	candidate.StopAll() // rollback: discard the candidate
+	if got := mcpsession.Lookup("rollback-session"); got != retained.SessionSocketPath() || got == "" {
+		t.Fatalf("rollback should route back to the retained runtime, got %q", got)
+	}
+}
+
+func TestSetSessionIDRebindMovesSocketLabel(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "mcps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	m := enabledManager(t, startNoopMCP(t))
+	m.SetSessionID("first")
+	first := m.SessionSocketPath()
+	m.SetSessionID("second")
+	second := m.SessionSocketPath()
+	if mcpsession.LabelFromPath(second) != "second" {
+		t.Fatalf("rebound socket label = %q", mcpsession.LabelFromPath(second))
+	}
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("previous socket should be removed on rebind, stat err = %v", err)
+	}
+	if mcpsession.Lookup("first") != "" || mcpsession.Lookup("second") != second {
+		t.Fatalf("registry not moved: first=%q second=%q", mcpsession.Lookup("first"), mcpsession.Lookup("second"))
+	}
+	if path, err := mcpsession.ResolveTarget("second"); err != nil || path != second {
+		t.Fatalf("ResolveTarget(second) = %q, %v", path, err)
 	}
 }

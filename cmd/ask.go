@@ -450,6 +450,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if sess != nil {
 		sessionID = sess.ID
 	}
+	if mcpManager != nil {
+		// Bind shell `term-llm mcp run` routing to this exact session so
+		// in-process subagents (other session IDs) never inherit it.
+		mcpManager.SetSessionID(sessionID)
+	}
 	req := buildAskRequest(cfg, settings, sessionID, messages, engine, toolMgr, mcpManager, outputTool, debugMode, debugRaw)
 
 	// Check if we're in a TTY and can use terminal markdown rendering

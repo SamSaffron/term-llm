@@ -468,13 +468,15 @@ func (s *serveServer) applyPersistedMCPSelectionLocked(ctx context.Context, sess
 	}
 	desired := normalizeMCPSelection(parseServerList(sess.MCP))
 	current := normalizeMCPSelection(parseServerList(rt.mcpSetting))
-	if sameStringSlice(desired, current) && rt.mcpSelectionReadyLocked(desired) {
-		return nil
-	}
+	// Bind before any early return: servers may already be running from a path
+	// that did not know the session (e.g. a runner with a deferred session).
 	if rt.mcpManager != nil || len(desired) > 0 {
 		if err := rt.ensureMCPManagerLocked(); err == nil {
 			rt.mcpManager.SetSessionID(sessionID)
 		}
+	}
+	if sameStringSlice(desired, current) && rt.mcpSelectionReadyLocked(desired) {
+		return nil
 	}
 	if err := rt.applyMCPSelectionLocked(ctx, desired); err != nil {
 		// Keep the persisted/session selection visible even when restoration fails

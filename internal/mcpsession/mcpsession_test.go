@@ -1,13 +1,17 @@
+//go:build unix
+
 package mcpsession
 
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func useTempRuntimeDir(t *testing.T) string {
@@ -39,46 +43,63 @@ func TestLookupBoundSessionsDoNotLeak(t *testing.T) {
 	}
 }
 
-func TestLookupProcessDefaultRules(t *testing.T) {
+func TestLookupNewestBindingWinsAndUnregisterRestoresPrevious(t *testing.T) {
+	unOld := Register("swap", "/old.sock")
+	defer unOld()
+	unNew := Register("swap", "/new.sock")
+	if got := Lookup("swap"); got != "/new.sock" {
+		t.Fatalf("replacement runtime should win, got %q", got)
+	}
+	unNew() // rollback: candidate discarded
+	if got := Lookup("swap"); got != "/old.sock" {
+		t.Fatalf("rollback should restore the retained runtime, got %q", got)
+	}
+}
+
+func TestLookupProcessDefaultOnlyForSessionlessCallers(t *testing.T) {
 	un := RegisterProcessDefault("/cli.sock")
-	if got := Lookup("some-cli-session"); got != "/cli.sock" {
-		t.Fatalf("Lookup with sole process default = %q", got)
-	}
 	if got := Lookup(""); got != "/cli.sock" {
-		t.Fatalf("Lookup without session context = %q", got)
+		t.Fatalf("session-less caller should get the process default, got %q", got)
 	}
-	bound := Register("bound", "/bound.sock")
-	if got := Lookup("bound"); got != "/bound.sock" {
-		t.Fatalf("exact binding must win over process default, got %q", got)
+	if got := Lookup("child-subagent"); got != "" {
+		t.Fatalf("a caller with its own session must not inherit the process default, got %q", got)
 	}
-	bound()
 	un2 := RegisterProcessDefault("/cli2.sock")
-	if got := Lookup("some-cli-session"); got != "" {
+	if got := Lookup(""); got != "" {
 		t.Fatalf("ambiguous process defaults must not resolve, got %q", got)
 	}
 	un2()
 	un()
-	if got := Lookup("some-cli-session"); got != "" {
+	if got := Lookup(""); got != "" {
 		t.Fatalf("unregistered default still resolves: %q", got)
 	}
-	// An empty session ID is not a binding.
 	unEmpty := Register("", "/empty.sock")
 	defer unEmpty()
-	if got := Lookup("anything"); got != "" {
-		t.Fatalf("empty binding must never resolve, got %q", got)
+	if got := Lookup(""); got != "" {
+		t.Fatalf("an empty binding is not a process default, got %q", got)
 	}
 }
 
-func TestSocketPathSanitizesAndBoundsLength(t *testing.T) {
+func TestNewSocketPathIsUniqueSanitizedAndBounded(t *testing.T) {
 	dir := useTempRuntimeDir(t)
-	path, err := SocketPath("abc/../def ghi")
+	a, err := NewSocketPath("abc/../def ghi")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Dir(path) != filepath.Join(dir, "term-llm") || strings.Contains(filepath.Base(path), "/") {
-		t.Fatalf("unexpected path %q", path)
+	b, err := NewSocketPath("abc/../def ghi")
+	if err != nil {
+		t.Fatal(err)
 	}
-	long, err := SocketPath(strings.Repeat("x", 300))
+	if a == b {
+		t.Fatalf("socket paths must be unique per manager, both %q", a)
+	}
+	if filepath.Dir(a) != filepath.Join(dir, "term-llm") {
+		t.Fatalf("unexpected dir for %q", a)
+	}
+	if got := LabelFromPath(a); got != "abc_.._def_ghi" {
+		t.Fatalf("LabelFromPath = %q", got)
+	}
+	long, err := NewSocketPath(strings.Repeat("x", 300))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,23 +115,22 @@ func TestSocketPathSanitizesAndBoundsLength(t *testing.T) {
 	}
 }
 
-func TestResolveTarget(t *testing.T) {
-	useTempRuntimeDir(t)
-	if got, _ := ResolveTarget("/x/y.sock"); got != "/x/y.sock" {
-		t.Fatalf("path target = %q", got)
+func TestNewSocketPathRejectsOverlongDirectory(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "mcps")
+	if err != nil {
+		t.Fatal(err)
 	}
-	got, err := ResolveTarget("sess-1")
-	if err != nil || filepath.Base(got) != "mcp-sess-1.sock" {
-		t.Fatalf("id target = %q, %v", got, err)
-	}
-	if LabelFromPath(got) != "sess-1" {
-		t.Fatalf("LabelFromPath = %q", LabelFromPath(got))
+	defer os.RemoveAll(base)
+	deep := filepath.Join(base, strings.Repeat("d", 90))
+	t.Setenv("XDG_RUNTIME_DIR", deep)
+	if _, err := NewSocketPath("s"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected path-length error, got %v", err)
 	}
 }
 
-func TestListenReplacesStaleSocketAndRefusesLiveOne(t *testing.T) {
+func TestListenOnlyReplacesDefinitivelyStaleSockets(t *testing.T) {
 	useTempRuntimeDir(t)
-	path, err := SocketPath("stale")
+	path, err := NewSocketPath("stale")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,41 +138,54 @@ func TestListenReplacesStaleSocketAndRefusesLiveOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Listen(path); err == nil || !strings.Contains(err.Error(), "already in use") {
-		t.Fatalf("second Listen on live socket = %v, want in-use error", err)
+	if _, err := Listen(path); err == nil {
+		t.Fatal("Listen over a live socket must fail")
+	}
+	if Stale(path) {
+		t.Fatal("a live socket is not stale")
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode = %v, %v", info.Mode().Perm(), err)
 	}
 	// Simulate a crashed owner: close the listener but leave the file behind.
-	if ul, ok := ln.(interface{ SetUnlinkOnClose(bool) }); ok {
-		ul.SetUnlinkOnClose(false)
-	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	ln.Close()
-	if _, err := os.Lstat(path); err != nil {
-		t.Fatalf("expected stale socket file to remain: %v", err)
+	if !Stale(path) {
+		t.Fatal("an orphaned socket should be stale")
 	}
 	ln2, err := Listen(path)
 	if err != nil {
 		t.Fatalf("Listen over stale socket: %v", err)
 	}
 	ln2.Close()
-}
 
-func TestClientRoundTrip(t *testing.T) {
-	useTempRuntimeDir(t)
-	path, err := SocketPath("rt")
-	if err != nil {
+	// Regular files are never treated as stale sockets.
+	plain := filepath.Join(filepath.Dir(path), "mcp-plain@00000000.sock")
+	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if Stale(plain) {
+		t.Fatal("regular file must not be stale")
+	}
+	if _, err := Listen(plain); err == nil {
+		t.Fatal("Listen must not replace a non-socket file")
+	}
+	SweepStale()
+	if _, err := os.Stat(plain); err != nil {
+		t.Fatalf("SweepStale removed a regular file: %v", err)
+	}
+}
+
+func serveFake(t *testing.T, path, sessionID string) func() {
+	t.Helper()
 	ln, err := Listen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/session", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSON(w, http.StatusOK, SessionInfo{SessionID: "rt", PID: 7, Servers: []ServerInfo{{Name: "srv", Status: "ready"}}})
+		WriteJSON(w, http.StatusOK, SessionInfo{SessionID: sessionID, PID: 7, Servers: []ServerInfo{{Name: "srv", Status: "ready"}}})
 	})
 	mux.HandleFunc("POST /v1/call", func(w http.ResponseWriter, r *http.Request) {
 		var req CallRequest
@@ -165,8 +198,22 @@ func TestClientRoundTrip(t *testing.T) {
 	})
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(ln)
-	defer srv.Close()
+	return func() { srv.Close() }
+}
 
+func TestClientRoundTripAndResolveNewestLiveSocket(t *testing.T) {
+	useTempRuntimeDir(t)
+	older, _ := NewSocketPath("rt")
+	stopOld := serveFake(t, older, "rt")
+	defer stopOld()
+	time.Sleep(20 * time.Millisecond) // distinct mtimes
+	newer, _ := NewSocketPath("rt")
+	stopNew := serveFake(t, newer, "rt")
+	defer stopNew()
+
+	if got, err := ResolveTarget("rt"); err != nil || got != newer {
+		t.Fatalf("ResolveTarget(rt) = %q, %v; want newest %q", got, err, newer)
+	}
 	client, err := Dial("rt")
 	if err != nil {
 		t.Fatal(err)
