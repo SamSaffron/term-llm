@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcpsession"
 )
 
 const (
@@ -534,11 +535,19 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (llm
 
 	cmd := exec.CommandContext(execCtx, t.shellPath, "-c", a.Command)
 	cmd.Dir = workDir
-	overrides := make(map[string]struct{}, len(a.Env))
+	overrides := make(map[string]struct{}, len(a.Env)+1)
 	for key := range a.Env {
 		overrides[key] = struct{}{}
 	}
-	cmd.Env = make([]string, 0, len(os.Environ())+len(a.Env))
+	// Point `term-llm mcp run` at this session's live MCP servers so stateful
+	// servers (browsers, REPLs) keep their state across shell commands.
+	mcpSessionSocket := ""
+	if _, explicit := a.Env[mcpsession.EnvVar]; !explicit {
+		if mcpSessionSocket = mcpsession.Lookup(llm.SessionIDFromContext(ctx)); mcpSessionSocket != "" {
+			overrides[mcpsession.EnvVar] = struct{}{}
+		}
+	}
+	cmd.Env = make([]string, 0, len(os.Environ())+len(a.Env)+1)
 	for _, e := range os.Environ() {
 		if k, _, ok := strings.Cut(e, "="); ok {
 			if _, shadowed := overrides[k]; shadowed {
@@ -549,6 +558,9 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (llm
 	}
 	for key, value := range a.Env {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+	}
+	if mcpSessionSocket != "" {
+		cmd.Env = append(cmd.Env, mcpsession.EnvVar+"="+mcpSessionSocket)
 	}
 
 	cleanup, prepErr := prepareToolCommand(cmd)

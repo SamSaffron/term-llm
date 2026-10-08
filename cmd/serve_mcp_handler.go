@@ -471,6 +471,11 @@ func (s *serveServer) applyPersistedMCPSelectionLocked(ctx context.Context, sess
 	if sameStringSlice(desired, current) && rt.mcpSelectionReadyLocked(desired) {
 		return nil
 	}
+	if rt.mcpManager != nil || len(desired) > 0 {
+		if err := rt.ensureMCPManagerLocked(); err == nil {
+			rt.mcpManager.SetSessionID(sessionID)
+		}
+	}
 	if err := rt.applyMCPSelectionLocked(ctx, desired); err != nil {
 		// Keep the persisted/session selection visible even when restoration fails
 		// so the UI can show the requested server and let the user turn it off.
@@ -729,6 +734,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	rt.mcpManager.SetSessionID(sessionID)
 	if err := rt.applyMCPSelectionLocked(r.Context(), req.Enabled); err != nil {
 		if apiErr, ok := err.(*serveMCPError); ok {
 			writeOpenAIError(w, apiErr.status, apiErr.errorType, apiErr.message)

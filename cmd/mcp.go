@@ -14,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/mcpsession"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	mcpTui "github.com/samsaffron/term-llm/internal/tui/mcp"
 	"github.com/spf13/cobra"
@@ -115,9 +116,14 @@ var mcpPathCmd = &cobra.Command{
 type mcpToolCall struct {
 	name string
 	args map[string]any
+	// raw holds the unparsed text of key=value arguments so values can be
+	// re-typed against the tool's input schema (e.g. text=1815 stays a string).
+	raw map[string]string
 }
 
 var mcpRunTimeout time.Duration
+var mcpRunSession string
+var mcpRunSpawn bool
 
 var mcpRunCmd = &cobra.Command{
 	Use:   "run <server> <tool> [key=val|json] ...",
@@ -134,6 +140,13 @@ Values in key=value pairs are auto-detected:
 
 Use key=@path to read a file's contents as the value, or key=@- for stdin.
 
+Session mode: inside a term-llm session with live MCP servers, the shell tool
+exports TERM_LLM_MCP_SESSION. Calls then go to the session's already-running
+server instead of spawning a new one, so stateful servers (e.g. Playwright)
+keep their state. Use --session <socket|session-id> to target a session
+explicitly, or --spawn to force a fresh server. List sessions with
+"term-llm mcp sessions".
+
 Examples:
   term-llm mcp run filesystem read_file path=/tmp/test.txt
   term-llm mcp run server tool '{"nested":{"deep":"value"}}'
@@ -148,6 +161,8 @@ Examples:
 func init() {
 	mcpBrowseCmd.Flags().BoolVar(&mcpBrowseTUI, "no-tui", false, "Use simple CLI output instead of interactive browser")
 	mcpRunCmd.Flags().DurationVar(&mcpRunTimeout, "timeout", 30*time.Second, "Timeout for MCP server startup and tool execution")
+	mcpRunCmd.Flags().StringVar(&mcpRunSession, "session", "", "Call a live session's MCP server (socket path or session ID; default $"+mcpsession.EnvVar+")")
+	mcpRunCmd.Flags().BoolVar(&mcpRunSpawn, "spawn", false, "Always spawn a fresh MCP server, ignoring $"+mcpsession.EnvVar)
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.AddCommand(mcpListCmd)
 	mcpCmd.AddCommand(mcpBrowseCmd)
@@ -156,6 +171,7 @@ func init() {
 	mcpCmd.AddCommand(mcpInfoCmd)
 	mcpCmd.AddCommand(mcpRunCmd)
 	mcpCmd.AddCommand(mcpPathCmd)
+	mcpCmd.AddCommand(mcpSessionsCmd)
 }
 
 func mcpList(cmd *cobra.Command, args []string) error {
@@ -719,16 +735,21 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 				current.args[key] = content
 			} else {
 				current.args[key] = parseValue(val)
+				current.raw[key] = val
 			}
 		} else {
 			// New tool name
-			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any)})
+			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any), raw: make(map[string]string)})
 			current = &calls[len(calls)-1]
 		}
 	}
 
 	if len(calls) == 0 {
 		return fmt.Errorf("no tool name provided")
+	}
+
+	if target := mcpRunSessionTarget(); target != "" {
+		return mcpRunInSession(cmd, target, serverName, calls)
 	}
 
 	// Load config and start client
@@ -754,9 +775,15 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 
 	mcp.CacheTools(serverName, client.Tools())
 
+	schemas := make(map[string]map[string]any)
+	for _, tool := range client.Tools() {
+		schemas[tool.Name] = tool.Schema
+	}
+
 	multiple := len(calls) > 1
 
 	for _, call := range calls {
+		applyInputSchemaToArgs(cmd.ErrOrStderr(), &call, schemas[call.name])
 		argsJSON, err := json.Marshal(call.args)
 		if err != nil {
 			return fmt.Errorf("marshal args for %s: %w", call.name, err)
