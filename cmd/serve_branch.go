@@ -67,17 +67,66 @@ func branchContextSourceMessage(message session.Message) bool {
 	return false
 }
 
-func activeWebBranchAnchorRowID(messages []session.Message, activeResponseID string, sampledAnchorRowID int64) int64 {
-	if strings.TrimSpace(activeResponseID) == "" {
-		return 0
+// activeWebBranchRun is one consistent sample of the source session's active
+// run, taken under the run lock.
+type activeWebBranchRun struct {
+	responseID string
+	epoch      int64
+	// anchorRowID is the latest published durable boundary; zero while it is
+	// withdrawn after a mid-run rewrite or compaction.
+	anchorRowID int64
+	// startAnchorRowID is the durable boundary published before run output.
+	startAnchorRowID int64
+}
+
+func (s *serveServer) sampleActiveWebBranchRun(sessionID string) activeWebBranchRun {
+	if s.responseRuns == nil {
+		return activeWebBranchRun{}
 	}
-	if sampledAnchorRowID <= 0 {
-		return -1
+	id := s.responseRuns.activeRunID(sessionID)
+	if id == "" {
+		return activeWebBranchRun{}
+	}
+	run, ok := s.responseRuns.get(id)
+	if !ok || run == nil {
+		return activeWebBranchRun{responseID: id}
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	sample := activeWebBranchRun{responseID: id, epoch: run.runEpoch, startAnchorRowID: run.startAnchorRowID}
+	if run.anchorAvailable {
+		sample.anchorRowID = run.anchorRowID
+	}
+	return sample
+}
+
+func branchableRowPresent(messages []session.Message, rowID int64) bool {
+	if rowID <= 0 {
+		return false
 	}
 	for _, message := range messages {
-		if message.ID == sampledAnchorRowID && session.IsBranchableMessage(message) {
-			return sampledAnchorRowID
+		if message.ID == rowID {
+			return session.IsBranchableMessage(message)
 		}
+	}
+	return false
+}
+
+// activeWebBranchAnchorRowID returns the last row of messages that the active
+// run can no longer change: 0 when no run is active, -1 when nothing is safe.
+func activeWebBranchAnchorRowID(messages []session.Message, run activeWebBranchRun) int64 {
+	if strings.TrimSpace(run.responseID) == "" {
+		return 0
+	}
+	if branchableRowPresent(messages, run.anchorRowID) {
+		return run.anchorRowID
+	}
+	// While the published boundary is withdrawn, the boundary that preceded run
+	// output still bounds history the run cannot change. Rewrites that alter it
+	// delete the row, which fails closed below; message IDs are AUTOINCREMENT,
+	// so a deleted ID never returns with different content.
+	if branchableRowPresent(messages, run.startAnchorRowID) {
+		return run.startAnchorRowID
 	}
 	return -1
 }
@@ -106,7 +155,7 @@ const (
 	activeWebBranchAnchorUnstable
 )
 
-func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID string, sampledAnchorRowID, requestedAnchorRowID int64) activeWebBranchAnchorStatus {
+func activeWebBranchAnchorSafety(messages []session.Message, run activeWebBranchRun, requestedAnchorRowID int64) activeWebBranchAnchorStatus {
 	if requestedAnchorRowID == 0 {
 		return activeWebBranchAnchorSafe
 	}
@@ -123,7 +172,7 @@ func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID st
 	if !session.IsBranchableMessage(*requested) {
 		return activeWebBranchAnchorInvalid
 	}
-	activeAnchorRowID := activeWebBranchAnchorRowID(messages, activeResponseID, sampledAnchorRowID)
+	activeAnchorRowID := activeWebBranchAnchorRowID(messages, run)
 	if activeAnchorRowID <= 0 {
 		return activeWebBranchAnchorUnstable
 	}
@@ -152,23 +201,22 @@ type webBranchContextSnapshot struct {
 
 func (s *serveServer) loadWebBranchContextSnapshot(ctx context.Context, sessionID string) (webBranchContextSnapshot, error) {
 	for attempt := 0; attempt < webBranchSnapshotMaxAttempts; attempt++ {
-		activeResponseID, _, activeEpoch, _, sampledAnchorRowID := s.activeTranscriptRun(sessionID)
+		run := s.sampleActiveWebBranchRun(sessionID)
 		messages, err := s.store.GetMessages(ctx, sessionID, 0, 0)
 		if err != nil {
 			return webBranchContextSnapshot{}, err
 		}
-		checkResponseID, _, checkEpoch, _, checkAnchorRowID := s.activeTranscriptRun(sessionID)
-		if checkResponseID != activeResponseID || checkEpoch != activeEpoch || checkAnchorRowID != sampledAnchorRowID {
+		if run != s.sampleActiveWebBranchRun(sessionID) {
 			if err := ctx.Err(); err != nil {
 				return webBranchContextSnapshot{}, err
 			}
 			continue
 		}
-		if activeResponseID == "" {
+		if run.responseID == "" {
 			return webBranchContextSnapshot{messages: messages}, nil
 		}
-		activeAnchorRowID := activeWebBranchAnchorRowID(messages, activeResponseID, sampledAnchorRowID)
-		safeMessages := pruneActiveWebBranchOutput(messages, activeResponseID, activeAnchorRowID)
+		activeAnchorRowID := activeWebBranchAnchorRowID(messages, run)
+		safeMessages := pruneActiveWebBranchOutput(messages, run.responseID, activeAnchorRowID)
 		return webBranchContextSnapshot{
 			messages:          safeMessages,
 			activeAnchorRowID: activeAnchorRowID,
@@ -327,16 +375,15 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	activeResponseID, _, _, _, activeAnchorRowID := s.activeTranscriptRun(sourceSessionID)
-	activeSource := activeResponseID != ""
+	activeRun := s.sampleActiveWebBranchRun(sourceSessionID)
+	activeSource := activeRun.responseID != ""
 	unlock := func() {}
 	validateActiveAnchor := func() bool {
-		messages, loadErr := s.store.GetMessages(r.Context(), sourceSessionID, 0, 0)
-		if loadErr != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to validate active conversation branch")
+		messages, ok := s.loadActiveWebBranchMessages(w, r, sourceSessionID, &activeRun)
+		if !ok {
 			return false
 		}
-		status := activeWebBranchAnchorSafety(messages, activeResponseID, activeAnchorRowID, req.AnchorMessageID)
+		status := activeWebBranchAnchorSafety(messages, activeRun, req.AnchorMessageID)
 		switch status {
 		case activeWebBranchAnchorMissing:
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch source or anchor was not found")
@@ -361,8 +408,8 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 		if busy {
 			// Work may have become active after the initial sample. Prefer its
 			// published durable boundary over rejecting an otherwise safe prefix.
-			activeResponseID, _, _, _, activeAnchorRowID = s.activeTranscriptRun(sourceSessionID)
-			activeSource = activeResponseID != ""
+			activeRun = s.sampleActiveWebBranchRun(sourceSessionID)
+			activeSource = activeRun.responseID != ""
 			if !activeSource {
 				writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot branch while source work is active")
 				return
@@ -412,6 +459,29 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 			Reused:                result.Reused,
 		})
 	}
+}
+
+// loadActiveWebBranchMessages reads the source transcript consistently with
+// *run. Boundary movement within the same run is resampled a bounded number of
+// times; a different run means the sample no longer describes these rows.
+func (s *serveServer) loadActiveWebBranchMessages(w http.ResponseWriter, r *http.Request, sessionID string, run *activeWebBranchRun) ([]session.Message, bool) {
+	for attempt := 0; attempt < webBranchSnapshotMaxAttempts; attempt++ {
+		messages, err := s.store.GetMessages(r.Context(), sessionID, 0, 0)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to validate active conversation branch")
+			return nil, false
+		}
+		current := s.sampleActiveWebBranchRun(sessionID)
+		if current == *run {
+			return messages, true
+		}
+		if current.responseID != run.responseID || current.epoch != run.epoch {
+			break
+		}
+		*run = current
+	}
+	writeOpenAIError(w, http.StatusConflict, "conflict_error", "the active branch boundary changed; refresh and try again")
+	return nil, false
 }
 
 func directBranchNode(tree session.BranchTree, childSessionID string) (session.BranchTreeNode, bool) {

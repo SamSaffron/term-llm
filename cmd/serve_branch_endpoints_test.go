@@ -78,14 +78,15 @@ func TestActiveWebBranchSafetyAcceptsPublishedCompletedToolBoundary(t *testing.T
 		{ID: 3, Sequence: 2, Role: llm.RoleTool, ResponseID: responseID},
 		{ID: 4, Sequence: 3, Role: llm.RoleAssistant, ResponseID: responseID},
 	}
-	if status := activeWebBranchAnchorSafety(messages, responseID, 3, 3); status != activeWebBranchAnchorSafe {
+	published := activeWebBranchRun{responseID: responseID, anchorRowID: 3}
+	if status := activeWebBranchAnchorSafety(messages, published, 3); status != activeWebBranchAnchorSafe {
 		t.Fatalf("published tool boundary status = %v, want safe", status)
 	}
-	if status := activeWebBranchAnchorSafety(messages, responseID, 3, 4); status != activeWebBranchAnchorUnstable {
+	if status := activeWebBranchAnchorSafety(messages, published, 4); status != activeWebBranchAnchorUnstable {
 		t.Fatalf("partial row status = %v, want unstable", status)
 	}
 	messages = append(messages, session.Message{ID: 5, Sequence: 4, Role: llm.RoleSystem})
-	if status := activeWebBranchAnchorSafety(messages, responseID, 3, 5); status != activeWebBranchAnchorInvalid {
+	if status := activeWebBranchAnchorSafety(messages, published, 5); status != activeWebBranchAnchorInvalid {
 		t.Fatalf("system row status = %v, want invalid", status)
 	}
 	pruned := pruneActiveWebBranchOutput(messages, responseID, 3)
@@ -218,11 +219,21 @@ func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeSteering(t *testin
 		{ID: 3, Role: llm.RoleUser},
 		{ID: 4, Role: llm.RoleAssistant, ResponseID: responseID},
 	}
-	if got := activeWebBranchAnchorRowID(fallbackMessages, responseID, 0); got != -1 {
-		t.Fatalf("missing published active anchor = %d, want fail-closed sentinel -1", got)
-	}
-	if got := activeWebBranchAnchorRowID([]session.Message{{ID: 1, Role: llm.RoleAssistant, ResponseID: responseID}}, responseID, 0); got != -1 {
-		t.Fatalf("unbounded active anchor = %d, want fail-closed sentinel -1", got)
+	for _, tc := range []struct {
+		name string
+		run  activeWebBranchRun
+		want int64
+	}{
+		{"published anchor", activeWebBranchRun{responseID: responseID, anchorRowID: 4, startAnchorRowID: 3}, 4},
+		{"withdrawn anchor uses start anchor", activeWebBranchRun{responseID: responseID, startAnchorRowID: 3}, 3},
+		{"vanished anchor uses start anchor", activeWebBranchRun{responseID: responseID, anchorRowID: 999, startAnchorRowID: 3}, 3},
+		{"no start anchor fails closed", activeWebBranchRun{responseID: responseID}, -1},
+		{"vanished start anchor fails closed", activeWebBranchRun{responseID: responseID, startAnchorRowID: 999}, -1},
+		{"no active run", activeWebBranchRun{}, 0},
+	} {
+		if got := activeWebBranchAnchorRowID(fallbackMessages, tc.run); got != tc.want {
+			t.Fatalf("%s: active anchor = %d, want %d", tc.name, got, tc.want)
+		}
 	}
 	if points := webBranchTreePointsForActiveRun(fallbackMessages, 999); len(points) != 0 {
 		t.Fatalf("missing active anchor exposed branch points: %#v", points)
@@ -371,6 +382,117 @@ func TestSessionBranchEndpointAllowsActiveSourceAtStableAnchor(t *testing.T) {
 	srv.handleSessionByID(rr, req)
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
 		t.Fatalf("steering anchor status/body = %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionBranchEndpointAllowsPreRunAnchorWhileBoundaryUnavailable(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "unavailable-boundary-source"
+		responseID = "resp-unavailable-boundary"
+	)
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	// Mid-run snapshot rewrites and compaction rebuild run output from engine
+	// messages, so these rows carry no response ID.
+	tool := *session.NewMessage(sourceID, llm.ToolResultMessage("call-active", "shell", "done", nil), -1)
+	partial := *session.NewMessage(sourceID, llm.AssistantText("still streaming"), -1)
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, llm.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, llm.AssistantText("stable answer"), -1),
+		*session.NewMessage(sourceID, llm.UserText("active request"), -1),
+		tool,
+		partial,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.GetMessages(ctx, sourceID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.setInitialDurableBoundary(messages[2].ID)
+	// Mid-run snapshot rewrites and compaction withdraw the published boundary
+	// until the next durable turn completes.
+	run.invalidateDurableBoundary()
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	wrapped := &webBranchSnapshotTestStore{Store: store}
+	srv := &serveServer{store: wrapped, responseRuns: manager}
+
+	branch := func(anchorID int64, key string) *httptest.ResponseRecorder {
+		t.Helper()
+		body := fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":%q}`, anchorID, key)
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		return rr
+	}
+
+	rr := branch(messages[1].ID, "pre-run-anchor")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("pre-run anchor status/body = %d %s, want created", rr.Code, rr.Body.String())
+	}
+	var created createSessionBranchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	childMessages, err := store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childMessages) != 2 || childMessages[1].TextContent != "stable answer" {
+		t.Fatalf("pre-run branch copied messages = %#v, want completed prefix only", childMessages)
+	}
+
+	for i, id := range []int64{messages[3].ID, messages[4].ID} {
+		rr = branch(id, fmt.Sprintf("run-output-anchor-%d", i))
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
+			t.Fatalf("run output anchor %d status/body = %d %s, want conflict", id, rr.Code, rr.Body.String())
+		}
+	}
+
+	// Durable progress within the same run during the read is resampled rather
+	// than rejected.
+	advanced := false
+	wrapped.afterGetMessages = func() {
+		if advanced {
+			return
+		}
+		advanced = true
+		run.mu.Lock()
+		run.anchorRowID, run.anchorAvailable = messages[3].ID, true
+		run.mu.Unlock()
+	}
+	rr = branch(messages[1].ID, "boundary-advanced-anchor")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("same-run boundary advance status/body = %d %s, want created", rr.Code, rr.Body.String())
+	}
+	if !advanced {
+		t.Fatal("boundary advance hook did not run")
+	}
+
+	// A different run taking over while validation reads the transcript makes
+	// the sampled boundary meaningless for the rows that were read.
+	next := newResponseRun("resp-unavailable-boundary-next", sourceID, "", "mock-model", time.Now().Unix(), nil)
+	if err := manager.create(next); err != nil {
+		t.Fatal(err)
+	}
+	wrapped.afterGetMessages = func() { manager.setActiveRun(sourceID, next.id) }
+	rr = branch(messages[1].ID, "run-changed-anchor")
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "boundary changed") {
+		t.Fatalf("run change status/body = %d %s, want conflict", rr.Code, rr.Body.String())
 	}
 }
 

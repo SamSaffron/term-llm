@@ -127,6 +127,7 @@ type responseRun struct {
 	requestFingerprint      string
 	anchorRowID             int64 // latest durable completed boundary; zero means unavailable
 	anchorAvailable         bool
+	startAnchorRowID        int64 // boundary published before run output; survives invalidation, callers must confirm the row exists
 	boundary                *runboundary.Tracker
 	model                   string
 	reasoningEffort         string
@@ -282,6 +283,7 @@ func (r *responseRun) setInitialDurableBoundary(rowID int64) bool {
 		return false
 	}
 	r.anchorRowID, r.anchorAvailable = rowID, true
+	r.startAnchorRowID = rowID
 	return true
 }
 

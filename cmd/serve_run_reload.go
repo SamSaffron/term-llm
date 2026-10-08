@@ -61,6 +61,7 @@ type webRunView struct {
 	RequestFingerprint      string
 	AnchorRowID             int64
 	AnchorAvailable         bool
+	StartAnchorRowID        int64
 	Model                   string
 	ReasoningEffort         string
 	ReasoningEffortSet      bool
@@ -127,6 +128,7 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *ll
 			RequestFingerprint:      run.requestFingerprint,
 			AnchorRowID:             run.anchorRowID,
 			AnchorAvailable:         run.anchorAvailable,
+			StartAnchorRowID:        run.startAnchorRowID,
 			Model:                   run.model,
 			ReasoningEffort:         run.reasoningEffort,
 			ReasoningEffortSet:      run.reasoningEffortSet,
@@ -185,6 +187,7 @@ func restoreWebRun(saved *webRunContinuation, cancel context.CancelFunc) *respon
 	run.requestFingerprint = saved.View.RequestFingerprint
 	run.anchorRowID = saved.View.AnchorRowID
 	run.anchorAvailable = saved.View.AnchorAvailable
+	run.startAnchorRowID = saved.View.StartAnchorRowID
 	run.model = saved.View.Model
 	run.reasoningEffort = saved.View.ReasoningEffort
 	run.reasoningEffortSet = saved.View.ReasoningEffortSet
