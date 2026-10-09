@@ -408,7 +408,9 @@ describe('render isolation', () => {
     await act(() => publish({ ...snapshot, durationMs: 2_000 }));
     expect(screen.getByText('Recording 0:02')).toBeInTheDocument();
     expect(
-      within(screen.getByRole('status')).getByRole('button', { name: 'Stop' }),
+      within(screen.getByRole('group', { name: 'Voice dictation' })).getByRole('button', {
+        name: 'Stop',
+      }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(counts.count('VoiceStatus')).toBeGreaterThan(0);

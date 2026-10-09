@@ -887,7 +887,10 @@ describe('Preact-owned chat surfaces', () => {
         expect(
           screen.queryByRole('button', { name: /^Steer (all )?now$/ }),
         ).not.toBeInTheDocument();
-        expect(screen.queryByRole('status')).not.toBeInTheDocument();
+        // The composer keeps an empty voice announcer mounted; no status may carry text.
+        expect(
+          screen.queryAllByRole('status').filter((status) => status.textContent?.trim()),
+        ).toHaveLength(0);
       }
       unmount();
       store.dispose();

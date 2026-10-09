@@ -63,6 +63,60 @@ type VoiceControls = Pick<
   'phase' | 'generation' | 'owner' | 'transcript' | 'capability'
 >;
 
+const VOICE_BUSY_PHASES: ReadonlyArray<VoiceSnapshot['phase']> = [
+  'requesting-permission',
+  'recording',
+  'preparing',
+  'transcribing',
+];
+
+// `label` is the phase announcement without ticking numbers; `copy` is the
+// visible text, which adds the timer or upload percentage.
+function voiceStatusText(state: VoiceSnapshot): { label: string; copy: string } {
+  switch (state.phase) {
+    case 'requesting-permission':
+      return { label: 'Requesting microphone access…', copy: 'Requesting microphone access…' };
+    case 'recording':
+      return { label: 'Recording', copy: `Recording ${voiceTime(state.durationMs)}` };
+    case 'preparing':
+      return { label: 'Preparing recording…', copy: 'Preparing recording…' };
+    case 'transcribing':
+      if (state.stage === 'uploading') {
+        const percent = state.total
+          ? ` ${Math.min(100, Math.round(((state.loaded || 0) / state.total) * 100))}%`
+          : '…';
+        return { label: 'Uploading', copy: `Uploading${percent}` };
+      }
+      if (state.stage === 'stalled') return { label: 'Upload stalled', copy: 'Upload stalled' };
+      return { label: 'Transcribing…', copy: `Transcribing… ${voiceTime(state.elapsedMs)}` };
+    case 'complete':
+      return { label: 'Transcription inserted.', copy: 'Transcription inserted.' };
+    case 'cancelled':
+      return { label: 'Voice recording cancelled.', copy: 'Voice recording cancelled.' };
+    case 'failed': {
+      const message = state.error || 'Voice transcription failed.';
+      return { label: message, copy: message };
+    }
+    default:
+      return { label: '', copy: '' };
+  }
+}
+
+function VoiceStatusIndicator({ state }: { state: VoiceSnapshot }) {
+  const stalled = state.phase === 'transcribing' && state.stage === 'stalled';
+  let indicator = <span class="voice-status-spinner" />;
+  if (state.phase === 'recording') indicator = <span class="voice-status-dot" />;
+  else if (state.phase === 'failed' || stalled)
+    indicator = <span class="voice-status-mark">!</span>;
+  else if (state.phase === 'complete') indicator = <span class="voice-status-mark">✓</span>;
+  else if (state.phase === 'cancelled') indicator = <span class="voice-status-mark">–</span>;
+  return (
+    <span class="voice-status-indicator" aria-hidden="true">
+      {indicator}
+    </span>
+  );
+}
+
 function VoiceStatus({
   snapshot,
   voice,
@@ -70,57 +124,84 @@ function VoiceStatus({
   snapshot: ReadonlySignal<VoiceSnapshot>;
   voice: VoiceOperation;
 }) {
-  const voiceState = snapshot.value;
-  const voiceBusy = ['requesting-permission', 'recording', 'preparing', 'transcribing'].includes(
-    voiceState.phase,
-  );
-  if (voiceState.phase === 'idle') return null;
+  const state = snapshot.value;
+  const busy = VOICE_BUSY_PHASES.includes(state.phase);
+  const failed = state.phase === 'failed';
+  const { label, copy } = voiceStatusText(state);
+
+  // The announcer stays mounted (even while idle) and only changes on phase or
+  // stage changes, so screen readers hear neither timer ticks nor upload
+  // percentages, and the final message survives the strip's dismissal.
+  // Failures are announced through a separate alert that mounts with them.
+  const [announcement, setAnnouncement] = useState('');
+  useEffect(() => {
+    if (label && !failed) setAnnouncement(label);
+  }, [label, failed]);
+
   return (
-    <div
-      id="voiceStatus"
-      class={`voice-status voice-status-${voiceState.phase}`}
-      aria-live="polite"
-      role={voiceState.phase === 'failed' ? 'alert' : 'status'}
-    >
-      <span
-        class={voiceState.phase === 'recording' ? 'voice-status-dot' : 'voice-status-spinner'}
-        aria-hidden="true"
-      />
-      <span class="voice-status-copy">
-        {voiceState.phase === 'requesting-permission' && 'Requesting microphone access…'}
-        {voiceState.phase === 'recording' && `Recording ${voiceTime(voiceState.durationMs)}`}
-        {voiceState.phase === 'preparing' && 'Preparing recording…'}
-        {voiceState.phase === 'transcribing' &&
-          (voiceState.stage === 'uploading'
-            ? `Uploading${voiceState.total ? ` ${Math.min(100, Math.round(((voiceState.loaded || 0) / voiceState.total) * 100))}%` : '…'}`
-            : voiceState.stage === 'stalled'
-              ? 'Upload stalled'
-              : `Transcribing… ${voiceTime(voiceState.elapsedMs)}`)}
-        {voiceState.phase === 'complete' && 'Transcription inserted.'}
-        {voiceState.phase === 'cancelled' && 'Voice recording cancelled.'}
-        {voiceState.phase === 'failed' && (voiceState.error || 'Voice transcription failed.')}
+    <>
+      <span class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
       </span>
-      {voiceState.phase === 'recording' && (
-        <button type="button" class="btn voice-status-action" onClick={() => voice.stop()}>
-          Stop
-        </button>
+      {failed && (
+        <span class="visually-hidden" role="alert">
+          {label}
+        </span>
       )}
-      {voiceBusy && (
-        <button type="button" class="btn voice-status-cancel" onClick={() => voice.cancel()}>
-          Cancel
-        </button>
+      {state.phase !== 'idle' && (
+        <div
+          id="voiceStatus"
+          class={`voice-status voice-status-${state.phase}`}
+          role="group"
+          aria-label="Voice dictation"
+        >
+          <div class="voice-status-summary">
+            <VoiceStatusIndicator state={state} />
+            <span class="voice-status-copy">{copy}</span>
+          </div>
+          {(busy || failed) && (
+            <div class="voice-status-actions">
+              {state.phase === 'recording' && (
+                <button
+                  type="button"
+                  class="btn primary voice-status-action"
+                  onClick={() => voice.stop()}
+                >
+                  Stop
+                </button>
+              )}
+              {failed && state.retryable && (
+                <button
+                  type="button"
+                  class="btn primary voice-status-action"
+                  onClick={() => voice.retry()}
+                >
+                  Retry
+                </button>
+              )}
+              {busy && (
+                <button
+                  type="button"
+                  class="btn voice-status-cancel"
+                  onClick={() => voice.cancel()}
+                >
+                  Cancel
+                </button>
+              )}
+              {failed && (
+                <button
+                  type="button"
+                  class="btn voice-status-cancel"
+                  onClick={() => voice.discard()}
+                >
+                  Discard
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       )}
-      {voiceState.phase === 'failed' && voiceState.retryable && (
-        <button type="button" class="btn voice-status-action" onClick={() => voice.retry()}>
-          Retry
-        </button>
-      )}
-      {voiceState.phase === 'failed' && (
-        <button type="button" class="btn voice-status-cancel" onClick={() => voice.discard()}>
-          Discard
-        </button>
-      )}
-    </div>
+    </>
   );
 }
 

@@ -19,80 +19,122 @@
 .voice-status {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
   flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  min-height: 50px;
   margin: 0 0.3rem 0.45rem;
-  padding: 0.65rem 0.85rem;
-  border-radius: 14px;
+  padding: 6px 8px 6px 12px;
   border: 1px solid var(--border);
+  border-radius: 14px;
   background: var(--surface);
   color: var(--text);
-  min-height: 44px;
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
 }
 
 .voice-status.hidden {
   display: none;
 }
 
-.voice-status-copy {
+.voice-status-summary {
+  display: flex;
+  align-items: flex-start;
+  flex: 1 1 7rem;
+  gap: 0.5rem;
   min-width: 0;
-  line-height: 1.35;
-  font-size: 0.92rem;
 }
 
-.voice-status strong {
+/* One copy line tall, so the indicator stays level with the first line when
+   a long error wraps. */
+.voice-status-indicator {
+  display: grid;
+  place-items: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: calc(0.9rem * 1.4);
+}
+
+.voice-status-copy {
+  min-width: 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .voice-status-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   background: var(--danger);
-  flex-shrink: 0;
-  box-shadow: 0 0 0 0 rgb(248 113 113 / 50%);
-  animation: voice-pulse 1.35s infinite;
 }
 
 .voice-status-spinner {
-  width: 15px;
-  height: 15px;
-  border-radius: 999px;
+  width: 14px;
+  height: 14px;
   border: 2px solid var(--border);
   border-top-color: var(--text);
+  border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
 }
 
-.voice-status-cancel {
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  border-radius: 999px;
-  padding: 0.42rem 0.7rem;
-  font-size: 0.82rem;
+.voice-status-mark {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.voice-status-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0.375rem;
+  margin-inline-start: auto;
+}
+
+/* Scoped so these win over the generic .btn rules loaded later (modals.css). */
+.voice-status .voice-status-actions .btn {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 36px;
+  padding: 0.35rem 0.8rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
   font-weight: 600;
-  cursor: pointer;
-  flex-shrink: 0;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.voice-status-cancel:hover {
-  background: var(--surface-3);
+.voice-status .voice-status-actions .btn.voice-status-cancel {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
 }
 
-.voice-status-action {
-  flex-shrink: 0;
+.voice-status .voice-status-actions .btn.voice-status-cancel:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.voice-status .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .voice-status-failed {
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
 }
 
-.voice-status-complete {
-  border-color: color-mix(in srgb, var(--success, #22c55e) 55%, var(--border));
+.voice-status-failed .voice-status-mark {
+  color: var(--danger);
+}
+
+.voice-status-complete .voice-status-mark {
+  color: var(--success, #22c55e);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-status-spinner {
+    animation: none;
+  }
 }
 
 .live-status {
@@ -571,7 +613,7 @@
   color: var(--danger);
 }
 
-.voice-btn.busy {
+.voice-btn.busy:not(.recording) {
   color: var(--text);
 }
 
@@ -715,10 +757,19 @@
   }
 
   .voice-status {
+    min-height: 58px;
     margin: 0 0.15rem 0.4rem;
-    padding: 0.65rem 0.75rem;
+    padding: 6px 6px 6px 10px;
     border-radius: 16px;
-    gap: 0.6rem;
+  }
+
+  .voice-status .voice-status-actions .btn {
+    min-height: 44px;
+  }
+
+  /* Long errors take the full row; Retry/Discard drop below, right-aligned. */
+  .voice-status-failed .voice-status-summary {
+    flex-basis: 100%;
   }
 
   .live-status {
@@ -739,17 +790,6 @@
   .live-status-stop {
     min-height: 44px;
     margin-left: auto;
-  }
-
-  .voice-status-copy {
-    flex: 1 1 10rem;
-    font-size: 0.89rem;
-  }
-
-  .voice-status-cancel,
-  .voice-status-action {
-    min-height: 44px;
-    padding: 0.48rem 0.72rem;
   }
 
   .composer-box {
