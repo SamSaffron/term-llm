@@ -50,4 +50,6 @@ test('records, transcribes, and leaves voice text in the draft', async ({ page }
   await page.locator('#voiceStatus').getByRole('button', { name: 'Stop', exact: true }).click();
   await expect(page.locator('#voiceStatus')).toContainText('Transcription inserted');
   await expect(page.locator('#promptInput')).toHaveValue('webkit voice');
+  await expect(page.locator('#voiceStatus')).toBeHidden();
+  await expect(voiceButton).toBeEnabled();
 });

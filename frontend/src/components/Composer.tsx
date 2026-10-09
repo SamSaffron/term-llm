@@ -293,14 +293,18 @@ function ConversationComposer() {
         textarea.current?.focus();
         textarea.current?.setSelectionRange(inserted.caret, inserted.caret);
       });
-      const timer = window.setTimeout(() => voice.settle(), 1_200);
-      return () => clearTimeout(timer);
-    }
-    if (voiceState.phase === 'cancelled') {
-      const timer = window.setTimeout(() => voice.settle(), 800);
-      return () => clearTimeout(timer);
     }
   }, [voice, voiceState, store, cursor]);
+  // Kept apart from the insertion effect: inserting moves the caret, which
+  // re-runs that effect and would clear this timer before it fires.
+  useEffect(() => {
+    if (voiceState.phase !== 'complete' && voiceState.phase !== 'cancelled') return;
+    const timer = window.setTimeout(
+      () => voice.settle(),
+      voiceState.phase === 'complete' ? 1_200 : 800,
+    );
+    return () => clearTimeout(timer);
+  }, [voice, voiceState.phase, voiceState.generation]);
   const mention = activeMentionAtCursor(store.prompt.value, cursor);
 
   // Mention results are revalidated in place: keep showing the previous
