@@ -29,10 +29,18 @@ func transcribeAndTruncate(ctx context.Context, filePath string, opts Transcribe
 	return TruncateTranscriptIfImplausible(ctx, filePath, transcript), nil
 }
 
+func transcribeChatGPTAndTruncate(ctx context.Context, filePath, language string) (string, error) {
+	transcript, err := TranscribeChatGPT(ctx, filePath, language)
+	if err != nil {
+		return "", err
+	}
+	return TruncateTranscriptIfImplausible(ctx, filePath, transcript), nil
+}
+
 // TranscribeWithConfig transcribes an audio file using the provider configured in cfg.
 // providerOverride, if non-empty, overrides cfg.Transcription.Provider.
 //
-// Supported provider names: "openai" (default), "mistral" (Voxtral), "venice", "elevenlabs", "local" (whisper.cpp server),
+// Supported provider names: "openai" (default), "chatgpt" (ChatGPT OAuth), "mistral" (Voxtral), "venice", "elevenlabs", "local" (whisper.cpp server),
 // "whisper-cli" (whisper.cpp CLI binary). The whisper-cli case is delegated back to cmd via
 // the transcribeWhisperCLI function — callers that don't support it (e.g. Telegram) will get
 // an unsupported-provider error, which is intentional.
@@ -188,6 +196,11 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			Timestamps: cfg.Transcription.Timestamps,
 		})
 
+	case "chatgpt":
+		// ChatGPT OAuth session; the backend chooses the model, so
+		// transcription.model and timestamps are not applicable.
+		return transcribeChatGPTAndTruncate(ctx, filePath, language)
+
 	case "openai":
 		// Named provider entry takes precedence over env var
 		openAIProvider, err := getProviderConfig(string(config.ProviderTypeOpenAI))
@@ -246,6 +259,6 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 				Language: language,
 			})
 		}
-		return "", fmt.Errorf("transcription provider %q not found in providers config (supported builtins: openai, mistral, venice, elevenlabs, local, whisper-cli)", providerName)
+		return "", fmt.Errorf("transcription provider %q not found in providers config (supported builtins: openai, chatgpt, mistral, venice, elevenlabs, local, whisper-cli)", providerName)
 	}
 }

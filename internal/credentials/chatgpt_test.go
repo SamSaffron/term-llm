@@ -289,6 +289,49 @@ func TestRefreshChatGPTCredentialsUsesDiskGenerationAsCASBaseline(t *testing.T) 
 	}
 }
 
+func TestRefreshRejectedChatGPTCredentials(t *testing.T) {
+	unexpired := time.Now().Add(time.Hour).Unix()
+	tests := []struct {
+		name          string
+		diskAccess    string
+		wantExchanges int
+		wantAccess    string
+	}{
+		{name: "stored token is the rejected one", diskAccess: "rejected", wantExchanges: 1, wantAccess: "fresh"},
+		{name: "another caller already rotated", diskAccess: "rotated-elsewhere", wantExchanges: 0, wantAccess: "rotated-elsewhere"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			if err := SaveChatGPTCredentials(&ChatGPTCredentials{AccessToken: tt.diskAccess, RefreshToken: "refresh", ExpiresAt: unexpired, AccountID: "account"}); err != nil {
+				t.Fatal(err)
+			}
+			oldRefresh := refreshChatGPTToken
+			t.Cleanup(func() { refreshChatGPTToken = oldRefresh })
+			exchanges := 0
+			refreshChatGPTToken = func(string) (*oauth.ChatGPTTokenResponse, error) {
+				exchanges++
+				return &oauth.ChatGPTTokenResponse{AccessToken: "fresh", RefreshToken: "new-refresh", ExpiresIn: 3600}, nil
+			}
+
+			caller := &ChatGPTCredentials{AccessToken: "rejected", RefreshToken: "refresh", ExpiresAt: unexpired, AccountID: "account"}
+			if err := RefreshRejectedChatGPTCredentials(caller, "rejected"); err != nil {
+				t.Fatalf("RefreshRejectedChatGPTCredentials: %v", err)
+			}
+			if exchanges != tt.wantExchanges || caller.AccessToken != tt.wantAccess {
+				t.Fatalf("exchanges=%d access=%q, want %d and %q", exchanges, caller.AccessToken, tt.wantExchanges, tt.wantAccess)
+			}
+			stored, err := GetChatGPTCredentials()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.AccessToken != tt.wantAccess {
+				t.Fatalf("stored access = %q, want %q", stored.AccessToken, tt.wantAccess)
+			}
+		})
+	}
+}
+
 func TestConcurrentChatGPTRefreshCoalescesExchanges(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	initial := &ChatGPTCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "account"}

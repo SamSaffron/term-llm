@@ -145,7 +145,23 @@ func removeChatGPTCredentials(credPath string) error {
 // processes. Remote OAuth I/O stays outside the short credential mutation lock,
 // so login and logout remain responsive. The generation-aware commit below
 // prevents a stale refresh from overwriting those concurrent mutations.
-func RefreshChatGPTCredentials(creds *ChatGPTCredentials) (err error) {
+func RefreshChatGPTCredentials(creds *ChatGPTCredentials) error {
+	return refreshChatGPTCredentials(creds, "")
+}
+
+// RefreshRejectedChatGPTCredentials refreshes after the server rejected
+// rejectedAccessToken (HTTP 401). Unlike RefreshChatGPTCredentials it exchanges
+// the refresh token even before nominal expiry while the stored access token
+// is still the rejected one. A different stored token, written by another
+// caller, is adopted without an exchange.
+func RefreshRejectedChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccessToken string) error {
+	return refreshChatGPTCredentials(creds, rejectedAccessToken)
+}
+
+func refreshChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccessToken string) (err error) {
+	needsRefresh := func(c *ChatGPTCredentials) bool {
+		return c.IsExpired() || (rejectedAccessToken != "" && c.AccessToken == rejectedAccessToken)
+	}
 	if creds == nil {
 		return fmt.Errorf("missing ChatGPT credentials")
 	}
@@ -181,7 +197,7 @@ func RefreshChatGPTCredentials(creds *ChatGPTCredentials) (err error) {
 			// The CAS baseline must be the generation actually present on disk,
 			// not a caller's potentially stale or speculative in-memory copy.
 			base = *stored
-			if !base.IsExpired() {
+			if !needsRefresh(&base) {
 				*creds = base
 			}
 		}
@@ -189,7 +205,7 @@ func RefreshChatGPTCredentials(creds *ChatGPTCredentials) (err error) {
 	}); err != nil {
 		return err
 	}
-	if !base.IsExpired() {
+	if !needsRefresh(&base) {
 		*creds = base
 		return nil
 	}
@@ -205,7 +221,7 @@ func RefreshChatGPTCredentials(creds *ChatGPTCredentials) (err error) {
 		}
 		if readErr == nil && !sameChatGPTCredentialGeneration(stored, &base) {
 			*creds = *stored
-			if !stored.IsExpired() {
+			if !needsRefresh(stored) {
 				return nil
 			}
 			// If the credential still names the token generation we exchanged,

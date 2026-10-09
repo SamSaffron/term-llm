@@ -125,8 +125,8 @@ func init() {
 	transcribeCmd.Flags().StringVar(&transcribeModel, "model", "", "Transcription model override")
 	transcribeCmd.Flags().BoolVar(&transcribeTimestamps, "timestamps", false, "Request timestamp metadata where supported (ElevenLabs emits JSON with word timestamps)")
 	transcribeCmd.Flags().BoolVar(&transcribePorcelain, "porcelain", false, "Output only the transcript text")
-	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "", `Transcription provider override: "openai", "mistral" (Voxtral), "venice", "elevenlabs", "local" (whisper.cpp server), "whisper-cli". Defaults to transcription.provider in config, or "openai".`)
-	_ = transcribeCmd.RegisterFlagCompletionFunc("provider", staticCompletion("openai", "mistral", "venice", "elevenlabs", "local", "whisper-cli"))
+	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "", `Transcription provider override: "openai", "chatgpt" (ChatGPT login, experimental), "mistral" (Voxtral), "venice", "elevenlabs", "local" (whisper.cpp server), "whisper-cli". Defaults to transcription.provider in config, or "openai".`)
+	_ = transcribeCmd.RegisterFlagCompletionFunc("provider", staticCompletion("openai", "chatgpt", "mistral", "venice", "elevenlabs", "local", "whisper-cli"))
 	_ = transcribeCmd.RegisterFlagCompletionFunc("model", transcribeModelCompletion)
 
 	rootCmd.AddCommand(transcribeCmd)
@@ -140,6 +140,8 @@ func transcribeModelCompletion(cmd *cobra.Command, _ []string, _ string) ([]stri
 		return []string{"scribe_v2", "scribe_v1"}, cobra.ShellCompDirectiveNoFileComp
 	case "mistral":
 		return []string{"voxtral-mini-latest", "voxtral-small-latest"}, cobra.ShellCompDirectiveNoFileComp
+	case "chatgpt":
+		return nil, cobra.ShellCompDirectiveNoFileComp
 	default:
 		return []string{"whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"}, cobra.ShellCompDirectiveNoFileComp
 	}

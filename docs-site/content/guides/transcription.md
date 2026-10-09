@@ -1,7 +1,7 @@
 ---
 title: "Transcription"
 weight: 8
-description: "Transcribe audio files to text with OpenAI, Mistral Voxtral, Venice, ElevenLabs, or a local whisper.cpp HTTP server."
+description: "Transcribe audio files to text with OpenAI, your ChatGPT login, Mistral Voxtral, Venice, ElevenLabs, or a local whisper.cpp HTTP server."
 kicker: "Audio"
 featured: true
 next:
@@ -29,6 +29,7 @@ Supported input extensions include:
 ```bash
 term-llm transcribe interview.mp3 --language en
 term-llm transcribe note.m4a --provider openai
+term-llm transcribe note.m4a --provider chatgpt
 term-llm transcribe memo.wav --provider mistral
 term-llm transcribe hello.mp3 --provider venice --model nvidia/parakeet-tdt-0.6b-v3
 term-llm transcribe hello.mp3 --provider elevenlabs --model scribe_v2
@@ -48,12 +49,38 @@ Key options:
 term-llm supports several transcription backends:
 
 - `openai`
+- `chatgpt` to use your ChatGPT subscription login instead of an API key (experimental)
 - `mistral` (Voxtral)
 - `venice`
 - `elevenlabs`
 - `local` for a local Whisper-compatible server
 
 If you omit `--provider`, term-llm uses the configured transcription provider or falls back to OpenAI.
+
+### ChatGPT login (experimental)
+
+The `chatgpt` provider uses the same ChatGPT OAuth session as the `chatgpt` chat provider, so no OpenAI API key is needed. Sign in once, then transcribe:
+
+```bash
+term-llm auth login chatgpt
+term-llm transcribe note.m4a --provider chatgpt
+```
+
+To make it the default for `transcribe`, the web UI microphone, and Telegram voice notes:
+
+```yaml
+transcription:
+  provider: chatgpt
+```
+
+term-llm uploads the audio to `https://chatgpt.com/backend-api/transcribe`, the endpoint Codex dictation uses. Keep in mind:
+
+- The endpoint is undocumented and may change or disappear without notice.
+- ChatGPT picks the model. `--model` and `transcription.model` are ignored.
+- `--timestamps` is not supported. The response contains plain text only.
+- Accepted extensions are `.flac`, `.m4a`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.oga`, `.ogg`, `.opus`, `.wav`, and `.webm`. Files over 25 MB are rejected before upload.
+- Some networks get a Cloudflare challenge (HTTP 403) on this endpoint. term-llm reports this as an error and does not retry; if it happens, use another provider.
+- Expired sessions are refreshed automatically. If ChatGPT rejects the session, term-llm refreshes it once and retries. If the refresh token is no longer valid, term-llm removes the stored login; run `term-llm auth login chatgpt` again.
 
 ### Venice models
 
