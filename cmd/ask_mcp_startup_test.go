@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,8 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	"golang.org/x/oauth2"
 )
 
 type stuckMCPStartup struct{}
@@ -115,5 +119,137 @@ func TestAskMCPStartup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCheckMCPServerFailures(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "ready", Version: "1"}, nil)
+	handler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return server }, &sdkmcp.StreamableHTTPOptions{Stateless: true})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth" || r.URL.Path == "/other-auth" {
+			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+	writeServeMCPConfig(t, map[string]mcp.ServerConfig{})
+	manager := mcp.NewManagerWithConfig(&mcp.Config{Servers: map[string]mcp.ServerConfig{
+		"ready":      {URL: httpServer.URL + "/ready"},
+		"failed":     {Command: filepath.Join(t.TempDir(), "missing-command")},
+		"auth":       {URL: httpServer.URL + "/auth"},
+		"other-auth": {URL: httpServer.URL + "/other-auth"},
+	}})
+	defer manager.StopAll()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for _, name := range manager.AvailableServers() {
+		if err := manager.Enable(ctx, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := waitForMCPStartup(ctx, manager, manager.AvailableServers(), io.Discard, false, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		servers []string
+		want    []string
+	}{
+		{name: "ready", servers: []string{"ready"}},
+		{name: "failed", servers: []string{"failed"}, want: []string{"MCP servers failed to start: failed ("}},
+		{name: "auth required", servers: []string{"auth"}, want: []string{"MCP servers need sign-in: auth", "term-llm mcp login auth"}},
+		{name: "multiple auth required", servers: []string{"auth", "other-auth"}, want: []string{"MCP servers need sign-in: auth, other-auth", "term-llm mcp login auth", "term-llm mcp login other-auth"}},
+		{name: "ready and auth", servers: []string{"ready", "auth"}, want: []string{"MCP servers need sign-in: auth", "term-llm mcp login auth"}},
+		{name: "mixed", servers: []string{"ready", "failed", "auth"}, want: []string{"MCP servers failed to start: failed (", "MCP servers need sign-in: auth", "term-llm mcp login auth"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var feedback bytes.Buffer
+			err := checkMCPServerFailures(manager, tc.servers, &feedback, true)
+			if len(tc.want) == 0 {
+				if err != nil || feedback.Len() != 0 {
+					t.Fatalf("ready check: err=%v feedback=%q", err, feedback.String())
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected startup error")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, missing %q", err.Error(), want)
+				}
+			}
+			if feedback.String() != "\n" {
+				t.Errorf("animated error feedback = %q", feedback.String())
+			}
+		})
+	}
+}
+
+func TestEnableMCPServersWithFeedbackRequiresSignIn(t *testing.T) {
+	protected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer protected.Close()
+	for _, selection := range []string{"protected", "greeter,protected"} {
+		t.Run(selection, func(t *testing.T) {
+			writeServeMCPConfig(t, map[string]mcp.ServerConfig{
+				"protected": {URL: protected.URL},
+				"greeter":   {Command: os.Args[0], Env: map[string]string{runServeMCPHandlerTestServerEnv: "1"}},
+			})
+			var feedback bytes.Buffer
+			manager, err := enableMCPServersWithFeedback(t.Context(), selection, llm.NewEngine(nil, llm.NewToolRegistry()), &feedback, nil)
+			if manager != nil {
+				defer manager.StopAll()
+				t.Error("startup with missing authorization returned a manager")
+			}
+			if err == nil || !strings.Contains(err.Error(), "MCP servers need sign-in: protected") || !strings.Contains(err.Error(), "term-llm mcp login protected") {
+				t.Fatalf("startup error = %v", err)
+			}
+			if strings.Contains(feedback.String(), "✓ MCP ready") {
+				t.Fatalf("misleading ready feedback: %q", feedback.String())
+			}
+		})
+	}
+}
+
+func TestCheckMCPServerFailuresInsufficientScope(t *testing.T) {
+	if !runServeMCPOAuthTestIsolated(t) {
+		return
+	}
+	path, err := mcpoauth.DefaultStorePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	_, err = mcpoauth.NewFileStore(path).Update(server.URL, func(*mcpoauth.Session) (*mcpoauth.Session, error) {
+		return &mcpoauth.Session{Endpoint: server.URL, Config: mcpoauth.OAuth2Config{ClientID: "client"}, Token: &oauth2.Token{AccessToken: "valid", Expiry: time.Now().Add(time.Hour)}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := mcp.NewManagerWithConfig(&mcp.Config{Servers: map[string]mcp.ServerConfig{"protected": {URL: server.URL}}})
+	defer manager.StopAll()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := manager.Enable(ctx, "protected"); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForMCPStartup(ctx, manager, []string{"protected"}, io.Discard, false, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if manager.AuthStatuses()["protected"].State != mcpoauth.AuthSignedIn {
+		t.Fatal("scope challenge invalidated stored grant")
+	}
+	err = checkMCPServerFailures(manager, []string{"protected"}, io.Discard, false)
+	if err == nil || !strings.Contains(err.Error(), "term-llm mcp login --force protected") {
+		t.Fatalf("scope step-up hint = %v", err)
 	}
 }

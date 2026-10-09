@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -2401,11 +2402,17 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 	tools := mcpManager.AllTools()
 
 	// Show result
+	var readyServers []string
+	for _, name := range serverNames {
+		if status, _ := mcpManager.ServerStatus(name); status == mcp.StatusReady {
+			readyServers = append(readyServers, name)
+		}
+	}
 	if len(tools) > 0 {
 		if animate {
 			fmt.Fprint(errWriter, "\r")
 		}
-		fmt.Fprintf(errWriter, "✓ MCP ready: %d tools from %s\n\n", len(tools), strings.Join(serverNames, ", "))
+		fmt.Fprintf(errWriter, "✓ MCP ready: %d tools from %s\n\n", len(tools), strings.Join(readyServers, ", "))
 	} else {
 		if animate {
 			fmt.Fprintln(errWriter)
@@ -2445,8 +2452,13 @@ func startMCPServersWithFeedback(ctx context.Context, manager *mcp.Manager, serv
 
 func checkMCPServerFailures(manager *mcp.Manager, serverNames []string, feedback io.Writer, animate bool) error {
 	var failedServers []string
+	var authRequiredServers []string
 	for _, name := range serverNames {
 		status, err := manager.ServerStatus(name)
+		if status == mcp.StatusAuthRequired {
+			authRequiredServers = append(authRequiredServers, name)
+			continue
+		}
 		if status != mcp.StatusFailed {
 			continue
 		}
@@ -2459,13 +2471,29 @@ func checkMCPServerFailures(manager *mcp.Manager, serverNames []string, feedback
 		}
 		failedServers = append(failedServers, fmt.Sprintf("%s (%s)", name, errMsg))
 	}
-	if len(failedServers) == 0 {
+	var problems []string
+	if len(failedServers) > 0 {
+		problems = append(problems, "MCP servers failed to start: "+strings.Join(failedServers, "; "))
+	}
+	if len(authRequiredServers) > 0 {
+		var hints []string
+		authStatuses := manager.AuthStatuses()
+		for _, name := range authRequiredServers {
+			command := "term-llm mcp login "
+			if authStatuses[name].State == mcpoauth.AuthSignedIn {
+				command += "--force "
+			}
+			hints = append(hints, "`"+command+name+"`")
+		}
+		problems = append(problems, fmt.Sprintf("MCP servers need sign-in: %s (run %s)", strings.Join(authRequiredServers, ", "), strings.Join(hints, ", ")))
+	}
+	if len(problems) == 0 {
 		return nil
 	}
 	if animate {
 		fmt.Fprintln(feedback)
 	}
-	return fmt.Errorf("MCP servers failed to start: %s", strings.Join(failedServers, "; "))
+	return errors.New(strings.Join(problems, "; "))
 }
 
 // waitForMCPStartup waits for each requested server to leave the starting state.

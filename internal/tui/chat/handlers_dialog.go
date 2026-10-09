@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 )
 
 func (m *Model) handleDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -170,7 +171,8 @@ func (m *Model) handleMCPPickerDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 			name := selected.ID
 			status, _ := m.mcpManager.ServerStatus(name)
 			if status == mcp.StatusAuthRequired {
-				return m, m.startMCPOAuthCmd(name, false)
+				force := m.mcpManager.AuthStatuses()[name].State == mcpoauth.AuthSignedIn
+				return m, m.startMCPOAuthCmd(name, force)
 			}
 			if status == mcp.StatusReady || status == mcp.StatusStarting {
 				if err := m.mcpManager.Disable(name); err == nil {

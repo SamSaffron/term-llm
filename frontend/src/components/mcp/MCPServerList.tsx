@@ -153,19 +153,17 @@ function AuthActions({ server }: { server: MCPServer }) {
         Retry
       </button>
     );
-  if (!server.canSignIn || server.authState === 'signed_in') return null;
-  const label =
-    server.authState === 'needs_sign_in'
-      ? 'Sign in again'
-      : server.authState === 'retry'
-        ? 'Retry'
-        : 'Sign in';
+  const force =
+    server.authState === 'needs_sign_in' ||
+    (server.status === 'auth_required' && server.authState === 'signed_in');
+  if (!server.canSignIn || (server.authState === 'signed_in' && !force)) return null;
+  const label = force ? 'Sign in again' : server.authState === 'retry' ? 'Retry' : 'Sign in';
   return (
     <button
       class="mcp-inline-action attention"
       type="button"
       disabled={store.streaming.value}
-      onClick={() => void store.startMCPOAuth(server.name, server.authState === 'needs_sign_in')}
+      onClick={() => void store.startMCPOAuth(server.name, force)}
     >
       {label}
     </button>

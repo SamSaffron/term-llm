@@ -621,3 +621,29 @@ func TestOAuthOptionsDeferredSecret(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerConfigPreservesOAuthScopes(t *testing.T) {
+	cfg := &Config{Servers: map[string]ServerConfig{
+		"nil":       {URL: "https://example.test/nil", OAuth: &OAuthConfig{}},
+		"empty":     {URL: "https://example.test/empty", OAuth: &OAuthConfig{Scopes: []string{}}},
+		"populated": {URL: "https://example.test/populated", OAuth: &OAuthConfig{Scopes: []string{"read"}}},
+	}}
+	manager := NewManagerWithConfig(cfg)
+	cloned := manager.Config()
+	for name, original := range cfg.Servers {
+		if got := cloned.Servers[name].OAuth.Scopes; !reflect.DeepEqual(got, original.OAuth.Scopes) {
+			t.Errorf("Config()[%s] scopes = %#v, want %#v", name, got, original.OAuth.Scopes)
+		}
+		if cloned.Servers[name].OAuth == original.OAuth {
+			t.Errorf("Config()[%s] aliases OAuth config", name)
+		}
+	}
+	cloned.Servers["populated"].OAuth.Scopes[0] = "write"
+	if got := cfg.Servers["populated"].OAuth.Scopes[0]; got != "read" {
+		t.Fatalf("original scopes mutated to %q", got)
+	}
+	cloned.Servers["empty"].OAuth.Scopes = append(cloned.Servers["empty"].OAuth.Scopes, "write")
+	if len(cfg.Servers["empty"].OAuth.Scopes) != 0 {
+		t.Fatal("original empty scopes mutated")
+	}
+}

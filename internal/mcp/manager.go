@@ -134,7 +134,7 @@ func (m *Manager) Config() *Config {
 		serverCopy.Env = cloneStringMap(server.Env)
 		if server.OAuth != nil {
 			oauthCopy := *server.OAuth
-			oauthCopy.Scopes = append([]string(nil), server.OAuth.Scopes...)
+			oauthCopy.Scopes = cloneScopes(server.OAuth.Scopes)
 			serverCopy.OAuth = &oauthCopy
 		}
 		copy.Servers[name] = serverCopy
@@ -697,7 +697,7 @@ func oauthOptionsForServer(server ServerConfig) (mcpoauth.Options, error) {
 	options := mcpoauth.Options{}
 	if server.OAuth != nil {
 		options.ClientID = server.OAuth.ClientID
-		options.Scopes = append([]string(nil), server.OAuth.Scopes...)
+		options.Scopes = cloneScopes(server.OAuth.Scopes)
 		options.ScopesConfigured = server.OAuth.Scopes != nil
 		options.ClientIDMetadataURL = server.OAuth.ClientIDMetadataURL
 		if strings.TrimSpace(server.OAuth.ClientSecret) != "" {

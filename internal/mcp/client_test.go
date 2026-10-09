@@ -23,6 +23,7 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	"golang.org/x/oauth2"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -391,10 +392,9 @@ func TestCreateHTTPTransport_OAuthWiringAndAuthorizationHeaderPrecedence(t *test
 	}
 }
 
-func TestCreateHTTPTransport_OAuthClientOmitsCustomHeaders(t *testing.T) {
-	// The OAuth handler talks to authorization-server endpoints (metadata,
-	// registration, token). Custom per-server headers such as API keys must
-	// only reach the MCP endpoint, never OAuth discovery or registration.
+func TestCreateHTTPTransport_BackgroundOAuthDoesNotDiscover(t *testing.T) {
+	// A background challenge must not cause discovery or registration, even
+	// when the MCP endpoint is configured with custom headers such as API keys.
 	var server *httptest.Server
 	var leakedHeader atomic.Bool
 	var oauthRequests atomic.Int32
@@ -456,8 +456,8 @@ func TestCreateHTTPTransport_OAuthClientOmitsCustomHeaders(t *testing.T) {
 	if !errors.Is(err, mcpoauth.ErrAuthenticationRequired) {
 		t.Fatalf("background Authorize error = %v, want ErrAuthenticationRequired", err)
 	}
-	if oauthRequests.Load() == 0 {
-		t.Fatal("expected OAuth discovery requests to reach the fake authorization server")
+	if oauthRequests.Load() != 0 {
+		t.Fatal("background OAuth must not contact authorization-server endpoints")
 	}
 	if leakedHeader.Load() {
 		t.Fatal("custom MCP header leaked to authorization-server endpoints")
@@ -757,5 +757,246 @@ func TestFormatContent_JSONFailureHasVisibleFallback(t *testing.T) {
 	if !strings.Contains(output.Content, "unsupported MCP content *mcp.AudioContent") ||
 		!strings.Contains(output.Content, "JSON encoding failed") {
 		t.Fatalf("Content = %q, want visible JSON failure fallback", output.Content)
+	}
+}
+
+func TestBackgroundOAuthConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		token             *oauth2.Token
+		reject            bool
+		forbidden         bool
+		insufficientScope bool
+		reconnect         bool
+		wantStatus        ServerStatus
+		wantRefresh       int32
+	}{
+		{name: "no grant", wantStatus: StatusAuthRequired},
+		{name: "valid grant", token: &oauth2.Token{AccessToken: "valid", Expiry: time.Now().Add(time.Hour)}, wantStatus: StatusReady},
+		{name: "rejected grant", token: &oauth2.Token{AccessToken: "rejected", Expiry: time.Now().Add(time.Hour)}, reject: true, wantStatus: StatusAuthRequired},
+		{name: "expired grant refreshes", token: &oauth2.Token{AccessToken: "expired", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour)}, wantStatus: StatusReady, wantRefresh: 1},
+		{name: "forbidden", forbidden: true, wantStatus: StatusFailed},
+		{name: "insufficient scope", insufficientScope: true, wantStatus: StatusAuthRequired},
+		{name: "rejected refreshable grant", token: &oauth2.Token{AccessToken: "rejected", RefreshToken: "refresh", Expiry: time.Now().Add(time.Hour)}, reject: true, reconnect: true, wantStatus: StatusAuthRequired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var discovery, registration, refreshes atomic.Int32
+			var bearer, refreshedBearer atomic.Bool
+			server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "protected", Version: "1"}, nil)
+			sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "greet"}, func(context.Context, *sdkmcp.CallToolRequest, struct{}) (*sdkmcp.CallToolResult, any, error) {
+				return &sdkmcp.CallToolResult{}, nil, nil
+			})
+			handler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return server }, &sdkmcp.StreamableHTTPOptions{Stateless: true})
+			var httpServer *httptest.Server
+			mux := http.NewServeMux()
+			mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+				auth := r.Header.Get("Authorization")
+				if auth == "Bearer rotated" {
+					refreshedBearer.Store(true)
+				}
+				if !tc.reject && !tc.forbidden && !tc.insufficientScope && (auth == "Bearer valid" || auth == "Bearer rotated") {
+					bearer.Store(true)
+					handler.ServeHTTP(w, r)
+					return
+				}
+				w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, httpServer.URL+"/.well-known/oauth-protected-resource/mcp"))
+				if tc.insufficientScope {
+					w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
+					w.WriteHeader(http.StatusForbidden)
+				} else if tc.forbidden {
+					w.WriteHeader(http.StatusForbidden)
+				} else {
+					w.WriteHeader(http.StatusUnauthorized)
+				}
+			})
+			writeJSON := func(w http.ResponseWriter, value any) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(value)
+			}
+			mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, r *http.Request) {
+				discovery.Add(1)
+				writeJSON(w, map[string]any{"resource": httpServer.URL + "/mcp", "authorization_servers": []string{httpServer.URL}})
+			})
+			mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+				discovery.Add(1)
+				writeJSON(w, map[string]any{"issuer": httpServer.URL, "authorization_endpoint": httpServer.URL + "/authorize", "token_endpoint": httpServer.URL + "/token", "registration_endpoint": httpServer.URL + "/register", "response_types_supported": []string{"code"}, "code_challenge_methods_supported": []string{"S256"}})
+			})
+			mux.HandleFunc("/.well-known/", func(w http.ResponseWriter, r *http.Request) { discovery.Add(1); http.NotFound(w, r) })
+			mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+				registration.Add(1)
+				writeJSON(w, map[string]any{"client_id": "dynamic", "redirect_uris": []string{"http://127.0.0.1/callback"}, "token_endpoint_auth_method": "none", "grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"}})
+			})
+			mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+				refreshes.Add(1)
+				if err := r.ParseForm(); err != nil {
+					t.Error(err)
+				}
+				if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "refresh" {
+					t.Errorf("refresh form = %v", r.Form)
+				}
+				writeJSON(w, map[string]any{"access_token": "rotated", "refresh_token": "rotated-refresh", "token_type": "Bearer", "expires_in": 3600})
+			})
+			httpServer = httptest.NewServer(mux)
+			defer httpServer.Close()
+			endpoint := httpServer.URL + "/mcp"
+			store := mcpoauth.NewFileStore(filepath.Join(t.TempDir(), "oauth.json"))
+			if tc.token != nil {
+				_, err := store.Update(endpoint, func(*mcpoauth.Session) (*mcpoauth.Session, error) {
+					return &mcpoauth.Session{Endpoint: endpoint, Issuer: httpServer.URL, Config: mcpoauth.OAuth2Config{ClientID: "stored", Endpoint: oauth2.Endpoint{TokenURL: httpServer.URL + "/token", AuthURL: httpServer.URL + "/authorize", AuthStyle: oauth2.AuthStyleInParams}}, Token: tc.token}, nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			manager := NewManagerWithConfig(&Config{Servers: map[string]ServerConfig{"protected": {Type: "http", URL: endpoint}}})
+			manager.oauthCoordinator = mcpoauth.NewCoordinator(store)
+			defer manager.StopAll()
+			updates := make(chan StatusUpdate, 10)
+			manager.SetStatusChannel(updates)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if err := manager.Enable(ctx, "protected"); err != nil {
+				t.Fatal(err)
+			}
+			attempt := 0
+			for {
+				select {
+				case update := <-updates:
+					if update.Status == StatusStarting || update.Status == StatusStopped {
+						continue
+					}
+					if update.Status != tc.wantStatus {
+						t.Fatalf("status = %v (%v), want %v", update.Status, update.Error, tc.wantStatus)
+					}
+					if tc.wantStatus == StatusAuthRequired && !errors.Is(update.Error, mcpoauth.ErrAuthenticationRequired) {
+						t.Errorf("error = %v, want ErrAuthenticationRequired", update.Error)
+					}
+					if tc.forbidden && errors.Is(update.Error, mcpoauth.ErrAuthenticationRequired) {
+						t.Errorf("403 misclassified: %v", update.Error)
+					}
+					if got := discovery.Load(); got != 0 {
+						t.Errorf("metadata requests = %d, want 0", got)
+					}
+					if got := registration.Load(); got != 0 {
+						t.Errorf("registrations = %d, want 0", got)
+					}
+					wantRefresh := tc.wantRefresh + int32(attempt)
+					if got := refreshes.Load(); got != wantRefresh {
+						t.Errorf("refreshes = %d, want %d", got, wantRefresh)
+					}
+					if tc.wantStatus == StatusReady && !bearer.Load() {
+						t.Error("resource did not receive stored/refreshed bearer")
+					}
+					if wantRefresh > 0 {
+						if !refreshedBearer.Load() {
+							t.Error("refreshed bearer was not sent to the resource")
+						}
+						stored, err := store.Load(endpoint)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if stored.Token.AccessToken != "rotated" || stored.Token.RefreshToken != "rotated-refresh" {
+							t.Error("rotated grant not persisted")
+						}
+					}
+					if tc.reject {
+						wantState := mcpoauth.AuthRequired
+						if tc.token.RefreshToken != "" {
+							wantState = mcpoauth.AuthExpired
+						}
+						if got := manager.oauthCoordinator.Status(endpoint).State; got != wantState {
+							t.Errorf("rejected grant state = %s, want %s", got, wantState)
+						}
+					}
+					if tc.reconnect && attempt == 0 {
+						attempt++
+						if err := manager.Restart(ctx, "protected"); err != nil {
+							t.Fatal(err)
+						}
+						continue
+					}
+					return
+				case <-ctx.Done():
+					t.Fatal("startup did not settle")
+				}
+			}
+		})
+	}
+}
+
+func TestBackgroundInsufficientScopePreservesOtherToolCalls(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "step-up", Version: "1"}, nil)
+	for _, name := range []string{"restricted", "normal"} {
+		sdkmcp.AddTool(server, &sdkmcp.Tool{Name: name}, func(context.Context, *sdkmcp.CallToolRequest, struct{}) (*sdkmcp.CallToolResult, any, error) {
+			return &sdkmcp.CallToolResult{}, nil, nil
+		})
+	}
+	handler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return server }, &sdkmcp.StreamableHTTPOptions{Stateless: true})
+	var normalCalls atomic.Int32
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer valid" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodPost {
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			r.Body = io.NopCloser(strings.NewReader(string(data)))
+			var message struct {
+				Method string
+				Params struct{ Name string }
+			}
+			if err := json.Unmarshal(data, &message); err != nil {
+				t.Error(err)
+				return
+			}
+			if message.Method == "tools/call" && message.Params.Name == "restricted" {
+				w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="write"`)
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if message.Method == "tools/call" && message.Params.Name == "normal" {
+				normalCalls.Add(1)
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+	store := mcpoauth.NewFileStore(filepath.Join(t.TempDir(), "oauth.json"))
+	before, err := store.Update(httpServer.URL, func(*mcpoauth.Session) (*mcpoauth.Session, error) {
+		return &mcpoauth.Session{Endpoint: httpServer.URL, Config: mcpoauth.OAuth2Config{ClientID: "client"}, Token: &oauth2.Token{AccessToken: "valid", Expiry: time.Now().Add(time.Hour)}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient("step-up", ServerConfig{URL: httpServer.URL})
+	client.oauthCoordinator = mcpoauth.NewCoordinator(store)
+	defer client.Stop()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CallTool(ctx, "restricted", nil); !errors.Is(err, mcpoauth.ErrAuthenticationRequired) {
+		t.Fatalf("restricted tool error = %v", err)
+	}
+	if got := client.oauthCoordinator.Status(httpServer.URL).State; got != mcpoauth.AuthSignedIn {
+		t.Errorf("scope challenge changed auth state to %s", got)
+	}
+	after, err := store.Load(httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Version != before.Version || !after.Token.Expiry.Equal(before.Token.Expiry) {
+		t.Error("scope challenge changed stored grant")
+	}
+	if _, err := client.CallTool(ctx, "normal", nil); err != nil {
+		t.Fatalf("unrelated tool after scope challenge: %v", err)
+	}
+	if normalCalls.Load() != 1 {
+		t.Error("subsequent request did not send the valid stored bearer")
 	}
 }

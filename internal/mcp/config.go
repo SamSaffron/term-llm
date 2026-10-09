@@ -53,9 +53,18 @@ type OAuthConfig struct {
 	// and is resolved only when the server connects or starts an OAuth flow.
 	ClientSecret        string   `json:"client_secret,omitempty"`
 	ClientSecretEnv     string   `json:"client_secret_env,omitempty"`
-	Scopes              []string `json:"scopes,omitempty"`
+	Scopes              []string `json:"scopes,omitzero"`
 	ClientIDMetadataURL string   `json:"client_id_metadata_url,omitempty"`
 	Disabled            bool     `json:"disabled,omitempty"`
+}
+
+func cloneScopes(scopes []string) []string {
+	if scopes == nil {
+		return nil
+	}
+	cloned := make([]string, len(scopes))
+	copy(cloned, scopes)
+	return cloned
 }
 
 // SamplingConfig configures MCP sampling behavior for a server.

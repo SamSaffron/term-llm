@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -88,4 +89,72 @@ func stringsContainsTest(value, part string) bool {
 		}
 	}
 	return false
+}
+
+func TestOAuthScopesRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+	}{
+		{name: "nil"},
+		{name: "empty", scopes: []string{}},
+		{name: "populated", scopes: []string{"read", "write"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mcp.json")
+			cfg := &Config{Servers: map[string]ServerConfig{"remote": {URL: "https://example.test/mcp", OAuth: &OAuthConfig{Scopes: tc.scopes}}}}
+			if err := cfg.SaveToPath(path); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved struct {
+				Servers map[string]struct {
+					OAuth map[string]json.RawMessage `json:"oauth"`
+				} `json:"servers"`
+			}
+			if err := json.Unmarshal(data, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if _, present := saved.Servers["remote"].OAuth["scopes"]; present != (tc.scopes != nil) {
+				t.Fatalf("saved scopes present = %v, want %v", present, tc.scopes != nil)
+			}
+			loaded, err := LoadConfigFromPath(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := loaded.Servers["remote"].OAuth.Scopes; !reflect.DeepEqual(got, tc.scopes) {
+				t.Fatalf("round-trip scopes = %#v, want %#v", got, tc.scopes)
+			}
+			options, err := oauthOptionsForServer(loaded.Servers["remote"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if options.ScopesConfigured != (tc.scopes != nil) || !reflect.DeepEqual(options.Scopes, tc.scopes) {
+				t.Fatalf("OAuth options = %#v, want scopes %#v", options, tc.scopes)
+			}
+		})
+	}
+}
+
+func TestUpdateConfigPreservesEmptyOAuthScopes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(path, []byte(`{"servers":{"remote":{"url":"https://example.test/mcp","oauth":{"scopes":[]}}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateConfigAtPath(path, func(cfg *Config) error {
+		cfg.Servers["other"] = ServerConfig{Command: "example"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfigFromPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Servers["remote"].OAuth.Scopes; got == nil || len(got) != 0 {
+		t.Fatalf("scopes after unrelated update = %#v, want []", got)
+	}
 }

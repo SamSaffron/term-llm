@@ -98,12 +98,6 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 		}
 		startCtx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 		defer cancel()
-		selected := containsMCPServer(parseServerList(rt.mcpSetting), serverName)
-		if !selected && s.store != nil {
-			if session, getErr := s.store.Get(r.Context(), sessionID); getErr == nil && session != nil {
-				selected = containsMCPServer(parseServerList(session.MCP), serverName)
-			}
-		}
 		flow, err := rt.mcpManager.StartOAuth(startCtx, serverName, mcp.OAuthStartOptions{
 			RedirectURL: redirectURL, Force: req.Force, SkipReconnect: true,
 		})
@@ -111,7 +105,7 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 			writeOpenAIError(w, http.StatusBadGateway, "oauth_error", safeServeOAuthError(err))
 			return
 		}
-		go s.publishMCPOAuthCompletion(sessionID, serverName, flow.ID, rt.mcpManager, selected)
+		go s.publishMCPOAuthCompletion(sessionID, serverName, flow.ID, rt.mcpManager)
 		writeJSON(w, http.StatusAccepted, flow)
 	case "cancel":
 		var req serveMCPOAuthCancelRequest
@@ -140,13 +134,27 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (s *serveServer) publishMCPOAuthCompletion(sessionID, serverName, flowID string, manager *mcp.Manager, selected bool) {
+func (s *serveServer) publishMCPOAuthCompletion(sessionID, serverName, flowID string, manager *mcp.Manager) {
 	ctx, cancel := context.WithTimeout(context.Background(), 11*time.Minute)
 	defer cancel()
 	flow, err := mcpoauth.DefaultCoordinator().Wait(ctx, flowID)
 	if err == nil && flow != nil && flow.State == mcpoauth.FlowSucceeded {
-		if selected && manager != nil {
-			_ = manager.Restart(context.Background(), serverName)
+		if manager != nil && s.sessionMgr != nil {
+			if rt, ok := s.sessionMgr.Get(sessionID); ok {
+				rt.mu.Lock()
+				selected := containsMCPServer(parseServerList(rt.mcpSetting), serverName)
+				if !selected && s.store != nil {
+					if session, getErr := s.store.Get(ctx, sessionID); getErr == nil && session != nil {
+						selected = containsMCPServer(parseServerList(session.MCP), serverName)
+					}
+				}
+				if selected && rt.mcpManager == manager {
+					if err := manager.Restart(context.Background(), serverName); err == nil {
+						delete(rt.mcpAuthRequiredGrants, serverName)
+					}
+				}
+				rt.mu.Unlock()
+			}
 		}
 		s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "mcp_oauth"})
 	}

@@ -7803,75 +7803,78 @@ describe('Preact-owned chat surfaces', () => {
     expect(button).toHaveTextContent('MCP 1');
   });
 
-  it('separates MCP enablement from OAuth sign-in actions', async () => {
-    const store = createStore();
-    store.modal.value = 'mcp';
-    store.mcp.value = {
-      servers: [
-        {
-          name: 'protected',
-          configured: true,
-          enabled: true,
-          status: 'auth_required',
-          error: '',
-          refreshWarning: '',
-          tools: 0,
-          active: 0,
-          deferred: 0,
-          loadingMode: '',
-          authState: 'needs_sign_in',
-          authIssuer: 'https://auth.example',
-          authScopes: ['read'],
-          authExpiresAt: '',
-          canSignIn: true,
-          canSignOut: false,
-        },
-      ],
-      enabled: ['protected'],
-      loading: false,
-      pending: '',
-      error: '',
-      oauth: {},
-    };
-    store.startMCPOAuth = vi.fn(async () => undefined);
+  it.each(['needs_sign_in', 'signed_in'])(
+    'separates MCP enablement from OAuth sign-in actions for %s',
+    async (authState) => {
+      const store = createStore();
+      store.modal.value = 'mcp';
+      store.mcp.value = {
+        servers: [
+          {
+            name: 'protected',
+            configured: true,
+            enabled: true,
+            status: 'auth_required',
+            error: '',
+            refreshWarning: '',
+            tools: 0,
+            active: 0,
+            deferred: 0,
+            loadingMode: '',
+            authState,
+            authIssuer: 'https://auth.example',
+            authScopes: ['read'],
+            authExpiresAt: '',
+            canSignIn: true,
+            canSignOut: false,
+          },
+        ],
+        enabled: ['protected'],
+        loading: false,
+        pending: '',
+        error: '',
+        oauth: {},
+      };
+      store.startMCPOAuth = vi.fn(async () => undefined);
 
-    const { rerender } = render(
-      <StoreContext.Provider value={store}>
-        <Modals />
-      </StoreContext.Provider>,
-    );
-    expect(await screen.findByText('sign-in needed')).toBeVisible();
-    await userEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
-    expect(store.startMCPOAuth).toHaveBeenCalledWith('protected', true);
-    expect(screen.getByRole('checkbox', { name: 'Disable protected' })).toBeChecked();
+      const { rerender } = render(
+        <StoreContext.Provider value={store}>
+          <Modals />
+        </StoreContext.Provider>,
+      );
+      expect(await screen.findByText('sign-in needed')).toBeVisible();
+      await userEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+      expect(store.startMCPOAuth).toHaveBeenCalledWith('protected', true);
+      expect(screen.getByRole('checkbox', { name: 'Disable protected' })).toBeChecked();
 
-    store.mcp.value = {
-      ...store.mcp.value,
-      oauth: {
-        protected: {
-          flowId: 'flow-safe-id',
-          authorizationURL: 'https://auth.example/authorize',
-          state: 'pending',
-          error: '',
-          popupBlocked: true,
+      store.mcp.value = {
+        ...store.mcp.value,
+        oauth: {
+          protected: {
+            flowId: 'flow-safe-id',
+            authorizationURL: 'https://auth.example/authorize',
+            state: 'pending',
+            error: '',
+            popupBlocked: true,
+          },
         },
-      },
-    };
-    store.copyMCPOAuthLink = vi.fn(async () => undefined);
-    store.cancelMCPOAuth = vi.fn(async () => undefined);
-    rerender(
-      <StoreContext.Provider value={store}>
-        <Modals />
-      </StoreContext.Provider>,
-    );
-    await waitFor(() =>
-      expect(screen.getByText('popup blocked — copy the sign-in link')).toBeVisible(),
-    );
-    await userEvent.click(screen.getByRole('button', { name: 'Copy link' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(store.copyMCPOAuthLink).toHaveBeenCalledWith('protected');
-    expect(store.cancelMCPOAuth).toHaveBeenCalledWith('protected');
-  });
+      };
+      store.copyMCPOAuthLink = vi.fn(async () => undefined);
+      store.cancelMCPOAuth = vi.fn(async () => undefined);
+      rerender(
+        <StoreContext.Provider value={store}>
+          <Modals />
+        </StoreContext.Provider>,
+      );
+      await waitFor(() =>
+        expect(screen.getByText('popup blocked — copy the sign-in link')).toBeVisible(),
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(store.copyMCPOAuthLink).toHaveBeenCalledWith('protected');
+      expect(store.cancelMCPOAuth).toHaveBeenCalledWith('protected');
+    },
+  );
 
   it('removes an MCP server from the row menu and offers undo', async () => {
     const store = createStore();

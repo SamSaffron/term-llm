@@ -58,6 +58,7 @@ type serveRuntime struct {
 	spawnRunner            *SpawnAgentRunner // drained before provider cleanup and owned session-store closure
 	agentOwner             *agentHostOwner
 	mcpManager             *mcp.Manager
+	mcpAuthRequiredGrants  map[string]string // observed grant revisions; guarded by mu
 	toolDiscovery          config.ToolDiscoveryConfig
 	store                  session.Store
 	goalStore              session.Store

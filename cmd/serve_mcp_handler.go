@@ -284,7 +284,14 @@ func (rt *serveRuntime) registerMCPToolsForServersLocked(serverNames []string) {
 	if rt == nil || rt.engine == nil || rt.engine.Tools() == nil || rt.mcpManager == nil {
 		return
 	}
-	requested := stringSet(serverNames)
+	requested := make(map[string]bool, len(serverNames))
+	for _, name := range serverNames {
+		if status, _ := rt.mcpManager.ServerStatus(name); status == mcp.StatusReady {
+			requested[name] = true
+		} else {
+			rt.unregisterMCPServerToolsLocked(name)
+		}
+	}
 	snapshot := rt.mcpManager.CatalogueSnapshot()
 	if snapshot == nil {
 		return
@@ -313,8 +320,8 @@ func waitForMCPServersReady(ctx context.Context, manager *mcp.Manager, names []s
 		for _, name := range names {
 			status, err := manager.ServerStatus(name)
 			switch status {
-			case mcp.StatusReady:
-				// ready
+			case mcp.StatusReady, mcp.StatusAuthRequired:
+				// Settled: sign-in can finish later without discarding selection.
 			case mcp.StatusStarting:
 				starting = append(starting, name)
 			case mcp.StatusFailed:
@@ -358,6 +365,42 @@ func waitForMCPServersReady(ctx context.Context, manager *mcp.Manager, names []s
 			}
 			return fmt.Errorf("timed out waiting for MCP servers to start: %s", strings.Join(stillStarting, ", "))
 		case <-ticker.C:
+		}
+	}
+}
+
+func (rt *serveRuntime) startSelectedMCPServersLocked(ctx context.Context, requested []string) error {
+	authStatuses := rt.mcpManager.AuthStatuses()
+	for _, name := range requested {
+		status, _ := rt.mcpManager.ServerStatus(name)
+		var err error
+		if status == mcp.StatusAuthRequired {
+			if rt.mcpAuthGrantChangedLocked(name, authStatuses[name]) {
+				// A grant may have been stored by another surface or process.
+				// Enable is a no-op for auth_required, so explicitly reconnect.
+				err = rt.mcpManager.Restart(ctx, name)
+				if err == nil {
+					delete(rt.mcpAuthRequiredGrants, name)
+				}
+			}
+		} else if status != mcp.StatusReady && status != mcp.StatusStarting {
+			err = rt.mcpManager.Enable(ctx, name)
+		}
+		if err != nil {
+			return newServeMCPError(http.StatusInternalServerError, "server_error", fmt.Sprintf("failed to start MCP server %q: %v", name, err))
+		}
+	}
+	return nil
+}
+
+func (rt *serveRuntime) recordMCPAuthRequiredGrantsLocked(requested []string) {
+	// Remember the grant that actually failed startup, after any refresh.
+	authStatuses := rt.mcpManager.AuthStatuses()
+	for _, name := range requested {
+		if status, _ := rt.mcpManager.ServerStatus(name); status == mcp.StatusAuthRequired {
+			rt.mcpAuthGrantChangedLocked(name, authStatuses[name])
+		} else {
+			delete(rt.mcpAuthRequiredGrants, name)
 		}
 	}
 }
@@ -412,29 +455,37 @@ func (rt *serveRuntime) applyMCPSelectionLocked(ctx context.Context, requestedNa
 	sort.Strings(disableNames)
 	for _, name := range disableNames {
 		rt.unregisterMCPServerToolsLocked(name)
+		delete(rt.mcpAuthRequiredGrants, name)
 		if err := rt.mcpManager.Disable(name); err != nil {
 			return newServeMCPError(http.StatusInternalServerError, "server_error", fmt.Sprintf("failed to disable MCP server %q: %v", name, err))
 		}
 	}
 
-	var enableNames []string
-	for _, name := range requested {
-		status, _ := rt.mcpManager.ServerStatus(name)
-		if status != mcp.StatusReady && status != mcp.StatusStarting {
-			enableNames = append(enableNames, name)
-		}
-	}
-	for _, name := range enableNames {
-		if err := rt.mcpManager.Enable(ctx, name); err != nil {
-			return newServeMCPError(http.StatusInternalServerError, "server_error", fmt.Sprintf("failed to start MCP server %q: %v", name, err))
-		}
+	if err := rt.startSelectedMCPServersLocked(ctx, requested); err != nil {
+		return err
 	}
 	if err := waitForMCPServersReady(ctx, rt.mcpManager, requested); err != nil {
 		return newServeMCPError(http.StatusInternalServerError, "server_error", err.Error())
 	}
+	rt.recordMCPAuthRequiredGrantsLocked(requested)
 	rt.registerMCPToolsForServersLocked(requested)
 	rt.mcpSetting = strings.Join(requested, ",")
 	return nil
+}
+
+// mcpAuthGrantChangedLocked records the first observed auth-required grant.
+// A signed-in grant is only worth retrying when a later sign-in/refresh changed
+// its revision; insufficient_scope does not make the original token unusable.
+func (rt *serveRuntime) mcpAuthGrantChangedLocked(name string, authStatus mcp.AuthStatus) bool {
+	if rt.mcpAuthRequiredGrants == nil {
+		rt.mcpAuthRequiredGrants = make(map[string]string)
+	}
+	previous, observed := rt.mcpAuthRequiredGrants[name]
+	if !observed {
+		rt.mcpAuthRequiredGrants[name] = authStatus.GrantRevision
+		return false
+	}
+	return authStatus.State == mcpoauth.AuthSignedIn && previous != authStatus.GrantRevision
 }
 
 func (rt *serveRuntime) mcpSelectionReadyLocked(names []string) bool {
@@ -446,12 +497,16 @@ func (rt *serveRuntime) mcpSelectionReadyLocked(names []string) bool {
 		return false
 	}
 	enabledSet := stringSet(rt.mcpManager.EnabledServers())
+	authStatuses := rt.mcpManager.AuthStatuses()
 	for _, name := range requested {
 		if !enabledSet[name] {
 			return false
 		}
 		status, _ := rt.mcpManager.ServerStatus(name)
-		if status != mcp.StatusReady {
+		if status != mcp.StatusReady && status != mcp.StatusAuthRequired {
+			return false
+		}
+		if status == mcp.StatusAuthRequired && rt.mcpAuthGrantChangedLocked(name, authStatuses[name]) {
 			return false
 		}
 	}

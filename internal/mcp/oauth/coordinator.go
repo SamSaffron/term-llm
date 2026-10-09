@@ -117,11 +117,13 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 	}
 
 	var initial oauth2.TokenSource
+	var persistentSource *persistentTokenSource
 	if stored != nil && !force {
-		initial = &persistentTokenSource{
+		persistentSource = &persistentTokenSource{
 			store: c.store, endpoint: canonical, session: cloneSession(stored),
 			client: client, coordinator: c,
 		}
+		initial = persistentSource
 	}
 
 	var callbackIssuer string
@@ -246,19 +248,28 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 		OAuthHandler: handler,
 		scopes:       configuredScopes,
 		discoverAll:  !scopesConfigured,
-		client:       client,
+		background:   interactive == nil,
+		invalidateToken: func(req *http.Request) error {
+			return c.invalidateRejectedToken(canonical, req, persistentSource)
+		},
+		client: client,
 	}, nil
 }
 
 type scopeOAuthHandler struct {
 	sdkauth.OAuthHandler
-	scopes      []string
-	discoverAll bool
-	client      *http.Client
+	scopes          []string
+	discoverAll     bool
+	background      bool
+	invalidateToken func(*http.Request) error
+	client          *http.Client
 }
 
 func (h *scopeOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	challenges, err := oauthex.ParseWWWAuthenticate(resp.Header.Values("WWW-Authenticate"))
+	if h.background {
+		return h.authorizeBackground(req, resp, challenges, err)
+	}
 	if err != nil {
 		return h.OAuthHandler.Authorize(ctx, req, resp)
 	}
@@ -294,6 +305,60 @@ func (h *scopeOAuthHandler) Authorize(ctx context.Context, req *http.Request, re
 		cloned.Header.Add("WWW-Authenticate", formatChallenge(challenge))
 	}
 	return h.OAuthHandler.Authorize(ctx, req, &cloned)
+}
+
+// invalidateRejectedToken only expires the exact grant used by the failed
+// request. A token rotated by another process must remain usable.
+func (c *Coordinator) invalidateRejectedToken(endpoint string, req *http.Request, source *persistentTokenSource) error {
+	bearer := strings.Fields(req.Header.Get("Authorization"))
+	if len(bearer) != 2 || !strings.EqualFold(bearer[0], "Bearer") {
+		return nil
+	}
+	if source != nil {
+		// Serialize rejection with Token so another startup request cannot
+		// immediately refresh the token this handler just had rejected.
+		source.mu.Lock()
+		defer source.mu.Unlock()
+	}
+	_, err := c.store.Update(endpoint, func(current *Session) (*Session, error) {
+		if current == nil || current.Token == nil || current.Token.AccessToken != bearer[1] {
+			return nil, nil
+		}
+		current.Token.Expiry = time.Now().Add(-time.Minute)
+		if source != nil {
+			source.rejectedToken = bearer[1]
+		}
+		return current, nil
+	})
+	return err
+}
+
+func (h *scopeOAuthHandler) authorizeBackground(req *http.Request, resp *http.Response, challenges []oauthex.Challenge, challengeErr error) error {
+	// Background connections may refresh stored tokens, but discovery and
+	// registration belong only to an explicitly started sign-in flow.
+	if resp.Body != nil {
+		defer resp.Body.Close()
+		defer func() { _, _ = io.CopyN(io.Discard, resp.Body, 4096) }()
+	}
+	if challengeErr == nil && resp.StatusCode == http.StatusForbidden {
+		challengeError := ""
+		for _, challenge := range challenges {
+			if challenge.Scheme == "bearer" && challenge.Params["error"] != "" {
+				challengeError = challenge.Params["error"]
+				break
+			}
+		}
+		if challengeError != "insufficient_scope" {
+			return nil
+		}
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		if err := h.invalidateToken(req); err != nil {
+			// Store errors must not expose any credential material.
+			return fmt.Errorf("%w: unable to invalidate rejected stored grant", ErrAuthenticationRequired)
+		}
+	}
+	return ErrAuthenticationRequired
 }
 
 type protectedResourceMetadataCandidate struct {
@@ -645,14 +710,16 @@ func (c *Coordinator) Status(endpoint string) AuthStatus {
 	if id := c.byEndpoint[canonical]; id != "" {
 		if record := c.flows[id]; record != nil && (record.flow.State == FlowStarting || record.flow.State == FlowPending) {
 			status.State = AuthWaiting
-			c.mu.Unlock()
-			return status
 		}
 	}
 	refreshErr := c.refreshErrs[canonical]
 	c.mu.Unlock()
 	session, err := c.store.Load(canonical)
 	if err != nil {
+		return status
+	}
+	status.GrantRevision = fmt.Sprintf("%d:%s", session.Version, session.UpdatedAt.Format(time.RFC3339Nano))
+	if status.State == AuthWaiting {
 		return status
 	}
 	status.Issuer = session.Issuer
@@ -748,12 +815,13 @@ func (c *Coordinator) setRefreshError(endpoint string, err error) {
 }
 
 type persistentTokenSource struct {
-	store       Store
-	endpoint    string
-	session     *Session
-	client      *http.Client
-	coordinator *Coordinator
-	mu          sync.Mutex
+	store         Store
+	endpoint      string
+	session       *Session
+	client        *http.Client
+	coordinator   *Coordinator
+	mu            sync.Mutex
+	rejectedToken string
 }
 
 func (s *persistentTokenSource) Token() (*oauth2.Token, error) {
@@ -763,6 +831,9 @@ func (s *persistentTokenSource) Token() (*oauth2.Token, error) {
 	var refreshRejected bool
 	updated, err := s.store.Update(s.endpoint, func(current *Session) (*Session, error) {
 		if current == nil || current.Token == nil {
+			return nil, ErrAuthenticationRequired
+		}
+		if s.rejectedToken != "" && current.Token.AccessToken == s.rejectedToken {
 			return nil, ErrAuthenticationRequired
 		}
 		// A newer process may already have rotated the refresh token. Always

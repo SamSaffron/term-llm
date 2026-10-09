@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -695,5 +698,89 @@ func TestEnsureMCPManagerRetriesPlannerSetupAfterFailure(t *testing.T) {
 	}
 	if _, ok := rt.engine.ToolDiscoveryDiagnostics("serve"); !ok {
 		t.Fatal("successful retry did not attach the discovery planner")
+	}
+}
+
+func TestHandleSessionMCPPatchKeepsAuthRequiredSelection(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed=%v", mixed), func(t *testing.T) {
+			var requests atomic.Int32
+			protected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+				w.WriteHeader(http.StatusUnauthorized)
+			}))
+			defer protected.Close()
+			servers := map[string]internalmcp.ServerConfig{"protected": {URL: protected.URL}}
+			selection := []string{"protected"}
+			if mixed {
+				servers["greeter"] = internalmcp.ServerConfig{Command: os.Args[0], Env: map[string]string{runServeMCPHandlerTestServerEnv: "1"}}
+				selection = []string{"greeter", "protected"}
+			}
+			writeServeMCPConfig(t, servers)
+			store := newServeMCPTestStore(t)
+			srv, created := newServeMCPHandlerTestServer(t, store)
+			body, err := json.Marshal(serveMCPSelectionRequest{Enabled: selection})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPatch, "/v1/sessions/sess_auth_required/mcp", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			srv.handleSessionByID(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+			}
+			resp := decodeServeMCPResponse(t, rr)
+			if !reflect.DeepEqual(resp.Enabled, selection) {
+				t.Fatalf("enabled = %v, want %v", resp.Enabled, selection)
+			}
+			var authView *serveMCPServerView
+			for i := range resp.Servers {
+				if resp.Servers[i].Name == "protected" {
+					authView = &resp.Servers[i]
+				}
+			}
+			if authView == nil || !authView.Enabled || authView.Status != string(internalmcp.StatusAuthRequired) || !authView.CanSignIn || authView.AuthState != "signed_out" || authView.Tools != 0 {
+				t.Fatalf("auth-required server view = %#v", authView)
+			}
+			rt := *created
+			if rt == nil || rt.mcpSetting != strings.Join(selection, ",") {
+				t.Fatalf("runtime selection = %#v", rt)
+			}
+			persisted, err := store.Get(t.Context(), "sess_auth_required")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted == nil || persisted.MCP != rt.mcpSetting {
+				t.Fatalf("persisted selection = %#v", persisted)
+			}
+			if !rt.mcpSelectionReadyLocked(selection) {
+				t.Fatal("auth-required selection is not settled")
+			}
+			before := requests.Load()
+			if err := srv.ensureRuntimeMCPForSession(t.Context(), "sess_auth_required", rt); err != nil {
+				t.Fatal(err)
+			}
+			if got := requests.Load(); got != before {
+				t.Fatalf("settled selection retried connection: requests %d -> %d", before, got)
+			}
+			if mixed {
+				tool, ok := rt.engine.Tools().Get("greeter__greet")
+				if !ok {
+					t.Fatal("ready server's tool is not registered")
+				}
+				if _, err := tool.Execute(t.Context(), json.RawMessage(`{"name":"test"}`)); err != nil {
+					t.Fatalf("ready server tool call: %v", err)
+				}
+			}
+			// An old registry entry must not survive re-registering a server
+			// whose connection settled without a usable grant.
+			rt.engine.RegisterTool(serveMCPFakeTool{name: "protected__stale"})
+			rt.registerMCPToolsForServersLocked(selection)
+			if _, ok := rt.engine.Tools().Get("protected__stale"); ok {
+				t.Fatal("auth-required server retained stale tools")
+			}
+		})
 	}
 }

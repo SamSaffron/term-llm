@@ -47,13 +47,16 @@ const (
 
 // AuthStatus contains safe grant metadata. It never contains credentials.
 type AuthStatus struct {
-	State       AuthState `json:"state"`
-	Issuer      string    `json:"issuer,omitempty"`
-	Scopes      []string  `json:"scopes,omitempty"`
-	ExpiresAt   time.Time `json:"expires_at,omitempty"`
-	StoragePath string    `json:"storage_path,omitempty"`
-	CanSignIn   bool      `json:"can_sign_in"`
-	CanSignOut  bool      `json:"can_sign_out"`
+	// GrantRevision identifies the local store generation without credentials.
+	// It changes on sign-in/refresh, including tokens with identical expiry.
+	GrantRevision string    `json:"-"`
+	State         AuthState `json:"state"`
+	Issuer        string    `json:"issuer,omitempty"`
+	Scopes        []string  `json:"scopes,omitempty"`
+	ExpiresAt     time.Time `json:"expires_at,omitempty"`
+	StoragePath   string    `json:"storage_path,omitempty"`
+	CanSignIn     bool      `json:"can_sign_in"`
+	CanSignOut    bool      `json:"can_sign_out"`
 }
 
 // FlowState is the state of an interactive browser authorization flow.

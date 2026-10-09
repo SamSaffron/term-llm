@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -408,4 +410,258 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type closeTrackingBody struct {
+	closed bool
+	reader *strings.Reader
+	read   int
+}
+
+func (b *closeTrackingBody) Read(p []byte) (int, error) {
+	if b.reader == nil {
+		return 0, io.EOF
+	}
+	n, err := b.reader.Read(p)
+	b.read += n
+	return n, err
+}
+func (b *closeTrackingBody) Close() error { b.closed = true; return nil }
+
+func TestBackgroundAuthorizeChallenge(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		challenge string
+		wantAuth  bool
+	}{
+		{"unauthorized", http.StatusUnauthorized, `Bearer error="invalid_token"`, true},
+		{"scope required", http.StatusForbidden, `Bearer error="insufficient_scope", scope="write"`, true},
+		{"forbidden", http.StatusForbidden, `Bearer error="invalid_token"`, false},
+		{"forbidden without challenge", http.StatusForbidden, "", false},
+		{"first bearer error wins", http.StatusForbidden, `Bearer error="invalid_token", Bearer error="insufficient_scope"`, false},
+		{"malformed unauthorized", http.StatusUnauthorized, `Bearer error="`, true},
+		{"malformed forbidden", http.StatusForbidden, `Bearer error="`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				http.NotFound(w, r)
+			}))
+			defer server.Close()
+			coordinator := NewCoordinator(NewFileStore(t.TempDir() + "/oauth.json"))
+			handler, err := coordinator.Handler(server.URL+"/mcp", Options{HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := &closeTrackingBody{}
+			resp := &http.Response{StatusCode: tc.status, Header: http.Header{"Www-Authenticate": []string{tc.challenge}}, Body: body}
+			req := httptest.NewRequest(http.MethodPost, server.URL+"/mcp", nil)
+			err = handler.Authorize(t.Context(), req, resp)
+			if tc.wantAuth && !errors.Is(err, ErrAuthenticationRequired) || !tc.wantAuth && err != nil {
+				t.Errorf("Authorize error = %v, want auth-required = %v", err, tc.wantAuth)
+			}
+			if !body.closed {
+				t.Error("Authorize did not close response body")
+			}
+			if got := requests.Load(); got != 0 {
+				t.Errorf("background authorization made %d network requests", got)
+			}
+		})
+	}
+}
+
+func TestBackgroundAuthorizeInvalidatesOnlyRejectedStoredToken(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		challenge string
+		bearer    string
+		refresh   string
+		rotate    bool
+		noGrant   bool
+		wantState AuthState
+	}{
+		{name: "rejected token", status: http.StatusUnauthorized, bearer: "stored", wantState: AuthRequired},
+		{name: "refreshable rejected token", status: http.StatusUnauthorized, bearer: "stored", refresh: "refresh", wantState: AuthExpired},
+		{name: "scope step-up keeps grant", status: http.StatusForbidden, challenge: `Bearer error="insufficient_scope"`, bearer: "stored", wantState: AuthSignedIn},
+		{name: "different bearer", status: http.StatusUnauthorized, bearer: "different", wantState: AuthSignedIn},
+		{name: "concurrently rotated token", status: http.StatusUnauthorized, bearer: "stored", rotate: true, wantState: AuthSignedIn},
+		{name: "no bearer", status: http.StatusUnauthorized, wantState: AuthSignedIn},
+		{name: "ordinary forbidden", status: http.StatusForbidden, challenge: `Bearer error="invalid_token"`, bearer: "stored", wantState: AuthSignedIn},
+		{name: "no grant", status: http.StatusUnauthorized, bearer: "stored", noGrant: true, wantState: AuthSignedOut},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := "https://example.test/mcp"
+			store := NewFileStore(t.TempDir() + "/oauth.json")
+			if !tc.noGrant {
+				_, err := store.Update(endpoint, func(*Session) (*Session, error) {
+					return &Session{Endpoint: endpoint, Config: OAuth2Config{ClientID: "client"}, Token: &oauth2.Token{AccessToken: "stored", RefreshToken: tc.refresh, Expiry: time.Now().Add(time.Hour)}}, nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			coordinator := NewCoordinator(store)
+			handler, err := coordinator.Handler(endpoint, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.rotate {
+				_, err := store.Update(endpoint, func(current *Session) (*Session, error) { current.Token.AccessToken = "rotated"; return current, nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _ := store.Load(endpoint)
+			req := httptest.NewRequest(http.MethodPost, endpoint, nil)
+			if tc.bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.bearer)
+			}
+			resp := &http.Response{StatusCode: tc.status, Header: http.Header{"Www-Authenticate": []string{tc.challenge}}, Body: io.NopCloser(strings.NewReader(""))}
+			err = handler.Authorize(t.Context(), req, resp)
+			if tc.status == http.StatusUnauthorized || tc.challenge == `Bearer error="insufficient_scope"` {
+				if !errors.Is(err, ErrAuthenticationRequired) {
+					t.Fatalf("Authorize error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if got := coordinator.Status(endpoint).State; got != tc.wantState {
+				t.Errorf("Status = %s, want %s", got, tc.wantState)
+			}
+			after, err := store.Load(endpoint)
+			if tc.noGrant {
+				if !errors.Is(err, ErrNotFound) {
+					t.Fatalf("missing grant changed: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantState == AuthSignedIn {
+				if after.Version != before.Version || !after.Token.Expiry.Equal(before.Token.Expiry) || after.Token.AccessToken != before.Token.AccessToken {
+					t.Error("unrelated grant was changed")
+				}
+			} else {
+				if !after.Token.Expiry.Before(time.Now()) {
+					t.Error("rejected access token is still usable")
+				}
+				if after.Token.AccessToken != before.Token.AccessToken || after.Token.RefreshToken != before.Token.RefreshToken {
+					t.Error("invalidation changed token material")
+				}
+			}
+		})
+	}
+}
+
+func TestRejectedStoredTokenAllowsNonForcedStart(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, server.URL+"/.well-known/oauth-protected-resource/mcp"))
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{"resource": server.URL + "/mcp", "authorization_servers": []string{server.URL}})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token", "response_types_supported": []string{"code"}, "code_challenge_methods_supported": []string{"S256"}})
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+	endpoint := server.URL + "/mcp"
+	store := NewFileStore(t.TempDir() + "/oauth.json")
+	_, err := store.Update(endpoint, func(*Session) (*Session, error) {
+		return &Session{Endpoint: endpoint, Issuer: server.URL, Config: OAuth2Config{ClientID: "client", RedirectURL: "http://127.0.0.1/callback"}, Token: &oauth2.Token{AccessToken: "stored", Expiry: time.Now().Add(time.Hour)}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := NewCoordinator(store)
+	handler, err := coordinator.Handler(endpoint, Options{HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, endpoint, nil)
+	req.Header.Set("Authorization", "Bearer stored")
+	if err := handler.Authorize(t.Context(), req, &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}); !errors.Is(err, ErrAuthenticationRequired) {
+		t.Fatal(err)
+	}
+	flow, err := coordinator.Start(t.Context(), endpoint, Options{HTTPClient: server.Client()}, "http://127.0.0.1/callback", false)
+	if err != nil {
+		t.Fatalf("non-forced Start after rejection: %v", err)
+	}
+	defer coordinator.Cancel(endpoint, flow.ID)
+	if flow.State != FlowPending || flow.AuthorizationURL == "" {
+		t.Fatal("sign-in did not proceed")
+	}
+}
+
+func TestBackgroundAuthorizeResponseBody(t *testing.T) {
+	for _, name := range []string{"nil", "large"} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() != nil {
+					t.Errorf("Authorize panicked for %s body", name)
+				}
+			}()
+			coordinator := NewCoordinator(NewFileStore(t.TempDir() + "/oauth.json"))
+			handler, err := coordinator.Handler("https://example.test/mcp", Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header)}
+			body := &closeTrackingBody{reader: strings.NewReader(strings.Repeat("x", 8192))}
+			if name == "large" {
+				resp.Body = body
+			}
+			if err := handler.Authorize(t.Context(), httptest.NewRequest(http.MethodPost, "https://example.test/mcp", nil), resp); !errors.Is(err, ErrAuthenticationRequired) {
+				t.Fatal(err)
+			}
+			if name == "large" && (!body.closed || body.read != 4096) {
+				t.Fatalf("response drained %d bytes, closed=%v", body.read, body.closed)
+			}
+		})
+	}
+}
+
+func TestAuthStatusGrantRevisionTracksStoreUpdates(t *testing.T) {
+	endpoint := "https://example.test/mcp"
+	store := NewFileStore(t.TempDir() + "/oauth.json")
+	_, err := store.Update(endpoint, func(*Session) (*Session, error) { return testSession(endpoint), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := NewCoordinator(store)
+	before := coordinator.Status(endpoint)
+	if before.GrantRevision == "" || before.GrantRevision != coordinator.Status(endpoint).GrantRevision {
+		t.Fatal("grant revision is absent or unstable across reads")
+	}
+	_, err = store.Update(endpoint, func(current *Session) (*Session, error) {
+		current.Config.Scopes = []string{"read", "write"}
+		return current, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := coordinator.Status(endpoint)
+	if before.GrantRevision == after.GrantRevision || !before.ExpiresAt.Equal(after.ExpiresAt) {
+		t.Fatal("grant update with unchanged expiry did not change revision")
+	}
+	data, err := json.Marshal(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), after.GrantRevision) {
+		t.Fatal("internal grant revision was serialized")
+	}
+	coordinator.flows["pending"] = &flowRecord{flow: Flow{State: FlowPending}}
+	coordinator.byEndpoint[endpoint] = "pending"
+	waiting := coordinator.Status(endpoint)
+	if waiting.State != AuthWaiting || waiting.GrantRevision != after.GrantRevision {
+		t.Fatal("pending sign-in obscured the existing grant revision")
+	}
 }
