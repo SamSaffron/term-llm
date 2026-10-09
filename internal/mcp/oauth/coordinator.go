@@ -857,12 +857,7 @@ func (s *persistentTokenSource) Token() (*oauth2.Token, error) {
 		refreshCtx, cancelRefresh := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancelRefresh()
 		refreshCtx = context.WithValue(refreshCtx, oauth2.HTTPClient, s.client)
-		refreshSeed := cloneToken(current.Token)
-		// oauth2.Config.TokenSource otherwise reuses a token until its own small
-		// expiry delta. Mark only the in-memory seed expired so our five-minute
-		// proactive refresh skew is honored without changing the stored grant.
-		refreshSeed.Expiry = time.Now().Add(-time.Second)
-		token, refreshErr := cfg.TokenSource(refreshCtx, refreshSeed).Token()
+		token, refreshErr := refreshGrant(refreshCtx, cfg, current.Token, s.endpoint)
 		if refreshErr != nil {
 			classified := classifyRefreshError(refreshErr)
 			s.coordinator.setRefreshError(s.endpoint, classified)
@@ -907,12 +902,58 @@ func tokenNeedsRefresh(token *oauth2.Token) bool {
 	return time.Now().Add(refreshExpirySkew).After(token.Expiry)
 }
 
+// refreshGrant performs one refresh_token grant against the token endpoint.
+//
+// golang.org/x/oauth2's tokenRefresher sends only grant_type and
+// refresh_token. The SDK's authorization-code exchange binds the grant to the
+// MCP endpoint with an RFC 8707 resource indicator, and authorization servers
+// that enforce that binding (the MCP authorization spec requires clients to
+// send it on token requests) reject a resource-less refresh with
+// invalid_target. Send the canonical endpoint on every refresh so rotation
+// keeps working against those servers.
+func refreshGrant(ctx context.Context, cfg *oauth2.Config, current *oauth2.Token, resource string) (*oauth2.Token, error) {
+	if current == nil || current.RefreshToken == "" {
+		return nil, errors.New("oauth2: token expired and refresh token is not set")
+	}
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
+		oauth2.SetAuthURLParam("refresh_token", current.RefreshToken),
+	}
+	if resource != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("resource", resource))
+	}
+	// Exchange with an empty code is the same technique oauthex.ExchangeToken
+	// uses for non-authorization_code grants: RFC 6749 §3.2 says servers ignore
+	// empty parameters. Clear RedirectURL so redirect_uri stays out of refreshes.
+	exchangeCfg := *cfg
+	exchangeCfg.RedirectURL = ""
+	token, err := exchangeCfg.Exchange(ctx, "", opts...)
+	if err != nil {
+		return nil, err
+	}
+	if token.RefreshToken == "" {
+		// Servers that do not rotate omit refresh_token; keep the current one.
+		token.RefreshToken = current.RefreshToken
+	}
+	return token, nil
+}
+
+// rejectedRefreshErrorCodes are token endpoint errors that a retry cannot fix:
+// the grant, client registration, or resource binding is no longer accepted,
+// so only a fresh interactive authorization can recover.
+var rejectedRefreshErrorCodes = map[string]bool{
+	"invalid_grant":       true,
+	"invalid_client":      true,
+	"unauthorized_client": true,
+	"invalid_target":      true,
+}
+
 func classifyRefreshError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var retrieveErr *oauth2.RetrieveError
-	if errors.As(err, &retrieveErr) && retrieveErr.ErrorCode == "invalid_grant" {
+	if errors.As(err, &retrieveErr) && rejectedRefreshErrorCodes[retrieveErr.ErrorCode] {
 		return ErrRefreshRejected
 	}
 	lower := strings.ToLower(err.Error())

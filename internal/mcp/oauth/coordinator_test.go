@@ -307,6 +307,100 @@ func TestConcurrentCoordinatorsAdoptRotatedRefresh(t *testing.T) {
 	}
 }
 
+func TestRefreshSendsResourceIndicatorAndKeepsUnrotatedRefreshToken(t *testing.T) {
+	var form atomic.Pointer[url.Values]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse token form: %v", err)
+		}
+		values := r.Form
+		form.Store(&values)
+		// No refresh_token in the response: the server does not rotate.
+		writeTestJSON(w, map[string]any{"access_token": "fresh-access", "token_type": "Bearer", "expires_in": 3600})
+	}))
+	defer server.Close()
+	endpoint := server.URL + "/resource"
+	store := NewFileStore(t.TempDir() + "/mcp_oauth.json")
+	_, err := store.Update(endpoint, func(*Session) (*Session, error) {
+		return &Session{
+			Endpoint: endpoint, Issuer: server.URL,
+			Config: OAuth2Config{
+				ClientID: "client",
+				Endpoint: oauth2.Endpoint{
+					AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token",
+					// Public DCR clients are persisted with in-params auth.
+					AuthStyle: oauth2.AuthStyleInParams,
+				},
+				RedirectURL: "http://127.0.0.1/callback",
+			},
+			Token: &oauth2.Token{AccessToken: "expired", RefreshToken: "original-refresh", Expiry: time.Now().Add(-time.Hour)},
+		}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewCoordinator(store).Handler(endpoint, Options{HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := handler.TokenSource(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := source.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.AccessToken != "fresh-access" || token.RefreshToken != "original-refresh" {
+		t.Fatalf("token = %+v, want fresh access with retained refresh token", token)
+	}
+	sent := form.Load()
+	if sent == nil {
+		t.Fatal("no token request was made")
+	}
+	if got := sent.Get("grant_type"); got != "refresh_token" {
+		t.Fatalf("grant_type = %q", got)
+	}
+	if got := sent.Get("refresh_token"); got != "original-refresh" {
+		t.Fatalf("refresh_token = %q", got)
+	}
+	if got := sent.Get("resource"); got != endpoint {
+		t.Fatalf("resource = %q, want %q", got, endpoint)
+	}
+	if got := sent.Get("client_id"); got != "client" {
+		t.Fatalf("client_id = %q", got)
+	}
+	if sent.Has("redirect_uri") {
+		t.Fatalf("refresh request carried redirect_uri: %v", *sent)
+	}
+	stored, err := store.Load(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Token.AccessToken != "fresh-access" || stored.Token.RefreshToken != "original-refresh" {
+		t.Fatalf("stored token = %+v", stored.Token)
+	}
+}
+
+func TestClassifyRefreshErrorTreatsBindingRejectionsAsRejected(t *testing.T) {
+	for _, code := range []string{"invalid_grant", "invalid_client", "unauthorized_client", "invalid_target"} {
+		err := classifyRefreshError(&oauth2.RetrieveError{ErrorCode: code, ErrorDescription: "nope"})
+		if !errors.Is(err, ErrRefreshRejected) {
+			t.Errorf("%s classified as %v, want ErrRefreshRejected", code, err)
+		}
+	}
+	for _, code := range []string{"server_error", "temporarily_unavailable", ""} {
+		err := classifyRefreshError(&oauth2.RetrieveError{ErrorCode: code, Response: &http.Response{StatusCode: http.StatusServiceUnavailable}})
+		if errors.Is(err, ErrRefreshRejected) {
+			t.Errorf("%q classified as rejected, want temporary", code)
+		}
+	}
+}
+
 func TestInteractiveStartHonorsStoredClientRedirectCompatibility(t *testing.T) {
 	var server *httptest.Server
 	var registrations atomic.Int32
