@@ -416,4 +416,110 @@ describe('render isolation', () => {
     expect(counts.count('VoiceStatus')).toBeGreaterThan(0);
     expect(counts.count('Composer')).toBe(0);
   });
+
+  it('renders voice phase text and indicators while keeping progress out of announcements', async () => {
+    const store = createStore();
+    let publish!: (snapshot: VoiceSnapshot) => void;
+    let snapshot!: VoiceSnapshot;
+    vi.spyOn(VoiceOperation.prototype, 'subscribe').mockImplementation(function (
+      this: VoiceOperation,
+      listener,
+    ) {
+      publish = listener;
+      snapshot = this.snapshot;
+      listener(snapshot);
+      return () => {};
+    });
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    const cases: Array<{
+      state: Partial<VoiceSnapshot>;
+      label: string;
+      copy?: string;
+      indicator: string;
+      mark?: string;
+    }> = [
+      {
+        state: { phase: 'requesting-permission' },
+        label: 'Requesting microphone access…',
+        indicator: 'spinner',
+      },
+      {
+        state: { phase: 'recording', durationMs: 65_000 },
+        label: 'Recording',
+        copy: 'Recording 1:05',
+        indicator: 'dot',
+      },
+      { state: { phase: 'preparing' }, label: 'Preparing recording…', indicator: 'spinner' },
+      {
+        state: { phase: 'transcribing', stage: 'uploading', loaded: 25, total: 100 },
+        label: 'Uploading',
+        copy: 'Uploading 25%',
+        indicator: 'spinner',
+      },
+      {
+        state: { phase: 'transcribing', stage: 'uploading', loaded: 120, total: 100 },
+        label: 'Uploading',
+        copy: 'Uploading 100%',
+        indicator: 'spinner',
+      },
+      {
+        state: { phase: 'transcribing', stage: 'uploading' },
+        label: 'Uploading',
+        copy: 'Uploading…',
+        indicator: 'spinner',
+      },
+      {
+        state: { phase: 'transcribing', stage: 'stalled' },
+        label: 'Upload stalled',
+        indicator: 'mark',
+        mark: '!',
+      },
+      {
+        state: { phase: 'transcribing', elapsedMs: 12_000 },
+        label: 'Transcribing…',
+        copy: 'Transcribing… 0:12',
+        indicator: 'spinner',
+      },
+      {
+        state: { phase: 'complete' },
+        label: 'Transcription inserted.',
+        indicator: 'mark',
+        mark: '✓',
+      },
+      {
+        state: { phase: 'cancelled' },
+        label: 'Voice recording cancelled.',
+        indicator: 'mark',
+        mark: '–',
+      },
+      {
+        state: { phase: 'failed' },
+        label: 'Voice transcription failed.',
+        indicator: 'mark',
+        mark: '!',
+      },
+      {
+        state: { phase: 'failed', error: 'Microphone unavailable' },
+        label: 'Microphone unavailable',
+        indicator: 'mark',
+        mark: '!',
+      },
+    ];
+    for (const { state, label, copy, indicator, mark } of cases) {
+      await act(() => publish({ ...snapshot, ...state }));
+      const group = screen.getByRole('group', { name: 'Voice dictation' });
+      expect(within(group).getByText(copy ?? label)).toBeInTheDocument();
+      expect(group.querySelector(`.voice-status-${indicator}`)).toHaveTextContent(mark ?? '');
+      expect(screen.getByRole(state.phase === 'failed' ? 'alert' : 'status')).toHaveTextContent(
+        label,
+      );
+    }
+    await act(() => publish({ ...snapshot, phase: 'idle' }));
+    expect(screen.queryByRole('group', { name: 'Voice dictation' })).not.toBeInTheDocument();
+  });
 });

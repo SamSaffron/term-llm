@@ -73,46 +73,69 @@ const VOICE_BUSY_PHASES: ReadonlyArray<VoiceSnapshot['phase']> = [
 // `label` is the phase announcement without ticking numbers; `copy` is the
 // visible text, which adds the timer or upload percentage.
 function voiceStatusText(state: VoiceSnapshot): { label: string; copy: string } {
+  let label = '';
+  let copy: string | undefined;
   switch (state.phase) {
     case 'requesting-permission':
-      return { label: 'Requesting microphone access…', copy: 'Requesting microphone access…' };
+      label = 'Requesting microphone access…';
+      break;
     case 'recording':
-      return { label: 'Recording', copy: `Recording ${voiceTime(state.durationMs)}` };
+      label = 'Recording';
+      copy = `${label} ${voiceTime(state.durationMs)}`;
+      break;
     case 'preparing':
-      return { label: 'Preparing recording…', copy: 'Preparing recording…' };
+      label = 'Preparing recording…';
+      break;
     case 'transcribing':
       if (state.stage === 'uploading') {
+        label = 'Uploading';
         const percent = state.total
           ? ` ${Math.min(100, Math.round(((state.loaded || 0) / state.total) * 100))}%`
           : '…';
-        return { label: 'Uploading', copy: `Uploading${percent}` };
+        copy = `${label}${percent}`;
+      } else if (state.stage === 'stalled') {
+        label = 'Upload stalled';
+      } else {
+        label = 'Transcribing…';
+        copy = `${label} ${voiceTime(state.elapsedMs)}`;
       }
-      if (state.stage === 'stalled') return { label: 'Upload stalled', copy: 'Upload stalled' };
-      return { label: 'Transcribing…', copy: `Transcribing… ${voiceTime(state.elapsedMs)}` };
+      break;
     case 'complete':
-      return { label: 'Transcription inserted.', copy: 'Transcription inserted.' };
+      label = 'Transcription inserted.';
+      break;
     case 'cancelled':
-      return { label: 'Voice recording cancelled.', copy: 'Voice recording cancelled.' };
-    case 'failed': {
-      const message = state.error || 'Voice transcription failed.';
-      return { label: message, copy: message };
-    }
-    default:
-      return { label: '', copy: '' };
+      label = 'Voice recording cancelled.';
+      break;
+    case 'failed':
+      label = state.error || 'Voice transcription failed.';
+      break;
   }
+  return { label, copy: copy ?? label };
 }
 
 function VoiceStatusIndicator({ state }: { state: VoiceSnapshot }) {
   const stalled = state.phase === 'transcribing' && state.stage === 'stalled';
-  let indicator = <span class="voice-status-spinner" />;
-  if (state.phase === 'recording') indicator = <span class="voice-status-dot" />;
-  else if (state.phase === 'failed' || stalled)
-    indicator = <span class="voice-status-mark">!</span>;
-  else if (state.phase === 'complete') indicator = <span class="voice-status-mark">✓</span>;
-  else if (state.phase === 'cancelled') indicator = <span class="voice-status-mark">–</span>;
+  const mark =
+    state.phase === 'failed' || stalled
+      ? '!'
+      : state.phase === 'complete'
+        ? '✓'
+        : state.phase === 'cancelled'
+          ? '–'
+          : '';
   return (
     <span class="voice-status-indicator" aria-hidden="true">
-      {indicator}
+      <span
+        class={
+          mark
+            ? 'voice-status-mark'
+            : state.phase === 'recording'
+              ? 'voice-status-dot'
+              : 'voice-status-spinner'
+        }
+      >
+        {mark}
+      </span>
     </span>
   );
 }

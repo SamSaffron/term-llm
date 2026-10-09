@@ -866,8 +866,9 @@ test.describe('lightbox chunk failures and handoff', () => {
     const trigger = page.getByRole('button', { name: 'preview.png' });
     try {
       await trigger.click();
-      await expect(page.getByRole('status')).toHaveText('Loading image viewer…');
-      await page.getByRole('dialog', { name: 'Media preview' }).press('Escape');
+      const dialog = page.getByRole('dialog', { name: 'Media preview' });
+      await expect(dialog.getByRole('status')).toHaveText('Loading image viewer…');
+      await dialog.press('Escape');
       await expect(trigger).toBeFocused();
     } finally {
       release();
