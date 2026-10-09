@@ -785,6 +785,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// Create MCP manager
 	mcpManager := mcp.NewManager()
 	failureCleanup = append(failureCleanup, mcpManager.StopAll)
+	// Single-session TUI process: expose live MCP servers to shell commands via
+	// `term-llm mcp run` (TERM_LLM_MCP_SESSION).
+	mcpManager.UseAsProcessSession()
 	if err := mcpManager.LoadConfig(); err != nil {
 		// Non-fatal: continue without MCP
 		fmt.Fprintf(warnings, "Warning: failed to load MCP config: %v\n", err)

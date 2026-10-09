@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/mcpsession"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	mcpTui "github.com/samsaffron/term-llm/internal/tui/mcp"
 	"github.com/spf13/cobra"
@@ -115,9 +117,14 @@ var mcpPathCmd = &cobra.Command{
 type mcpToolCall struct {
 	name string
 	args map[string]any
+	// raw holds the unparsed text of key=value arguments so values can be
+	// re-typed against the tool's input schema (e.g. text=1815 stays a string).
+	raw map[string]string
 }
 
 var mcpRunTimeout time.Duration
+var mcpRunSession string
+var mcpRunSpawn bool
 
 var mcpRunCmd = &cobra.Command{
 	Use:   "run <server> <tool> [key=val|json] ...",
@@ -134,6 +141,13 @@ Values in key=value pairs are auto-detected:
 
 Use key=@path to read a file's contents as the value, or key=@- for stdin.
 
+Session mode: inside a term-llm session with live MCP servers, the shell tool
+exports TERM_LLM_MCP_SESSION. Calls then go to the session's already-running
+server instead of spawning a new one, so stateful servers (e.g. Playwright)
+keep their state. Use --session <socket|session-id> to target a session
+explicitly, or --spawn to force a fresh server. List sessions with
+"term-llm mcp sessions".
+
 Examples:
   term-llm mcp run filesystem read_file path=/tmp/test.txt
   term-llm mcp run server tool '{"nested":{"deep":"value"}}'
@@ -148,6 +162,8 @@ Examples:
 func init() {
 	mcpBrowseCmd.Flags().BoolVar(&mcpBrowseTUI, "no-tui", false, "Use simple CLI output instead of interactive browser")
 	mcpRunCmd.Flags().DurationVar(&mcpRunTimeout, "timeout", 30*time.Second, "Timeout for MCP server startup and tool execution")
+	mcpRunCmd.Flags().StringVar(&mcpRunSession, "session", "", "Call a live session's MCP server (socket path or session ID; default $"+mcpsession.EnvVar+")")
+	mcpRunCmd.Flags().BoolVar(&mcpRunSpawn, "spawn", false, "Always spawn a fresh MCP server, ignoring $"+mcpsession.EnvVar)
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.AddCommand(mcpListCmd)
 	mcpCmd.AddCommand(mcpBrowseCmd)
@@ -156,6 +172,7 @@ func init() {
 	mcpCmd.AddCommand(mcpInfoCmd)
 	mcpCmd.AddCommand(mcpRunCmd)
 	mcpCmd.AddCommand(mcpPathCmd)
+	mcpCmd.AddCommand(mcpSessionsCmd)
 }
 
 func mcpList(cmd *cobra.Command, args []string) error {
@@ -689,46 +706,23 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	serverName := args[0]
 
-	// Parse remaining args into tool calls
-	var calls []mcpToolCall
-	var current *mcpToolCall
-
-	for _, arg := range args[1:] {
-		if strings.HasPrefix(arg, "{") {
-			// JSON object — set as args for current tool
-			if current == nil {
-				return fmt.Errorf("JSON argument without a tool name")
-			}
-			var obj map[string]any
-			if err := json.Unmarshal([]byte(arg), &obj); err != nil {
-				return fmt.Errorf("invalid JSON argument: %w", err)
-			}
-			current.args = obj
-		} else if strings.Contains(arg, "=") {
-			// key=value pair
-			if current == nil {
-				return fmt.Errorf("key=value argument without a tool name")
-			}
-			key, val, _ := strings.Cut(arg, "=")
-			if strings.HasPrefix(val, "@") {
-				// @path reads file contents, @- reads stdin
-				content, err := readFileArg(val[1:])
-				if err != nil {
-					return fmt.Errorf("read %s: %w", val, err)
-				}
-				current.args[key] = content
-			} else {
-				current.args[key] = parseValue(val)
-			}
-		} else {
-			// New tool name
-			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any)})
-			current = &calls[len(calls)-1]
-		}
+	calls, err := parseMCPRunCalls(args[1:])
+	if err != nil {
+		return err
 	}
 
 	if len(calls) == 0 {
 		return fmt.Errorf("no tool name provided")
+	}
+
+	if target, explicit := mcpRunSessionTarget(); target != "" {
+		err := mcpRunInSession(cmd, target, serverName, calls)
+		if err == nil || explicit || !errors.Is(err, errMCPSessionUnavailable) {
+			return err
+		}
+		// An inherited TERM_LLM_MCP_SESSION whose session has ended must not
+		// break scripts that worked before session routing existed.
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: %v; spawning a fresh %s server\n", err, serverName)
 	}
 
 	// Load config and start client
@@ -754,9 +748,15 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 
 	mcp.CacheTools(serverName, client.Tools())
 
+	schemas := make(map[string]map[string]any)
+	for _, tool := range client.Tools() {
+		schemas[tool.Name] = tool.Schema
+	}
+
 	multiple := len(calls) > 1
 
 	for _, call := range calls {
+		applyInputSchemaToArgs(cmd.ErrOrStderr(), &call, schemas[call.name])
 		argsJSON, err := json.Marshal(call.args)
 		if err != nil {
 			return fmt.Errorf("marshal args for %s: %w", call.name, err)
@@ -780,6 +780,53 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// parseMCPRunCalls parses `mcp run` arguments after the server name into tool
+// calls: bare words start a call, key=value pairs and JSON objects set args.
+func parseMCPRunCalls(args []string) ([]mcpToolCall, error) {
+	var calls []mcpToolCall
+	var current *mcpToolCall
+
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "{") {
+			// JSON object — set as args for current tool
+			if current == nil {
+				return nil, fmt.Errorf("JSON argument without a tool name")
+			}
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(arg), &obj); err != nil {
+				return nil, fmt.Errorf("invalid JSON argument: %w", err)
+			}
+			current.args = obj
+			// The object replaces earlier key=value pairs entirely.
+			current.raw = make(map[string]string)
+		} else if strings.Contains(arg, "=") {
+			// key=value pair
+			if current == nil {
+				return nil, fmt.Errorf("key=value argument without a tool name")
+			}
+			key, val, _ := strings.Cut(arg, "=")
+			if strings.HasPrefix(val, "@") {
+				// @path reads file contents, @- reads stdin
+				content, err := readFileArg(val[1:])
+				if err != nil {
+					return nil, fmt.Errorf("read %s: %w", val, err)
+				}
+				current.args[key] = content
+				delete(current.raw, key)
+			} else {
+				current.args[key] = parseValue(val)
+				current.raw[key] = val
+			}
+		} else {
+			// New tool name
+			calls = append(calls, mcpToolCall{name: arg, args: make(map[string]any), raw: make(map[string]string)})
+			current = &calls[len(calls)-1]
+		}
+	}
+
+	return calls, nil
 }
 
 func mcpToolResultError(name string, result llm.ToolOutput) error {
