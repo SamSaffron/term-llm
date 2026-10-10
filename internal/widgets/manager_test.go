@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -231,6 +232,49 @@ func TestForwardedHost(t *testing.T) {
 				t.Fatalf("forwardedHost(%q) = %q, want %q", tt.host, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestManagerProxyStripsCredentials(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, name := range []string{"Authorization", "Cookie", "X-Api-Key"} {
+			if values := r.Header.Values(name); len(values) != 0 {
+				t.Errorf("widget received %s: %q", name, values)
+			}
+		}
+		if got := r.Header.Get("X-Widget-Custom"); got != "preserved" {
+			t.Errorf("custom header = %q, want preserved", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{entries: map[string]*widgetEntry{
+		"example": {
+			manifest: &Manifest{ID: "example", Mount: "example"},
+			state:    stateRunning,
+			proxy:    httputil.NewSingleHostReverseProxy(target),
+		},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer web-ui-token")
+	req.Header.Set("Cookie", "term-llm-token=web-ui-token")
+	req.Header.Add("x-api-key", "web-ui-token")
+	req.Header.Add("X-Api-Key", "another-token")
+	req.Header.Set("X-Widget-Custom", "preserved")
+	originalHeaders := req.Header.Clone()
+	rec := httptest.NewRecorder()
+	m.Proxy("example", rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	for name, values := range originalHeaders {
+		if got := req.Header.Values(name); !slices.Equal(got, values) {
+			t.Errorf("original %s changed: got %q, want %q", name, got, values)
+		}
 	}
 }
 

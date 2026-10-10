@@ -324,6 +324,7 @@ func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
 	r2 := r.Clone(r.Context())
 	r2.Header.Del("Authorization")
 	r2.Header.Del("Cookie")
+	r2.Header.Del("X-Api-Key")
 	publicPrefix := widgetPublicPrefix(r.Header.Get(PublicPrefixHeader), r.Header.Get("X-Forwarded-Prefix"), m.basePath, mount)
 	r2.Header.Del("Forwarded")
 	r2.Header.Del(PublicPrefixHeader)
