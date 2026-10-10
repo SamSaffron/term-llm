@@ -205,7 +205,7 @@ A manifest reload is enough for registry changes. Reloading does not restart an 
 
 A widget command is trusted local code. It runs as the same OS user as term-llm and inherits the server process environment; widgets are not sandboxed. Install only code and dependencies you trust, and never enumerate or expose inherited environment variables.
 
-The Web UI authentication layer protects widget routes, but the proxy strips `Authorization` and `Cookie` before forwarding requests. A widget therefore does not receive the Web UI token, login cookie, authenticated username, or per-user identity. Do not implement behavior that assumes those values are present.
+The Web UI authentication layer protects widget routes, but the proxy strips `Authorization` and `Cookie` before forwarding requests. On direct widget requests, `x-api-key` authentication is also accepted, but that header is currently forwarded to the widget, exposing the Web UI token. Use `Authorization: Bearer ...` or cookie authentication instead, without an `x-api-key` header, and never log or expose arbitrary request headers. The proxy does not provide an authenticated username or per-user identity; do not implement behavior that assumes those values are present.
 
 Keep secrets out of HTML, JavaScript, CSS, generated images, manifests, and client-visible API responses. Validate mutating input and write persistent data safely even though the outer route is authenticated.
 
