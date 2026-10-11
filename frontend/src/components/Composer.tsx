@@ -27,6 +27,12 @@ function resizePrompt(element: HTMLTextAreaElement | null): void {
   if (element.value) element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
 }
 
+// On touch-only devices the on-screen keyboard's return key should add a new
+// line, as in other chat apps; the send button sends. Same check as ChipPicker.
+function touchOnlyInput(): boolean {
+  return Boolean(globalThis.matchMedia?.('(hover: none) and (pointer: coarse)').matches);
+}
+
 // Only a prepared image has a thumbnail; everything else reads through its icon.
 function attachmentThumbnail(attachment: Attachment): string {
   return attachment.id &&
@@ -1184,6 +1190,8 @@ function ConversationComposer() {
                 }
               }
               if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+                // Ctrl/Cmd+Enter still sends, e.g. from a tablet keyboard.
+                if (touchOnlyInput() && !event.ctrlKey && !event.metaKey) return;
                 event.preventDefault();
                 sendOrCommand();
               }
