@@ -1028,12 +1028,14 @@ test('queues separate steering, removes a selected row, and rushes without losin
   await page.goto('./chat/s1');
   await expect(page.locator('#startupSplash')).toBeHidden({ timeout: 10_000 });
   const input = page.locator('#promptInput');
+  // The send button, not Enter: on touch-only profiles Enter adds a new line.
+  const send = page.locator('#sendBtn');
   await input.fill('Begin');
-  await input.press('Enter');
+  await send.click();
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   for (const text of ['first guidance', 'remove this']) {
     await input.fill(text);
-    await input.press('Enter');
+    await send.click();
     await expect(
       page.locator('.pending-steering-text').getByText(text, { exact: true }),
     ).toBeVisible();
@@ -1044,7 +1046,7 @@ test('queues separate steering, removes a selected row, and rushes without losin
   await expect(page.locator('.pending-steering-text')).toHaveCount(1);
   expect(removed).toHaveLength(1);
   await input.fill('second guidance');
-  await input.press('Enter');
+  await send.click();
   await expect(page.locator('.pending-steering-text')).toHaveCount(2);
   await expect(
     page
