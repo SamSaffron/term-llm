@@ -410,7 +410,7 @@ A gate runs to the end of the file unless you close it. Markdown headings and `-
 
 When no model is known — previews, and any prompt built before the model is selected — markers are stripped and all content is kept.
 
-Two current limits:
+Keep in mind:
 
 - Gates resolve when the system prompt is built: session start, resume, handover, and worktree change. Switching models mid-session with `/model` does not re-resolve them, so a long session keeps the blocks chosen for the model it started with.
-- Gates match the model string the session actually carries. An agent configured with an alias such as `model: fast` matches `[[[fast]]]`, not the underlying model ID.
+- Fresh `ask` and shared-runner launches resolve an agent's `model: fast` alias before matching gates. Use the resolved provider/model, not the alias: if it resolves to `openai:gpt-5.6-luna`, `[[[openai:gpt-5.6-luna]]]` matches, while `[[[fast]]]` does not.
