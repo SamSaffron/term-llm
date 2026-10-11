@@ -33,6 +33,11 @@ function touchOnlyInput(): boolean {
   return Boolean(globalThis.matchMedia?.('(hover: none) and (pointer: coarse)').matches);
 }
 
+// A one-line slash command can't need a new line, so return still runs it on touch.
+function singleLineCommand(value: string): boolean {
+  return /^\/\S/.test(value.trim()) && !value.trim().includes('\n');
+}
+
 // Only a prepared image has a thumbnail; everything else reads through its icon.
 function attachmentThumbnail(attachment: Attachment): string {
   return attachment.id &&
@@ -1191,7 +1196,13 @@ function ConversationComposer() {
               }
               if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
                 // Ctrl/Cmd+Enter still sends, e.g. from a tablet keyboard.
-                if (touchOnlyInput() && !event.ctrlKey && !event.metaKey) return;
+                if (
+                  touchOnlyInput() &&
+                  !event.ctrlKey &&
+                  !event.metaKey &&
+                  !singleLineCommand(store.prompt.value)
+                )
+                  return;
                 event.preventDefault();
                 sendOrCommand();
               }

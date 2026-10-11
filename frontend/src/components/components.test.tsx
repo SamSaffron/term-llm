@@ -5066,6 +5066,31 @@ describe('Preact-owned chat surfaces', () => {
     matchMedia.mockRestore();
   });
 
+  it('still runs a one-line slash command on Enter on touch-only devices', async () => {
+    const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === '(hover: none) and (pointer: coarse)',
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const store = createStore();
+    store.loadBranchTree = vi.fn(async () => undefined);
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, '/tree');
+    await userEvent.keyboard('{Enter}');
+    expect(store.loadBranchTree).toHaveBeenCalledOnce();
+    expect(store.send).not.toHaveBeenCalled();
+    matchMedia.mockRestore();
+  });
+
   it('opens /tree locally and clears the command from the composer', async () => {
     const store = createStore();
     store.loadBranchTree = vi.fn(async () => undefined);
