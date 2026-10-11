@@ -21,7 +21,12 @@ export function createMessageMediaResolvers() {
       previous &&
       [...previous.used].every(([reference, old]) => {
         const next = media.get(reference);
-        return old?.url === next?.url && old?.type === next?.type;
+        return (
+          old?.url === next?.url &&
+          old?.type === next?.type &&
+          old?.name === next?.name &&
+          old?.caption === next?.caption
+        );
       })
     )
       return previous.resolve;

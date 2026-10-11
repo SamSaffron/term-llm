@@ -8,6 +8,9 @@ import type { Message, ToolCall } from '../domain/types';
 import { windowTranscript } from '../domain/transcript';
 import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
+import { AudioMedia } from './AudioMedia';
+import { trustedPublishedMediaURL } from '../domain/audio-media';
+import { bindTranscriptMedia } from './transcript-media';
 import { ChipPicker } from './ChipPicker';
 import { Icon } from './Icon';
 import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
@@ -23,16 +26,7 @@ import {
 import { formatElapsedDuration, subscribeElapsedClock } from '../platform/elapsed-clock';
 
 function publishedMediaURL(store: AppStore, value: string): string {
-  const rebased = rebaseHubAssetURL(store.config, value);
-  try {
-    const url = new URL(rebased, location.href);
-    if (url.origin !== location.origin || url.search || url.hash) return '';
-    if (!/\/media\/[a-f0-9]{32}\.(?:png|jpe?g|gif|webp|bmp|mp4|webm)$/i.test(url.pathname))
-      return '';
-    return rebased;
-  } catch {
-    return '';
-  }
+  return trustedPublishedMediaURL(rebaseHubAssetURL(store.config, value));
 }
 
 function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video'): void {
@@ -955,7 +949,9 @@ function Attachments({ message }: { message: Message }) {
             </button>
           );
         if (attachment.type.startsWith('audio/'))
-          return <audio key={`${attachment.name}-${index}`} src={src} controls />;
+          return (
+            <AudioMedia key={`${attachment.name}-${index}`} url={src} name={attachment.name} />
+          );
         return file;
       })}
     </div>
@@ -1395,6 +1391,10 @@ export function Transcript() {
   const prependAnchor = useRef<{ id: string; top: number } | null>(null);
   const messages = store.visibleMessages.value;
   const sessionId = store.activeSession.value?.id;
+  useLayoutEffect(() => {
+    const root = scroll.current;
+    if (root) return bindTranscriptMedia(root);
+  }, [sessionId, store]);
   const hydratingTranscript = Boolean(
     sessionId && store.selectionStore.transcriptLoading.value === sessionId,
   );

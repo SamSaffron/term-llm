@@ -290,3 +290,29 @@ func TestUserImageMessage_NoCaption(t *testing.T) {
 		t.Fatalf("Parts[0].Type = %q, want %q", msg.Parts[0].Type, PartImage)
 	}
 }
+
+func TestAudioToolOutputJSONAndHistoryClone(t *testing.T) {
+	audio := MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
+	output := ToolOutput{Content: "ready", Media: []MediaArtifact{audio}}
+	message := ToolResultMessageFromOutput("audio-call", "show_media", output, nil)
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Message
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	result := restored.Parts[0].ToolResult
+	if len(result.Media) != 1 || result.Media[0] != audio || len(result.ContentParts) != 0 || len(result.Images) != 0 {
+		t.Fatalf("restored=%+v", result)
+	}
+	cloned, ok := clonePart(message.Parts[0])
+	if !ok || cloned.ToolResult.Media[0] != audio {
+		t.Fatalf("clone=%+v", cloned)
+	}
+	cloned.ToolResult.Media[0].Name = "changed"
+	if message.Parts[0].ToolResult.Media[0] != audio {
+		t.Fatal("clone mutated original media")
+	}
+}

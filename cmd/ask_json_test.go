@@ -765,3 +765,21 @@ func TestJSONEmitter_SeqMonotonicUnderConcurrency(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamJSONAudioUsesMediaEvent(t *testing.T) {
+	audio := llm.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
+	out := captureStreamJSONOutput(t, []ui.StreamEvent{ui.MediaEvent(audio), ui.MediaEvent(llm.MediaArtifact{MediaType: "audio/wav"}), ui.DoneEvent(0)}, defaultTestSessionInfo())
+	events := parseJSONL(t, out)
+	count := 0
+	for _, ev := range events {
+		if ev["type"] == "media" {
+			count++
+			if ev["reference"] != audio.Reference || ev["path"] != audio.StoredPath || ev["media_type"] != audio.MediaType || ev["name"] != audio.Name || ev["caption"] != audio.Caption {
+				t.Fatalf("event=%v", ev)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("events=%s", out)
+	}
+}

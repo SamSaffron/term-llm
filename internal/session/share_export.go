@@ -234,3 +234,15 @@ func assistantPartsText(parts []llm.Part) string {
 	}
 	return strings.Join(texts, "\n\n")
 }
+
+// HasAudioMedia reports whether a selected transcript contains registered
+// recordings, including artifacts whose tool rows were removed. It performs
+// no filesystem access and does not grant permission to embed them.
+func HasAudioMedia(messages []Message, extra []llm.MediaArtifact) bool {
+	for _, item := range htmlMediaReferences(messages, extra) {
+		if strings.HasPrefix(normalizedMediaType(item.MediaType), "audio/") {
+			return true
+		}
+	}
+	return false
+}

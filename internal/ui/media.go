@@ -73,9 +73,8 @@ func RenderMediaMarkdown(content string, media map[string]llm.MediaArtifact, ren
 			cursor = match[1]
 			continue
 		}
-		if alt := strings.TrimSpace(content[match[2]:match[3]]); alt != "" {
-			item.Name = alt
-		}
+		alt := strings.TrimSpace(content[match[2]:match[3]])
+		item = mediaDisplayItem(item, alt)
 		rendered := ""
 		if strings.HasPrefix(strings.ToLower(item.MediaType), "image/") {
 			if image := renderMediaImageWithRenderer(item.Path(), imageRenderer); image != "" {
@@ -90,7 +89,7 @@ func RenderMediaMarkdown(content string, media map[string]llm.MediaArtifact, ren
 			}
 		}
 		if rendered == "" {
-			rendered = RenderMediaLink(item)
+			rendered = renderMediaLink(item, alt)
 		} else if item.Caption != "" {
 			rendered += "\n" + terminaltext.Sanitize(item.Caption)
 		}
@@ -221,8 +220,17 @@ func terminalFileHyperlink(label, path string) string {
 }
 
 // RenderMediaLink renders a clickable terminal link with a visible file URI
-// fallback. It is used for videos and when rich image rendering is unavailable.
-func RenderMediaLink(item llm.MediaArtifact) string {
+// fallback. Audio and video are file links, not terminal playback controls.
+func RenderMediaLink(item llm.MediaArtifact) string { return renderMediaLink(item, "") }
+
+func mediaDisplayItem(item llm.MediaArtifact, alt string) llm.MediaArtifact {
+	if alt != "" && !strings.HasPrefix(strings.ToLower(item.MediaType), "audio/") {
+		item.Name = alt
+	}
+	return item
+}
+
+func renderMediaLink(item llm.MediaArtifact, displayLabel string) string {
 	path := strings.TrimSpace(item.Path())
 	if path == "" {
 		return ""
@@ -230,6 +238,9 @@ func RenderMediaLink(item llm.MediaArtifact) string {
 	name := terminaltext.SanitizeSingleLine(strings.TrimSpace(item.Name))
 	if name == "" {
 		name = terminaltext.SanitizeSingleLine(filepath.Base(path))
+	}
+	if strings.HasPrefix(strings.ToLower(item.MediaType), "audio/") {
+		return renderAudioLink(item, name, displayLabel, path)
 	}
 	kind := "Image"
 	if strings.HasPrefix(strings.ToLower(item.MediaType), "video/") {
@@ -245,6 +256,24 @@ func RenderMediaLink(item llm.MediaArtifact) string {
 	}
 	result := fmt.Sprintf("%s: %s\n%s", kind, label, location)
 	if caption := strings.TrimSpace(terminaltext.Sanitize(item.Caption)); caption != "" {
+		result += "\n" + caption
+	}
+	return result
+}
+
+func renderAudioLink(item llm.MediaArtifact, name, label, path string) string {
+	label = terminaltext.SanitizeSingleLine(strings.TrimSpace(label))
+	caption := terminaltext.SanitizeSingleLine(strings.TrimSpace(item.Caption))
+	if label == "" {
+		label = caption
+	}
+	title := name
+	if label != "" && label != name {
+		title = label + " — " + name
+	}
+	location := terminaltext.SanitizeSingleLine(LocalFileURI(path))
+	result := "♪ Audio: " + terminalFileHyperlink(title, path) + "\nOpen " + terminalFileHyperlink(location, path)
+	if caption != "" && caption != label && caption != name {
 		result += "\n" + caption
 	}
 	return result

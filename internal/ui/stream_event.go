@@ -21,7 +21,7 @@ const (
 	StreamEventDone
 	StreamEventError
 	StreamEventImage       // Legacy image produced by tool
-	StreamEventMedia       // Image or video produced for presentation
+	StreamEventMedia       // Image, video, or audio produced for presentation
 	StreamEventDiff        // Diff from edit tool
 	StreamEventSteering    // User steered a message mid-stream
 	StreamEventModelSwitch // Request model changed at a provider-turn boundary
@@ -243,7 +243,7 @@ func ImageEvent(path string) StreamEvent {
 	}
 }
 
-// MediaEvent creates an ordered image/video presentation event.
+// MediaEvent creates an ordered image/video/audio presentation event.
 func MediaEvent(media llm.MediaArtifact) StreamEvent {
 	return StreamEvent{Type: StreamEventMedia, Media: media}
 }

@@ -33,3 +33,30 @@ describe('per-message media resolution', () => {
     expect(resolverFor('stream', new Map())).not.toBe(resolve);
   });
 });
+
+it('invalidates audio metadata only for rows using that reference', () => {
+  const resolverFor = createMessageMediaResolvers();
+  const first: MarkdownMediaTarget = {
+    url: '/a.wav',
+    type: 'audio',
+    name: 'a.wav',
+    caption: 'Original',
+  };
+  const media = new Map([['audio', first]]);
+  const resolve = resolverFor('recording', media);
+  const plain = resolverFor('plain', media);
+  expect(resolve('AUDIO')).toBe(first);
+  expect(resolverFor('recording', new Map([['audio', { ...first }]]))).toBe(resolve);
+  let previous = resolve;
+  for (const target of [
+    { ...first, name: 'renamed.wav' },
+    { ...first, caption: 'Corrected' },
+  ]) {
+    const next = resolverFor('recording', new Map([['audio', target]]));
+    expect(next).not.toBe(previous);
+    expect(next('audio')).toBe(target);
+    expect(resolverFor('plain', new Map([['audio', target]]))).toBe(plain);
+    previous = next;
+  }
+  expect(resolverFor('recording', new Map())).not.toBe(previous);
+});

@@ -110,21 +110,22 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 	willUpdate := !sessionsShareNew && hadExistingShare && canUpdate &&
 		sess.Share.Provider == string(capabilities.Provider.ID) &&
 		sess.Share.Scope == session.ShareScopeSession && capabilities.Supports(sharepkg.OperationUpdate)
-	// Updates keep earlier exclusions so the same URL is never widened.
-	excludeTools, excludeImages := sessionsShareNoTools, sessionsShareNoImages
-	if willUpdate {
-		excludeTools = excludeTools || sess.Share.ExcludeTools
-		excludeImages = excludeImages || sess.Share.ExcludeImages
+	excludeTools, excludeImages, err := sessionShareExclusions(sess.Share, willUpdate)
+	if err != nil {
+		return err
 	}
+	// Audio consent is never inherited from an earlier share or configuration.
+	exportOptions.IncludeAudio = sessionsShareIncludeAudio
 	exportOptions.Images, exportOptions.AssetMediaTypes = session.ShareImageOptions(capabilities, !excludeImages)
 	visible := session.VisibleExportMessages(messages)
 	if excludeTools {
 		visible, exportOptions.Media = session.StripToolActivity(visible)
 	}
-	files, err := session.ShareBundle(sess, visible, exportOptions)
+	files, exportResult, err := session.ShareBundleWithResult(sess, visible, exportOptions)
 	if err != nil {
 		return err
 	}
+	reportIncludedAudioOmissions(cmd, sessionsShareIncludeAudio, exportResult)
 	name := strings.TrimSpace(sess.PreferredShortTitle())
 	if name == "" {
 		name = fmt.Sprintf("#%d", sess.Number)
@@ -154,6 +155,7 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 		result.Provider = capabilities.Provider.ID
 	}
 
+	reportRemovedShareAudio(cmd, sess.Share, updated, exportResult)
 	now := time.Now()
 	sharedAt := now
 	if updated && sess.Share != nil && !sess.Share.SharedAt.IsZero() {
@@ -162,7 +164,7 @@ func runSessionsShare(cmd *cobra.Command, args []string) error {
 	state := &session.ShareState{
 		Provider: string(result.Provider), ID: result.ID, URL: result.URL, SourceURL: result.SourceURL,
 		Visibility: string(result.Visibility), Scope: session.ShareScopeSession,
-		ExcludeTools: excludeTools, ExcludeImages: excludeImages,
+		ExcludeTools: excludeTools, ExcludeImages: excludeImages, IncludedAudio: exportResult.AudioEmbedded > 0,
 		SharedAt: sharedAt, UpdatedAt: now,
 	}
 	state.Normalize()
@@ -216,4 +218,44 @@ func sessionShareExportOptions(cfg *config.Config, sess *session.Session, includ
 		opts.IncludeRawReasoning = true
 	}
 	return opts, nil
+}
+
+// Just like retained tool/image exclusions, an existing URL must not gain
+// previously excluded recordings. The persisted bit detects content, never
+// grants consent for an update.
+func validateShareAudioUpdate(previous *session.ShareState, includeAudio bool) error {
+	if includeAudio && !previous.IncludedAudio {
+		return fmt.Errorf("cannot add audio recordings to an existing share that had no audio; use --new --include-audio to avoid widening an already-distributed URL")
+	}
+	return nil
+}
+
+func reportAudioOmissions(cmd *cobra.Command, result session.ExportResult) {
+	if result.AudioOmitted > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Note: %d audio recording(s) omitted (unavailable, invalid, or over the 2 MiB audio export budget).\n", result.AudioOmitted)
+	}
+}
+
+func sessionShareExclusions(previous *session.ShareState, update bool) (bool, bool, error) {
+	excludeTools, excludeImages := sessionsShareNoTools, sessionsShareNoImages
+	if !update {
+		return excludeTools, excludeImages, nil
+	}
+	if err := validateShareAudioUpdate(previous, sessionsShareIncludeAudio); err != nil {
+		return false, false, err
+	}
+	// Updates keep earlier exclusions so the same URL is never widened.
+	return excludeTools || previous.ExcludeTools, excludeImages || previous.ExcludeImages, nil
+}
+
+func reportIncludedAudioOmissions(cmd *cobra.Command, include bool, result session.ExportResult) {
+	if include {
+		reportAudioOmissions(cmd, result)
+	}
+}
+
+func reportRemovedShareAudio(cmd *cobra.Command, previous *session.ShareState, updated bool, result session.ExportResult) {
+	if updated && previous.IncludedAudio && result.AudioEmbedded == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Note: audio recordings were removed from the existing share; consent is never inherited from an earlier share.")
+	}
 }

@@ -47,6 +47,8 @@ type shareDoneMsg struct {
 	providerHelp        string
 	providerNotes       []string
 	includedRaw         bool
+	omittedAudio        bool
+	removedAudio        bool
 	excludeTools        bool
 	excludeImages       bool
 	copyAttempted       bool
@@ -255,6 +257,7 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 			requestedVisibility: requestedVisibility, providerName: req.capabilities.Provider.Name,
 			providerHelp: req.capabilities.Provider.Help, providerNotes: append([]string(nil), req.capabilities.Notes...),
 			includedRaw: opts.IncludeRawReasoning, excludeTools: excludeTools, excludeImages: excludeImages,
+			removedAudio: update && sessSnapshot.Share != nil && sessSnapshot.Share.IncludedAudio,
 		}
 		messages, _, err := session.LoadScrollbackWithBoundary(ctx, store, &sessSnapshot)
 		if err != nil {
@@ -266,6 +269,7 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 		if excludeTools {
 			visible, opts.Media = session.StripToolActivity(visible)
 		}
+		result.omittedAudio = session.HasAudioMedia(visible, opts.Media)
 		files, err := session.ShareBundle(&sessSnapshot, visible, opts)
 		if err != nil {
 			result.err = err
@@ -339,6 +343,7 @@ func (m *Model) handleShareDone(msg shareDoneMsg) (tea.Model, tea.Cmd) {
 	if msg.providerHelp != "" {
 		content += "\n\nHelp: " + msg.providerHelp
 	}
+	content += shareAudioNotice(msg)
 	if msg.includedRaw {
 		content += "\n\nWARNING: This share includes raw model reasoning, which may contain private or sensitive information."
 	}
@@ -363,4 +368,15 @@ func (m *Model) handleShareDone(msg shareDoneMsg) (tea.Model, tea.Cmd) {
 	m.clearFooterMessage()
 	m.dialog.ShowContent("Session shared", content)
 	return m, nil
+}
+
+func shareAudioNotice(msg shareDoneMsg) string {
+	if !msg.omittedAudio && !msg.removedAudio {
+		return ""
+	}
+	notice := "Audio recordings were omitted."
+	if msg.removedAudio {
+		notice = "Audio recordings were removed from the existing share."
+	}
+	return "\n\n" + notice + " To include audio, use term-llm sessions share --include-audio (with --new when adding audio to a link that had none), or the web Share dialog."
 }

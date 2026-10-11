@@ -59,11 +59,24 @@ export function createTranscriptIndexes(
               .trim()
               .toLowerCase();
             if (!reference) continue;
+            const type = item.type.startsWith('image/')
+              ? 'image'
+              : item.type.startsWith('video/')
+                ? 'video'
+                : item.type.startsWith('audio/')
+                  ? 'audio'
+                  : undefined;
+            if (!type) continue;
             const url = mediaURL(item.url);
             if (url)
               entries.push([
                 reference,
-                { url, type: item.type.startsWith('video/') ? 'video' : 'image' },
+                {
+                  url,
+                  type,
+                  ...(item.name ? { name: item.name } : {}),
+                  ...(item.caption ? { caption: item.caption } : {}),
+                },
               ]);
           }
           mediaCache.set(input, entries);
@@ -74,7 +87,11 @@ export function createTranscriptIndexes(
       if (
         next.size !== media.size ||
         [...next].some(
-          ([key, item]) => media.get(key)?.url !== item.url || media.get(key)?.type !== item.type,
+          ([key, item]) =>
+            media.get(key)?.url !== item.url ||
+            media.get(key)?.type !== item.type ||
+            media.get(key)?.name !== item.name ||
+            media.get(key)?.caption !== item.caption,
         )
       )
         media = next;

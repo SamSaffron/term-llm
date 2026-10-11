@@ -72,7 +72,7 @@ var sessionsDeleteCmd = &cobra.Command{
 
 var sessionsExportCmd = &cobra.Command{
 	Use:   "export <number|id> [path]",
-	Short: "Export session as markdown",
+	Short: "Export session as Markdown or HTML (.html output filename)",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE:  runSessionsExport,
 }
@@ -179,6 +179,7 @@ var (
 	sessionsMode                      string
 	sessionsTag                       string
 	sessionsExportIncludeSystem       bool
+	sessionsExportIncludeAudio        bool
 	sessionsExportIncludeReasoning    bool
 	sessionsExportIncludeRawReasoning bool
 	sessionsGistPublic                bool
@@ -189,6 +190,7 @@ var (
 	sessionsShareNew                  bool
 	sessionsShareJSON                 bool
 	sessionsShareIncludeRawReasoning  bool
+	sessionsShareIncludeAudio         bool
 	sessionsShareNoImages             bool
 	sessionsShareNoTools              bool
 	sessionsResetYes                  bool
@@ -205,8 +207,9 @@ func init() {
 	// Show flags
 	sessionsShowCmd.Flags().BoolVar(&sessionsJSON, "json", false, "Output as JSON")
 
-	// Markdown export flags
+	// Local transcript export flags
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeSystem, "include-system", false, "Include system prompt in export")
+	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeAudio, "include-audio", false, "Include short audio in HTML exports (recordings and metadata copied as-is)")
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeReasoning, "include-reasoning", false, "Include provider reasoning summaries in export")
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeRawReasoning, "include-raw-reasoning", false, "Include raw reasoning when reasoning.raw is enabled")
 
@@ -215,6 +218,7 @@ func init() {
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareNew, "new", false, "Create a new share instead of updating a compatible session share")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareJSON, "json", false, "Output the share result as JSON")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareIncludeRawReasoning, "include-raw-reasoning", false, "Include raw model reasoning (privacy-sensitive; requires reasoning.raw/source permission)")
+	sessionsShareCmd.Flags().BoolVar(&sessionsShareIncludeAudio, "include-audio", false, "Include short audio (privacy-sensitive; recordings and metadata copied as-is)")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareNoImages, "no-images", false, "Omit images (uploads, generated images, and shown images) from the share")
 	sessionsShareCmd.Flags().BoolVar(&sessionsShareNoTools, "no-tools", false, "Omit tool calls and tool output (which can contain secrets) from the share")
 
@@ -547,20 +551,67 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 		outputPath = fmt.Sprintf("%s.md", name)
 	}
 
-	// Generate markdown with reasoning export policy applied from config and flags.
-	markdown := session.ExportToMarkdown(sess, messages, buildSessionExportOptions(
+	// Apply export policy from config and explicit flags.
+	opts := buildSessionExportOptions(
 		sess,
 		sessionsExportIncludeSystem,
 		sessionsExportIncludeReasoning,
 		sessionsExportIncludeRawReasoning,
-	))
+	)
+	opts.IncludeAudio = sessionsExportIncludeAudio
+	content, exportResult, err := renderSessionExport(sess, messages, opts, outputPath)
+	if err != nil {
+		return err
+	}
 
-	if err := os.WriteFile(outputPath, []byte(markdown), 0644); err != nil {
+	if opts.IncludeAudio {
+		if !isHTMLExportPath(outputPath) {
+			fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: --include-audio is ignored for non-HTML output; use an .html or .htm filename to embed recordings.")
+		} else {
+			reportAudioOmissions(cmd, exportResult)
+		}
+	}
+
+	if err := writeSessionExport(outputPath, content, exportResult.AudioEmbedded > 0); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Exported %d messages to %s\n", len(messages), outputPath)
 	return nil
+}
+
+// renderSessionExport keeps Markdown text-only; an explicit HTML filename
+// selects the self-contained player-capable exporter.
+func renderSessionExport(sess *session.Session, messages []session.Message, opts session.ExportOptions, outputPath string) (string, session.ExportResult, error) {
+	if isHTMLExportPath(outputPath) {
+		return session.ExportToHTMLWithResult(sess, messages, opts)
+	}
+	return session.ExportToMarkdown(sess, messages, opts), session.ExportResult{}, nil
+}
+
+func isHTMLExportPath(outputPath string) bool {
+	ext := strings.ToLower(filepath.Ext(outputPath))
+	return ext == ".html" || ext == ".htm"
+}
+
+// Protect both new files and an existing, previously public export before any
+// private recording bytes are written. Audio-free exports keep their old mode.
+func writeSessionExport(path, content string, embeddedAudio bool) error {
+	if !embeddedAudio {
+		return os.WriteFile(path, []byte(content), 0644)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err := file.WriteString(content); err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func sessionExportReasoningSurface(sess *session.Session) string {

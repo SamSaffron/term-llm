@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
@@ -14,6 +15,8 @@ func TestLocalFileURIForOS(t *testing.T) {
 		goos string
 		want string
 	}{
+		{name: "audio escaping", path: "/tmp/narrated summary.mp3", goos: "linux", want: "file:///tmp/narrated%20summary.mp3"},
+		{name: "windows audio", path: `C:\Users\Sam\narration.wav`, goos: "windows", want: "file:///C:/Users/Sam/narration.wav"},
 		{name: "unix escaping", path: "/tmp/a movie.mp4", goos: "linux", want: "file:///tmp/a%20movie.mp4"},
 		{name: "windows drive", path: `C:\Users\Sam\a movie.mp4`, goos: "windows", want: "file:///C:/Users/Sam/a%20movie.mp4"},
 		{name: "windows unc", path: `\\server\share\a movie.mp4`, goos: "windows", want: "file://server/share/a%20movie.mp4"},
@@ -156,5 +159,37 @@ func TestRenderMediaMarkdownAcceptsCaseAndAngleDestination(t *testing.T) {
 	)
 	if !strings.Contains(got, "file:///tmp/preview.webm") || strings.Contains(strings.ToLower(got), "term-llm-media://") {
 		t.Fatalf("ReplaceMediaMarkdown() = %q", got)
+	}
+}
+
+func TestAudioMediaLinkPreservesNameAndNeverRendersImage(t *testing.T) {
+	const ref = "0123456789abcdef0123456789abcdef"
+	item := llm.MediaArtifact{Reference: ref, SourcePath: "/tmp/narration track.mp3", MediaType: "audio/mpeg", Name: "narration track.mp3", Caption: "Listen to the summary"}
+	media := map[string]llm.MediaArtifact{ref: item}
+	content := "Before\n![Listen to the summary](term-llm-media://" + ref + ")\nAfter"
+	rendered := RenderMediaMarkdown(content, media, func(s string) string { return s }, func(string) ImageArtifact { t.Fatal("audio reached image renderer"); return ImageArtifact{} })
+	plain := ansi.Strip(rendered)
+	for _, want := range []string{"Before", "♪ Audio: Listen to the summary — narration track.mp3", "Open file:///tmp/narration%20track.mp3", "After"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing %q in %q", want, plain)
+		}
+	}
+	if strings.Count(plain, "Listen to the summary") != 1 || media[ref].Name != item.Name {
+		t.Fatalf("duplicated caption or mutated name: %q", plain)
+	}
+	var stream MediaMarkdownStream
+	streamed := stream.Write(content[:30], media) + stream.Write(content[30:65], media) + stream.Write(content[65:], media) + stream.Finish(media)
+	if ansi.Strip(streamed) != plain {
+		t.Fatalf("streamed=%q want=%q", ansi.Strip(streamed), plain)
+	}
+	fenced := "```md\n" + content + "\n```"
+	if got := ReplaceMediaMarkdown(fenced, media); got != fenced {
+		t.Fatalf("fenced example resolved=%q", got)
+	}
+	item.Name = "speech\x1b[31m.mp3"
+	item.Caption = "caption\n\x1b[31m"
+	sanitized := ansi.Strip(RenderMediaLink(item))
+	if strings.Contains(sanitized, "\x1b") || strings.Count(sanitized, "\n") != 1 {
+		t.Fatalf("unsafe caption=%q", sanitized)
 	}
 }

@@ -167,7 +167,7 @@ export function markdownDocumentBlocks(source: string): RenderedMarkdownSourceBl
     const piece = [token] as TokenList;
     piece.links = tokens.links;
     const rendered = documentMarked.parser(piece as never) as string;
-    const html = sanitizeMarkdownHTML(restoreMath(rendered, protectedSource.values));
+    const html = sanitizeMarkdownHTML(restoreMath(rendered, protectedSource.values), 'document');
     const transformedStart = mapped ? cursor - raw.length : 0;
     const startOffset = mapped ? protectedSource.originalOffset(transformedStart) : 0;
     const endOffset = mapped

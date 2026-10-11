@@ -1,4 +1,5 @@
 import { copyText } from '../platform/clipboard';
+import { preserveAudioMediaCards } from '../domain/audio-media';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import {
   analyzeStreamingMarkdown,
@@ -294,6 +295,8 @@ class AssistantStreamRenderer {
         html,
         (prepared) => {
           if (this.rebase) rebaseRenderedAssetURLs(prepared, this.rebase);
+          if (this.fallback && !this.unsafe && source.startsWith(this.latestSource))
+            preserveAudioMediaCards(this.root, prepared);
           addCodeCopyButtons(prepared);
         },
         committed,
@@ -316,6 +319,8 @@ class AssistantStreamRenderer {
     const piece = document.createElement('div');
     piece.className = 'streaming-stable-piece';
     piece.innerHTML = renderMarkdown(source, this.resolveMedia);
+    if (this.rebase) rebaseRenderedAssetURLs(piece, this.rebase);
+    if (this.tail) preserveAudioMediaCards(this.tail, piece);
     this.committed.append(piece);
     this.decorate(piece, source, true);
   }
@@ -333,8 +338,11 @@ class AssistantStreamRenderer {
     } else if (plain) {
       this.tail.replaceChildren(document.createTextNode(source));
     } else {
-      this.tail.innerHTML = renderMarkdown(source, this.resolveMedia);
-      if (this.rebase) rebaseRenderedAssetURLs(this.tail, this.rebase);
+      const prepared = document.createElement('div');
+      prepared.innerHTML = renderMarkdown(source, this.resolveMedia);
+      if (this.rebase) rebaseRenderedAssetURLs(prepared, this.rebase);
+      preserveAudioMediaCards(this.tail, prepared);
+      this.tail.replaceChildren(...Array.from(prepared.childNodes));
     }
     this.tail.className = `streaming-tail${plain ? ' streaming-tail-plain' : ''}`;
     this.tail.style.whiteSpace = plain ? 'pre-wrap' : '';
@@ -381,6 +389,18 @@ class AssistantStreamRenderer {
     this.renderCanonical(source, false);
   }
 
+  private renderPlainFallback(source: string): void {
+    if (!this.tail) return;
+    // Keep already-rendered nodes (including players in the mutable tail). Only
+    // new text becomes plain; subsequent tokens never rebuild this snapshot.
+    const delta = source.slice(this.committedLength + this.tailSource.length);
+    const last = this.tail.lastChild;
+    if (last?.nodeType === Node.TEXT_NODE) (last as Text).appendData(delta);
+    else this.tail.append(document.createTextNode(delta));
+    this.tail.style.whiteSpace = 'pre-wrap';
+    this.tailSource = source.slice(this.committedLength);
+  }
+
   private renderIncremental(source: string, finalized = false): void {
     if (this.updateActiveCode(source, finalized)) return;
     if (hasIncrementalGlobalMarkdownSyntax(source)) {
@@ -396,9 +416,7 @@ class AssistantStreamRenderer {
       this.root.classList.add('streaming-markdown', 'streaming-over-budget');
       this.root.dataset.streamingFallback = 'plain';
       this.root.style.whiteSpace = 'pre-wrap';
-      this.root.replaceChildren(document.createTextNode(source));
-      this.committed = null;
-      this.tail = null;
+      this.renderPlainFallback(source);
       return;
     }
 
@@ -435,9 +453,8 @@ class AssistantStreamRenderer {
     this.hasStreamed = true;
     if (!source.startsWith(this.latestSource)) this.unsafe = true;
     if (this.unsafe) this.renderCanonical(source, false);
-    else if (this.fallback) {
-      this.root.replaceChildren(document.createTextNode(source));
-    } else this.renderIncremental(source);
+    else if (this.fallback) this.renderPlainFallback(source);
+    else this.renderIncremental(source);
     this.latestSource = source;
   }
 
@@ -559,6 +576,15 @@ export function Markdown({
           event.preventDefault();
           event.stopPropagation();
           void handleCodeCopy(copyButton);
+          return;
+        }
+        const audioCard = target.closest('.audio-media-card');
+        if (audioCard) {
+          const link = target.closest('a');
+          if (link && !audioCard.contains(link)) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
           return;
         }
         const image = target.closest('img');

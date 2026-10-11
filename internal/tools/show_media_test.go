@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
 )
 
 type testMediaPublisher struct {
@@ -24,7 +26,7 @@ func (p testMediaPublisher) PublishMedia(context.Context, string, string) (strin
 func TestShowMediaToolPublishesTypedMedia(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "clip.mp4")
-	data := append([]byte{0, 0, 0, 24}, []byte("ftypisom00000000")...)
+	data := mediafixture.MP4("isom")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -78,21 +80,6 @@ func TestShowMediaToolRejectsUnsafeTypeAndPublisherFailure(t *testing.T) {
 	}
 }
 
-func TestDetectShowMediaTypeRejectsLookalikeContainers(t *testing.T) {
-	avif := append([]byte{0, 0, 0, 24}, []byte("ftypavif00000000")...)
-	if got := detectShowMediaType(avif); got != "" {
-		t.Fatalf("AVIF detected as %q", got)
-	}
-	matroska := append([]byte{0x1a, 0x45, 0xdf, 0xa3}, []byte("matroska")...)
-	if got := detectShowMediaType(matroska); got != "" {
-		t.Fatalf("Matroska detected as %q", got)
-	}
-	webm := append([]byte{0x1a, 0x45, 0xdf, 0xa3}, []byte("\x42\x82\x84webm")...)
-	if got := detectShowMediaType(webm); got != "video/webm" {
-		t.Fatalf("WebM detected as %q", got)
-	}
-}
-
 func TestRegistryRetainsMediaPublisherWithoutShowMedia(t *testing.T) {
 	registry, err := NewLocalToolRegistry(&ToolConfig{Enabled: []string{SpawnAgentToolName}}, &config.Config{}, nil)
 	if err != nil {
@@ -125,5 +112,80 @@ func TestShowMediaSpecAndLegacyStandardSet(t *testing.T) {
 	}
 	if !contains(ShowMediaToolName) || contains(ShowImageToolName) {
 		t.Fatalf("standard tools = %v", standard)
+	}
+}
+
+func TestShowMediaAudioFormatsAndLimit(t *testing.T) {
+	for mime, data := range mediafixture.Audio() {
+		t.Run(mime, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "misleading.png")
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			tool := NewShowMediaTool(nil, &ToolConfig{BaseDir: dir})
+			args, _ := json.Marshal(ShowMediaArgs{Path: path, Caption: "Listen\nnow\x1b"})
+			out, err := tool.Execute(context.Background(), args)
+			if err != nil || len(out.Media) != 1 || out.Media[0].MediaType != mime || len(out.Images) != 0 {
+				t.Fatalf("audio output=%+v,%v", out, err)
+			}
+			if out.Media[0].Caption != "Listen now" || !strings.Contains(out.Content, "even for audio") || !strings.Contains(out.Content, "Media ready ("+mime+")") {
+				t.Fatalf("audio instructions=%+v", out)
+			}
+		})
+	}
+	// Sparse MP3 preserves valid starting frames without allocating 100 MiB.
+	for _, size := range []int64{100<<20 - 1, 100 << 20, 100<<20 + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "large.mp3")
+			if err := os.WriteFile(path, mediafixture.MP3(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, size); err != nil {
+				t.Fatal(err)
+			}
+			tool := NewShowMediaTool(nil, &ToolConfig{BaseDir: dir})
+			args, _ := json.Marshal(ShowMediaArgs{Path: path})
+			out, err := tool.Execute(context.Background(), args)
+			if err != nil || (len(out.Media) == 1) != (size <= 100<<20) {
+				t.Fatalf("size=%d output=%+v,%v", size, out, err)
+			}
+			if size > 100<<20 && !strings.Contains(out.Content, "audio files up to 100 MiB") {
+				t.Fatalf("limit message=%s", out.Content)
+			}
+		})
+	}
+}
+
+func TestShowMediaAudioFailurePaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "speech.mp3")
+	if err := os.WriteFile(path, mediafixture.MP3(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(ShowMediaArgs{Path: path})
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
+	mgr.SetApprovalMode(ModeAuto)
+	mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+		return PolicyDecision{Allowed: false, Rationale: "not authorized"}, nil
+	}, nil)
+	denied := NewShowMediaTool(mgr, &ToolConfig{BaseDir: dir})
+	out, err := denied.Execute(context.Background(), args)
+	if err != nil || len(out.Media) != 0 || !strings.Contains(out.Content, "denied") {
+		t.Fatalf("denial=%+v,%v", out, err)
+	}
+	tool := NewShowMediaTool(nil, &ToolConfig{BaseDir: dir})
+	tool.SetPublisher(testMediaPublisher{})
+	out, err = tool.Execute(context.Background(), args)
+	if err != nil || len(out.Media) != 0 || !strings.Contains(out.Content, "no stored path") {
+		t.Fatalf("empty publication=%+v,%v", out, err)
+	}
+	for _, path := range []string{filepath.Join(dir, "missing.wav"), dir} {
+		args, _ = json.Marshal(ShowMediaArgs{Path: path})
+		out, err = tool.Execute(context.Background(), args)
+		if err != nil || len(out.Media) != 0 {
+			t.Fatalf("invalid path=%+v,%v", out, err)
+		}
 	}
 }

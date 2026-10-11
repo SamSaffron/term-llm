@@ -158,7 +158,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Detached-agent wait/continue cards keep validated child links through
 		// live results and durable reloads; their small eager transcript parser
 		// adds a little to the compressed shell.
-		"dist/app.js":                {raw: 533_000, gzip: 157_000},
+		// show_media audio adds the shared audio card (native controls, download
+		// fallback, decoder-error state), trusted-placeholder Markdown sanitizing
+		// and the transcript-scoped single-player policy. Generated audio renders
+		// inline in history, so it is eager: ~536.5/158.3 kB. Same ~1% rule.
+		"dist/app.js":                {raw: 542_000, gzip: 160_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

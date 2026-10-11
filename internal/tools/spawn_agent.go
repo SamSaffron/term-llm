@@ -113,7 +113,7 @@ type SubagentEvent struct {
 	ToolOutput        string              // for "tool_end" events - text content
 	Diffs             []llm.DiffData      // for "tool_end" events - structured diffs
 	Images            []string            // for "tool_end" events - legacy image paths
-	Media             []llm.MediaArtifact // for "tool_end" events - ordered image/video artifacts
+	Media             []llm.MediaArtifact // for "tool_end" events - ordered image/video/audio artifacts
 	Success           bool                // for "tool_end" events
 	Phase             string              // for "phase" events
 	InputTokens       int                 // fresh input tokens for "usage" events

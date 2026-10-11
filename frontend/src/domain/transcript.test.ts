@@ -2247,3 +2247,43 @@ describe('transcript domain', () => {
     });
   });
 });
+
+describe('durable audio media', () => {
+  it.each(['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/mp4', 'audio/webm'])(
+    'retains and rebases %s with metadata on reload',
+    (type) => {
+      const artifact = {
+        reference: '0123456789abcdef0123456789abcdef',
+        url: '/ui/media/audio.wav',
+        type,
+        name: 'narration.wav',
+        caption: 'Summary',
+      };
+      const messages = convertServerMessages(
+        [
+          {
+            id: 1,
+            role: 'assistant',
+            parts: [{ type: 'tool_call', tool_call_id: 'audio', tool_name: 'show_media' }],
+          },
+          {
+            id: 2,
+            role: 'tool',
+            parts: [
+              {
+                type: 'tool_result',
+                tool_call_id: 'audio',
+                tool_name: 'show_media',
+                media: [artifact, { url: '/not-media', type: 'application/pdf' }],
+              },
+            ],
+          },
+        ],
+        { rebaseAssetURL: (value) => `/hub/nodes/test${value}` },
+      );
+      expect(messages[0].tools?.[0].media).toEqual([
+        { ...artifact, url: `/hub/nodes/test${artifact.url}` },
+      ]);
+    },
+  );
+});

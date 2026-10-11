@@ -21,6 +21,9 @@ type ShareState struct {
 	// existing URL; creating a new share is required to include them again.
 	ExcludeTools  bool `json:"exclude_tools,omitempty"`
 	ExcludeImages bool `json:"exclude_images,omitempty"`
+	// IncludedAudio records actual embedding, not consent for a later export.
+	// Legacy state without this field is treated as having no audio.
+	IncludedAudio bool `json:"included_audio,omitempty"`
 
 	GistID     string `json:"gist_id,omitempty"`
 	GistURL    string `json:"gist_url,omitempty"`

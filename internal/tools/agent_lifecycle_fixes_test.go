@@ -16,11 +16,17 @@ import (
 // mediaRunner emits one media-bearing tool result, then blocks until released.
 type mediaRunner struct {
 	*lifecycleRunner
-	path string
+	path      string
+	mediaType string
+	reference string
 }
 
 func (r *mediaRunner) RunAgentWithCallbackAndOptions(ctx context.Context, name, prompt string, depth int, id string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
-	cb(id, SubagentEvent{Type: SubagentEventToolEnd, ToolName: "image_generate", Media: []llm.MediaArtifact{{StoredPath: r.path, MediaType: "image/png"}}})
+	mime := r.mediaType
+	if mime == "" {
+		mime = "image/png"
+	}
+	cb(id, SubagentEvent{Type: SubagentEventToolEnd, ToolName: "show_media", Media: []llm.MediaArtifact{{Reference: r.reference, StoredPath: r.path, MediaType: mime}}})
 	return r.lifecycleRunner.RunAgentWithCallbackAndOptions(ctx, name, prompt, depth, id, cb, opts)
 }
 

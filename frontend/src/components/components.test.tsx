@@ -8,6 +8,7 @@ import { APIError } from '../api/client';
 import type { SessionShareResponse } from '../api/endpoints';
 import type { Attachment, ToolCall } from '../domain/types';
 import { Transcript } from './Transcript';
+import { bindTranscriptMedia } from './transcript-media';
 import { Composer } from './Composer';
 import { DelegationContext, returnToParent } from './DelegationContext';
 import { Markdown } from './Markdown';
@@ -8117,6 +8118,7 @@ describe('Preact-owned chat surfaces', () => {
       scope: 'conversation',
       visibility: 'public',
       include_images: true,
+      include_audio: false,
       include_tools: true,
     });
     expect(screen.getByText('Creating share…')).toBeVisible();
@@ -8212,6 +8214,53 @@ describe('Preact-owned chat surfaces', () => {
       scope: 'response',
       visibility: 'unlisted',
       include_images: false,
+      include_audio: false,
+    });
+  });
+
+  it.each([false, true])('requires separate audio consent (include=%s)', async (includeAudio) => {
+    const store = createStore();
+    store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
+    store.modal.value = 'share';
+    store.endpoints.sharingCapabilities = vi.fn(async () => ({
+      enabled: true,
+      provider: { id: 'acme', name: 'Acme Vault' },
+      operations: ['create'] as Array<'create'>,
+      visibilities: ['unlisted'] as Array<'unlisted'>,
+      default_visibility: 'unlisted' as const,
+    }));
+    store.endpoints.createSessionShare = vi.fn(async () => ({
+      provider: 'acme',
+      id: 'x',
+      url: 'https://share.example/x',
+      visibility: 'unlisted' as const,
+      ready: true,
+      scope: 'response' as const,
+    }));
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const audio = await screen.findByRole('checkbox', { name: /Include audio/ });
+    const images = screen.getByRole('checkbox', { name: /Include images/ });
+    expect(audio).not.toBeChecked();
+    expect(images).toBeChecked();
+    expect(
+      screen.getByText(/Recordings and their embedded metadata are copied as-is/),
+    ).toBeVisible();
+    await userEvent.click(images);
+    expect(audio).not.toBeChecked();
+    if (includeAudio) await userEvent.click(audio);
+    expect(images).not.toBeChecked();
+    await userEvent.click(screen.getByRole('button', { name: 'Create share' }));
+    expect(store.endpoints.createSessionShare).toHaveBeenCalledWith(store.sessions.value[0].id, {
+      anchor_message_id: 42,
+      scope: 'response',
+      visibility: 'unlisted',
+      include_images: false,
+      include_audio: includeAudio,
     });
   });
 
@@ -8250,7 +8299,7 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(tools);
     expect(
       screen.getByText(
-        'Your messages, the assistant’s replies, and images are included. Tool activity and raw reasoning are excluded.',
+        'Your messages, the assistant’s replies, and images are included. Tool activity, audio, and raw reasoning are excluded.',
       ),
     ).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Create share' }));
@@ -8259,6 +8308,7 @@ describe('Preact-owned chat surfaces', () => {
       scope: 'conversation',
       visibility: 'unlisted',
       include_images: true,
+      include_audio: false,
       include_tools: false,
     });
   });
@@ -10073,5 +10123,394 @@ describe('Preact-owned chat surfaces', () => {
     const value = 'x'.repeat(70_000);
     const { container } = render(<Markdown value={value} streaming />);
     expect(container.querySelector('[data-streaming-fallback="plain"]')).toHaveTextContent(value);
+  });
+});
+
+describe('transcript audio cards', () => {
+  const reference = '0123456789abcdef0123456789abcdef';
+  const artifact = {
+    reference,
+    url: `/ui/media/${reference}.ogg`,
+    type: 'audio/ogg',
+    name: 'summary.ogg',
+    caption: 'A narrated summary',
+  };
+  const messagesWithAudio = () => [
+    {
+      id: 'audio-tool',
+      role: 'tool-group' as const,
+      content: '',
+      created: 1,
+      tools: [{ id: 'show-audio', name: 'show_media', status: 'done' as const, media: [artifact] }],
+    },
+    {
+      id: 'audio-answer',
+      role: 'assistant' as const,
+      content: `![Listen to the summary](term-llm-media://${reference})`,
+      created: 2,
+    },
+  ];
+  const mount = (store: AppStore) =>
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+  const playing = (player: HTMLMediaElement) => {
+    Object.defineProperty(player, 'paused', { configurable: true, value: false });
+    return vi.spyOn(player, 'pause').mockImplementation(() => undefined);
+  };
+
+  it('renders uploaded audio with the same native controls, filename and download affordance', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'upload-audio',
+        role: 'user',
+        content: 'Listen',
+        created: 1,
+        attachments: [
+          { type: 'audio/wav', name: 'voice.wav', dataURL: 'data:audio/wav;base64,AAAA' },
+        ],
+      },
+    ];
+    const { container, unmount } = mount(store);
+    const audio = container.querySelector('audio')!;
+    expect(audio.closest('.audio-media-card')).not.toBeNull();
+    expect(audio).toHaveAttribute('preload', 'metadata');
+    expect(audio).toHaveAttribute('aria-label', 'voice.wav');
+    expect(audio).not.toHaveAttribute('autoplay');
+    expect(screen.getByRole('link', { name: 'Download audio' })).toHaveAttribute(
+      'download',
+      'voice.wav',
+    );
+    const pause = playing(audio);
+    unmount();
+    expect(pause).toHaveBeenCalled();
+    store.dispose();
+  });
+
+  it.each([
+    [{ prefix: '/ui' }, `/ui/media/${reference}.ogg`],
+    [{ prefix: '/custom/chat' }, `/custom/chat/media/${reference}.ogg`],
+    [
+      { prefix: '/hub/nodes/n/chat', hub: { nodeBasePath: '/ui' } },
+      `/hub/nodes/n/chat/media/${reference}.ogg`,
+    ],
+  ])('validates audio routes under custom and Hub mounts: %s', (options, path) => {
+    const store = createStore(options as Partial<AppConfig>);
+    const messages = messagesWithAudio();
+    messages[0].tools![0].media = [{ ...artifact, url: 'hub' in options ? artifact.url : path }];
+    store.sessions.value[0].messages = messages;
+    const { container } = mount(store);
+    expect(container.querySelector('audio')?.src).toBe(new URL(path, location.href).href);
+    container.addEventListener('click', (event) => event.preventDefault(), { once: true });
+    fireEvent.click(screen.getByRole('link', { name: 'Download audio' }));
+    expect(store.lightbox.value).toBeNull();
+    expect(container.querySelector('a.audio-media-download')).not.toHaveClass('video-link');
+    store.dispose();
+  });
+
+  it('does not intercept Ogg audio controls or download links for the video lightbox', () => {
+    const onMedia = vi.fn();
+    const { container } = render(
+      <Markdown
+        value={`![Listen](term-llm-media://${reference})`}
+        resolveMedia={() => ({ ...artifact, type: 'audio' })}
+        onMedia={onMedia}
+      />,
+    );
+    fireEvent.click(container.querySelector('audio')!);
+    const link = screen.getByRole('link', { name: 'Download audio' });
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    let intercepted = true;
+    container.addEventListener(
+      'click',
+      (event) => {
+        intercepted = event.defaultPrevented;
+        event.preventDefault(); // Do not ask jsdom to navigate the download.
+      },
+      { once: true },
+    );
+    link.dispatchEvent(click);
+    expect(onMedia).not.toHaveBeenCalled();
+    expect(intercepted).toBe(false);
+  });
+
+  it('preserves repeated audio players through tail updates, commitment and finalization', async () => {
+    vi.useFakeTimers();
+    try {
+      const audioSource = `![Listen](term-llm-media://${reference})`;
+      const resolve = () => ({ ...artifact, type: 'audio' as const });
+      const rebase = (value: string) => value.replace(/^\/ui\//, '/hub/node/');
+      let value = `${audioSource}\n\n${audioSource}\n\nMore`;
+      const { container, rerender } = render(
+        <Markdown value={value} streaming resolveMedia={resolve} rebase={rebase} />,
+      );
+      const players = [...container.querySelectorAll('audio')];
+      players.forEach((player, index) => {
+        player.dataset.playing = String(index);
+        player.currentTime = 12 + index;
+      });
+      expect(players).toHaveLength(2);
+      for (const delta of [' tokens', `\n\n${'continuing '.repeat(110)}`]) {
+        value += delta;
+        rerender(<Markdown value={value} streaming resolveMedia={resolve} rebase={rebase} />);
+        await act(async () => {
+          await vi.runAllTimersAsync();
+        });
+        const updated = [...container.querySelectorAll('audio')];
+        players.forEach((player, index) => {
+          expect(updated[index]).toBe(player);
+          expect(player.dataset.playing).toBe(String(index));
+          expect(player.currentTime).toBe(12 + index);
+        });
+      }
+      expect(players[0].closest('.streaming-stable')).not.toBeNull();
+      rerender(<Markdown value={value} resolveMedia={resolve} rebase={rebase} />);
+      expect([...container.querySelectorAll('audio')]).toEqual(players);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])(
+    'keeps rendered audio through the 64 KiB fallback (committed: %s)',
+    async (committed) => {
+      vi.useFakeTimers();
+      try {
+        const audioSource = `![Listen](term-llm-media://${reference})`;
+        const resolve = () => ({ ...artifact, type: 'audio' as const });
+        let value = `${audioSource}\n\n${committed ? 'text '.repeat(230) : 'More'}`;
+        const { container, rerender } = render(
+          <Markdown value={value} streaming resolveMedia={resolve} />,
+        );
+        const player = container.querySelector('audio')!;
+        player.dataset.playing = 'true';
+        expect(Boolean(player.closest('.streaming-stable'))).toBe(committed);
+        value += 'x'.repeat(70_000);
+        rerender(<Markdown value={value} streaming resolveMedia={resolve} />);
+        // Flush the adaptive buffer without walking tens of thousands of frames.
+        act(() => {
+          document.dispatchEvent(new Event('visibilitychange'));
+        });
+        expect(container.querySelector('[data-streaming-fallback="plain"]')).not.toBeNull();
+        expect(container.querySelector('audio')).toBe(player);
+        expect(player.dataset.playing).toBe('true');
+        value += ' next token';
+        rerender(<Markdown value={value} streaming resolveMedia={resolve} />);
+        await act(async () => {
+          await vi.runAllTimersAsync();
+        });
+        expect(container.querySelector('audio')).toBe(player);
+        expect(container).toHaveTextContent('next token');
+        rerender(<Markdown value={value} resolveMedia={resolve} />);
+        expect(container.querySelector('audio')).toBe(player);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('does not follow an enclosing model link from audio controls but permits its download', () => {
+    const onMedia = vi.fn();
+    const { container } = render(
+      <Markdown
+        value={`[![Listen](term-llm-media://${reference})](https://example.com)`}
+        resolveMedia={() => ({ ...artifact, type: 'audio' })}
+        onMedia={onMedia}
+      />,
+    );
+    const player = container.querySelector('audio')!;
+    const card = player.closest('.audio-media-card')!;
+    expect(card.closest('a')).toBeNull();
+    const normalClick = new MouseEvent('click', { bubbles: true, cancelable: true });
+    fireEvent(player, normalClick);
+    expect(normalClick.defaultPrevented).toBe(false);
+    // Defend against an enclosing anchor even if another DOM path introduces one.
+    const outerLink = document.createElement('a');
+    outerLink.href = 'https://example.com';
+    // A model-controlled class is not proof that this is the card's own download.
+    outerLink.className = 'audio-media-download';
+    card.replaceWith(outerLink);
+    outerLink.append(card);
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    fireEvent(player, click);
+    expect(click.defaultPrevented).toBe(true);
+    let downloadIntercepted = true;
+    container.addEventListener(
+      'click',
+      (event) => {
+        downloadIntercepted = event.defaultPrevented;
+        event.preventDefault();
+      },
+      { once: true },
+    );
+    fireEvent.click(card.querySelector('.audio-media-download')!);
+    expect(downloadIntercepted).toBe(false);
+    expect(onMedia).not.toHaveBeenCalled();
+  });
+
+  it.each(['ogg', 'webm', 'mp4'])(
+    'opens only video extensions in the lightbox: .%s',
+    (extension) => {
+      const onMedia = vi.fn();
+      const { container } = render(
+        <Markdown value={`[Recording](/media/${reference}.${extension})`} onMedia={onMedia} />,
+      );
+      container.addEventListener('click', (event) => event.preventDefault());
+      fireEvent.click(container.querySelector('a')!);
+      expect(onMedia).toHaveBeenCalledTimes(extension === 'ogg' ? 0 : 1);
+    },
+  );
+
+  it('pauses other audio and video in this transcript, not unrelated page media, and cleans up', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<audio></audio><audio></audio><video></video>';
+    document.body.append(root);
+    const [first, second, video] = [...root.querySelectorAll<HTMLMediaElement>('audio,video')];
+    const outside = document.createElement('audio');
+    document.body.append(outside);
+    const pauseFirst = playing(first);
+    const pauseSecond = playing(second);
+    const pauseVideo = playing(video);
+    const pauseOutside = playing(outside);
+    const remove = vi.spyOn(root, 'removeEventListener');
+    const cleanup = bindTranscriptMedia(root);
+    fireEvent.play(second);
+    expect(pauseFirst).toHaveBeenCalledTimes(1);
+    expect(pauseVideo).toHaveBeenCalledTimes(1);
+    expect(pauseSecond).not.toHaveBeenCalled();
+    expect(pauseOutside).not.toHaveBeenCalled();
+    cleanup();
+    expect(pauseSecond).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith('play', expect.any(Function), true);
+    pauseFirst.mockClear();
+    fireEvent.play(second);
+    expect(pauseFirst).not.toHaveBeenCalled();
+    root.remove();
+    outside.remove();
+  });
+
+  it('stops detached media when a source is replaced or a row is virtualized away', async () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<span><audio></audio></span>';
+    const audio = root.querySelector('audio')!;
+    const pause = playing(audio);
+    const cleanup = bindTranscriptMedia(root);
+    fireEvent.play(audio);
+    root.replaceChildren();
+    await act(async () => Promise.resolve());
+    expect(pause).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it('preserves historical audio DOM and playback during unrelated incoming streaming deltas', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = messagesWithAudio();
+    const { container } = mount(store);
+    const audio = container.querySelector('audio')!;
+    const pause = playing(audio);
+    fireEvent.play(audio);
+    const run = initialProjection({
+      responseId: 'incoming',
+      sessionId: 's1',
+      epoch: 1,
+      status: 'streaming',
+      lastSequence: 0,
+      startedRev: 0,
+      reconnects: 0,
+    });
+    act(() => {
+      store.runs.value = {
+        s1: reduceResponse(run, {
+          type: 'response.output_text.delta',
+          response_id: 'incoming',
+          run_epoch: 1,
+          sequence_number: 1,
+          delta: 'Incoming delta',
+          assistant_segment_ordinal: 0,
+        }),
+      };
+    });
+    expect(store.streaming.value).toBe(true);
+    expect(container.querySelector('audio')).toBe(audio);
+    expect(pause).not.toHaveBeenCalled();
+    act(() => {
+      store.runs.value = {
+        s1: reduceResponse(store.runs.value.s1, {
+          type: 'response.output_text.delta',
+          response_id: 'incoming',
+          run_epoch: 1,
+          sequence_number: 2,
+          delta: ' continued',
+          assistant_segment_ordinal: 0,
+        }),
+      };
+    });
+    expect(container.querySelector('audio')).toBe(audio);
+    expect(pause).not.toHaveBeenCalled();
+    store.dispose();
+  });
+
+  it('stops the old player on session switch and updates only corrected audio metadata', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = messagesWithAudio();
+    const { container } = mount(store);
+    const oldAudio = container.querySelector('audio')!;
+    const pause = playing(oldAudio);
+    fireEvent.play(oldAudio);
+    act(() => {
+      const session = store.sessions.value[0];
+      store.sessions.value = [
+        {
+          ...session,
+          messages: session.messages.map((message) =>
+            message.id === 'audio-tool'
+              ? {
+                  ...message,
+                  tools: message.tools!.map((tool) => ({
+                    ...tool,
+                    media: [{ ...artifact, name: 'corrected.ogg' }],
+                  })),
+                }
+              : message,
+          ),
+        },
+      ];
+    });
+    await act(async () => Promise.resolve());
+    expect(container.querySelector('audio')).not.toBe(oldAudio);
+    expect(screen.getByRole('link', { name: 'Download audio' })).toHaveAttribute(
+      'download',
+      'corrected.ogg',
+    );
+    expect(pause).toHaveBeenCalled();
+    const nextAudio = container.querySelector('audio')!;
+    const nextPause = playing(nextAudio);
+    fireEvent.play(nextAudio);
+    act(() => {
+      store.sessions.value = [
+        ...store.sessions.value,
+        { ...store.sessions.value[0], id: 's2', messages: [] },
+      ];
+      store.activeSessionId.value = 's2';
+    });
+    expect(nextPause).toHaveBeenCalled();
+    expect(container.querySelector('audio')).toBeNull();
+    store.dispose();
+  });
+
+  it('offers an accessible decoder-error fallback without losing the download', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = messagesWithAudio();
+    const { container } = mount(store);
+    const audio = container.querySelector('audio')!;
+    fireEvent.error(audio);
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Download the audio to listen in another player.',
+    );
+    expect(screen.getByRole('link', { name: 'Download audio' })).toBeVisible();
+    store.dispose();
   });
 });

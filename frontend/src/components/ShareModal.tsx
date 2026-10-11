@@ -37,6 +37,7 @@ export const includedSummary = (
   scope: ShareScope,
   includeTools: boolean,
   includeImages: boolean,
+  includeAudio = false,
 ): string => {
   const included: string[] = [];
   const excluded: string[] = [];
@@ -48,6 +49,7 @@ export const includedSummary = (
     (includeTools ? included : excluded).push('tool activity');
   }
   (includeImages ? included : excluded).push('images');
+  (includeAudio ? included : excluded).push('audio');
   excluded.push('raw reasoning');
   return `${sentence(included, 'included')} ${sentence(excluded, 'excluded')}`;
 };
@@ -61,6 +63,7 @@ export function ShareModal() {
   const [scope, setScope] = useState<ShareScope>('response');
   const [visibility, setVisibility] = useState<ShareVisibility | ''>('');
   const [includeImages, setIncludeImages] = useState(true);
+  const [includeAudio, setIncludeAudio] = useState(false);
   const [includeTools, setIncludeTools] = useState(true);
   const [capabilities, setCapabilities] = useState<SharingCapabilitiesResponse | null>(null);
   const [capabilityLoading, setCapabilityLoading] = useState(true);
@@ -130,6 +133,7 @@ export function ShareModal() {
         scope,
         visibility,
         include_images: includeImages,
+        include_audio: includeAudio,
         ...(scope === 'conversation' ? { include_tools: includeTools } : {}),
       });
       setResult(response);
@@ -293,6 +297,25 @@ export function ShareModal() {
                 </label>
               </fieldset>
 
+              <fieldset class="share-fieldset" disabled={submitting}>
+                <legend>Audio</legend>
+                <label class={`share-choice ${includeAudio ? 'is-selected' : ''}`}>
+                  <input
+                    type="checkbox"
+                    name="share-audio"
+                    checked={includeAudio}
+                    onChange={(event) => setIncludeAudio(event.currentTarget.checked)}
+                  />
+                  <span>
+                    <strong>Include audio</strong>
+                    <small>
+                      Recordings and their embedded metadata are copied as-is, up to 2 MiB in total.
+                      Audio can contain private speech; metadata is not removed.
+                    </small>
+                  </span>
+                </label>
+              </fieldset>
+
               <fieldset class="share-fieldset share-visibility" disabled={submitting}>
                 <legend>Visibility</legend>
                 {capabilities.visibilities.length === 1 ? (
@@ -324,7 +347,7 @@ export function ShareModal() {
 
               <div class="share-included">
                 <strong>What’s included</strong>
-                <p>{includedSummary(scope, includeTools, includeImages)}</p>
+                <p>{includedSummary(scope, includeTools, includeImages, includeAudio)}</p>
               </div>
               {capabilities.notes?.map((note) => (
                 <p class="share-privacy" key={note}>

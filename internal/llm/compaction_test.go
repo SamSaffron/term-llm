@@ -2440,3 +2440,43 @@ func TestCompactionAckTextMatchesWebTranscript(t *testing.T) {
 		t.Fatalf("%s does not bind COMPACTION_ACK_TEXT to %q", path, CompactionAckText)
 	}
 }
+
+func TestCompactRetainsAudioMediaAndSummarizesKinds(t *testing.T) {
+	audio := MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3"}
+	toolResult := &ToolResult{ID: "audio-call", Name: "show_media", Content: "ready", Media: []MediaArtifact{audio}}
+	summary := compactToolResultSummary(toolResult)
+	if !strings.Contains(summary, "1 audio(s)") || strings.Contains(summary, "image(s)") {
+		t.Fatalf("summary=%q", summary)
+	}
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("summary")
+	messages := []Message{UserText("older"), AssistantText("older answer"), UserText("latest request " + strings.Repeat("x", 2000)),
+		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{ID: "audio-call", Name: "show_media", Arguments: json.RawMessage(`{"path":"/tmp/speech.mp3"}`)}}}},
+		{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: toolResult}}},
+	}
+	config := DefaultCompactionConfig()
+	config.RecentRawTurns = 1
+	config.RecentRawTokenBudget = 80
+	result, err := Compact(context.Background(), provider, "test-model", "", messages, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, message := range sanitizeToolHistory(result.NewMessages) {
+		for _, part := range message.Parts {
+			if part.ToolResult != nil && part.ToolResult.ID == "audio-call" {
+				if len(part.ToolResult.Media) != 1 || part.ToolResult.Media[0] != audio {
+					t.Fatalf("lost media=%+v", part.ToolResult)
+				}
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("audio result removed from retained tail: %+v", result.NewMessages)
+	}
+	mixed := compactMediaSummary([]MediaArtifact{audio, {MediaType: "image/png"}, {MediaType: "video/mp4"}})
+	if strings.Join(mixed, ",") != "1 image(s),1 video(s),1 audio(s)" {
+		t.Fatalf("mixed=%v", mixed)
+	}
+}

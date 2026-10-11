@@ -2,15 +2,19 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mediatype"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 )
 
 // telegramPresentation owns the message window and send/edit policy for one
@@ -256,62 +260,169 @@ func (p *telegramPresentation) deliverMedia(images []string, mediaItems []llm.Me
 		}
 	}
 	for _, media := range mediaItems {
-		path := media.PublishedPath()
-		info, err := os.Stat(path)
-		if err != nil {
-			log.Printf("[telegram] cannot access media %s: %v", path, err)
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			log.Printf("[telegram] media is not a regular file: %s", path)
-			continue
-		}
-		if info.Size() > telegramMaxMediaUploadBytes {
-			label := strings.TrimSpace(media.Name)
-			if label == "" {
-				label = "video"
-			}
-			if _, err := p.bot.Send(tgbotapi.NewMessage(p.chatID, fmt.Sprintf("%s was not sent because it exceeds Telegram's 50 MiB upload limit.", label))); err != nil {
-				log.Printf("[telegram] failed to report oversized media %s: %v", path, err)
-			}
-			continue
-		}
-		upload, err := os.Open(path)
-		if err != nil {
-			log.Printf("[telegram] cannot open media %s: %v", path, err)
-			continue
-		}
-		file := tgbotapi.FileReader{Name: telegramMediaFilename(media.MediaType), Reader: upload}
-		if strings.HasPrefix(strings.ToLower(media.MediaType), "image/") {
-			message := tgbotapi.NewPhoto(p.chatID, file)
-			message.Caption = media.Caption
-			_, err = p.bot.Send(message)
-			_ = upload.Close()
-			if err != nil {
-				log.Printf("[telegram] failed to send image media %s: %v", path, err)
-			}
-			continue
-		}
-		message := tgbotapi.NewVideo(p.chatID, file)
-		message.Caption = media.Caption
-		_, err = p.bot.Send(message)
-		_ = upload.Close()
-		if err != nil {
-			log.Printf("[telegram] video send failed for %s, retrying as document: %v", path, err)
-			fallback, openErr := os.Open(path)
-			if openErr != nil {
-				log.Printf("[telegram] cannot reopen media document %s: %v", path, openErr)
-				continue
-			}
-			document := tgbotapi.NewDocument(p.chatID, tgbotapi.FileReader{Name: telegramMediaFilename(media.MediaType), Reader: fallback})
-			document.Caption = media.Caption
-			_, documentErr := p.bot.Send(document)
-			_ = fallback.Close()
-			if documentErr != nil {
-				log.Printf("[telegram] failed to send media document %s: %v", path, documentErr)
-			}
-		}
+		p.deliverArtifact(media)
 	}
+}
+
+var errTelegramMediaTooLarge = errors.New("media exceeds Telegram's 50 MiB upload limit")
+
+// openTelegramMedia rejects non-regular files before opening (in particular,
+// FIFOs), then verifies that the handle still refers to the checked file.
+func openTelegramMedia(path string) (*os.File, os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("stat media: %w", err)
+	}
+	if err := checkTelegramMediaInfo(info); err != nil {
+		return nil, nil, err
+	}
+	upload, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open media: %w", err)
+	}
+	opened, err := upload.Stat()
+	if err == nil {
+		err = checkTelegramMediaInfo(opened)
+	}
+	if err == nil && !os.SameFile(info, opened) {
+		err = errors.New("media changed while opening")
+	}
+	if err != nil {
+		_ = upload.Close()
+		return nil, nil, err
+	}
+	return upload, opened, nil
+}
+
+func checkTelegramMediaInfo(info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return errors.New("media is not a regular file")
+	}
+	if info.Size() > telegramMaxMediaUploadBytes {
+		return errTelegramMediaTooLarge
+	}
+	return nil
+}
+
+func (p *telegramPresentation) uploadArtifact(media llm.MediaArtifact, document bool) (string, error) {
+	upload, info, err := openTelegramMedia(media.PublishedPath())
+	if err != nil {
+		return "", err
+	}
+	defer upload.Close()
+	kind := "document"
+	if !document {
+		kind = telegramUploadKind(media.MediaType, upload, info.Size())
+	}
+	return kind, p.sendMediaUpload(media, upload, kind)
+}
+
+func (p *telegramPresentation) reportOversizedMedia(media llm.MediaArtifact) {
+	label := telegramArtifactFilename(media)
+	if _, err := p.bot.Send(tgbotapi.NewMessage(p.chatID, fmt.Sprintf("%s was not sent because it exceeds Telegram's 50 MiB upload limit.", label))); err != nil {
+		log.Printf("[telegram] failed to report oversized media: %v", err)
+	}
+}
+
+func (p *telegramPresentation) deliverArtifact(media llm.MediaArtifact) {
+	kind, err := p.uploadArtifact(media, false)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, errTelegramMediaTooLarge) {
+		p.reportOversizedMedia(media)
+		return
+	}
+	log.Printf("[telegram] media upload (%s) failed: %v", kind, err)
+	if kind != "video" && kind != "audio" && kind != "voice" {
+		return
+	}
+	// Reopen and revalidate rather than reusing a consumed native upload reader.
+	if _, err := p.uploadArtifact(media, true); err != nil {
+		if errors.Is(err, errTelegramMediaTooLarge) {
+			p.reportOversizedMedia(media)
+		}
+		log.Printf("[telegram] document fallback failed: %v", err)
+	}
+}
+
+func telegramUploadKind(mime string, upload *os.File, size int64) string {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	switch mime {
+	case "audio/mpeg", "audio/mp4":
+		return "audio"
+	case "audio/ogg":
+		if opus, err := mediatype.IsOggOpus(upload, size); err == nil && opus {
+			return "voice"
+		}
+		return "document"
+	}
+	if strings.HasPrefix(mime, "image/") {
+		return "photo"
+	}
+	if strings.HasPrefix(mime, "video/") {
+		return "video"
+	}
+	return "document"
+}
+
+func (p *telegramPresentation) sendMediaUpload(media llm.MediaArtifact, upload *os.File, kind string) error {
+	file := tgbotapi.FileReader{Name: telegramArtifactFilename(media), Reader: upload}
+	caption := telegramMediaText(media.Caption, 1024)
+	var message tgbotapi.Chattable
+	switch kind {
+	case "photo":
+		c := tgbotapi.NewPhoto(p.chatID, file)
+		c.Caption = caption
+		message = c
+	case "video":
+		c := tgbotapi.NewVideo(p.chatID, file)
+		c.Caption = caption
+		message = c
+	case "audio":
+		c := tgbotapi.NewAudio(p.chatID, file)
+		c.Caption = caption
+		if strings.TrimSpace(media.Name) != "" {
+			c.Title = telegramMediaText(filepath.Base(strings.ReplaceAll(media.Name, "\\", "/")), 64)
+		}
+		if c.Title == "" {
+			c.Title = telegramMediaText(media.Caption, 64)
+		}
+		if c.Title == "" {
+			c.Title = "Audio recording"
+		}
+		message = c
+	case "voice":
+		c := tgbotapi.NewVoice(p.chatID, file)
+		c.Caption = caption
+		message = c
+	default:
+		c := tgbotapi.NewDocument(p.chatID, file)
+		c.Caption = caption
+		message = c
+	}
+	_, err := p.bot.Send(message)
+	return err
+}
+
+func telegramMediaText(value string, limit int) string {
+	value = terminaltext.SanitizeSingleLine(strings.TrimSpace(value))
+	runes := []rune(value)
+	if len(runes) > limit {
+		value = string(runes[:limit])
+	}
+	return value
+}
+
+func telegramArtifactFilename(media llm.MediaArtifact) string {
+	name := telegramMediaText(filepath.Base(strings.ReplaceAll(media.Name, "\\", "/")), 180)
+	if name == "" || name == "." || name == ".." {
+		return telegramMediaFilename(media.MediaType)
+	}
+	if format, ok := mediatype.Lookup(media.MediaType); ok {
+		name = strings.TrimSuffix(name, filepath.Ext(name)) + format.Extension
+	}
+	return name
 }
 
 func (p *telegramPresentation) finalizeText(ctx context.Context, full string, toolsRan bool) error {
