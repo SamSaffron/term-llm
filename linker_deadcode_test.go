@@ -41,20 +41,18 @@ func TestLinkerKeepsMethodDeadCodeElimination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const mark = " <ReflectMethod>"
 	parent := make(map[string]string) // first symbol that made each symbol reachable
 	var marked []string
 	isMarked := make(map[string]bool)
+	// Symbols carry attribute flags such as "<UsedInIface><ReflectMethod>",
+	// and a symbol may gain flags during the pass. Key by bare name.
 	noteMark := func(sym string) string {
-		if !strings.HasSuffix(sym, mark) {
-			return sym
+		name, flags, _ := strings.Cut(sym, " <")
+		if strings.Contains("<"+flags, "<ReflectMethod>") && !isMarked[name] {
+			isMarked[name] = true
+			marked = append(marked, name)
 		}
-		sym = strings.TrimSuffix(sym, mark)
-		if !isMarked[sym] {
-			isMarked[sym] = true
-			marked = append(marked, sym)
-		}
-		return sym
+		return name
 	}
 	var other strings.Builder
 	scanner := bufio.NewScanner(stderr)

@@ -199,6 +199,8 @@ func writeExportBlock(b *strings.Builder, block *htmlExportBlock) {
 			}
 		}
 		b.WriteString(`</summary><div class="details-body content">` + block.HTML + `</div></details>`)
+	// The template failed the whole export on a nil payload; skipping the block
+	// is deliberate.
 	case "tool":
 		if block.Tool != nil {
 			writeExportTool(b, block.Tool)

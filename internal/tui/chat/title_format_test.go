@@ -67,6 +67,8 @@ func TestTitleFormatMatchesTextTemplate(t *testing.T) {
 		"{{.Env.DOCKER_CONTAINER_NAME}}|{{.Env.MISSING}}|",
 		`{{"literal"}} {{` + "`raw`" + `}} {{"esc\"aped"}}`,
 		"a  {{- .Agent -}}  b",
+		"left {{-\r.Agent\r-}} right",
+		"left\u00a0{{- .Agent -}}\u00a0right",
 		"{{.Model | default \"none\"}} {{.Branch | default \"root\"}}",
 		`{{env "MISSING" | default "" | default "chained"}}`,
 		"brace } inside {{agent}} }} text",

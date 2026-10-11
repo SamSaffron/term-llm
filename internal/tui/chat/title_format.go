@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
 // Terminal title formats use a small, text/template-compatible syntax:
@@ -49,6 +48,9 @@ const (
 	titleOperandPipeline
 )
 
+// titleTrimSpace is the whitespace text/template recognises around trim markers.
+const titleTrimSpace = " \t\r\n"
+
 func parseTitleFormat(format string) (titleFormatProgram, error) {
 	var prog titleFormatProgram
 	rest := format
@@ -60,8 +62,8 @@ func parseTitleFormat(format string) (titleFormatProgram, error) {
 		}
 		text := rest[:start]
 		rest = rest[start+2:]
-		if strings.HasPrefix(rest, "- ") || strings.HasPrefix(rest, "-\t") || strings.HasPrefix(rest, "-\n") {
-			text = strings.TrimRightFunc(text, unicode.IsSpace)
+		if len(rest) >= 2 && rest[0] == '-' && strings.IndexByte(titleTrimSpace, rest[1]) >= 0 {
+			text = strings.TrimRight(text, titleTrimSpace)
 			rest = rest[1:]
 		}
 		if text != "" {
@@ -73,9 +75,9 @@ func parseTitleFormat(format string) (titleFormatProgram, error) {
 		}
 		action := rest[:end]
 		rest = rest[end+2:]
-		if strings.HasSuffix(action, " -") || strings.HasSuffix(action, "\t-") || strings.HasSuffix(action, "\n-") {
-			action = action[:len(action)-1]
-			rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+		if n := len(action); n >= 2 && action[n-1] == '-' && strings.IndexByte(titleTrimSpace, action[n-2]) >= 0 {
+			action = action[:n-1]
+			rest = strings.TrimLeft(rest, titleTrimSpace)
 		}
 		pipeline, err := parseTitlePipeline(action)
 		if err != nil {
