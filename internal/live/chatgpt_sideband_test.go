@@ -91,8 +91,10 @@ func TestSidebandReconnectsAndDeliversPendingSend(t *testing.T) {
 		received []string
 		refresh  atomic.Bool
 	)
-	delivered := make(chan struct{})
-	reconnected := make(chan struct{})
+	// Buffered: the server signals with a non-blocking send, which an
+	// unbuffered channel drops whenever the test is not already waiting.
+	delivered := make(chan struct{}, 1)
+	reconnected := make(chan struct{}, 1)
 	server := sidebandServer(t, func(conn *websocket.Conn, attempt int, _ http.Header) {
 		if attempt == 1 {
 			// Drop the first connection so the client must reconnect.

@@ -2214,14 +2214,25 @@ func (rt *serveRuntime) consumeRunStream(runCtx, persistCtx context.Context, sta
 	}
 	defer stream.Close()
 
+	sawDone := false
 	for {
 		event, recvErr := stream.Recv()
 		if recvErr == io.EOF {
 			return result, nil, false
 		}
+		// Once EventDone has been delivered the turn is complete. A request
+		// context cancelled afterwards (for example a client that disconnects on
+		// the final event) can still surface from Recv while the engine tears
+		// down; that is the end of the stream, not a failed turn.
+		if recvErr != nil && sawDone && runCtx.Err() != nil && (errors.Is(recvErr, context.Canceled) || errors.Is(recvErr, context.DeadlineExceeded)) {
+			return result, nil, false
+		}
 		if recvErr != nil {
 			rt.persistRunError(persistCtx, req.SessionID, persisted, recvErr)
 			return result, recvErr, false
+		}
+		if event.Type == llm.EventDone {
+			sawDone = true
 		}
 		rt.recordStatsEvent(event)
 		if onEvent != nil {
