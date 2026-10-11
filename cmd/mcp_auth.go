@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"sort"
@@ -103,7 +103,7 @@ func mcpLogin(cmd *cobra.Command, args []string) error {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = template.Must(template.New("done").Parse(`<!doctype html><meta charset="utf-8"><title>Connected</title><main><h1>Connected</h1><p>You can close this window.</p></main>`)).Execute(w, nil)
+		_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Connected</title><main><h1>Connected</h1><p>You can close this window.</p></main>`)
 	})
 	go func() { _ = server.Serve(listener) }()
 	defer server.Shutdown(context.Background())

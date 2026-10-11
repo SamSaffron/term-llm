@@ -3,7 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
-	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -44,7 +44,7 @@ func (m *Model) startMCPOAuthCmd(name string, force bool) tea.Cmd {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
-			_ = template.Must(template.New("done").Parse(`<!doctype html><meta charset="utf-8"><title>Connected</title><h1>Connected</h1><p>You can close this window.</p>`)).Execute(w, nil)
+			_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Connected</title><h1>Connected</h1><p>You can close this window.</p>`)
 		})
 		go func() { _ = server.Serve(listener) }()
 		defer server.Shutdown(context.Background())

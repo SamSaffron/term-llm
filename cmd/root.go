@@ -26,7 +26,8 @@ import (
 func init() {
 	update.SetupUpdateChecks(rootCmd, Version)
 	rootCmd.Version = versionString()
-	rootCmd.SetVersionTemplate("{{printf \"%s version %s\\n\" .Name .Version}}")
+	// cobra's default version output is "<name> version <version>\n". Do not
+	// call SetVersionTemplate: it pulls text/template into the binary.
 	defaultHelpFunc := rootCmd.HelpFunc()
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		defaultHelpFunc(cmd, args)

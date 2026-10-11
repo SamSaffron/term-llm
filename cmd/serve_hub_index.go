@@ -1,20 +1,14 @@
 package cmd
 
 import (
-	"bytes"
-	_ "embed"
 	"encoding/json"
-	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 
+	"github.com/samsaffron/term-llm/internal/htmlesc"
 	"github.com/samsaffron/term-llm/internal/serveui"
 )
-
-//go:embed templates/hub_shell.html
-var hubShellHTML string
-
-var hubShellTmpl = template.Must(template.New("hub-shell").Parse(hubShellHTML))
 
 type hubPageConfig struct {
 	CacheScope          string                `json:"cacheScope,omitempty"`
@@ -111,11 +105,7 @@ func writeBrowserAuthShell(w http.ResponseWriter, r *http.Request, status int, t
 		InvalidToken: config.InvalidToken,
 		FormAction:   config.FormAction,
 	}
-	var body bytes.Buffer
-	if err := hubShellTmpl.Execute(&body, view); err != nil {
-		http.Error(w, "could not render Hub", http.StatusInternalServerError)
-		return
-	}
+	body := renderHubShell(view)
 	header := w.Header()
 	header.Set("Content-Type", "text/html; charset=utf-8")
 	header.Set("Cache-Control", "no-store")
@@ -129,7 +119,7 @@ func writeBrowserAuthShell(w http.ResponseWriter, r *http.Request, status int, t
 	header.Set("Content-Security-Policy", csp)
 	w.WriteHeader(status)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(body.Bytes())
+		_, _ = w.Write([]byte(body))
 	}
 }
 
@@ -167,4 +157,57 @@ func handleBrowserAuthAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
+}
+
+// hubDashboardIcon is the inline SVG favicon shown on the dashboard page.
+const hubDashboardIcon = `<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d1117'/%3E%3Cg fill='none' stroke='%23e6edf3' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='32' cy='32' r='8'/%3E%3Ccircle cx='14' cy='16' r='5'/%3E%3Ccircle cx='50' cy='16' r='5'/%3E%3Ccircle cx='14' cy='48' r='5'/%3E%3Ccircle cx='50' cy='48' r='5'/%3E%3Cpath d='M18 20 27 29M46 20 37 29M18 44 27 35M46 44 37 35'/%3E%3C/g%3E%3C/svg%3E">`
+
+// renderHubShell renders the Hub and passkey browser shell. It is written by
+// hand rather than with html/template, whose reflection-based execution
+// defeats the linker's dead-code elimination (see internal/htmlesc).
+func renderHubShell(v hubShellView) string {
+	var b strings.Builder
+	b.WriteString(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>` + htmlesc.Text(v.Title) + `</title>
+  `)
+	if v.Dashboard {
+		b.WriteString(hubDashboardIcon)
+	}
+	b.WriteString(`
+  <link rel="stylesheet" href="` + htmlesc.URL(v.StyleURL) + `">
+  <script type="module" src="` + htmlesc.URL(v.ScriptURL) + `"></script>
+</head>
+<body>
+  <div id="root" data-hub-config="` + htmlesc.Text(v.ConfigJSON) + `"></div>
+  `)
+	if v.BearerLogin {
+		b.WriteString(`
+  <noscript>
+    <main>
+      <h1>term-llm Hub</h1>
+      <p>Enter your hub access token to continue.</p>
+      `)
+		if v.InvalidToken {
+			b.WriteString(`<p role="alert">That hub token was not accepted.</p>`)
+		}
+		b.WriteString(`
+      <form method="get" action="` + htmlesc.URL(v.FormAction) + `">
+        <label for="noscript-hub-token">Hub token</label>
+        <input id="noscript-hub-token" name="token" type="password" autocomplete="current-password" required>
+        <button type="submit">Connect to Hub</button>
+      </form>
+    </main>
+  </noscript>
+  `)
+	}
+	b.WriteString(`
+</body>
+</html>
+`)
+	return b.String()
 }

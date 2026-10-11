@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"html/template"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,7 +20,7 @@ const maxHTMLExportInlineAudioBytes = 2 << 20
 type htmlExportAudio struct {
 	ID       string
 	Repeated bool
-	URL      template.URL
+	URL      string // trusted: validated, exporter-generated data URL
 	Name     string
 	Label    string
 	Caption  string
@@ -136,7 +135,7 @@ func buildHTMLAudio(audio *exportAudio, item llm.MediaArtifact, label string) ht
 		if !repeated {
 			id = fmt.Sprintf("audio-%d", len(audio.players)+1)
 			audio.players[result.URL] = id
-			view.URL = template.URL(result.URL) // #nosec G203 -- validated generated audio data URL.
+			view.URL = result.URL // validated generated audio data URL.
 		}
 		view.ID, view.Repeated = id, repeated
 	} else {
