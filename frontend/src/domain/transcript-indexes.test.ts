@@ -88,3 +88,57 @@ describe('incremental transcript indexes', () => {
     expect(index([]).media.size).toBe(0);
   });
 });
+
+it('classifies audio explicitly and updates metadata without invalidating equal maps', () => {
+  const index = createTranscriptIndexes((url) => url);
+  const original: Message = {
+    ...message('tool', 'tool-group'),
+    tools: [
+      {
+        id: 'one',
+        name: 'show_media',
+        status: 'done',
+        media: [
+          { reference: 'A', url: '/a.ogg', type: 'audio/ogg', name: 'a.ogg', caption: 'Original' },
+          { reference: 'bad', url: '/text', type: 'text/plain' },
+        ],
+      },
+    ],
+  };
+  const first = index([original]).media;
+  expect([...first]).toEqual([
+    ['a', { url: '/a.ogg', type: 'audio', name: 'a.ogg', caption: 'Original' }],
+  ]);
+  expect(index([original, message('stream')]).media).toBe(first);
+  const duplicate: Message = {
+    ...original,
+    id: 'duplicate',
+    tools: [
+      {
+        ...original.tools![0],
+        media: [{ reference: 'a', url: '/b.wav', type: 'audio/wav', name: 'b.wav' }],
+      },
+    ],
+  };
+  expect(index([original, duplicate]).media).toBe(first);
+  const equal: Message = {
+    ...original,
+    tools: [
+      { ...original.tools![0], media: original.tools![0].media!.map((item) => ({ ...item })) },
+    ],
+  };
+  expect(index([equal]).media).toBe(first);
+  let previous = first;
+  for (const metadata of [{ name: 'renamed.ogg' }, { caption: 'Corrected' }]) {
+    const updated: Message = {
+      ...original,
+      tools: [{ ...original.tools![0], media: [{ ...original.tools![0].media![0], ...metadata }] }],
+    };
+    const next = index([updated]).media;
+    expect(next).not.toBe(previous);
+    expect(next.get('a')).toMatchObject({ type: 'audio', ...metadata });
+    previous = next;
+  }
+  expect(index([duplicate]).media.get('a')).toMatchObject({ url: '/b.wav', type: 'audio' });
+  expect(index([]).media.size).toBe(0);
+});

@@ -70,7 +70,11 @@ const mediaArtifacts = (value: unknown, rebase: (value: string) => string): Medi
       if (!item) return null;
       const url = rebase(text(item.url));
       const type = text(item.type || item.media_type);
-      if (!url || (!type.startsWith('image/') && !type.startsWith('video/'))) return null;
+      if (
+        !url ||
+        (!type.startsWith('image/') && !type.startsWith('video/') && !type.startsWith('audio/'))
+      )
+        return null;
       return {
         url,
         type,

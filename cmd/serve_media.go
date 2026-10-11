@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,13 +13,8 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mediatype"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
-)
-
-const (
-	serveMediaMaxImageBytes int64 = 25 << 20
-	serveMediaMaxVideoBytes int64 = 256 << 20
 )
 
 type webMediaEntry struct {
@@ -33,7 +29,7 @@ func (s *serveServer) toolMediaEntries(media []llm.MediaArtifact) []webMediaEntr
 	entries := make([]webMediaEntry, 0, len(media))
 	for _, item := range media {
 		mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
-		if !strings.HasPrefix(mediaType, "image/") && !strings.HasPrefix(mediaType, "video/") {
+		if _, ok := mediatype.Lookup(mediaType); !ok {
 			continue
 		}
 		mediaURL := s.mediaURL(item.StoredPath)
@@ -61,7 +57,7 @@ func mediaEntriesFromValue(value any) []webMediaEntry {
 		}
 		urlValue := strings.TrimSpace(stringValue(entry["url"]))
 		mediaType := strings.ToLower(strings.TrimSpace(stringValue(entry["type"])))
-		if urlValue == "" || (!strings.HasPrefix(mediaType, "image/") && !strings.HasPrefix(mediaType, "video/")) {
+		if _, supported := mediatype.Lookup(mediaType); urlValue == "" || !supported {
 			continue
 		}
 		entries = append(entries, webMediaEntry{
@@ -139,13 +135,21 @@ func (p *serveMediaPublisher) PublishMedia(ctx context.Context, sourcePath, medi
 	if info.Size() != written {
 		return "", fmt.Errorf("source changed while publishing")
 	}
-	header := make([]byte, 512)
-	n, readErr := tmp.ReadAt(header, 0)
-	if readErr != nil && readErr != io.EOF {
-		return "", fmt.Errorf("verify published media: %w", readErr)
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	if detected := tools.DetectShowMediaType(header[:n]); detected != strings.ToLower(strings.TrimSpace(mediaType)) {
+	format, inspectErr := mediatype.Inspect(tmp, written)
+	if errors.Is(inspectErr, mediatype.ErrUnsupported) {
+		return "", fmt.Errorf("published copy failed media verification: %w", inspectErr)
+	}
+	if inspectErr != nil {
+		return "", fmt.Errorf("verify published media: %w", inspectErr)
+	}
+	if format.MIME != strings.ToLower(strings.TrimSpace(mediaType)) {
 		return "", fmt.Errorf("media type changed while publishing")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	if err := tmp.Sync(); err != nil {
 		return "", fmt.Errorf("sync media: %w", err)
@@ -183,45 +187,13 @@ func (r *contextReader) Read(p []byte) (int, error) {
 }
 
 func serveMediaExtension(mediaType string) (extension string, limit int64, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(mediaType)) {
-	case "image/png":
-		return ".png", serveMediaMaxImageBytes, true
-	case "image/jpeg":
-		return ".jpg", serveMediaMaxImageBytes, true
-	case "image/gif":
-		return ".gif", serveMediaMaxImageBytes, true
-	case "image/webp":
-		return ".webp", serveMediaMaxImageBytes, true
-	case "image/bmp":
-		return ".bmp", serveMediaMaxImageBytes, true
-	case "video/mp4":
-		return ".mp4", serveMediaMaxVideoBytes, true
-	case "video/webm":
-		return ".webm", serveMediaMaxVideoBytes, true
-	default:
-		return "", 0, false
-	}
+	f, ok := mediatype.Lookup(mediaType)
+	return f.Extension, f.MaxBytes, ok
 }
 
 func serveMediaTypeForName(name string) (string, bool) {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".png":
-		return "image/png", true
-	case ".jpg":
-		return "image/jpeg", true
-	case ".gif":
-		return "image/gif", true
-	case ".webp":
-		return "image/webp", true
-	case ".bmp":
-		return "image/bmp", true
-	case ".mp4":
-		return "video/mp4", true
-	case ".webm":
-		return "video/webm", true
-	default:
-		return "", false
-	}
+	f, ok := mediatype.ForExtension(filepath.Ext(name))
+	return f.MIME, ok
 }
 
 func (s *serveServer) handleMedia(w http.ResponseWriter, r *http.Request) {

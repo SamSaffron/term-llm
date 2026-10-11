@@ -1130,22 +1130,7 @@ func compactToolResultSummary(result *ToolResult) string {
 		}
 	}
 	media := NormalizeMedia(result.Media, result.Images)
-	if len(media) > 0 {
-		images, videos := 0, 0
-		for _, item := range media {
-			if strings.HasPrefix(strings.ToLower(item.MediaType), "video/") {
-				videos++
-			} else {
-				images++
-			}
-		}
-		if images > 0 {
-			details = append(details, fmt.Sprintf("%d image(s)", images))
-		}
-		if videos > 0 {
-			details = append(details, fmt.Sprintf("%d video(s)", videos))
-		}
-	}
+	details = append(details, compactMediaSummary(media)...)
 
 	content := toolResultTextContent(result)
 	contentLen := runeLen(strings.TrimSpace(content))
@@ -1924,4 +1909,21 @@ func isContextOverflowError(err error) bool {
 		}
 	}
 	return false
+}
+
+func compactMediaSummary(media []MediaArtifact) []string {
+	counts := map[string]int{}
+	for _, item := range media {
+		kind := strings.SplitN(strings.ToLower(item.MediaType), "/", 2)[0]
+		if kind == "image" || kind == "video" || kind == "audio" {
+			counts[kind]++
+		}
+	}
+	var details []string
+	for _, kind := range []string{"image", "video", "audio"} {
+		if counts[kind] > 0 {
+			details = append(details, fmt.Sprintf("%d %s(s)", counts[kind], kind))
+		}
+	}
+	return details
 }

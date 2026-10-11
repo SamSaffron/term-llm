@@ -66,14 +66,17 @@ func TestSpawnAgentToolWaitBudgetDoesNotImposeChildDeadline(t *testing.T) {
 
 func TestSpawnAgentToolRetainsNestedMediaOnResult(t *testing.T) {
 	const reference = "0123456789abcdef0123456789abcdef"
-	tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
-	tool.SetRunner(&mediaEventMockRunner{mockRunner: newMockRunner(), media: llm.MediaArtifact{
-		Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png",
-	}})
-	ctx := llm.ContextWithCallID(context.Background(), "parent-call")
-	out, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 0))
-	if err != nil || len(out.Media) != 1 || out.Media[0].Reference != reference {
-		t.Fatalf("nested media output = %#v, %v", out, err)
+	for _, mime := range []string{"image/png", "audio/mpeg"} {
+		t.Run(mime, func(t *testing.T) {
+			tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
+			artifact := llm.MediaArtifact{Reference: reference, SourcePath: "/tmp/result", MediaType: mime, Name: "result", Caption: "caption"}
+			tool.SetRunner(&mediaEventMockRunner{mockRunner: newMockRunner(), media: artifact})
+			ctx := llm.ContextWithCallID(context.Background(), "parent-call")
+			out, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 0))
+			if err != nil || len(out.Media) != 1 || out.Media[0] != artifact {
+				t.Fatalf("nested media output = %#v, %v", out, err)
+			}
+		})
 	}
 }
 

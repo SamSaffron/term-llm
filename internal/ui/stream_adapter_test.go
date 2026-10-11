@@ -654,3 +654,19 @@ func TestStreamAdapterForwardsRawReasoningClassifiedButNotDisplayable(t *testing
 		t.Fatal("raw should not be marked displayable by default")
 	}
 }
+
+func TestStreamAdapterEmitsAudioInArtifactOrder(t *testing.T) {
+	artifacts := []llm.MediaArtifact{{Reference: "audio", SourcePath: "speech.mp3", MediaType: "audio/mpeg"}, {Reference: "image", SourcePath: "chart.png", MediaType: "image/png"}}
+	adapter := NewStreamAdapter(10)
+	stream := &testStream{events: []llm.Event{{Type: llm.EventToolExecEnd, ToolCallID: "media-call", ToolName: "show_media", ToolSuccess: true, ToolMedia: artifacts}}}
+	go adapter.ProcessStream(context.Background(), stream)
+	var got []llm.MediaArtifact
+	for ev := range adapter.Events() {
+		if ev.Type == StreamEventMedia {
+			got = append(got, ev.Media)
+		}
+	}
+	if len(got) != 2 || got[0] != artifacts[0] || got[1] != artifacts[1] {
+		t.Fatalf("events=%+v", got)
+	}
+}

@@ -23,6 +23,8 @@ type sessionShareRequest struct {
 	Public          *bool              `json:"public,omitempty"`
 	// IncludeImages defaults to true. False omits every image from the share.
 	IncludeImages *bool `json:"include_images,omitempty"`
+	// IncludeAudio requires explicit consent on every share request.
+	IncludeAudio bool `json:"include_audio,omitempty"`
 	// IncludeTools defaults to true. False removes tool calls and output from
 	// conversation shares; response shares never include tool activity.
 	IncludeTools *bool `json:"include_tools,omitempty"`
@@ -242,6 +244,7 @@ func (s *serveServer) handleCreateSessionShare(w http.ResponseWriter, r *http.Re
 		IncludeReasoningSummaries: internalreasoning.ExportSummaries(reasoningConfig),
 		Partial:                   req.Scope == session.ShareScopeConversation,
 		ResponseOnly:              req.Scope == session.ShareScopeResponse,
+		IncludeAudio:              req.IncludeAudio,
 		// Point-in-time web shares deliberately never include raw reasoning and
 		// are never persisted, so a later whole-session update cannot widen them.
 		IncludeRawReasoning: false,

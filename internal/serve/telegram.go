@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mediatype"
 	memorystore "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -2387,22 +2388,10 @@ func referencedTelegramMedia(text string, media []llm.MediaArtifact) []llm.Media
 }
 
 func telegramMediaFilename(mediaType string) string {
-	switch strings.ToLower(strings.TrimSpace(mediaType)) {
-	case "image/png":
-		return "media.png"
-	case "image/jpeg":
-		return "media.jpg"
-	case "image/gif":
-		return "media.gif"
-	case "image/webp":
-		return "media.webp"
-	case "image/bmp":
-		return "media.bmp"
-	case "video/webm":
-		return "media.webm"
-	default:
-		return "media.mp4"
+	if format, ok := mediatype.Lookup(mediaType); ok {
+		return "media" + format.Extension
 	}
+	return "media.mp4"
 }
 
 func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
@@ -2436,6 +2425,8 @@ func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
 		kind := "image"
 		if strings.HasPrefix(strings.ToLower(media.MediaType), "video/") {
 			kind = "video"
+		} else if strings.HasPrefix(strings.ToLower(media.MediaType), "audio/") {
+			kind = "audio"
 		}
 		parts = append(parts, "["+kind+" uploaded]")
 	}

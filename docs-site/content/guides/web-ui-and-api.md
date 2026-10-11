@@ -90,15 +90,57 @@ With the default base path of `/ui`, the web runtime exposes:
 ### Showing local media
 
 Agents with the `show_media` tool can present an existing PNG, JPEG, GIF, WebP,
-BMP, MP4, or WebM directly in the conversation. The tool accepts a local path
-and optional caption. The path follows the normal workspace/read approval
-policy; after approval, web serves import a content-addressed durable copy rather
-than exposing arbitrary host paths. Images are limited to 25 MiB and videos to
-256 MiB. The tool returns an opaque `term-llm-media://…` URL and asks the model
-to embed that exact URL in normal Markdown with context-appropriate alt text.
-The browser resolves only registered artifact URLs and displays the media at the
-position chosen in the assistant response, rather than burying it inside the tool
-call. Videos become inline players; images retain the media lightbox behavior.
+BMP, MP4, WebM, MP3, PCM/IEEE-float WAV, Ogg Opus/Vorbis, FLAC, or M4A/audio
+MP4. Bounded track inspection also identifies audio-only WebM. The tool accepts a
+local path and optional caption, subject to normal workspace/read approval. After
+approval, web serves import a content-addressed durable copy instead of exposing
+arbitrary host paths. Images are limited to **25 MiB**, videos to **256 MiB**,
+and audio to **100 MiB**. Publication independently inspects the completed copy
+and enforces its type and size limit.
+
+The tool returns an opaque `term-llm-media://…` URL and asks the model to embed
+that exact URL in **Markdown image syntax even for audio**, on its own line with
+context-appropriate alt text. Registration does not claim that playback succeeded.
+The browser resolves registered artifact URLs at the position chosen in the
+assistant response. Images retain their media lightbox behavior and videos remain
+inline players; codec support varies by browser. Prefer MP3, PCM WAV, or AAC in
+faststart M4A (metadata at the start) for interoperable narration. Downloads preserve the original recording and
+its embedded metadata; there is no server-side transcoding or metadata stripping.
+
+Authenticated `GET`/`HEAD` requests to `<base-path>/media/:file` use the same
+owned-file route for every kind, with canonical MIME, inline disposition,
+`nosniff`, and private caching (`Vary: Authorization, Cookie`). Standard byte
+ranges support seeking (`206`/`Content-Range`, including suffix and open-ended
+ranges); unsatisfiable ranges return `416`. No public audio route or query-token
+URL is introduced. Stored audio suffixes are `.mp3`, `.wav`, `.ogg`, `.flac`,
+`.m4a`, and `.weba`; `.mp4` and `.webm` remain unambiguously video suffixes.
+
+Live and replay web media entries retain the existing shape:
+
+```json
+{"reference":"<reference>","url":"/ui/media/<content-hash>.mp3","type":"audio/mpeg","name":"narration.mp3","caption":"Listen to the summary"}
+```
+
+The URL follows a custom base path when configured. Source/stored filesystem
+paths never appear in browser media envelopes. CLI streaming JSON continues to
+use the existing `media` event with `reference`, `path`, `media_type`, `name`, and
+`caption`; `path` there is the durable copy when available, otherwise the approved
+local path. Audio is presentation data, not automatic model input, and does not
+create a new session part or event type.
+
+MP4/WebM inspection is bounded. A generic container lacking complete track
+metadata within the budget—including track metadata beyond the bounded inspection
+window—conservatively retains video classification (and its video cap) by design,
+rather than guessing audio. M4A/M4B brands may identify audio without
+available track metadata, but inspected video tracks take precedence. Unknown
+Ogg codecs, Ogg video, raw AAC/ADTS, RF64/RIFX, and compressed WAV are rejected.
+Streamed WAV with unknown RIFF/final data sizes is supported.
+
+In terminals, audio and video are local file links, not players; audio retains
+its real filename alongside the Markdown label. Telegram uses native MP3/M4A
+audio or confirmed Ogg Opus voice uploads, with document fallback. Vorbis/WAV/
+FLAC/audio WebM are documents directly, and Telegram's separate upload cap is
+**50 MiB**.
 
 `show_image` remains available when explicitly configured for compatibility, but
 `--tools all` and new configurations should use `show_media`.

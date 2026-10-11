@@ -31,10 +31,16 @@ func ShareFiles(sess *Session, messages []Message, opts ExportOptions) (map[stri
 // ExportImagesAssets mode, normalized images under assets/ referenced by both
 // renderings with relative URLs.
 func ShareBundle(sess *Session, messages []Message, opts ExportOptions) ([]share.File, error) {
+	files, _, err := ShareBundleWithResult(sess, messages, opts)
+	return files, err
+}
+
+// ShareBundleWithResult reports audio embedding and omissions for a share.
+func ShareBundleWithResult(sess *Session, messages []Message, opts ExportOptions) ([]share.File, ExportResult, error) {
 	images := newExportImages(opts)
-	html, err := exportToHTML(sess, messages, opts, images)
+	html, result, err := exportToHTMLWithResult(sess, messages, opts, images)
 	if err != nil {
-		return nil, fmt.Errorf("render HTML transcript: %w", err)
+		return nil, result, fmt.Errorf("render HTML transcript: %w", err)
 	}
 	markdown := exportToMarkdown(sess, messages, opts, images)
 	files := []share.File{
@@ -45,7 +51,7 @@ func ShareBundle(sess *Session, messages []Message, opts ExportOptions) ([]share
 		files = append(files, share.File{Name: asset.Name, MediaType: asset.MediaType, Role: share.RoleAsset, Content: asset.Content})
 	}
 	slices.SortFunc(files, func(a, b share.File) int { return strings.Compare(a.Name, b.Name) })
-	return files, nil
+	return files, result, nil
 }
 
 // GistFiles is retained for the explicit GitHub-only export commands.

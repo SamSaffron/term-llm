@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { markdownDocumentBlocks } from './markdown-document';
+import { renderMarkdown } from './markdown';
 
 function byType(blocks: ReturnType<typeof markdownDocumentBlocks>, type: string) {
   return blocks.filter((block) => block.type === type);
@@ -76,4 +77,15 @@ describe('Markdown document source mapping', () => {
     expect(blocks.find((block) => block.startLine === 8)).toBeTruthy();
     expect(blocks.map((block) => block.html).join('')).not.toContain('<script');
   });
+});
+
+it('keeps existing document audio sanitization separate from trusted chat audio', () => {
+  const source =
+    '<audio controls src="https://example.com/audio.wav"><source src="https://example.com/audio.wav"></audio>';
+  expect(
+    markdownDocumentBlocks(source)
+      .map((block) => block.html)
+      .join(''),
+  ).toContain('<audio');
+  expect(renderMarkdown(source)).not.toContain('<audio');
 });

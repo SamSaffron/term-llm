@@ -1,14 +1,12 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,11 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
-)
-
-const (
-	maxShowMediaImageBytes int64 = 25 << 20
-	maxShowMediaVideoBytes int64 = 256 << 20
+	"github.com/samsaffron/term-llm/internal/mediatype"
 )
 
 // MediaPublisher imports approved local media into storage owned by a
@@ -31,7 +25,7 @@ type MediaPublisher interface {
 	PublishMedia(ctx context.Context, sourcePath, mediaType string) (string, error)
 }
 
-// ShowMediaTool presents an existing local image or video to the user.
+// ShowMediaTool presents an existing local image, video, or audio to the user.
 type ShowMediaTool struct {
 	approval    *ApprovalManager
 	config      *ToolConfig
@@ -63,16 +57,16 @@ type ShowMediaArgs struct {
 func (t *ShowMediaTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name: ShowMediaToolName,
-		Description: "Register an existing image or video so it can be placed in your response. The result returns an opaque " +
+		Description: "Register an existing image, video, or audio so it can be placed in your response. The result returns an opaque " +
 			"term-llm-media URL; embed that exact URL on its own line with Markdown image syntax and choose context-appropriate alt text. " +
-			"Use this when the user should actually see the media, not merely when you need to inspect or analyze it. " +
-			"Supports PNG, JPEG, GIF, WebP, BMP, MP4, and WebM; images may be up to 25 MiB and videos up to 256 MiB.",
+			"Use this when the user should actually see or listen to the media, not merely when you need to inspect or analyze it. " +
+			"Supports PNG, JPEG, GIF, WebP, BMP, MP4, WebM, MP3, WAV, Ogg Opus/Vorbis, FLAC, M4A, and audio-only WebM; images up to 25 MiB, videos up to 256 MiB, audio up to 100 MiB.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path to an existing image or video to show to the user",
+					"description": "Path to an existing image, video, or audio to show to the user",
 				},
 				"caption": map[string]any{
 					"type":        "string",
@@ -134,25 +128,24 @@ func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "path must be a regular file"))), nil
 	}
 
-	header := make([]byte, 512)
-	n, readErr := io.ReadFull(f, header)
-	if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot inspect file: %v", readErr))), nil
+	if err := ctx.Err(); err != nil {
+		return llm.ToolOutput{}, err
 	}
-	mediaType := detectShowMediaType(header[:n])
-	if mediaType == "" {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat,
-			"unsupported media format (supported: PNG, JPEG, GIF, WebP, BMP, MP4, WebM)"))), nil
+	format, inspectErr := mediatype.Inspect(f, info.Size())
+	if inspectErr != nil {
+		if errors.Is(inspectErr, mediatype.ErrUnsupported) {
+			return llm.TextOutput(formatToolError(NewToolError(ErrUnsupportedFormat,
+				"unsupported media format (supported: PNG, JPEG, GIF, WebP, BMP, MP4, WebM, MP3, WAV, Ogg Opus/Vorbis, FLAC, M4A, audio-only WebM)"))), nil
+		}
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot inspect file: %v", inspectErr))), nil
 	}
-	limit := maxShowMediaImageBytes
-	kind := "Image"
-	if strings.HasPrefix(mediaType, "video/") {
-		limit = maxShowMediaVideoBytes
-		kind = "Video"
+	if err := ctx.Err(); err != nil {
+		return llm.ToolOutput{}, err
 	}
-	if info.Size() > limit {
+	mediaType := format.MIME
+	if info.Size() > format.MaxBytes {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams,
-			"%s is %.1f MiB; show_media supports %ss up to %d MiB", filepath.Base(a.Path), float64(info.Size())/(1<<20), strings.ToLower(kind), limit>>20))), nil
+			"%s is %.1f MiB; show_media supports %s files up to %d MiB", filepath.Base(a.Path), float64(info.Size())/(1<<20), format.Kind, format.MaxBytes>>20))), nil
 	}
 
 	reference, err := newMediaReference()
@@ -174,10 +167,10 @@ func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	caption := sanitizeMediaCaption(a.Caption)
 	uri := "term-llm-media://" + reference
 	var result strings.Builder
-	result.WriteString("Media ready.\n\n")
-	result.WriteString("To embed it in your response, use this exact URL in Markdown:\n\n")
+	fmt.Fprintf(&result, "Media ready (%s).\n\n", mediaType)
+	result.WriteString("To embed it in your response, use this exact URL in Markdown image syntax, even for audio:\n\n")
 	fmt.Fprintf(&result, "%s\n\n", uri)
-	result.WriteString("Choose concise, descriptive alt text appropriate to the surrounding response, and place the Markdown on its own line.\n")
+	result.WriteString("Choose concise, descriptive alt text appropriate to the surrounding response (for example, “Listen to the narrated summary”), and place the Markdown on its own line. Do not substitute a local path or write an HTML audio tag.\n")
 	fmt.Fprintf(&result, "Example: ![descriptive alt text](%s)\n", uri)
 	if caption != "" {
 		fmt.Fprintf(&result, "Suggested alt text: %s\n", caption)
@@ -218,74 +211,4 @@ func sanitizeMediaCaption(value string) string {
 		}
 	}
 	return strings.Join(strings.Fields(value), " ")
-}
-
-func isMP4Brand(brand []byte) bool {
-	if len(brand) != 4 {
-		return false
-	}
-	switch string(brand) {
-	case "isom", "iso2", "iso3", "iso4", "iso5", "iso6", "iso7", "iso8", "iso9",
-		"mp41", "mp42", "avc1", "dash", "M4V ", "MSNV":
-		return true
-	default:
-		return false
-	}
-}
-
-func hasWebMDocType(data []byte) bool {
-	for offset := 0; offset+3 <= len(data); offset++ {
-		if data[offset] != 0x42 || data[offset+1] != 0x82 {
-			continue
-		}
-		first := data[offset+2]
-		width := 1
-		for mask := byte(0x80); width <= 8 && first&mask == 0; mask >>= 1 {
-			width++
-		}
-		if width > 8 || offset+2+width > len(data) {
-			continue
-		}
-		length := uint64(first & (0xff >> width))
-		for i := 1; i < width; i++ {
-			length = length<<8 | uint64(data[offset+2+i])
-		}
-		start := offset + 2 + width
-		if length == 4 && start+4 <= len(data) && bytes.Equal(data[start:start+4], []byte("webm")) {
-			return true
-		}
-	}
-	return false
-}
-
-// DetectShowMediaType returns a browser-safe media type for supported magic
-// bytes, or an empty string when the data is not on show_media's allowlist.
-func DetectShowMediaType(data []byte) string { return detectShowMediaType(data) }
-
-func detectShowMediaType(data []byte) string {
-	switch {
-	case len(data) >= 8 && bytes.Equal(data[:8], []byte("\x89PNG\r\n\x1a\n")):
-		return "image/png"
-	case len(data) >= 3 && bytes.Equal(data[:3], []byte{0xff, 0xd8, 0xff}):
-		return "image/jpeg"
-	case len(data) >= 6 && (bytes.Equal(data[:6], []byte("GIF87a")) || bytes.Equal(data[:6], []byte("GIF89a"))):
-		return "image/gif"
-	case len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
-		return "image/webp"
-	case len(data) >= 2 && bytes.Equal(data[:2], []byte("BM")):
-		return "image/bmp"
-	case len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp")) && isMP4Brand(data[8:12]):
-		return "video/mp4"
-	case len(data) >= 4 && bytes.Equal(data[:4], []byte{0x1a, 0x45, 0xdf, 0xa3}) && hasWebMDocType(data):
-		return "video/webm"
-	default:
-		// DetectContentType is deliberately only a conservative fallback for
-		// signatures already represented by a browser-safe allowlist.
-		detected := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
-		switch detected {
-		case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp":
-			return detected
-		}
-		return ""
-	}
 }

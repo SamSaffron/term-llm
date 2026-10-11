@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import DOMPurify from 'dompurify';
 import { highlight, highlightDiffLine } from './rich-highlight';
-import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
+import {
+  decorateRichContent,
+  renderMarkdown,
+  stableMarkdownBoundary,
+  rebaseRenderedAssetURLs,
+} from './markdown';
+import { audioMediaHTML, preserveAudioMediaCards } from './audio-media';
 import { applyDocumentURLPolicy, markdownDocumentBlocks } from './markdown-document';
 import {
   analyzeStreamingMarkdown,
@@ -365,3 +372,234 @@ describe('composer completion', () => {
     expect(mentionCompletions(stale, { start: 4, end: 7 })).toEqual([]);
   });
 });
+
+describe('trusted audio Markdown', () => {
+  const reference = '0123456789abcdef0123456789abcdef';
+  const url = `/ui/media/${reference}.ogg`;
+  const source = `![Listen to the summary](term-llm-media://${reference})`;
+  const renderAudio = (value = source, target = url) => {
+    const root = document.createElement('div');
+    root.innerHTML = renderMarkdown(value, () => ({
+      url: target,
+      type: 'audio',
+      name: '../summary.ogg',
+      caption: '<img src=x onerror=alert(1)> & details',
+    }));
+    return root;
+  };
+
+  it('renders an inline-compatible accessible card, escaped metadata and a persistent download', () => {
+    const root = renderAudio(`Before ${source} after.`);
+    expect(root.querySelector('p > .audio-media-card')).not.toBeNull();
+    const audio = root.querySelector('audio')!;
+    expect(audio).toHaveAttribute('src', url);
+    expect(audio).toHaveAttribute('controls');
+    expect(audio).toHaveAttribute('preload', 'metadata');
+    expect(audio).toHaveAttribute('aria-label', 'Listen to the summary');
+    expect(audio).toHaveAttribute('title', 'Listen to the summary');
+    expect(audio).not.toHaveAttribute('autoplay');
+    expect(audio).not.toHaveAttribute('loop');
+    expect(root.querySelector('.audio-media-name')).toHaveTextContent('summary.ogg');
+    expect(root.querySelector('.audio-media-caption')?.textContent).toBe(
+      '<img src=x onerror=alert(1)> & details',
+    );
+    expect(root.querySelector('img')).toBeNull();
+    const download = root.querySelector('a')!;
+    expect(download).toHaveTextContent('Download audio');
+    expect(download).toHaveAttribute('href', url);
+    expect(download).toHaveAttribute('download', 'summary.ogg');
+    expect(root.innerHTML).not.toContain('TERM_LLM_AUDIO_');
+  });
+
+  it.each([
+    [{ caption: 'A caption', name: 'file.wav' }, 'A caption'],
+    [{ name: 'file.wav' }, 'file.wav'],
+    [{}, 'Audio recording'],
+  ])('uses caption, filename, then generic accessible fallback: %s', (metadata, label) => {
+    const root = document.createElement('div');
+    root.innerHTML = renderMarkdown(`![](term-llm-media://${reference})`, () => ({
+      url,
+      type: 'audio',
+      ...metadata,
+    }));
+    expect(root.querySelector('audio')).toHaveAttribute('aria-label', label);
+    if ('caption' in metadata) expect(root.querySelector('.audio-media-caption')).toBeNull();
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'data:audio/wav;base64,AAAA',
+    'blob:https://localhost/test',
+    `https://tracker.example/media/${reference}.ogg`,
+    `${location.origin.replace('://', '://user:pass@')}/ui/media/${reference}.ogg`,
+    `${url}?token=secret`,
+    `${url}#fragment`,
+    `${url}?`,
+    `/ui/uploads/${reference}.ogg`,
+    '/ui/media/not-a-hash.ogg',
+    `/ui/media/${reference}.mp4`,
+  ])('rejects untrusted resolver URL %s', (target) => {
+    const root = renderAudio(source, target);
+    expect(root.querySelector('audio,a')).toBeNull();
+    expect(root).toHaveTextContent('unavailable');
+  });
+
+  it('substitutes audio slots using only inert templates, even with ordinary images', () => {
+    const createElement = vi.spyOn(document, 'createElement');
+    try {
+      const html = renderMarkdown(`${source}\n\n![Remote](https://example.com/image.png)`, () => ({
+        url,
+        type: 'audio',
+      }));
+      expect(html).toContain('<audio');
+      expect(html).toContain('<img');
+      expect(createElement).toHaveBeenCalledWith('template');
+      expect(createElement).not.toHaveBeenCalledWith('div');
+    } finally {
+      createElement.mockRestore();
+    }
+  });
+
+  it('places linked audio outside its enclosing anchor and retains the remaining link text', () => {
+    const root = renderAudio(`[Before ${source} after](https://example.com)`);
+    const card = root.querySelector('.audio-media-card')!;
+    const anchor = root.querySelector('a[href="https://example.com"]')!;
+    expect(anchor).toHaveTextContent('Before after');
+    expect(anchor.querySelector('.audio-media-card,audio,a')).toBeNull();
+    expect(card.closest('a')).toBeNull();
+    expect(anchor.nextElementSibling).toBe(card);
+    expect(card.querySelector('a')).toHaveAttribute('download', 'summary.ogg');
+  });
+
+  it('keeps multiple audio cards from one link in source order, outside the link', () => {
+    const root = renderAudio(
+      `[${source} ![Second](term-llm-media://${reference})](https://example.com)`,
+    );
+    const cards = [...root.querySelectorAll('.audio-media-card')];
+    expect(cards.map((card) => card.querySelector('audio')?.getAttribute('aria-label'))).toEqual([
+      'Listen to the summary',
+      'Second',
+    ]);
+    expect(cards.every((card) => !card.closest('a'))).toBe(true);
+    expect(cards[0].nextElementSibling).toBe(cards[1]);
+  });
+
+  it('does not reuse audio state across changed labels or sources, or different occurrences', () => {
+    const previous = document.createElement('div');
+    const prepared = document.createElement('div');
+    previous.innerHTML = ['First', 'Second', 'Third']
+      .map((label) => audioMediaHTML({ url, label }))
+      .join('');
+    const oldPlayers = [...previous.querySelectorAll('audio')];
+    prepared.innerHTML =
+      audioMediaHTML({ url, label: 'Changed' }) +
+      audioMediaHTML({ url, label: 'Second' }) +
+      audioMediaHTML({ url: url.replace('.ogg', '.wav'), label: 'Third' });
+    const newPlayers = [...prepared.querySelectorAll('audio')];
+    preserveAudioMediaCards(previous, prepared);
+    const players = [...prepared.querySelectorAll('audio')];
+    expect(players[0]).toBe(newPlayers[0]);
+    expect(players[1]).toBe(oldPlayers[1]);
+    expect(players[2]).toBe(newPlayers[2]);
+    expect(previous.querySelectorAll('audio')).toHaveLength(2);
+  });
+
+  it('does not grant raw model HTML audio, source, autoplay or handlers permission', () => {
+    const root = renderAudio(
+      `<audio src="${url}" autoplay onplay="alert(1)"><source src="https://tracker.example/x"></audio>\n\n${source}`,
+    );
+    expect(root.querySelectorAll('audio')).toHaveLength(1);
+    expect(root.querySelector('source,[autoplay],[onplay]')).toBeNull();
+    expect(
+      renderMarkdown(`<audio controls src="${url}"><source src="${url}"></audio>`),
+    ).not.toContain('<audio');
+  });
+
+  it('ignores forged placeholder text, attributes, code and raw card wrappers', () => {
+    const forged = 'TERM_LLM_AUDIO_00000000-0000-4000-8000-000000000000_TOKEN';
+    const root = renderAudio(
+      `<span class="audio-media-card" data-audio="0">${forged}</span>\n\n\`${forged}\`\n\n${source}`,
+    );
+    expect(root.querySelectorAll('audio')).toHaveLength(1);
+    expect(root).toHaveTextContent(forged);
+    expect(root.querySelector('code')).toHaveTextContent(forged);
+    expect(
+      renderAudio(`\`${source}\`\n\n\`\`\`md\n${source}\n\`\`\``).querySelector('audio'),
+    ).toBeNull();
+    expect(renderMarkdown(source, () => undefined)).toContain('unavailable');
+  });
+});
+
+it('rebases audio/video sources and downloads without giving Ogg audio a video-link class', () => {
+  const root = document.createElement('div');
+  root.innerHTML =
+    '<span class="audio-media-card"><audio src="/media/a.ogg"></audio><a href="/media/a.ogg" download="a.ogg">Download audio</a></span><video src="/media/b.mp4"></video><a href="/media/b.mp4">Video</a>';
+  const rebase = (value: string) => (value.startsWith('/hub/node/') ? value : `/hub/node${value}`);
+  rebaseRenderedAssetURLs(root, rebase);
+  rebaseRenderedAssetURLs(root, rebase);
+  expect(root.querySelector('audio')).toHaveAttribute('src', '/hub/node/media/a.ogg');
+  expect(root.querySelector('video')).toHaveAttribute('src', '/hub/node/media/b.mp4');
+  expect(root.querySelector('.audio-media-card a')).not.toHaveClass('video-link');
+  expect(root.querySelector('a.video-link')).toHaveAttribute('href', '/hub/node/media/b.mp4');
+});
+
+it.each(['ogg', 'webm', 'mp4'])(
+  'classifies bare .%s media links without treating Ogg audio as video',
+  (extension) => {
+    const root = document.createElement('div');
+    root.innerHTML = renderMarkdown(
+      `[Recording](/media/0123456789abcdef0123456789abcdef.${extension})`,
+    );
+    rebaseRenderedAssetURLs(root, (value) => value);
+    expect(root.querySelector('a')?.classList.contains('video-link')).toBe(extension !== 'ogg');
+  },
+);
+
+it('does not restore replayed audio placeholders from a previous render', () => {
+  const sanitize = DOMPurify.sanitize.bind(DOMPurify);
+  let oldPlaceholder = '';
+  const spy = vi.spyOn(DOMPurify, 'sanitize').mockImplementation((source, options) => {
+    oldPlaceholder = String(source).match(/data-audio-placeholder="([^"]+)"/)?.[1] || '';
+    return sanitize(source, options) as never;
+  });
+  const reference = '0123456789abcdef0123456789abcdef';
+  const audio = `![Listen](term-llm-media://${reference})`;
+  const resolve = () => ({ url: `/ui/media/${reference}.wav`, type: 'audio' as const });
+  renderMarkdown(audio, resolve);
+  spy.mockRestore();
+  expect(oldPlaceholder).not.toBe('');
+  const root = document.createElement('div');
+  root.innerHTML = renderMarkdown(
+    `<span data-audio-placeholder="${oldPlaceholder}"></span>\n\n${audio}`,
+    resolve,
+  );
+  expect(root.querySelectorAll('audio')).toHaveLength(1);
+  expect(root.querySelector('[data-audio-placeholder]')).toHaveAttribute(
+    'data-audio-placeholder',
+    oldPlaceholder,
+  );
+  root.innerHTML = renderMarkdown(`<code>${audio}</code>`, resolve);
+  expect(root.querySelector('audio')).toBeNull();
+});
+
+it('does not reset audio sources when a rebasing pass is already current', () => {
+  const root = document.createElement('div');
+  root.innerHTML = '<audio src="/hub/media/recording.wav"></audio>';
+  const player = root.querySelector('audio')!;
+  const src = vi.spyOn(player, 'src', 'set');
+  rebaseRenderedAssetURLs(root, (value) => value);
+  expect(src).not.toHaveBeenCalled();
+});
+
+it.each(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'weba'])(
+  'accepts canonical published audio extension .%s',
+  (extension) => {
+    const reference = '0123456789abcdef0123456789abcdef';
+    const url = `/custom/chat/media/${reference}.${extension}`;
+    const html = renderMarkdown(`![Listen](term-llm-media://${reference})`, () => ({
+      url,
+      type: 'audio',
+    }));
+    expect(html).toContain(`<audio src="${url}"`);
+  },
+);

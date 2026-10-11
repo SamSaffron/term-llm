@@ -177,7 +177,11 @@ function responseMedia(value: unknown): MediaArtifact[] | undefined {
     .map((entry): MediaArtifact | null => {
       const url = text(entry.url);
       const type = text(entry.type || entry.media_type);
-      if (!url || (!type.startsWith('image/') && !type.startsWith('video/'))) return null;
+      if (
+        !url ||
+        (!type.startsWith('image/') && !type.startsWith('video/') && !type.startsWith('audio/'))
+      )
+        return null;
       return {
         url,
         type,

@@ -85,3 +85,19 @@ func TestBuildKeepsRepeatedAgentCallsIsolatedByCallID(t *testing.T) {
 		t.Fatalf("runs collided: first=%#v second=%#v", first, second)
 	}
 }
+
+func TestCompletedSubagentRetainsAudioReferenceAndFingerprint(t *testing.T) {
+	audio := llm.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
+	child := &session.Session{ID: "child", Status: session.StatusComplete}
+	result := &llm.ToolResult{ID: "outer", Name: tools.SpawnAgentToolName, Media: []llm.MediaArtifact{audio}}
+	childMessage := session.NewMessage(child.ID, llm.ToolResultMessageFromOutput("audio-call", "show_media", llm.ToolOutput{Media: []llm.MediaArtifact{audio}}, nil), 0)
+	run := Build(&llm.ToolCall{ID: "outer", Name: tools.SpawnAgentToolName}, result, tools.SpawnAgentResult{Output: "Listen", SessionID: child.ID}, child, []session.Message{*childMessage})
+	if len(run.Media) != 1 || run.Media[0] != audio {
+		t.Fatalf("media=%+v", run.Media)
+	}
+	result.Media[0].Caption = "New caption"
+	updated := Build(&llm.ToolCall{ID: "outer", Name: tools.SpawnAgentToolName}, result, tools.SpawnAgentResult{Output: "Listen", SessionID: child.ID}, child, nil)
+	if updated.Fingerprint == run.Fingerprint {
+		t.Fatal("caption did not invalidate completed-run projection")
+	}
+}

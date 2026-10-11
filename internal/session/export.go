@@ -15,6 +15,7 @@ type ExportOptions struct {
 	IncludeReasoningSummaries bool // Include provider-sanctioned reasoning summaries
 	IncludeRawReasoning       bool // Include raw reasoning; caller must enforce safety gate
 	Partial                   bool // Export is a transcript prefix; omit misleading whole-session metrics
+	IncludeAudio              bool // Explicit opt-in; inline HTML only, metadata copied as-is
 	ResponseOnly              bool // Export is a standalone assistant response
 
 	// Images selects inline data URIs (default), separate assets (share
@@ -48,10 +49,7 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 // historical text-only local export.
 func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, images *exportImages) string {
 	var b strings.Builder
-	var mediaReferences map[string]llm.MediaArtifact
-	if images != nil {
-		mediaReferences = htmlMediaReferences(VisibleExportMessages(messages), opts.Media)
-	}
+	mediaReferences := htmlMediaReferences(VisibleExportMessages(messages), opts.Media)
 	assets := images.assetsMode()
 	writeImage := func(target *strings.Builder, source exportImageSource) {
 		resolved := images.resolve(source)
@@ -67,7 +65,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 	}
 	rewriteText := func(text string) string {
 		if images == nil {
-			return text
+			return replaceMarkdownAudioReferences(text, mediaReferences)
 		}
 		if !assets {
 			return replaceHTMLMediaReferences(text, mediaReferences, nil)
@@ -190,7 +188,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 			if opts.IncludeSystem {
 				flushAssistant()
 				b.WriteString("### System\n\n")
-				b.WriteString(msg.TextContent)
+				b.WriteString(replaceMarkdownAudioReferences(msg.TextContent, mediaReferences))
 				b.WriteString("\n\n---\n\n")
 			}
 			continue
@@ -200,7 +198,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 		if msg.Role == llm.RoleUser {
 			flushAssistant()
 			b.WriteString("### User\n\n")
-			b.WriteString(msg.TextContent)
+			b.WriteString(replaceMarkdownAudioReferences(msg.TextContent, mediaReferences))
 			b.WriteString("\n\n")
 			if assets {
 				for _, part := range msg.Parts {

@@ -24,6 +24,7 @@ term-llm sessions share 42 --include-raw-reasoning
 term-llm sessions share 42 --new --json
 term-llm sessions share 42 --no-images
 term-llm sessions share 42 --no-tools
+term-llm sessions share 42 --include-audio # explicit consent for short recordings
 ```
 
 A compatible whole-session share is updated by default. `new` or `--new` always creates another share. An update is offered only when the stored share has `scope: session`, belongs to the currently configured provider, and that provider advertises `update`. Replacing saved state warns that the old provider link may remain active.
@@ -42,7 +43,7 @@ A whole-session share created with `notools`/`--no-tools` or `noimages`/`--no-im
 
 ## Images
 
-Shares include images by default: your uploads, images returned by tools, `image_generate` output, and media shown with `show_media`. To omit them all, use `/share noimages` or `--no-images`, clear the Web UI's **Include images** checkbox, or set `include_images: false` in the API.
+Shares include images by default: your uploads, images returned by tools, `image_generate` output, and images shown with `show_media`. To omit them all, use `/share noimages` or `--no-images`, clear the Web UI's **Include images** checkbox, or set `include_images: false` in the API.
 
 Every included image is decoded and re-encoded before it leaves the machine, so metadata such as EXIF, XMP, GPS location, and GIF comments is removed. JPEG orientation is applied first, and the longest edge is bounded. Each image uses a format the provider accepts: usually JPEG for photos and PNG for screenshots, flat graphics, and transparent images. GIFs keep their animation when the provider accepts GIF and the image fits the pixel limit; otherwise only the first frame is used. SVG and anything that does not decode as PNG, JPEG, GIF, or WebP is replaced by an "Image omitted" note.
 
@@ -58,6 +59,28 @@ A response-only share contains any images shown during the response, such as gen
 The Web UI shares either one response or the visible conversation through that response. These point-in-time Web shares are deliberately **not persisted**. A later whole-session update therefore cannot add broader content to a response-only URL.
 
 The older `agents export/import gist` and `sessions export gist` commands remain GitHub-specific and do not use this protocol.
+
+## Audio and local HTML exports
+
+Audio shown with `show_media` is **excluded by default**. To copy short recordings into a share, explicitly pass `term-llm sessions share 42 --include-audio`, select the Web UI's separate **Include audio** checkbox (off by default), or set `include_audio: true` in the share API request. `--no-images` / `include_images: false` still affects only images; it does not enable or disable audio consent. Removing tool activity or sharing just a response preserves registered audio references, but never overrides the audio opt-in.
+
+Audio uses native controls with `preload="metadata"`, never autoplay, and a download link in `index.html`. Supported formats are MP3, WAV, Ogg Opus/Vorbis, FLAC, audio MP4/M4A, and recognized audio-only WebM. Browser codec support varies; a download remains available if the browser cannot play a recording.
+
+Unlike images, **recordings and their embedded metadata are copied as-is**. No metadata stripping, resizing, or transcoding is performed. Recordings can contain private speech and identifying tags; review them before enabling sharing.
+
+There is a **2 MiB aggregate raw-audio budget per export** (up to 2 MiB in total), independent of the image budget. Each unique recording is embedded once; later references link to the first player as the same recording. The download link reuses the player's source via the export's existing inline-script policy rather than duplicating the audio data. Base64 adds approximately one third to the raw-audio size, regardless of reference count. The final HTML still must fit the provider's existing 16 MiB per-file and 32 MiB per-request limits. No audio sidecar files are published. Missing, nonregular, invalid/mislabelled, oversized, over-budget, or excluded recordings become descriptive placeholders, never local paths or private server URLs. CLI share/export with `--include-audio` reports the count of omitted recordings on stderr. Video remains a placeholder.
+
+`session.md` and local Markdown exports always use an audio placeholder, even with opt-in; they never contain an inline player or base64 audio. Literal Markdown references inside code examples remain unchanged. Message text and tool output are otherwise shared as written, so review them for private paths or secrets too.
+
+For a local self-contained HTML export, specify an `.html` (or `.htm`) output filename:
+
+```bash
+term-llm sessions export 42 transcript.html --include-audio
+```
+
+Without an HTML filename, `sessions export` keeps its Markdown default and warns on stderr if `--include-audio` is supplied. HTML exports containing embedded audio are written with owner-only permissions (`0600`), even when replacing a previously world-readable file.
+
+Audio consent is required again on each CLI share/update invocation and is never inferred from configuration or an earlier share. Adding audio to an existing URL that previously had none requires `--new --include-audio`, just as previously excluded tools/images require a new share. An update without the flag removes any previously embedded audio and prints a note. TUI `/share` and its update path also omit audio and show an omission/removal notice when applicable; use the explicit CLI or Web option to include it.
 
 ## Providers
 

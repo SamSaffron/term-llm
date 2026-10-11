@@ -206,7 +206,7 @@ func TestHTMLExportPlacesReferencedMediaPlaceholderInAssistantText(t *testing.T)
 			Type: llm.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter",
 		}}},
 	}
-	views, _ := buildHTMLExportMessages(messages, ExportOptions{}, newExportImages(ExportOptions{}))
+	views, _ := buildHTMLExportMessages(messages, ExportOptions{}, newExportImages(ExportOptions{}), newExportAudio(ExportOptions{}))
 	if len(views) != 2 || len(views[1].Blocks) != 1 {
 		t.Fatalf("unexpected export view: %#v", views)
 	}

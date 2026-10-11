@@ -3245,3 +3245,41 @@ func TestSQLiteStoreMigratesLegacyMessagesToResponseSegmentIdentity(t *testing.T
 		t.Fatalf("identified row after migration = %+v", got)
 	}
 }
+
+func TestSQLiteAudioMediaRoundTripAndTranscriptVisibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audio.db")
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "mock", Model: "mock", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	audio := llm.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
+	message := NewMessage(sess.ID, llm.ToolResultMessageFromOutput("audio-call", "show_media", llm.ToolOutput{Media: []llm.MediaArtifact{audio}}, nil), 0)
+	if err := store.AddMessage(ctx, sess.ID, message); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("messages=%v,%v", messages, err)
+	}
+	result := messages[0].Parts[0].ToolResult
+	if len(result.Media) != 1 || result.Media[0] != audio {
+		t.Fatalf("media=%+v", result.Media)
+	}
+	_, index, err := store.GetTranscriptIndex(ctx, sess.ID)
+	if err != nil || len(index) != 1 {
+		t.Fatalf("audio-only row hidden: index=%v,%v", index, err)
+	}
+}

@@ -252,6 +252,69 @@
   font-style: italic;
 }
 
+/* Inline-compatible cards also live inside Markdown paragraphs. */
+.audio-media-card {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 28rem;
+  margin-block: 0.6rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.audio-media-title,
+.audio-media-name,
+.audio-media-caption {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.audio-media-title {
+  font-weight: 600;
+}
+
+.audio-media-name,
+.audio-media-caption,
+.audio-media-error {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.audio-media-card audio {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 54px;
+  margin-block: 0.6rem;
+  color-scheme: light dark;
+}
+
+.audio-media-error:not([hidden]) {
+  display: block;
+}
+
+.audio-media-download {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.audio-media-card audio:focus-visible,
+.audio-media-download:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .message-image-button {
   appearance: none;
   display: block;

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/subagentview"
@@ -1383,5 +1384,43 @@ func TestRendererReasoningOverrideIgnoresHiddenUnknownReasoningForOrdinal(t *tes
 	}
 	if strings.Contains(expanded, "hidden unknown body") {
 		t.Fatalf("unknown reasoning should remain hidden, got %q", expanded)
+	}
+}
+
+func TestAudioMediaInToolAndPersistedAssistantUsesLinks(t *testing.T) {
+	const ref = "0123456789abcdef0123456789abcdef"
+	item := llm.MediaArtifact{Reference: ref, StoredPath: "/tmp/narration.mp3", MediaType: "audio/mpeg", Name: "narration.mp3"}
+	messages := []session.Message{
+		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "media", Name: "show_media", Media: []llm.MediaArtifact{item}}}}},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "![Listen](term-llm-media://" + ref + ")"}}},
+	}
+	for _, expanded := range []bool{false, true} {
+		renderer := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 1, expanded)
+		renderer.SetImageRenderer(func(string) ui.ImageArtifact { t.Fatal("audio reached image decoder"); return ui.ImageArtifact{} })
+		tool := ansi.Strip(renderer.renderToolMedia([]llm.MediaArtifact{item}))
+		if !strings.Contains(tool, "♪ Audio:") || !strings.Contains(tool, "file:///tmp/narration.mp3") {
+			t.Fatalf("tool=%q", tool)
+		}
+		block := renderer.Render(&messages[1])
+		plain := ansi.Strip(block.Rendered)
+		if !strings.Contains(plain, "♪ Audio: Listen — narration.mp3") || strings.Contains(plain, "term-llm-media://") {
+			t.Fatalf("history=%q", plain)
+		}
+	}
+}
+
+func TestCompletedSubagentAudioReferenceRendersAsLink(t *testing.T) {
+	const ref = "0123456789abcdef0123456789abcdef"
+	item := llm.MediaArtifact{Reference: ref, StoredPath: "/tmp/child.mp3", MediaType: "audio/mpeg", Name: "child.mp3"}
+	renderer := NewMessageBlockRenderer(80, simpleMarkdownRenderer, false)
+	renderer.SetImageRenderer(func(string) ui.ImageArtifact {
+		t.Fatal("subagent audio reached image decoder")
+		return ui.ImageArtifact{}
+	})
+	renderer.SetPersistedSubagents(map[string]subagentview.CompletedRun{"spawn": {ParentCallID: "spawn", Media: []llm.MediaArtifact{item}}})
+	message := session.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "![Child narration](term-llm-media://" + ref + ")"}}}
+	block := renderer.Render(&message)
+	if plain := ansi.Strip(block.Rendered); !strings.Contains(plain, "♪ Audio: Child narration — child.mp3") {
+		t.Fatalf("subagent audio=%q", plain)
 	}
 }

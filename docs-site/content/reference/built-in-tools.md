@@ -26,7 +26,7 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `grep` | Search file contents (uses ripgrep) |
 | `glob` | Find files by glob pattern |
 | `view_image` | Inspect an image file. Normally returns structured image content to a vision-capable primary model; with `vision_via`, a routed vision model returns text instead |
-| `show_media` | Register an existing local image or video and return an opaque `term-llm-media://…` URL for placement in assistant Markdown; web serves import an approved durable copy and terminals resolve it to rich media or a clickable local link |
+| `show_media` | Register an existing local image, video, or audio and return an opaque `term-llm-media://…` URL for placement in assistant Markdown; web serves import an approved durable copy and terminals resolve it to rich media or a clickable local link |
 | `show_image` | Legacy image-only presentation tool retained for explicit configurations |
 | `image_generate` | Generate images via configured provider |
 | `manage_workspace` | Grant, list, or revoke session-scoped local workspaces. Added automatically whenever a local path-capable file/search/image tool is enabled. |
@@ -45,6 +45,47 @@ Lifecycle tools are enabled together whenever `spawn_agent` is enabled. `spawn.m
 For persisted web sessions, `notify_when_done: true` asks the host to resume the **parent agent loop** in its original session when a detached child completes or fails. This is not a raw child notification to the user, not a jobs-v2 run, and not a model-selected target. The parent receives a marked internal lifecycle event containing child IDs, statuses, and reasons, with its normal tools, model, reasoning settings, and permissions. Child output is not embedded in developer/system authority: the parent uses `wait_agent` to collect untrusted results and media, then may continue the workflow and synthesize a response. The event uses a provider-visible synthetic user turn (the durable internal-prompt marker, not human-authored speech). Multiple completions coalesce while the parent is busy; collection with `wait_agent` suppresses a redundant wake. Pending events survive a restart, though an external delivery or model side effect cannot be guaranteed exactly once across a crash. A provably interrupted child is surfaced after restart with an interruption reason, without automatically resuming it: only an explicit `continue_agent` in a subsequent user-authorized turn can resume side-effectful work. Host-initiated lifecycle turns cannot call `continue_agent`. An explicit parent stop suppresses running children of the session and pending completions from that stopped turn, without rewriting the lifecycle reason or suppressing earlier completed turns. A parent response inactivity timeout or lease loss does not interrupt independently owned detached children; native collection waits pause only the parent inactivity timer for the duration of the tool call. Graceful host shutdown/reload remains an interruption, not a user stop. Deleted or archived parents are never recreated by completion delivery. This opt-in currently requires a persisted **web** session; Telegram, terminal chat, one-shot ask, and sessionless hosts do not yet provide a host-owned parent-loop reactivation channel and reject the option rather than silently sending a raw message.
 
 For `term-llm ask`, staged stdin or `-f` text/binary data transiently enables `read_file`; PNG/JPEG/GIF/WebP sources transiently enable both `read_file` and `view_image`. These additions are merged with explicit session tools and do not rewrite the saved tool list. The staged attachment receives an exact-file grant—nearby files, paths mentioned only in text, and symlink escapes receive no automatic access and remain subject to normal approval policy.
+
+### Presenting existing media
+
+Use `show_media` when the user should see or listen to a local artifact, rather
+than when the model only needs to inspect it. It accepts `path` and an optional
+`caption`, subject to the normal read/workspace approval policy. Registration
+returns an opaque URL, not a claim that playback succeeded. Place the exact URL
+on its own line using **Markdown image syntax for every kind**, including audio:
+
+```markdown
+![Listen to the narrated summary](term-llm-media://<reference-returned-by-show_media>)
+```
+
+| Kind | Supported formats | Maximum file size |
+|------|-------------------|-------------------|
+| Image | PNG, JPEG, GIF, WebP, BMP | 25 MiB |
+| Video | MP4, WebM | 256 MiB |
+| Audio | MP3, PCM/IEEE-float WAV (including valid extensible headers), Ogg Opus/Vorbis, FLAC, M4A/M4B or audio MP4, audio-only WebM | 100 MiB |
+
+Types are inspected from bytes, not guessed from filenames. MP4/WebM audio
+classification uses bounded track metadata inspection. Generic containers without
+complete metadata within the inspection budget—including MP4/WebM files whose
+track metadata lies beyond the bounded inspection window—retain their legacy
+video classification and video limit by design. M4A/M4B brands can still identify
+audio without available track metadata; inspected video tracks take precedence.
+Prefer MP3, faststart M4A (AAC, with metadata at the start), or PCM WAV for
+narration. Streamed WAV with unknown RIFF/final data sizes is supported. Raw AAC/ADTS, arbitrary Ogg video/Matroska, RF64/RIFX, and compressed
+WAV encodings are not supported. Container recognition does not guarantee codec
+playback in every browser; downloads remain useful when a codec is unavailable.
+
+Terminals display audio as a **♪ Audio** file link with the real filename,
+contextual label, and a visible `file://` URI. Videos are also file links; there
+is no terminal playback command or invented duration. Images retain rich terminal
+rendering where supported. Web serves import an approved durable copy, so the
+browser never receives a source filesystem path.
+
+Telegram has a separate **50 MiB** upload cap. MP3/M4A use native audio uploads;
+confirmed Ogg Opus uses voice uploads. Ogg Vorbis, WAV, FLAC, and audio WebM are
+sent as documents. Failed native audio/voice/video uploads retry as documents.
+There is no transcoding or automatic audio input to the model. Explicit
+`show_image` configurations remain compatible and image-only.
 
 ### Indirect image understanding for text-only models
 

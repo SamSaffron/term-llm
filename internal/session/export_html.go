@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/extension"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
@@ -53,6 +52,7 @@ type htmlExportView struct {
 	Partial      bool
 	ResponseOnly bool
 	AssetImages  bool
+	HasAudio     bool
 }
 
 type htmlExportMessage struct {
@@ -74,6 +74,7 @@ type htmlExportBlock struct {
 	Raw   bool
 	Tool  *htmlExportTool
 	Image *htmlExportImage
+	Audio *htmlExportAudio
 	File  *htmlExportFile
 }
 
@@ -131,34 +132,39 @@ func VisibleExportMessages(messages []Message) []Message {
 
 // ExportToHTML renders a self-contained, interactive transcript document.
 func ExportToHTML(sess *Session, messages []Message, opts ExportOptions) (string, error) {
-	if sess == nil {
-		return "", fmt.Errorf("session is required")
-	}
+	content, _, err := ExportToHTMLWithResult(sess, messages, opts)
+	return content, err
+}
 
+// ExportToHTMLWithResult also reports which referenced recordings were embedded
+// or omitted, without requiring callers to inspect generated HTML.
+func ExportToHTMLWithResult(sess *Session, messages []Message, opts ExportOptions) (string, ExportResult, error) {
 	if opts.Images == ExportImagesAssets {
 		// Standalone HTML has nowhere to put separate assets.
 		opts.Images = ExportImagesInline
 	}
-	return exportToHTML(sess, messages, opts, newExportImages(opts))
+	return exportToHTMLWithResult(sess, messages, opts, newExportImages(opts))
 }
 
-func exportToHTML(sess *Session, messages []Message, opts ExportOptions, images *exportImages) (string, error) {
+func exportToHTMLWithResult(sess *Session, messages []Message, opts ExportOptions, images *exportImages) (string, ExportResult, error) {
 	if sess == nil {
-		return "", fmt.Errorf("session is required")
+		return "", ExportResult{}, fmt.Errorf("session is required")
 	}
-	view := buildHTMLExportView(sess, messages, opts, images)
+	audio := newExportAudio(opts)
+	view := buildHTMLExportView(sess, messages, opts, images, audio)
+	result := audio.result()
 	tmpl, err := template.New("export_html.tmpl").ParseFS(exportHTMLTemplateFS, "export_html.tmpl")
 	if err != nil {
-		return "", fmt.Errorf("parse HTML export template: %w", err)
+		return "", result, fmt.Errorf("parse HTML export template: %w", err)
 	}
 	var out bytes.Buffer
 	if err := tmpl.Execute(&out, view); err != nil {
-		return "", fmt.Errorf("render HTML export: %w", err)
+		return "", result, fmt.Errorf("render HTML export: %w", err)
 	}
-	return out.String(), nil
+	return out.String(), result, nil
 }
 
-func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions, images *exportImages) htmlExportView {
+func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions, images *exportImages, audio *exportAudio) htmlExportView {
 	title := strings.TrimSpace(sess.PreferredLongTitle())
 	if title == "" {
 		title = strings.TrimSpace(sess.PreferredShortTitle())
@@ -187,7 +193,8 @@ func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions, 
 		Input: formatHTMLCount(sess.InputTokens), Cached: formatHTMLCount(sess.CachedInputTokens), CacheWrite: formatHTMLCount(sess.CacheWriteTokens), Output: formatHTMLCount(sess.OutputTokens),
 		Partial: opts.Partial, ResponseOnly: opts.ResponseOnly, AssetImages: images.assetsMode(),
 	}
-	view.Messages, view.DetailCount = buildHTMLExportMessages(VisibleExportMessages(messages), opts, images)
+	view.Messages, view.DetailCount = buildHTMLExportMessages(VisibleExportMessages(messages), opts, images, audio)
+	view.HasAudio = audio.used > 0
 	return view
 }
 
@@ -230,13 +237,14 @@ func htmlMediaReferences(messages []Message, extra []llm.MediaArtifact) map[stri
 	return media
 }
 
-// replaceHTMLMediaReferences rewrites term-llm-media:// Markdown images. Image
+// replaceHTMLMediaReferences rewrites term-llm-media:// images for Markdown
+// exports. HTML exports instead transform parsed image nodes. Image
 // artifacts that resolve within the export budget become ordinary Markdown
 // images pointing at a data: URI or bundle asset; everything else becomes a
 // textual placeholder because the private media URL is meaningless outside
 // the originating server.
 func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact, images *exportImages) string {
-	return htmlMediaReferencePattern.ReplaceAllStringFunc(value, func(token string) string {
+	return rewriteExportMediaText(value, func(token string) string {
 		match := htmlMediaReferencePattern.FindStringSubmatch(token)
 		if len(match) != 3 {
 			return token
@@ -250,6 +258,9 @@ func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact
 			return "Media unavailable in exported transcript"
 		}
 		kind := "Image"
+		if strings.HasPrefix(strings.ToLower(item.MediaType), "audio/") {
+			return markdownAudioPlaceholder(item)
+		}
 		if strings.HasPrefix(strings.ToLower(item.MediaType), "video/") {
 			kind = "Video"
 		}
@@ -276,9 +287,8 @@ func escapeMarkdownImageAlt(value string) string {
 	return replacer.Replace(value)
 }
 
-func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exportImages) ([]htmlExportMessage, int) {
-	markdown := goldmark.New(goldmark.WithExtensions(extension.GFM))
-	mediaReferences := htmlMediaReferences(messages, opts.Media)
+func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exportImages, audio *exportAudio) ([]htmlExportMessage, int) {
+	markdown := newHTMLExportMarkdown(htmlMediaReferences(messages, opts.Media), images, audio)
 	views := make([]htmlExportMessage, 0, len(messages))
 	pending := make(map[string]pendingHTMLTool)
 	detailCount := 0
@@ -305,8 +315,7 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 					detailCount++
 				}
 				if part.Text != "" {
-					text := replaceHTMLMediaReferences(part.Text, mediaReferences, images)
-					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
+					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, part.Text)})
 				}
 			case llm.PartImage:
 				alt := "Attached image"
@@ -347,8 +356,7 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 			}
 		}
 		if compaction && len(view.Blocks) == 0 && msg.TextContent != "" {
-			text := replaceHTMLMediaReferences(msg.TextContent, mediaReferences, images)
-			view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
+			view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, msg.TextContent)})
 		}
 		views = append(views, view)
 	}
@@ -447,8 +455,9 @@ func renderSafeMarkdown(markdown goldmark.Markdown, source string) template.HTML
 	if err := markdown.Convert([]byte(source), &out); err != nil {
 		return template.HTML(template.HTMLEscapeString(source))
 	}
-	// Goldmark's default renderer suppresses raw HTML and unsafe link schemes.
-	return template.HTML(out.String()) // #nosec G203 -- output comes from Goldmark in safe mode.
+	// Goldmark suppresses raw HTML and unsafe link schemes. The custom audio
+	// renderer only emits html/template-escaped, validated exporter data.
+	return template.HTML(out.String()) // #nosec G203 -- safe Goldmark plus typed exporter-generated audio.
 }
 
 func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, images *exportImages) *htmlExportTool {

@@ -3,6 +3,7 @@ import { marked, Renderer } from 'marked';
 import { findStableMarkdownBoundary, isInCodeBlockFast } from './markdown-streaming';
 
 import { escapeHTML, externalLink, markdownHooks } from './markdown-hooks';
+import { audioMediaHTML, trustedPublishedMediaURL } from './audio-media';
 
 marked.use({ gfm: true, breaks: true, ...markdownHooks });
 
@@ -20,11 +21,24 @@ function protectMath(source: string): { source: string; values: string[] } {
   return { source: protectedSource, values };
 }
 
-export function sanitizeMarkdownHTML(source: string): string {
+export function sanitizeMarkdownHTML(
+  source: string,
+  variant: 'chat' | 'document' = 'chat',
+): string {
   return DOMPurify.sanitize(source, {
     USE_PROFILES: { html: true },
     ADD_ATTR: ['target', 'rel', 'data-language'],
-    FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
+    FORBID_TAGS: [
+      'style',
+      'script',
+      'iframe',
+      'object',
+      'embed',
+      'form',
+      'input',
+      'button',
+      ...(variant === 'chat' ? ['audio', 'source'] : []),
+    ],
     FORBID_ATTR: ['style', 'srcdoc', 'onerror', 'onload'],
     ALLOW_UNKNOWN_PROTOCOLS: false,
   });
@@ -32,12 +46,17 @@ export function sanitizeMarkdownHTML(source: string): string {
 
 export interface MarkdownMediaTarget {
   url: string;
-  type: 'image' | 'video';
+  type: 'image' | 'video' | 'audio';
+  name?: string;
+  caption?: string;
 }
 
 export type MarkdownMediaResolver = (reference: string) => MarkdownMediaTarget | undefined;
 
-function mediaRenderer(resolveMedia: MarkdownMediaResolver): Renderer {
+function mediaRenderer(
+  resolveMedia: MarkdownMediaResolver,
+  audioCards: Map<string, string>,
+): Renderer {
   const renderer = new Renderer();
   renderer.link = externalLink;
   const defaultImage = renderer.image.bind(renderer);
@@ -51,6 +70,22 @@ function mediaRenderer(resolveMedia: MarkdownMediaResolver): Renderer {
     const media = resolveMedia(reference);
     if (!media)
       return `<span class="media-reference-missing">[${escapeHTML(label)} unavailable]</span>`;
+    if (media.type === 'audio') {
+      if (!trustedPublishedMediaURL(media.url, true))
+        return `<span class="media-reference-missing">[${escapeHTML(label)} unavailable]</span>`;
+      // The namespace is private to this render, never supplied by model HTML.
+      const placeholder = `TERM_LLM_AUDIO_${crypto.getRandomValues(new Uint32Array(4)).join('-')}_TOKEN`;
+      audioCards.set(
+        placeholder,
+        audioMediaHTML({
+          url: media.url,
+          name: media.name,
+          caption: media.caption,
+          label: token.text,
+        }),
+      );
+      return `<span data-audio-placeholder="${placeholder}"></span>`;
+    }
     if (media.type === 'video') {
       return `<video src="${escapeHTML(media.url)}" controls playsinline preload="metadata" aria-label="${escapeHTML(label)}"></video>`;
     }
@@ -61,14 +96,39 @@ function mediaRenderer(resolveMedia: MarkdownMediaResolver): Renderer {
 
 export function renderMarkdown(source: string, resolveMedia?: MarkdownMediaResolver): string {
   const math = protectMath(source || '');
+  const audioCards = new Map<string, string>();
   const options = resolveMedia
-    ? { async: false as const, renderer: mediaRenderer(resolveMedia) }
+    ? { async: false as const, renderer: mediaRenderer(resolveMedia, audioCards) }
     : { async: false as const };
   let rendered = marked.parse(math.source, options) as string;
   rendered = rendered.replace(/TERM_LLM_MATH_(\d+)_TOKEN/g, (_match, index: string) =>
     escapeHTML(math.values[Number(index)] || ''),
   );
-  return sanitizeMarkdownHTML(rendered);
+  const sanitized = sanitizeMarkdownHTML(rendered);
+  if (!audioCards.size) return sanitized;
+  // Template contents stay inert: ordinary images must not fetch during this pass.
+  const root = document.createElement('template');
+  root.innerHTML = sanitized;
+  const linkedCards = new Map<HTMLAnchorElement, ChildNode>();
+  for (const slot of root.content.querySelectorAll<HTMLElement>('[data-audio-placeholder]')) {
+    const placeholder = slot.dataset.audioPlaceholder || '';
+    const card = audioCards.get(placeholder);
+    if (!card || slot.closest('pre,code,textarea')) continue;
+    const template = document.createElement('template');
+    template.innerHTML = card;
+    const anchor = slot.closest('a');
+    if (anchor) {
+      // Do not create nested anchors or let native controls activate the model link.
+      // Keep multiple cards from the same link in their original occurrence order.
+      const lastCard = template.content.lastChild!;
+      (linkedCards.get(anchor) || anchor).after(template.content);
+      linkedCards.set(anchor, lastCard);
+      slot.remove();
+    } else slot.replaceWith(template.content);
+    // Each generated placeholder can be consumed only once.
+    audioCards.delete(placeholder);
+  }
+  return root.innerHTML;
 }
 
 export function stableMarkdownBoundary(value: string): number {
@@ -158,17 +218,22 @@ export async function decorateRichContent(
   }
 }
 
-export const VIDEO_LINK_PATTERN = /\.(?:mp4|webm|mov|ogg|ogv)(?:[?#].*)?$/i;
+export const VIDEO_LINK_PATTERN = /\.(?:mp4|webm|mov|ogv)(?:[?#].*)?$/i;
 export function rebaseRenderedAssetURLs(
   root: HTMLElement,
   rebase: (value: string) => string,
 ): void {
-  root.querySelectorAll<HTMLImageElement>('img[src]').forEach((image) => {
-    image.src = rebase(image.getAttribute('src') || image.src);
-  });
+  root
+    .querySelectorAll<HTMLImageElement | HTMLMediaElement>('img[src],audio[src],video[src]')
+    .forEach((asset) => {
+      const raw = asset.getAttribute('src') || asset.src;
+      const next = rebase(raw);
+      if (next !== raw) asset.src = next;
+    });
   root.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => {
     const raw = anchor.getAttribute('href') || '';
     if (/^(?:\/|https?:)/i.test(raw)) anchor.href = rebase(raw);
-    if (VIDEO_LINK_PATTERN.test(raw)) anchor.classList.add('video-link');
+    if (!anchor.closest('.audio-media-card') && VIDEO_LINK_PATTERN.test(raw))
+      anchor.classList.add('video-link');
   });
 }

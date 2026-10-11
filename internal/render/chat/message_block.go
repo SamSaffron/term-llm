@@ -712,7 +712,7 @@ func (r *MessageBlockRenderer) renderToolMedia(media []llm.MediaArtifact) string
 	for _, item := range media {
 		mediaPath := item.Path()
 		var rendered string
-		if strings.HasPrefix(strings.ToLower(item.MediaType), "video/") {
+		if !strings.HasPrefix(strings.ToLower(item.MediaType), "image/") {
 			rendered = ui.RenderMediaLink(item)
 		} else {
 			rendered = ui.RenderImageArtifactWithRenderer(mediaPath, r.imageRenderer)

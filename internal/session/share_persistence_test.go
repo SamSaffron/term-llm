@@ -132,3 +132,35 @@ func TestGistPreviewURLRejectsInvalidID(t *testing.T) {
 		t.Fatalf("GistPreviewURL invalid = %q", got)
 	}
 }
+
+func TestShareStateAudioDetectionPersistence(t *testing.T) {
+	legacy := parseShareJSONString(sql.NullString{Valid: true, String: `{"provider":"acme","id":"old","url":"https://example.test/old"}`})
+	if legacy == nil || legacy.IncludedAudio {
+		t.Fatalf("old state must not imply audio: %+v", legacy)
+	}
+	store, err := NewSQLiteStore(Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sess := &Session{ID: "audio-state", Provider: "mock", Model: "mock", Share: &ShareState{Provider: "acme", ID: "audio", IncludedAudio: true}}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(context.Background(), sess.ID)
+	if err != nil || got.Share == nil || !got.Share.IncludedAudio {
+		t.Fatalf("audio state lost: %+v err=%v", got, err)
+	}
+	state := got.Share.Clone()
+	if !state.IncludedAudio {
+		t.Fatal("clone lost audio detection")
+	}
+	state.IncludedAudio = false
+	if err := UpdateShare(context.Background(), store, sess.ID, state); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get(context.Background(), sess.ID)
+	if err != nil || got.Share.IncludedAudio {
+		t.Fatalf("audio removal not persisted: %+v err=%v", got, err)
+	}
+}

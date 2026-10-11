@@ -754,7 +754,7 @@ type ToolContentPart struct {
 	ImageData *ToolImageData      `json:"image_data,omitempty"`
 }
 
-// MediaArtifact describes a local image or video produced for presentation to
+// MediaArtifact describes a local image, video, or audio produced for presentation to
 // the user. SourcePath remains useful to local terminal surfaces; StoredPath is
 // an optional durable copy owned by a serve runtime. Neither path is sent to a
 // browser directly.
@@ -820,7 +820,7 @@ type ToolOutput struct {
 	ContentParts           []ToolContentPart              `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
 	Diffs                  []DiffData                     // Structured diff data (for UI rendering)
 	Images                 []string                       // Legacy image paths (for UI rendering)
-	Media                  []MediaArtifact                `json:"media,omitempty"`        // Ordered image/video artifacts for UI rendering
+	Media                  []MediaArtifact                `json:"media,omitempty"`        // Ordered image/video/audio artifacts for UI rendering
 	FileChanges            []FileChange                   `json:"file_changes,omitempty"` // Persisted attributed changes only
 	FilesystemObservations []FilesystemObservationSummary `json:"filesystem_observations,omitempty"`
 	OutputClaimDiagnostics []OutputClaimDiagnostic        `json:"output_claim_diagnostics,omitempty"`
@@ -844,7 +844,7 @@ type ToolResult struct {
 	Display         string            // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
 	Diffs           []DiffData        `json:"diffs,omitempty"`            // Structured diff data
 	Images          []string          `json:"images,omitempty"`           // Legacy image paths
-	Media           []MediaArtifact   `json:"media,omitempty"`            // Ordered image/video artifacts
+	Media           []MediaArtifact   `json:"media,omitempty"`            // Ordered image/video/audio artifacts
 	GuardianReviews []GuardianReview  `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata
 	IsError         bool              // True if this result represents a tool execution error
 	Caller          string            `json:",omitempty"` // PTC caller provenance.
@@ -925,7 +925,7 @@ type Event struct {
 	ToolFilesystemObservations []FilesystemObservationSummary
 	ToolOutputClaimDiagnostics []OutputClaimDiagnostic
 	ToolImages                 []string        // Legacy image paths from image tools
-	ToolMedia                  []MediaArtifact // Ordered image/video artifacts from presentation tools
+	ToolMedia                  []MediaArtifact // Ordered image/video/audio artifacts from presentation tools
 	Use                        *Usage
 	Err                        error
 	// Retry fields (for EventRetry). RetryMaxAttempts == 0 means the retry
