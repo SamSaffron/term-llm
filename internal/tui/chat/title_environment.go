@@ -46,14 +46,3 @@ func (e TerminalTitleEnvironment) Get(name string) string {
 	}
 	return e.values[name]
 }
-
-func (e TerminalTitleEnvironment) Values() map[string]string {
-	if e.values == nil {
-		return nil
-	}
-	clone := make(map[string]string, len(e.values))
-	for key, value := range e.values {
-		clone[key] = value
-	}
-	return clone
-}

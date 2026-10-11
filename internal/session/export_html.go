@@ -2,10 +2,8 @@ package session
 
 import (
 	"bytes"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -13,14 +11,12 @@ import (
 
 	"github.com/yuin/goldmark"
 
+	"github.com/samsaffron/term-llm/internal/htmlesc"
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
 
 const maxHTMLExportInlineImageBytes = 2 << 20
-
-//go:embed export_html.tmpl
-var exportHTMLTemplateFS embed.FS
 
 type htmlExportView struct {
 	Title        string
@@ -68,7 +64,7 @@ type htmlExportMessage struct {
 
 type htmlExportBlock struct {
 	Kind  string
-	HTML  template.HTML
+	HTML  string // trusted: safe Goldmark output
 	Text  string
 	Title string
 	Raw   bool
@@ -99,7 +95,7 @@ type htmlExportDiff struct {
 }
 
 type htmlExportImage struct {
-	URL       template.URL
+	URL       string // trusted: validated, exporter-generated
 	MediaType string
 	Alt       string
 	Reason    string
@@ -153,15 +149,8 @@ func exportToHTMLWithResult(sess *Session, messages []Message, opts ExportOption
 	audio := newExportAudio(opts)
 	view := buildHTMLExportView(sess, messages, opts, images, audio)
 	result := audio.result()
-	tmpl, err := template.New("export_html.tmpl").ParseFS(exportHTMLTemplateFS, "export_html.tmpl")
-	if err != nil {
-		return "", result, fmt.Errorf("parse HTML export template: %w", err)
-	}
-	var out bytes.Buffer
-	if err := tmpl.Execute(&out, view); err != nil {
-		return "", result, fmt.Errorf("render HTML export: %w", err)
-	}
-	return out.String(), result, nil
+	out := renderHTMLExport(&view)
+	return out, result, nil
 }
 
 func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions, images *exportImages, audio *exportAudio) htmlExportView {
@@ -450,14 +439,14 @@ func htmlReasoningBlock(part llm.Part, opts ExportOptions, markdown goldmark.Mar
 	}
 }
 
-func renderSafeMarkdown(markdown goldmark.Markdown, source string) template.HTML {
+func renderSafeMarkdown(markdown goldmark.Markdown, source string) string {
 	var out bytes.Buffer
 	if err := markdown.Convert([]byte(source), &out); err != nil {
-		return template.HTML(template.HTMLEscapeString(source))
+		return htmlesc.Text(source)
 	}
 	// Goldmark suppresses raw HTML and unsafe link schemes. The custom audio
-	// renderer only emits html/template-escaped, validated exporter data.
-	return template.HTML(out.String()) // #nosec G203 -- safe Goldmark plus typed exporter-generated audio.
+	// renderer only emits htmlesc-escaped, validated exporter data.
+	return out.String()
 }
 
 func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, images *exportImages) *htmlExportTool {
@@ -526,7 +515,7 @@ func buildHTMLImage(images *exportImages, source exportImageSource) htmlExportIm
 	if !resolved.Omitted {
 		// resolve only yields data:image/(png|jpeg|gif) URIs of re-encoded
 		// bytes or relative assets/<hash>.<ext> names.
-		image.URL = template.URL(resolved.URL) // #nosec G203 -- constructed above from validated, re-encoded image data.
+		image.URL = resolved.URL // constructed above from validated, re-encoded image data.
 	}
 	return image
 }

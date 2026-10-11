@@ -1,7 +1,6 @@
 package session
 
 import (
-	"html/template"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -92,7 +91,7 @@ func (t *exportMediaTransformer) replace(node *ast.Image, source []byte) {
 	node.Parent().ReplaceChild(node.Parent(), node, ast.NewString([]byte(placeholder)))
 }
 
-type exportAudioRenderer struct{ template *template.Template }
+type exportAudioRenderer struct{}
 
 func (r *exportAudioRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 	reg.Register(kindExportAudio, r.render)
@@ -103,17 +102,19 @@ func (r *exportAudioRenderer) render(w util.BufWriter, _ []byte, node ast.Node, 
 		return ast.WalkContinue, nil
 	}
 	block := node.(*exportAudioNode).block
-	return ast.WalkSkipChildren, r.template.ExecuteTemplate(w, "audio", block.Audio)
+	if block.Audio != nil {
+		writeExportAudio(w, block.Audio)
+	}
+	return ast.WalkSkipChildren, nil
 }
 
 func newHTMLExportMarkdown(media map[string]llm.MediaArtifact, images *exportImages, audio *exportAudio) goldmark.Markdown {
-	// The same html/template partial renders typed audio blocks and AST nodes.
+	// The same audio renderer handles typed audio blocks and AST nodes.
 	// No raw HTML is injected into Markdown and Goldmark unsafe mode stays off.
-	tmpl := template.Must(template.New("export_html.tmpl").ParseFS(exportHTMLTemplateFS, "export_html.tmpl"))
 	return goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		goldmark.WithParserOptions(parser.WithASTTransformers(util.Prioritized(&exportMediaTransformer{media: media, images: images, audio: audio}, 100))),
-		goldmark.WithRendererOptions(renderer.WithNodeRenderers(util.Prioritized(&exportAudioRenderer{template: tmpl}, 100))),
+		goldmark.WithRendererOptions(renderer.WithNodeRenderers(util.Prioritized(&exportAudioRenderer{}, 100))),
 	)
 }
 

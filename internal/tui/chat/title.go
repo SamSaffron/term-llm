@@ -1,11 +1,8 @@
 package chat
 
 import (
-	"bytes"
 	"fmt"
-	"regexp"
 	"strings"
-	"text/template"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -159,14 +156,9 @@ func sanitizeTerminalTitle(title string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(b.String()), " "))
 }
 
-var (
-	terminalTitleSimpleVarPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
-	terminalTitleEnvDotPattern    = regexp.MustCompile(`\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
-)
-
 type terminalTitleFormatter struct {
 	raw  string
-	tmpl *template.Template
+	prog titleFormatProgram
 	env  TerminalTitleEnvironment
 }
 
@@ -184,7 +176,6 @@ type terminalTitleFormatData struct {
 	Attention       bool
 	AttentionMarker string
 	Streaming       bool
-	Env             map[string]string
 }
 
 func newTerminalTitleFormatter(format string, env TerminalTitleEnvironment) *terminalTitleFormatter {
@@ -193,11 +184,11 @@ func newTerminalTitleFormatter(format string, env TerminalTitleEnvironment) *ter
 	if format == "" {
 		return formatter
 	}
-	tmpl, err := parseTerminalTitleFormat(format, env)
+	prog, err := parseTitleFormat(format)
 	if err != nil {
 		return formatter
 	}
-	formatter.tmpl = tmpl
+	formatter.prog = prog
 	return formatter
 }
 
@@ -206,44 +197,10 @@ func ValidateTerminalTitleFormat(format string) error {
 	if format == "" {
 		return nil
 	}
-	tmpl, err := parseTerminalTitleFormat(format, TerminalTitleEnvironment{})
-	if err != nil {
-		return err
-	}
-	var b bytes.Buffer
-	if err := tmpl.Execute(&b, terminalTitleFormatDataForState(titleState{Agent: "agent", Task: "task", Model: "model", Branch: "branch"}, TerminalTitleEnvironment{})); err != nil {
-		return fmt.Errorf("execute terminal title format: %w", err)
+	if _, err := parseTitleFormat(format); err != nil {
+		return fmt.Errorf("parse terminal title format: %w", err)
 	}
 	return nil
-}
-
-func parseTerminalTitleFormat(format string, env TerminalTitleEnvironment) (*template.Template, error) {
-	funcs := template.FuncMap{
-		"env": func(name string) string {
-			return env.Get(name)
-		},
-		"default": func(fallback, value string) string {
-			if strings.TrimSpace(value) == "" {
-				return fallback
-			}
-			return value
-		},
-	}
-	return template.New("terminal-title").Funcs(funcs).Option("missingkey=zero").Parse(normalizeTerminalTitleFormat(format))
-}
-
-func normalizeTerminalTitleFormat(format string) string {
-	format = terminalTitleEnvDotPattern.ReplaceAllString(format, `{{env "$1"}}`)
-	return terminalTitleSimpleVarPattern.ReplaceAllStringFunc(format, func(action string) string {
-		matches := terminalTitleSimpleVarPattern.FindStringSubmatch(action)
-		if len(matches) != 2 {
-			return action
-		}
-		if field, ok := terminalTitleFormatField(matches[1]); ok {
-			return "{{." + field + "}}"
-		}
-		return action
-	})
 }
 
 func terminalTitleFormatField(name string) (string, bool) {
@@ -279,15 +236,11 @@ func terminalTitleFormatField(name string) (string, bool) {
 
 func (f *terminalTitleFormatter) Format(st titleState) string {
 	defaultTitle := buildTitle(st)
-	if f == nil || strings.TrimSpace(f.raw) == "" || f.tmpl == nil {
+	if f == nil || strings.TrimSpace(f.raw) == "" || f.prog == nil {
 		return defaultTitle
 	}
 	data := terminalTitleFormatDataForState(st, f.env)
-	var b bytes.Buffer
-	if err := f.tmpl.Execute(&b, data); err != nil {
-		return defaultTitle
-	}
-	formatted := sanitizeTerminalTitle(b.String())
+	formatted := sanitizeTerminalTitle(f.prog.execute(data, f.env))
 	if formatted == "" {
 		return defaultTitle
 	}
@@ -338,7 +291,6 @@ func terminalTitleFormatDataForState(st titleState, env TerminalTitleEnvironment
 		Attention:       st.Attention,
 		AttentionMarker: attentionMarker,
 		Streaming:       st.Streaming,
-		Env:             env.Values(),
 	}
 }
 
