@@ -1360,10 +1360,12 @@ func TestControllerReportsFailedAndRefusedDelegationsToBothAudiences(t *testing.
 		// this lane still produces is the worker's capacity path.
 		session := newFakeSession()
 		release := make(chan struct{})
+		slowRouting := make(chan struct{})
 		var releaseOnce sync.Once
 		releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
 		router := &fakeRouter{route: func(_ context.Context, request RouteRequest) (RouteResult, error) {
 			if request.Input == "slow" {
+				close(slowRouting)
 				<-release
 			}
 			return RouteResult{Handled: true, Answer: "handled"}, nil
@@ -1372,7 +1374,16 @@ func TestControllerReportsFailedAndRefusedDelegationsToBothAudiences(t *testing.
 		startControllerWith(t, session, ControllerOptions{Delegator: &fakeDelegator{}, Router: router}, recorder)
 		t.Cleanup(releaseAll)
 
-		for _, id := range []string{"slow", "a", "b", "c", "d", "overflow"} {
+		// Fill the queue only once the worker holds "slow": until then "slow"
+		// itself occupies a queue slot, a different request overflows, and
+		// "overflow" later fits in the slot the worker frees.
+		session.emit(Event{Kind: EventDelegationCreated, DelegationID: "slow", Text: "slow"})
+		select {
+		case <-slowRouting:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the route worker never picked up the slow request")
+		}
+		for _, id := range []string{"a", "b", "c", "d", "overflow"} {
 			session.emit(Event{Kind: EventDelegationCreated, DelegationID: id, Text: id})
 		}
 		waitFor(t, "the overflow refusal", func() bool {

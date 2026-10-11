@@ -1317,10 +1317,8 @@ func TestLiveRequestWithoutARouterRunsInTheSessionLane(t *testing.T) {
 			}
 			// Fail open, not fail closed: nothing was refused, and the browser was not
 			// told about an outage it cannot act on.
-			events := h.delegationEvents()
 			waitForLiveCondition(t, "the completed delegation", func() bool {
-				states := delegationStates(events)
-				return strings.HasSuffix(states, "done")
+				return strings.HasSuffix(delegationStates(h.delegationEvents()), "done")
 			})
 			if states := delegationStates(h.delegationEvents()); strings.Contains(states, "refused") || strings.Contains(states, "failed") {
 				t.Fatalf("a router outage was reported as a failure: %v", states)
