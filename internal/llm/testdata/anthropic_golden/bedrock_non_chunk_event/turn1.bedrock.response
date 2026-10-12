@@ -1,0 +1,77 @@
+[
+ {
+  "chunk": {
+   "type": "message_start",
+   "message": {
+    "id": "msg_bedrock",
+    "type": "message",
+    "role": "assistant",
+    "content": [],
+    "model": "claude-sonnet-4-6",
+    "usage": {
+     "input_tokens": 10,
+     "output_tokens": 0
+    }
+   }
+  }
+ },
+ {
+  "headers": [
+   {
+    "name": ":message-type",
+    "value": "event"
+   },
+   {
+    "name": ":event-type",
+    "value": "metadata"
+   },
+   {
+    "name": ":content-type",
+    "value": "application/json"
+   }
+  ],
+  "payload": "{\"ignored\":true}"
+ },
+ {
+  "chunk": {
+   "type": "content_block_start",
+   "index": 0,
+   "content_block": {
+    "type": "text",
+    "text": ""
+   }
+  }
+ },
+ {
+  "chunk": {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "text_delta",
+    "text": "bedrock ok"
+   }
+  }
+ },
+ {
+  "chunk": {
+   "type": "content_block_stop",
+   "index": 0
+  }
+ },
+ {
+  "chunk": {
+   "type": "message_delta",
+   "delta": {
+    "stop_reason": "end_turn"
+   },
+   "usage": {
+    "output_tokens": 3
+   }
+  }
+ },
+ {
+  "chunk": {
+   "type": "message_stop"
+  }
+ }
+]

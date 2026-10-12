@@ -1,0 +1,83 @@
+[
+  [
+    {
+      "type": "reasoning_delta",
+      "text": "The user wants me to read notes",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": ".txt using",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " the read_file tool",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": ".",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "reasoning_kind": "encrypted",
+      "encrypted": "EskCCqgBCBIYAipAn/s+VxQapy9a0eOqJrZkegrcPyIOUYHjrLwSueaUWsZO8Iw4MN8hMdK2J/R//BhZcgrmzIcygyZk7uMzyzwxXzIRY2xhdWRlLXNvbm5ldC00LTY4AEIIdGhpbmtpbmdaJDFmNWY0NjRjLWIxZmItNDM5Mi04M2Q0LWIyOGYzMTFiMmZiNZoBEwoRY2xhdWRlLXNvbm5ldC00LTaoAe2ysNYGEgzHNVdRu1pgoJO+VtEaDGxb9wL5YSqyWOnJ6yIw77+ZsiZ6rsX4331NJSxPkQLv72QNRwMVc4boCN+h5yG8vetdP9Dn3mSvuz/T0umqKk6DjehC33qJ6dXdzDvC8jmnZczI4AHbFjFHN0wIcbTvOPpw8K3rZfB2xlSVT+VT9BR5sMaVfRPOheJpf+3BkfbR4abUTEiFm2TsX2Ox/c0YAQ=="
+    },
+    {
+      "type": "tool_call",
+      "tool": {
+        "id": "toolu_01KjWwJcG6Vd7SxGb5fC63Vw",
+        "name": "read_file",
+        "args": {
+          "path": "notes.txt"
+        }
+      }
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 3,
+        "OutputTokens": 86,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 2859,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ],
+  [
+    {
+      "type": "text_delta",
+      "text": "The"
+    },
+    {
+      "type": "text_delta",
+      "text": " secret word is **PELICAN"
+    },
+    {
+      "type": "text_delta",
+      "text": "**."
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 1,
+        "OutputTokens": 12,
+        "CachedInputTokens": 2859,
+        "CacheWriteTokens": 109,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

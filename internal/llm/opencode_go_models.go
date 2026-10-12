@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/samsaffron/term-llm/internal/cache"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"golang.org/x/sync/singleflight"
@@ -625,13 +623,26 @@ func activeOpenCodeGoModelIDs(models map[string]opencodeGoModel) []string {
 }
 
 func newOpenCodeGoAnthropicProvider(apiKey, baseURL, model string, client *http.Client) *AnthropicProvider {
-	// anthropic-sdk-go appends /v1/messages itself. OpenCode publishes a base URL
-	// ending in /v1, so pass the parent to avoid /v1/v1/messages.
+	// The Messages client appends /v1/messages itself. OpenCode publishes a base
+	// URL ending in /v1, so pass the parent to avoid /v1/v1/messages.
 	anthropicBaseURL := strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
-	opts := []option.RequestOption{option.WithAPIKey(apiKey), option.WithBaseURL(anthropicBaseURL)}
-	if client != nil {
-		opts = append(opts, option.WithHTTPClient(client))
+	if client == nil {
+		client = newAnthropicHTTPClient()
+	} else {
+		// Never follow redirects with X-Api-Key; copy so the shared client
+		// used by the other OpenCode protocols is left untouched.
+		copied := *client
+		copied.CheckRedirect = refuseAnthropicRedirect
+		client = &copied
 	}
-	anthropicClient := anthropic.NewClient(opts...)
-	return &AnthropicProvider{client: &anthropicClient, model: model, credential: "api_key"}
+	ac := &anthropicClient{apiKey: apiKey, httpClient: client}
+	parsed, err := parseAnthropicBaseURL(anthropicBaseURL)
+	if err != nil {
+		// Never fall back to another host: that would send the OpenCode key
+		// to an unrelated endpoint. Requests report the configuration error.
+		ac.baseErr = fmt.Errorf("invalid OpenCode Go base URL %q: %w", baseURL, err)
+	} else {
+		ac.baseURL = parsed
+	}
+	return &AnthropicProvider{client: ac, model: model, credential: "api_key"}
 }

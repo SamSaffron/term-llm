@@ -64,6 +64,13 @@ func ValidateProviderCompatibility(name string, cfg *ProviderConfig) error {
 	if InferProviderType(name, cfg.Type) == ProviderTypeGrok && (strings.TrimSpace(cfg.APIKey) != "" || strings.TrimSpace(cfg.ResolvedAPIKey) != "" || strings.TrimSpace(cfg.BaseURL) != "" || strings.TrimSpace(cfg.URL) != "") {
 		return fmt.Errorf("provider %q now selects Grok subscription OAuth and cannot use api_key/base_url/url; set explicit type: xai for the public xAI API or type: openai_compatible for a custom endpoint", name)
 	}
+	if len(cfg.Headers) > 0 {
+		switch InferProviderType(name, cfg.Type) {
+		case ProviderTypeAnthropic, ProviderTypeBedrock:
+		default:
+			return fmt.Errorf("provider %q: headers is only supported for anthropic and bedrock providers", name)
+		}
+	}
 	return nil
 }
 
@@ -143,6 +150,7 @@ type ProviderConfig struct {
 	Reasoning    string                `mapstructure:"reasoning"`     // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
 	Credentials  string                `mapstructure:"credentials"`   // Provider-specific credential mode (for example "api_key" or "claude")
 	Env          map[string]string     `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
+	Headers      map[string]string     `mapstructure:"headers"`       // Extra HTTP headers for Anthropic-protocol providers (values support ${ENV}, $(), op://, file://)
 	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
 	Enabled      *bool                 `mapstructure:"enabled"`       // false disables the provider even when credentials are detected; nil means enabled
@@ -2450,6 +2458,7 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 	cfg.AppURL = expandEnv(cfg.AppURL)
 	cfg.AppTitle = expandEnv(cfg.AppTitle)
 	resolveProviderEnv(cfg)
+	resolveProviderHeaders(cfg)
 
 	// Check if api_key uses magic syntax (op://, file://, $(), etc.)
 	// If so, defer resolution until inference time
@@ -2514,6 +2523,16 @@ func resolveProviderEnv(cfg *ProviderConfig) {
 	}
 }
 
+func resolveProviderHeaders(cfg *ProviderConfig) {
+	for k, v := range cfg.Headers {
+		if needsLazyResolve(v) {
+			cfg.needsLazyResolution = true
+			continue
+		}
+		cfg.Headers[k] = expandEnv(v)
+	}
+}
+
 // ResolveForInference performs lazy resolution of expensive config values (op://, file://, srv://, $()).
 // Call this before creating a provider for inference.
 func (cfg *ProviderConfig) ResolveForInference() error {
@@ -2574,6 +2593,15 @@ func (cfg *ProviderConfig) ResolveForInference() error {
 				return fmt.Errorf("env.%s: %w", k, err)
 			}
 			cfg.Env[k] = resolved
+		}
+	}
+	for k, v := range cfg.Headers {
+		if needsLazyResolve(v) {
+			resolved, err := ResolveValue(v)
+			if err != nil {
+				return fmt.Errorf("headers.%s: %w", k, err)
+			}
+			cfg.Headers[k] = resolved
 		}
 	}
 
@@ -2826,6 +2854,10 @@ func IsKnownKey(keyPath string) bool {
 			}
 			if len(parts) >= 4 && parts[2] == "env" {
 				// providers.<name>.env.<VAR> - arbitrary subprocess env vars
+				return true
+			}
+			if len(parts) >= 4 && parts[2] == "headers" {
+				// providers.<name>.headers.<Header-Name> - arbitrary HTTP headers
 				return true
 			}
 			if len(parts) >= 4 && parts[2] == "model_map" {

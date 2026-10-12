@@ -600,6 +600,7 @@ var providerFieldSpecs = []ProviderFieldSpec{
 	{Path: "reasoning"},
 	{Path: "credentials"},
 	{Path: "env", Placeholder: map[string]any{}},
+	{Path: "headers", Placeholder: map[string]any{}},
 	{Path: "enable_hooks", Placeholder: false},
 	{Path: "use_websocket", Placeholder: false},
 	{Path: "responses.reasoning_mode"},

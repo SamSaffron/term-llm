@@ -342,6 +342,13 @@ func InputLimitForProviderModel(providerName, model string) int {
 		}
 	}
 
+	// The live Anthropic catalog wins over the curated rows it mirrors.
+	if providerType == string(config.ProviderTypeAnthropic) {
+		if result := anthropicInputLimit(model); result > 0 {
+			return result
+		}
+	}
+
 	// 1. Explicit provider-scoped limits from ProviderModels
 	if v, ok := explicitProviderInput[configKey(providerType, model)]; ok {
 		return v
@@ -395,6 +402,22 @@ func InputLimitForProviderModel(providerName, model string) int {
 
 	// 5. Config fallback (provider-scoped, then model-only)
 	return configInputLimitForProvider(providerName, model)
+}
+
+// anthropicInputLimit prefers the live catalog. -1m selects the 1M-context
+// beta, so its budget comes from the -1m prefix rows (keyed by the undated
+// alias) rather than the aliased 200K snapshot in the catalog.
+func anthropicInputLimit(model string) int {
+	if base, ok := trimKnownEffortSuffix(model); ok && strings.HasSuffix(base, "-1m") {
+		model = base // claude-sonnet-4-5-1m-high keeps the 1M budget
+	}
+	if strings.HasSuffix(model, "-1m") {
+		return lookupPrefix(anthropicModelAlias(model)+"-1m", inputLimitTable)
+	}
+	if info, ok := anthropicCachedModelInfoForRequest(model); ok {
+		return info.InputLimit
+	}
+	return 0
 }
 
 // selfManagedHelperInputLimits are bounded-replay budgets for providers that
@@ -511,10 +534,14 @@ func lookupPrefix(model string, table []limitEntry) int {
 // Entries are matched by longest prefix. Unknown models return 0 (compaction disabled).
 var inputLimitTable = []limitEntry{
 	// Anthropic Claude 1M context: 1M ctx - 20K practical output reserve = 980K
-	// Fable 5, Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 have 1M context.
+	// Claude 5.x, Fable 5, Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 have 1M
+	// context (GET /v1/models max_input_tokens); the live catalog wins when cached.
 	// The -1m aliases remain for backwards compatibility with existing configs.
 	// Older 1M beta-only entries are enabled via -1m suffix (sends context-1m-2025-08-07 beta header).
 	// Requires Anthropic usage tier 4 or custom rate limits.
+	{"claude-haiku-5", 980_000},
+	{"claude-sonnet-5", 980_000},
+	{"claude-opus-5", 980_000},
 	{"claude-fable-5", 980_000},
 	{"claude-opus-4-8", 980_000},
 	{"claude-opus-4-7", 980_000},
@@ -685,18 +712,20 @@ func ClampOutputTokens(requested int, model string) int {
 // Derived from context_window - input_limit (see inputLimitTable comments).
 // Entries are matched by longest prefix. Unknown models return 0 (no clamping).
 var outputLimitTable = []limitEntry{
-	// Anthropic Claude 4.x/5: theoretical max is 64K-128K but practical is 16K-20K.
-	// Use the actual API max to avoid rejections.
+	// Anthropic Claude 4.x/5: the API max_tokens from GET /v1/models.
+	{"claude-haiku-5", 128_000},
+	{"claude-sonnet-5", 128_000},
+	{"claude-opus-5", 128_000},
 	{"claude-fable-5", 128_000},
 	{"claude-opus-4-8", 128_000},
-	{"claude-sonnet-4-6-1m", 64_000},
+	{"claude-sonnet-4-6-1m", 128_000},
 	{"claude-sonnet-4-5-1m", 64_000},
 	{"claude-sonnet-4-1m", 64_000},
-	{"claude-opus-4-7", 64_000},
-	{"claude-opus-4-7-1m", 64_000},
-	{"claude-opus-4-6-1m", 64_000},
-	{"claude-sonnet-4-6", 64_000},
-	{"claude-opus-4-6", 64_000},
+	{"claude-opus-4-7", 128_000},
+	{"claude-opus-4-7-1m", 128_000},
+	{"claude-opus-4-6-1m", 128_000},
+	{"claude-sonnet-4-6", 128_000},
+	{"claude-opus-4-6", 128_000},
 	{"claude-sonnet-4-5", 64_000},
 	{"claude-opus-4-5", 64_000},
 	{"claude-haiku-4-5", 64_000},

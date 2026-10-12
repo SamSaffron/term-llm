@@ -336,7 +336,7 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	switch providerType {
 	case config.ProviderTypeAnthropic:
-		return NewAnthropicProviderWithBaseURL(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials, cfg.BaseURL)
+		return NewAnthropicProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials, AnthropicProviderOptions{BaseURL: cfg.BaseURL, Headers: cfg.Headers})
 
 	case config.ProviderTypeOpenAI:
 		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)}), nil
@@ -363,7 +363,7 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return newAPIKeyProvider(name, providerType, cfg)
 
 	case config.ProviderTypeBedrock:
-		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap)
+		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap, cfg.Headers)
 
 	case config.ProviderTypeClaudeBin, config.ProviderTypeGrokBin, config.ProviderTypeCursorBin, config.ProviderTypeAgyBin:
 		return newBinProvider(providerType, cfg.Model, cfg.Env, cfg.EnableHooks)

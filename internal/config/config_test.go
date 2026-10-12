@@ -1974,3 +1974,80 @@ func TestDiagnosticsDirDoesNotUseWorkingDirectory(t *testing.T) {
 		t.Fatalf("unsafe diagnostic directory = %q", got)
 	}
 }
+
+func TestLoad_ProviderHeaders(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("TEST_ANTHROPIC_WORKSPACE", "wrkspc_test")
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	secretPath := filepath.Join(configDir, "header.json")
+	if err := os.WriteFile(secretPath, []byte(`{"value":"lazy-secret"}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	configYAML := `providers:
+  anthropic:
+    headers:
+      Anthropic-Workspace-Id: ${TEST_ANTHROPIC_WORKSPACE}
+      X-Gateway-Token: file://` + secretPath + `#value
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	providerCfg := cfg.Providers["anthropic"]
+	if err := resolveProviderCredentials("anthropic", &providerCfg); err != nil {
+		t.Fatalf("resolveProviderCredentials: %v", err)
+	}
+	if err := providerCfg.ResolveForInference(); err != nil {
+		t.Fatalf("ResolveForInference: %v", err)
+	}
+	// Header names are case-insensitive, so viper's key lowercasing is harmless.
+	got := map[string]string{}
+	for k, v := range providerCfg.Headers {
+		got[strings.ToLower(k)] = v
+	}
+	if got["anthropic-workspace-id"] != "wrkspc_test" {
+		t.Fatalf("anthropic-workspace-id = %q, want wrkspc_test (headers=%v)", got["anthropic-workspace-id"], got)
+	}
+	if got["x-gateway-token"] != "lazy-secret" {
+		t.Fatalf("x-gateway-token = %q, want lazily resolved value", got["x-gateway-token"])
+	}
+}
+
+func TestIsKnownKey_ProviderHeaders(t *testing.T) {
+	for _, key := range []string{"providers.anthropic.headers", "providers.anthropic.headers.anthropic-workspace-id", "providers.custom.headers.x-token"} {
+		if !IsKnownKey(key) {
+			t.Errorf("IsKnownKey(%q) = false, want true", key)
+		}
+	}
+}
+
+func TestValidateProviderCompatibility_HeadersOnlyForAnthropicProtocols(t *testing.T) {
+	headers := map[string]string{"x-test": "1"}
+	for name, cfg := range map[string]*ProviderConfig{
+		"anthropic": {Headers: headers},
+		"bedrock":   {Headers: headers},
+		"gateway":   {Type: ProviderTypeAnthropic, Headers: headers},
+	} {
+		if err := ValidateProviderCompatibility(name, cfg); err != nil {
+			t.Errorf("%s: unexpected error %v", name, err)
+		}
+	}
+	for name, cfg := range map[string]*ProviderConfig{
+		"openai":      {Headers: headers},
+		"opencode-go": {Headers: headers},
+	} {
+		if err := ValidateProviderCompatibility(name, cfg); err == nil || !strings.Contains(err.Error(), "headers is only supported") {
+			t.Errorf("%s: error = %v, want unsupported headers", name, err)
+		}
+	}
+}

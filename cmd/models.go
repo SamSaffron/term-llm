@@ -225,7 +225,7 @@ func newModelLister(providerName string, providerType config.ProviderType, provi
 }
 
 func newAnthropicModelLister(providerCfg config.ProviderConfig) (ModelLister, error) {
-	provider, err := llm.NewAnthropicProviderWithBaseURL(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials, providerCfg.BaseURL)
+	provider, err := llm.NewAnthropicProviderWithOptions(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials, llm.AnthropicProviderOptions{BaseURL: providerCfg.BaseURL, Headers: providerCfg.Headers})
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: %w", err)
 	}

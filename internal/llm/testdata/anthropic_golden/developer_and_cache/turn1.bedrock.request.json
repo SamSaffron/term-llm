@@ -1,0 +1,77 @@
+{
+  "method": "POST",
+  "path": "/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+  "raw_path": "/model/us.anthropic.claude-haiku-4-5-20251001-v1%3A0/invoke-with-response-stream",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "authorization": [
+      "AWS4-HMAC-SHA256 Credential=AKIDGOLDENEXAMPLE/<date>/..."
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-amz-date": [
+      "<present>"
+    ],
+    "x-amz-security-token": [
+      "golden-session"
+    ]
+  },
+  "body": {
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "<developer>\nAlways answer in lowercase.\n</developer>\n\nSummary anchor: we are testing.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "ok",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "text": "<developer>\nKeep it to two words.\n</developer>\n\nReply with: dev ok",
+            "type": "text"
+          },
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "<developer>\nTrailing developer note.\n</developer>",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are a terse assistant used for wire-format golden tests.",
+        "type": "text"
+      }
+    ]
+  }
+}

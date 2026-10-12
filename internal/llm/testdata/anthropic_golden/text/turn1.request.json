@@ -1,0 +1,46 @@
+{
+  "method": "POST",
+  "path": "/v1/messages",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-api-key": [
+      "<present>"
+    ]
+  },
+  "body": {
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Reply with exactly: golden hello",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-haiku-4-5",
+    "stream": true,
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are a terse assistant used for wire-format golden tests.",
+        "type": "text"
+      }
+    ]
+  }
+}

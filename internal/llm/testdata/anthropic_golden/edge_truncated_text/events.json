@@ -1,0 +1,15 @@
+[
+  [
+    {
+      "type": "text_delta",
+      "text": "partial"
+    },
+    {
+      "type": "error",
+      "error": {
+        "incomplete": true,
+        "retryable": true
+      }
+    }
+  ]
+]

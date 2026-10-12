@@ -1,0 +1,70 @@
+[
+  [
+    {
+      "type": "reasoning_delta",
+      "text": "The user is asking",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " me",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " to say hi. This is a simple",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": ",",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " friendly greeting request",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": ".",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "reasoning_kind": "encrypted",
+      "encrypted": "EuYCCrYBCBIYAipALS6lFhvPr+Wxe5mfvqy6WrWF1kX/aeAQ/sReqtSXJngHjw1QmXSsCY4s6DYfytfu9DY7FfcpMHxkKx5/HSnBmjIYY2xhdWRlLW9wdXMtNC01LTIwMjUxMTAxOABCCHRoaW5raW5nWiQxZjVmNDY0Yy1iMWZiLTQzOTItODNkNC1iMjhmMzExYjJmYjWaARoKGGNsYXVkZS1vcHVzLTQtNS0yMDI1MTEwMagB/qix1gYSDKI8pnMt6zfFSaUuDhoMuklyDQKCCGqvNtqxIjDLfDRx6FfIqPyzkUWt17HgfmS76chtjMeklM4QFaFg8pwnVmCwKqCKRiZixEg0j+4qXZqjrdpKq1ckrMeSHOZhecwk0WMqmHnyGtmMsMS9FB7hBu1ITWTNhaaPvwzZw/GpJ+8EvYYH7pYb34m5y7y10NzlqfC7jTp906Uo5tbApcjEmhRjVAtLmz+bGlh8fxgB"
+    },
+    {
+      "type": "text_delta",
+      "text": "Hi"
+    },
+    {
+      "type": "text_delta",
+      "text": "! How are you doing today?"
+    },
+    {
+      "type": "text_delta",
+      "text": " Is there something"
+    },
+    {
+      "type": "text_delta",
+      "text": " I can help you with?"
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 39,
+        "OutputTokens": 46,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

@@ -36,6 +36,7 @@ type CachedModel struct {
 	InputPrice        float64          `json:"input_price,omitempty"`
 	OutputPrice       float64          `json:"output_price,omitempty"`
 	ReasoningEfforts  []string         `json:"reasoning_efforts,omitempty"`
+	ReasoningModes    []string         `json:"reasoning_modes,omitempty"`
 	ReasoningBudgets  map[string]int64 `json:"reasoning_budgets,omitempty"`
 	Protocol          string           `json:"protocol,omitempty"`
 	Deprecated        bool             `json:"deprecated,omitempty"`

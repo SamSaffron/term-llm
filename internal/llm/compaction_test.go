@@ -981,7 +981,7 @@ func TestOutputLimitForModel(t *testing.T) {
 		model    string
 		expected int
 	}{
-		{"claude-sonnet-4-6", 64_000},
+		{"claude-sonnet-4-6", 128_000},
 		{"claude-3.5-sonnet-20241022", 8_192},
 		{"claude-3-opus-20240229", 4_096},
 		{"gpt-4-turbo-2024-04-09", 4_096},
@@ -2022,8 +2022,8 @@ func TestConfigFallbackOutputLimit(t *testing.T) {
 	}
 
 	// Hardcoded model still uses hardcoded table
-	if got := OutputLimitForModel("claude-sonnet-4-6"); got != 64_000 {
-		t.Errorf("OutputLimitForModel(claude) = %d, want 64000", got)
+	if got := OutputLimitForModel("claude-sonnet-4-6"); got != 128_000 {
+		t.Errorf("OutputLimitForModel(claude) = %d, want 128000", got)
 	}
 }
 

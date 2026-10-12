@@ -1,0 +1,63 @@
+[
+  [
+    {
+      "type": "text_delta",
+      "text": "I"
+    },
+    {
+      "type": "text_delta",
+      "text": "'m"
+    },
+    {
+      "type": "text_delta",
+      "text": " ready"
+    },
+    {
+      "type": "text_delta",
+      "text": " to continue our conversation."
+    },
+    {
+      "type": "text_delta",
+      "text": " We"
+    },
+    {
+      "type": "text_delta",
+      "text": " just"
+    },
+    {
+      "type": "text_delta",
+      "text": " said"
+    },
+    {
+      "type": "text_delta",
+      "text": " the word \"blue\" together"
+    },
+    {
+      "type": "text_delta",
+      "text": ". What would you like to"
+    },
+    {
+      "type": "text_delta",
+      "text": " talk about next"
+    },
+    {
+      "type": "text_delta",
+      "text": "?"
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 26,
+        "OutputTokens": 30,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

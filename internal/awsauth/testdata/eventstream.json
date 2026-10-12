@@ -1,0 +1,223 @@
+[
+  {
+    "File": "all-types.bin",
+    "Messages": [
+      {
+        "Headers": [
+          {
+            "Name": "true",
+            "Type": 0,
+            "Value": true
+          },
+          {
+            "Name": "false",
+            "Type": 1,
+            "Value": false
+          },
+          {
+            "Name": "byte",
+            "Type": 2,
+            "Value": -17
+          },
+          {
+            "Name": "short",
+            "Type": 3,
+            "Value": -1234
+          },
+          {
+            "Name": "int",
+            "Type": 4,
+            "Value": -12345678
+          },
+          {
+            "Name": "long",
+            "Type": 5,
+            "Value": -9007199254740993
+          },
+          {
+            "Name": "bytes",
+            "Type": 6,
+            "Value": "AP8R"
+          },
+          {
+            "Name": ":event-type",
+            "Type": 7,
+            "Value": "chunk"
+          },
+          {
+            "Name": "time",
+            "Type": 8,
+            "Value": "2026-10-12T00:00:00.123Z"
+          },
+          {
+            "Name": "uuid",
+            "Type": 9,
+            "Value": "AAECAwQFBgcICQoLDA0ODw=="
+          }
+        ],
+        "Payload": "eyJieXRlcyI6ImhlbGxvIn0="
+      }
+    ],
+    "Error": ""
+  },
+  {
+    "File": "empty.bin",
+    "Messages": [
+      {
+        "Headers": [],
+        "Payload": ""
+      }
+    ],
+    "Error": ""
+  },
+  {
+    "File": "multiple.bin",
+    "Messages": [
+      {
+        "Headers": [
+          {
+            "Name": "true",
+            "Type": 0,
+            "Value": true
+          },
+          {
+            "Name": "false",
+            "Type": 1,
+            "Value": false
+          },
+          {
+            "Name": "byte",
+            "Type": 2,
+            "Value": -17
+          },
+          {
+            "Name": "short",
+            "Type": 3,
+            "Value": -1234
+          },
+          {
+            "Name": "int",
+            "Type": 4,
+            "Value": -12345678
+          },
+          {
+            "Name": "long",
+            "Type": 5,
+            "Value": -9007199254740993
+          },
+          {
+            "Name": "bytes",
+            "Type": 6,
+            "Value": "AP8R"
+          },
+          {
+            "Name": ":event-type",
+            "Type": 7,
+            "Value": "chunk"
+          },
+          {
+            "Name": "time",
+            "Type": 8,
+            "Value": "2026-10-12T00:00:00.123Z"
+          },
+          {
+            "Name": "uuid",
+            "Type": 9,
+            "Value": "AAECAwQFBgcICQoLDA0ODw=="
+          }
+        ],
+        "Payload": "eyJieXRlcyI6ImhlbGxvIn0="
+      },
+      {
+        "Headers": [],
+        "Payload": ""
+      },
+      {
+        "Headers": [
+          {
+            "Name": "true",
+            "Type": 0,
+            "Value": true
+          },
+          {
+            "Name": "false",
+            "Type": 1,
+            "Value": false
+          },
+          {
+            "Name": "byte",
+            "Type": 2,
+            "Value": -17
+          },
+          {
+            "Name": "short",
+            "Type": 3,
+            "Value": -1234
+          },
+          {
+            "Name": "int",
+            "Type": 4,
+            "Value": -12345678
+          },
+          {
+            "Name": "long",
+            "Type": 5,
+            "Value": -9007199254740993
+          },
+          {
+            "Name": "bytes",
+            "Type": 6,
+            "Value": "AP8R"
+          },
+          {
+            "Name": ":event-type",
+            "Type": 7,
+            "Value": "chunk"
+          },
+          {
+            "Name": "time",
+            "Type": 8,
+            "Value": "2026-10-12T00:00:00.123Z"
+          },
+          {
+            "Name": "uuid",
+            "Type": 9,
+            "Value": "AAECAwQFBgcICQoLDA0ODw=="
+          }
+        ],
+        "Payload": "eyJieXRlcyI6ImhlbGxvIn0="
+      }
+    ],
+    "Error": ""
+  },
+  {
+    "File": "bad-prelude-crc.bin",
+    "Messages": null,
+    "Error": "prelude CRC"
+  },
+  {
+    "File": "bad-message-crc.bin",
+    "Messages": null,
+    "Error": "message CRC"
+  },
+  {
+    "File": "truncated.bin",
+    "Messages": null,
+    "Error": "unexpected EOF"
+  },
+  {
+    "File": "truncated-prelude.bin",
+    "Messages": null,
+    "Error": "unexpected EOF"
+  },
+  {
+    "File": "truncated-after-prelude.bin",
+    "Messages": null,
+    "Error": "unexpected EOF"
+  },
+  {
+    "File": "oversize.bin",
+    "Messages": null,
+    "Error": "message length"
+  }
+]

@@ -1,0 +1,58 @@
+[
+  [
+    {
+      "type": "tool_call",
+      "tool": {
+        "id": "toolu_01LmMVVynrzhUTRSjzQJa3gf",
+        "name": "read_file",
+        "args": {
+          "path": "notes.txt"
+        }
+      }
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 391,
+        "OutputTokens": 47,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ],
+  [
+    {
+      "type": "text_delta",
+      "text": "The secret word is"
+    },
+    {
+      "type": "text_delta",
+      "text": " **"
+    },
+    {
+      "type": "text_delta",
+      "text": "PELICAN**."
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 468,
+        "OutputTokens": 12,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

@@ -310,10 +310,15 @@ func TestReasoningEffortsForProviderModel(t *testing.T) {
 		{"chatgpt", "gpt-5.6-luna", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-opus-4-8", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-opus-4-8-max", []string{"low", "medium", "high", "xhigh", "max"}},
-		{"anthropic", "claude-sonnet-4-6", []string{"low", "medium", "high"}},
-		{"anthropic", "claude-sonnet-4-6-high", []string{"low", "medium", "high"}},
+		// Direct Anthropic efforts mirror GET /v1/models capabilities.effort.
+		{"anthropic", "claude-sonnet-4-6", []string{"low", "medium", "high", "max"}},
+		{"anthropic", "claude-sonnet-4-6-high", []string{"low", "medium", "high", "max"}},
 		{"anthropic", "claude-haiku-4-5", nil},
-		{"anthropic", "claude-sonnet-4-5-1m", []string{"low", "medium", "high"}},
+		{"anthropic", "claude-sonnet-4-5-1m", nil},
+		{"anthropic", "claude-opus-4-5", []string{"low", "medium", "high"}},
+		{"anthropic", "claude-opus-4-5-20251101", []string{"low", "medium", "high"}},
+		{"anthropic", "claude-haiku-5-5", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"anthropic", "claude-opus-6", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-fable-5", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-fable-5-max", []string{"low", "medium", "high", "xhigh", "max"}},
 	}
@@ -367,7 +372,9 @@ func TestBaseModelAndEffortForProviderAvoidsFalseMaxParsing(t *testing.T) {
 		{"anthropic", "claude-opus-4-8-max", "claude-opus-4-8", "max"},
 		{"anthropic", "claude-fable-5-max", "claude-fable-5", "max"},
 		{"anthropic", "claude-sonnet-4-6-high", "claude-sonnet-4-6", "high"},
-		{"anthropic", "claude-sonnet-4-6-max", "claude-sonnet-4-6-max", ""},
+		{"anthropic", "claude-sonnet-4-6-max", "claude-sonnet-4-6", "max"},
+		{"anthropic", "claude-sonnet-4-6-xhigh", "claude-sonnet-4-6-xhigh", ""},
+		{"anthropic", "claude-opus-4-5-max", "claude-opus-4-5-max", ""},
 		{"anthropic", "claude-haiku-4-5-high", "claude-haiku-4-5-high", ""},
 	}
 
@@ -405,12 +412,12 @@ func TestExpandWithEffortVariantsForProvider(t *testing.T) {
 	}
 
 	got = ExpandWithEffortVariantsForProvider("anthropic", []string{"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"})
-	for _, want := range []string{"claude-opus-4-8-low", "claude-opus-4-8-max", "claude-sonnet-4-6-low", "claude-sonnet-4-6-high"} {
+	for _, want := range []string{"claude-opus-4-8-low", "claude-opus-4-8-max", "claude-sonnet-4-6-low", "claude-sonnet-4-6-high", "claude-sonnet-4-6-max"} {
 		if !containsModelID(got, want) {
 			t.Fatalf("expanded anthropic models missing %q: %v", want, got)
 		}
 	}
-	if containsModelID(got, "claude-sonnet-4-6-max") || containsModelID(got, "claude-haiku-4-5-low") {
+	if containsModelID(got, "claude-sonnet-4-6-xhigh") || containsModelID(got, "claude-haiku-4-5-low") {
 		t.Fatalf("expanded anthropic models included invalid variants: %v", got)
 	}
 }

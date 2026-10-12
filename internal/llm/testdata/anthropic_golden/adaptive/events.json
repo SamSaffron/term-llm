@@ -1,0 +1,61 @@
+[
+  [
+    {
+      "type": "reasoning_delta",
+      "text": "221",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " =",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 13 × 17,",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " so no",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": ".",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "reasoning_kind": "encrypted",
+      "encrypted": "EqICCqgBCBIYAipAWLUnx0EQ1W319LoMxi/90ZEWFKzqffpZQwCc63Yy33VravcwGjGLWzF6//tiGZw9cRLqodfvssegbYbuBaboSDIRY2xhdWRlLXNvbm5ldC00LTY4AEIIdGhpbmtpbmdaJDFmNWY0NjRjLWIxZmItNDM5Mi04M2Q0LWIyOGYzMTFiMmZiNZoBEwoRY2xhdWRlLXNvbm5ldC00LTaoAdmysNYGEgw+Sa9zSzL/b1Hb2okaDJp27X/OOqg2K+sGnyIwBVEZGcO3jJgAxrXHWfuJzHJ2dnCtlSZac0vcEJCCGjWSsTVpGcSq/cMLEBB17JXZKic1SDJ6CV2k5IMVzV2/pu+tNjQ9s89PIDUpltJuNO0bsjlcTmFfJe4YAQ=="
+    },
+    {
+      "type": "text_delta",
+      "text": "No"
+    },
+    {
+      "type": "text_delta",
+      "text": ", 221 ="
+    },
+    {
+      "type": "text_delta",
+      "text": " 13 × 17."
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 16,
+        "OutputTokens": 44,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

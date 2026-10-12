@@ -1,0 +1,27 @@
+[
+  [
+    {
+      "type": "text_delta",
+      "text": "golden"
+    },
+    {
+      "type": "text_delta",
+      "text": " hello"
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 27,
+        "OutputTokens": 5,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

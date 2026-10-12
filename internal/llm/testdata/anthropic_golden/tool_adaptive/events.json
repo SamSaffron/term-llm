@@ -1,0 +1,99 @@
+[
+  [
+    {
+      "type": "reasoning_delta",
+      "text": "The user wants me to read notes",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": ".txt to",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " find the",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " secret word.",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "reasoning_kind": "encrypted",
+      "encrypted": "EsgCCqgBCBIYAipAKbvWehuuUn1/i5U2Vjd2KEuA1iBj3NvJLHjxVWOcM3q0h+pOkXWzyjiVexn8nYK+KMcK2s2pFCzs8B/Cj/ueGDIRY2xhdWRlLXNvbm5ldC00LTY4AEIIdGhpbmtpbmdaJDFmNWY0NjRjLWIxZmItNDM5Mi04M2Q0LWIyOGYzMTFiMmZiNZoBEwoRY2xhdWRlLXNvbm5ldC00LTaoAeGysNYGEgxzcdj3GsaJHmToPyEaDNEmw/LeJ3XELiTkUCIwFaj5I1zuA9Ipe5XqmiI5GnGOf6DfKIn59tp4LRnzU4fXJhrHc4jUcIMwGkPgcWsvKk17MjBVfNH7VL8cWrB4lLTDaVDyIuaQsdh+KW3i77AgiVL2JVDNffSjOtXM1BDqXWKfK4/nC/1mp693Ul8T0MVoVmxqTZAE7qHxyJwEGRgB"
+    },
+    {
+      "type": "text_delta",
+      "text": "Sure"
+    },
+    {
+      "type": "text_delta",
+      "text": "! Let me read that"
+    },
+    {
+      "type": "text_delta",
+      "text": " file right"
+    },
+    {
+      "type": "text_delta",
+      "text": " away."
+    },
+    {
+      "type": "tool_call",
+      "tool": {
+        "id": "toolu_01TiZ3oFKnqQwpdNvqv5o4d3",
+        "name": "read_file",
+        "args": {
+          "path": "notes.txt"
+        }
+      }
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 599,
+        "OutputTokens": 96,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ],
+  [
+    {
+      "type": "text_delta",
+      "text": "The"
+    },
+    {
+      "type": "text_delta",
+      "text": " secret word is **PELICAN"
+    },
+    {
+      "type": "text_delta",
+      "text": "**."
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 716,
+        "OutputTokens": 12,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

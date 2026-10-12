@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -16,17 +17,20 @@ import (
 // Keep completion refreshes short: stale cached or curated models remain
 // available when the local CLI or its remote catalog is slow.
 const (
-	agyBinCompletionRefreshTimeout  = 5 * time.Second
-	grokBinCompletionRefreshTimeout = 5 * time.Second
-	ollamaCompletionRefreshTimeout  = 2 * time.Second
-	zenCompletionRefreshTimeout     = 2 * time.Second
+	agyBinCompletionRefreshTimeout    = 5 * time.Second
+	grokBinCompletionRefreshTimeout   = 5 * time.Second
+	ollamaCompletionRefreshTimeout    = 2 * time.Second
+	zenCompletionRefreshTimeout       = 2 * time.Second
+	anthropicCompletionRefreshTimeout = 3 * time.Second
 )
 
 var (
-	refreshAgyBinModelsForCompletion  = llm.RefreshAgyBinModelsIfStale
-	refreshGrokBinModelsForCompletion = llm.RefreshGrokBinModelsIfStale
-	refreshOllamaModelsForCompletion  = llm.RefreshOllamaModelsIfStale
-	refreshZenModelsForCompletion     = llm.RefreshZenModelsIfStale
+	refreshAgyBinModelsForCompletion    = llm.RefreshAgyBinModelsIfStale
+	refreshGrokBinModelsForCompletion   = llm.RefreshGrokBinModelsIfStale
+	refreshOllamaModelsForCompletion    = llm.RefreshOllamaModelsIfStale
+	refreshZenModelsForCompletion       = llm.RefreshZenModelsIfStale
+	refreshAnthropicModelsForCompletion = llm.RefreshAnthropicModelsIfStale
+	claimAnthropicCatalogRefresh        = llm.ClaimAnthropicCatalogRefresh
 )
 
 // ProviderFlagCompletion handles --provider flag completion for LLM commands
@@ -61,6 +65,57 @@ func refreshProviderCompletionCaches(toComplete string, cfg *config.Config) {
 	refreshGrokBinCompletionCache(toComplete, cfg)
 	refreshOllamaCompletionCache(toComplete, cfg)
 	refreshZenCompletionCache(toComplete, cfg)
+	refreshAnthropicCompletionCache(toComplete, cfg)
+}
+
+// refreshAnthropicCompletionCache refreshes the public Anthropic catalog when
+// completing anthropic:<model> and the cache is missing or stale. Gateways
+// (base_url or ANTHROPIC_BASE_URL) keep their configured/curated lists.
+func refreshAnthropicCompletionCache(toComplete string, cfg *config.Config) {
+	provider, _, completingModel := strings.Cut(toComplete, ":")
+	if !completingModel || llm.AnthropicModelCacheFresh() {
+		return
+	}
+	var providerCfg config.ProviderConfig
+	if cfg != nil {
+		providerCfg = cfg.Providers[provider]
+	}
+	if len(providerCfg.Models) > 0 || !llm.AnthropicUsesPublicCatalog(providerCfg) {
+		return
+	}
+	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeAnthropic {
+		return
+	}
+	// At most one attempt per retry interval: credential commands and the
+	// catalog fetch must not rerun on every keystroke when slow or failing.
+	if !claimAnthropicCatalogRefresh() {
+		return
+	}
+	if cfg != nil {
+		_ = cfg.ResolveProviderCredentials(provider)
+		providerCfg = cfg.Providers[provider]
+	}
+	// Lazy values may run $()/op:// commands, so their resolution shares the
+	// refresh deadline and completion abandons it rather than blocking the
+	// shell. The goroutine owns a private copy so an abandoned resolution
+	// never races with the caller's config.
+	resolved := providerCfg
+	resolved.Headers = maps.Clone(providerCfg.Headers)
+	resolved.Env = maps.Clone(providerCfg.Env)
+	ctx, cancel := context.WithTimeout(context.Background(), anthropicCompletionRefreshTimeout)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := resolved.ResolveForInference(); err != nil || ctx.Err() != nil {
+			return
+		}
+		_ = refreshAnthropicModelsForCompletion(ctx, resolved)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func refreshAgyBinCompletionCache(toComplete string, cfg *config.Config) {

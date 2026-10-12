@@ -1,0 +1,23 @@
+[
+  [
+    {
+      "type": "text_delta",
+      "text": "ok"
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 6,
+        "OutputTokens": 6,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 3881,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

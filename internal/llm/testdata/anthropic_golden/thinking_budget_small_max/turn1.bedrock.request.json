@@ -1,0 +1,47 @@
+{
+  "method": "POST",
+  "path": "/model/us.anthropic.claude-opus-4-5-20251101-v1:0/invoke-with-response-stream",
+  "raw_path": "/model/us.anthropic.claude-opus-4-5-20251101-v1%3A0/invoke-with-response-stream",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "authorization": [
+      "AWS4-HMAC-SHA256 Credential=AKIDGOLDENEXAMPLE/<date>/..."
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-amz-date": [
+      "<present>"
+    ],
+    "x-amz-security-token": [
+      "golden-session"
+    ]
+  },
+  "body": {
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 2048,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Say hi.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "thinking": {
+      "budget_tokens": 2047,
+      "type": "enabled"
+    }
+  }
+}

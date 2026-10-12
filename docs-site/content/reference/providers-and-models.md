@@ -219,7 +219,17 @@ providers:
     model: custom-model
 ```
 
-The Anthropic SDK appends paths such as `/v1/messages` and `/v1/models` to `base_url`. The field supports the same lazy `srv://` and `$()` endpoint resolution as `url`. Omit `base_url` to use Anthropic's standard API endpoint.
+term-llm appends paths such as `/v1/messages` and `/v1/models` to `base_url`. The field supports the same lazy `srv://` and `$()` endpoint resolution as `url`. Omit `base_url` to use `ANTHROPIC_BASE_URL` if set, otherwise Anthropic's standard API endpoint.
+
+Use `headers` to send extra HTTP headers with every Anthropic request, for example a workspace ID for an organization-scoped API key or a gateway token. `headers` is accepted only by `anthropic` and `bedrock` providers; on Bedrock, `anthropic-beta` values are moved into the request body's `anthropic_beta` list (Bedrock does not read the header) and all other headers are covered by the SigV4 signature. Values support `${ENV}`, `$()`, `op://`, and `file://` resolution; entries that resolve to an empty value are not sent. Header names are case-insensitive, and `term-llm config show` redacts values whose names contain `key`, `token`, `secret`, `password`, `credential`, or `auth`.
+
+```yaml
+providers:
+  anthropic:
+    headers:
+      anthropic-workspace-id: wrkspc_...
+      x-gateway-token: $(op-cache read "op://Private/Gateway/token")
+```
 
 ## WebSocket defaults
 
@@ -761,13 +771,25 @@ providers:
     model: claude-sonnet-4-6-thinking
 ```
 
-On the direct Anthropic adapter, `-thinking` uses adaptive thinking for recognized Claude 4.6+ Opus/Sonnet and Fable models; older supported models use a token budget. Effort suffixes are separate: Opus/Fable expose `-low`, `-medium`, `-high`, `-xhigh`, and `-max`, while Sonnet exposes `-low`, `-medium`, and `-high`. Availability remains model-specific; use only controls accepted by your endpoint.
+The direct Anthropic adapter takes model IDs, context and output limits, effort levels, and thinking support from the live `GET /v1/models` catalog. `term-llm models --provider anthropic` refreshes it, and shell completion for `anthropic:` refreshes it when the cache is missing or older than six hours. Until the first refresh, a bundled copy of the catalog is used. Gateways (`base_url`, `ANTHROPIC_BASE_URL`, or a custom-named `type: anthropic` provider) never write the cache and complete from the bundled list (or your `models:` list). Limits and effort levels for Claude model IDs still come from the catalog.
+
+`-thinking` uses adaptive thinking when the catalog reports it, which covers Claude 4.6 and newer; Claude 4.5 and older use a token budget. Effort suffixes (`-low`, `-medium`, `-high`, `-xhigh`, `-max`) are accepted only where the catalog lists them. For example, Sonnet 4.6 and Opus 4.6 have no `-xhigh`, Opus 4.5 stops at `-high`, and Haiku 4.5 and Sonnet 4.5 have none.
 
 ### AWS Bedrock
 
-The `bedrock` provider routes Anthropic Claude models through AWS Bedrock. It shares the Anthropic message/tool implementation and translates `-thinking` and `-1m` suffixes. Model availability, context features, and hosted tools remain subject to AWS support and your account; this is not a guarantee of feature parity with the direct Anthropic service. The Bedrock constructor does not currently translate the direct adapter’s `-high`/`-max` effort suffixes—do not append those to a Bedrock model ID.
+The `bedrock` provider routes Anthropic Claude models through AWS Bedrock. It shares the Anthropic message/tool implementation and decodes the same suffixes as the direct adapter (`-thinking`, `-1m`, and effort levels such as `-high`) before resolving the remaining name through `model_map` and the built-in table. `-thinking` uses adaptive thinking when the resolved model supports it; inference-profile ARNs, whose underlying model is unknown, use a token budget and no effort setting. Model availability, context features, and hosted tools remain subject to AWS support and your account; this is not a guarantee of feature parity with the direct Anthropic service.
 
-**Authentication** uses the standard AWS credential chain (`AWS_ACCESS_KEY_ID` env var, `~/.aws/credentials`, instance profiles), or explicit credentials in config:
+**Authentication** checks, in order:
+
+1. `access_key_id` / `secret_access_key` (and optional `session_token`) from config.
+2. `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, unless `profile` is set in config. Without a config `profile`, `AWS_WEB_IDENTITY_TOKEN_FILE` (for example EKS IRSA) is resolved next via `aws configure export-credentials --format process`.
+3. The selected profile (`profile`, else `AWS_PROFILE`, else `AWS_DEFAULT_PROFILE`, else `default`) in `~/.aws/credentials` and `~/.aws/config` (or `AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE`): static keys, then `credential_process`.
+4. ECS/EKS container credentials (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` / `_FULL_URI`).
+5. EC2 instance profile via IMDSv2 (disable with `AWS_EC2_METADATA_DISABLED=true`; `AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE=IPv6` selects the IPv6 endpoint).
+
+Profiles that use SSO, `aws login`, assume-role (`role_arn`, `source_profile`, `credential_source`) or web identity are resolved by running `aws configure export-credentials --profile NAME --format process`, so those need [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) on `PATH`. `AWS_BEARER_TOKEN_BEDROCK` (a Bedrock API key) takes precedence over all of the above, and provider creation then succeeds even if the shared profile cannot be loaded. Credentials are fetched on first use and refreshed before they expire. Credential commands run non-interactively (no terminal input), so run `aws sso login` or `aws login` beforehand; `credential_process` helpers that prompt for MFA are not supported. Bedrock in the AWS China regions (`cn-*`) uses the `amazonaws.com.cn` endpoint.
+
+Explicit credentials in config:
 
 ```yaml
 providers:
@@ -798,8 +820,8 @@ Raw Bedrock model IDs (`us.anthropic.claude-sonnet-4-6`, `anthropic.claude-sonne
 
 | Config field | Description |
 |---|---|
-| `region` | AWS region. Uses the AWS SDK region configuration (including `AWS_REGION` / `AWS_DEFAULT_REGION`), then `us-east-1` if unresolved. |
-| `profile` | AWS profile name from `~/.aws/credentials`. |
+| `region` | AWS region. Falls back to `AWS_REGION`, `AWS_DEFAULT_REGION`, the profile's `region` in `~/.aws/config`, then `us-east-1`. |
+| `profile` | AWS profile name from `~/.aws/credentials` / `~/.aws/config`. |
 | `access_key_id` | Explicit AWS access key. Supports `$()`, `op://`, `${ENV}`. |
 | `secret_access_key` | Explicit AWS secret key. Same resolution support. |
 | `session_token` | Optional session token for temporary credentials. |

@@ -533,7 +533,7 @@ func printProviderConfig(out io.Writer, name string, includeOptional bool, defau
 			continue
 		}
 		rel := strings.TrimPrefix(rawKey, dynamicPrefix)
-		if strings.HasPrefix(rel, "env.") || strings.HasPrefix(rel, "model_map.") {
+		if strings.HasPrefix(rel, "env.") || strings.HasPrefix(rel, "headers.") || strings.HasPrefix(rel, "model_map.") {
 			keys = append(keys, renderKey{RenderPath: rel, FullPath: rawKey, Sensitive: isSensitiveProviderEnvKey(rel), Placeholder: ""})
 		}
 	}
@@ -579,10 +579,15 @@ func hasRawDescendant(rawKeys map[string]bool, prefix string) bool {
 }
 
 func isSensitiveProviderEnvKey(rel string) bool {
-	if !strings.HasPrefix(rel, "env.") {
+	var name string
+	switch {
+	case strings.HasPrefix(rel, "env."):
+		name = strings.ToUpper(strings.TrimPrefix(rel, "env."))
+	case strings.HasPrefix(rel, "headers."):
+		name = strings.ToUpper(strings.TrimPrefix(rel, "headers."))
+	default:
 		return false
 	}
-	name := strings.ToUpper(strings.TrimPrefix(rel, "env."))
 	for _, marker := range []string{"TOKEN", "KEY", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"} {
 		if strings.Contains(name, marker) {
 			return true

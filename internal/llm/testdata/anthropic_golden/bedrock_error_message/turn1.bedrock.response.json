@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "content_type": "application/vnd.amazon.eventstream",
+  "event_stream": true
+}

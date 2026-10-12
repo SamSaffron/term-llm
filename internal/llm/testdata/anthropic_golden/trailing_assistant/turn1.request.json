@@ -1,0 +1,55 @@
+{
+  "method": "POST",
+  "path": "/v1/messages",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-api-key": [
+      "<present>"
+    ]
+  },
+  "body": {
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "Say the word blue.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "blue",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Continue from the conversation state above.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-haiku-4-5",
+    "stream": true
+  }
+}

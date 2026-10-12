@@ -1,0 +1,113 @@
+{
+  "method": "POST",
+  "path": "/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+  "raw_path": "/model/us.anthropic.claude-haiku-4-5-20251001-v1%3A0/invoke-with-response-stream",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "authorization": [
+      "AWS4-HMAC-SHA256 Credential=AKIDGOLDENEXAMPLE/<date>/..."
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-amz-date": [
+      "<present>"
+    ],
+    "x-amz-security-token": [
+      "golden-session"
+    ]
+  },
+  "body": {
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "Use view_image on red.png and tell me its colour in one word.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "id": "toolu_01QbpSx3E32jbVomjuCQGd5r",
+            "input": {
+              "path": "red.png"
+            },
+            "name": "view_image",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "content": [
+              {
+                "text": "Image red.png (16x16)",
+                "type": "text"
+              },
+              {
+                "source": {
+                  "data": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGO4I2JDEmIY1TCqYfhqAAAeBCwQ8YdREQAAAABJRU5ErkJggg==",
+                  "media_type": "image/png",
+                  "type": "base64"
+                },
+                "type": "image"
+              }
+            ],
+            "is_error": false,
+            "tool_use_id": "toolu_01QbpSx3E32jbVomjuCQGd5r",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are a terse assistant used for wire-format golden tests.",
+        "type": "text"
+      }
+    ],
+    "tool_choice": {
+      "disable_parallel_tool_use": true,
+      "type": "auto"
+    },
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "View an image file.",
+        "input_schema": {
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "name": "view_image"
+      }
+    ]
+  }
+}

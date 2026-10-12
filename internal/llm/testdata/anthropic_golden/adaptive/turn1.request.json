@@ -1,0 +1,40 @@
+{
+  "method": "POST",
+  "path": "/v1/messages",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-api-key": [
+      "<present>"
+    ]
+  },
+  "body": {
+    "max_tokens": 16000,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Is 221 prime? One line.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "stream": true,
+    "thinking": {
+      "type": "adaptive"
+    }
+  }
+}

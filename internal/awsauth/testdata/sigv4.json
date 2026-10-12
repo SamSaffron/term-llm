@@ -1,0 +1,1091 @@
+[
+  {
+    "Name": "get-vanilla",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "empty-path",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "query-sorting",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/?z=last\u0026a=two\u0026a=one\u0026a=one\u0026space=hello+world\u0026encoded=%2F%25%2B%3A\u0026empty=\u0026flag",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=410f9185e25e666aeb05ce29ffe54b9b01417d2de7204632b1858ac19955c347"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": "a=one\u0026a=one\u0026a=two\u0026empty=\u0026encoded=%2F%25%2B%3A\u0026flag=\u0026space=hello%20world\u0026z=last"
+  },
+  {
+    "Name": "query-unicode",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/x?%E6%97%A5=%E6%9C%AC\u0026x=a%2Bb\u0026x=a+b",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=23c19d6b7098842305c7d037846f5623ef8fefe44890317907b19a195e712256"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": "x=a%20b\u0026x=a%2Bb\u0026%E6%97%A5=%E6%9C%AC"
+  },
+  {
+    "Name": "path-space-unicode",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/a%20b/%E6%97%A5/%25/x:y",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=c56d990f87c194e39859e002d132593d25a1760b2ff2efaaeb877c50c68b6a0e"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "path-dot-segments",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/a/../b//./c",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=086ab5c6d05d8cc292b1360af849f52d8b74b0fa09fc4a864f8b19c22afa5119"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "default-https-port",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com:443/a",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=e7dfad111cdad6139e285ddec7592de69207ee936e9af6cffa906e281325f76a"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "example.amazonaws.com",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "default-http-port",
+    "Method": "GET",
+    "URL": "http://example.amazonaws.com:80/a",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=e7dfad111cdad6139e285ddec7592de69207ee936e9af6cffa906e281325f76a"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "example.amazonaws.com",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "custom-port",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com:8443/a",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=b6a3902d904d1319dcdf4f5ef1340c608f344b047d79a0a49fca625186a0078e"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "ipv6-default-port",
+    "Method": "GET",
+    "URL": "https://[::1]:443/a",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=485daeaed9f82996a062bec21d917cbd3071b4cc037d7c2054666c940495504e"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "::1",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "ignored-headers",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {
+      "Authorization": [
+        "old"
+      ],
+      "Expect": [
+        "100-continue"
+      ],
+      "Transfer-Encoding": [
+        "chunked"
+      ],
+      "User-Agent": [
+        "ua"
+      ],
+      "X-Amzn-Trace-Id": [
+        "trace"
+      ]
+    },
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
+      ],
+      "Expect": [
+        "100-continue"
+      ],
+      "Transfer-Encoding": [
+        "chunked"
+      ],
+      "User-Agent": [
+        "ua"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "X-Amzn-Trace-Id": [
+        "trace"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "multi-value-whitespace",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "Host": [
+        "ignored-host-value"
+      ],
+      "X-Custom": [
+        "  alpha   beta  ",
+        "\t second\t   third \t",
+        ""
+      ]
+    },
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-custom, Signature=85bd3b6bb08e2fdbd7dce5f74575b6c72080c6956b2dd436df823f45e8a0235b"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "Host": [
+        "ignored-host-value"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "X-Custom": [
+        "  alpha   beta  ",
+        "\t second\t   third \t",
+        ""
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "existing-signing-headers",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {
+      "X-Amz-Content-Sha256": [
+        "already-present"
+      ],
+      "X-Amz-Date": [
+        "old"
+      ],
+      "X-Amz-Security-Token": [
+        "already-present"
+      ]
+    },
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=974a322ec4eb077293402aa56785bb64205a018504b1fe9fddefc96cccf086b6"
+      ],
+      "X-Amz-Content-Sha256": [
+        "already-present"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "X-Amz-Security-Token": [
+        "already-present"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "lowercase-ignore-keys",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {
+      "authorization": [
+        "lowercase-is-signed"
+      ],
+      "user-agent": [
+        "lowercase-is-signed"
+      ]
+    },
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=authorization;host;user-agent;x-amz-date, Signature=635cf579a44a909e9382da99064424b3cc2de722277a33e5fb1bce5ce8e2d695"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "authorization": [
+        "lowercase-is-signed"
+      ],
+      "user-agent": [
+        "lowercase-is-signed"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "override-host",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com:8443/a",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "override.example.com:443",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=a8311dcdeaf2c50aa45facd254dadf20b95e00dd9c24bc69e815888e32940aa8"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "override.example.com",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "host-override-2001:db8::443",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "2001:db8::443",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=c4cd3f09978a313c12a32d7ea8dd65168655f8101358ee613780bc88e9a9dc99"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "2001:db8::443",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "host-override-[::1]",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "[::1]",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=443f41622efecbb191c8869276856c6844714b671f8fb78725f36f5f331d4197"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "[::1]",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "host-override-[::1]:8443",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "[::1]:8443",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=1646807dd04005a9d15625be21d176ee9a15c22c11fab5a2b51a344ee1a131cb"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "[::1]:8443",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "non-UTC-signing-time",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T23:36:00+11:00",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "content-length",
+    "Method": "POST",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 19,
+    "Headers": {
+      "Content-Length": [
+        "999"
+      ],
+      "Content-Type": [
+        "application/json"
+      ]
+    },
+    "PayloadHash": "9b2d43affbf49a367028df2e1414f84c0e099ac98c3d54a8a80157fd7771af25",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=content-length;content-type;host;x-amz-date, Signature=773a26fef9ccfbcf12f9e2189f11951cb8031dae7653c196fe896e9a7a6f5b31"
+      ],
+      "Content-Length": [
+        "999"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "opaque",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/",
+    "RawPath": "",
+    "Opaque": "//example.amazonaws.com/a%2Fb?discarded=true",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=1f6a184cf6814c4a68548c923194021e047ba5e48b0caba93a1c8936b11c5328"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "invalid-raw-path",
+    "Method": "GET",
+    "URL": "https://example.amazonaws.com/actual:path",
+    "RawPath": "/different%2Fpath",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 0,
+    "Headers": {},
+    "PayloadHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "service",
+    "Region": "us-east-1",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=ebb68648b76da53d8b541079fa274fb32c2ddac5d13083bae85f903b70b882af"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": ""
+  },
+  {
+    "Name": "bedrock-us.anthropic.claude-haiku-4-5-20251001-v1:0-token-false",
+    "Method": "POST",
+    "URL": "https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream?beta=true",
+    "RawPath": "/model/us.anthropic.claude-haiku-4-5-20251001-v1%3A0/invoke-with-response-stream",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 19,
+    "Headers": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "PayloadHash": "9b2d43affbf49a367028df2e1414f84c0e099ac98c3d54a8a80157fd7771af25",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "bedrock",
+    "Region": "us-west-2",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-west-2/bedrock/aws4_request, SignedHeaders=accept;anthropic-version;content-length;content-type;host;x-amz-date;x-extra, Signature=a7a5756686de770e0b7f56bfad4c961424e247c39f196990c3053ef3a0c187a3"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": "beta=true"
+  },
+  {
+    "Name": "bedrock-us.anthropic.claude-haiku-4-5-20251001-v1:0-token-true",
+    "Method": "POST",
+    "URL": "https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream?beta=true",
+    "RawPath": "/model/us.anthropic.claude-haiku-4-5-20251001-v1%3A0/invoke-with-response-stream",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 19,
+    "Headers": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "PayloadHash": "9b2d43affbf49a367028df2e1414f84c0e099ac98c3d54a8a80157fd7771af25",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "session-token-example",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "bedrock",
+    "Region": "us-west-2",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-west-2/bedrock/aws4_request, SignedHeaders=accept;anthropic-version;content-length;content-type;host;x-amz-date;x-amz-security-token;x-extra, Signature=c6cef88fc7be39e4b4130b952a566d0c6551534af29add2f403c1f429d8288c5"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "X-Amz-Security-Token": [
+        "session-token-example"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": "beta=true"
+  },
+  {
+    "Name": "bedrock-arn:aws:bedrock:us-west-2:123456789:application-inference-profile/abc123-token-false",
+    "Method": "POST",
+    "URL": "https://bedrock-runtime.us-west-2.amazonaws.com/model/arn:aws:bedrock:us-west-2:123456789:application-inference-profile/abc123/invoke-with-response-stream?beta=true",
+    "RawPath": "/model/arn%3Aaws%3Abedrock%3Aus-west-2%3A123456789%3Aapplication-inference-profile%2Fabc123/invoke-with-response-stream",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 19,
+    "Headers": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "PayloadHash": "9b2d43affbf49a367028df2e1414f84c0e099ac98c3d54a8a80157fd7771af25",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "bedrock",
+    "Region": "us-west-2",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-west-2/bedrock/aws4_request, SignedHeaders=accept;anthropic-version;content-length;content-type;host;x-amz-date;x-extra, Signature=22994f73e8856be62d701d3be00b687eee31d85b8ffcacdf705ffb3ede1f210e"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": "beta=true"
+  },
+  {
+    "Name": "bedrock-arn:aws:bedrock:us-west-2:123456789:application-inference-profile/abc123-token-true",
+    "Method": "POST",
+    "URL": "https://bedrock-runtime.us-west-2.amazonaws.com/model/arn:aws:bedrock:us-west-2:123456789:application-inference-profile/abc123/invoke-with-response-stream?beta=true",
+    "RawPath": "/model/arn%3Aaws%3Abedrock%3Aus-west-2%3A123456789%3Aapplication-inference-profile%2Fabc123/invoke-with-response-stream",
+    "Opaque": "",
+    "Host": "",
+    "ContentLength": 19,
+    "Headers": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "PayloadHash": "9b2d43affbf49a367028df2e1414f84c0e099ac98c3d54a8a80157fd7771af25",
+    "Credentials": {
+      "AccessKeyID": "AKIDEXAMPLE",
+      "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "SessionToken": "session-token-example",
+      "Source": "",
+      "CanExpire": false,
+      "Expires": "0001-01-01T00:00:00Z",
+      "AccountID": ""
+    },
+    "Service": "bedrock",
+    "Region": "us-west-2",
+    "Time": "2015-08-30T12:36:00Z",
+    "ExpectedHeaders": {
+      "Accept": [
+        "application/json"
+      ],
+      "Anthropic-Version": [
+        "2023-06-01"
+      ],
+      "Authorization": [
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-west-2/bedrock/aws4_request, SignedHeaders=accept;anthropic-version;content-length;content-type;host;x-amz-date;x-amz-security-token;x-extra, Signature=4a84826499ee00d0902a1b3041ff13e61977fab748ebafc5ede4d40f0ccd463b"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "term-llm"
+      ],
+      "X-Amz-Date": [
+        "20150830T123600Z"
+      ],
+      "X-Amz-Security-Token": [
+        "session-token-example"
+      ],
+      "X-Extra": [
+        "first",
+        "second"
+      ]
+    },
+    "ExpectedHost": "",
+    "ExpectedQuery": "beta=true"
+  }
+]

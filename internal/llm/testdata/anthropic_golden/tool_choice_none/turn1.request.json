@@ -1,0 +1,61 @@
+{
+  "method": "POST",
+  "path": "/v1/messages",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-api-key": [
+      "<present>"
+    ]
+  },
+  "body": {
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Reply with exactly: none",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-haiku-4-5",
+    "stream": true,
+    "tool_choice": {
+      "type": "none"
+    },
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "Read a text file from the working directory.",
+        "input_schema": {
+          "properties": {
+            "path": {
+              "description": "Relative file path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "name": "read_file"
+      }
+    ]
+  }
+}

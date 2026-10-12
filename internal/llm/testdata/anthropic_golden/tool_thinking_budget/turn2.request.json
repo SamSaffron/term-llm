@@ -1,0 +1,105 @@
+{
+  "method": "POST",
+  "path": "/v1/messages",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-api-key": [
+      "<present>"
+    ]
+  },
+  "body": {
+    "max_tokens": 16000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "Use read_file on notes.txt and tell me the secret word.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "signature": "EuMCCrYBCBIYAipA5VjSSDQYZXYUvQA0SHMxxtKxxlAoYqkEthGdJCiqUC5cv2/IqQFo1YqOFGFHjY6NX0eJa5gZSUM1e964ia6iwTIYY2xhdWRlLW9wdXMtNC01LTIwMjUxMTAxOABCCHRoaW5raW5nWiQxZjVmNDY0Yy1iMWZiLTQzOTItODNkNC1iMjhmMzExYjJmYjWaARoKGGNsYXVkZS1vcHVzLTQtNS0yMDI1MTEwMagBgKmx1gYSDIUzTmxLD4cmeKJqShoMOFbJb2H5CcXjaWWQIjCtG/qeHFSWFeugc0BNVseAO5zm9jhoeH533DnZ/lqt9CqtODvp5+M8jAynpeVbLegqWoKkkrJWKupoaCYW0NbovtCyOEsrcm3z/f5k9VX4X7UdDDPbMj7BDwco0/e9BOuFU9aEaiZKNc383G+v9nZuSZSFnEteToBk6vx/ky2Rfh2abRy9eZr5BbqlsBgB",
+            "thinking": "The user wants me to read the file notes.txt and find a secret word in it.",
+            "type": "thinking"
+          },
+          {
+            "id": "toolu_01LKobwBT6G844Pv5PYhkaHv",
+            "input": {
+              "path": "notes.txt"
+            },
+            "name": "read_file",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "content": [
+              {
+                "text": "The secret word is PELICAN.\n",
+                "type": "text"
+              }
+            ],
+            "is_error": false,
+            "tool_use_id": "toolu_01LKobwBT6G844Pv5PYhkaHv",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-opus-4-5",
+    "stream": true,
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are a terse assistant used for wire-format golden tests.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "budget_tokens": 10000,
+      "type": "enabled"
+    },
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "Read a text file from the working directory.",
+        "input_schema": {
+          "properties": {
+            "path": {
+              "description": "Relative file path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "name": "read_file"
+      }
+    ]
+  }
+}

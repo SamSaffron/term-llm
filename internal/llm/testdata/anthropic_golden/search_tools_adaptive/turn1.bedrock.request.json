@@ -1,0 +1,97 @@
+{
+  "method": "POST",
+  "path": "/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream",
+  "query": "beta=true",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "authorization": [
+      "AWS4-HMAC-SHA256 Credential=AKIDGOLDENEXAMPLE/<date>/..."
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-amz-date": [
+      "<present>"
+    ],
+    "x-amz-security-token": [
+      "golden-session"
+    ]
+  },
+  "body": {
+    "anthropic_beta": [
+      "web-search-2025-03-05",
+      "web-fetch-2025-09-10"
+    ],
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 16000,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Read notes.txt with read_file and reply with the secret word. Do not search.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are a terse assistant used for wire-format golden tests.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "type": "adaptive"
+    },
+    "tools": [
+      {
+        "max_uses": 5,
+        "name": "web_search",
+        "type": "web_search_20250305"
+      },
+      {
+        "max_uses": 3,
+        "name": "web_fetch",
+        "type": "web_fetch_20250910"
+      },
+      {
+        "description": "Read a text file from the working directory.",
+        "input_schema": {
+          "properties": {
+            "path": {
+              "description": "Relative file path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "name": "read_file"
+      },
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "",
+        "input_schema": {
+          "type": "object"
+        },
+        "name": "ping_tool"
+      }
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+[
+  [
+    {
+      "type": "tool_exec_start",
+      "tool_name": "web_fetch"
+    },
+    {
+      "type": "tool_exec_end",
+      "tool_name": "web_fetch",
+      "tool_success": true
+    },
+    {
+      "type": "text_delta",
+      "text": "The"
+    },
+    {
+      "type": "text_delta",
+      "text": " title"
+    },
+    {
+      "type": "text_delta",
+      "text": " of"
+    },
+    {
+      "type": "text_delta",
+      "text": " the go"
+    },
+    {
+      "type": "text_delta",
+      "text": ".dev homepage"
+    },
+    {
+      "type": "text_delta",
+      "text": " is **"
+    },
+    {
+      "type": "text_delta",
+      "text": "\"The"
+    },
+    {
+      "type": "text_delta",
+      "text": " Go Programming"
+    },
+    {
+      "type": "text_delta",
+      "text": " Language\"**."
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 2756,
+        "OutputTokens": 78,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 8335,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

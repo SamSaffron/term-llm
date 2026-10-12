@@ -1,0 +1,14 @@
+[
+  [
+    {
+      "type": "text_delta",
+      "text": "bedrock ok"
+    },
+    {
+      "type": "error",
+      "error": {
+        "retryable": true
+      }
+    }
+  ]
+]

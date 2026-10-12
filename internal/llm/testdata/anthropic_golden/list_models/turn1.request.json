@@ -1,0 +1,16 @@
+{
+  "method": "GET",
+  "path": "/v1/models",
+  "query": "limit=1000",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "x-api-key": [
+      "<present>"
+    ]
+  }
+}

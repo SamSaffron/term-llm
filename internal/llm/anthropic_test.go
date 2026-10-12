@@ -11,11 +11,18 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
+
+// newAnthropicTestProvider builds a provider whose client posts to a test
+// server. model may be empty when the test does not assert on the request body.
+func newAnthropicTestProvider(t *testing.T, baseURL, model string) *AnthropicProvider {
+	t.Helper()
+	client, err := newAnthropicClient("test-key", baseURL, nil)
+	if err != nil {
+		t.Fatalf("newAnthropicClient: %v", err)
+	}
+	return &AnthropicProvider{client: client, model: model}
+}
 
 func TestParseModelThinking(t *testing.T) {
 	t.Parallel()
@@ -156,9 +163,9 @@ func TestAnthropicRequestModelAndEffort(t *testing.T) {
 			wantEffort: "high",
 		},
 		{
-			name:       "invalid sonnet max suffix is preserved",
-			req:        Request{Model: "claude-sonnet-4-6-max"},
-			wantModel:  "claude-sonnet-4-6-max",
+			name:       "invalid sonnet xhigh suffix is preserved",
+			req:        Request{Model: "claude-sonnet-4-6-xhigh"},
+			wantModel:  "claude-sonnet-4-6-xhigh",
 			wantEffort: "",
 		},
 		{
@@ -282,32 +289,66 @@ func TestToolCallAccumulatorFallbackArgs(t *testing.T) {
 	}
 }
 
+// TestBuildAnthropicBlocks_AssistantReasoningReplay checks that assistant
+// reasoning is replayed ahead of the text block as a signed thinking block.
+// The standard and beta builders were merged, so the former beta variant is
+// covered here as a second case with its own values.
 func TestBuildAnthropicBlocks_AssistantReasoningReplay(t *testing.T) {
-	parts := []Part{
+	cases := []struct {
+		name      string
+		text      string
+		reasoning string
+		signature string
+	}{
 		{
-			Type:                      PartText,
-			Text:                      "Final answer",
-			ReasoningContent:          "I should inspect configuration first.",
-			ReasoningEncryptedContent: "anthropic-signature-1",
+			name:      "assistant reasoning",
+			text:      "Final answer",
+			reasoning: "I should inspect configuration first.",
+			signature: "anthropic-signature-1",
+		},
+		{
+			name:      "beta search answer reasoning",
+			text:      "Search answer",
+			reasoning: "I should verify sources.",
+			signature: "anthropic-signature-beta-1",
 		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := []Part{
+				{
+					Type:                      PartText,
+					Text:                      tc.text,
+					ReasoningContent:          tc.reasoning,
+					ReasoningEncryptedContent: tc.signature,
+				},
+			}
 
-	blocks := buildAnthropicBlocks(parts, true)
-	if len(blocks) != 2 {
-		t.Fatalf("expected 2 blocks (thinking + text), got %d", len(blocks))
-	}
+			blocks := buildAnthropicBlocks(parts, true)
+			if len(blocks) != 2 {
+				t.Fatalf("expected 2 blocks (thinking + text), got %d", len(blocks))
+			}
 
-	if got := blocks[0].GetSignature(); got == nil || *got != "anthropic-signature-1" {
-		t.Fatalf("expected thinking signature anthropic-signature-1, got %v", got)
-	}
-	if got := blocks[0].GetThinking(); got == nil || *got != "I should inspect configuration first." {
-		t.Fatalf("expected thinking text to round-trip, got %v", got)
-	}
-	if got := blocks[1].GetText(); got == nil || *got != "Final answer" {
-		t.Fatalf("expected second block text Final answer, got %v", got)
-	}
-	if got := blocks[1].GetSignature(); got != nil {
-		t.Fatalf("did not expect thinking signature in text block, got %v", got)
+			thinking, ok := blocks[0].(*anthropicThinkingBlock)
+			if !ok {
+				t.Fatalf("expected thinking block first, got %T", blocks[0])
+			}
+			if thinking.Signature != tc.signature {
+				t.Fatalf("expected thinking signature %s, got %q", tc.signature, thinking.Signature)
+			}
+			if thinking.Thinking != tc.reasoning {
+				t.Fatalf("expected thinking text to round-trip, got %q", thinking.Thinking)
+			}
+			// The second block must be text: a text block has no signature field
+			// to carry thinking metadata.
+			text, ok := blocks[1].(*anthropicTextBlock)
+			if !ok {
+				t.Fatalf("expected text block second, got %T", blocks[1])
+			}
+			if text.Text != tc.text {
+				t.Fatalf("expected second block text %s, got %q", tc.text, text.Text)
+			}
+		})
 	}
 }
 
@@ -325,11 +366,12 @@ func TestBuildAnthropicBlocks_UserDoesNotReplayReasoning(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 text block for non-assistant replay, got %d", len(blocks))
 	}
-	if got := blocks[0].GetText(); got == nil || *got != "User message" {
-		t.Fatalf("expected user text block, got %v", got)
+	text, ok := blocks[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("did not expect thinking metadata in non-assistant block, got %T", blocks[0])
 	}
-	if got := blocks[0].GetSignature(); got != nil {
-		t.Fatalf("did not expect thinking signature in non-assistant block, got %v", got)
+	if text.Text != "User message" {
+		t.Fatalf("expected user text block, got %q", text.Text)
 	}
 }
 
@@ -348,20 +390,22 @@ func TestBuildAnthropicBlocks_UserImagePart(t *testing.T) {
 	if len(blocks) != 2 {
 		t.Fatalf("expected 2 blocks, got %d", len(blocks))
 	}
-	if blocks[0].OfImage == nil {
-		t.Fatal("expected first block to be an image block")
+	image, ok := blocks[0].(*anthropicImageBlock)
+	if !ok {
+		t.Fatalf("expected first block to be an image block, got %T", blocks[0])
 	}
-	if blocks[0].OfImage.Source.OfBase64 == nil {
-		t.Fatal("expected base64 image source")
+	if image.Source.Type != "base64" {
+		t.Fatalf("expected base64 image source, got %q", image.Source.Type)
 	}
-	if blocks[0].OfImage.Source.OfBase64.Data != "dGVzdA==" {
-		t.Fatalf("Base64 data = %q, want %q", blocks[0].OfImage.Source.OfBase64.Data, "dGVzdA==")
+	if image.Source.Data != "dGVzdA==" {
+		t.Fatalf("Base64 data = %q, want %q", image.Source.Data, "dGVzdA==")
 	}
-	if string(blocks[0].OfImage.Source.OfBase64.MediaType) != "image/jpeg" {
-		t.Fatalf("MediaType = %q, want %q", blocks[0].OfImage.Source.OfBase64.MediaType, "image/jpeg")
+	if image.Source.MediaType != "image/jpeg" {
+		t.Fatalf("MediaType = %q, want %q", image.Source.MediaType, "image/jpeg")
 	}
-	if blocks[1].OfText == nil || blocks[1].OfText.Text != "What is in this image?" {
-		t.Fatalf("expected second block to be text, got %+v", blocks[1])
+	text, ok := blocks[1].(*anthropicTextBlock)
+	if !ok || text.Text != "What is in this image?" {
+		t.Fatalf("expected second block to be text, got %#v", blocks[1])
 	}
 }
 
@@ -370,46 +414,40 @@ func TestAnthropicToolResultMarkerTextRemainsText(t *testing.T) {
 		name    string
 		tool    string
 		content string
-		beta    bool
 	}{
 		{name: "normal non-image tool", tool: "read_file", content: "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\""},
 		{name: "normal image marker", tool: "view_image", content: "Image loaded\n[IMAGE_DATA:image/png:aGVsbG8=]"},
-		{name: "beta non-image tool", tool: "read_file", content: "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\"", beta: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			parts := []Part{{Type: PartToolResult, ToolResult: &ToolResult{ID: "call-1", Name: tc.tool, Content: tc.content}}}
-			if tc.beta {
-				blocks := buildAnthropicBetaBlocks(parts, false)
-				if len(blocks) != 1 || blocks[0].OfToolResult == nil || len(blocks[0].OfToolResult.Content) != 1 {
-					t.Fatalf("unexpected beta tool result: %#v", blocks)
-				}
-				content := blocks[0].OfToolResult.Content[0]
-				if content.OfText == nil || content.OfImage != nil || content.OfText.Text != tc.content {
-					t.Fatalf("expected unchanged beta text content, got %#v", content)
-				}
-				return
-			}
 			blocks := buildAnthropicBlocks(parts, false)
-			if len(blocks) != 1 || blocks[0].OfToolResult == nil || len(blocks[0].OfToolResult.Content) != 1 {
+			if len(blocks) != 1 {
 				t.Fatalf("unexpected tool result: %#v", blocks)
 			}
-			content := blocks[0].OfToolResult.Content[0]
-			if content.OfText == nil || content.OfImage != nil || content.OfText.Text != tc.content {
-				t.Fatalf("expected unchanged text content, got %#v", content)
+			result, ok := blocks[0].(*anthropicToolResultBlock)
+			if !ok || len(result.Content) != 1 {
+				t.Fatalf("unexpected tool result: %#v", blocks)
+			}
+			content, ok := result.Content[0].(*anthropicTextBlock)
+			if !ok || content.Text != tc.content {
+				t.Fatalf("expected unchanged text content, got %#v", result.Content[0])
 			}
 		})
 	}
 }
 
+// TestBuildAnthropicToolResult_ViewImageToolUsesStructuredContentParts covers
+// both the text+image+text and text+image shapes. The latter was the former
+// beta variant; both now exercise the shared block builder.
 func TestBuildAnthropicToolResult_ViewImageToolUsesStructuredContentParts(t *testing.T) {
-	parts := []Part{{
-		Type: PartToolResult,
-		ToolResult: &ToolResult{
-			ID:      "call-1",
-			Name:    "view_image",
-			Content: "Image loaded",
-			ContentParts: []ToolContentPart{
+	cases := []struct {
+		name  string
+		parts []ToolContentPart
+	}{
+		{
+			name: "text_image_text",
+			parts: []ToolContentPart{
 				{Type: ToolContentPartText, Text: "Image loaded"},
 				{
 					Type: ToolContentPartImageData,
@@ -421,38 +459,9 @@ func TestBuildAnthropicToolResult_ViewImageToolUsesStructuredContentParts(t *tes
 				{Type: ToolContentPartText, Text: "done"},
 			},
 		},
-	}}
-
-	blocks := buildAnthropicBlocks(parts, false)
-	if len(blocks) != 1 {
-		t.Fatalf("expected 1 block, got %d", len(blocks))
-	}
-	tr := blocks[0].OfToolResult
-	if tr == nil {
-		t.Fatalf("expected tool_result block")
-	}
-	if len(tr.Content) != 3 {
-		t.Fatalf("expected 3 tool_result content blocks (text + image + text), got %d", len(tr.Content))
-	}
-	if tr.Content[0].OfText == nil || tr.Content[0].OfText.Text != "Image loaded" {
-		t.Fatalf("expected first content block to be text 'Image loaded', got %#v", tr.Content[0])
-	}
-	if tr.Content[1].OfImage == nil {
-		t.Fatalf("expected second content block to be image, got %#v", tr.Content[1])
-	}
-	if tr.Content[2].OfText == nil || tr.Content[2].OfText.Text != "done" {
-		t.Fatalf("expected third content block to be text 'done', got %#v", tr.Content[2])
-	}
-}
-
-func TestBuildAnthropicBetaToolResult_UsesStructuredContentParts(t *testing.T) {
-	parts := []Part{{
-		Type: PartToolResult,
-		ToolResult: &ToolResult{
-			ID:      "call-1",
-			Name:    "view_image",
-			Content: "Image loaded",
-			ContentParts: []ToolContentPart{
+		{
+			name: "text_image",
+			parts: []ToolContentPart{
 				{Type: ToolContentPartText, Text: "Image loaded"},
 				{
 					Type:      ToolContentPartImageData,
@@ -460,53 +469,75 @@ func TestBuildAnthropicBetaToolResult_UsesStructuredContentParts(t *testing.T) {
 				},
 			},
 		},
-	}}
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := []Part{{
+				Type: PartToolResult,
+				ToolResult: &ToolResult{
+					ID:           "call-1",
+					Name:         "view_image",
+					Content:      "Image loaded",
+					ContentParts: tc.parts,
+				},
+			}}
 
-	blocks := buildAnthropicBetaBlocks(parts, false)
-	if len(blocks) != 1 {
-		t.Fatalf("expected 1 block, got %d", len(blocks))
-	}
-	tr := blocks[0].OfToolResult
-	if tr == nil {
-		t.Fatalf("expected beta tool_result block")
-	}
-	if len(tr.Content) != 2 {
-		t.Fatalf("expected 2 beta tool_result content blocks (text + image), got %d", len(tr.Content))
-	}
-	if tr.Content[0].OfText == nil {
-		t.Fatalf("expected first beta tool_result content block to be text, got %#v", tr.Content[0])
-	}
-	if tr.Content[1].OfImage == nil {
-		t.Fatalf("expected second beta tool_result content block to be image, got %#v", tr.Content[1])
+			blocks := buildAnthropicBlocks(parts, false)
+			if len(blocks) != 1 {
+				t.Fatalf("expected 1 block, got %d", len(blocks))
+			}
+			tr, ok := blocks[0].(*anthropicToolResultBlock)
+			if !ok {
+				t.Fatalf("expected tool_result block, got %T", blocks[0])
+			}
+			if len(tr.Content) != len(tc.parts) {
+				t.Fatalf("expected %d tool_result content blocks, got %d", len(tc.parts), len(tr.Content))
+			}
+			for i, part := range tc.parts {
+				switch part.Type {
+				case ToolContentPartText:
+					text, ok := tr.Content[i].(*anthropicTextBlock)
+					if !ok || text.Text != part.Text {
+						t.Fatalf("expected content block %d to be text %q, got %#v", i, part.Text, tr.Content[i])
+					}
+				case ToolContentPartImageData:
+					image, ok := tr.Content[i].(*anthropicImageBlock)
+					if !ok {
+						t.Fatalf("expected content block %d to be image, got %#v", i, tr.Content[i])
+					}
+					if image.Source.MediaType != part.ImageData.MediaType || image.Source.Data != part.ImageData.Base64 {
+						t.Fatalf("content block %d image source = %#v, want %#v", i, image.Source, part.ImageData)
+					}
+				default:
+					t.Fatalf("unhandled content part %q", part.Type)
+				}
+			}
+		})
 	}
 }
 
-func TestBuildAnthropicBetaBlocks_AssistantReasoningReplay(t *testing.T) {
-	parts := []Part{
-		{
-			Type:                      PartText,
-			Text:                      "Search answer",
-			ReasoningContent:          "I should verify sources.",
-			ReasoningEncryptedContent: "anthropic-signature-beta-1",
-		},
-	}
+// TestAnthropicThinkingBlockExposesReplayFields pins the wire keys a replayed
+// assistant thinking block must keep so the API accepts it back on the next
+// request.
+func TestAnthropicThinkingBlockExposesReplayFields(t *testing.T) {
+	block := &anthropicThinkingBlock{Type: "thinking", Signature: "sig-x", Thinking: "reasoning text"}
 
-	blocks := buildAnthropicBetaBlocks(parts, true)
-	if len(blocks) != 2 {
-		t.Fatalf("expected 2 beta blocks (thinking + text), got %d", len(blocks))
+	raw, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("marshal thinking block: %v", err)
 	}
-
-	if got := blocks[0].GetSignature(); got == nil || *got != "anthropic-signature-beta-1" {
-		t.Fatalf("expected beta thinking signature anthropic-signature-beta-1, got %v", got)
+	var wire map[string]string
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal thinking block: %v", err)
 	}
-	if got := blocks[0].GetThinking(); got == nil || *got != "I should verify sources." {
-		t.Fatalf("expected beta thinking text to round-trip, got %v", got)
+	if wire["type"] != "thinking" {
+		t.Fatalf("type = %q, want %q", wire["type"], "thinking")
 	}
-	if got := blocks[1].GetText(); got == nil || *got != "Search answer" {
-		t.Fatalf("expected second beta block text Search answer, got %v", got)
+	if wire["signature"] != "sig-x" {
+		t.Fatalf("signature = %q, want %q", wire["signature"], "sig-x")
 	}
-	if got := blocks[1].GetSignature(); got != nil {
-		t.Fatalf("did not expect thinking signature in beta text block, got %v", got)
+	if wire["thinking"] != "reasoning text" {
+		t.Fatalf("thinking = %q, want %q", wire["thinking"], "reasoning text")
 	}
 }
 
@@ -537,14 +568,21 @@ func TestBuildAnthropicMessages_ConvertsDanglingToolCalls(t *testing.T) {
 	if len(out[1].Content) != 2 {
 		t.Fatalf("expected 2 blocks (text + interrupted stub), got %d", len(out[1].Content))
 	}
-	if out[1].Content[0].OfText == nil || out[1].Content[0].OfText.Text != "Working" {
+	first, ok := out[1].Content[0].(*anthropicTextBlock)
+	if !ok || first.Text != "Working" {
 		t.Fatalf("expected first block to be original text, got %#v", out[1].Content[0])
 	}
-	if out[1].Content[1].OfText == nil {
+	if _, ok := out[1].Content[1].(*anthropicToolUseBlock); ok {
+		t.Fatalf("expected no tool_use block after sanitization, got %#v", out[1].Content[1])
+	}
+	stub, ok := out[1].Content[1].(*anthropicTextBlock)
+	if !ok {
 		t.Fatalf("expected second block to be text stub for interrupted tool call, got %#v", out[1].Content[1])
 	}
-	if out[1].Content[1].OfToolUse != nil {
-		t.Fatalf("expected no tool_use block after sanitization, got %#v", out[1].Content[1])
+	for _, want := range []string{"tool call interrupted", "id:call-1", "name:shell"} {
+		if !strings.Contains(stub.Text, want) {
+			t.Fatalf("interrupted tool stub %q missing %q", stub.Text, want)
+		}
 	}
 }
 
@@ -561,38 +599,18 @@ func TestBuildAnthropicMessages_AppendsSyntheticUserAfterTrailingAssistant(t *te
 		t.Fatalf("expected 3 anthropic messages after normalization, got %d", len(out))
 	}
 	last := out[len(out)-1]
-	if last.Role != anthropic.MessageParamRoleUser {
+	if last.Role != "user" {
 		t.Fatalf("expected trailing anthropic role user, got %v", last.Role)
 	}
-	if len(last.Content) != 1 || last.Content[0].OfText == nil {
+	if len(last.Content) != 1 {
+		t.Fatalf("expected trailing anthropic message to be a single text user block, got %#v", last.Content)
+	}
+	block, ok := last.Content[0].(*anthropicTextBlock)
+	if !ok {
 		t.Fatalf("expected trailing anthropic message to be a text user block, got %#v", last.Content)
 	}
-	if got := last.Content[0].OfText.Text; got != "Continue from the conversation state above." {
+	if got := block.Text; got != "Continue from the conversation state above." {
 		t.Fatalf("synthetic user text = %q, want %q", got, "Continue from the conversation state above.")
-	}
-}
-
-func TestBuildAnthropicBetaMessages_AppendsSyntheticUserAfterTrailingAssistant(t *testing.T) {
-	summary := Message{
-		Role:        RoleUser,
-		Parts:       []Part{{Type: PartText, Text: summaryPrefix + "Previous context"}},
-		CacheAnchor: true,
-	}
-	ack := AssistantText("I've reviewed the context summary. I'll continue from where we left off.")
-
-	_, out := buildAnthropicBetaMessages([]Message{summary, ack})
-	if len(out) != 3 {
-		t.Fatalf("expected 3 anthropic beta messages after normalization, got %d", len(out))
-	}
-	last := out[len(out)-1]
-	if last.Role != anthropic.BetaMessageParamRoleUser {
-		t.Fatalf("expected trailing anthropic beta role user, got %v", last.Role)
-	}
-	if len(last.Content) != 1 || last.Content[0].OfText == nil {
-		t.Fatalf("expected trailing anthropic beta message to be a text user block, got %#v", last.Content)
-	}
-	if got := last.Content[0].OfText.Text; got != "Continue from the conversation state above." {
-		t.Fatalf("synthetic beta user text = %q, want %q", got, "Continue from the conversation state above.")
 	}
 }
 
@@ -600,7 +618,8 @@ func TestHandleAnthropicStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) 
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	if err := handleAnthropicStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropic.TextBlock{
+	if err := handleAnthropicStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropicResponseBlock{
+		Type: "text",
 		Text: "hello from start block",
 	}, 0, acc); err != nil {
 		t.Fatalf("handleAnthropicStartBlockContent error: %v", err)
@@ -623,7 +642,8 @@ func TestHandleAnthropicStartBlockContent_ToolUseStartsAccumulator(t *testing.T)
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	if err := handleAnthropicStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropic.ToolUseBlock{
+	if err := handleAnthropicStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropicResponseBlock{
+		Type:  "tool_use",
 		ID:    "call-1",
 		Name:  "read_file",
 		Input: json.RawMessage(`{"path":"README.md"}`),
@@ -631,36 +651,17 @@ func TestHandleAnthropicStartBlockContent_ToolUseStartsAccumulator(t *testing.T)
 		t.Fatalf("handleAnthropicStartBlockContent error: %v", err)
 	}
 
-	if _, ok := acc.Finish(1); !ok {
+	call, ok := acc.Finish(1)
+	if !ok {
 		t.Fatal("expected tool call to be started in accumulator")
+	}
+	if call.ID != "call-1" || call.Name != "read_file" || string(call.Arguments) != `{"path":"README.md"}` {
+		t.Fatalf("accumulated tool call = %#v", call)
 	}
 	select {
 	case ev := <-events:
 		t.Fatalf("did not expect direct event for tool_use start, got %+v", ev)
 	default:
-	}
-}
-
-func TestHandleAnthropicBetaStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) {
-	events := make(chan Event, 1)
-	acc := newToolCallAccumulator()
-
-	if err := handleAnthropicBetaStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropic.BetaTextBlock{
-		Text: "hello from beta start block",
-	}, 0, acc); err != nil {
-		t.Fatalf("handleAnthropicBetaStartBlockContent error: %v", err)
-	}
-
-	select {
-	case ev := <-events:
-		if ev.Type != EventTextDelta {
-			t.Fatalf("expected EventTextDelta, got %v", ev.Type)
-		}
-		if ev.Text != "hello from beta start block" {
-			t.Fatalf("expected beta start-block text to be emitted, got %q", ev.Text)
-		}
-	default:
-		t.Fatal("expected one EventTextDelta from beta start text block")
 	}
 }
 
@@ -716,166 +717,136 @@ func TestEmitReasoningDelta_SignatureOnlyIsEncrypted(t *testing.T) {
 	}
 }
 
-func TestAnthropicThinkingBlockHelpersExposeReplayFields(t *testing.T) {
-	thinking := anthropic.NewThinkingBlock("sig-x", "reasoning text")
-	if got := thinking.GetSignature(); got == nil || *got != "sig-x" {
-		t.Fatalf("expected helper signature sig-x, got %v", got)
-	}
-	if got := thinking.GetThinking(); got == nil || *got != "reasoning text" {
-		t.Fatalf("expected helper thinking text, got %v", got)
-	}
-}
-
+// TestBuildAnthropicTools_LastToolHasCacheControl covers the standard and beta
+// flag; the former beta variant is the second subtest.
 func TestBuildAnthropicTools_LastToolHasCacheControl(t *testing.T) {
 	specs := []ToolSpec{
 		{Name: "tool_a", Description: "first tool", Schema: map[string]interface{}{}},
 		{Name: "tool_b", Description: "last tool", Schema: map[string]interface{}{}},
 	}
-	tools := buildAnthropicTools(specs)
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
-	}
-	// Only last tool should have cache_control set
-	if tools[0].OfTool == nil {
-		t.Fatalf("expected first tool to be OfTool")
-	}
-	first := tools[0].OfTool.CacheControl
-	if first.Type != "" {
-		t.Fatalf("first tool should not have cache_control, got type=%q", first.Type)
-	}
-	if tools[1].OfTool == nil {
-		t.Fatalf("expected last tool to be OfTool")
-	}
-	last := tools[1].OfTool.CacheControl
-	if last.Type != "ephemeral" {
-		t.Fatalf("last tool should have cache_control type=ephemeral, got %q", last.Type)
+	for _, beta := range []bool{false, true} {
+		name := "standard"
+		if beta {
+			name = "beta"
+		}
+		t.Run(name, func(t *testing.T) {
+			tools := buildAnthropicTools(specs, beta)
+			if len(tools) != 2 {
+				t.Fatalf("expected 2 tools, got %d", len(tools))
+			}
+			// Only last tool should have cache_control set
+			if tools[0].CacheControl != nil {
+				t.Fatalf("first tool should not have cache_control, got %+v", tools[0].CacheControl)
+			}
+			if tools[1].CacheControl == nil || tools[1].CacheControl.Type != "ephemeral" {
+				t.Fatalf("last tool should have cache_control type=ephemeral, got %+v", tools[1].CacheControl)
+			}
+		})
 	}
 }
 
 func TestBuildAnthropicTools_EmptySpecsReturnsNil(t *testing.T) {
-	tools := buildAnthropicTools(nil)
-	if tools != nil {
-		t.Fatalf("expected nil for empty specs, got %v", tools)
+	for _, beta := range []bool{false, true} {
+		if tools := buildAnthropicTools(nil, beta); tools != nil {
+			t.Fatalf("buildAnthropicTools(nil, %v) = %v, want nil", beta, tools)
+		}
 	}
 }
 
-func TestBuildAnthropicBetaTools_LastToolHasCacheControl(t *testing.T) {
-	specs := []ToolSpec{
-		{Name: "tool_a", Description: "first tool", Schema: map[string]interface{}{}},
-		{Name: "tool_b", Description: "last tool", Schema: map[string]interface{}{}},
+// TestBuildAnthropicTools_BetaDescriptionAlwaysSet documents the one way the
+// standard and beta flag still differ: beta always sends a description (an
+// empty string keeps the field present), the standard endpoint omits empty ones.
+func TestBuildAnthropicTools_BetaDescriptionAlwaysSet(t *testing.T) {
+	specs := []ToolSpec{{Name: "tool_a", Schema: map[string]interface{}{}}}
+
+	standard := buildAnthropicTools(specs, false)
+	if standard[0].Description != nil {
+		t.Fatalf("standard tool should omit an empty description, got %q", *standard[0].Description)
 	}
-	tools := buildAnthropicBetaTools(specs)
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 beta tools, got %d", len(tools))
+
+	beta := buildAnthropicTools(specs, true)
+	if beta[0].Description == nil {
+		t.Fatalf("beta tool should always carry a description")
 	}
-	if tools[0].OfTool == nil {
-		t.Fatalf("expected first beta tool to be OfTool")
+	if *beta[0].Description != "" {
+		t.Fatalf("beta tool description = %q, want empty", *beta[0].Description)
 	}
-	first := tools[0].OfTool.CacheControl
-	if first.Type != "" {
-		t.Fatalf("first beta tool should not have cache_control, got type=%q", first.Type)
-	}
-	if tools[1].OfTool == nil {
-		t.Fatalf("expected last beta tool to be OfTool")
-	}
-	last := tools[1].OfTool.CacheControl
-	if last.Type != "ephemeral" {
-		t.Fatalf("last beta tool should have cache_control type=ephemeral, got %q", last.Type)
+
+	described := buildAnthropicTools([]ToolSpec{{Name: "tool_b", Description: "described", Schema: map[string]interface{}{}}}, false)
+	if described[0].Description == nil || *described[0].Description != "described" {
+		t.Fatalf("standard tool should keep a non-empty description, got %+v", described[0].Description)
 	}
 }
 
 func TestApplyLastMessageCacheControl_TextBlock(t *testing.T) {
-	messages := []anthropic.MessageParam{
-		anthropic.NewUserMessage(
-			anthropic.NewTextBlock("hello"),
-		),
+	messages := []anthropicMessage{
+		{Role: "user", Content: []anthropicBlock{newAnthropicTextBlock("hello")}},
 	}
 	applyLastMessageCacheControl(messages)
-	block := messages[0].Content[0]
-	if block.OfText == nil {
-		t.Fatalf("expected text block")
+	block, ok := messages[0].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected text block, got %T", messages[0].Content[0])
 	}
-	if block.OfText.CacheControl.Type != "ephemeral" {
-		t.Fatalf("expected cache_control type=ephemeral, got %q", block.OfText.CacheControl.Type)
+	if block.CacheControl == nil || block.CacheControl.Type != "ephemeral" {
+		t.Fatalf("expected cache_control type=ephemeral, got %+v", block.CacheControl)
 	}
 }
 
 func TestApplyLastMessageCacheControl_ToolResult(t *testing.T) {
-	toolBlock := anthropic.ToolResultBlockParam{
+	toolBlock := &anthropicToolResultBlock{
+		Type:      "tool_result",
 		ToolUseID: "call-1",
 	}
-	messages := []anthropic.MessageParam{
+	messages := []anthropicMessage{
 		{
-			Role: anthropic.MessageParamRoleUser,
-			Content: []anthropic.ContentBlockParamUnion{
-				{OfToolResult: &toolBlock},
-			},
+			Role:    "user",
+			Content: []anthropicBlock{toolBlock},
 		},
 	}
 	applyLastMessageCacheControl(messages)
-	block := messages[0].Content[0]
-	if block.OfToolResult == nil {
-		t.Fatalf("expected tool_result block")
+	block, ok := messages[0].Content[0].(*anthropicToolResultBlock)
+	if !ok {
+		t.Fatalf("expected tool_result block, got %T", messages[0].Content[0])
 	}
-	if block.OfToolResult.CacheControl.Type != "ephemeral" {
-		t.Fatalf("expected cache_control type=ephemeral, got %q", block.OfToolResult.CacheControl.Type)
+	if block.CacheControl == nil || block.CacheControl.Type != "ephemeral" {
+		t.Fatalf("expected cache_control type=ephemeral, got %+v", block.CacheControl)
 	}
 }
 
 func TestApplyLastMessageCacheControl_EmptyMessages(t *testing.T) {
 	// Should not panic on empty slice
 	applyLastMessageCacheControl(nil)
-	applyLastMessageCacheControl([]anthropic.MessageParam{})
+	applyLastMessageCacheControl([]anthropicMessage{})
 }
 
 func TestApplyLastMessageCacheControl_EmptyContent(t *testing.T) {
-	messages := []anthropic.MessageParam{
-		{Role: anthropic.MessageParamRoleUser, Content: []anthropic.ContentBlockParamUnion{}},
+	messages := []anthropicMessage{
+		{Role: "user", Content: []anthropicBlock{}},
 	}
 	// Should not panic on empty content
 	applyLastMessageCacheControl(messages)
 }
 
 func TestApplyLastMessageCacheControl_OnlyLastMessageAffected(t *testing.T) {
-	messages := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock("first")),
-		anthropic.NewUserMessage(anthropic.NewTextBlock("second")),
+	messages := []anthropicMessage{
+		{Role: "user", Content: []anthropicBlock{newAnthropicTextBlock("first")}},
+		{Role: "user", Content: []anthropicBlock{newAnthropicTextBlock("second")}},
 	}
 	applyLastMessageCacheControl(messages)
-	first := messages[0].Content[0]
-	if first.OfText != nil && first.OfText.CacheControl.Type == "ephemeral" {
-		t.Fatalf("first message should not have cache_control")
+	first, ok := messages[0].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected first text block, got %T", messages[0].Content[0])
 	}
-	last := messages[1].Content[0]
-	if last.OfText == nil || last.OfText.CacheControl.Type != "ephemeral" {
-		t.Fatalf("last message should have cache_control type=ephemeral")
+	if first.CacheControl != nil {
+		t.Fatalf("first message should not have cache_control, got %+v", first.CacheControl)
 	}
-}
-
-func TestBuildAnthropicBetaTools_EmptySpecsReturnsNil(t *testing.T) {
-	tools := buildAnthropicBetaTools(nil)
-	if tools != nil {
-		t.Fatalf("expected nil for empty specs, got %v", tools)
+	last, ok := messages[1].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected last text block, got %T", messages[1].Content[0])
 	}
-}
-
-func TestApplyBetaLastMessageCacheControl_TextBlock(t *testing.T) {
-	messages := []anthropic.BetaMessageParam{
-		anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock("hello")),
+	if last.CacheControl == nil || last.CacheControl.Type != "ephemeral" {
+		t.Fatalf("last message should have cache_control type=ephemeral, got %+v", last.CacheControl)
 	}
-	applyBetaLastMessageCacheControl(messages)
-	block := messages[0].Content[0]
-	if block.OfText == nil {
-		t.Fatalf("expected text block")
-	}
-	if block.OfText.CacheControl.Type != "ephemeral" {
-		t.Fatalf("expected cache_control type=ephemeral, got %q", block.OfText.CacheControl.Type)
-	}
-}
-
-func TestApplyBetaLastMessageCacheControl_EmptyMessages(t *testing.T) {
-	applyBetaLastMessageCacheControl(nil)
-	applyBetaLastMessageCacheControl([]anthropic.BetaMessageParam{})
 }
 
 func TestBuildAnthropicTools_SingleTool(t *testing.T) {
@@ -886,15 +857,12 @@ func TestBuildAnthropicTools_SingleTool(t *testing.T) {
 			Schema:      map[string]interface{}{},
 		},
 	}
-	tools := buildAnthropicTools(specs)
+	tools := buildAnthropicTools(specs, false)
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
 	}
-	if tools[0].OfTool == nil {
-		t.Fatalf("expected OfTool")
-	}
-	if tools[0].OfTool.CacheControl.Type != "ephemeral" {
-		t.Fatalf("single tool should have cache_control type=ephemeral, got %q", tools[0].OfTool.CacheControl.Type)
+	if tools[0].CacheControl == nil || tools[0].CacheControl.Type != "ephemeral" {
+		t.Fatalf("single tool should have cache_control type=ephemeral, got %+v", tools[0].CacheControl)
 	}
 }
 
@@ -906,13 +874,16 @@ func TestBuildAnthropicTools_ToolHasSchema(t *testing.T) {
 			Schema:      map[string]interface{}{},
 		},
 	}
-	tools := buildAnthropicTools(specs)
+	tools := buildAnthropicTools(specs, false)
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
 	}
-	schema := tools[0].OfTool.InputSchema
-	if schema.Type != constant.Object("object") {
-		t.Fatalf("expected schema type=object")
+	schema := tools[0].InputSchema
+	if schema == nil {
+		t.Fatalf("expected input schema")
+	}
+	if schema.Type != "object" {
+		t.Fatalf("expected schema type=object, got %q", schema.Type)
 	}
 }
 
@@ -920,13 +891,12 @@ func TestBuildAnthropicMessages_CollaborativeActivityEnvelopeWrappedOnce(t *test
 	activity := `<collaborative_shell_activity source="browser-terminal" id="sha256:test">data</collaborative_shell_activity>`
 	messages := []Message{{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: activity}}}, UserText("continue")}
 	_, standard := buildAnthropicMessages(messages)
-	if got := standard[0].Content[0].OfText.Text; got != "<developer>\n"+activity+"\n</developer>\n\ncontinue" || strings.Count(got, "<developer>") != 1 {
-		t.Fatalf("standard activity = %q", got)
+	block, ok := standard[0].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected text block, got %T", standard[0].Content[0])
 	}
-	_, beta := buildAnthropicBetaMessages(messages)
-	got := beta[0].Content[0].GetText()
-	if got == nil || *got != "<developer>\n"+activity+"\n</developer>\n\ncontinue" || strings.Count(*got, "<developer>") != 1 {
-		t.Fatalf("beta activity = %#v", got)
+	if got := block.Text; got != "<developer>\n"+activity+"\n</developer>\n\ncontinue" || strings.Count(got, "<developer>") != 1 {
+		t.Fatalf("standard activity = %q", got)
 	}
 }
 
@@ -941,16 +911,19 @@ func TestBuildAnthropicMessages_DeveloperRole(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("expected 1 message (developer merged into user), got %d", len(out))
 	}
-	if out[0].Role != anthropic.MessageParamRoleUser {
+	if out[0].Role != "user" {
 		t.Fatalf("expected user role, got %v", out[0].Role)
 	}
-	if len(out[0].Content) != 1 || out[0].Content[0].OfText == nil {
+	if len(out[0].Content) != 1 {
 		t.Fatalf("expected single text block, got %#v", out[0].Content)
 	}
-	got := out[0].Content[0].OfText.Text
+	block, ok := out[0].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected single text block, got %#v", out[0].Content)
+	}
 	want := "<developer>\nBe concise\n</developer>\n\nHello"
-	if got != want {
-		t.Errorf("content = %q, want %q", got, want)
+	if block.Text != want {
+		t.Errorf("content = %q, want %q", block.Text, want)
 	}
 }
 
@@ -961,16 +934,12 @@ func TestBuildAnthropicMessages_DeveloperBeforeAssistantPreservesBoundary(t *tes
 		AssistantText("answer"),
 	}
 	_, standard := buildAnthropicMessages(messages)
-	if len(standard) < 2 || standard[0].Role != anthropic.MessageParamRoleUser || standard[1].Role != anthropic.MessageParamRoleAssistant || len(standard[0].Content) != 2 || standard[0].Content[1].OfText == nil || standard[0].Content[1].OfText.Text != "<developer>\nbefore assistant\n</developer>" {
+	if len(standard) < 2 || standard[0].Role != "user" || standard[1].Role != "assistant" || len(standard[0].Content) != 2 {
 		t.Fatalf("standard ordering = %#v", standard)
 	}
-	_, beta := buildAnthropicBetaMessages(messages)
-	if len(beta) < 2 || beta[0].Role != anthropic.BetaMessageParamRoleUser || beta[1].Role != anthropic.BetaMessageParamRoleAssistant || len(beta[0].Content) != 2 {
-		t.Fatalf("beta ordering = %#v", beta)
-	}
-	text := beta[0].Content[1].GetText()
-	if text == nil || *text != "<developer>\nbefore assistant\n</developer>" {
-		t.Fatalf("beta developer boundary = %#v", text)
+	block, ok := standard[0].Content[1].(*anthropicTextBlock)
+	if !ok || block.Text != "<developer>\nbefore assistant\n</developer>" {
+		t.Fatalf("standard developer boundary = %#v", standard[0].Content[1])
 	}
 }
 
@@ -984,16 +953,15 @@ func TestBuildAnthropicMessages_DeveloperBeforeToolPreservesBoundary(t *testing.
 		toolResult,
 	}
 	_, standard := buildAnthropicMessages(messages)
-	if len(standard) != 3 || standard[2].Role != anthropic.MessageParamRoleUser || standard[2].Content[0].OfText == nil || standard[2].Content[0].OfText.Text != "<developer>\nbefore tool\n</developer>\n\n" || standard[2].Content[1].OfToolResult == nil {
+	if len(standard) != 3 || standard[2].Role != "user" || len(standard[2].Content) != 2 {
 		t.Fatalf("standard tool ordering = %#v", standard)
 	}
-	_, beta := buildAnthropicBetaMessages(messages)
-	if len(beta) != 3 || beta[2].Role != anthropic.BetaMessageParamRoleUser || len(beta[2].Content) != 2 || beta[2].Content[1].OfToolResult == nil {
-		t.Fatalf("beta tool ordering = %#v", beta)
+	block, ok := standard[2].Content[0].(*anthropicTextBlock)
+	if !ok || block.Text != "<developer>\nbefore tool\n</developer>\n\n" {
+		t.Fatalf("standard tool developer boundary = %#v", standard[2].Content[0])
 	}
-	text := beta[2].Content[0].GetText()
-	if text == nil || *text != "<developer>\nbefore tool\n</developer>\n\n" {
-		t.Fatalf("beta tool developer boundary = %#v", text)
+	if _, ok := standard[2].Content[1].(*anthropicToolResultBlock); !ok {
+		t.Fatalf("standard tool result missing: %#v", standard[2].Content[1])
 	}
 }
 
@@ -1006,10 +974,14 @@ func TestBuildAnthropicMessages_TrailingDeveloper(t *testing.T) {
 	}
 
 	_, out := buildAnthropicMessages(messages)
-	if len(out) != 3 || out[2].Role != anthropic.MessageParamRoleUser || len(out[2].Content) != 1 || out[2].Content[0].OfText == nil {
+	if len(out) != 3 || out[2].Role != "user" || len(out[2].Content) != 1 {
 		t.Fatalf("expected synthetic trailing user developer block, got %#v", out)
 	}
-	if got, want := out[2].Content[0].OfText.Text, "<developer>\nBe concise\n\nUse examples\n</developer>"; got != want {
+	block, ok := out[2].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected synthetic trailing text block, got %#v", out[2].Content)
+	}
+	if got, want := block.Text, "<developer>\nBe concise\n\nUse examples\n</developer>"; got != want {
 		t.Fatalf("content = %q, want %q", got, want)
 	}
 }
@@ -1022,79 +994,47 @@ func TestBuildAnthropicMessages_AdjacentAndEmptyDeveloper(t *testing.T) {
 		UserText("hello"),
 	}
 	_, out := buildAnthropicMessages(messages)
-	if got, want := out[0].Content[0].OfText.Text, "<developer>\nfirst\n\nsecond\n</developer>\n\nhello"; got != want {
+	block, ok := out[0].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected text block, got %T", out[0].Content[0])
+	}
+	if got, want := block.Text, "<developer>\nfirst\n\nsecond\n</developer>\n\nhello"; got != want {
 		t.Fatalf("content = %q, want %q", got, want)
 	}
 }
 
-func TestBuildAnthropicMessages_TrailingDeveloperAppendsToUser(t *testing.T) {
-	_, out := buildAnthropicMessages([]Message{UserText("hello"), {Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "note"}}}})
-	if len(out) != 1 || len(out[0].Content) != 2 || out[0].Content[1].OfText == nil {
-		t.Fatalf("expected trailing block on existing user, got %#v", out)
-	}
-	if got := out[0].Content[1].OfText.Text; got != "<developer>\nnote\n</developer>" {
-		t.Fatalf("trailing developer = %q", got)
-	}
-}
-
-func TestBuildAnthropicBetaMessages_DeveloperRole(t *testing.T) {
-	messages := []Message{
-		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
-		UserText("Hello"),
-	}
-
-	_, out := buildAnthropicBetaMessages(messages)
-
-	if len(out) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(out))
-	}
-	if out[0].Role != anthropic.BetaMessageParamRoleUser {
-		t.Fatalf("expected user role, got %v", out[0].Role)
-	}
-	if len(out[0].Content) != 1 {
-		t.Fatalf("expected single content block, got %d", len(out[0].Content))
-	}
-	got := out[0].Content[0].GetText()
-	if got == nil {
-		t.Fatalf("expected text block, got %#v", out[0].Content[0])
-	}
-	want := "<developer>\nBe concise\n</developer>\n\nHello"
-	if *got != want {
-		t.Errorf("content = %q, want %q", *got, want)
-	}
-}
-
-func TestBuildAnthropicBetaMessages_AdjacentEmptyAndTrailingDeveloper(t *testing.T) {
+// TestBuildAnthropicMessages_DeveloperOnlyHistory checks the synthetic-user
+// shape for a developer-only history, formerly asserted by the beta variant.
+func TestBuildAnthropicMessages_DeveloperOnlyHistory(t *testing.T) {
 	messages := []Message{
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "first"}}},
 		{Role: RoleDeveloper},
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "second"}}},
 	}
-	_, onlyDevelopers := buildAnthropicBetaMessages(messages)
-	if len(onlyDevelopers) != 1 || onlyDevelopers[0].Role != anthropic.BetaMessageParamRoleUser {
-		t.Fatalf("expected one synthetic user, got %#v", onlyDevelopers)
+	_, out := buildAnthropicMessages(messages)
+	if len(out) != 1 || out[0].Role != "user" {
+		t.Fatalf("expected one synthetic user, got %#v", out)
 	}
-	text := onlyDevelopers[0].Content[0].GetText()
-	if text == nil || *text != "<developer>\nfirst\n\nsecond\n</developer>" {
-		t.Fatalf("developer-only content = %#v", text)
+	block, ok := out[0].Content[0].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected synthetic user text block, got %#v", out[0].Content)
 	}
+	if got, want := block.Text, "<developer>\nfirst\n\nsecond\n</developer>"; got != want {
+		t.Fatalf("developer-only content = %q, want %q", got, want)
+	}
+}
 
-	_, afterUser := buildAnthropicBetaMessages([]Message{UserText("hello"), {Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "note"}}}})
-	if len(afterUser) != 1 || len(afterUser[0].Content) != 2 {
-		t.Fatalf("expected developer appended to trailing user, got %#v", afterUser)
+func TestBuildAnthropicMessages_TrailingDeveloperAppendsToUser(t *testing.T) {
+	_, out := buildAnthropicMessages([]Message{UserText("hello"), {Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "note"}}}})
+	if len(out) != 1 || len(out[0].Content) != 2 {
+		t.Fatalf("expected trailing block on existing user, got %#v", out)
 	}
-	trailing := afterUser[0].Content[1].GetText()
-	if trailing == nil || *trailing != "<developer>\nnote\n</developer>" {
-		t.Fatalf("trailing content = %#v", trailing)
+	block, ok := out[0].Content[1].(*anthropicTextBlock)
+	if !ok {
+		t.Fatalf("expected trailing text block, got %#v", out[0].Content[1])
 	}
-
-	_, afterAssistant := buildAnthropicBetaMessages([]Message{UserText("hello"), AssistantText("hi"), {Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "note"}}}})
-	if len(afterAssistant) != 3 || afterAssistant[2].Role != anthropic.BetaMessageParamRoleUser || len(afterAssistant[2].Content) != 1 {
-		t.Fatalf("expected synthetic user after assistant, got %#v", afterAssistant)
-	}
-	synthetic := afterAssistant[2].Content[0].GetText()
-	if synthetic == nil || *synthetic != "<developer>\nnote\n</developer>" {
-		t.Fatalf("synthetic trailing content = %#v", synthetic)
+	if got := block.Text; got != "<developer>\nnote\n</developer>" {
+		t.Fatalf("trailing developer = %q", got)
 	}
 }
 
@@ -1168,11 +1108,11 @@ data: {"type":"message_stop"}
 			}))
 			defer ts.Close()
 
-			client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
-			provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+			provider := newAnthropicTestProvider(t, ts.URL, "claude-sonnet-4-6")
 
-			stream, err := provider.streamWithSearch(context.Background(), Request{
+			stream, err := provider.Stream(context.Background(), Request{
 				Messages: []Message{UserText("test")},
+				Search:   true,
 			})
 			if err != nil {
 				t.Fatalf("streamWithSearch error: %v", err)
@@ -1256,8 +1196,7 @@ func TestAnthropicStreamsRejectMissingMessageStop(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
-			provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+			provider := newAnthropicTestProvider(t, ts.URL, "claude-sonnet-4-6")
 			stream, err := provider.Stream(context.Background(), Request{
 				Messages: []Message{UserText("test")},
 				Search:   tt.search,
@@ -1332,6 +1271,7 @@ func TestValidateAnthropicStreamEnd(t *testing.T) {
 		{name: "direct HTTP truncated", wantIncomplete: true},
 		{name: "Bedrock truncated EOF", streamErr: io.EOF, wantIncomplete: true},
 		{name: "other stream error", streamErr: errors.New("decode failed"), wantOtherError: true},
+		{name: "Bedrock frame cut mid-message", streamErr: fmt.Errorf("event stream: incomplete frame: %w", io.ErrUnexpectedEOF), wantIncomplete: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1380,10 +1320,7 @@ func TestAnthropicStreamCloseDoesNotDeadlockWhenConsumerStopsDraining(t *testing
 	}))
 	defer ts.Close()
 
-	client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
-	provider := &AnthropicProvider{
-		client: &client,
-	}
+	provider := newAnthropicTestProvider(t, ts.URL, "")
 
 	stream, err := provider.Stream(context.Background(), Request{
 		Messages: []Message{{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hi"}}}},
@@ -1448,8 +1385,7 @@ func TestAnthropicStreamSerializesReasoningEffort(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
-			provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+			provider := newAnthropicTestProvider(t, ts.URL, "claude-sonnet-4-6")
 
 			stream, err := provider.Stream(context.Background(), Request{
 				Messages:        []Message{UserText("hello")},
@@ -1499,8 +1435,7 @@ func TestAnthropicStreamOmitsOutputConfigWhenEffortEmpty(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
-	provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+	provider := newAnthropicTestProvider(t, ts.URL, "claude-sonnet-4-6")
 
 	stream, err := provider.Stream(context.Background(), Request{
 		Messages: []Message{UserText("hello")},

@@ -1,0 +1,60 @@
+{
+  "method": "POST",
+  "path": "/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream",
+  "query": "beta=true",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "authorization": [
+      "AWS4-HMAC-SHA256 Credential=AKIDGOLDENEXAMPLE/<date>/..."
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-amz-date": [
+      "<present>"
+    ],
+    "x-amz-security-token": [
+      "golden-session"
+    ]
+  },
+  "body": {
+    "anthropic_beta": [
+      "web-search-2025-03-05",
+      "web-fetch-2025-09-10",
+      "context-1m-2025-08-07"
+    ],
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Reply with exactly: ok",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "tools": [
+      {
+        "max_uses": 5,
+        "name": "web_search",
+        "type": "web_search_20250305"
+      },
+      {
+        "max_uses": 3,
+        "name": "web_fetch",
+        "type": "web_fetch_20250910"
+      }
+    ]
+  }
+}

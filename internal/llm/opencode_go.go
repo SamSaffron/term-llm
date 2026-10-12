@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
@@ -285,9 +283,8 @@ func (p *OpenCodeGoProvider) Stream(ctx context.Context, req Request) (Stream, e
 		}
 		// Budget-based non-Anthropic models accept `thinking`, but reject Claude's
 		// separate `output_config.effort` field.
-		return p.messages.streamStandardForModel(ctx, req, req.Model, reasoningEffort, budget, false, false,
-			option.WithHeader(openCodeGoClientHeader, openCodeGoClientID),
-			option.WithHeader(openCodeGoSessionHeader, sessionID))
+		return p.messages.streamStandardForModel(ctx, req, anthropicModelSpec{model: req.Model, effort: reasoningEffort, thinkingBudget: budget}, false,
+			http.Header{openCodeGoClientHeader: {openCodeGoClientID}, openCodeGoSessionHeader: {sessionID}})
 	case opencodeGoProtocolResponses:
 		return p.streamResponses(ctx, req, sessionID)
 	default:

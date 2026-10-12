@@ -1,0 +1,252 @@
+[
+  {
+    "id": "claude-haiku-5-5",
+    "display_name": "Claude Haiku 5.5",
+    "created": 1791396000,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-sonnet-5-5",
+    "display_name": "Claude Sonnet 5.5",
+    "created": 1790553600,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-opus-5-5",
+    "display_name": "Claude Opus 5.5",
+    "created": 1790007840,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-fable-5-1",
+    "display_name": "Claude Fable 5.1",
+    "created": 1787875200,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-opus-5",
+    "display_name": "Claude Opus 5",
+    "created": 1784851200,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-sonnet-5",
+    "display_name": "Claude Sonnet 5",
+    "created": 1782691200,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-fable-5",
+    "display_name": "Claude Fable 5",
+    "created": 1780790400,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-opus-4-8",
+    "display_name": "Claude Opus 4.8",
+    "created": 1779926400,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-opus-4-7",
+    "display_name": "Claude Opus 4.7",
+    "created": 1776124800,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive"
+    ]
+  },
+  {
+    "id": "claude-sonnet-4-6",
+    "display_name": "Claude Sonnet 4.6",
+    "created": 1771286400,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive",
+      "enabled"
+    ]
+  },
+  {
+    "id": "claude-opus-4-6",
+    "display_name": "Claude Opus 4.6",
+    "created": 1770163200,
+    "input_limit": 980000,
+    "output_limit": 128000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "reasoning_modes": [
+      "adaptive",
+      "enabled"
+    ]
+  },
+  {
+    "id": "claude-opus-4-5-20251101",
+    "display_name": "Claude Opus 4.5",
+    "created": 1763942400,
+    "input_limit": 180000,
+    "output_limit": 64000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "reasoning_modes": [
+      "enabled"
+    ]
+  },
+  {
+    "id": "claude-haiku-4-5-20251001",
+    "display_name": "Claude Haiku 4.5",
+    "created": 1760486400,
+    "input_limit": 180000,
+    "output_limit": 64000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_modes": [
+      "enabled"
+    ]
+  },
+  {
+    "id": "claude-sonnet-4-5-20250929",
+    "display_name": "Claude Sonnet 4.5",
+    "created": 1759104000,
+    "input_limit": 180000,
+    "output_limit": 64000,
+    "input_price": 0,
+    "output_price": 0,
+    "reasoning_modes": [
+      "enabled"
+    ]
+  }
+]

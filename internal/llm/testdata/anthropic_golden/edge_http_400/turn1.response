@@ -1,0 +1,1 @@
+{"type": "error", "error": {"type": "invalid_request_error", "message": "messages: text content blocks must be non-empty"}}

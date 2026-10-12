@@ -3,13 +3,11 @@ package llm
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/bedrock"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/samsaffron/term-llm/internal/awsauth"
 )
 
 // BedrockProvider implements Provider using AWS Bedrock with Anthropic Claude models.
@@ -86,59 +84,80 @@ func isQualifiedBedrockID(model string) bool {
 	return false
 }
 
-// NewBedrockProvider creates a new AWS Bedrock provider for Anthropic Claude models.
-func NewBedrockProvider(model, region, profile, accessKey, secretKey, sessionToken string, modelMap map[string]string) (*BedrockProvider, error) {
-	// Parse model suffixes using the same chain as the Anthropic provider:
-	// strip -thinking first (may leave -1m), then strip -1m.
-	afterThinking, thinkingBudget, adaptive := parseModelThinking(model)
-	baseModel, use1m := parseModel1m(afterThinking)
-
-	// Build AWS config
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var opts []func(*awsconfig.LoadOptions) error
-	if region != "" {
-		opts = append(opts, awsconfig.WithRegion(region))
+// resolveBedrockAuth resolves the region and SigV4 credential chain. With a
+// Bedrock API key (AWS_BEARER_TOKEN_BEDROCK) the credential chain is unused,
+// so a broken shared profile must not prevent provider creation; the region
+// then falls back to config and environment.
+func resolveBedrockAuth(region, profile, accessKey, secretKey, sessionToken, bearerToken string) (string, awsauth.CredentialsProvider, error) {
+	resolved, err := awsauth.Resolve(context.Background(), awsauth.Options{
+		Region:          region,
+		Profile:         profile,
+		AccessKeyID:     accessKey,
+		SecretAccessKey: secretKey,
+		SessionToken:    sessionToken,
+	})
+	var resolvedRegion string
+	var credentials awsauth.CredentialsProvider
+	switch {
+	case err == nil:
+		resolvedRegion, credentials = resolved.Region, resolved.Credentials
+	case bearerToken != "":
+		resolvedRegion = firstNonEmpty(region, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"))
+	default:
+		return "", nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
-	if profile != "" {
-		opts = append(opts, awsconfig.WithSharedConfigProfile(profile))
-	}
-	if accessKey != "" && secretKey != "" {
-		opts = append(opts, awsconfig.WithCredentialsProvider(
-			awscreds.NewStaticCredentialsProvider(accessKey, secretKey, sessionToken),
-		))
-	}
-
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
-	}
-
 	// Apply region fallback so the Bedrock client actually uses it
-	if awsCfg.Region == "" {
-		awsCfg.Region = "us-east-1"
+	if resolvedRegion == "" {
+		resolvedRegion = "us-east-1"
 	}
-	resolvedRegion := awsCfg.Region
+	return resolvedRegion, credentials, nil
+}
 
-	// Resolve the base model name to a Bedrock model ID.
-	// Skip resolution if the model is already a qualified Bedrock ID/ARN.
-	// Uses the resolved region to derive the geographic prefix (us./eu./ap.).
-	bedrockID := baseModel
-	if !isQualifiedBedrockID(baseModel) {
-		bedrockID = resolveBedrockModelID(baseModel, modelMap, resolvedRegion)
+// NewBedrockProvider creates a new AWS Bedrock provider for Anthropic Claude models.
+// headers are extra HTTP headers; anthropic-beta values are moved into the
+// request body as Bedrock requires, and the rest are SigV4-signed.
+func NewBedrockProvider(model, region, profile, accessKey, secretKey, sessionToken string, modelMap, headers map[string]string) (*BedrockProvider, error) {
+	extraHeaders, err := newAnthropicExtraHeaders(headers)
+	if err != nil {
+		return nil, err
+	}
+	bearerToken := os.Getenv("AWS_BEARER_TOKEN_BEDROCK")
+	resolvedRegion, credentials, err := resolveBedrockAuth(region, profile, accessKey, secretKey, sessionToken, bearerToken)
+	if err != nil {
+		return nil, err
 	}
 
-	// Create Anthropic client routed through Bedrock
-	client := anthropic.NewClient(bedrock.WithConfig(awsCfg))
+	// Friendly names resolve through model_map, then the built-in table with
+	// a geographic prefix from the resolved region; qualified IDs/ARNs pass
+	// through. The same resolver decodes per-request models, so the engine's
+	// request model (the configured friendly name) never reaches Bedrock.
+	resolveID := func(name string) string {
+		if isQualifiedBedrockID(name) {
+			return name
+		}
+		return resolveBedrockModelID(name, modelMap, resolvedRegion)
+	}
+	spec := parseAnthropicModelSpec(model, resolveID)
 
+	client := &anthropicClient{
+		headers:    extraHeaders,
+		httpClient: newAnthropicHTTPClient(),
+		bedrock: &bedrockTransport{
+			region:      resolvedRegion,
+			credentials: credentials,
+			bearerToken: bearerToken,
+			now:         time.Now,
+		},
+	}
 	inner := &AnthropicProvider{
-		client:         &client,
-		model:          bedrockID,
-		thinkingBudget: thinkingBudget,
-		useAdaptive:    adaptive,
-		use1m:          use1m,
-		credential:     "aws",
+		client:          client,
+		model:           spec.model,
+		thinkingBudget:  spec.thinkingBudget,
+		useAdaptive:     spec.adaptive,
+		use1m:           spec.use1m,
+		reasoningEffort: spec.effort,
+		credential:      "aws",
+		resolveModelID:  resolveID,
 	}
 
 	return &BedrockProvider{

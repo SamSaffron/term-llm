@@ -1,0 +1,74 @@
+{
+  "method": "POST",
+  "path": "/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+  "raw_path": "/model/us.anthropic.claude-haiku-4-5-20251001-v1%3A0/invoke-with-response-stream",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "authorization": [
+      "AWS4-HMAC-SHA256 Credential=AKIDGOLDENEXAMPLE/<date>/..."
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-amz-date": [
+      "<present>"
+    ],
+    "x-amz-security-token": [
+      "golden-session"
+    ]
+  },
+  "body": {
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "Call the ping tool.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "tool_choice": {
+      "name": "ping_tool",
+      "type": "tool"
+    },
+    "tools": [
+      {
+        "description": "Read a text file from the working directory.",
+        "input_schema": {
+          "properties": {
+            "path": {
+              "description": "Relative file path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "name": "read_file"
+      },
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "name": "ping_tool"
+      }
+    ]
+  }
+}

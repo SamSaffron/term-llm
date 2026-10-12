@@ -99,6 +99,7 @@ func modelInfosFromCache(cached *cache.ModelCache) []ModelInfo {
 				InputPrice:        m.InputPrice,
 				OutputPrice:       m.OutputPrice,
 				ReasoningEfforts:  cloneEfforts(m.ReasoningEfforts),
+				ReasoningModes:    cloneEfforts(m.ReasoningModes),
 			})
 		}
 		return models
@@ -129,6 +130,7 @@ func modelInfosToCache(models []ModelInfo) []cache.CachedModel {
 			InputPrice:        m.InputPrice,
 			OutputPrice:       m.OutputPrice,
 			ReasoningEfforts:  cloneEfforts(m.ReasoningEfforts),
+			ReasoningModes:    cloneEfforts(m.ReasoningModes),
 		})
 	}
 	return cached

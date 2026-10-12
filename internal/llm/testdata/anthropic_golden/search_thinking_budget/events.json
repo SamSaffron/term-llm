@@ -1,0 +1,63 @@
+[
+  [
+    {
+      "type": "reasoning_delta",
+      "text": "The user is asking me to reply with",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " exactly \"ok\" and not to",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " search. I",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "'ll",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " follow",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " their",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " instruction.",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "reasoning_kind": "encrypted",
+      "encrypted": "EvsCCrYBCBIYAipA+OQjmcB9wO3ZM2oQSWHCyNDZuhP0MM648dYPiph5p/4N2WNIt0O/CKggW/msp39J8AXjY4FwlWKBbEQ5pAa+TTIYY2xhdWRlLW9wdXMtNC01LTIwMjUxMTAxOABCCHRoaW5raW5nWiQxZjVmNDY0Yy1iMWZiLTQzOTItODNkNC1iMjhmMzExYjJmYjWaARoKGGNsYXVkZS1vcHVzLTQtNS0yMDI1MTEwMagBg6mx1gYSDERZQ29d9yQruG2mOhoMpsx2hx9ST4GeFs1yIjDIQrFwPQrGHGodJsMvRcLP/Ssm3WCigWuKWmG/uXyPmImQyzQ1+h09WaxXN8l8VsQqcly36PdyLfWRdLpmyjvGShTk1VaOpCCH2sLYAhKsB0kvgtJ7zfJSxDfpaT3q8Pan7fy0VJ2soA8bc5VNrj95mjB1BnqhJsFYJ5vL9FEXB8/MOa7MaB4nRQEHZHQjQG4celFNgFN7aIrP0fxELOgIP/xrLRgB"
+    },
+    {
+      "type": "text_delta",
+      "text": "ok"
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 2843,
+        "OutputTokens": 35,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

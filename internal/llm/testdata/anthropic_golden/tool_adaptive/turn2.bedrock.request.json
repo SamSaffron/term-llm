@@ -1,0 +1,113 @@
+{
+  "method": "POST",
+  "path": "/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream",
+  "headers": {
+    "accept": [
+      "application/json"
+    ],
+    "anthropic-version": [
+      "2023-06-01"
+    ],
+    "authorization": [
+      "AWS4-HMAC-SHA256 Credential=AKIDGOLDENEXAMPLE/<date>/..."
+    ],
+    "content-type": [
+      "application/json"
+    ],
+    "x-amz-date": [
+      "<present>"
+    ],
+    "x-amz-security-token": [
+      "golden-session"
+    ]
+  },
+  "body": {
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 16000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "Use read_file on notes.txt and tell me the secret word.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "signature": "EsgCCqgBCBIYAipAKbvWehuuUn1/i5U2Vjd2KEuA1iBj3NvJLHjxVWOcM3q0h+pOkXWzyjiVexn8nYK+KMcK2s2pFCzs8B/Cj/ueGDIRY2xhdWRlLXNvbm5ldC00LTY4AEIIdGhpbmtpbmdaJDFmNWY0NjRjLWIxZmItNDM5Mi04M2Q0LWIyOGYzMTFiMmZiNZoBEwoRY2xhdWRlLXNvbm5ldC00LTaoAeGysNYGEgxzcdj3GsaJHmToPyEaDNEmw/LeJ3XELiTkUCIwFaj5I1zuA9Ipe5XqmiI5GnGOf6DfKIn59tp4LRnzU4fXJhrHc4jUcIMwGkPgcWsvKk17MjBVfNH7VL8cWrB4lLTDaVDyIuaQsdh+KW3i77AgiVL2JVDNffSjOtXM1BDqXWKfK4/nC/1mp693Ul8T0MVoVmxqTZAE7qHxyJwEGRgB",
+            "thinking": "The user wants me to read notes.txt to find the secret word.",
+            "type": "thinking"
+          },
+          {
+            "text": "Sure! Let me read that file right away.",
+            "type": "text"
+          },
+          {
+            "id": "toolu_01TiZ3oFKnqQwpdNvqv5o4d3",
+            "input": {
+              "path": "notes.txt"
+            },
+            "name": "read_file",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "content": [
+              {
+                "text": "The secret word is PELICAN.\n",
+                "type": "text"
+              }
+            ],
+            "is_error": false,
+            "tool_use_id": "toolu_01TiZ3oFKnqQwpdNvqv5o4d3",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are a terse assistant used for wire-format golden tests.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "type": "adaptive"
+    },
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "Read a text file from the working directory.",
+        "input_schema": {
+          "properties": {
+            "path": {
+              "description": "Relative file path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "name": "read_file"
+      }
+    ]
+  }
+}

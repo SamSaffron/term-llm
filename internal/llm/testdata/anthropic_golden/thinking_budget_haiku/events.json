@@ -1,0 +1,131 @@
+[
+  [
+    {
+      "type": "reasoning_delta",
+      "text": "17",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " * 23",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " = ?",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "\n\nI",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " can",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " calculate this:",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "\n17 * ",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "23 = ",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "17 * (",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "20 + ",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "3)",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": "\n=",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 17 *",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 20 +",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 17 *",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 3\n=",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 340 +",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 51\n=",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "text": " 391",
+      "reasoning_kind": "raw"
+    },
+    {
+      "type": "reasoning_delta",
+      "reasoning_kind": "encrypted",
+      "encrypted": "EvkCCrgBCBIYAipAYyZBmHtUgAyHIX+3qGEE/Gad2llzYQgJyq1SoDPqr7QZbAuZVLXPx1Xa2A45UPiZcvEL93ApgvXtC4PI0lxArjIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okMWY1ZjQ2NGMtYjFmYi00MzkyLTgzZDQtYjI4ZjMxMWIyZmI1mgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAH6qLHWBhIM7LSL4JAkYhi3YH/jGgzHfLg3fXLXKslHi/MiMCMgJuTvEB19XSX+FcTje+6FQLbFsp5oi1pw/7f3FI5Tryga7RrRzsuv8QoNISyLFSpu27SN01itcqy5Vk4nv72JJc8sQe/xqSbrm1zfWV3hJySrRPY4UySX+3Hn3TRMiykHzKQdQ46PMtngjmDbqym9pgs+3TyWutR8AFVOaE1kT+zOsnkHvYPyiecq36Ru63y/yTQTP4kspn/V2Cxv5vkYAQ=="
+    },
+    {
+      "type": "text_delta",
+      "text": "17"
+    },
+    {
+      "type": "text_delta",
+      "text": " × 23"
+    },
+    {
+      "type": "text_delta",
+      "text": " = 391"
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "InputTokens": 46,
+        "OutputTokens": 81,
+        "CachedInputTokens": 0,
+        "CacheWriteTokens": 0,
+        "ProviderRawInputTokens": 0,
+        "ProviderTotalTokens": 0,
+        "ReasoningTokens": 0
+      }
+    },
+    {
+      "type": "done"
+    }
+  ]
+]

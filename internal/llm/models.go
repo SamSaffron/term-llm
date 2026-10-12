@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -46,25 +47,23 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "compaction", InputLimit: 19_000, OutputLimit: 1_000},
 	},
 	"anthropic": {
-		// Claude 4.x/5. Reasoning-effort metadata is provider-level below:
-		// Fable and Opus support low/medium/high/xhigh/max; Sonnet supports low/medium/high.
-		// 1M-capable current models use 980K effective input (1M minus reserve).
-		{ID: "claude-fable-5", InputLimit: 980_000, OutputLimit: 128_000},
-		{ID: "claude-opus-4-8", InputLimit: 980_000, OutputLimit: 128_000},
-		{ID: "claude-opus-4-7", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-7-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-6", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-5", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-5-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-5", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-haiku-4-5", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-haiku-4", InputLimit: 180_000, OutputLimit: 64_000},
+		// Curated fallback mirroring GET /v1/models; the live catalog (cached by
+		// `term-llm models -p anthropic` and completion) takes precedence.
+		// Inputs are context minus a 20K output reserve.
+		{ID: "claude-haiku-5-5", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-sonnet-5-5", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-opus-5-5", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-fable-5-1", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-opus-5", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-sonnet-5", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-fable-5", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-opus-4-8", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-opus-4-7", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicFullEffortVariants},
+		{ID: "claude-sonnet-4-6", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicNoXHighEffortVariants},
+		{ID: "claude-opus-4-6", InputLimit: 980_000, OutputLimit: 128_000, ReasoningEfforts: anthropicNoXHighEffortVariants},
+		{ID: "claude-opus-4-5-20251101", InputLimit: 180_000, OutputLimit: 64_000, ReasoningEfforts: anthropicLowHighEffortVariants},
+		{ID: "claude-haiku-4-5-20251001", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-5-20250929", InputLimit: 180_000, OutputLimit: 64_000},
 	},
 	"openai": {
 		{ID: "gpt-5.6-sol", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
@@ -314,6 +313,14 @@ func ProviderModelIDs(provider string) []string {
 		if ids := GetCachedZenModels(); len(ids) > 0 {
 			return ids
 		}
+	case "anthropic":
+		// The cached catalog is the public API's; custom-named Anthropic
+		// gateways keep the curated list (or their configured models).
+		if provider == "anthropic" && strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")) == "" {
+			if ids := GetCachedAnthropicModels(); len(ids) > 0 {
+				return ids
+			}
+		}
 	case "agy-bin":
 		if ids := GetCachedAgyBinModels(); len(ids) > 0 {
 			return ids
@@ -393,6 +400,11 @@ var gpt56ChatGPTEffortVariants = []string{"low", "medium", "high", "xhigh", "max
 
 var claudeBinOpusEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
 var claudeBinSonnetEffortVariants = []string{"low", "medium", "high"}
+
+// Direct Anthropic API effort sets (GET /v1/models capabilities.effort).
+var anthropicFullEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
+var anthropicNoXHighEffortVariants = []string{"low", "medium", "high", "max"}
+var anthropicLowHighEffortVariants = []string{"low", "medium", "high"}
 var grokBinEffortVariants = []string{"low", "medium", "high", "xhigh"}
 
 // Fable 5 supports the same effort levels as Opus.
@@ -450,6 +462,9 @@ func resolveProviderModelEntries(provider string) []ModelEntry {
 }
 
 func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {
+	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "anthropic" {
+		return anthropicReasoningEfforts(baseModel) // live catalog before curated rows
+	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
 		if efforts, found := grokCachedReasoningEfforts(baseModel); found {
 			return efforts
@@ -500,7 +515,9 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 		}
 	case "opencode-go":
 		return opencodeGoCachedReasoningEfforts(model)
-	case "anthropic", "bedrock":
+	case "anthropic":
+		return anthropicReasoningEfforts(model)
+	case "bedrock":
 		if isClaudeOpusModelName(nameLower) || isClaudeFableModelName(nameLower) {
 			return cloneEfforts(claudeBinOpusEffortVariants)
 		}
@@ -616,6 +633,9 @@ func BaseModelAndEffortForProvider(provider, model string) (base string, effort 
 }
 
 func reasoningEffortsForEntry(provider string, entry ModelEntry) []string {
+	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "anthropic" {
+		return anthropicReasoningEfforts(entry.ID) // live catalog before curated rows
+	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
 		if efforts, found := grokCachedReasoningEfforts(entry.ID); found {
 			return efforts

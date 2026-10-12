@@ -376,3 +376,54 @@ func TestImageCompletionLoadsNamedProviderConfig(t *testing.T) {
 		t.Fatalf("config completion = %v", got)
 	}
 }
+
+func TestRefreshAnthropicCompletionCache(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	original := refreshAnthropicModelsForCompletion
+	t.Cleanup(func() { refreshAnthropicModelsForCompletion = original })
+
+	var calls int
+	var got config.ProviderConfig
+	refreshAnthropicModelsForCompletion = func(ctx context.Context, providerCfg config.ProviderConfig) error {
+		calls++
+		got = providerCfg
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("completion refresh context has no deadline")
+		}
+		return nil
+	}
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"anthropic":     {APIKey: "sk-test", Headers: map[string]string{"anthropic-workspace-id": "wrkspc_x"}},
+		"gateway":       {Type: config.ProviderTypeAnthropic, BaseURL: "https://gateway.example.com"},
+		"pinned-claude": {Type: config.ProviderTypeAnthropic, Models: []string{"fixed"}},
+	}}
+
+	refreshAnthropicCompletionCache("anthropic:claude-", cfg)
+	if calls != 1 || got.ResolvedAPIKey != "sk-test" || got.Headers["anthropic-workspace-id"] != "wrkspc_x" {
+		t.Fatalf("refresh calls=%d key=%q headers=%v", calls, got.ResolvedAPIKey, got.Headers)
+	}
+
+	// A refresh that did not populate the cache is not retried immediately.
+	refreshAnthropicCompletionCache("anthropic:claude-o", cfg)
+	if calls != 1 {
+		t.Fatalf("refresh retried within the retry interval: %d calls", calls)
+	}
+
+	// Provider-name stage, custom base URLs, pinned model lists, and other
+	// providers never trigger a catalog fetch.
+	for _, toComplete := range []string{"anthropic", "gateway:claude", "pinned-claude:", "openai:gpt"} {
+		refreshAnthropicCompletionCache(toComplete, cfg)
+	}
+	if calls != 1 {
+		t.Fatalf("unexpected refreshes: %d", calls)
+	}
+
+	// An ANTHROPIC_BASE_URL gateway is never refreshed (its catalog is not
+	// cached, so a refresh would repeat on every keystroke).
+	t.Setenv("ANTHROPIC_BASE_URL", "https://gateway.example.com")
+	refreshAnthropicCompletionCache("anthropic:claude-", cfg)
+	if calls != 1 {
+		t.Fatalf("refreshed through ANTHROPIC_BASE_URL gateway: %d", calls)
+	}
+}

@@ -285,7 +285,7 @@ term-llm ask --provider bedrock:claude-sonnet-4-6 "explain this code"
 term-llm ask --provider bedrock:claude-opus-4-6-thinking "complex question"
 ```
 
-**Authentication** uses the standard AWS credential chain. Configure credentials via any method the AWS SDK supports:
+**Authentication** uses the AWS credential chain described in [Providers and models](/reference/providers-and-models/#aws-bedrock): explicit config keys, environment variables, shared profile files (static keys or `credential_process`), container credentials, then the EC2 instance profile (IMDSv2). SSO, `aws login`, and assume-role profiles are resolved through AWS CLI v2 (`aws configure export-credentials`). For example:
 
 ```bash
 # Environment variables
@@ -346,12 +346,12 @@ The geographic prefix (`us.`, `eu.`, `ap.`) is derived from your configured regi
 
 You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-sonnet-4-6` or full ARNs). These bypass the translation layer.
 
-**Capabilities:** the adapter shares Anthropic message streaming, tools, images, thinking, and caching logic. AWS model, context, and hosted-tool support still apply; not every direct Anthropic feature is guaranteed on Bedrock. Use `--no-native-search` when the endpoint does not accept the native search/fetch tools. Bedrock translates `-thinking` and `-1m`, not the direct adapter’s effort suffixes such as `-high` and `-max`.
+**Capabilities:** the adapter shares Anthropic message streaming, tools, images, thinking, and caching logic. AWS model, context, and hosted-tool support still apply; not every direct Anthropic feature is guaranteed on Bedrock. Use `--no-native-search` when the endpoint does not accept the native search/fetch tools. Bedrock decodes `-thinking`, `-1m`, and effort suffixes such as `-high` before resolving the model through `model_map`.
 
 | Config field | Description |
 |---|---|
-| `region` | AWS region. Falls back to `AWS_REGION` / `AWS_DEFAULT_REGION` env vars, then `us-east-1`. |
-| `profile` | AWS profile name from `~/.aws/credentials`. |
+| `region` | AWS region. Falls back to `AWS_REGION` / `AWS_DEFAULT_REGION` env vars, the profile's `region` in `~/.aws/config`, then `us-east-1`. |
+| `profile` | AWS profile name from `~/.aws/credentials` / `~/.aws/config`. SSO and assume-role profiles require AWS CLI v2. |
 | `access_key_id` | Explicit AWS access key. Supports `$()`, `op://`, `${ENV}` resolution. |
 | `secret_access_key` | Explicit AWS secret key. Same resolution support. |
 | `session_token` | Optional session token for temporary/assumed-role credentials. |
