@@ -39,6 +39,7 @@ The chat smoke uses HTTP transport only.
 - Hub assets are intentionally absent from the chat service worker. Only the exact two Hub assets are public before Hub authentication.
 - KaTeX and highlight.js remain deterministic chat-only lazy chunks. KaTeX emits only WOFF2 fonts.
 - Source maps and frontend test artifacts are not emitted under `static`; the generated chat asset manifest is embedded.
+- `build:compress` runs last (`go run ../cmd/precompressui`): every text output that gzip shrinks is replaced in place by a deterministic, level-9 `X.gz`. Go code always uses the logical name `X`; the server sends stored gzip bytes unchanged to gzip clients and decodes them only for clients that refuse gzip. `StaticAsset` returns decoded content, and the asset versions hash the stored bytes. Fonts and images stay raw.
 - `AssetVersion()` covers only chat assets. `HubAssetVersion()` covers exactly `hub.js` and `hub.css`; both Hub JS and CSS use `?v=<HubAssetVersion>` in the shell and are immutable only on an exact version match.
 
 The payload baseline's historical `app-interject.js` entry describes a previous measured asset set; it is not an active chunk name. The current Vite build emits a hashed entry and named hashed chunks, including lazy steering actions and queue presentation. Do not rename baseline entries by guessing or relax its budget to mask growth.

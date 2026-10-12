@@ -206,6 +206,62 @@ func uiAddVary(header http.Header, value string) {
 }
 
 func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, contentType, cacheControl string, conditional bool) {
+	entry := uiGetOrBuildEntry(data, uiCompressibleContentType(contentType))
+	writeEmbeddedUIEntry(w, r, entry, func() ([]byte, error) { return data, nil }, contentType, cacheControl, conditional)
+}
+
+// uiPrecompressedAssets maps embedded asset names that the build stored
+// gzip-compressed to entries whose compressed bytes are the stored bytes.
+// serveui.EncodedAsset accepts only canonical names and entries are stored
+// only after it succeeds, so the map is bounded by the embedded asset set.
+var uiPrecompressedAssets sync.Map // string → *uiAssetCacheEntry
+
+// uiEmbeddedAssetEntry returns the cache entry for a named embedded asset.
+// Precompressed assets are cached by name and need no runtime compression;
+// raw assets also return their content for an identity response.
+func uiEmbeddedAssetEntry(name string, compressible bool) (*uiAssetCacheEntry, []byte, error) {
+	if v, ok := uiPrecompressedAssets.Load(name); ok {
+		return v.(*uiAssetCacheEntry), nil, nil
+	}
+	data, gzipped, err := serveui.EncodedAsset(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !gzipped {
+		return uiGetOrBuildEntry(data, compressible), data, nil
+	}
+	sum := sha256.Sum256(data)
+	entry := &uiAssetCacheEntry{etag: `"` + hex.EncodeToString(sum[:]) + `"`, compressed: data}
+	actual, _ := uiPrecompressedAssets.LoadOrStore(name, entry)
+	return actual.(*uiAssetCacheEntry), nil, nil
+}
+
+// serveEmbeddedUIAsset serves a named embedded asset with conditional caching.
+// It reports false when the asset does not exist. contentType is detected from
+// the content when empty.
+func serveEmbeddedUIAsset(w http.ResponseWriter, r *http.Request, name, contentType, cacheControl string) bool {
+	identity := func() ([]byte, error) { return serveui.StaticAsset(name) }
+	if contentType == "" {
+		raw, err := identity()
+		if err != nil {
+			return false
+		}
+		contentType = http.DetectContentType(raw)
+	}
+	entry, raw, err := uiEmbeddedAssetEntry(name, uiCompressibleContentType(contentType))
+	if err != nil {
+		return false
+	}
+	if raw != nil {
+		identity = func() ([]byte, error) { return raw, nil }
+	}
+	writeEmbeddedUIEntry(w, r, entry, identity, contentType, cacheControl, true)
+	return true
+}
+
+// writeEmbeddedUIEntry writes a cached asset, preferring its gzip bytes. The
+// identity body is only produced for clients that do not accept gzip.
+func writeEmbeddedUIEntry(w http.ResponseWriter, r *http.Request, entry *uiAssetCacheEntry, identity func() ([]byte, error), contentType, cacheControl string, conditional bool) {
 	header := w.Header()
 	if contentType != "" {
 		header.Set("Content-Type", contentType)
@@ -213,13 +269,9 @@ func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, c
 	if cacheControl != "" {
 		header.Set("Cache-Control", cacheControl)
 	}
-
-	compressible := uiCompressibleContentType(contentType)
-	if compressible {
+	if entry.compressed != nil {
 		uiAddVary(header, "Accept-Encoding")
 	}
-
-	entry := uiGetOrBuildEntry(data, compressible)
 
 	if conditional {
 		header.Set("ETag", entry.etag)
@@ -229,10 +281,17 @@ func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, c
 		}
 	}
 
-	body := data
-	if compressible && entry.compressed != nil && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
+	var body []byte
+	if entry.compressed != nil && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
 		body = entry.compressed
 		header.Set("Content-Encoding", "gzip")
+	} else {
+		raw, err := identity()
+		if err != nil {
+			http.Error(w, "asset unavailable", http.StatusInternalServerError)
+			return
+		}
+		body = raw
 	}
 	header.Set("Content-Length", strconv.Itoa(len(body)))
 
@@ -274,26 +333,11 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
-		if data, err := serveui.StaticAsset(assetName); err == nil {
-			extension := filepath.Ext(assetName)
-			contentType := mime.TypeByExtension(extension)
-			switch extension {
-			case ".js", ".mjs":
-				contentType = "text/javascript; charset=utf-8"
-			case ".css":
-				contentType = "text/css; charset=utf-8"
-			case ".woff2":
-				contentType = "font/woff2"
-			default:
-				if contentType == "" {
-					contentType = http.DetectContentType(data)
-				}
-			}
-			cacheControl := "no-cache"
-			if serveui.IsHashedAsset(assetName) || r.URL.Query().Get("v") == serveui.AssetVersion() {
-				cacheControl = "public, max-age=31536000, immutable"
-			}
-			serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
+		cacheControl := "no-cache"
+		if serveui.IsHashedAsset(assetName) || r.URL.Query().Get("v") == serveui.AssetVersion() {
+			cacheControl = "public, max-age=31536000, immutable"
+		}
+		if serveEmbeddedUIAsset(w, r, assetName, uiAssetContentType(assetName), cacheControl) {
 			return
 		}
 		if strings.HasPrefix(assetName, "dist/") {
@@ -308,6 +352,22 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	// SPA catch-all: serve index.html only for extensionless application routes.
 	serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", "no-cache, no-store, must-revalidate", false)
+}
+
+// uiAssetContentType maps an embedded asset name to its Content-Type, or ""
+// when it must be detected from the content.
+func uiAssetContentType(name string) string {
+	extension := filepath.Ext(name)
+	switch extension {
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".woff2":
+		return "font/woff2"
+	default:
+		return mime.TypeByExtension(extension)
+	}
 }
 
 func (s *serveServer) renderIndexHTML() []byte {
@@ -395,9 +455,9 @@ func (s *serveServer) buildIndexHTMLCacheable(vapidKey string) ([]byte, bool) {
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet), scopeFinal
 }
 
-// prewarmUIAssetCache pre-compresses the service-worker shell assets in a
-// background goroutine so the first real browser request finds gzip bytes
-// already cached rather than paying the compression cost inline.
+// prewarmUIAssetCache builds the cache entries for the service-worker shell
+// assets in a background goroutine. Rendered assets are compressed here;
+// precompressed bundle assets only need their ETag.
 func (s *serveServer) prewarmUIAssetCache() {
 	go func() {
 		// Rendered assets: build + cache in one shot.
@@ -406,11 +466,8 @@ func (s *serveServer) prewarmUIAssetCache() {
 		uiGetOrBuildEntry(serveui.RenderManifest(), true)
 
 		// The manifest keeps warm paths aligned with the hashed graph.
-		assetNames := serveui.PrewarmAssetPaths()
-		for _, name := range assetNames {
-			if data, err := serveui.StaticAsset(name); err == nil {
-				uiGetOrBuildEntry(data, true)
-			}
+		for _, name := range serveui.PrewarmAssetPaths() {
+			_, _, _ = uiEmbeddedAssetEntry(name, true)
 		}
 	}()
 }

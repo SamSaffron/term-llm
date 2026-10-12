@@ -150,13 +150,10 @@ func handleBrowserAuthAsset(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("v") == serveui.HubAssetVersion() {
 		cacheControl = "public, max-age=31536000, immutable"
 	}
-	data, err := serveui.StaticAsset(name)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
+	if !serveEmbeddedUIAsset(w, r, name, contentType, cacheControl) {
+		http.NotFound(w, r)
+	}
 }
 
 // hubDashboardIcon is the inline SVG favicon shown on the dashboard page.

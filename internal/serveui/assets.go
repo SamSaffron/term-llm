@@ -49,8 +49,8 @@ func loadChatManifest() {
 		if !hashedName.MatchString(file) || strings.Contains(file, "..") || strings.HasPrefix(file, "/") {
 			panic("invalid hashed chat asset: " + file)
 		}
-		if _, err := StaticAsset(name); err != nil {
-			panic(fmt.Sprintf("missing chat asset %s: %v", name, err))
+		if !storedExists("static/" + name) {
+			panic("missing chat asset " + name)
 		}
 		hashedAssets[name] = true
 		return name

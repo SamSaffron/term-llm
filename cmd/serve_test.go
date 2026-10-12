@@ -1119,6 +1119,14 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 	if !bytes.Equal(gotBody, wantBody) {
 		t.Fatalf("decompressed body mismatch")
 	}
+	// The build stores the bundle gzip-compressed; it is sent unchanged.
+	stored, gzipped, err := serveui.EncodedAsset(uiBuildAsset(t, "dist/app.css"))
+	if err != nil || !gzipped {
+		t.Fatalf("EncodedAsset(dist/app.css): gzipped=%v err=%v", gzipped, err)
+	}
+	if !bytes.Equal(rr.Body.Bytes(), stored) {
+		t.Fatalf("gzip body was recompressed instead of served as stored")
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css")+"?v="+version, nil)
 	rr = httptest.NewRecorder()
@@ -1131,6 +1139,12 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 	}
 	if !bytes.Equal(rr.Body.Bytes(), wantBody) {
 		t.Fatalf("plain body mismatch")
+	}
+	if got := rr.Header().Get("Content-Length"); got != fmt.Sprint(len(wantBody)) {
+		t.Fatalf("plain content-length = %q, want %d", got, len(wantBody))
+	}
+	if got := rr.Header().Get("ETag"); got != etag {
+		t.Fatalf("plain ETag = %q, want %q", got, etag)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/"+uiBuildAsset(t, "dist/app.css")+"?v="+version, nil)
@@ -1155,6 +1169,82 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 	}
 	if rr.Body.Len() != 0 {
 		t.Fatalf("HEAD body length = %d, want 0", rr.Body.Len())
+	}
+}
+
+func TestHandleUI_PrecompressedAssetNegotiation(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+	name := uiBuildAsset(t, "dist/app.js")
+	raw, err := serveui.StaticAsset(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, gzipped, err := serveui.EncodedAsset(name)
+	if err != nil || !gzipped {
+		t.Fatalf("EncodedAsset(%s): gzipped=%v err=%v", name, gzipped, err)
+	}
+	for _, tc := range []struct {
+		acceptEncoding string
+		wantGzip       bool
+	}{
+		{"", false},
+		{"identity", false},
+		{"br", false},
+		{"gzip;q=0, br", false},
+		{"gzip", true},
+		{"br, GZIP;q=0.5", true},
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			req := httptest.NewRequest(method, "/"+name, nil)
+			if tc.acceptEncoding != "" {
+				req.Header.Set("Accept-Encoding", tc.acceptEncoding)
+			}
+			rr := httptest.NewRecorder()
+			srv.handleUI(rr, req)
+			want, wantEncoding := raw, ""
+			if tc.wantGzip {
+				want, wantEncoding = stored, "gzip"
+			}
+			if rr.Code != http.StatusOK || rr.Header().Get("Content-Encoding") != wantEncoding {
+				t.Fatalf("%s %q: status=%d encoding=%q, want 200 %q", method, tc.acceptEncoding, rr.Code, rr.Header().Get("Content-Encoding"), wantEncoding)
+			}
+			if got := rr.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+				t.Fatalf("%s %q: content-type = %q", method, tc.acceptEncoding, got)
+			}
+			if got := rr.Header().Get("Content-Length"); got != fmt.Sprint(len(want)) {
+				t.Fatalf("%s %q: content-length = %s, want %d", method, tc.acceptEncoding, got, len(want))
+			}
+			if method == http.MethodGet && !bytes.Equal(rr.Body.Bytes(), want) {
+				t.Fatalf("GET %q: body does not match the expected representation", tc.acceptEncoding)
+			}
+		}
+	}
+}
+
+func TestHandleUI_NoncanonicalAssetNamesDoNotGrowCache(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+	name := uiBuildAsset(t, "dist/app.js")
+	countEntries := func() int {
+		n := 0
+		uiPrecompressedAssets.Range(func(any, any) bool { n++; return true })
+		return n
+	}
+	get := func(target string) int {
+		rr := httptest.NewRecorder()
+		srv.handleUI(rr, httptest.NewRequest(http.MethodGet, target, nil))
+		return rr.Code
+	}
+	if code := get("/" + name); code != http.StatusOK {
+		t.Fatalf("canonical status = %d, want 200", code)
+	}
+	before := countEntries()
+	for _, alias := range []string{"/" + name + "%20", "/" + name + "%20%20", "//" + name, "/%20" + name, "/" + name + ".gz"} {
+		if code := get(alias); code != http.StatusNotFound {
+			t.Errorf("alias %q status = %d, want 404", alias, code)
+		}
+	}
+	if after := countEntries(); after != before {
+		t.Fatalf("aliases grew the precompressed cache from %d to %d entries", before, after)
 	}
 }
 

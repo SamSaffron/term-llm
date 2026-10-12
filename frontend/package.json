@@ -7,9 +7,10 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run build:chat && npm run build:hub",
+    "build": "npm run build:chat && npm run build:hub && npm run build:compress",
     "build:chat": "vite build",
     "build:hub": "vite build --config vite.hub.config.ts",
+    "build:compress": "go run ../cmd/precompressui",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "npm run lint:ts && npm run lint:css",

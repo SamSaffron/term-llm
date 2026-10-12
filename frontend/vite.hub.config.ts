@@ -1,15 +1,27 @@
 import preact from '@preact/preset-vite';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
 
 const outputDirectory = resolve(import.meta.dirname, '../internal/serveui/static/dist');
 
+// `build:compress` replaces text outputs with `.gz` files. Accept either form
+// so `build:hub` can be rerun on its own after a full build.
+function outputExists(file: string): boolean {
+  const path = resolve(outputDirectory, file);
+  return existsSync(path) || existsSync(`${path}.gz`);
+}
+
+function readOutput(file: string): string {
+  const path = resolve(outputDirectory, file);
+  if (existsSync(path)) return readFileSync(path, 'utf8');
+  return gunzipSync(readFileSync(`${path}.gz`)).toString('utf8');
+}
+
 function chatOutputs(): string[] {
-  const manifest = JSON.parse(
-    readFileSync(resolve(outputDirectory, 'asset-manifest.json'), 'utf8'),
-  );
+  const manifest = JSON.parse(readOutput('asset-manifest.json'));
   const entry = manifest['src/main.tsx'];
   if (!entry?.isEntry || !entry.css?.length)
     throw new Error('Chat asset manifest has no entry/CSS');
@@ -21,7 +33,7 @@ function preserveChatBuild(): Plugin {
     name: 'term-llm-preserve-chat-build',
     buildStart() {
       for (const file of chatOutputs()) {
-        if (!existsSync(resolve(outputDirectory, file))) {
+        if (!outputExists(file)) {
           throw new Error(`Hub build requires the chat build output dist/${file}`);
         }
       }
@@ -40,7 +52,7 @@ function preserveChatBuild(): Plugin {
         );
       }
       for (const file of [...chatOutputs(), 'hub.js', 'hub.css']) {
-        if (!existsSync(resolve(outputDirectory, file))) {
+        if (!outputExists(file)) {
           throw new Error(`Frontend build did not produce dist/${file}`);
         }
       }

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
-	"io/fs"
 	pathpkg "path"
 	"regexp"
 	"sort"
@@ -41,25 +40,53 @@ func TestGeneratedBundleAssets(t *testing.T) {
 
 func TestGeneratedImportsPreloadsAndCSSURLsResolveToEmbeddedAssets(t *testing.T) {
 	assetReference := regexp.MustCompile(`(?:["']|url\()((?:\.\.?/)[^"'()]+\.(?:js|css|woff2|png|svg))["') ]`)
-	err := fs.WalkDir(staticFiles, "static/dist", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || (!strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css")) {
-			return err
-		}
-		body, err := fs.ReadFile(staticFiles, name)
-		if err != nil {
-			return err
+	for _, name := range logicalPaths("static/dist") {
+		if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css") {
+			continue
 		}
 		assetName := strings.TrimPrefix(name, "static/")
+		body, err := StaticAsset(assetName)
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, match := range assetReference.FindAllSubmatch(body, -1) {
 			resolved := pathpkg.Clean(pathpkg.Join(pathpkg.Dir(assetName), string(match[1])))
 			if _, err := StaticAsset(resolved); err != nil {
 				t.Errorf("%s references missing graph asset %q: %v", assetName, resolved, err)
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	}
+}
+
+func TestTextBundleAssetsArePrecompressed(t *testing.T) {
+	manifest := ChatAssetManifest()
+	for _, name := range []string{manifest.EntryJS, manifest.EntryCSS[0], "dist/hub.js", "dist/hub.css", "dist/asset-manifest.json"} {
+		stored, gzipped, err := EncodedAsset(name)
+		if err != nil {
+			t.Fatalf("EncodedAsset(%q): %v", name, err)
+		}
+		if !gzipped {
+			t.Errorf("%s is embedded uncompressed; run the full frontend build", name)
+			continue
+		}
+		raw, err := StaticAsset(name)
+		if err != nil {
+			t.Fatalf("StaticAsset(%q): %v", name, err)
+		}
+		decoded, err := gunzip(stored)
+		if err != nil || !bytes.Equal(decoded, raw) {
+			t.Fatalf("%s: stored gzip does not decode to StaticAsset content (err=%v)", name, err)
+		}
+		if _, err := StaticAsset(name + ".gz"); err == nil {
+			t.Errorf("stored name %s.gz must not be addressable", name)
+		}
+	}
+	for _, name := range manifest.Files {
+		if strings.HasSuffix(name, ".woff2") {
+			if _, gzipped, err := EncodedAsset(name); err != nil || gzipped {
+				t.Errorf("font %s: gzipped=%v err=%v, want raw", name, gzipped, err)
+			}
+		}
 	}
 }
 
@@ -375,22 +402,14 @@ func TestHubBundlePolicy(t *testing.T) {
 func TestChatAndHubAssetVersionScopes(t *testing.T) {
 	versionFor := func(include func(string) bool) string {
 		entries := []string{}
-		err := fs.WalkDir(staticFiles, "static", func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() {
-				return err
-			}
+		for _, path := range logicalPaths("static") {
 			if include(path) {
 				entries = append(entries, path)
 			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
-		sort.Strings(entries)
 		hash := sha256.New()
 		for _, path := range entries {
-			body, err := fs.ReadFile(staticFiles, path)
+			body, _, err := readStored(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -541,21 +560,14 @@ func TestChatManifestCompleteAndContentAddressed(t *testing.T) {
 			t.Errorf("stable build path still embedded: %s", canonical)
 		}
 	}
-	err := fs.WalkDir(staticFiles, "static/dist", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
+	for _, name := range logicalPaths("static/dist") {
 		file := strings.TrimPrefix(name, "static/")
 		if file == "dist/hub.js" || file == "dist/hub.css" || file == "dist/asset-manifest.json" {
-			return nil
+			continue
 		}
 		if !IsHashedAsset(file) {
 			t.Errorf("build file absent from hashed manifest: %s", file)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	rendered := string(RenderServiceWorker())
 	for _, file := range manifest.Files {
