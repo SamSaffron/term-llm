@@ -60,25 +60,31 @@ func (p *OpenAIProvider) Start(ctx context.Context, offerSDP string, opts Sessio
 	if err != nil {
 		return nil, err
 	}
-	if p.cfg.OpenAI.UsesRealtime() {
-		return p.startRealtime(ctx, apiKey, offerSDP, opts)
+	headers, err := config.ResolveOpenAIHeaders(p.cfg.OpenAI.Headers)
+	if err != nil {
+		return nil, fmt.Errorf("live.openai.%w", err)
 	}
-	return p.startLive(ctx, apiKey, offerSDP, opts)
+	auth := openAIAuth{APIKey: apiKey, Headers: headers}
+	if p.cfg.OpenAI.UsesRealtime() {
+		return p.startRealtime(ctx, auth, offerSDP, opts)
+	}
+	return p.startLive(ctx, auth, offerSDP, opts)
 }
 
-func (p *OpenAIProvider) startRealtime(ctx context.Context, apiKey, offerSDP string, opts SessionOptions) (Session, error) {
+func (p *OpenAIProvider) startRealtime(ctx context.Context, auth openAIAuth, offerSDP string, opts SessionOptions) (Session, error) {
 	sessionJSON, err := openAIRealtimeSessionJSON(p.cfg, opts)
 	if err != nil {
 		return nil, err
 	}
-	call, err := createOpenAICall(ctx, p.client, p.baseURL(), apiKey, offerSDP, sessionJSON)
+	call, err := createOpenAICall(ctx, p.client, p.baseURL(), auth, offerSDP, sessionJSON)
 	if err != nil {
 		return nil, err
 	}
 	channel, err := dialOpenAISideband(ctx, openAISidebandConfig{
 		BaseURL:     p.baseURL(),
 		CallID:      call.CallID,
-		APIKey:      apiKey,
+		APIKey:      auth.APIKey,
+		Headers:     auth.Headers,
 		Dialer:      p.dialer,
 		EmitStarted: true,
 	})
@@ -93,19 +99,20 @@ func (p *OpenAIProvider) startRealtime(ctx context.Context, apiKey, offerSDP str
 	return session, nil
 }
 
-func (p *OpenAIProvider) startLive(ctx context.Context, apiKey, offerSDP string, opts SessionOptions) (Session, error) {
+func (p *OpenAIProvider) startLive(ctx context.Context, auth openAIAuth, offerSDP string, opts SessionOptions) (Session, error) {
 	payload, err := openAILiveSessionPayloadFor(p.cfg, opts)
 	if err != nil {
 		return nil, err
 	}
-	call, err := createOpenAILiveCall(ctx, p.client, p.baseURL(), apiKey, offerSDP, payload)
+	call, err := createOpenAILiveCall(ctx, p.client, p.baseURL(), auth, offerSDP, payload)
 	if err != nil {
 		return nil, err
 	}
 	channel, err := dialOpenAISideband(ctx, openAISidebandConfig{
 		BaseURL:    p.baseURL(),
 		CallID:     call.CallID,
-		APIKey:     apiKey,
+		APIKey:     auth.APIKey,
+		Headers:    auth.Headers,
 		Dialer:     p.dialer,
 		Endpoint:   openAILiveSidebandURL,
 		ParseEvent: parseOpenAILiveEvent,

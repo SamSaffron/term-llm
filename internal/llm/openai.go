@@ -2,17 +2,19 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/samsaffron/term-llm/internal/openaiapi"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // OpenAIProvider implements Provider using the standard OpenAI API.
 type OpenAIProvider struct {
-	client           *openai.Client // Used for ListModels
+	endpoint         openaiapi.Endpoint // Resolved API root plus organization/project scoping
 	apiKey           string
 	model            string
 	effort           string            // reasoning effort: "low", "medium", "high", "xhigh", or ""
@@ -24,6 +26,9 @@ type OpenAIProvider struct {
 }
 
 type OpenAIProviderOptions struct {
+	// Endpoint overrides the API root, organization and project. Blank fields
+	// fall back to OPENAI_BASE_URL, OPENAI_ORG_ID and OPENAI_PROJECT_ID.
+	Endpoint         openaiapi.Endpoint
 	UseWebSocket     bool
 	ServiceTier      string
 	FileUploadPolicy *FileUploadPolicy
@@ -52,9 +57,8 @@ func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 
 func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptions) *OpenAIProvider {
 	actualModel, effort := parseModelEffortForProvider("openai", model)
-	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
-		client:           &client,
+		endpoint:         openaiapi.Resolve(opts.Endpoint),
 		apiKey:           apiKey,
 		model:            actualModel,
 		effort:           effort,
@@ -86,20 +90,40 @@ func (p *OpenAIProvider) Capabilities() Capabilities {
 }
 
 func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
-	page, err := p.client.Models.List(ctx)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.endpoint.URL("models"), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create OpenAI models request: %w", err)
+	}
+	p.endpoint.Apply(httpReq.Header)
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	resp, err := defaultHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
+	defer resp.Body.Close()
 
-	var models []ModelInfo
-	for _, m := range page.Data {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read OpenAI models response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to list models: %w", newHTTPStatusError("OpenAI", resp, body))
+	}
+
+	var modelsResp oaiModelsResponse
+	if err := json.Unmarshal(body, &modelsResp); err != nil {
+		return nil, fmt.Errorf("parse OpenAI models response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(modelsResp.Data))
+	for _, m := range modelsResp.Data {
 		models = append(models, ModelInfo{
 			ID:         m.ID,
 			Created:    m.Created,
 			InputLimit: InputLimitForModel(m.ID),
 		})
 	}
-
 	return models, nil
 }
 
@@ -108,8 +132,9 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	// Reuse client to maintain server state across requests
 	if p.responsesClient == nil {
 		p.responsesClient = &ResponsesClient{
-			BaseURL:       "https://api.openai.com/v1/responses",
+			BaseURL:       p.endpoint.URL("responses"),
 			GetAuthHeader: func() string { return "Bearer " + p.apiKey },
+			ExtraHeaders:  p.endpoint.HeaderMap(),
 			HTTPClient:    defaultHTTPClient,
 			UseWebSocket:  p.useWebSocket,
 		}

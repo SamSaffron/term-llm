@@ -45,8 +45,11 @@ Set your API key as an environment variable:
 # For Anthropic
 export ANTHROPIC_API_KEY=your-key
 
-# For OpenAI
+# For OpenAI (optionally scoped or routed; see Providers and models)
 export OPENAI_API_KEY=your-key
+export OPENAI_ORG_ID=org-...        # optional
+export OPENAI_PROJECT_ID=proj_...   # optional
+export OPENAI_BASE_URL=https://...  # optional gateway
 
 # For xAI (Grok)
 export XAI_API_KEY=your-key

@@ -221,7 +221,7 @@ providers:
 
 term-llm appends paths such as `/v1/messages` and `/v1/models` to `base_url`. The field supports the same lazy `srv://` and `$()` endpoint resolution as `url`. Omit `base_url` to use `ANTHROPIC_BASE_URL` if set, otherwise Anthropic's standard API endpoint.
 
-Use `headers` to send extra HTTP headers with every Anthropic request, for example a workspace ID for an organization-scoped API key or a gateway token. `headers` is accepted only by `anthropic` and `bedrock` providers; on Bedrock, `anthropic-beta` values are moved into the request body's `anthropic_beta` list (Bedrock does not read the header) and all other headers are covered by the SigV4 signature. Values support `${ENV}`, `$()`, `op://`, and `file://` resolution; entries that resolve to an empty value are not sent. Header names are case-insensitive, and `term-llm config show` redacts values whose names contain `key`, `token`, `secret`, `password`, `credential`, or `auth`.
+Use `headers` to send extra HTTP headers with every Anthropic request, for example a workspace ID for an organization-scoped API key or a gateway token. `headers` is accepted only by `anthropic`, `bedrock`, and `openai` providers (see [OpenAI organization, project, and gateway](#openai-organization-project-and-gateway)); on Bedrock, `anthropic-beta` values are moved into the request body's `anthropic_beta` list (Bedrock does not read the header) and all other headers are covered by the SigV4 signature. Values support `${ENV}`, `$()`, `op://`, and `file://` resolution; entries that resolve to an empty value are not sent. Header names are case-insensitive, and `term-llm config show` redacts values whose names contain `key`, `token`, `secret`, `password`, `credential`, or `auth`.
 
 ```yaml
 providers:
@@ -230,6 +230,31 @@ providers:
       anthropic-workspace-id: wrkspc_...
       x-gateway-token: $(op-cache read "op://Private/Gateway/token")
 ```
+
+## OpenAI organization, project, and gateway
+
+The `openai` provider (`type: openai`) accepts `base_url` and `headers`. Use them to scope an API key to an organization or project, or to route through a gateway:
+
+```yaml
+providers:
+  openai:
+    base_url: https://gateway.example.com/v1   # default: https://api.openai.com/v1
+    headers:
+      OpenAI-Organization: org-...
+      OpenAI-Project: proj_...
+```
+
+Each setting falls back to the standard OpenAI SDK environment variables when it is not configured:
+
+| Setting | Fallback |
+|---|---|
+| `base_url` | `OPENAI_BASE_URL`, then `https://api.openai.com/v1` |
+| `headers.OpenAI-Organization` | `OPENAI_ORG_ID` |
+| `headers.OpenAI-Project` | `OPENAI_PROJECT_ID` |
+
+term-llm appends `/responses`, `/models`, and similar paths to `base_url`. The endpoint and headers apply to Responses requests over HTTP/SSE and WebSockets, and to model listing. They also apply to the other OpenAI API-key features: embeddings (`embed.provider: openai`), images (`image.provider: openai`), and transcription (`transcription.provider: openai`). Those features read `providers.openai` when it is the native OpenAI provider, even if their API key comes from `embed.openai.api_key` or `image.openai.api_key`. Configured `Authorization`, `Content-Type`, and `Accept` headers are ignored, so the API key always authenticates and request bodies keep their generated content type. The ChatGPT OAuth providers never use these settings.
+
+Live voice and classify keep their own endpoint settings, so set their headers in `live.openai.headers` ([Live voice](/guides/live-voice/)) and `classify.providers.<name>.headers` ([Classify](/guides/classify/)). Both fall back to `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID`, but not to `OPENAI_BASE_URL`.
 
 ## WebSocket defaults
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
 func firstNonEmptyString(values ...string) string {
@@ -207,29 +208,17 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if err != nil {
 			return "", err
 		}
-		if openAIProvider != nil && openAIProvider.ResolvedAPIKey != "" {
-			endpoint := ""
-			baseURL := openAIProvider.ResolvedURL
-			if baseURL == "" {
-				baseURL = openAIProvider.BaseURL
-			}
-			if baseURL != "" {
-				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
-			}
-			return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
-				APIKey:   openAIProvider.ResolvedAPIKey,
-				Endpoint: endpoint,
-				Model:    modelOverride,
-				Language: language,
-			})
+		endpoint, apiKey, err := openAITranscriptionTarget(cfg, openAIProvider)
+		if err != nil {
+			return "", err
 		}
-		// Fall back to environment variable
-		apiKey := os.Getenv("OPENAI_API_KEY")
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription is not configured — set providers.openai.api_key or configure a transcription provider in config")
 		}
 		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 			APIKey:   apiKey,
+			Endpoint: endpoint.URL("audio/transcriptions"),
+			Headers:  endpoint.HeaderMap(),
 			Model:    modelOverride,
 			Language: language,
 		})
@@ -261,4 +250,37 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		}
 		return "", fmt.Errorf("transcription provider %q not found in providers config (supported builtins: openai, chatgpt, mistral, venice, elevenlabs, local, whisper-cli)", providerName)
 	}
+}
+
+// openAITranscriptionTarget picks the endpoint and API key for
+// transcription.provider: openai. A native providers.openai entry contributes
+// its key, base_url and headers, with OPENAI_* environment fallbacks. An entry
+// named openai of another type keeps its legacy routing: its own key goes only
+// to its own endpoint, and no OpenAI organization/project headers are added.
+func openAITranscriptionTarget(cfg *config.Config, entry *config.ProviderConfig) (openaiapi.Endpoint, string, error) {
+	name := string(config.ProviderTypeOpenAI)
+	if entry != nil && config.InferProviderType(name, entry.Type) != config.ProviderTypeOpenAI {
+		endpoint := openaiapi.Public()
+		if entry.ResolvedAPIKey == "" {
+			return endpoint, os.Getenv("OPENAI_API_KEY"), nil
+		}
+		if base := firstNonEmptyString(entry.ResolvedURL, entry.BaseURL); base != "" {
+			endpoint.BaseURL = base
+		}
+		return endpoint, entry.ResolvedAPIKey, nil
+	}
+	endpoint, err := cfg.OpenAIEndpoint()
+	if err != nil {
+		return openaiapi.Endpoint{}, "", fmt.Errorf("OpenAI transcription endpoint: %w", err)
+	}
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if entry != nil {
+		if entry.ResolvedURL != "" {
+			endpoint.BaseURL = entry.ResolvedURL
+		}
+		if entry.ResolvedAPIKey != "" {
+			apiKey = entry.ResolvedAPIKey
+		}
+	}
+	return endpoint, apiKey, nil
 }

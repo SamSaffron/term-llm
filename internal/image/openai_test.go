@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
 type openAIImageRoundTripper func(*http.Request) (*http.Response, error)
@@ -217,5 +220,40 @@ func TestOpenAIProviderEditUsesConfiguredModelAndMultipleImages(t *testing.T) {
 	}
 	if imageCount != 2 {
 		t.Fatalf("image count = %d, want 2", imageCount)
+	}
+}
+
+func TestNewImageProviderOpenAIUsesSharedEndpoint(t *testing.T) {
+	t.Setenv(openaiapi.EnvBaseURL, "")
+	t.Setenv(openaiapi.EnvOrganization, "org-env")
+	t.Setenv(openaiapi.EnvProject, "proj-env")
+	oldClient := openaiHTTPClient
+	defer func() { openaiHTTPClient = oldClient }()
+
+	var got *http.Request
+	openaiHTTPClient = &http.Client{
+		Transport: openAIImageRoundTripper(func(req *http.Request) (*http.Response, error) {
+			got = req
+			resp := `{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString([]byte("png")) + `"}]}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(resp))}, nil
+		}),
+	}
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"openai": {BaseURL: "https://gateway.example/v1", Headers: map[string]string{"OpenAI-Project": "proj-config"}},
+	}}
+	cfg.Image.OpenAI.APIKey = "image-key"
+	provider, err := NewImageProvider(cfg, "openai")
+	if err != nil {
+		t.Fatalf("NewImageProvider: %v", err)
+	}
+	if _, err := provider.Generate(context.Background(), GenerateRequest{Prompt: "a fox"}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got == nil || got.URL.String() != "https://gateway.example/v1/images/generations" {
+		t.Fatalf("request = %v", got)
+	}
+	if got.Header.Get("Authorization") != "Bearer image-key" || got.Header.Get("OpenAI-Organization") != "org-env" || got.Header.Get("OpenAI-Project") != "proj-config" {
+		t.Fatalf("headers = %#v", got.Header)
 	}
 }

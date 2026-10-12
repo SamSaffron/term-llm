@@ -75,7 +75,11 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		if apiKey == "" {
 			return nil, fmt.Errorf("OPENAI_API_KEY not configured. Set environment variable or add to embed.openai.api_key in config")
 		}
-		p := NewOpenAIProvider(apiKey)
+		endpoint, err := cfg.OpenAIEndpoint()
+		if err != nil {
+			return nil, fmt.Errorf("OpenAI embedding endpoint: %w", err)
+		}
+		p := NewOpenAIProviderWithEndpoint(apiKey, endpoint)
 		if model != "" {
 			p.model = model
 		}

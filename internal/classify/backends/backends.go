@@ -25,6 +25,9 @@ type Connection struct {
 	// AccountID fills {account_id} in a cloudflare BaseURL.
 	AccountID string
 	Timeout   time.Duration
+	// Headers are the resolved extra request headers. For the openai type,
+	// OpenAI-Organization/OpenAI-Project fall back to OPENAI_ORG_ID/OPENAI_PROJECT_ID.
+	Headers map[string]string
 }
 
 // Overrides are per-invocation settings that take precedence over the
@@ -58,6 +61,14 @@ func Resolve(provider config.ClassifyProviderConfig, overrides Overrides) (Conne
 			return conn, fmt.Errorf("resolve classify provider account ID: %w", err)
 		}
 	}
+	if provider.Type == config.ClassifyProviderOpenAI {
+		conn.Headers, err = config.ResolveOpenAIHeaders(provider.Headers)
+	} else {
+		conn.Headers, err = config.ResolveHeaderValues(provider.Headers)
+	}
+	if err != nil {
+		return conn, fmt.Errorf("resolve classify provider %w", err)
+	}
 	if conn.Timeout == 0 && provider.TimeoutSeconds != 0 {
 		if conn.Timeout, err = ProviderTimeout(provider); err != nil {
 			return conn, err
@@ -83,11 +94,11 @@ func ProviderTimeout(provider config.ClassifyProviderConfig) (time.Duration, err
 func New(conn Connection) (classify.Backend, error) {
 	switch conn.Type {
 	case config.ClassifyProviderTypeSafe:
-		return typesafe.NewClient(typesafe.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout})
+		return typesafe.NewClient(typesafe.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout, Headers: conn.Headers})
 	case config.ClassifyProviderOpenAI:
-		return openai.NewClient(openai.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout})
+		return openai.NewClient(openai.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout, Headers: conn.Headers})
 	case config.ClassifyProviderCloudflare:
-		return cloudflare.NewClient(cloudflare.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, AccountID: conn.AccountID, Timeout: conn.Timeout})
+		return cloudflare.NewClient(cloudflare.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, AccountID: conn.AccountID, Timeout: conn.Timeout, Headers: conn.Headers})
 	default:
 		return nil, fmt.Errorf("unsupported classify provider type %q", conn.Type)
 	}

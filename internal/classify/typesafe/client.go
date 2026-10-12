@@ -27,6 +27,7 @@ type Options struct {
 	APIKey  string
 	BaseURL string
 	Timeout time.Duration
+	Headers map[string]string // extra request headers
 }
 
 // Client is a native HTTP client for the TypeSafe System One API. It
@@ -43,6 +44,7 @@ func NewClient(opts Options) (*Client, error) {
 	http, err := transport.New(transport.Config{
 		Provider:       "typesafe",
 		APIKey:         opts.APIKey,
+		Headers:        opts.Headers,
 		BaseURL:        opts.BaseURL,
 		Timeout:        opts.Timeout,
 		DefaultBaseURL: DefaultBaseURL,

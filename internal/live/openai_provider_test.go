@@ -417,3 +417,53 @@ func TestOpenAILiveCloseReportsMissingFinalEvent(t *testing.T) {
 		t.Fatalf("close error = %v", err)
 	}
 }
+
+func TestOpenAIProviderSendsConfiguredAndEnvironmentHeaders(t *testing.T) {
+	t.Setenv("OPENAI_ORG_ID", "org-env")
+	t.Setenv("OPENAI_PROJECT_ID", "proj-env")
+	type seen struct{ path, auth, org, project, gateway string }
+	requests := make(chan seen, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- seen{r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("OpenAI-Organization"), r.Header.Get("OpenAI-Project"), r.Header.Get("X-Gateway")}
+		switch r.URL.Path {
+		case "/v1/realtime/calls":
+			w.Header().Set("Location", "/v1/realtime/calls/rtc_headers")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, "v=0\r\na=answer\r\n")
+		case "/v1/realtime":
+			conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+			if err == nil {
+				defer conn.Close()
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	cfg := config.LiveConfig{Provider: config.LiveProviderOpenAI}
+	cfg.OpenAI.APIKey = "key"
+	cfg.OpenAI.Model = "my-realtime-model"
+	cfg.OpenAI.BaseURL = server.URL + "/v1"
+	cfg.OpenAI.Headers = map[string]string{
+		"openai-organization": "$(printf org-config)",
+		"X-Gateway":           "gw",
+		"Authorization":       "Bearer must-not-win",
+	}
+	session, err := NewOpenAIProvider(cfg, server.Client()).Start(context.Background(), "v=0\r\n", SessionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close(context.Background()) }()
+	for _, path := range []string{"/v1/realtime/calls", "/v1/realtime"} {
+		got := <-requests
+		want := seen{path, "Bearer key", "org-config", "proj-env", "gw"}
+		if got != want {
+			t.Fatalf("request = %+v, want %+v", got, want)
+		}
+	}
+}

@@ -142,7 +142,7 @@ func TestCreateOpenAILiveCallSendsDocumentedJSONAndReadsResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := createOpenAILiveCall(context.Background(), server.Client(), server.URL+"/v1", "sk-test", offer, payload)
+	got, err := createOpenAILiveCall(context.Background(), server.Client(), server.URL+"/v1", openAIAuth{APIKey: "sk-test"}, offer, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestCreateOpenAIRealtimeCallSendsMultipartAndPreservesSDP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := createOpenAICall(context.Background(), server.Client(), server.URL+"/v1", "sk-test", offer, session)
+	got, err := createOpenAICall(context.Background(), server.Client(), server.URL+"/v1", openAIAuth{APIKey: "sk-test"}, offer, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestCreateOpenAILiveCallFailurePaths(t *testing.T) {
 				_, _ = io.WriteString(w, test.body)
 			}))
 			defer server.Close()
-			_, err := createOpenAILiveCall(context.Background(), server.Client(), server.URL, "key", "v=0\r\n", openAILiveSessionPayload{})
+			_, err := createOpenAILiveCall(context.Background(), server.Client(), server.URL, openAIAuth{APIKey: "key"}, "v=0\r\n", openAILiveSessionPayload{})
 			if err == nil || !strings.Contains(err.Error(), test.wantText) {
 				t.Fatalf("error = %v, want %q", err, test.wantText)
 			}

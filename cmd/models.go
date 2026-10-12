@@ -275,7 +275,7 @@ func newAPIKeyModelLister(providerType config.ProviderType, providerCfg config.P
 		if err != nil {
 			return nil, err
 		}
-		return llm.NewOpenAIProvider(apiKey, providerCfg.Model), nil
+		return llm.NewOpenAIProviderWithOptions(apiKey, providerCfg.Model, llm.OpenAIProviderOptions{Endpoint: providerCfg.OpenAIEndpoint()}), nil
 	case config.ProviderTypeOpenRouter:
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "OPENROUTER_API_KEY", "openrouter")
 		if err != nil {

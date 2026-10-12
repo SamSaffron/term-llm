@@ -56,6 +56,7 @@ type Options struct {
 	// AccountID replaces {account_id} in BaseURL.
 	AccountID string
 	Timeout   time.Duration
+	Headers   map[string]string // extra request headers
 }
 
 // Client calls Clef on Workers AI. It implements classify.Backend.
@@ -85,6 +86,7 @@ func NewClient(opts Options) (*Client, error) {
 	http, err := transport.New(transport.Config{
 		Provider:       "cloudflare",
 		APIKey:         opts.APIKey,
+		Headers:        opts.Headers,
 		BaseURL:        base,
 		Timeout:        opts.Timeout,
 		DefaultBaseURL: base,

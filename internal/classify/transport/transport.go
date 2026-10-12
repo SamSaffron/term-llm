@@ -43,12 +43,16 @@ type Config struct {
 	// The result is redacted and truncated by the transport. Nil uses the
 	// raw body.
 	ErrorMessage func(body []byte) string
+	// Headers are extra request headers. They cannot replace Authorization,
+	// Accept, or Content-Type.
+	Headers map[string]string
 }
 
 // Client sends JSON requests to one classification API.
 type Client struct {
 	provider     string
 	apiKey       string
+	headers      http.Header
 	baseURL      *url.URL
 	http         *http.Client
 	timeout      time.Duration
@@ -100,8 +104,20 @@ func New(cfg Config) (*Client, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("%s: timeout must not be negative", cfg.Provider)
 	}
+	var headers http.Header
+	for key, value := range cfg.Headers {
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		if headers == nil {
+			headers = http.Header{}
+		}
+		headers.Set(key, value)
+	}
 	return &Client{
 		provider: cfg.Provider,
+		headers:  headers,
 		// Keys routinely arrive from files or command substitution with a
 		// trailing newline, which makes the Authorization header invalid.
 		apiKey:  strings.TrimSpace(cfg.APIKey),
@@ -161,6 +177,9 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body []byte, s
 	req, err := http.NewRequestWithContext(ctx, method, c.endpoint(path), reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: create request: %w", c.provider, err)
+	}
+	for key, values := range c.headers {
+		req.Header[key] = append([]string(nil), values...)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)

@@ -10,7 +10,7 @@ import (
 )
 
 func TestVeniceProviderEmbedsWithQwenQueryInstruction(t *testing.T) {
-	var got veniceEmbedRequest
+	var got openAICompatibleEmbedRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/embeddings" {
 			t.Fatalf("path = %q", r.URL.Path)

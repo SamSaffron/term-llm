@@ -425,6 +425,7 @@ var keySpecs = []KeySpec{
 	def("live.openai.model", DefaultLiveOpenAIModel),
 	def("live.openai.voice", DefaultLiveOpenAIVoice),
 	def("live.openai.base_url", DefaultLiveOpenAIBaseURL),
+	optional("live.openai.headers", withPlaceholder(map[string]any{})),
 	optional("live.gemini.api_key", sensitive()),
 	def("live.gemini.model", DefaultLiveGeminiModel),
 	def("live.gemini.voice", DefaultLiveGeminiVoice),
@@ -466,6 +467,7 @@ var keySpecs = []KeySpec{
 	def("classify.providers.typesafe.model", DefaultTypeSafeModel),
 	def("classify.providers.typesafe.base_url", DefaultTypeSafeBaseURL),
 	def("classify.providers.typesafe.timeout_seconds", DefaultTypeSafeTimeoutSeconds),
+	optional("classify.providers.typesafe.headers", withPlaceholder(map[string]any{})),
 
 	def("reasoning.display", ReasoningDisplayAuto),
 	def("reasoning.source", ReasoningSourceSummaryOrProviderSafe),

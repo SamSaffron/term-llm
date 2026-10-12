@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
 // ChatGPTProvider uses the user's ChatGPT/Codex OAuth session with OpenAI's
@@ -23,7 +24,9 @@ func NewChatGPTProvider() *ChatGPTProvider {
 		loadCredentials: credentials.GetChatGPTCredentials,
 		refresh:         credentials.RefreshChatGPTCredentials,
 		embed: func(ctx context.Context, accessToken, model string, req EmbedRequest) (*EmbeddingResult, error) {
-			provider := NewOpenAIProvider(accessToken)
+			// ChatGPT OAuth tokens are not Platform API keys: always use the
+			// public root and never apply OPENAI_* org/project scoping.
+			provider := NewOpenAIProviderWithEndpoint(accessToken, openaiapi.Public())
 			provider.model = model
 			return provider.Embed(ctx, req)
 		},

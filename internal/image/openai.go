@@ -17,13 +17,12 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/openaiapi"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
 const (
-	openaiGenerateEndpoint = "https://api.openai.com/v1/images/generations"
-	openaiEditEndpoint     = "https://api.openai.com/v1/images/edits"
-	openaiHTTPTimeout      = 10 * time.Minute
+	openaiHTTPTimeout = 10 * time.Minute
 
 	openaiMinPixels   = 655_360
 	openaiMaxPixels   = 8_294_400
@@ -51,15 +50,23 @@ var (
 // max 3:1 aspect ratio, pixel count between 655,360 and 8,294,400).
 // Older GPT Image models keep the legacy 3-size behavior.
 type OpenAIProvider struct {
-	apiKey string
-	model  string
+	apiKey   string
+	model    string
+	endpoint openaiapi.Endpoint
 }
 
+// NewOpenAIProvider uses the OPENAI_BASE_URL/OPENAI_ORG_ID/OPENAI_PROJECT_ID
+// environment, falling back to the public API root.
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
+	return NewOpenAIProviderWithEndpoint(apiKey, model, openaiapi.Resolve(openaiapi.Endpoint{}))
+}
+
+// NewOpenAIProviderWithEndpoint uses an already-resolved endpoint.
+func NewOpenAIProviderWithEndpoint(apiKey, model string, endpoint openaiapi.Endpoint) *OpenAIProvider {
 	if model == "" {
 		model = openaiDefaultModel
 	}
-	return &OpenAIProvider{apiKey: apiKey, model: model}
+	return &OpenAIProvider{apiKey: apiKey, model: model, endpoint: endpoint}
 }
 
 func (p *OpenAIProvider) Name() string {
@@ -90,11 +97,12 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", openaiGenerateEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.endpoint.URL("images/generations"), bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	p.endpoint.Apply(httpReq.Header)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
@@ -145,11 +153,12 @@ func (p *OpenAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", openaiEditEndpoint, &body)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.endpoint.URL("images/edits"), &body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	p.endpoint.Apply(httpReq.Header)
 	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 

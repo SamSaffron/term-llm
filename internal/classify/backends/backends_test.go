@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,8 @@ func TestOpenDispatchesByProviderType(t *testing.T) {
 
 func TestResolveAppliesProviderSettingsAndOverrides(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "openai-key")
+	t.Setenv("OPENAI_ORG_ID", "")
+	t.Setenv("OPENAI_PROJECT_ID", "")
 	cfg := config.ClassifyConfig{}
 	provider, err := cfg.ResolveProvider(config.ClassifyProviderOpenAI)
 	if err != nil {
@@ -49,7 +52,7 @@ func TestResolveAppliesProviderSettingsAndOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Connection{Type: config.ClassifyProviderOpenAI, APIKey: "openai-key", BaseURL: config.DefaultOpenAIDecisionsBaseURL, Timeout: 10 * time.Second}
-	if conn != want {
+	if !reflect.DeepEqual(conn, want) {
 		t.Fatalf("conn = %#v, want %#v", conn, want)
 	}
 	conn, err = Resolve(provider, Overrides{BaseURL: "https://proxy.example/v1", Timeout: time.Second})
@@ -122,5 +125,66 @@ func TestResolveCloudflareAccountID(t *testing.T) {
 	}
 	if conn.AccountID != "acc123" || conn.BaseURL != config.DefaultCloudflareClassifyBaseURL || conn.APIKey != "cf-token" {
 		t.Fatalf("conn = %#v", conn)
+	}
+}
+
+func TestResolveHeaders(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	t.Setenv("TYPESAFE_API_KEY", "typesafe-key")
+	t.Setenv("OPENAI_ORG_ID", "org-env")
+	t.Setenv("OPENAI_PROJECT_ID", "proj-env")
+	tests := []struct {
+		name    string
+		cfg     config.ClassifyConfig
+		want    map[string]string
+		wantErr string
+	}{
+		{
+			name: "openai falls back to environment scoping",
+			cfg:  config.ClassifyConfig{DefaultProvider: config.ClassifyProviderOpenAI},
+			want: map[string]string{"OpenAI-Organization": "org-env", "OpenAI-Project": "proj-env"},
+		},
+		{
+			name: "openai configured headers win and resolve",
+			cfg: config.ClassifyConfig{DefaultProvider: config.ClassifyProviderOpenAI, Providers: map[string]config.ClassifyProviderConfig{
+				config.ClassifyProviderOpenAI: {Headers: map[string]string{"OpenAI-Organization": "$(printf org-config)", "X-Empty": ""}},
+			}},
+			want: map[string]string{"OpenAI-Organization": "org-config", "OpenAI-Project": "proj-env"},
+		},
+		{
+			name: "other types get only configured headers",
+			cfg: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
+				config.ClassifyProviderTypeSafe: {Headers: map[string]string{"X-Gateway": "gw"}},
+			}},
+			want: map[string]string{"X-Gateway": "gw"},
+		},
+		{
+			name: "resolution errors name the header",
+			cfg: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
+				config.ClassifyProviderTypeSafe: {Headers: map[string]string{"X-Broken": "$(exit 3)"}},
+			}},
+			wantErr: "headers.X-Broken",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := tt.cfg.ResolveProvider("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn, err := Resolve(provider, Overrides{})
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(conn.Headers, tt.want) {
+				t.Fatalf("headers = %#v, want %#v", conn.Headers, tt.want)
+			}
+		})
 	}
 }

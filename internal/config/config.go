@@ -66,9 +66,9 @@ func ValidateProviderCompatibility(name string, cfg *ProviderConfig) error {
 	}
 	if len(cfg.Headers) > 0 {
 		switch InferProviderType(name, cfg.Type) {
-		case ProviderTypeAnthropic, ProviderTypeBedrock:
+		case ProviderTypeAnthropic, ProviderTypeBedrock, ProviderTypeOpenAI:
 		default:
-			return fmt.Errorf("provider %q: headers is only supported for anthropic and bedrock providers", name)
+			return fmt.Errorf("provider %q: headers is only supported for anthropic, bedrock and openai providers", name)
 		}
 	}
 	return nil
@@ -150,7 +150,7 @@ type ProviderConfig struct {
 	Reasoning    string                `mapstructure:"reasoning"`     // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
 	Credentials  string                `mapstructure:"credentials"`   // Provider-specific credential mode (for example "api_key" or "claude")
 	Env          map[string]string     `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
-	Headers      map[string]string     `mapstructure:"headers"`       // Extra HTTP headers for Anthropic-protocol providers (values support ${ENV}, $(), op://, file://)
+	Headers      map[string]string     `mapstructure:"headers"`       // Extra HTTP headers for Anthropic-protocol and OpenAI providers (values support ${ENV}, $(), op://, file://)
 	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
 	Enabled      *bool                 `mapstructure:"enabled"`       // false disables the provider even when credentials are detected; nil means enabled
@@ -1246,6 +1246,10 @@ type LiveOpenAIConfig struct {
 	Model   string `mapstructure:"model"`
 	Voice   string `mapstructure:"voice"`
 	BaseURL string `mapstructure:"base_url"`
+	// Headers are sent on GPT-Live/Realtime call creation and the sideband
+	// WebSocket. OpenAI-Organization/OpenAI-Project fall back to
+	// OPENAI_ORG_ID/OPENAI_PROJECT_ID. Values support ${ENV}, $(), op://, file://.
+	Headers map[string]string `mapstructure:"headers"`
 }
 
 // LiveGeminiConfig configures Gemini Live. The API key remains server-side;
@@ -1434,6 +1438,10 @@ type ClassifyProviderConfig struct {
 	Model          string `mapstructure:"model" yaml:"model,omitempty"`
 	BaseURL        string `mapstructure:"base_url" yaml:"base_url,omitempty"`
 	TimeoutSeconds int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+	// Headers are sent with every request. For type openai,
+	// OpenAI-Organization/OpenAI-Project fall back to OPENAI_ORG_ID/OPENAI_PROJECT_ID.
+	// Values support ${ENV}, $(), op://, file://.
+	Headers map[string]string `mapstructure:"headers" yaml:"headers,omitempty"`
 }
 
 // SearchConfig configures web search providers
@@ -2837,7 +2845,15 @@ func IsKnownKey(keyPath string) bool {
 		if len(parts) == 3 {
 			return true
 		}
+		if strings.HasPrefix(parts[3], "headers.") {
+			// classify.providers.<name>.headers.<Header-Name> - arbitrary HTTP headers
+			return true
+		}
 		return KnownKeys["classify.providers.typesafe."+parts[3]]
+	}
+	if strings.HasPrefix(keyPath, "live.openai.headers.") {
+		// live.openai.headers.<Header-Name> - arbitrary HTTP headers
+		return true
 	}
 
 	// Check for providers.* pattern

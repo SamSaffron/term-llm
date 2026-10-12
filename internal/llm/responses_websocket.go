@@ -1379,14 +1379,25 @@ func jsonStringValueForCompare(v reflect.Value) (string, bool) {
 	return v.String(), true
 }
 
+// headerValueFold returns the value of name in headers, matching the key
+// case-insensitively.
+func headerValueFold(headers map[string]string, name string) string {
+	if value, ok := headers[name]; ok {
+		return value
+	}
+	for key, value := range headers {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
+}
+
 func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequest) (*responsesWebSocketConnection, bool, error) {
-	betaHeader := ""
-	if c.ExtraHeaders != nil {
-		betaHeader = c.ExtraHeaders["OpenAI-Beta"]
-	}
-	if req.ExtraHeaders != nil {
-		betaHeader = composeBetaHeader(betaHeader, req.ExtraHeaders["OpenAI-Beta"])
-	}
+	// Header names may arrive lowercased from config (viper), so match the
+	// configured beta case-insensitively like applyResponsesHeaders does.
+	betaHeader := headerValueFold(c.ExtraHeaders, "OpenAI-Beta")
+	betaHeader = composeBetaHeader(betaHeader, headerValueFold(req.ExtraHeaders, "OpenAI-Beta"))
 	betaHeader = composeBetaHeader(betaHeader, responsesWebSocketBetaHeader)
 	if c.wsConn != nil {
 		if c.wsConn.healthy() && c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader && c.wsConn.reserveResponse(req.SessionID, req.PreviousResponseID, req.Input) {

@@ -64,7 +64,12 @@ classify:
       model: gpt-6-luna
       base_url: https://api.openai.com/v1
       timeout_seconds: 10
+      headers: # optional
+        OpenAI-Organization: org-...
+        OpenAI-Project: proj_...
 ```
+
+`headers` are sent with every request and support `${ENV}`, `$()`, `op://`, and `file://` values. They cannot replace `Authorization`, `Accept`, or `Content-Type`. Every provider type accepts `headers`; for `type: openai`, `OpenAI-Organization` and `OpenAI-Project` fall back to `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID`.
 
 The provider calls `POST /v1/decisions` and translates questions and answers, so output looks the same as TypeSafe's:
 

@@ -48,3 +48,30 @@ func TestDoUsesErrorMessageAndRedacts(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestDoSendsConfiguredHeadersWithoutOverridingAuth(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c, err := New(Config{Provider: "p", APIKey: "k", BaseURL: srv.URL, Headers: map[string]string{
+		"openai-organization": "org-1",
+		"Authorization":       "Bearer other",
+		"Content-Type":        "text/plain",
+		"X-Blank":             " ",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Do(context.Background(), http.MethodPost, "/x", []byte(`{}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("OpenAI-Organization") != "org-1" || got.Get("Authorization") != "Bearer k" || got.Get("Content-Type") != "application/json" {
+		t.Fatalf("headers = %#v", got)
+	}
+	if _, ok := got["X-Blank"]; ok {
+		t.Fatalf("blank header was sent: %#v", got)
+	}
+}

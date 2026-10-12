@@ -188,7 +188,22 @@ type openAICallResponse struct {
 }
 
 // createOpenAICall uses the GA Realtime unified WebRTC interface.
-func createOpenAICall(ctx context.Context, client *http.Client, baseURL, apiKey, offerSDP string, session json.RawMessage) (openAICallResponse, error) {
+// openAIAuth carries the public OpenAI API key plus the configured extra
+// headers (for example OpenAI-Organization/OpenAI-Project).
+type openAIAuth struct {
+	APIKey  string
+	Headers map[string]string
+}
+
+// apply sets the extra headers first so they can never replace Authorization.
+func (a openAIAuth) apply(header http.Header) {
+	for key, value := range a.Headers {
+		header.Set(key, value)
+	}
+	header.Set("Authorization", "Bearer "+a.APIKey)
+}
+
+func createOpenAICall(ctx context.Context, client *http.Client, baseURL string, auth openAIAuth, offerSDP string, session json.RawMessage) (openAICallResponse, error) {
 	endpoint, err := openAIURL(baseURL, "/realtime/calls")
 	if err != nil {
 		return openAICallResponse{}, err
@@ -209,7 +224,7 @@ func createOpenAICall(ctx context.Context, client *http.Client, baseURL, apiKey,
 	if err != nil {
 		return openAICallResponse{}, fmt.Errorf("build OpenAI Realtime call request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	auth.apply(req.Header)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	if client == nil {
 		client = http.DefaultClient
@@ -244,7 +259,7 @@ type openAILiveCallResponse struct {
 	Transport openAILiveTransport `json:"transport"`
 }
 
-func createOpenAILiveCall(ctx context.Context, client *http.Client, baseURL, apiKey, offerSDP string, session openAILiveSessionPayload) (openAICallResponse, error) {
+func createOpenAILiveCall(ctx context.Context, client *http.Client, baseURL string, auth openAIAuth, offerSDP string, session openAILiveSessionPayload) (openAICallResponse, error) {
 	endpoint, err := openAIURL(baseURL, "/live/sessions")
 	if err != nil {
 		return openAICallResponse{}, err
@@ -260,7 +275,7 @@ func createOpenAILiveCall(ctx context.Context, client *http.Client, baseURL, api
 	if err != nil {
 		return openAICallResponse{}, fmt.Errorf("build OpenAI GPT-Live session request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	auth.apply(req.Header)
 	req.Header.Set("Content-Type", "application/json")
 	if client == nil {
 		client = http.DefaultClient

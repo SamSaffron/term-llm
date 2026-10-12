@@ -31,6 +31,7 @@ type Options struct {
 	APIKey  string
 	BaseURL string
 	Timeout time.Duration
+	Headers map[string]string // extra request headers, e.g. OpenAI-Organization
 }
 
 // Client calls the OpenAI Decisions API. It implements classify.Backend.
@@ -46,6 +47,7 @@ func NewClient(opts Options) (*Client, error) {
 	http, err := transport.New(transport.Config{
 		Provider:       "openai decisions",
 		APIKey:         opts.APIKey,
+		Headers:        opts.Headers,
 		BaseURL:        opts.BaseURL,
 		Timeout:        opts.Timeout,
 		DefaultBaseURL: DefaultBaseURL,

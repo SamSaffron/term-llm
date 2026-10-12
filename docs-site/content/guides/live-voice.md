@@ -158,7 +158,12 @@ live:
     api_key: sk-... # or set OPENAI_API_KEY in the server environment
     model: gpt-live-1
     voice: marin
+    headers: # optional; values support ${ENV}, $(), op://, file://
+      OpenAI-Organization: org-...
+      OpenAI-Project: proj_...
 ```
+
+`live.openai.headers` are sent when the call is created and on the sideband WebSocket. `OpenAI-Organization` and `OpenAI-Project` fall back to `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID`, and configured `Authorization`, `Content-Type`, and `Accept` headers are ignored. The ChatGPT live provider never sends these headers.
 
 The API key stays on the server. This provider uses separately billed OpenAI API access, not ChatGPT OAuth or a Codex executable. `live.chatgpt.*` settings do not apply; in particular, `juniper` is a ChatGPT voice, not a public OpenAI Live voice.
 

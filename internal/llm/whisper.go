@@ -16,11 +16,12 @@ import (
 
 type TranscribeOptions struct {
 	APIKey     string
-	Endpoint   string // full URL, e.g. "http://localhost:8080/inference" or "https://api.mistral.ai/v1/audio/transcriptions"
-	Model      string // optional, overrides default model name sent to API
-	Language   string // optional, e.g. "en"
-	Provider   string // optional request dialect: "openai" (default), "venice", or "elevenlabs"
-	Timestamps bool   // Request timestamp metadata in JSON responses where supported
+	Endpoint   string            // full URL, e.g. "http://localhost:8080/inference" or "https://api.mistral.ai/v1/audio/transcriptions"
+	Model      string            // optional, overrides default model name sent to API
+	Language   string            // optional, e.g. "en"
+	Provider   string            // optional request dialect: "openai" (default), "venice", or "elevenlabs"
+	Timestamps bool              // Request timestamp metadata in JSON responses where supported
+	Headers    map[string]string // optional extra request headers, e.g. OpenAI-Organization
 }
 
 type whisperResponse struct {
@@ -60,6 +61,10 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bodyReader)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
+	}
+	// Extra headers first so they cannot replace auth or the multipart boundary.
+	for key, value := range opts.Headers {
+		req.Header.Set(key, value)
 	}
 	if opts.APIKey != "" {
 		if opts.Provider == "elevenlabs" {

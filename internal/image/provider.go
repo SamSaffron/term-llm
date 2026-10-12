@@ -103,7 +103,11 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if model == "" {
 			model = cfg.Image.OpenAI.Model
 		}
-		return NewOpenAIProvider(apiKey, model), nil
+		endpoint, err := cfg.OpenAIEndpoint()
+		if err != nil {
+			return nil, fmt.Errorf("OpenAI image endpoint: %w", err)
+		}
+		return NewOpenAIProviderWithEndpoint(apiKey, model, endpoint), nil
 
 	case "chatgpt":
 		if model == "" {

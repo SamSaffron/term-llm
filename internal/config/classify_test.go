@@ -187,7 +187,7 @@ func TestClassifyOpenAIProviderResolutionAndKey(t *testing.T) {
 }
 
 func TestClassifyAliasSchema(t *testing.T) {
-	for _, field := range []string{"type", "api_key", "model", "base_url", "timeout_seconds"} {
+	for _, field := range []string{"type", "api_key", "model", "base_url", "timeout_seconds", "headers", "headers.OpenAI-Organization"} {
 		if !IsKnownKey("classify.providers.custom." + field) {
 			t.Fatalf("unknown field %s", field)
 		}
@@ -198,7 +198,7 @@ func TestClassifyAliasSchema(t *testing.T) {
 		}
 	}
 	specs := ClassifyKeySpecs([]string{"custom"})
-	if len(specs) != 5 {
+	if len(specs) != 6 {
 		t.Fatalf("specs: %v", specs)
 	}
 	for _, spec := range specs {

@@ -2037,13 +2037,15 @@ func TestValidateProviderCompatibility_HeadersOnlyForAnthropicProtocols(t *testi
 		"anthropic": {Headers: headers},
 		"bedrock":   {Headers: headers},
 		"gateway":   {Type: ProviderTypeAnthropic, Headers: headers},
+		"openai":    {Headers: headers},
+		"platform":  {Type: ProviderTypeOpenAI, Headers: headers},
 	} {
 		if err := ValidateProviderCompatibility(name, cfg); err != nil {
 			t.Errorf("%s: unexpected error %v", name, err)
 		}
 	}
 	for name, cfg := range map[string]*ProviderConfig{
-		"openai":      {Headers: headers},
+		"chatgpt":     {Headers: headers},
 		"opencode-go": {Headers: headers},
 	} {
 		if err := ValidateProviderCompatibility(name, cfg); err == nil || !strings.Contains(err.Error(), "headers is only supported") {

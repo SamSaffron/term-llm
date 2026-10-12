@@ -32,6 +32,7 @@ type openAISidebandConfig struct {
 	BaseURL     string
 	CallID      string
 	APIKey      string
+	Headers     map[string]string
 	Dialer      *websocket.Dialer
 	EmitStarted bool
 	Endpoint    func(baseURL, callID string) (string, error)
@@ -219,7 +220,7 @@ func (s *openAISideband) redial(endpoint string, backoff *time.Duration, failure
 
 func (s *openAISideband) dial(ctx context.Context, endpoint string) (*websocket.Conn, error) {
 	header := http.Header{}
-	header.Set("Authorization", "Bearer "+s.cfg.APIKey)
+	openAIAuth{APIKey: s.cfg.APIKey, Headers: s.cfg.Headers}.apply(header)
 	dialer := s.cfg.Dialer
 	if dialer == nil {
 		dialer = websocket.DefaultDialer

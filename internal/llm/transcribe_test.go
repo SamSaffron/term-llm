@@ -5,11 +5,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
 func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
@@ -213,5 +215,98 @@ func TestTranscribeWithConfig_TruncatesImplausiblyLongTranscript(t *testing.T) {
 	wordCount := len(strings.Fields(result))
 	if wordCount != 350 {
 		t.Fatalf("word count = %d, want 350 (truncated from 351)", wordCount)
+	}
+}
+
+func TestTranscribeWithConfig_OpenAIUsesSharedEndpoint(t *testing.T) {
+	origClient := defaultHTTPClient
+	origProbe := probeAudioDuration
+	t.Cleanup(func() {
+		defaultHTTPClient = origClient
+		probeAudioDuration = origProbe
+	})
+	probeAudioDuration = func(context.Context, string) (time.Duration, error) { return time.Minute, nil }
+
+	audioPath := filepath.Join(t.TempDir(), "audio.wav")
+	if err := os.WriteFile(audioPath, []byte("not really audio"), 0o600); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		env      map[string]string
+		cfg      *config.Config
+		wantURL  string
+		wantAuth string
+		wantOrg  string
+		wantProj string
+	}{
+		{
+			name: "env key with env endpoint",
+			env: map[string]string{
+				"OPENAI_API_KEY": "env-key", openaiapi.EnvBaseURL: "https://env.example/v1",
+				openaiapi.EnvOrganization: "org-env", openaiapi.EnvProject: "proj-env",
+			},
+			cfg:      &config.Config{},
+			wantURL:  "https://env.example/v1/audio/transcriptions",
+			wantAuth: "Bearer env-key",
+			wantOrg:  "org-env",
+			wantProj: "proj-env",
+		},
+		{
+			name: "provider base_url and headers",
+			env:  map[string]string{openaiapi.EnvOrganization: "org-env", openaiapi.EnvProject: "proj-env"},
+			cfg: &config.Config{Providers: map[string]config.ProviderConfig{
+				"openai": {
+					ResolvedAPIKey: "config-key",
+					BaseURL:        "https://gateway.example/v1",
+					Headers:        map[string]string{"OpenAI-Organization": "org-config"},
+				},
+			}},
+			wantURL:  "https://gateway.example/v1/audio/transcriptions",
+			wantAuth: "Bearer config-key",
+			wantOrg:  "org-config",
+			wantProj: "proj-env",
+		},
+		{
+			name: "non-native openai entry keeps its own endpoint and no scoping",
+			env:  map[string]string{openaiapi.EnvBaseURL: "https://env.example/v1", openaiapi.EnvOrganization: "org-env"},
+			cfg: &config.Config{Providers: map[string]config.ProviderConfig{
+				"openai": {
+					Type:           config.ProviderTypeOpenAICompat,
+					ResolvedAPIKey: "compat-key",
+					BaseURL:        "https://compat.example/v1",
+				},
+			}},
+			wantURL:  "https://compat.example/v1/audio/transcriptions",
+			wantAuth: "Bearer compat-key",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, key := range []string{"OPENAI_API_KEY", openaiapi.EnvBaseURL, openaiapi.EnvOrganization, openaiapi.EnvProject} {
+				t.Setenv(key, tt.env[key])
+			}
+			var got *http.Request
+			defaultHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				got = req
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"text":"ok"}`)),
+				}, nil
+			})}
+
+			if _, err := TranscribeWithConfig(context.Background(), tt.cfg, audioPath, "", "openai"); err != nil {
+				t.Fatalf("TranscribeWithConfig: %v", err)
+			}
+			if got == nil {
+				t.Fatal("no request sent")
+			}
+			if got.URL.String() != tt.wantURL || got.Header.Get("Authorization") != tt.wantAuth ||
+				got.Header.Get("OpenAI-Organization") != tt.wantOrg || got.Header.Get("OpenAI-Project") != tt.wantProj {
+				t.Fatalf("request = %s auth=%q org=%q project=%q", got.URL, got.Header.Get("Authorization"), got.Header.Get("OpenAI-Organization"), got.Header.Get("OpenAI-Project"))
+			}
+		})
 	}
 }
