@@ -17,8 +17,6 @@ const config: AppConfig = {
   worktrees: true,
   hub: null,
   vapidKey: '',
-  webRTC: false,
-  signalingURL: '',
 };
 const session = (): Session => ({
   id: 's1',

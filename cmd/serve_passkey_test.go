@@ -190,9 +190,9 @@ func TestWebPasskeyCookieAndLegacyCleanup(t *testing.T) {
 }
 
 func TestWebPasskeyUnsupportedTransports(t *testing.T) {
-	oldURL, oldToken, oldConnect, oldHubURL, oldWebRTC, oldRegister, oldCORS := servePublicURL, serveToken, serveHubConnect, serveHubURL, serveWebRTC, serveHubRegister, serveCORSOrigins
+	oldURL, oldToken, oldConnect, oldHubURL, oldRegister, oldCORS := servePublicURL, serveToken, serveHubConnect, serveHubURL, serveHubRegister, serveCORSOrigins
 	t.Cleanup(func() {
-		servePublicURL, serveToken, serveHubConnect, serveHubURL, serveWebRTC, serveHubRegister, serveCORSOrigins = oldURL, oldToken, oldConnect, oldHubURL, oldWebRTC, oldRegister, oldCORS
+		servePublicURL, serveToken, serveHubConnect, serveHubURL, serveHubRegister, serveCORSOrigins = oldURL, oldToken, oldConnect, oldHubURL, oldRegister, oldCORS
 	})
 	t.Setenv("TERM_LLM_SERVE_TOKEN", "")
 	for _, tc := range []struct {
@@ -202,7 +202,6 @@ func TestWebPasskeyUnsupportedTransports(t *testing.T) {
 		{"reverse case and whitespace", func() { serveHubConnect = " Reverse " }},
 		{"Hub URL", func() { serveHubURL = "https://hub.example/" }},
 		{"registration", func() { serveHubRegister = true }},
-		{"WebRTC", func() { serveWebRTC = true }},
 		{"CORS", func() { serveCORSOrigins = []string{"https://other.example"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,7 +209,6 @@ func TestWebPasskeyUnsupportedTransports(t *testing.T) {
 			serveToken = ""
 			serveHubConnect = "direct"
 			serveHubURL = ""
-			serveWebRTC = false
 			serveHubRegister = false
 			serveCORSOrigins = nil
 			tc.setup()

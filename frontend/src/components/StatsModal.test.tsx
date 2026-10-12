@@ -55,8 +55,6 @@ function fixture(data: SessionStats = runtime, fail = false, childSessions = chi
     worktrees: false,
     hub: null,
     vapidKey: '',
-    webRTC: false,
-    signalingURL: '',
   });
   store.sessions.value = [
     { id: 's1', messages: [] },

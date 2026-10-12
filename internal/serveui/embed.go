@@ -95,15 +95,10 @@ func IndexHTML() []byte {
 	return data
 }
 
-// RenderOptions controls optional UI features included in rendered UI assets.
-type RenderOptions struct {
-	WebRTC bool
-}
-
 // RenderIndexHTML returns the Preact entry page with versioned cacheable assets,
 // a content-addressed module graph, caller-supplied head markup, and the
 // exact relative base-path contract.
-func RenderIndexHTML(basePath, headSnippet string, _ RenderOptions) []byte {
+func RenderIndexHTML(basePath, headSnippet string) []byte {
 	html := IndexHTML()
 	if len(html) == 0 {
 		return nil
@@ -143,7 +138,7 @@ func RenderManifest() []byte {
 // current and previous deployment's cached files for open clients. HTTP immutable
 // caching also works without a service worker (including WKWebView). No URL ever
 // serves a different graph member: removed old chunks return 404, not newer bytes.
-func RenderServiceWorker(_ RenderOptions) []byte {
+func RenderServiceWorker() []byte {
 	renderServiceWorkerOnce.Do(func() {
 		data, err := StaticAsset("sw.js")
 		if err != nil {

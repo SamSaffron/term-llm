@@ -23,8 +23,6 @@ const config: AppConfig = {
   worktrees: false,
   hub: null,
   vapidKey: '',
-  webRTC: false,
-  signalingURL: '',
   cacheScope: 'abcdef0123456789',
   shellAuthorized: true,
 };

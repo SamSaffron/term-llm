@@ -12,8 +12,6 @@ export const testConfig: AppConfig = {
   worktrees: true,
   hub: null,
   vapidKey: '',
-  webRTC: false,
-  signalingURL: '',
 };
 
 export const testSession = (patch: Partial<Session> = {}): Session => ({

@@ -39,8 +39,6 @@ const config: AppConfig = {
   worktrees: true,
   hub: null,
   vapidKey: '',
-  webRTC: false,
-  signalingURL: '',
 };
 const createStore = (overrides: Partial<AppConfig> = {}) => {
   const store = new AppStore({ ...config, ...overrides });

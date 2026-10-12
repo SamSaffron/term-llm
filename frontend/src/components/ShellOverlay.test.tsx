@@ -46,8 +46,6 @@ const config = {
   hub: null,
   vapidKey: '',
   pushSupported: false,
-  webRTC: false,
-  signalingURL: '',
 };
 
 const stores: AppStore[] = [];

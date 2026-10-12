@@ -102,9 +102,6 @@ func (s *serveServer) capabilityList() []string {
 	if s.widgetsMgr != nil {
 		caps = append(caps, "widgets")
 	}
-	if s.webrtcEnabled {
-		caps = append(caps, "voice")
-	}
 	if _, ok := session.AsAttentionStore(s.store); ok {
 		caps = append(caps, "attention")
 	}
@@ -273,7 +270,7 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if assetName == "sw.js" {
-		serveEmbeddedUIBytes(w, r, serveui.RenderServiceWorker(serveui.RenderOptions{WebRTC: s.webrtcEnabled}), "text/javascript", "no-cache", true)
+		serveEmbeddedUIBytes(w, r, serveui.RenderServiceWorker(), "text/javascript", "no-cache", true)
 		return
 	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
@@ -395,8 +392,7 @@ func (s *serveServer) buildIndexHTMLCacheable(vapidKey string) ([]byte, bool) {
 	}
 	_, pushPersistent := session.AsPushSubscriptionLifecycleStore(s.store)
 	headSnippet += `<script>window.TERM_LLM_PUSH_SUPPORTED=` + strconv.FormatBool(pushPersistent) + `;</script>`
-	headSnippet += s.webrtcHeadSnippet
-	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet, serveui.RenderOptions{WebRTC: s.webrtcEnabled}), scopeFinal
+	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet), scopeFinal
 }
 
 // prewarmUIAssetCache pre-compresses the service-worker shell assets in a
@@ -406,11 +402,11 @@ func (s *serveServer) prewarmUIAssetCache() {
 	go func() {
 		// Rendered assets: build + cache in one shot.
 		_ = s.renderIndexHTML()
-		uiGetOrBuildEntry(serveui.RenderServiceWorker(serveui.RenderOptions{WebRTC: s.webrtcEnabled}), true)
+		uiGetOrBuildEntry(serveui.RenderServiceWorker(), true)
 		uiGetOrBuildEntry(serveui.RenderManifest(), true)
 
 		// The manifest keeps warm paths aligned with the hashed graph.
-		assetNames := serveui.PrewarmAssetPaths(s.webrtcEnabled)
+		assetNames := serveui.PrewarmAssetPaths()
 		for _, name := range assetNames {
 			if data, err := serveui.StaticAsset(name); err == nil {
 				uiGetOrBuildEntry(data, true)

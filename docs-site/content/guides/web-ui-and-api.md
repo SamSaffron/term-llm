@@ -157,7 +157,7 @@ On supported Unix servers, enter `/shell` in an existing Web UI conversation to 
 
 The browser never sends a filesystem path. The server resolves the persisted session binding without creating or pinning an LLM runtime, and advertises support as `shell.enabled` from `GET /ui/v1/capabilities`. Unsupported platforms and API-only servers leave the command hidden. Shell input is explicit direct operator execution—it does not use the model shell-tool approval flow.
 
-Shell control uses authenticated HTTP mutations plus a resumable SSE response rather than WebSockets, so the same protocol works through direct serve, Hub proxying, reverse-connected Hub nodes, and WebRTC HTTP transport. Shell endpoints additionally require the first-party browser origin and are not opened to configured cross-origin API callers.
+Shell control uses authenticated HTTP mutations plus a resumable SSE response rather than WebSockets, so the same protocol works through direct serve, Hub proxying, and reverse-connected Hub nodes. Shell endpoints additionally require the first-party browser origin and are not opened to configured cross-origin API callers.
 
 ## Project-aware Responses and worktrees
 
@@ -414,7 +414,7 @@ origin. Behind a proxy, `--passkey-trusted-proxy IP_OR_CIDR` can explicitly trus
 its forwarded client address for rate limiting; this does not trust its origin.
 
 This initial mode supports **`serve web` alone, direct same-origin access**.
-Additional platforms, Hub integration, WebRTC, and `--cors-origin` are not
+Additional platforms, Hub integration, and `--cors-origin` are not
 supported. `--token` and `TERM_LLM_SERVE_TOKEN` are rejected rather than silently
 leaving a second authentication path open. For bearer-authenticated API clients,
 continue using the default bearer mode. Passkeys identify one shared operator,
@@ -557,7 +557,6 @@ Relevant options include:
 - `--title` (overrides the web UI sidebar title; also configurable as `serve.title`)
 - `--response-timeout` (maximum inactivity before the first or next completed LLM response, default `30m`; each completed LLM response refreshes the clock, interactive approval, `ask_user`, and native `spawn_agent`/`wait_agent`/`continue_agent` collection waits pause it, and verified deadline-bounded **jobs-v2** delegations can pause it for at most one hour plus a 30-second completion grace each; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`). This bounds a web *parent response*, not a `spawn_agent` child: native children have **no execution deadline**, and `wait`/deprecated `timeout` only bound collection.
 - `--cors-origin`
-- `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 
 ## Health checks
 
@@ -610,7 +609,7 @@ Push uses Git; PR creation also requires an authenticated `gh` installation on t
 
 ## Steering API
 
-Canonical clients send `X-Term-LLM-Steering-Protocol: 1`; the canonical steering routes imply it. Discovery advertises `steering_v1`, and an unsupported explicit version returns `400`. HTTP and WebRTC share the same handler and projection, and user text and attachment contents are never rewritten.
+Canonical clients send `X-Term-LLM-Steering-Protocol: 1`; the canonical steering routes imply it. Discovery advertises `steering_v1`, and an unsupported explicit version returns `400`. User text and attachment contents are never rewritten.
 
 | Route | Purpose |
 | --- | --- |
@@ -635,7 +634,6 @@ Use the web runtime when you want:
 
 ## Related pages
 
-- [WebRTC direct routing](/guides/webrtc-direct-routing/)
 - [Jobs](/guides/job-runner/)
 - [Telegram Bot](/guides/telegram-bot/)
 - [Configuration](/reference/configuration/)

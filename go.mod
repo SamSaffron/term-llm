@@ -28,13 +28,6 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/muesli/cancelreader v0.2.2
 	github.com/muesli/reflow v0.3.0
-	github.com/pion/datachannel v1.6.3
-	github.com/pion/dtls/v3 v3.1.10
-	github.com/pion/ice/v4 v4.4.5
-	github.com/pion/logging v0.2.4
-	github.com/pion/sctp v1.12.0
-	github.com/pion/sdp/v3 v3.0.20
-	github.com/pion/stun/v4 v4.0.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/shogoki/gotextdiff v1.22.0
 	github.com/spf13/cobra v1.10.2
@@ -85,10 +78,6 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
-	github.com/pion/mdns/v2 v2.2.2 // indirect
-	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/transport/v5 v5.1.1 // indirect
-	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
@@ -99,7 +88,6 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
-	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xo/terminfo v1.2.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect

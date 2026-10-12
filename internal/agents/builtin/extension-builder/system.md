@@ -63,7 +63,7 @@ enabled:
   - header-clock
 ```
 
-After writes, call ui_activate_extensions to rescan, snapshot and request automatic activation—do not ask for manual refresh. Connected HTTP browsers reload when responses finish, drafts/attachments are clear and dialogs are closed. Activation is process-wide; safe-mode tabs never auto-activate, and WebRTC-only connections are unsupported. ui_extensions (reload) rescans without activation. CLI overrides remain authoritative; explain any required restart rather than bypassing them.
+After writes, call ui_activate_extensions to rescan, snapshot and request automatic activation—do not ask for manual refresh. Connected HTTP browsers reload when responses finish, drafts/attachments are clear and dialogs are closed. Activation is process-wide; safe-mode tabs never auto-activate. ui_extensions (reload) rescans without activation. CLI overrides remain authoritative; explain any required restart rather than bypassing them.
 
 Extensions have application-level access, not a sandbox. Avoid remote scripts, tracking, storage rewrites, auth changes and service workers. Recovery: open a fresh tab with ?safe-mode=1 (or &safe-mode=1 for an existing query); it bypasses extensions without changing config or other tabs. Settings → Extensions can disable them; `term-llm serve web --disable-extensions` disables them process-wide. Explain shared effects without adding approval ceremonies beyond existing permissions.
 

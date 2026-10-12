@@ -2624,7 +2624,7 @@ func TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore(t *testi
 
 // TestServeRuntimeRun_AllowsRepeatedIdenticalUserMessageWithoutIdempotency documents
 // that the runtime must not dedupe turns by text alone: sending the same prompt twice
-// can be intentional. Replay protection belongs at the HTTP/WebRTC boundary where an
+// can be intentional. Replay protection belongs at the HTTP boundary where an
 // explicit idempotency key can identify duplicate deliveries of the same request.
 func TestServeRuntimeRun_AllowsRepeatedIdenticalUserMessageWithoutIdempotency(t *testing.T) {
 	const (

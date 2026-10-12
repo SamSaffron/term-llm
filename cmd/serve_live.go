@@ -1181,7 +1181,7 @@ func writeLiveAudioSSEFrame(w io.Writer, controller *http.ResponseController, re
 
 // handleLiveSessionAudioOutput streams base64-encoded 24 kHz PCM and interrupt
 // markers over an ordinary HTTP response. Unlike WebSocket upgrades, this path
-// traverses deployed reverse Hub connectors and WebRTC HTTP tunnels unchanged.
+// traverses deployed reverse Hub connectors unchanged.
 func (s *serveServer) handleLiveSessionAudioOutput(w http.ResponseWriter, r *http.Request, liveID string) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)

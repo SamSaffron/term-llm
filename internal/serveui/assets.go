@@ -88,13 +88,12 @@ func IsHashedAsset(name string) bool {
 	return hashedAssets[name]
 }
 
-// PrewarmAssetPaths identifies the eager shell and optional transport chunks.
-func PrewarmAssetPaths(webRTC bool) []string {
+// PrewarmAssetPaths identifies the eager shell and shared vendor chunks.
+func PrewarmAssetPaths() []string {
 	manifest := ChatAssetManifest()
 	paths := append([]string{manifest.EntryJS}, manifest.EntryCSS...)
 	for _, name := range manifest.Files {
-		isWarmChunk := strings.HasPrefix(name, "dist/chunks/vendor-") || webRTC && strings.HasPrefix(name, "dist/chunks/webrtc-")
-		if isWarmChunk && strings.HasSuffix(name, ".js") {
+		if strings.HasPrefix(name, "dist/chunks/vendor-") && strings.HasSuffix(name, ".js") {
 			paths = append(paths, name)
 		}
 	}

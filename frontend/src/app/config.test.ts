@@ -21,8 +21,6 @@ describe('bootstrap configuration and storage', () => {
       TERM_LLM_APPROVALS_ENABLED: false,
       TERM_LLM_APPROVAL_MODE: 'yolo',
       TERM_LLM_HUB: { nodeId: 'alpha', nodeBasePath: '/chat/nodes/alpha' },
-      __WEBRTC_ENABLED__: true,
-      __WEBRTC_SIGNALING_URL__: 'https://signal',
     } as Window;
     expect(readInjectedConfig(target)).toMatchObject({
       prefix: '/chat/nodes/alpha',
@@ -30,8 +28,6 @@ describe('bootstrap configuration and storage', () => {
       agentNames: ['a', 'b'],
       approvals: false,
       approvalMode: 'yolo',
-      webRTC: true,
-      signalingURL: 'https://signal',
     });
     expect(parseSidebarCategories('recent,pinned,recent')).toEqual(['recent', 'pinned']);
     expect(parseSidebarCategories([])).toEqual(['all']);

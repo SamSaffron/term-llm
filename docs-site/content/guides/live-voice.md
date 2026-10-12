@@ -5,8 +5,8 @@ description: "Hold a spoken conversation with the web workspace: the voice model
 kicker: "Browser workspace"
 featured: true
 next:
-  label: WebRTC direct routing
-  url: /guides/webrtc-direct-routing/
+  label: Search
+  url: /guides/search/
 ---
 
 Live voice lets you hold a spoken conversation in the [web workspace](/guides/web-ui-and-api/). The voice model talks to you; when you ask for real work, it hands that work to your ordinary chat session, which runs it with the same engine, tools, approvals, and transcript as a typed message.
@@ -189,7 +189,7 @@ The server opens Gemini's `BidiGenerateContent` WebSocket, configures audio plus
 
 The browser captures input through an `AudioWorklet`, resamples it to 16 kHz, and begins uploading after about 100 ms of audio. It then drains accumulated microphone audio in bounded, sequential `POST /v1/live/sessions/{live_id}/audio/input` requests of at most 64 KiB. Provider output returns as base64 PCM and interruption markers on `GET /v1/live/sessions/{live_id}/audio/output`.
 
-One continuous output `AudioWorklet` consumes the 24 kHz PCM from a bounded FIFO. It preserves interpolation phase across provider packet boundaries when the audio context runs at 44.1 or 48 kHz and passes samples through directly at 24 kHz. It does not create an `AudioBufferSourceNode` for each packet. An interruption resets the FIFO immediately. Both routes derive from `live_id` and use the normal authenticated API client, so its public prefix, [Hub](/guides/hub/) authentication, and WebRTC HTTP tunnel hooks apply.
+One continuous output `AudioWorklet` consumes the 24 kHz PCM from a bounded FIFO. It preserves interpolation phase across provider packet boundaries when the audio context runs at 44.1 or 48 kHz and passes samples through directly at 24 kHz. It does not create an `AudioBufferSourceNode` for each packet. An interruption resets the FIFO immediately. Both routes derive from `live_id` and use the normal authenticated API client, so its public prefix and [Hub](/guides/hub/) authentication apply.
 
 The HTTP split lets Gemini Live work through a deployed reverse Hub connector, which supports finite requests and streamed HTTP/SSE responses but not WebSocket upgrades or an infinite bidirectional request body. SSE output plus finite microphone posts fit that transport. Direct clients can explicitly request the legacy `/audio` WebSocket with `websocket_pcm`.
 

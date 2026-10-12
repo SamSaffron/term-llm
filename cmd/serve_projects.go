@@ -420,17 +420,6 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	payload["attention_diagnostics"] = s.attentionDiagnostics.snapshot()
-	s.webrtcMu.RLock()
-	peer := s.webrtcPeer
-	s.webrtcMu.RUnlock()
-	if peer != nil {
-		diagnostics := peer.Diagnostics()
-		payload["webrtc_diagnostics"] = map[string]any{
-			"active":   diagnostics.Active,
-			"reserved": diagnostics.Reserved,
-			"rejected": diagnostics.Rejected,
-		}
-	}
 	writeJSON(w, http.StatusOK, payload)
 }
 

@@ -13,10 +13,6 @@ async function bootstrap(): Promise<void> {
   // Hub proxy context and <base> rewriting are injected before this deferred module executes.
   const config = readInjectedConfig();
   initializeExtensionRecovery(config);
-  if (config.webRTC && config.signalingURL) {
-    const { installWebRTC } = await import('./platform/webrtc');
-    installWebRTC();
-  }
   const store = new AppStore(config);
   const root = document.getElementById('root');
   if (!root) throw new Error('term-llm application mount is missing');

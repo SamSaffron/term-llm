@@ -71,12 +71,11 @@ Paths below are relative to `content/`.
 | `guides/transcription.md` | Transcribe CLI | Added supported short flags and debug option. |
 | `guides/usage.md` | CLI flag definitions and exec flow | Corrected `-p` shorthand: provider, not print-only. |
 | `guides/video-generation.md` | Video CLI, stdin and retrieval paths | Added provider/cleanup flags, stdin example and availability/cleanup caveats. |
-| `guides/webrtc-direct-routing.md` | `cmd/serve_webrtc.go` | Removed unsupported YAML configuration; documented flags and diagnostics. |
 | `guides/web-ui-and-api.md` | Serve handlers, file attribution, commit operations | Updated diffs, authenticated examples, native push/PR lifecycle and deployment wording. |
 | `guides/widgets.md` | `internal/widgets/`, serve flags | Retained: discovery, manifest, routes, lifecycle and proxy security. |
 | `reference/_index.md` | Reference navigation | Retained. |
 | `reference/built-in-tools.md` | Tool registry, custom tools, approval and tracking | Replaced unsafe SQL interpolation; fixed gofmt example and local endpoint; distinguished agent YAML. |
-| `reference/configuration.md` | `internal/config/schema.go`, provider/serve wiring | Corrected transport/default examples and removed unsupported WebRTC YAML. |
+| `reference/configuration.md` | `internal/config/schema.go`, provider/serve wiring | Corrected transport/default examples. |
 | `reference/profiling.md` | `cmd/pprof.go`, profiling startup | Retained: commands, registry discovery and 30-second CPU capture. |
 | `reference/provider-setup-details.md` | Provider registry, factory, local/CLI adapters | Aligned local APIs, Zen defaults, vLLM reasoning, OAuth, transports and Bedrock caveats. |
 | `reference/providers-and-models.md` | Registry, model discovery, credentials and adapters | Complete 20-provider inventory plus custom profiles; native Ollama/LM Studio, Astra/context, transport, search and reasoning corrections. |

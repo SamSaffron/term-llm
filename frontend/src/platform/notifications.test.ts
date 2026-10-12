@@ -19,8 +19,6 @@ const config: AppConfig = {
   hub: null,
   vapidKey: 'AQID',
   pushSupported: true,
-  webRTC: false,
-  signalingURL: '',
 };
 
 afterEach(() => vi.restoreAllMocks());

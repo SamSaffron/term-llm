@@ -56,7 +56,6 @@ use explicit root admission.
   conversations resume from storage; no-session conversations use the state file.
 - Hub/reverse forwarding accounts for request completion, while explicit passive
   event subscriptions and reverse connections reconnect after successful exec.
-  WebRTC requests use the same operation admission as HTTP requests.
 - Background delegated agents (`spawn_agent` with an expired wait budget) take
   `restart.Detached` ownership before launch, so they outlive the spawning tool
   call. A reload interrupts them after the grace period; they end `interrupted`
@@ -97,5 +96,5 @@ Reintroduce an equivalent Linux-only proof in Go before claiming those guarantee
 again; a replacement must create its own temporary HOME/XDG directories, loopback
 server, installed fixture binary, and child PID, and must never target a live
 service. Telegram polling cancellation and rollback use a fake API in Go tests;
-these are not live Telegram delivery proofs. Hub/reverse and WebRTC have
+these are not live Telegram delivery proofs. Hub/reverse has
 route/regression tests, not a claimed real deployment upgrade proof.

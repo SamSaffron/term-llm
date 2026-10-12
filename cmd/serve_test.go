@@ -1242,7 +1242,6 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 	for _, snippet := range []string{
 		`'./dist/app.js`,
 		`'./dist/chunks/vendor.js`,
-		`'./dist/chunks/webrtc.js`,
 		`'./dist/chunks/katex.js`,
 		`'./dist/chunks/highlight.js`,
 	} {

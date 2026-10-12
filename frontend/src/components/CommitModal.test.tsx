@@ -18,8 +18,6 @@ function fixture() {
     worktrees: false,
     hub: null,
     vapidKey: '',
-    webRTC: false,
-    signalingURL: '',
   });
   store.sessions.value = [{ id: 's1', messages: [] } as unknown as Session];
   store.activeSessionId.value = 's1';

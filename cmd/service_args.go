@@ -63,7 +63,7 @@ func parseServiceLaunch(kind string, args []string) (userservice.Spec, error) {
 	if fs.NArg() != 0 {
 		return s, fmt.Errorf("only additional serve %s flags may follow --", kind)
 	}
-	for _, name := range []string{"token", "webrtc-token", "hub-registration-token", "registration-token", "passkey-bootstrap-token-file", "passkey-recovery-token-file", "print-passkey-bootstrap-token", "setup", "help", "version", "debug-raw", "cpuprofile", "memprofile", "pprof"} {
+	for _, name := range []string{"token", "hub-registration-token", "registration-token", "passkey-bootstrap-token-file", "passkey-recovery-token-file", "print-passkey-bootstrap-token", "setup", "help", "version", "debug-raw", "cpuprofile", "memprofile", "pprof"} {
 		if fs.Changed(name) {
 			return s, fmt.Errorf("--%s is not persisted in service arguments; use service credential/setup options instead", name)
 		}
@@ -119,12 +119,11 @@ func parseServiceLaunch(kind string, args []string) (userservice.Spec, error) {
 			if base == "" {
 				return s, fmt.Errorf("Web passkeys require a non-root URL path such as /ui/")
 			}
-			rtc, _ := fs.GetBool("webrtc")
 			hubURL, _ := fs.GetString("hub-url")
 			register, _ := fs.GetBool("hub-register")
 			connect, _ := fs.GetString("hub-connect")
 			cors, _ := fs.GetStringArray("cors-origin")
-			if err := validateWebPasskeyTransport(rtc, hubURL, register, connect, cors); err != nil {
+			if err := validateWebPasskeyTransport(hubURL, register, connect, cors); err != nil {
 				return s, err
 			}
 		}

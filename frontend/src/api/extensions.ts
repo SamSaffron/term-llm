@@ -26,10 +26,6 @@ export async function loadExtensions(store: AppStore): Promise<void> {
     extensionRuntime.generation.value = status.generation;
     extensionRuntime.errors.value = [...status.errors];
     if (!status.enabled.length) return;
-    // Extensions use module/style URLs, not bearer-header fetches. WebRTC's
-    // JSON tunnel cannot currently serve browser module subresources.
-    if (store.config.webRTC)
-      throw new Error('Extensions require a direct or Hub HTTP connection (not WebRTC).');
     for (const id of status.enabled) {
       const entry = status.entries.find((entry) => entry.id === id);
       if (!entry || entry.error) continue;
@@ -92,7 +88,7 @@ export function watchExtensionActivation(
   store: AppStore,
   reload: () => void = () => location.reload(),
 ): () => void {
-  if (extensionRuntime.safeMode.peek() || store.config.webRTC) return () => {};
+  if (extensionRuntime.safeMode.peek()) return () => {};
   let stopped = false;
   let timer: ReturnType<typeof setTimeout>;
   const poll = async () => {

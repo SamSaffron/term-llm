@@ -779,7 +779,7 @@ func sameOriginShellRequest(r *http.Request) bool {
 	if fetchSite == "cross-site" {
 		return false
 	}
-	// Direct, Hub-proxied, reverse-Hub, and WebRTC requests all originate as a
+	// Direct, Hub-proxied, and reverse-Hub requests all originate as a
 	// same-origin browser fetch. Hub transports deliberately replace the backend
 	// Host, so the browser-owned Fetch Metadata signal is authoritative there.
 	if fetchSite == "same-origin" {

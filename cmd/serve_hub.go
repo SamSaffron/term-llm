@@ -122,8 +122,8 @@ func browserReturnURL(u *url.URL, publicPath func(string) string) string {
 
 // newHubTransport returns the proxy's HTTP transport with bounded connection
 // and response-header timeouts so a hung node cannot tie up the hub. It
-// deliberately sets NO whole-response deadline: long-lived streams (SSE,
-// WebRTC signalling) must stay open, so only connection establishment and
+// deliberately sets NO whole-response deadline: long-lived streams (SSE)
+// must stay open, so only connection establishment and
 // response *headers* are bounded.
 func newHubTransport() *http.Transport {
 	return &http.Transport{

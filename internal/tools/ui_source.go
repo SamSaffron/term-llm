@@ -36,7 +36,7 @@ type UIExtensionsTool struct {
 
 func (t *UIExtensionsTool) Spec() llm.ToolSpec {
 	if t.activate {
-		return llm.ToolSpec{Name: UIActivateToolName, Description: "Activate completed web extension edits: rescan the configured enabled list and request automatic browser reload when responses finish and drafts are clear. No user activation step is needed. Affects connected HTTP browsers of this process; safe mode, boot flags and WebRTC restrictions remain authoritative. Does not edit the enabled list. Reports a requested activation, not proof the browser rendered it.", Schema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}
+		return llm.ToolSpec{Name: UIActivateToolName, Description: "Activate completed web extension edits: rescan the configured enabled list and request automatic browser reload when responses finish and drafts are clear. No user activation step is needed. Affects connected HTTP browsers of this process; safe mode and boot flags remain authoritative. Does not edit the enabled list. Reports a requested activation, not proof the browser rendered it.", Schema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}
 	}
 	return llm.ToolSpec{
 		Name: UIExtensionsToolName,

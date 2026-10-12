@@ -433,7 +433,7 @@ test('a newly sent plain HTTPS response keeps its owned stream', async ({
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'plain HTTPS admission race is covered once');
   test.setTimeout(30_000);
-  await page.goto('./?new=1&no_webrtc=1');
+  await page.goto('./?new=1');
   await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
   await responseGate.waitStarted();
@@ -456,7 +456,7 @@ test('reloading a running HTTPS session never presents it as idle', async ({
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'running-session reload is covered once');
   test.setTimeout(30_000);
-  await page.goto('./?new=1&no_webrtc=1');
+  await page.goto('./?new=1');
   await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
   await responseGate.waitStarted();

@@ -1010,7 +1010,7 @@ func responseIdempotencyKeyFromRequest(r *http.Request) string {
 		return ""
 	}
 	// Prefer the standard header. X-Term-LLM-Request-ID is accepted for the
-	// first-party UI/WebRTC fallback path and is only registered for streaming
+	// first-party UI and is only registered for streaming
 	// stateful response runs (see runIdempotencyKey above).
 	for _, name := range []string{"Idempotency-Key", "X-Idempotency-Key", "X-Term-LLM-Request-ID"} {
 		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {

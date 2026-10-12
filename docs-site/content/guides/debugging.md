@@ -237,16 +237,15 @@ Reloading the page also clears retained artifacts. Treat both recordings as sens
 
 ## Web interface reliability
 
-The browser store counts discarded stale status results, rejected stale stream callbacks, supervisor retries/recoveries, stream inactivity timeouts, review-queue validation failures, interaction reconciliations, and browser-storage failures. WebRTC diagnostics expose only aggregate active/reserved/rejected admission counts through `/v1/capabilities`; signaling credentials, attachment contents, prompts, and approval details are never included.
+The browser store counts discarded stale status results, rejected stale stream callbacks, supervisor retries/recoveries, stream inactivity timeouts, review-queue validation failures, interaction reconciliations, and browser-storage failures.
 
-When diagnosing locally, correlate by truncated session/response/operation IDs. Do not export raw prompts, tokens, file contents, signaling tokens, or attachment data URLs.
+When diagnosing locally, correlate by truncated session/response/operation IDs. Do not export raw prompts, tokens, file contents, or attachment data URLs.
 
 ### Operational thresholds
 
 Deployment-specific monitoring should alert when any of these conditions persists:
 
 - a stream supervisor retries beyond five attempts or for longer than two minutes;
-- signaling timeout or WebRTC admission-rejection rates exceed 10% for five minutes;
 - an unresolved approval or ask-user request is older than 30 minutes while its run remains active;
 - browser storage migration/persistence failures recur in the same session;
 - stale status or stream callback discards rise continuously rather than appearing as isolated races.

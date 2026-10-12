@@ -18,7 +18,7 @@ func TestGeneratedBundleAssets(t *testing.T) {
 	for _, name := range []string{
 		"dist/app.js", "dist/app.css", "dist/hub.js", "dist/hub.css", "dist/chunks/vendor.js",
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
-		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js", "dist/chunks/mcp.js",
+		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/mcp.js",
 		"dist/chunks/MarkdownFilePreview.js", "dist/chunks/markdown-preview-store.js",
 		"dist/chunks/ShellOverlay.js", "dist/chunks/markdown-document.js", "dist/chunks/file-text.js",
 		"dist/assets/MarkdownFilePreview.css", "dist/assets/ShellOverlay.css",
@@ -433,7 +433,7 @@ func TestLazyChunksReuseCanonicalEntryModuleURL(t *testing.T) {
 	if !importsEntry {
 		t.Fatal("expected a lazy Markdown chunk to exercise the shared entry import contract")
 	}
-	rendered := string(RenderIndexHTML("/ui", "", RenderOptions{}))
+	rendered := string(RenderIndexHTML("/ui", ""))
 	if !strings.Contains(rendered, `type="module" src="`+ChatAssetManifest().EntryJS+`"`) || strings.Contains(rendered, `src="dist/app.js?v=`) {
 		t.Fatal("lazy chunks and the HTML entry must resolve app.js to one canonical module URL")
 	}
@@ -441,7 +441,7 @@ func TestLazyChunksReuseCanonicalEntryModuleURL(t *testing.T) {
 
 func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	const bootstrap = `<script>window.TERM_LLM_UI_PREFIX="/chat/nodes/alpha";</script>`
-	rendered := string(RenderIndexHTML("/chat/nodes/alpha", bootstrap, RenderOptions{WebRTC: true}))
+	rendered := string(RenderIndexHTML("/chat/nodes/alpha", bootstrap))
 	for _, want := range []string{
 		`<base href="/chat/nodes/alpha/">`,
 		bootstrap,
@@ -464,30 +464,26 @@ func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 }
 
 func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
-	without := string(RenderServiceWorker(RenderOptions{}))
-	with := string(RenderServiceWorker(RenderOptions{WebRTC: true}))
+	rendered := string(RenderServiceWorker())
 	for _, want := range []string{
 		"term-llm-shell-" + AssetVersion(),
 		"'./manifest.webmanifest?v=" + AssetVersion() + "'",
 		"'./icon-512.png?v=" + AssetVersion() + "'",
 	} {
-		if !strings.Contains(without, want) {
+		if !strings.Contains(rendered, want) {
 			t.Errorf("service worker missing %q", want)
 		}
 	}
-	for _, chunk := range []string{"app.js?v=", "vendor.js?v=", "webrtc.js?v=", "highlight.js?v=", "katex.js?v=", "mcp.js?v="} {
-		if strings.Contains(without, chunk) || strings.Contains(with, chunk) {
+	for _, chunk := range []string{"app.js?v=", "vendor.js?v=", "highlight.js?v=", "katex.js?v=", "mcp.js?v="} {
+		if strings.Contains(rendered, chunk) {
 			t.Errorf("canonical stable URL %q must not appear in the hashed graph", chunk)
 		}
 	}
-	if strings.Contains(without, "'./dist/app.js'") || strings.Contains(with, "'./dist/app.js'") {
+	if strings.Contains(rendered, "'./dist/app.js'") {
 		t.Fatal("stable entry URL must not appear in the hashed asset list")
 	}
-	if strings.Contains(without, "hub.js") || strings.Contains(without, "hub.css") || strings.Contains(with, "hub.js") || strings.Contains(with, "hub.css") {
+	if strings.Contains(rendered, "hub.js") || strings.Contains(rendered, "hub.css") {
 		t.Fatal("standalone Hub assets must stay outside the chat service-worker cache")
-	}
-	if without != with {
-		t.Fatal("WebRTC must not add a versioned URL that differs from the chunk URL imported by Vite")
 	}
 }
 
@@ -561,13 +557,13 @@ func TestChatManifestCompleteAndContentAddressed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered := string(RenderServiceWorker(RenderOptions{}))
+	rendered := string(RenderServiceWorker())
 	for _, file := range manifest.Files {
 		if !strings.Contains(rendered, `"./`+file+`"`) {
 			t.Errorf("SW missing %s", file)
 		}
 	}
-	for _, path := range PrewarmAssetPaths(true) {
+	for _, path := range PrewarmAssetPaths() {
 		if !IsHashedAsset(path) {
 			t.Errorf("prewarm not hashed: %s", path)
 		}

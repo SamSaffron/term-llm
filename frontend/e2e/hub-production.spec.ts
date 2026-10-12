@@ -295,20 +295,16 @@ test('Hub bearer mount preserves a proxied send across reload', async ({ page },
   expect(page.url()).not.toContain('token=');
   await expect.poll(async () => (await page.request.get(`${hubRoot}api/nodes`)).status()).toBe(200);
 
-  // The node has WebRTC enabled, but Hub mounts must keep browser traffic on
-  // the authenticated same-origin proxy.
   const nodeRoot = `${hubRoot}node/production-node/`;
   await page.goto(`${nodeRoot}?new=1`);
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
   const mount = await page.evaluate(() => ({
     prefix: window.TERM_LLM_UI_PREFIX,
     nodeBasePath: window.TERM_LLM_HUB?.nodeBasePath,
-    webrtc: window.__WEBRTC_ENABLED__,
   }));
   expect(mount).toEqual({
     prefix: '/hub/node/production-node',
     nodeBasePath: '/chat',
-    webrtc: false,
   });
 
   // Native CSS/module subresource requests carry the Hub cookie, not API

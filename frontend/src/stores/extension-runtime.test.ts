@@ -108,7 +108,6 @@ function activationFixture() {
   extensionRuntime.generation.value = 'old';
   const status = { generation: 'new', activation_generation: 'new', disabled: false };
   const store = {
-    config: { webRTC: false },
     endpoints: { extensionsStatus: vi.fn(async () => status) },
     authRequired: signal(false),
     runActive: signal(false),
@@ -175,13 +174,10 @@ describe('agent-requested extension activation', () => {
     expect(f.reload).not.toHaveBeenCalled();
     stop();
   });
-  it('never polls from safe mode or WebRTC-only browsers', async () => {
+  it('never polls from safe mode', async () => {
     vi.useFakeTimers();
     const f = activationFixture();
     extensionRuntime.safeMode.value = true;
-    f.start()();
-    extensionRuntime.safeMode.value = false;
-    f.store.config.webRTC = true;
     f.start()();
     await vi.advanceTimersByTimeAsync(6000);
     expect(f.store.endpoints.extensionsStatus).not.toHaveBeenCalled();

@@ -1042,11 +1042,6 @@ export class AppStore {
       { signal: this.lifecycleAbort.signal },
     );
     addEventListener(
-      'term-llm:transport-fallback',
-      () => void this.reconcile('transport-fallback', { authoritative: true }),
-      { signal: this.lifecycleAbort.signal },
-    );
-    addEventListener(
       'pageshow',
       (event) => {
         this.ensureSessionSyncChannel();

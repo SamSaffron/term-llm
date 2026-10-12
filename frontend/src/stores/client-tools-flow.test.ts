@@ -19,8 +19,6 @@ const config: AppConfig = {
   worktrees: true,
   hub: null,
   vapidKey: '',
-  webRTC: false,
-  signalingURL: '',
 };
 
 type Frame = [string, Record<string, unknown>];

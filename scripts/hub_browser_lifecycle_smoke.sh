@@ -19,24 +19,22 @@ registration_token="production-registration-secret"
 hub_root="http://127.0.0.1:${hub_port}/hub/"
 node_root="http://127.0.0.1:${node_port}/chat/"
 binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-hub-browser.XXXXXX")"
-relay_binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-hub-relay.XXXXXX")"
 state="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-hub-browser-state.XXXXXX")"
 results="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-hub-browser-results.XXXXXX")"
-relay_ready="$state/relay.ready"
 succeeded=false
 cleanup() {
-  for pid in "${hub_pid:-}" "${node_pid:-}" "${relay_pid:-}"; do
+  for pid in "${hub_pid:-}" "${node_pid:-}"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     fi
   done
   if [[ "$succeeded" != true ]]; then
-    for log in "$state/hub.log" "$state/node.log" "$state/relay.log"; do
+    for log in "$state/hub.log" "$state/node.log"; do
       if [[ -s "$log" ]]; then echo "== $log ==" >&2; cat "$log" >&2; fi
     done
   fi
-  rm -f "$binary" "$relay_binary"
+  rm -f "$binary"
   rm -rf "$state" "$results"
 }
 trap cleanup EXIT
@@ -44,16 +42,6 @@ trap cleanup EXIT
 cd "$root"
 npm --prefix frontend run build
 go build -tags browserfixture -o "$binary" .
-go build -o "$relay_binary" ./internal/testutil/webrtcrelay
-"$relay_binary" --listen 127.0.0.1:0 --cert-out "$state/relay.crt" --key-out "$state/relay.key" --ready-out "$relay_ready" >"$state/relay.log" 2>&1 &
-relay_pid=$!
-for _ in $(seq 1 80); do
-  [[ -s "$relay_ready" ]] && break
-  kill -0 "$relay_pid" 2>/dev/null || { cat "$state/relay.log" >&2; exit 1; }
-  sleep .1
-done
-relay_url="$(cat "$relay_ready")"
-curl -kfsS "$relay_url/healthz" >/dev/null
 
 home="$state/home"
 workspace="$state/workspace"
@@ -77,10 +65,8 @@ git -C "$workspace" -c user.name='Hub Browser Fixture' -c user.email='fixture@ex
   exec env -u TERM_LLM_PPROF -u TERM_LLM_SERVE_HUB_URL -u TERM_LLM_SERVE_HUB_REGISTER \
     -u TERM_LLM_SERVE_HUB_NODE_ID -u TERM_LLM_SERVE_HUB_NODE_NAME \
     HOME="$home" XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_CACHE_HOME="$home/cache" \
-    SSL_CERT_FILE="$state/relay.crt" TERM_LLM_WEBRTC_DIAGNOSTICS=1 \
     "$binary" serve web --host 127.0.0.1 --port "$node_port" --base-path /chat \
-    --token "$node_token" --webrtc --webrtc-signaling-url "$relay_url" \
-    --webrtc-token production-hub-smoke --webrtc-stun disabled --webrtc-diagnostics
+    --token "$node_token"
 ) >"$state/node.log" 2>&1 &
 node_pid=$!
 for _ in $(seq 1 80); do

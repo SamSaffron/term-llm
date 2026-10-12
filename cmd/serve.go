@@ -35,7 +35,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/usage"
-	webrtcpkg "github.com/samsaffron/term-llm/internal/webrtc"
 	"github.com/samsaffron/term-llm/internal/widgets"
 	"github.com/spf13/cobra"
 )
@@ -863,12 +862,6 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}
 		}
 
-		if hasWeb {
-			s.webrtcEnabled = serveWebRTC
-			s.webrtcHeadSnippet = webrtcHTMLSnippet()
-			runWebRTCPeer(ctx, s)
-		}
-
 		reverseHubURL := strings.TrimSpace(serveHubURL)
 		reverseHubNodeID := strings.TrimSpace(serveHubNodeID)
 		if serveHubRegister {
@@ -1490,10 +1483,6 @@ type serveServer struct {
 	skillRunsStopping        bool
 	skillRunRetention        time.Duration
 	skillChildRunnerFactory  func(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error)
-	webrtcEnabled            bool
-	webrtcMu                 sync.RWMutex
-	webrtcPeer               webrtcpkg.Peer
-	webrtcHeadSnippet        string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory           func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error)
 	agentRuntimeFactory      func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error)
 	titleProviderFactory     func(*config.Config) (llm.Provider, error)

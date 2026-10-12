@@ -926,18 +926,6 @@ Deferred vault, file, command, and DNS references resolve when needed, not when 
 
 See **[Secret management](/guides/secret-management/)** for supported settings, MCP-specific syntax, failure and fallback behavior, and complete recipes for 1Password, macOS Keychain, Linux keyrings, and a private `secrets.yml`.
 
-## WebRTC direct routing config
-
-WebRTC options are currently **CLI flags**, not `serve.webrtc.*` configuration keys. Put them in your launch command or service unit:
-
-```bash
-term-llm serve web --webrtc \
-  --webrtc-signaling-url https://signal.example.com/webrtc \
-  --webrtc-token "$SIGNAL_TOKEN"
-```
-
-A `serve.webrtc` YAML block is not read by the current implementation. See [WebRTC direct routing](/guides/webrtc-direct-routing/) for the remaining flags, diagnostics, and security model.
-
 ## Live voice
 
 Live voice is off by default. Turn it on, then see [Live voice](/guides/live-voice/) for how calls, delegation, and the control lane behave.

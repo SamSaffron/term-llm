@@ -26,8 +26,6 @@ function setup(media: LightboxState, load: ReturnType<typeof pendingModule>['loa
     worktrees: false,
     hub: null,
     vapidKey: '',
-    webRTC: false,
-    signalingURL: '',
   });
   store.lightbox.value = media;
   function Host() {

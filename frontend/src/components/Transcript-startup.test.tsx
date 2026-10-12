@@ -18,8 +18,6 @@ const config: AppConfig = {
   worktrees: false,
   hub: null,
   vapidKey: '',
-  webRTC: false,
-  signalingURL: '',
 };
 
 it('allows history paging after the visible startup placeholder hydrates', () => {

@@ -78,7 +78,7 @@ The server validates and snapshots enabled assets on startup or explicit rescan.
 
 The browser uses generation-scoped URLs and extension assets are excluded from the service-worker shell cache. After a rescan, requests for an old generation receive a reload-needed response. A full page reload resets JavaScript effects; there is no hot-uninstall or mandatory publication/revision system.
 
-Direct HTTP and Hub-proxied HTTP connections are supported. Browser module loading over a WebRTC-only connection is not currently supported; use a direct or Hub HTTP connection for extensions.
+Direct HTTP and Hub-proxied HTTP connections are supported.
 
 ## JavaScript helpers
 

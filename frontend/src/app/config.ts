@@ -18,13 +18,6 @@ declare global {
     TERM_LLM_HUB?: HubContext;
     TERM_LLM_VAPID_PUBLIC_KEY?: string;
     TERM_LLM_PUSH_SUPPORTED?: boolean;
-    TERM_LLM_WEBRTC_ENABLED?: boolean;
-    TERM_LLM_WEBRTC_SIGNALING_URL?: string;
-    __WEBRTC_ENABLED__?: boolean;
-    __WEBRTC_SIGNALING_URL__?: string;
-    __WEBRTC_DIAGNOSTICS__?: boolean;
-    __TERM_LLM_WEBRTC_TESTING__?: boolean;
-    __TERM_LLM_WEBRTC_TEST_HOOKS__?: unknown;
     __TERM_LLM_ENABLE_TEST_BRIDGE__?: boolean;
     __TERM_LLM_TEST__?: Record<string, unknown>;
   }
@@ -53,8 +46,6 @@ export interface AppConfig {
   hub: HubContext | null;
   vapidKey: string;
   pushSupported?: boolean;
-  webRTC: boolean;
-  signalingURL: string;
   initialProject?: Project;
   /**
    * Opaque server store/auth identity for persistent UI caches. Never derived
@@ -106,10 +97,6 @@ export function readInjectedConfig(target: Window = window): AppConfig {
     hub,
     vapidKey: String(target.TERM_LLM_VAPID_PUBLIC_KEY || ''),
     pushSupported: target.TERM_LLM_PUSH_SUPPORTED === true,
-    webRTC: target.TERM_LLM_WEBRTC_ENABLED === true || target.__WEBRTC_ENABLED__ === true,
-    signalingURL: String(
-      target.TERM_LLM_WEBRTC_SIGNALING_URL || target.__WEBRTC_SIGNALING_URL__ || '',
-    ),
   };
 }
 
