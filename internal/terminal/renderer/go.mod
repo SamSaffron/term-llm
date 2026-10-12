@@ -4,12 +4,12 @@ go 1.26.0
 
 require (
 	github.com/charmbracelet/colorprofile v0.4.3
-	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/windows v0.2.2
 	github.com/muesli/cancelreader v0.2.2
 	github.com/rivo/uniseg v0.4.7
 	github.com/xo/terminfo v1.2.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 )
 
 require (
