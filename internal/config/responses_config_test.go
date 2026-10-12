@@ -4,13 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func TestLoadProviderAdvancedResponsesConfig(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)

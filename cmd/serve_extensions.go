@@ -15,7 +15,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/extensions"
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,15 +40,17 @@ type extensionSettingsState struct {
 }
 
 func newServeExtensions(dir string, ids []string, flagSet, disabled bool) (*serveExtensions, error) {
-	p := viper.ConfigFileUsed()
+	p, err := config.FindConfigFile()
+	if err != nil {
+		return nil, err
+	}
 	if p == "" {
-		var err error
 		p, err = config.GetConfigPath()
 		if err != nil {
 			return nil, err
 		}
 	}
-	p, err := filepath.Abs(p)
+	p, err = filepath.Abs(p)
 	if err != nil {
 		return nil, err
 	}

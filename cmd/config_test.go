@@ -11,7 +11,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/cache"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -219,8 +218,6 @@ func TestEffectiveApprovalConfigValue(t *testing.T) {
 }
 
 func TestVeniceImageConfigModelCompletions(t *testing.T) {
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
@@ -251,8 +248,6 @@ func TestApprovalConfigValueCompletionsExcludeYolo(t *testing.T) {
 }
 
 func TestOllamaConfigModelCompletionFallsBackWhenEndpointUnavailable(t *testing.T) {
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	home := t.TempDir()
 	configHome := t.TempDir()
 	t.Setenv("HOME", home)
@@ -395,8 +390,6 @@ func TestConfigShowRedactsSensitiveRawValues(t *testing.T) {
 
 func TestClassifyConfigShowResetAndCompletion(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	path, err := config.GetConfigPath()
 	if err != nil {
 		t.Fatal(err)

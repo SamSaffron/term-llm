@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func TestGuardianFallbackEnabledAndValidate(t *testing.T) {
@@ -86,8 +84,6 @@ func TestGuardianFallbackLoadsFromYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", configHome)
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	cfg, err := Load()
 	if err != nil {
@@ -126,8 +122,6 @@ func TestGuardianFallbackLoadRejectsMisconfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("XDG_CONFIG_HOME", configHome)
-			viper.Reset()
-			t.Cleanup(viper.Reset)
 
 			if _, err := Load(); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("Load() = %v, want containing %q", err, tc.wantErr)

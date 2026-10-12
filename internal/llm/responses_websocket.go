@@ -1394,7 +1394,7 @@ func headerValueFold(headers map[string]string, name string) string {
 }
 
 func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequest) (*responsesWebSocketConnection, bool, error) {
-	// Header names may arrive lowercased from config (viper), so match the
+	// Header names arrive lowercased from config, so match the
 	// configured beta case-insensitively like applyResponsesHeaders does.
 	betaHeader := headerValueFold(c.ExtraHeaders, "OpenAI-Beta")
 	betaHeader = composeBetaHeader(betaHeader, headerValueFold(req.ExtraHeaders, "OpenAI-Beta"))

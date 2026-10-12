@@ -19,7 +19,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 type classifyTestServer struct {
@@ -775,8 +774,6 @@ func assertClassifyCompletions(t *testing.T, got []string, directive string, wan
 
 func TestClassifyEnumFlagCompletions(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -798,8 +795,6 @@ func TestClassifyEnumFlagCompletions(t *testing.T) {
 
 func TestClassifyProviderModelAndBaseURLCompletions(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	path, err := config.GetConfigPath()
 	if err != nil {
 		t.Fatal(err)
@@ -836,8 +831,6 @@ func TestClassifyProviderModelAndBaseURLCompletions(t *testing.T) {
 
 func TestClassifyAnswerCompletionUsesRequestedQuestions(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	questions := writeTemp(t, "questions.yaml", "urgency:\n  type: score\n  instructions: How urgent?\n  criteria: [low, high]\ntopic:\n  type: choice\n  instructions: Which topic?\n  criteria:\n    billing: Billing\n")
 
 	got, directive := classifyCompletions(t, "classify", "state", "--questions", questions, "--format", "value", "--answer", "")

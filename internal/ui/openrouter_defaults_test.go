@@ -2,8 +2,6 @@ package ui
 
 import (
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func TestHeadlessSetupPrefersOpenRouterFree(t *testing.T) {
@@ -14,8 +12,6 @@ func TestHeadlessSetupPrefersOpenRouterFree(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	t.Setenv("ANTHROPIC_API_KEY", "other-key")
 	t.Setenv("ZEN_API_KEY", "other-key")
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	cfg, err := RunHeadlessSetup()
 	if err != nil {
 		t.Fatal(err)

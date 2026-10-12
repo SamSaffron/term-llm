@@ -14,7 +14,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/share"
 	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func addShareAudioFixture(t *testing.T, store session.Store, id string) int64 {
@@ -74,8 +73,6 @@ func TestCreateSessionShareAudioConsent(t *testing.T) {
 
 func TestSessionsAudioFlagForwarding(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	oldDB, oldNoSession := sessionDBPath, noSession
 	oldFactory := newSessionSharePublisher
 	oldNew, oldJSON, oldNoImages := sessionsShareNew, sessionsShareJSON, sessionsShareNoImages

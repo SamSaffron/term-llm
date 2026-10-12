@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func clearProviderDiscoveryEnv(t *testing.T) {
@@ -137,8 +135,6 @@ func TestApplyOverridesDoesNotDeclareProvider(t *testing.T) {
 }
 
 func TestLoad_ProviderDiscoveryConfigDeclaredBlocks(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 	clearProviderDiscoveryEnv(t)
 	t.Setenv("XAI_API_KEY", "xai-test")
 
@@ -177,8 +173,6 @@ providers:
 }
 
 func TestLoad_RejectsInvalidProviderDiscovery(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)

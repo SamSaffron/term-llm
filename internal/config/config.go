@@ -1,18 +1,15 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -276,9 +273,9 @@ type ReasoningConfig struct {
 	Jobs             ReasoningSurfaceConfig `mapstructure:"jobs" yaml:"jobs,omitempty"`
 
 	// Presence markers let programmatic configs explicitly set false for boolean
-	// options while still allowing partial configs to inherit defaults. Viper
-	// populates these from InConfig; direct callers can set them when they need a
-	// false override.
+	// options while still allowing partial configs to inherit defaults. Load
+	// sets these when the config file has a value; direct callers can set them
+	// when they need a false override.
 	RawSet              bool `mapstructure:"-" yaml:"-"`
 	ExtractTitlesSet    bool `mapstructure:"-" yaml:"-"`
 	PersistSummariesSet bool `mapstructure:"-" yaml:"-"`
@@ -1495,42 +1492,47 @@ type SearchGoogleConfig struct {
 	CX     string `mapstructure:"cx"` // Custom Search Engine ID
 }
 
+// Load reads the config file (if any), applies schema defaults, validates the
+// result, and resolves the default provider's credentials.
 func Load() (*Config, error) {
-	configPath, err := GetConfigDir()
+	cfg, err := loadUnresolved()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get config dir: %w", err)
+		return nil, err
 	}
 
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(configPath)
-	viper.AddConfigPath(".")
-
-	viper.RegisterAlias("provider", "default_provider")
-
-	// Set defaults from GetDefaults() - single source of truth
-	for key, value := range GetDefaults() {
-		viper.SetDefault(key, value)
+	if err := cfg.ResolveProviderCredentials(cfg.DefaultProvider); err != nil {
+		return nil, fmt.Errorf("%s credentials: %w", cfg.DefaultProvider, err)
 	}
 
-	// Read config file (optional - won't error if missing)
-	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			return nil, fmt.Errorf("failed to read config: %w", err)
-		}
+	// Image, audio, music, transcription, embedding and search credentials are
+	// deliberately NOT resolved here. They are resolved through CredentialRef
+	// accessors at the point of use, so loading config never touches a vault
+	// for a feature the caller is not using.
+
+	return cfg, nil
+}
+
+// loadUnresolved is Load without credential resolution.
+func loadUnresolved() (*Config, error) {
+	path, err := FindConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	file, err := readFileSettings(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
 	var cfg Config
-	decodeHook := mapstructure.ComposeDecodeHookFunc(liveControlPlaneDecodeHook(), providerModelsDecodeHook())
-	if err := viper.Unmarshal(&cfg, viper.DecodeHook(decodeHook)); err != nil {
+	if err := decodeSettings(file.mergedSettings(), &cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-	applyProviderModelConfigs(&cfg, providerModelConfigsFromViper(viper.GetViper()))
+	applyProviderModelConfigs(&cfg, providerModelConfigsFromFile(file))
 	if err := validateProviderModelReasoning(&cfg); err != nil {
 		return nil, err
 	}
-	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
-	markProviderConfigPresence(&cfg, viper.GetViper())
+	markReasoningConfigPresence(&cfg.Reasoning, file)
+	markProviderConfigPresence(&cfg, file)
 	if err := cfg.ValidateCommit(); err != nil {
 		return nil, err
 	}
@@ -1562,24 +1564,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	if err := overlayProviderEnvFromRawConfig(&cfg); err != nil {
-		return nil, fmt.Errorf("failed to load raw provider env config: %w", err)
-	}
-
-	// Initialize providers map if nil
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
-
-	if err := cfg.ResolveProviderCredentials(cfg.DefaultProvider); err != nil {
-		return nil, fmt.Errorf("%s credentials: %w", cfg.DefaultProvider, err)
-	}
-
-	// Image, audio, music, transcription, embedding and search credentials are
-	// deliberately NOT resolved here. They are resolved through CredentialRef
-	// accessors at the point of use, so loading config never touches a vault
-	// for a feature the caller is not using.
-
 	return &cfg, nil
 }
 
@@ -1650,11 +1637,9 @@ func modelDisplayStringFromAny(raw any) (string, bool) {
 	}
 }
 
-func providerModelConfigsFromViper(v *viper.Viper) map[string][]ProviderModelConfig {
-	if v == nil {
-		return nil
-	}
-	providers := v.GetStringMap("providers")
+func providerModelConfigsFromFile(file *fileSettings) map[string][]ProviderModelConfig {
+	raw, _ := file.lookup("providers")
+	providers, _ := raw.(map[string]any)
 	if len(providers) == 0 {
 		return nil
 	}
@@ -2019,13 +2004,13 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func markReasoningConfigPresence(reasoning *ReasoningConfig, v *viper.Viper) {
-	if reasoning == nil || v == nil {
+func markReasoningConfigPresence(reasoning *ReasoningConfig, file *fileSettings) {
+	if reasoning == nil || file == nil {
 		return
 	}
-	reasoning.RawSet = v.InConfig("reasoning.raw")
-	reasoning.ExtractTitlesSet = v.InConfig("reasoning.extract_titles")
-	reasoning.PersistSummariesSet = v.InConfig("reasoning.persist_summaries")
+	reasoning.RawSet = file.has("reasoning.raw")
+	reasoning.ExtractTitlesSet = file.has("reasoning.extract_titles")
+	reasoning.PersistSummariesSet = file.has("reasoning.persist_summaries")
 }
 
 // ProviderDisabled reports whether providers.<name>.enabled is explicitly false.
@@ -2040,12 +2025,13 @@ func (c *Config) ProviderDisabled(name string) bool {
 // markProviderConfigPresence flags provider entries that come only from
 // registered defaults rather than the config file. Every key under providers:
 // counts as declared, including "name:" (YAML null) and "name: {}", which
-// viper drops when the provider has no schema defaults.
-func markProviderConfigPresence(cfg *Config, v *viper.Viper) {
-	if cfg == nil || v == nil {
+// merging drops when the provider has no schema defaults.
+func markProviderConfigPresence(cfg *Config, file *fileSettings) {
+	if cfg == nil || file == nil {
 		return
 	}
-	declared := declaredProviderKeys(v.ConfigFileUsed())
+	raw, _ := file.lookup("providers")
+	declared, _ := raw.(map[string]any)
 	if cfg.Providers == nil && len(declared) > 0 {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
@@ -2055,122 +2041,10 @@ func markProviderConfigPresence(cfg *Config, v *viper.Viper) {
 		}
 	}
 	for name, pc := range cfg.Providers {
-		pc.FromDefaults = !v.InConfig("providers."+name) && !declared[name]
+		_, isDeclared := declared[name]
+		pc.FromDefaults = !isDeclared
 		cfg.Providers[name] = pc
 	}
-}
-
-// declaredProviderKeys returns every provider name written under providers:
-// in the config file, whatever its value.
-func declaredProviderKeys(configFile string) map[string]bool {
-	if configFile == "" {
-		return nil
-	}
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return nil
-	}
-	var raw struct {
-		Providers map[string]any `yaml:"providers"`
-	}
-	if yaml.Unmarshal(data, &raw) != nil {
-		return nil
-	}
-	names := make(map[string]bool, len(raw.Providers))
-	for name := range raw.Providers {
-		names[strings.ToLower(name)] = true
-	}
-	return names
-}
-
-// writeConfigPreservingEnvCase calls v.WriteConfig() but preserves the case
-// of keys under providers.<name>.env. Viper unconditionally lowercases YAML
-// keys (see github.com/spf13/viper#411), which silently breaks env vars like
-// CLAUDE_CODE_OAUTH_TOKEN even when the caller is only touching unrelated
-// settings (telegram tokens, agent prefs, ...). This helper snapshots env
-// subsections from the raw file before the write and rewrites them after,
-// so unrelated saves no longer corrupt env casing.
-func writeConfigPreservingEnvCase(v *viper.Viper) error {
-	configFile := v.ConfigFileUsed()
-	envSnapshot, _ := snapshotProviderEnvSections(configFile)
-	if err := v.WriteConfig(); err != nil {
-		return err
-	}
-	if len(envSnapshot) == 0 {
-		return nil
-	}
-	return rewriteProviderEnvSections(configFile, envSnapshot)
-}
-
-func snapshotProviderEnvSections(path string) (map[string]map[string]string, error) {
-	if path == "" {
-		return nil, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var raw struct {
-		Providers map[string]struct {
-			Env map[string]string `yaml:"env"`
-		} `yaml:"providers"`
-	}
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, err
-	}
-	out := map[string]map[string]string{}
-	for name, p := range raw.Providers {
-		if len(p.Env) > 0 {
-			out[name] = p.Env
-		}
-	}
-	return out, nil
-}
-
-func rewriteProviderEnvSections(path string, snapshot map[string]map[string]string) error {
-	if path == "" || len(snapshot) == 0 {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return err
-	}
-	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return nil
-	}
-	rootMap := root.Content[0]
-	if rootMap.Kind != yaml.MappingNode {
-		return nil
-	}
-	providersNode := findOrCreateChildMapping(rootMap, "providers")
-	for name, env := range snapshot {
-		providerNode := findOrCreateChildMapping(providersNode, name)
-		envNode := findOrCreateChildMapping(providerNode, "env")
-		envNode.Content = nil
-		keys := make([]string, 0, len(env))
-		for k := range env {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			envNode.Content = append(envNode.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Value: k},
-				&yaml.Node{Kind: yaml.ScalarNode, Value: env[k]},
-			)
-		}
-	}
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		return err
-	}
-	enc.Close()
-	return writeFileAtomically(path, buf.Bytes(), 0o600)
 }
 
 // WriteFileAtomically replaces path with data using a temp-file + fsync + rename sequence.
@@ -2268,70 +2142,6 @@ func syncDirectory(dir string) error {
 	if err := df.Sync(); err != nil {
 		return fmt.Errorf("sync config directory: %w", err)
 	}
-	return nil
-}
-
-func findOrCreateChildMapping(parent *yaml.Node, key string) *yaml.Node {
-	if parent == nil || parent.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(parent.Content); i += 2 {
-		if parent.Content[i].Value == key {
-			child := parent.Content[i+1]
-			if child.Kind != yaml.MappingNode {
-				child.Kind = yaml.MappingNode
-				child.Tag = ""
-				child.Value = ""
-				child.Content = nil
-			}
-			return child
-		}
-	}
-	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-	mapping := &yaml.Node{Kind: yaml.MappingNode}
-	parent.Content = append(parent.Content, keyNode, mapping)
-	return mapping
-}
-
-func overlayProviderEnvFromRawConfig(cfg *Config) error {
-	configFile := viper.ConfigFileUsed()
-	if configFile == "" {
-		return nil
-	}
-
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return err
-	}
-
-	var raw struct {
-		Providers map[string]struct {
-			Env map[string]string `yaml:"env"`
-		} `yaml:"providers"`
-	}
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-
-	if len(raw.Providers) == 0 {
-		return nil
-	}
-	if cfg.Providers == nil {
-		cfg.Providers = make(map[string]ProviderConfig)
-	}
-
-	for name, provider := range raw.Providers {
-		if provider.Env == nil {
-			continue
-		}
-		providerCfg := cfg.Providers[name]
-		providerCfg.Env = make(map[string]string, len(provider.Env))
-		for k, v := range provider.Env {
-			providerCfg.Env[k] = v
-		}
-		cfg.Providers[name] = providerCfg
-	}
-
 	return nil
 }
 
@@ -2983,8 +2793,8 @@ func Save(cfg *Config) error {
 	return writeFileAtomically(path, data, 0o600)
 }
 
-// SetAgentPreference sets a preference for a specific agent.
-// Uses viper to merge with existing config.
+// SetAgentPreference sets a preference for a specific agent in config.yaml,
+// leaving the rest of the file (including comments) as written.
 // Supports "provider:model" format for the provider key (e.g., "chatgpt:gpt-5.2-codex").
 // Returns a list of keys that were set (may be multiple for provider:model format).
 func SetAgentPreference(agentName, key, value string) ([]string, error) {
@@ -2993,76 +2803,58 @@ func SetAgentPreference(agentName, key, value string) ([]string, error) {
 		return nil, fmt.Errorf("unknown agent preference key: %s", key)
 	}
 
-	configPath, err := GetConfigPath()
+	values, err := agentPreferenceValues(key, value)
 	if err != nil {
 		return nil, err
 	}
-
-	// Ensure config directory exists
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return nil, fmt.Errorf("create config dir: %w", err)
+	err = editConfigFile(func(root *yaml.Node) (bool, error) {
+		prefs := childMapping(childMapping(childMapping(root, "agents"), "preferences"), agentName)
+		return setConfigValues(prefs, values)
+	})
+	if err != nil {
+		return nil, err
 	}
+	keysSet := make([]string, len(values))
+	for i, v := range values {
+		keysSet[i] = v.key
+	}
+	return keysSet, nil
+}
 
-	// Load existing config using a separate viper instance
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	v.SetConfigType("yaml")
-
-	// Try to read existing config (ignore if doesn't exist)
-	_ = v.ReadInConfig()
-
-	var keysSet []string
-
-	// Handle provider:model format
-	if key == "provider" && strings.Contains(value, ":") {
-		provider, model := ParseProviderModel(value)
-
-		providerKey := fmt.Sprintf("agents.preferences.%s.provider", agentName)
-		modelKey := fmt.Sprintf("agents.preferences.%s.model", agentName)
-
-		v.Set(providerKey, provider)
-		v.Set(modelKey, model)
-		keysSet = append(keysSet, "provider", "model")
-	} else {
-		// Set the preference
-		viperKey := fmt.Sprintf("agents.preferences.%s.%s", agentName, key)
-
-		// Parse value based on key type
-		switch key {
-		case "max_turns", "spawn_max_parallel", "spawn_max_depth", "spawn_timeout":
-			// Integer values
-			var intVal int
-			if _, err := fmt.Sscanf(value, "%d", &intVal); err != nil {
-				return nil, fmt.Errorf("invalid integer value for %s: %s", key, value)
-			}
-			if intVal < 0 {
-				return nil, fmt.Errorf("negative value not allowed for %s: %d", key, intVal)
-			}
-			v.Set(viperKey, intVal)
-		case "search", "shell_auto_run":
-			// Boolean values (case-insensitive)
-			lowerVal := strings.ToLower(value)
-			boolVal := lowerVal == "true" || value == "1" || lowerVal == "yes"
-			v.Set(viperKey, boolVal)
-		case "tools_enabled", "tools_disabled", "shell_allow", "spawn_allowed_agents":
-			// Array values (comma-separated)
-			if value == "" {
-				v.Set(viperKey, []string{})
-			} else {
-				parts := strings.Split(value, ",")
-				for i := range parts {
-					parts[i] = strings.TrimSpace(parts[i])
-				}
-				v.Set(viperKey, parts)
-			}
-		default:
-			// String values
-			v.Set(viperKey, value)
+// agentPreferenceValues parses a preference value into the typed values to
+// store, splitting "provider:model" into provider and model.
+func agentPreferenceValues(key, value string) ([]configValue, error) {
+	switch key {
+	case "provider":
+		if strings.Contains(value, ":") {
+			provider, model := ParseProviderModel(value)
+			return []configValue{{"provider", provider}, {"model", model}}, nil
 		}
-		keysSet = append(keysSet, key)
+	case "max_turns", "spawn_max_parallel", "spawn_max_depth", "spawn_timeout":
+		var intVal int
+		if _, err := fmt.Sscanf(value, "%d", &intVal); err != nil {
+			return nil, fmt.Errorf("invalid integer value for %s: %s", key, value)
+		}
+		if intVal < 0 {
+			return nil, fmt.Errorf("negative value not allowed for %s: %d", key, intVal)
+		}
+		return []configValue{{key, intVal}}, nil
+	case "search", "shell_auto_run":
+		// Boolean values (case-insensitive)
+		lowerVal := strings.ToLower(value)
+		return []configValue{{key, lowerVal == "true" || value == "1" || lowerVal == "yes"}}, nil
+	case "tools_enabled", "tools_disabled", "shell_allow", "spawn_allowed_agents":
+		// Array values (comma-separated)
+		parts := []string{}
+		if value != "" {
+			parts = strings.Split(value, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+		}
+		return []configValue{{key, parts}}, nil
 	}
-
-	return keysSet, writeConfigPreservingEnvCase(v)
+	return []configValue{{key, value}}, nil
 }
 
 // GetAgentPreference returns the preferences for a specific agent.
@@ -3080,96 +2872,64 @@ func GetAgentPreference(agentName string) (AgentPreference, bool) {
 	return pref, ok
 }
 
-// ClearAgentPreferences removes all preferences for a specific agent.
+// ClearAgentPreferences removes all preferences for a specific agent from
+// config.yaml, dropping agents.preferences when it becomes empty.
 func ClearAgentPreferences(agentName string) error {
 	configPath, err := GetConfigPath()
 	if err != nil {
 		return err
 	}
-
-	// Load existing config
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			return nil // Nothing to clear
-		}
-		return err
-	}
-
-	// Get all preferences
-	prefs := v.GetStringMap("agents.preferences")
-	if prefs == nil {
+	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		return nil // Nothing to clear
 	}
-
-	// Remove this agent's preferences
-	delete(prefs, agentName)
-
-	// Set the updated preferences map
-	if len(prefs) == 0 {
-		// Remove the entire preferences section if empty
-		v.Set("agents.preferences", nil)
-	} else {
-		v.Set("agents.preferences", prefs)
-	}
-
-	return writeConfigPreservingEnvCase(v)
+	return editConfigFile(func(root *yaml.Node) (bool, error) {
+		agents := lookupMapping(root, "agents")
+		if agents == nil {
+			return false, nil
+		}
+		prefs := lookupMapping(agents, "preferences")
+		if prefs == nil || !deleteMappingKey(prefs, agentName) {
+			return false, nil
+		}
+		if len(prefs.Content) == 0 {
+			deleteMappingKey(agents, "preferences")
+		}
+		return true, nil
+	})
 }
 
-// SetServeTelegramConfig saves Telegram bot configuration using viper.
-// Merges with existing config rather than overwriting.
+// SetServeTelegramConfig saves Telegram bot configuration into config.yaml,
+// leaving the rest of the file (including comments) as written.
 func SetServeTelegramConfig(c TelegramServeConfig) error {
-	configPath, err := GetConfigPath()
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	v.SetConfigType("yaml")
-	_ = v.ReadInConfig()
-
-	v.Set("serve.telegram.token", c.Token)
-	v.Set("serve.telegram.allowed_user_ids", c.AllowedUserIDs)
-	v.Set("serve.telegram.allowed_usernames", c.AllowedUsernames)
-	if c.IdleTimeout > 0 {
-		v.Set("serve.telegram.idle_timeout", c.IdleTimeout)
-	}
-	if c.InterruptTimeout > 0 {
-		v.Set("serve.telegram.interrupt_timeout", c.InterruptTimeout)
-	}
-
-	return writeConfigPreservingEnvCase(v)
+	return editConfigFile(func(root *yaml.Node) (bool, error) {
+		telegram := childMapping(childMapping(root, "serve"), "telegram")
+		values := []configValue{
+			{"token", c.Token},
+			{"allowed_user_ids", nonNilSlice(c.AllowedUserIDs)},
+			{"allowed_usernames", nonNilSlice(c.AllowedUsernames)},
+		}
+		if c.IdleTimeout > 0 {
+			values = append(values, configValue{"idle_timeout", c.IdleTimeout})
+		}
+		if c.InterruptTimeout > 0 {
+			values = append(values, configValue{"interrupt_timeout", c.InterruptTimeout})
+		}
+		return setConfigValues(telegram, values)
+	})
 }
 
-// SetServeWebPushConfig saves Web Push VAPID configuration using viper.
+// SetServeWebPushConfig saves Web Push VAPID configuration into config.yaml,
+// leaving the rest of the file (including comments) as written.
 func SetServeWebPushConfig(c WebPushConfig) error {
-	configPath, err := GetConfigPath()
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	v.SetConfigType("yaml")
-	_ = v.ReadInConfig()
-
-	v.Set("serve.web_push.vapid_public_key", c.VAPIDPublicKey)
-	v.Set("serve.web_push.vapid_private_key", c.VAPIDPrivateKey)
-	if c.Subject != "" {
-		v.Set("serve.web_push.subject", c.Subject)
-	}
-
-	return writeConfigPreservingEnvCase(v)
+	return editConfigFile(func(root *yaml.Node) (bool, error) {
+		webPush := childMapping(childMapping(root, "serve"), "web_push")
+		values := []configValue{
+			{"vapid_public_key", c.VAPIDPublicKey},
+			{"vapid_private_key", c.VAPIDPrivateKey},
+		}
+		if c.Subject != "" {
+			values = append(values, configValue{"subject", c.Subject})
+		}
+		return setConfigValues(webPush, values)
+	})
 }

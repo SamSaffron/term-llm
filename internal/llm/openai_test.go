@@ -674,7 +674,7 @@ func TestOpenAIProviderWebSocketUsesEndpointHeaders(t *testing.T) {
 		UseWebSocket: true,
 		Endpoint: openaiapi.Endpoint{
 			BaseURL: server.URL + "/v1",
-			// Lowercase names mirror how viper loads config keys.
+			// Lowercase names mirror how config keys are loaded.
 			Headers: map[string]string{"openai-organization": "org-ws", "openai-project": "proj-ws", "openai-beta": "custom=v1"},
 		},
 	})

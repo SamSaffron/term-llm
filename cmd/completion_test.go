@@ -17,7 +17,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func TestShellCompletionSkipsInheritedPprofServer(t *testing.T) {
@@ -362,8 +361,6 @@ func TestImageCompletionLoadsNamedProviderConfig(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(text), 0600); err != nil {
 		t.Fatal(err)
 	}
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	got, _ := ImageProviderFlagCompletion(nil, nil, "janus")
 	if !slices.Contains(got, "janus") {
 		t.Fatalf("provider completion = %v", got)

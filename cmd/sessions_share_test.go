@@ -14,7 +14,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 type sessionsSharePublisherMock struct {
@@ -49,8 +48,6 @@ func (m *sessionsSharePublisherMock) Update(_ context.Context, _ string, req sha
 
 func TestSessionsShareCreatesThenUpdatesAndPersistsWholeSession(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	oldDBPath, oldNoSession := sessionDBPath, noSession
 	oldVisibility, oldNew, oldJSON, oldRaw := sessionsShareVisibility, sessionsShareNew, sessionsShareJSON, sessionsShareIncludeRawReasoning
 	oldFactory := newSessionSharePublisher

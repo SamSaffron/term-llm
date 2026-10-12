@@ -24,7 +24,7 @@ func runConfigCheck(t *testing.T, check *ConfigCheck) []Finding {
 	t.Helper()
 	if check.Config == nil {
 		// An explicit config keeps the check away from the user's real
-		// configuration and away from viper's global state.
+		// configuration.
 		check.Config = &config.Config{}
 	}
 	return check.Run(context.Background())

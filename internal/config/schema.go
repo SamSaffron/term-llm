@@ -39,7 +39,7 @@ type DefaultField struct {
 // types, API-key environment variables, `term-llm providers` output, setup
 // hints, and the setup wizard all derive from providerSpecs.
 //
-// ConfigDefault controls whether Defaults are registered with Viper and
+// ConfigDefault controls whether Defaults are applied by Load and
 // written to generated config templates; runtime-only defaults are still used
 // by direct constructors and fast-model helpers.
 type ProviderSpec struct {

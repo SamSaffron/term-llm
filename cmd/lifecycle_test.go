@@ -8,7 +8,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func TestLifecycleStatusJSONExplainsDetectionWithoutPublishing(t *testing.T) {
@@ -16,8 +15,6 @@ func TestLifecycleStatusJSONExplainsDetectionWithoutPublishing(t *testing.T) {
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_PANE_ID", "pane-1")
 	t.Setenv("HERDR_BIN_PATH", "/path/that/need/not/run")
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	previous := lifecycleStatusJSON
 	lifecycleStatusJSON = true
 	t.Cleanup(func() { lifecycleStatusJSON = previous })
@@ -48,8 +45,6 @@ func TestLifecycleStatusJSONExplainsDetectionWithoutPublishing(t *testing.T) {
 func TestLifecycleStatusTextIncludesReasons(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("TERM_LLM_LIFECYCLE", "0")
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	previous := lifecycleStatusJSON
 	lifecycleStatusJSON = false
 	t.Cleanup(func() { lifecycleStatusJSON = previous })

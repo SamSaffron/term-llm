@@ -13,12 +13,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/viper"
 )
 
 func TestAskTypedOutputToolRunsOnCompleteAfterCentralizedRunner(t *testing.T) {
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	repo := t.TempDir()
 	git := exec.Command("git", "init", "-q", repo)

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,8 +30,6 @@ func TestLiveControlPlaneSelectorCompatibility(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-			viper.Reset()
-			t.Cleanup(viper.Reset)
 			if tc.yaml != "" {
 				dir, err := GetConfigDir()
 				if err != nil {
@@ -64,8 +61,6 @@ func TestLiveControlPlaneSelectorCompatibility(t *testing.T) {
 
 func TestLiveClassifyDefaultsAndValidation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -88,8 +83,6 @@ func TestLiveClassifyDefaultsAndValidation(t *testing.T) {
 
 func TestFileTrackingDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	cfg, err := Load()
 	if err != nil {
@@ -110,7 +103,6 @@ func TestFileTrackingDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	viper.Reset()
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
@@ -122,8 +114,6 @@ func TestFileTrackingDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
 
 func TestServeProjectsConfigDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +131,6 @@ func TestServeProjectsConfigDefaultsEnabledAndLoadsExplicitDisable(t *testing.T)
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("serve:\n  projects:\n    enabled: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	viper.Reset()
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
@@ -153,8 +142,6 @@ func TestServeProjectsConfigDefaultsEnabledAndLoadsExplicitDisable(t *testing.T)
 
 func TestServeAutoTitleDefaultsEnabledAndPreservesExplicitDisable(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +159,6 @@ func TestServeAutoTitleDefaultsEnabledAndPreservesExplicitDisable(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("serve:\n  auto_title: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	viper.Reset()
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
@@ -268,8 +254,6 @@ func TestApplyOverrides(t *testing.T) {
 }
 
 func TestLoad_GuardianClassifyAllShell(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -293,8 +277,6 @@ func TestLoad_GuardianClassifyAllShell(t *testing.T) {
 }
 
 func TestLoad_ProviderUseWebSocket(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -328,8 +310,6 @@ providers:
 }
 
 func TestLoad_MarksProvidersPresentOnlyFromDefaults(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -373,8 +353,6 @@ providers:
 }
 
 func TestLoad_ProviderUseWebSocketExplicitFalseOverridesDefault(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -409,8 +387,6 @@ providers:
 }
 
 func TestLoad_OnlyResolvesDefaultProviderCredentials(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	homeDir := t.TempDir()
 	configHome := t.TempDir()
@@ -454,8 +430,6 @@ providers:
 }
 
 func TestLoad_PreservesProviderEnvKeyCase(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -501,11 +475,8 @@ providers:
 }
 
 func TestSetServeTelegramConfig_PreservesProviderEnvKeyCase(t *testing.T) {
-	// Regression: viper.WriteConfig() lowercases YAML keys, which corrupts
-	// providers.<n>.env.<KEY> during unrelated saves like telegram setup.
-	// writeConfigPreservingEnvCase must restore the original casing.
-	viper.Reset()
-	defer viper.Reset()
+	// Regression: unrelated saves like telegram setup must not lowercase
+	// providers.<n>.env.<KEY>.
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -549,7 +520,6 @@ providers:
 	}
 
 	// Verify the round-trip Load also returns the uppercase keys.
-	viper.Reset()
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load after save: %v", err)
@@ -1124,37 +1094,6 @@ func TestToolDiscoveryDefaultsAndValidation(t *testing.T) {
 	}
 }
 
-func TestNoViperSetDefaultOutsideConfigPackage(t *testing.T) {
-	root := filepath.Clean(filepath.Join("..", ".."))
-	pattern := "viper." + "SetDefault("
-	allowed := filepath.Clean(filepath.Join(root, "internal", "config", "config.go"))
-	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "docs-site", "term-llm":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if filepath.Ext(path) != ".go" || filepath.Clean(path) == allowed {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if strings.Contains(string(data), pattern) {
-			t.Fatalf("unexpected viper.SetDefault outside internal/config/config.go: %s", path)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("walk repo: %v", err)
-	}
-}
-
 func TestSchemaHasNoLeafPrefixCollisions(t *testing.T) {
 	paths := make([]string, 0)
 	for _, spec := range ConfigKeySpecs() {
@@ -1255,8 +1194,6 @@ func TestResolveReasoningExplicitFalsePresenceOverridesDefaults(t *testing.T) {
 }
 
 func TestLoadReasoningExplicitFalseOverridesDefaults(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -1422,8 +1359,6 @@ func TestDescribeCredentialSource_NearAI(t *testing.T) {
 }
 
 func TestLoadBlankChatGPTProviderUsesDefaultModel(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -1451,8 +1386,6 @@ providers:
 }
 
 func TestLoadProviderFileUploadConfig(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -1501,8 +1434,6 @@ providers:
 }
 
 func TestLoadProviderModelObjectConfigs(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -1606,8 +1537,6 @@ func TestValidateProviderModelReasoningRejectsUnsupportedDefault(t *testing.T) {
 }
 
 func TestLoadRejectsUnsupportedDefaultReasoningEffort(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -1787,8 +1716,6 @@ func TestApprovalModesAreOptionalAndValidated(t *testing.T) {
 
 func TestLiveDefaultsAreOffAndChatGPTBacked(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	cfg, err := Load()
 	if err != nil {
@@ -1825,8 +1752,6 @@ func TestLiveDefaultsAreOffAndChatGPTBacked(t *testing.T) {
 func TestLiveConfigOverridesAndValidation(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	dir := filepath.Join(configDir, "term-llm")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1874,8 +1799,6 @@ func TestLiveConfigOverridesAndValidation(t *testing.T) {
 func TestLiveGeminiConfigDefaultsSensitiveKeyAndValidation(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	if err := os.MkdirAll(filepath.Join(configDir, "term-llm"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1907,8 +1830,6 @@ func TestLiveGeminiConfigDefaultsSensitiveKeyAndValidation(t *testing.T) {
 func TestLiveOpenAIConfig(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	dir := filepath.Join(configDir, "term-llm")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1976,8 +1897,6 @@ func TestDiagnosticsDirDoesNotUseWorkingDirectory(t *testing.T) {
 }
 
 func TestLoad_ProviderHeaders(t *testing.T) {
-	viper.Reset()
-	defer viper.Reset()
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -2010,7 +1929,7 @@ func TestLoad_ProviderHeaders(t *testing.T) {
 	if err := providerCfg.ResolveForInference(); err != nil {
 		t.Fatalf("ResolveForInference: %v", err)
 	}
-	// Header names are case-insensitive, so viper's key lowercasing is harmless.
+	// Header names are case-insensitive, so config key lowercasing is harmless.
 	got := map[string]string{}
 	for k, v := range providerCfg.Headers {
 		got[strings.ToLower(k)] = v
@@ -2052,4 +1971,18 @@ func TestValidateProviderCompatibility_HeadersOnlyForAnthropicProtocols(t *testi
 			t.Errorf("%s: error = %v, want unsupported headers", name, err)
 		}
 	}
+}
+
+// writeTestConfig writes content as config.yaml under configHome/term-llm.
+func writeTestConfig(t *testing.T, configHome, content string) string {
+	t.Helper()
+	dir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
 }

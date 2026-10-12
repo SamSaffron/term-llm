@@ -5,14 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func TestShareConfigDefaultsAndLoad(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +28,6 @@ func TestShareConfigDefaultsAndLoad(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	viper.Reset()
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)

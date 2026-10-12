@@ -12,7 +12,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/spf13/viper"
 )
 
 func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
@@ -46,8 +45,6 @@ func TestModelListSupportedTypesIncludesOllama(t *testing.T) {
 }
 
 func TestRunModelsQueriesAgyCLIAndCachesCatalog(t *testing.T) {
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	binDir := t.TempDir()
 	script := `#!/bin/sh
@@ -114,8 +111,6 @@ exit 1
 }
 
 func TestRunModelsQueriesConfiguredOllamaEndpoint(t *testing.T) {
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

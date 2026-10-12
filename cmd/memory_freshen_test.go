@@ -18,7 +18,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/spf13/viper"
 )
 
 // -- truncateUpdateRecentText --
@@ -729,8 +728,6 @@ func TestMemoryUpdateRecentRejectsEmptyOutputWithoutConsumingActivity(t *testing
 	for _, compact := range []bool{false, true} {
 		for _, output := range []string{"reasoning-only", "whitespace-only"} {
 			t.Run(fmt.Sprintf("compact=%v/%s", compact, output), func(t *testing.T) {
-				viper.Reset()
-				t.Cleanup(viper.Reset)
 				ctx := context.Background()
 				dir := t.TempDir()
 				t.Setenv("HOME", dir)

@@ -13,13 +13,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func TestSessionsShareNoToolsIsStickyAcrossUpdates(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	oldDBPath, oldNoSession := sessionDBPath, noSession
 	oldVisibility, oldNew, oldJSON, oldRaw := sessionsShareVisibility, sessionsShareNew, sessionsShareJSON, sessionsShareIncludeRawReasoning
 	oldNoTools, oldNoImages, oldFactory := sessionsShareNoTools, sessionsShareNoImages, newSessionSharePublisher

@@ -1,19 +1,16 @@
 package config
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func TestClassifyProviderConfigDefaultsAndSensitiveKey(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	cfg, err := Load()
 	if err != nil {
@@ -108,8 +105,6 @@ func TestLoadConfigDoesNotResolveTypeSafeCredential(t *testing.T) {
 	}
 
 	t.Setenv("XDG_CONFIG_HOME", configHome)
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 
 	cfg, err := Load()
 	if err != nil {
@@ -209,9 +204,8 @@ func TestClassifyAliasSchema(t *testing.T) {
 }
 
 func TestGuardianClassifyConfig(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -220,9 +214,7 @@ func TestGuardianClassifyConfig(t *testing.T) {
 		t.Fatalf("defaults: %+v", cfg.Guardian)
 	}
 	for _, value := range []float64{0, 0.25, 1, -0.1, 1.1} {
-		viper.Set("guardian.backend", "classify")
-		viper.Set("guardian.classify.provider", "alias")
-		viper.Set("guardian.classify.min_confidence", value)
+		writeTestConfig(t, configHome, fmt.Sprintf("guardian:\n  backend: classify\n  classify:\n    provider: alias\n    min_confidence: %g\n", value))
 		cfg, err = Load()
 		if value < 0 || value > 1 {
 			if err == nil {

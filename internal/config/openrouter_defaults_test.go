@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func TestOpenRouterFreeDefaultsPreserveSavedChoices(t *testing.T) {
@@ -17,8 +15,6 @@ func TestOpenRouterFreeDefaultsPreserveSavedChoices(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 			t.Setenv("OPENROUTER_API_KEY", "test-key")
-			viper.Reset()
-			t.Cleanup(viper.Reset)
 			if tc.saved != "" {
 				dir, err := GetConfigDir()
 				if err != nil {

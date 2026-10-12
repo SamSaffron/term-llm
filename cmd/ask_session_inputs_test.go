@@ -12,12 +12,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	// The system prompt is asserted exactly, so user-global skills (discovered

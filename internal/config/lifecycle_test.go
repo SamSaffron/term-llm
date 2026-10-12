@@ -5,14 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/viper"
 )
 
 func TestLifecycleConfigDefaultsAndLoad(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	viper.Reset()
-	t.Cleanup(viper.Reset)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +33,6 @@ func TestLifecycleConfigDefaultsAndLoad(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	viper.Reset()
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +44,6 @@ func TestLifecycleConfigDefaultsAndLoad(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("lifecycle:\n  enabled: true\n  adapters: []\n  osc: off\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	viper.Reset()
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
