@@ -746,6 +746,36 @@ providers:
 
 This is passed only to the provider subprocess. It does not mutate your parent shell environment.
 
+## Encrypted reasoning requests
+
+Providers using `type: openai` (including custom Responses API endpoints) request
+`reasoning.encrypted_content` by default. This opaque reasoning data is retained
+for full-history replay if server-side conversation state becomes unavailable.
+
+Some endpoints, such as Muse Wonder, reject this include option together with
+`previous_response_id`. Disable the include for that provider:
+
+```yaml
+providers:
+  muse_wonder:
+    type: openai
+    api_key: ${MUSE_API_KEY}
+    base_url: https://your-provider.example/v1
+    model: muse-wonder-full-1
+    request_encrypted_reasoning: false
+```
+
+`request_encrypted_reasoning` defaults to `true`. Setting it to `false` omits
+`reasoning.encrypted_content` from the include list on all requests, including
+full-history retries, without disabling efficient `previous_response_id`
+continuation. It does not delete or prevent replay of encrypted reasoning already
+saved in history or returned unsolicited by the provider.
+
+**Recovery trade-off:** messages and tool calls are still retained, but full-history
+recovery may lack reasoning state for responses made with this option disabled.
+This setting applies only to `type: openai`, not `openai_compatible` (Chat
+Completions), `chatgpt`, or `opencode-go`.
+
 ## Provider service tier
 
 Built-in `openai` and `chatgpt` text providers support the Responses API `service_tier` field. Omit `service_tier` to send no service tier. Set it to `fast` (or the API value `priority`) to request fast/priority service for supported models and accounts:

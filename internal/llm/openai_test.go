@@ -722,3 +722,92 @@ func TestCreateOpenAIProviderFromConfigUsesBaseURLAndHeaders(t *testing.T) {
 		t.Fatalf("endpoint = %#v, want %#v", openai.endpoint, want)
 	}
 }
+
+func TestOpenAIProviderRequestEncryptedReasoning(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		option      *bool
+		wantInclude bool
+	}{
+		{name: "default", wantInclude: true},
+		{name: "enabled", option: boolPtr(true), wantInclude: true},
+		{name: "disabled", option: boolPtr(false)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests []ResponsesRequest
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload ResponsesRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				requests = append(requests, payload)
+				if len(requests) == 2 {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"error":"previous_response_id not found"}`))
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_saved\",\"output\":[]}}\n\n"))
+			}))
+			defer server.Close()
+
+			// Exercise the custom type: openai configuration path, not just the constructor.
+			created, err := createProviderFromConfig("muse_wonder", &config.ProviderConfig{
+				Type: config.ProviderTypeOpenAI, APIKey: "test-key", Model: "muse-wonder",
+				BaseURL: server.URL, RequestEncryptedReasoning: tc.option,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := created.(*OpenAIProvider)
+			messages := []Message{UserText("hello")}
+			stream, err := provider.Stream(context.Background(), Request{Messages: messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainStreamToDone(t, stream)
+			stream.Close()
+
+			// Existing or unsolicited encrypted reasoning must still survive full-history replay.
+			messages = append(messages, Message{Role: RoleAssistant, Parts: []Part{{
+				Type: PartText, Text: "answer", ReasoningItemID: "rs_saved", ReasoningEncryptedContent: "enc_saved",
+			}}}, UserText("follow up"))
+			stream, err = provider.Stream(context.Background(), Request{Messages: messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainStreamToDone(t, stream)
+			stream.Close()
+
+			if len(requests) != 3 {
+				t.Fatalf("requests = %d, want initial, continuation, and full-history retry", len(requests))
+			}
+			for i, req := range requests {
+				want := []string(nil)
+				if tc.wantInclude {
+					want = []string{"reasoning.encrypted_content"}
+				}
+				if !reflect.DeepEqual(req.Include, want) {
+					t.Errorf("request %d include = %v, want %v", i, req.Include, want)
+				}
+			}
+			if requests[0].PreviousResponseID != "" || requests[1].PreviousResponseID != "resp_saved" || requests[2].PreviousResponseID != "" {
+				t.Fatalf("unexpected continuation state: %q, %q, %q", requests[0].PreviousResponseID, requests[1].PreviousResponseID, requests[2].PreviousResponseID)
+			}
+			if len(requests[1].Input) != 1 {
+				t.Fatalf("continuation input = %v, want only latest user message", requests[1].Input)
+			}
+			var found bool
+			for _, item := range requests[2].Input {
+				if item.Type == "reasoning" && item.EncryptedContent == "enc_saved" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("full-history retry lost saved encrypted reasoning")
+			}
+		})
+	}
+}

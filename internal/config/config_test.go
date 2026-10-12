@@ -1986,3 +1986,54 @@ func writeTestConfig(t *testing.T, configHome, content string) string {
 	}
 	return path
 }
+
+func TestRequestEncryptedReasoningLoadAndSave(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := GetConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `default_provider: muse_wonder
+providers:
+  muse_wonder:
+    type: openai
+    model: muse-wonder
+    request_encrypted_reasoning: false
+  explicit_true:
+    type: openai
+    request_encrypted_reasoning: true
+  omitted:
+    type: openai
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := func(cfg *Config) {
+		t.Helper()
+		if got := cfg.Providers["muse_wonder"].RequestEncryptedReasoning; got == nil || *got {
+			t.Fatalf("explicit false = %v, want false", got)
+		}
+		if got := cfg.Providers["explicit_true"].RequestEncryptedReasoning; got == nil || !*got {
+			t.Fatalf("explicit true = %v, want true", got)
+		}
+		if got := cfg.Providers["omitted"].RequestEncryptedReasoning; got != nil {
+			t.Fatalf("omitted = %v, want nil (default enabled)", got)
+		}
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(cfg)
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(cfg)
+}

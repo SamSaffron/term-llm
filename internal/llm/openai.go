@@ -14,25 +14,27 @@ import (
 
 // OpenAIProvider implements Provider using the standard OpenAI API.
 type OpenAIProvider struct {
-	endpoint         openaiapi.Endpoint // Resolved API root plus organization/project scoping
-	apiKey           string
-	model            string
-	effort           string            // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	useWebSocket     bool              // Responses-over-WebSocket transport
-	serviceTier      string            // Optional Responses API service tier default
-	fileUploadPolicy *FileUploadPolicy // Provider-specific native file forwarding policy
-	responsesOptions ResponsesOptions
-	responsesClient  *ResponsesClient // Shared client for Responses API with server state
+	endpoint                  openaiapi.Endpoint // Resolved API root plus organization/project scoping
+	apiKey                    string
+	model                     string
+	effort                    string            // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	useWebSocket              bool              // Responses-over-WebSocket transport
+	serviceTier               string            // Optional Responses API service tier default
+	fileUploadPolicy          *FileUploadPolicy // Provider-specific native file forwarding policy
+	disableEncryptedReasoning bool              // Omit the encrypted reasoning include for incompatible endpoints
+	responsesOptions          ResponsesOptions
+	responsesClient           *ResponsesClient // Shared client for Responses API with server state
 }
 
 type OpenAIProviderOptions struct {
 	// Endpoint overrides the API root, organization and project. Blank fields
 	// fall back to OPENAI_BASE_URL, OPENAI_ORG_ID and OPENAI_PROJECT_ID.
-	Endpoint         openaiapi.Endpoint
-	UseWebSocket     bool
-	ServiceTier      string
-	FileUploadPolicy *FileUploadPolicy
-	Responses        ResponsesOptions
+	Endpoint                  openaiapi.Endpoint
+	UseWebSocket              bool
+	ServiceTier               string
+	FileUploadPolicy          *FileUploadPolicy
+	RequestEncryptedReasoning *bool // nil preserves the default: request encrypted reasoning
+	Responses                 ResponsesOptions
 }
 
 // ParseModelEffort extracts effort suffix from model name.
@@ -58,14 +60,15 @@ func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptions) *OpenAIProvider {
 	actualModel, effort := parseModelEffortForProvider("openai", model)
 	return &OpenAIProvider{
-		endpoint:         openaiapi.Resolve(opts.Endpoint),
-		apiKey:           apiKey,
-		model:            actualModel,
-		effort:           effort,
-		useWebSocket:     opts.UseWebSocket,
-		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
-		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
-		responsesOptions: opts.Responses,
+		endpoint:                  openaiapi.Resolve(opts.Endpoint),
+		apiKey:                    apiKey,
+		model:                     actualModel,
+		effort:                    effort,
+		useWebSocket:              opts.UseWebSocket,
+		serviceTier:               NormalizeServiceTier(opts.ServiceTier),
+		fileUploadPolicy:          cloneFileUploadPolicy(opts.FileUploadPolicy),
+		disableEncryptedReasoning: opts.RequestEncryptedReasoning != nil && !*opts.RequestEncryptedReasoning,
+		responsesOptions:          opts.Responses,
 	}
 }
 
@@ -170,9 +173,12 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		IncludeDeveloperInContinuation: req.IncludeDeveloperInContinuation,
 		FileUploadPolicy:               p.effectiveFileUploadPolicy(),
 		Tools:                          tools,
-		Include:                        []string{"reasoning.encrypted_content"},
 		Stream:                         true,
 		SessionID:                      req.SessionID,
+	}
+
+	if !p.disableEncryptedReasoning {
+		responsesReq.Include = []string{"reasoning.encrypted_content"}
 	}
 
 	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {

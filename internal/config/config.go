@@ -137,23 +137,24 @@ type ProviderConfig struct {
 	Type ProviderType `mapstructure:"type"`
 
 	// Common fields
-	APIKey       string                `mapstructure:"api_key"`
-	Model        string                `mapstructure:"model"`
-	FastModel    string                `mapstructure:"fast_model"`    // Lightweight model for control-plane tasks
-	FastProvider string                `mapstructure:"fast_provider"` // Optional provider key override for FastModel
-	ServiceTier  string                `mapstructure:"service_tier"`  // Optional model service tier (e.g. "fast"/"priority" for ChatGPT)
-	Models       []string              `mapstructure:"models"`        // Available model names/aliases for autocomplete
-	ModelConfigs []ProviderModelConfig `mapstructure:"-"`             // Metadata for object entries in models
-	Reasoning    string                `mapstructure:"reasoning"`     // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
-	Credentials  string                `mapstructure:"credentials"`   // Provider-specific credential mode (for example "api_key" or "claude")
-	Env          map[string]string     `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
-	Headers      map[string]string     `mapstructure:"headers"`       // Extra HTTP headers for Anthropic-protocol and OpenAI providers (values support ${ENV}, $(), op://, file://)
-	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
-	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
-	Enabled      *bool                 `mapstructure:"enabled"`       // false disables the provider even when credentials are detected; nil means enabled
-	Responses    ResponsesConfig       `mapstructure:"responses"`     // Advanced Responses API execution controls
-	FileUpload   *FileUploadConfig     `mapstructure:"file_upload"`   // Optional upload/native-file support overrides
-	VisionVia    string                `mapstructure:"vision_via"`    // Optional provider:model route for indirect image understanding
+	APIKey                    string                `mapstructure:"api_key"`
+	Model                     string                `mapstructure:"model"`
+	FastModel                 string                `mapstructure:"fast_model"`                  // Lightweight model for control-plane tasks
+	FastProvider              string                `mapstructure:"fast_provider"`               // Optional provider key override for FastModel
+	ServiceTier               string                `mapstructure:"service_tier"`                // Optional model service tier (e.g. "fast"/"priority" for ChatGPT)
+	Models                    []string              `mapstructure:"models"`                      // Available model names/aliases for autocomplete
+	ModelConfigs              []ProviderModelConfig `mapstructure:"-"`                           // Metadata for object entries in models
+	Reasoning                 string                `mapstructure:"reasoning"`                   // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
+	Credentials               string                `mapstructure:"credentials"`                 // Provider-specific credential mode (for example "api_key" or "claude")
+	Env                       map[string]string     `mapstructure:"env"`                         // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
+	Headers                   map[string]string     `mapstructure:"headers"`                     // Extra HTTP headers for Anthropic-protocol and OpenAI providers (values support ${ENV}, $(), op://, file://)
+	EnableHooks               bool                  `mapstructure:"enable_hooks"`                // Opt in to Claude Code hooks for claude-bin (disabled by default)
+	UseWebSocket              bool                  `mapstructure:"use_websocket"`               // Enable Responses-over-WebSocket for providers that support it
+	Enabled                   *bool                 `mapstructure:"enabled"`                     // false disables the provider even when credentials are detected; nil means enabled
+	RequestEncryptedReasoning *bool                 `mapstructure:"request_encrypted_reasoning"` // OpenAI Responses: nil defaults to requesting encrypted reasoning for replay
+	Responses                 ResponsesConfig       `mapstructure:"responses"`                   // Advanced Responses API execution controls
+	FileUpload                *FileUploadConfig     `mapstructure:"file_upload"`                 // Optional upload/native-file support overrides
+	VisionVia                 string                `mapstructure:"vision_via"`                  // Optional provider:model route for indirect image understanding
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -2738,16 +2739,17 @@ func Save(cfg *Config) error {
 	}
 
 	type saveProvider struct {
-		Type         ProviderType      `yaml:"type,omitempty"`
-		Model        string            `yaml:"model,omitempty"`
-		FastModel    string            `yaml:"fast_model,omitempty"`
-		FastProvider string            `yaml:"fast_provider,omitempty"`
-		ServiceTier  string            `yaml:"service_tier,omitempty"`
-		Responses    ResponsesConfig   `yaml:"responses,omitempty"`
-		FileUpload   *FileUploadConfig `yaml:"file_upload,omitempty"`
-		BaseURL      string            `yaml:"base_url,omitempty"`
-		AppURL       string            `yaml:"app_url,omitempty"`
-		AppTitle     string            `yaml:"app_title,omitempty"`
+		Type                      ProviderType      `yaml:"type,omitempty"`
+		Model                     string            `yaml:"model,omitempty"`
+		FastModel                 string            `yaml:"fast_model,omitempty"`
+		FastProvider              string            `yaml:"fast_provider,omitempty"`
+		ServiceTier               string            `yaml:"service_tier,omitempty"`
+		RequestEncryptedReasoning *bool             `yaml:"request_encrypted_reasoning,omitempty"`
+		Responses                 ResponsesConfig   `yaml:"responses,omitempty"`
+		FileUpload                *FileUploadConfig `yaml:"file_upload,omitempty"`
+		BaseURL                   string            `yaml:"base_url,omitempty"`
+		AppURL                    string            `yaml:"app_url,omitempty"`
+		AppTitle                  string            `yaml:"app_title,omitempty"`
 	}
 	type saveExec struct {
 		Suggestions int `yaml:"suggestions"`
@@ -2772,16 +2774,17 @@ func Save(cfg *Config) error {
 	}
 	for name, p := range cfg.Providers {
 		saved.Providers[name] = saveProvider{
-			Type:         p.Type,
-			Model:        p.Model,
-			FastModel:    p.FastModel,
-			FastProvider: p.FastProvider,
-			ServiceTier:  p.ServiceTier,
-			Responses:    p.Responses,
-			FileUpload:   p.FileUpload,
-			BaseURL:      p.BaseURL,
-			AppURL:       p.AppURL,
-			AppTitle:     p.AppTitle,
+			Type:                      p.Type,
+			Model:                     p.Model,
+			FastModel:                 p.FastModel,
+			FastProvider:              p.FastProvider,
+			ServiceTier:               p.ServiceTier,
+			RequestEncryptedReasoning: p.RequestEncryptedReasoning,
+			Responses:                 p.Responses,
+			FileUpload:                p.FileUpload,
+			BaseURL:                   p.BaseURL,
+			AppURL:                    p.AppURL,
+			AppTitle:                  p.AppTitle,
 		}
 	}
 
