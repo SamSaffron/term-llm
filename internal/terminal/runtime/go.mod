@@ -5,13 +5,13 @@ go 1.26.0
 require (
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468
-	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/exp/golden v0.1.0
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/creack/pty v1.1.24
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/muesli/cancelreader v0.2.2
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 )
 
 require (
