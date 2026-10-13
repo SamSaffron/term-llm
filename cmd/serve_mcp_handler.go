@@ -523,6 +523,13 @@ func (s *serveServer) applyPersistedMCPSelectionLocked(ctx context.Context, sess
 	}
 	desired := normalizeMCPSelection(parseServerList(sess.MCP))
 	current := normalizeMCPSelection(parseServerList(rt.mcpSetting))
+	// Bind before any early return: servers may already be running from a path
+	// that did not know the session (e.g. a runner with a deferred session).
+	if rt.mcpManager != nil || len(desired) > 0 {
+		if err := rt.ensureMCPManagerLocked(); err == nil {
+			rt.mcpManager.SetSessionID(sessionID)
+		}
+	}
 	if sameStringSlice(desired, current) && rt.mcpSelectionReadyLocked(desired) {
 		return nil
 	}
@@ -784,6 +791,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	rt.mcpManager.SetSessionID(sessionID)
 	if err := rt.applyMCPSelectionLocked(r.Context(), req.Enabled); err != nil {
 		if apiErr, ok := err.(*serveMCPError); ok {
 			writeOpenAIError(w, apiErr.status, apiErr.errorType, apiErr.message)

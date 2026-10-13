@@ -362,6 +362,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		}
 		if mcpManager != nil {
 			defer mcpManager.StopAll()
+			// Single-session CLI process: expose live MCP servers to shell
+			// commands via `term-llm mcp run` (TERM_LLM_MCP_SESSION).
+			mcpManager.UseAsProcessSession()
 		}
 	}
 

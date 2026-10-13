@@ -1005,6 +1005,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// override from the previous run before accepting further live toggles.
 		m.engine.ClearPendingRequestServiceTier()
 		serviceTier, serviceTierSet := m.currentServiceTier()
+		if m.mcpManager != nil && m.sess != nil {
+			// Keep shell `term-llm mcp run` routed to this (possibly switched)
+			// session's live MCP servers. Idempotent when unchanged.
+			m.mcpManager.SetSessionID(m.sess.ID)
+		}
 		req := llm.Request{
 			Resume:                  continuation,
 			SessionID:               m.sess.ID,

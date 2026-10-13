@@ -531,6 +531,14 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if err != nil {
 			return nil, err
 		}
+		if mgr != nil {
+			// Runners can share a process with other sessions: bind exactly.
+			mcpSessionID := strings.TrimSpace(req.SessionID)
+			if sess != nil {
+				mcpSessionID = sess.ID
+			}
+			mgr.SetSessionID(mcpSessionID)
+		}
 		runtime.setMCPManager(mgr)
 	}
 

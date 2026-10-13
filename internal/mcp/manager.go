@@ -80,6 +80,9 @@ type Manager struct {
 
 	// Sampling handler for createMessage requests
 	samplingHandler *SamplingHandler
+
+	// Private unix socket exposing live servers to the session's shell commands.
+	sessionSocket sessionSocketState
 }
 
 // NewManager creates a new MCP manager.
@@ -331,6 +334,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	}
 	defer release()
 	m.registerReload()
+	m.ensureSessionSocket()
 	m.mu.Lock()
 	if m.config == nil {
 		m.mu.Unlock()
@@ -728,6 +732,7 @@ func isAuthenticationRequired(err error) bool {
 // StopAll stops all running MCP servers.
 func (m *Manager) StopAll() {
 	m.unregisterReload()
+	m.closeSessionSocket()
 	_ = m.stopAll()
 }
 
