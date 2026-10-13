@@ -616,6 +616,11 @@ func (a *Agent) Merge(pref config.AgentPreference) {
 		a.Spawn.AllowedAgents = pref.SpawnAllowedAgents
 	}
 
+	// Model allowlist - replace the definition's list if set
+	if len(pref.AllowedModels) > 0 {
+		a.AllowedModels = append([]string(nil), pref.AllowedModels...)
+	}
+
 	// Behavior
 	if pref.MaxTurns != nil {
 		a.MaxTurns = *pref.MaxTurns

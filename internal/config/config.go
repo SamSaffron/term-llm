@@ -619,6 +619,9 @@ type AgentPreference struct {
 	SpawnTimeout       *int     `mapstructure:"spawn_timeout,omitempty" yaml:"spawn_timeout,omitempty"`
 	SpawnAllowedAgents []string `mapstructure:"spawn_allowed_agents,omitempty" yaml:"spawn_allowed_agents,omitempty"`
 
+	// Model allowlist: replaces the agent definition's allowed_models when set.
+	AllowedModels []string `mapstructure:"allowed_models,omitempty" yaml:"allowed_models,omitempty"`
+
 	// Behavior
 	MaxTurns *int  `mapstructure:"max_turns,omitempty" yaml:"max_turns,omitempty"`
 	Search   *bool `mapstructure:"search,omitempty" yaml:"search,omitempty"`
@@ -2635,6 +2638,7 @@ var KnownAgentPreferenceKeys = map[string]bool{
 	"spawn_max_depth":      true,
 	"spawn_timeout":        true,
 	"spawn_allowed_agents": true,
+	"allowed_models":       true,
 	"max_turns":            true,
 	"search":               true,
 }
@@ -2849,7 +2853,7 @@ func agentPreferenceValues(key, value string) ([]configValue, error) {
 		// Boolean values (case-insensitive)
 		lowerVal := strings.ToLower(value)
 		return []configValue{{key, lowerVal == "true" || value == "1" || lowerVal == "yes"}}, nil
-	case "tools_enabled", "tools_disabled", "shell_allow", "spawn_allowed_agents":
+	case "tools_enabled", "tools_disabled", "shell_allow", "spawn_allowed_agents", "allowed_models":
 		// Array values (comma-separated)
 		parts := []string{}
 		if value != "" {

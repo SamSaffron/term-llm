@@ -175,6 +175,16 @@ allowed_models:
 - Entries are `provider:model` or `provider:*`. The provider is the configured provider key, not the backend type. Matching is case-sensitive. Bare provider names and partial wildcards such as `openai:gpt-*` are invalid.
 - A base model allows its reasoning-effort variants: `chatgpt:gpt-6-sol` permits `gpt-6-sol-low`, `gpt-6-sol-high`, `gpt-6-sol-max` and so on, but not a different model such as `gpt-6-sol-mini`. When term-llm knows the model's efforts (built-in catalog, cached provider catalog, or a configured `reasoning_efforts` list) only those efforts match; for an unknown model the standard suffixes (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) match. An entry that names a variant (`claude-bin:opus-high`) matches only that variant.
 - The `fast` alias (`model: fast`, `--fast`, or a spawn override of `fast`) is resolved to its concrete provider and model before it is checked.
+- The list can also be set from config, which is the only way to restrict built-in agents. An `allowed_models` preference replaces the definition's list:
+
+```yaml
+agents:
+  preferences:
+    developer:
+      allowed_models: [chatgpt:*, claude-bin:*]
+```
+
+or `term-llm agents set developer allowed_models=chatgpt:*,claude-bin:*`. Leaving the top-level agent you chat with unrestricted while restricting the agents it spawns lets you pick any model yourself, while subagents (and their descendants) can only choose from the list.
 
 Every launch of the agent is checked before a model request is made: direct `ask`/`chat`/`loop` runs, resumed sessions, web sessions, jobs, and in-session switches (`/model` in the terminal, the web model picker). A rejected selection fails with an error naming the model and the allowed entries; a rejected switch keeps the current model.
 

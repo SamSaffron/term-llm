@@ -303,3 +303,37 @@ func TestSpawnedChildPersistsInheritedPolicy(t *testing.T) {
 		t.Fatalf("persisted policy = %+v, want only the inherited boss rule", saved.ModelPolicy)
 	}
 }
+
+func TestSpawnAgentAppliesAllowedModelsPreference(t *testing.T) {
+	root := t.TempDir()
+	agentDir := filepath.Join(root, "reviewer")
+	if err := os.MkdirAll(agentDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte("name: reviewer\nprovider: debug\nmodel: allowed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{DefaultProvider: "debug", Providers: map[string]config.ProviderConfig{
+		"debug": {Model: "allowed"}, "other": {Model: "denied"},
+	}, Agents: config.AgentsConfig{
+		SearchPaths: []string{root},
+		Preferences: map[string]config.AgentPreference{"reviewer": {AllowedModels: []string{"debug:*"}}},
+	}}
+	runner, err := NewSpawnAgentRunner(cfg, false, tools.NewApprovalManager(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Wait()
+	tool := tools.NewSpawnAgentTool(tools.DefaultSpawnConfig(), 0)
+	tool.SetRunner(runner)
+	payload, err := json.Marshal(tools.SpawnAgentArgs{AgentName: "reviewer", Prompt: "hello", Model: "other:denied"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := tool.Execute(ctx, payload)
+	if err != nil || !out.IsError || !strings.Contains(out.Content, "allowed: debug:*") {
+		t.Fatalf("spawn output = %+v, error = %v, want allowlist denial from preference", out, err)
+	}
+}

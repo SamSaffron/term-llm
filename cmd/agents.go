@@ -158,11 +158,13 @@ Valid preference keys:
   spawn_max_depth           - Levels below this agent (default 2 if 0/unset; capped by caller's remaining budget)
   spawn_timeout             - Spawn timeout in seconds
   spawn_allowed_agents      - Comma-separated list of allowed agents
+  allowed_models            - Comma-separated provider:model or provider:* entries this agent (and its subagents) may run on
 
 Examples:
   term-llm agents set reviewer provider=gemini model=gemini-2.5-pro
   term-llm agents set developer max_turns=50
-  term-llm agents set codebase search=true`,
+  term-llm agents set codebase search=true
+  term-llm agents set developer allowed_models=chatgpt:*,claude-bin:*`,
 	Args:              cobra.MinimumNArgs(2),
 	RunE:              runAgentsPrefSet,
 	ValidArgsFunction: agentPrefSetCompletion,
@@ -704,6 +706,7 @@ func agentPrefSetCompletion(cmd *cobra.Command, args []string, toComplete string
 		"spawn_max_depth=",
 		"spawn_timeout=",
 		"spawn_allowed_agents=",
+		"allowed_models=",
 	}
 
 	var completions []string
@@ -807,6 +810,9 @@ func runAgentsPrefGet(cmd *cobra.Command, args []string) error {
 	}
 	if len(pref.SpawnAllowedAgents) > 0 {
 		fmt.Printf("  spawn_allowed_agents: %s\n", strings.Join(pref.SpawnAllowedAgents, ", "))
+	}
+	if len(pref.AllowedModels) > 0 {
+		fmt.Printf("  allowed_models: %s\n", strings.Join(pref.AllowedModels, ", "))
 	}
 
 	// Behavior
