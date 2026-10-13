@@ -25,6 +25,8 @@ npm --prefix frontend test
 npm --prefix frontend run test:e2e
 ```
 
+`typecheck` runs the TypeScript 7 native compiler, installed under the `@typescript/native` alias. TypeScript 7 has no JavaScript compiler API, so the `typescript` package name is aliased to `@typescript/typescript6` for typescript-eslint and other API consumers; it provides `tsc6`, not `tsc`. Collapse the aliases once typescript-eslint supports TypeScript 7.
+
 From the repository root, `scripts/browser_lifecycle_smoke.sh` builds and starts a temporary `term-llm serve web --no-auth` process and runs the Playwright chat suite. `scripts/hub_browser_lifecycle_smoke.sh` exercises the bearer-authenticated Hub dashboard and a real proxied chat node, while `scripts/hub_passkey_smoke.sh` exercises passkey setup, login, recovery, and security administration with Chromium virtual authenticators. Run `make frontend-deps` first; standalone smokes fail immediately rather than downloading dependencies implicitly. On macOS the specs use an installed Google Chrome (`/Applications` or `~/Applications`), so no `playwright install` is needed; elsewhere, the smoke scripts use a `chromium` on `PATH`. `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/browser` overrides both. CI installs the Playwright-pinned browser.
 
 The chat smoke uses HTTP transport only.

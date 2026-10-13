@@ -173,7 +173,7 @@ jobs:
 
       - name: Install Playwright Chromium
         timeout-minutes: 10
-        run: npx --yes --package @playwright/test@1.63.0 playwright install --with-deps chromium
+        run: npx --yes --package @playwright/test@1.64.0 playwright install --with-deps chromium
 
       - name: Hub passkey browser smoke
         timeout-minutes: 5

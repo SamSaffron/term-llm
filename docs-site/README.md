@@ -1,10 +1,10 @@
 # term-llm site
 
-The product homepage and documentation are built with **Hugo Extended 0.165.0**, matching the pinned version in the docs deployment workflow. The site is static: no frontend framework, hosted search service, remote fonts, or runtime package installation is required in production.
+The product homepage and documentation are built with **Hugo Extended 0.167.0**, matching the pinned version in the docs deployment workflow. The site is static: no frontend framework, hosted search service, remote fonts, or runtime package installation is required in production.
 
 ## Develop
 
-Run from the repository root with Hugo and Node.js 24 or newer installed. With mise, install and select the matching Hugo version using `mise use --global hugo-extended@0.165.0`.
+Run from the repository root with Hugo and Node.js 24 or newer installed. With mise, install and select the matching Hugo version using `mise use --global hugo-extended@0.167.0`.
 
 ```bash
 npm --prefix docs-site ci

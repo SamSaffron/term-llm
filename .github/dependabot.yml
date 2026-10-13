@@ -70,7 +70,12 @@ updates:
     ignore:
       # These majors change the toolchain the frontend is validated against and
       # land together with a browser smoke run, so they stay manual.
+      # `typescript` is aliased to @typescript/typescript6 for typescript-eslint;
+      # `@typescript/native` is the TypeScript 7 compiler used by `typecheck`.
       - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+      - dependency-name: '@typescript/native'
         update-types:
           - version-update:semver-major
       - dependency-name: vitest
