@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
@@ -870,4 +871,21 @@ func containsSubstr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestMergeAllowedModelsPreferenceReplacesDefinition(t *testing.T) {
+	a := &Agent{Name: "developer", AllowedModels: []string{"anthropic:*"}}
+	a.Merge(config.AgentPreference{})
+	if len(a.AllowedModels) != 1 || a.AllowedModels[0] != "anthropic:*" {
+		t.Fatalf("empty preference changed allowed_models: %v", a.AllowedModels)
+	}
+	pref := config.AgentPreference{AllowedModels: []string{"chatgpt:*", "claude-bin:*"}}
+	a.Merge(pref)
+	if strings.Join(a.AllowedModels, ",") != "chatgpt:*,claude-bin:*" {
+		t.Fatalf("allowed_models = %v", a.AllowedModels)
+	}
+	pref.AllowedModels[0] = "mutated:*"
+	if a.AllowedModels[0] != "chatgpt:*" {
+		t.Fatal("Merge must copy the preference slice")
+	}
 }
