@@ -145,7 +145,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 		models, err = lister.ListModels(ctx)
 	}
 	if err == nil {
-		refreshModelListCaches(providerType, providerCfg.ResolvedAPIKey, models)
+		refreshModelListCaches(providerName, providerCfg, models)
 	}
 	if err != nil {
 		// Provide helpful error messages for common issues
@@ -334,16 +334,24 @@ func modelListTimeout(providerType config.ProviderType) time.Duration {
 	return 10 * time.Second
 }
 
-func refreshModelListCaches(providerType config.ProviderType, apiKey string, models []llm.ModelInfo) {
+func refreshModelListCaches(providerName string, providerCfg config.ProviderConfig, models []llm.ModelInfo) {
+	providerType := config.InferProviderType(providerName, providerCfg.Type)
 	switch providerType {
 	case config.ProviderTypeOpenRouter:
-		llm.RefreshOpenRouterCacheSync(apiKey, models)
+		llm.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
 	case config.ProviderTypeCursorBin:
 		llm.RefreshCursorBinCacheSync(models)
 	case config.ProviderTypeGrokBin:
 		llm.RefreshGrokBinCacheSync(models)
 	case config.ProviderTypeAgyBin:
 		llm.RefreshAgyBinCacheSync(models)
+	default:
+		// Endpoint-defined catalogs (custom OpenAI base URLs, generic
+		// OpenAI-compatible servers) are cached per endpoint+credential
+		// so shell completion can offer the same list offline.
+		if llm.UsesEndpointModelCatalog(providerName, providerCfg) {
+			llm.RefreshEndpointCacheSync(providerCfg, models)
+		}
 	}
 }
 

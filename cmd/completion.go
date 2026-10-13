@@ -21,6 +21,7 @@ const (
 	grokBinCompletionRefreshTimeout   = 5 * time.Second
 	ollamaCompletionRefreshTimeout    = 2 * time.Second
 	zenCompletionRefreshTimeout       = 2 * time.Second
+	endpointCompletionRefreshTimeout  = 2 * time.Second
 	anthropicCompletionRefreshTimeout = 3 * time.Second
 )
 
@@ -29,6 +30,7 @@ var (
 	refreshGrokBinModelsForCompletion   = llm.RefreshGrokBinModelsIfStale
 	refreshOllamaModelsForCompletion    = llm.RefreshOllamaModelsIfStale
 	refreshZenModelsForCompletion       = llm.RefreshZenModelsIfStale
+	refreshEndpointModelsForCompletion  = llm.RefreshEndpointModelsIfStale
 	refreshAnthropicModelsForCompletion = llm.RefreshAnthropicModelsIfStale
 	claimAnthropicCatalogRefresh        = llm.ClaimAnthropicCatalogRefresh
 )
@@ -65,6 +67,7 @@ func refreshProviderCompletionCaches(toComplete string, cfg *config.Config) {
 	refreshGrokBinCompletionCache(toComplete, cfg)
 	refreshOllamaCompletionCache(toComplete, cfg)
 	refreshZenCompletionCache(toComplete, cfg)
+	refreshEndpointCompletionCache(toComplete, cfg)
 	refreshAnthropicCompletionCache(toComplete, cfg)
 }
 
@@ -184,6 +187,36 @@ func refreshZenCompletionCache(toComplete string, cfg *config.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), zenCompletionRefreshTimeout)
 	defer cancel()
 	_ = refreshZenModelsForCompletion(ctx, providerCfg.ResolvedAPIKey, providerCfg.Model)
+}
+
+// refreshEndpointCompletionCache refreshes the live model list for providers
+// whose catalog is defined by their own endpoint (generic OpenAI-compatible
+// servers and OpenAI providers pointed at a custom base URL), so completion
+// offers the same models as `term-llm models --provider <name>`.
+func refreshEndpointCompletionCache(toComplete string, cfg *config.Config) {
+	provider, _, completingModel := strings.Cut(toComplete, ":")
+	if !completingModel || cfg == nil {
+		return
+	}
+
+	providerCfg, ok := cfg.Providers[provider]
+	if !ok || len(providerCfg.Models) > 0 {
+		return
+	}
+	if !llm.UsesEndpointModelCatalog(provider, providerCfg) {
+		return
+	}
+	if err := cfg.ResolveProviderCredentials(provider); err != nil {
+		return
+	}
+	providerCfg = cfg.Providers[provider]
+	if err := providerCfg.ResolveForInference(); err != nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), endpointCompletionRefreshTimeout)
+	defer cancel()
+	_ = refreshEndpointModelsForCompletion(ctx, providerCfg)
 }
 
 func refreshOllamaCompletionCache(toComplete string, cfg *config.Config) {

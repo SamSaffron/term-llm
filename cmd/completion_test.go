@@ -194,6 +194,82 @@ func TestRefreshZenCompletionCache(t *testing.T) {
 	}
 }
 
+func TestRefreshEndpointCompletionCache(t *testing.T) {
+	original := refreshEndpointModelsForCompletion
+	t.Cleanup(func() { refreshEndpointModelsForCompletion = original })
+
+	var calls int
+	var got config.ProviderConfig
+	refreshEndpointModelsForCompletion = func(ctx context.Context, providerCfg config.ProviderConfig) error {
+		calls++
+		got = providerCfg
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("completion refresh context has no deadline")
+		}
+		return nil
+	}
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"muse": {
+			Type:    config.ProviderTypeOpenAI,
+			BaseURL: "https://api.meta.ai/v1",
+			APIKey:  "muse-key",
+			Model:   "muse-wonder-full-1.0-contributor",
+		},
+		"pinned-muse": {
+			Type:    config.ProviderTypeOpenAI,
+			BaseURL: "https://api.meta.ai/v1",
+			Models:  []string{"fixed-model"},
+		},
+		"openai": {Model: "gpt-5.4"},
+	}}
+
+	refreshEndpointCompletionCache("muse:muse-", cfg)
+	if calls != 1 || got.BaseURL != "https://api.meta.ai/v1" || got.ResolvedAPIKey != "muse-key" || got.Model != "muse-wonder-full-1.0-contributor" {
+		t.Fatalf("refresh calls/cfg = %d/%+v", calls, got)
+	}
+
+	// Provider-name stage, pinned model lists, and the public OpenAI
+	// catalog never trigger an endpoint fetch.
+	for _, toComplete := range []string{"muse", "pinned-muse:", "openai:gpt", "muse-other:"} {
+		refreshEndpointCompletionCache(toComplete, cfg)
+	}
+	if calls != 1 {
+		t.Fatalf("unexpected endpoint refreshes: %d", calls)
+	}
+}
+
+func TestEndpointCompletionUsesLiveEndpointModels(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("requested path = %q, want /v1/models", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"muse-live-1"},{"id":"muse-live-2"}]}`)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"muse": {
+			Type:    config.ProviderTypeOpenAI,
+			BaseURL: server.URL + "/v1",
+			APIKey:  "test-key",
+			Model:   "muse-configured",
+		},
+	}}
+
+	refreshEndpointCompletionCache("muse:", cfg)
+	got := llm.GetProviderCompletions("muse:", false, cfg)
+	want := []string{"muse:muse-configured", "muse:muse-live-1", "muse:muse-live-2"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("provider completions = %v, want %v", got, want)
+	}
+	if got := llm.GetProviderCompletions("muse:gpt", false, cfg); len(got) != 0 {
+		t.Fatalf("curated OpenAI models bled into custom endpoint provider: %v", got)
+	}
+}
+
 func TestOllamaModelCompletionsUseLiveEndpoint(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -445,7 +445,7 @@ providers:
       - llama-3-70b
 ```
 
-The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
+The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions. Without a `models` list, completion fetches and caches the endpoint's own `/models` catalog (the same list as `term-llm models --provider my-server`), scoped to that endpoint and credential; providers of type `openai` pointed at a custom `base_url` behave the same way rather than completing with OpenAI's model names.
 
 The built-in `chatgpt` text provider enables Responses WebSockets by default. `openai` defaults to HTTP/SSE and can opt in with `use_websocket: true`. `openai_compatible` and `vllm` providers do not: local/self-hosted compatible APIs stay on HTTP/SSE by default.
 

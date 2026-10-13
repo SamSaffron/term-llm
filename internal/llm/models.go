@@ -1098,6 +1098,18 @@ func completionModelCandidates(provider string, isImage bool, providerCfg config
 	providerType := string(config.InferProviderType(provider, providerCfg.Type))
 	if !isImage {
 		switch {
+		case UsesEndpointModelCatalog(provider, providerCfg):
+			// The endpoint defines the catalog: never offer the curated
+			// models of the provider's type, which belong to another API.
+			resolvedCfg := providerCfg
+			if apiKey := resolvedProviderAPIKey(cfg, provider); apiKey != "" {
+				resolvedCfg.ResolvedAPIKey = apiKey
+			}
+			models := GetCachedEndpointModels(resolvedCfg)
+			if providerCfg.Model != "" && !slices.Contains(models, providerCfg.Model) {
+				models = append([]string{providerCfg.Model}, models...)
+			}
+			return models, true
 		case providerType == "openrouter" || provider == "openrouter":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
 			if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
@@ -1146,10 +1158,16 @@ func defaultCompletionModelCandidates(provider, providerType, configModel string
 	if len(models) == 0 {
 		models = getModelIDs(provider)
 	}
-	if len(models) == 0 && configModel != "" {
-		models = []string{configModel}
-	} else if len(models) == 0 {
-		return nil, false
+	if len(models) == 0 {
+		if configModel == "" {
+			return nil, false
+		}
+		return []string{configModel}, true
+	}
+	// The configured model is always offered, even when it is not part of
+	// the type's curated list (custom fine-tunes, renamed endpoints).
+	if configModel != "" && !slices.Contains(models, configModel) {
+		models = append([]string{configModel}, models...)
 	}
 	return models, true
 }
