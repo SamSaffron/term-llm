@@ -746,6 +746,38 @@ providers:
 
 This is passed only to the provider subprocess. It does not mutate your parent shell environment.
 
+## Responses API continuation
+
+Providers using `type: openai` (including custom Responses API endpoints) default
+to `use_previous_response_id: true`. Compatible follow-up requests reference the
+previous response and send only new input, avoiding full-history uploads.
+
+If an endpoint cannot reliably retain or route prior responses, disable this
+behavior for that provider:
+
+```yaml
+providers:
+  muse_wonder:
+    type: openai
+    api_key: ${MUSE_API_KEY}
+    base_url: https://your-provider.example/v1
+    model: muse-wonder-1.0-contributor
+    use_previous_response_id: false
+    request_encrypted_reasoning: true
+```
+
+Setting `use_previous_response_id: false` omits `previous_response_id` and sends
+full local history on every request, including tool-result follow-ups. It applies
+to both HTTP/SSE and WebSocket transport; `use_websocket` remains independent.
+Keep `request_encrypted_reasoning` enabled (the default) to preserve reasoning
+state for replay. If you previously disabled it, explicitly set it back to `true`;
+this cannot recover reasoning missing from earlier responses.
+
+Full-history requests upload more data; any prompt-cache savings depend on the
+provider. This option does not change the `store` field or disable prompt caching.
+It applies only to `type: openai`, not `openai_compatible` (Chat Completions),
+`chatgpt`, or `opencode-go`. Omitting the option preserves existing behavior.
+
 ## Encrypted reasoning requests
 
 Providers using `type: openai` (including custom Responses API endpoints) request
@@ -753,7 +785,8 @@ Providers using `type: openai` (including custom Responses API endpoints) reques
 for full-history replay if server-side conversation state becomes unavailable.
 
 Some endpoints, such as Muse Wonder, reject this include option together with
-`previous_response_id`. Disable the include for that provider:
+`previous_response_id`. Either disable [response-ID continuation](#responses-api-continuation)
+and retain encrypted reasoning for full-history replay, or disable the include:
 
 ```yaml
 providers:

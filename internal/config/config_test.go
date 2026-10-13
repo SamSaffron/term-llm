@@ -1987,7 +1987,7 @@ func writeTestConfig(t *testing.T, configHome, content string) string {
 	return path
 }
 
-func TestRequestEncryptedReasoningLoadAndSave(t *testing.T) {
+func TestResponsesProviderOptionsLoadAndSave(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path, err := GetConfigPath()
 	if err != nil {
@@ -2002,9 +2002,11 @@ providers:
     type: openai
     model: muse-wonder
     request_encrypted_reasoning: false
+    use_previous_response_id: false
   explicit_true:
     type: openai
     request_encrypted_reasoning: true
+    use_previous_response_id: true
   omitted:
     type: openai
 `
@@ -2013,6 +2015,15 @@ providers:
 	}
 	check := func(cfg *Config) {
 		t.Helper()
+		if got := cfg.Providers["muse_wonder"].UsePreviousResponseID; got == nil || *got {
+			t.Fatalf("explicit continuation false = %v, want false", got)
+		}
+		if got := cfg.Providers["explicit_true"].UsePreviousResponseID; got == nil || !*got {
+			t.Fatalf("explicit continuation true = %v, want true", got)
+		}
+		if got := cfg.Providers["omitted"].UsePreviousResponseID; got != nil {
+			t.Fatalf("omitted continuation = %v, want nil (default enabled)", got)
+		}
 		if got := cfg.Providers["muse_wonder"].RequestEncryptedReasoning; got == nil || *got {
 			t.Fatalf("explicit false = %v, want false", got)
 		}

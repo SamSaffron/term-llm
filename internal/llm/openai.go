@@ -21,6 +21,7 @@ type OpenAIProvider struct {
 	useWebSocket              bool              // Responses-over-WebSocket transport
 	serviceTier               string            // Optional Responses API service tier default
 	fileUploadPolicy          *FileUploadPolicy // Provider-specific native file forwarding policy
+	disableServerState        bool              // Send full history instead of previous_response_id
 	disableEncryptedReasoning bool              // Omit the encrypted reasoning include for incompatible endpoints
 	responsesOptions          ResponsesOptions
 	responsesClient           *ResponsesClient // Shared client for Responses API with server state
@@ -33,6 +34,7 @@ type OpenAIProviderOptions struct {
 	UseWebSocket              bool
 	ServiceTier               string
 	FileUploadPolicy          *FileUploadPolicy
+	UsePreviousResponseID     *bool // nil preserves the default: server-state continuation
 	RequestEncryptedReasoning *bool // nil preserves the default: request encrypted reasoning
 	Responses                 ResponsesOptions
 }
@@ -67,6 +69,7 @@ func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptio
 		useWebSocket:              opts.UseWebSocket,
 		serviceTier:               NormalizeServiceTier(opts.ServiceTier),
 		fileUploadPolicy:          cloneFileUploadPolicy(opts.FileUploadPolicy),
+		disableServerState:        opts.UsePreviousResponseID != nil && !*opts.UsePreviousResponseID,
 		disableEncryptedReasoning: opts.RequestEncryptedReasoning != nil && !*opts.RequestEncryptedReasoning,
 		responsesOptions:          opts.Responses,
 	}
@@ -135,11 +138,12 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	// Reuse client to maintain server state across requests
 	if p.responsesClient == nil {
 		p.responsesClient = &ResponsesClient{
-			BaseURL:       p.endpoint.URL("responses"),
-			GetAuthHeader: func() string { return "Bearer " + p.apiKey },
-			ExtraHeaders:  p.endpoint.HeaderMap(),
-			HTTPClient:    defaultHTTPClient,
-			UseWebSocket:  p.useWebSocket,
+			BaseURL:            p.endpoint.URL("responses"),
+			GetAuthHeader:      func() string { return "Bearer " + p.apiKey },
+			ExtraHeaders:       p.endpoint.HeaderMap(),
+			HTTPClient:         defaultHTTPClient,
+			UseWebSocket:       p.useWebSocket,
+			DisableServerState: p.disableServerState,
 		}
 	}
 

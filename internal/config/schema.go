@@ -605,6 +605,7 @@ var providerFieldSpecs = []ProviderFieldSpec{
 	{Path: "headers", Placeholder: map[string]any{}},
 	{Path: "enable_hooks", Placeholder: false},
 	{Path: "use_websocket", Placeholder: false},
+	{Path: "use_previous_response_id", Placeholder: true, Description: "OpenAI Responses: use server-state continuation (default true)"},
 	{Path: "request_encrypted_reasoning", Placeholder: true, Description: "OpenAI Responses: request encrypted reasoning for full-history replay (default true)"},
 	{Path: "responses.reasoning_mode"},
 	{Path: "responses.reasoning_context"},

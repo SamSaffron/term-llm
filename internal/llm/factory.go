@@ -339,7 +339,7 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewAnthropicProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials, AnthropicProviderOptions{BaseURL: cfg.BaseURL, Headers: cfg.Headers})
 
 	case config.ProviderTypeOpenAI:
-		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{RequestEncryptedReasoning: cfg.RequestEncryptedReasoning, Endpoint: cfg.OpenAIEndpoint(), UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)}), nil
+		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{UsePreviousResponseID: cfg.UsePreviousResponseID, RequestEncryptedReasoning: cfg.RequestEncryptedReasoning, Endpoint: cfg.OpenAIEndpoint(), UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)}), nil
 
 	case config.ProviderTypeChatGPT:
 		// ChatGPT uses native OAuth with interactive authentication

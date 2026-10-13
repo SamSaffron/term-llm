@@ -811,3 +811,101 @@ func TestOpenAIProviderRequestEncryptedReasoning(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIProviderUsePreviousResponseID(t *testing.T) {
+	for _, useWebSocket := range []bool{false, true} {
+		for _, tc := range []struct {
+			name             string
+			option           *bool
+			wantContinuation bool
+		}{
+			{name: "default", wantContinuation: true},
+			{name: "enabled", option: boolPtr(true), wantContinuation: true},
+			{name: "disabled", option: boolPtr(false)},
+		} {
+			transport := "http"
+			if useWebSocket {
+				transport = "websocket"
+			}
+			t.Run(transport+"/"+tc.name, func(t *testing.T) {
+				requests := make(chan ResponsesRequest, 2)
+				upgrader := websocket.Upgrader{}
+				completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_saved", "output": []any{}}}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if useWebSocket {
+						conn, err := upgrader.Upgrade(w, r, nil)
+						if err != nil {
+							t.Errorf("upgrade: %v", err)
+							return
+						}
+						defer conn.Close()
+						for range 2 {
+							var payload ResponsesRequest
+							if err := conn.ReadJSON(&payload); err != nil {
+								t.Errorf("read WebSocket request: %v", err)
+								return
+							}
+							requests <- payload
+							if err := conn.WriteJSON(completed); err != nil {
+								t.Errorf("write WebSocket response: %v", err)
+								return
+							}
+						}
+						return
+					}
+					var payload ResponsesRequest
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Errorf("decode request: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					requests <- payload
+					w.Header().Set("Content-Type", "text/event-stream")
+					body, _ := json.Marshal(completed)
+					_, _ = w.Write(append(append([]byte("data: "), body...), '\n', '\n'))
+				}))
+				defer server.Close()
+				created, err := createProviderFromConfig("muse_wonder", &config.ProviderConfig{
+					Type: config.ProviderTypeOpenAI, APIKey: "test-key", Model: "muse-wonder",
+					BaseURL: server.URL, UseWebSocket: useWebSocket, UsePreviousResponseID: tc.option,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				provider := created.(*OpenAIProvider)
+				defer func() { provider.responsesClient.closeWebSocket() }()
+				messages := []Message{UserText("old question"), {Role: RoleAssistant, Parts: []Part{{
+					Type: PartText, Text: "old answer", ReasoningItemID: "rs_saved", ReasoningEncryptedContent: "enc_saved",
+				}}}, UserText("hello")}
+				for range 2 {
+					stream, err := provider.Stream(context.Background(), Request{Messages: messages})
+					if err != nil {
+						t.Fatal(err)
+					}
+					drainStreamToDone(t, stream)
+					stream.Close()
+					messages = append(messages, UserText("follow up"))
+				}
+				first, second := <-requests, <-requests
+				if first.PreviousResponseID != "" {
+					t.Fatalf("initial request previous_response_id = %q", first.PreviousResponseID)
+				}
+				if tc.wantContinuation {
+					if second.PreviousResponseID != "resp_saved" || len(second.Input) != 1 {
+						t.Fatalf("expected response-ID continuation, got id=%q input=%v", second.PreviousResponseID, second.Input)
+					}
+				} else {
+					if second.PreviousResponseID != "" || len(second.Input) != len(first.Input)+1 {
+						t.Fatalf("expected full-history replay, got id=%q input=%v", second.PreviousResponseID, second.Input)
+					}
+					if second.Input[1].Type != "reasoning" || second.Input[1].EncryptedContent != "enc_saved" {
+						t.Fatal("full-history replay lost encrypted reasoning")
+					}
+				}
+				if !reflect.DeepEqual(second.Include, []string{"reasoning.encrypted_content"}) {
+					t.Fatalf("encrypted reasoning default changed: include=%v", second.Include)
+				}
+			})
+		}
+	}
+}

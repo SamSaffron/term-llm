@@ -151,6 +151,7 @@ type ProviderConfig struct {
 	EnableHooks               bool                  `mapstructure:"enable_hooks"`                // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket              bool                  `mapstructure:"use_websocket"`               // Enable Responses-over-WebSocket for providers that support it
 	Enabled                   *bool                 `mapstructure:"enabled"`                     // false disables the provider even when credentials are detected; nil means enabled
+	UsePreviousResponseID     *bool                 `mapstructure:"use_previous_response_id"`    // OpenAI Responses: nil defaults to server-state continuation
 	RequestEncryptedReasoning *bool                 `mapstructure:"request_encrypted_reasoning"` // OpenAI Responses: nil defaults to requesting encrypted reasoning for replay
 	Responses                 ResponsesConfig       `mapstructure:"responses"`                   // Advanced Responses API execution controls
 	FileUpload                *FileUploadConfig     `mapstructure:"file_upload"`                 // Optional upload/native-file support overrides
@@ -2744,6 +2745,7 @@ func Save(cfg *Config) error {
 		FastModel                 string            `yaml:"fast_model,omitempty"`
 		FastProvider              string            `yaml:"fast_provider,omitempty"`
 		ServiceTier               string            `yaml:"service_tier,omitempty"`
+		UsePreviousResponseID     *bool             `yaml:"use_previous_response_id,omitempty"`
 		RequestEncryptedReasoning *bool             `yaml:"request_encrypted_reasoning,omitempty"`
 		Responses                 ResponsesConfig   `yaml:"responses,omitempty"`
 		FileUpload                *FileUploadConfig `yaml:"file_upload,omitempty"`
@@ -2779,6 +2781,7 @@ func Save(cfg *Config) error {
 			FastModel:                 p.FastModel,
 			FastProvider:              p.FastProvider,
 			ServiceTier:               p.ServiceTier,
+			UsePreviousResponseID:     p.UsePreviousResponseID,
 			RequestEncryptedReasoning: p.RequestEncryptedReasoning,
 			Responses:                 p.Responses,
 			FileUpload:                p.FileUpload,
