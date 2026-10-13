@@ -331,6 +331,78 @@ func TestOpenAIProviderStreamReasoningEffortPrecedence(t *testing.T) {
 	}
 }
 
+// A custom-named type: openai provider must translate effort suffixes that
+// the user declared via models[].reasoning_efforts in config into
+// reasoning.effort, instead of sending the suffixed name as the model ID.
+// Undeclared suffixes stay part of the model ID.
+func TestOpenAIProviderConfigDeclaredEffortSuffixForCustomProvider(t *testing.T) {
+	clearOpenAIEndpointEnv(t)
+	// Mirrors registerModelLimits on config load.
+	RegisterConfigReasoningEfforts([]ConfigModelReasoningEfforts{{
+		Provider: "responses-custom",
+		Model:    "vendor-model",
+		Efforts:  []string{"low", "high", "xhigh"},
+	}})
+	defer RegisterConfigReasoningEfforts(nil)
+
+	for _, tc := range []struct {
+		name          string
+		providerModel string
+		requestModel  string
+		requestEffort string
+		wantModel     string
+		wantEffort    string
+	}{
+		{name: "provider model suffix", providerModel: "vendor-model-xhigh", wantModel: "vendor-model", wantEffort: "xhigh"},
+		{name: "request model suffix", providerModel: "vendor-model", requestModel: "vendor-model-high", wantModel: "vendor-model", wantEffort: "high"},
+		{name: "bare declared model sends no effort", providerModel: "vendor-model", wantModel: "vendor-model", wantEffort: ""},
+		{name: "undeclared provider suffix preserved", providerModel: "vendor-model-max", wantModel: "vendor-model-max", wantEffort: ""},
+		{name: "undeclared request suffix preserved", providerModel: "vendor-model", requestModel: "vendor-model-max", wantModel: "vendor-model-max", wantEffort: ""},
+		{name: "request suffix overrides provider suffix", providerModel: "vendor-model-low", requestModel: "vendor-model-high", wantModel: "vendor-model", wantEffort: "high"},
+		{name: "explicit request effort overrides both suffixes", providerModel: "vendor-model-low", requestModel: "vendor-model-high", requestEffort: "xhigh", wantModel: "vendor-model", wantEffort: "xhigh"},
+		// Built-in GPT effort tables still apply under a custom provider name.
+		{name: "gpt suffix under custom name", providerModel: "gpt-5.4-xhigh", wantModel: "gpt-5.4", wantEffort: "xhigh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got ResponsesRequest
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[]}}\n\n"))
+			}))
+			defer server.Close()
+
+			created, err := createProviderFromConfig("responses-custom", &config.ProviderConfig{
+				Type: config.ProviderTypeOpenAI, APIKey: "test-key", Model: tc.providerModel, BaseURL: server.URL,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := created.Stream(context.Background(), Request{Model: tc.requestModel, Messages: []Message{UserText("hello")}, ReasoningEffort: tc.requestEffort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainStreamToDone(t, stream)
+			stream.Close()
+
+			if got.Model != tc.wantModel {
+				t.Errorf("request model = %q, want %q", got.Model, tc.wantModel)
+			}
+			gotEffort := ""
+			if got.Reasoning != nil {
+				gotEffort = got.Reasoning.Effort
+			}
+			if gotEffort != tc.wantEffort {
+				t.Errorf("request reasoning effort = %q, want %q", gotEffort, tc.wantEffort)
+			}
+		})
+	}
+}
+
 func TestOpenAIProviderStreamIncludesProviderDefaultServiceTier(t *testing.T) {
 	var got ResponsesRequest
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

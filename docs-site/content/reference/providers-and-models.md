@@ -637,7 +637,7 @@ providers:
 | `default_reasoning_effort` | Effort used by the bare model/provider when no request or model suffix overrides it. Must be listed in `reasoning_efforts`. |
 | `vision_via` | Optional `provider` or `provider:model` route for indirect image understanding. Can be set at provider level (`providers.<name>.vision_via`) as the default for all models on that provider, or on an individual model object to override the provider default. If only `provider` is given, that provider's configured default `model` is used. When set, uploaded image parts are replaced with local path references for the primary model, `view_image` is auto-enabled, and that tool asks the configured vision model to return a text-only analysis. Requires the primary model to support tool calls and the vision provider credentials to be configured. |
 
-For `-p custom:friendly-name-max`, term-llm sends `model: upstream/model-id` plus `reasoning_effort: max`. When `default_reasoning_effort` is set, the bare provider/model uses that effort; otherwise it sends no effort. If `reasoning_efforts` is empty or omitted, no configured effort aliases or provider-profile completions are generated for that model.
+For `-p custom:friendly-name-max`, term-llm sends `model: upstream/model-id` plus `reasoning_effort: max`. When `default_reasoning_effort` is set, the bare provider/model uses that effort; otherwise it sends no effort. If `reasoning_efforts` is empty or omitted, no configured effort aliases or provider-profile completions are generated for that model. Declared `reasoning_efforts` suffixes are also translated by custom-named `type: openai` (Responses) providers, sent as `reasoning.effort`; see [OpenAI reasoning effort](#openai-reasoning-effort).
 
 ### Friendli reasoning
 
@@ -739,6 +739,27 @@ providers:
 Older GPT-5 models retain their existing provider-specific effort sets. Natural model IDs ending in a suffix-like word are preserved when that suffix is not valid for the model; for example, `gpt-5.1-codex-max` remains a model ID rather than being split into model plus `max` effort.
 
 For ChatGPT OAuth, GPT-5.6 Sol, Terra, and Luna expose `low`, `medium`, `high`, `xhigh`, and `max`. Codex's product-level Ultra option is not an inference effort: the official client sends `max` and separately enables subagents, so it is not included in term-llm's effort suffixes.
+
+term-llm's built-in effort tables cover OpenAI's GPT models. For other models served through a custom-named `type: openai` provider — whose model listings the OpenAI adapter does not surface effort metadata for — declare the supported values per model with [`reasoning_efforts`](#model-object-entries) instead. A declared suffix is then stripped from the model ID and sent as `reasoning.effort`, while an undeclared suffix remains part of the model ID. For example, a Meta Muse endpoint:
+
+```yaml
+providers:
+  muse:
+    type: openai
+    base_url: https://api.meta.ai/v1
+    api_key: ${MUSE_API_KEY}
+    model: muse-wonder-1.0-contributor
+    models:
+      - id: muse-wonder-1.0-contributor
+        reasoning_efforts: [minimal, low, medium, high, xhigh, max]
+```
+
+```bash
+term-llm ask -p muse:muse-wonder-1.0-contributor-xhigh "complex question"  # sends model: muse-wonder-1.0-contributor, reasoning.effort: xhigh
+term-llm ask -p muse:muse-wonder-1.0-contributor "question"                 # bare model: no reasoning.effort sent
+```
+
+Add one `models` entry per model you use suffixes with.
 
 ### vLLM thinking suffixes
 

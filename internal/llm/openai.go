@@ -25,6 +25,7 @@ type OpenAIProvider struct {
 	disableEncryptedReasoning bool              // Omit the encrypted reasoning include for incompatible endpoints
 	responsesOptions          ResponsesOptions
 	responsesClient           *ResponsesClient // Shared client for Responses API with server state
+	providerName              string           // Config provider key this instance was created for; "" means built-in parsing only
 }
 
 type OpenAIProviderOptions struct {
@@ -37,6 +38,22 @@ type OpenAIProviderOptions struct {
 	UsePreviousResponseID     *bool // nil preserves the default: server-state continuation
 	RequestEncryptedReasoning *bool // nil preserves the default: request encrypted reasoning
 	Responses                 ResponsesOptions
+	// ProviderName is the config provider key this instance was created for
+	// (e.g. "muse" for a custom-named type: openai provider). Effort suffixes
+	// first resolve against that provider's config-declared reasoning_efforts;
+	// blank skips the config lookup and uses only built-in OpenAI parsing.
+	ProviderName string
+}
+
+// parseOpenAIModelEffort splits a model/effort suffix for an OpenAI Responses
+// provider: efforts declared for the configured provider name (via
+// models[].reasoning_efforts) win, then OpenAI's built-in effort tables apply
+// so GPT model suffixes keep working under custom provider names.
+func parseOpenAIModelEffort(providerName, model string) (string, string) {
+	if base, effort, _ := configBaseModelAndEffortForProvider(providerName, model); base != "" {
+		return base, effort
+	}
+	return parseModelEffortForProvider("openai", model)
 }
 
 // ParseModelEffort extracts effort suffix from model name.
@@ -60,8 +77,9 @@ func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 }
 
 func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptions) *OpenAIProvider {
-	actualModel, effort := parseModelEffortForProvider("openai", model)
+	actualModel, effort := parseOpenAIModelEffort(opts.ProviderName, model)
 	return &OpenAIProvider{
+		providerName:              opts.ProviderName,
 		endpoint:                  openaiapi.Resolve(opts.Endpoint),
 		apiKey:                    apiKey,
 		model:                     actualModel,
@@ -148,7 +166,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := parseModelEffortForProvider("openai", req.Model)
+	reqModel, reqEffort := parseOpenAIModelEffort(p.providerName, req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
 	if reqEffort != "" {
