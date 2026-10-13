@@ -368,7 +368,7 @@ The OpenAI model IDs are `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Cha
 
 OpenAI API GPT-5.6 also supports term-llm's advanced Responses controls: reasoning context, hosted multi-agent execution, programmatic tool calling, and prompt-cache options. These controls are model/provider gated. term-llm rejects them for older OpenAI models, OpenAI-compatible providers, and the ChatGPT OAuth backend rather than sending unverified fields. See [Configuration](/reference/configuration/#gpt-56-advanced-responses-controls) and [Web UI and API](/guides/web-ui-and-api/#gpt-56-responses-controls).
 
-Bundled OpenAI API prices per 1M tokens (uncached input / cache read / cache write / output) are Sol: `$5 / $0.50 / $6.25 / $30`; Terra: `$2.50 / $0.25 / $3.125 / $15`; Luna: `$1 / $0.10 / $1.25 / $6`. When total input (uncached + cache reads + cache writes) exceeds 272K, the entire request uses 2× input/read/write rates and 1.5× output rates. This is API-key billing metadata; ChatGPT subscription access is not billed from these static prices.
+Bundled OpenAI API prices per 1M tokens (uncached input / cache read / cache write / output) are Sol: `$4 / $0.40 / $5 / $20`; Terra: `$2 / $0.20 / $2.50 / $12`; Luna: `$0.20 / $0.02 / $0.25 / $1.20`. When total input (uncached + cache reads + cache writes) exceeds 272K, the entire request uses 2× input/read/write rates and 1.5× output rates. This is API-key billing metadata; ChatGPT subscription access is not billed from these static prices.
 
 ## SambaNova Cloud
 
