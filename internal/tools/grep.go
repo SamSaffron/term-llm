@@ -886,6 +886,7 @@ type GrepArgs struct {
 	ContextLines     int    `json:"context_lines,omitempty"`      // lines of context around match (default 2)
 	FilesWithMatches bool   `json:"files_with_matches,omitempty"` // return filenames only
 	Multiline        bool   `json:"multiline,omitempty"`          // allow matches to span line boundaries
+	Query            string `json:"query,omitempty"`              // natural-language intent for optional reranking
 }
 
 // GrepMatch represents a single grep match.
@@ -899,10 +900,14 @@ type GrepMatch struct {
 func (t *GrepTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        GrepToolName,
-		Description: "Search file contents using regex patterns (RE2 syntax). Returns matches with context.",
+		Description: "Search file contents using regex patterns (RE2 syntax). When query is set, use a BROAD pattern (many alternatives, case-insensitive if useful); available rerankers show only the most relevant match blocks up to max_results.",
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "Plain-English intent; if a reranker is available, search broadly then rank match blocks and show the top max_results (default 10). Ignored with files_with_matches.",
+				},
 				"pattern": map[string]interface{}{
 					"type":        "string",
 					"description": "Regular expression pattern to search for (RE2 syntax)",
@@ -975,12 +980,13 @@ func (t *GrepTool) Preview(args json.RawMessage) string {
 }
 
 func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	rerankCtx := ctx // The initial model download may take longer than grep's search deadline.
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	warning := WarnUnknownParams(args, []string{
 		"pattern", "path", "include", "exclude", "type",
-		"max_results", "context_lines", "files_with_matches", "multiline",
+		"max_results", "context_lines", "files_with_matches", "multiline", "query",
 	})
 	textOutput := func(message string) llm.ToolOutput {
 		return llm.TextOutput(warning + message)
@@ -1038,9 +1044,13 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		}
 	}
 
+	// Query mode captures more candidates before ranking; ordinary grep and
+	// files_with_matches retain their existing cap and behavior.
+	provider, providerErr, searchLimit, rerankShown := t.grepRerankPlan(a, maxResults)
+
 	// Try ripgrep first (faster)
 	if ripgrepAvailable() {
-		result, err := t.executeRipgrep(ctx, a, resolvedSearchPath, contextLines, maxResults)
+		result, err := t.executeRipgrep(ctx, a, resolvedSearchPath, contextLines, searchLimit)
 		if err != nil {
 			if ctx.Err() != nil {
 				return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
@@ -1049,10 +1059,13 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		} else {
 			matches := result.matches
 			if len(matches) == 0 {
-				return textOutput("No matches found."), nil
+				return textOutput(grepFallbackNote(a, providerErr, provider) + "No matches found."), nil
 			}
 			if a.FilesWithMatches {
-				return textOutput(formatFilesWithMatches(matches, result.truncated)), nil
+				return textOutput(grepFallbackNote(a, providerErr, provider) + formatFilesWithMatches(matches, result.truncated)), nil
+			}
+			if provider != nil {
+				return textOutput(t.rerankGrepMatches(rerankCtx, a.Query, provider, matches, rerankShown, result.truncated)), nil
 			}
 			// Auto-enrich: when the result set is small and the caller didn't
 			// request explicit context, bump the context window so the model can
@@ -1076,7 +1089,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 			}
 			// Sort so the most recently modified files appear first.
 			matches = sortGrepMatchesByMtime(matches)
-			return textOutput(formatGrepResults(matches, result.truncated || len(matches) >= maxResults)), nil
+			return textOutput(grepFallbackNote(a, providerErr, provider) + formatGrepResults(matches, result.truncated || len(matches) >= maxResults)), nil
 		}
 	}
 
@@ -1103,11 +1116,11 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 			return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
 		}
 
-		if len(matches) >= maxResults {
+		if len(matches) >= searchLimit {
 			break
 		}
 
-		fileMatches, err := searchFile(file, re, maxResults-len(matches), contextLines)
+		fileMatches, err := searchFile(file, re, searchLimit-len(matches), contextLines)
 		if err != nil {
 			continue // Skip files that can't be read
 		}
@@ -1115,15 +1128,20 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	}
 
 	if len(matches) == 0 {
-		return textOutput("No matches found."), nil
+		return textOutput(grepFallbackNote(a, providerErr, provider) + "No matches found."), nil
 	}
 
 	if a.FilesWithMatches {
-		return textOutput(formatFilesWithMatches(matches, len(matches) >= maxResults)), nil
+		return textOutput(grepFallbackNote(a, providerErr, provider) + formatFilesWithMatches(matches, len(matches) >= maxResults)), nil
 	}
-
+	if provider != nil {
+		return textOutput(t.rerankGrepMatches(rerankCtx, a.Query, provider, matches, rerankShown, len(matches) >= searchLimit)), nil
+	}
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
 	// Format results
-	return textOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
+	return textOutput(grepFallbackNote(a, providerErr, provider) + formatGrepResults(matches, len(matches) >= maxResults)), nil
 }
 
 // collectFiles collects files to search.

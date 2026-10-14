@@ -475,6 +475,7 @@ type Config struct {
 	Transcription   TranscriptionConfig       `mapstructure:"transcription"`
 	Live            LiveConfig                `mapstructure:"live"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
+	Rerank          RerankConfig              `mapstructure:"rerank"`
 	Search          SearchConfig              `mapstructure:"search"`
 	Classify        ClassifyConfig            `mapstructure:"classify" yaml:"classify,omitempty"`
 	Reasoning       ReasoningConfig           `mapstructure:"reasoning"`
@@ -1386,6 +1387,57 @@ func (c *Config) ValidateLive() error {
 	}
 }
 
+// RerankConfig controls optional grep block reranking. An empty provider uses
+// llama.cpp when llama-server is installed; "none" always disables it.
+type RerankConfig struct {
+	Provider string               `mapstructure:"provider"`
+	Model    string               `mapstructure:"model"`
+	BaseURL  string               `mapstructure:"base_url"`
+	Path     string               `mapstructure:"path"` // optional HTTP endpoint path; defaults to /v1/rerank
+	APIKey   string               `mapstructure:"api_key"`
+	Pool     int                  `mapstructure:"pool"`
+	Timeout  string               `mapstructure:"timeout"`
+	Llamacpp RerankLlamacppConfig `mapstructure:"llamacpp"`
+}
+
+// RerankLlamacppConfig controls the managed llama-server process.
+type RerankLlamacppConfig struct {
+	Binary         string   `mapstructure:"binary"`
+	Args           []string `mapstructure:"args"`
+	StartupTimeout string   `mapstructure:"startup_timeout"`
+	IdleTimeout    string   `mapstructure:"idle_timeout"`
+}
+
+// ValidateRerank checks the optional reranker configuration.
+func (c *Config) ValidateRerank() error {
+	r := c.Rerank
+	switch r.Provider {
+	case "", "none", "http", "llamacpp":
+	default:
+		return fmt.Errorf("invalid rerank.provider %q: expected none, http, or llamacpp", r.Provider)
+	}
+	if r.Pool < 0 {
+		return fmt.Errorf("rerank.pool must be non-negative")
+	}
+	for _, setting := range []struct{ name, value string }{
+		{"timeout", r.Timeout},
+		{"llamacpp.startup_timeout", r.Llamacpp.StartupTimeout},
+		{"llamacpp.idle_timeout", r.Llamacpp.IdleTimeout},
+	} {
+		if setting.value == "" {
+			continue
+		}
+		d, err := time.ParseDuration(setting.value)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("invalid rerank.%s %q: expected positive duration", setting.name, setting.value)
+		}
+	}
+	if r.Provider == "http" && strings.TrimSpace(r.BaseURL) == "" {
+		return fmt.Errorf("rerank.base_url is required for http provider")
+	}
+	return nil
+}
+
 // EmbedConfig configures text embedding generation
 type EmbedConfig struct {
 	Provider  string            `mapstructure:"provider"`   // default embedding provider: gemini, openai, chatgpt, venice, jina, voyage, ollama
@@ -1566,6 +1618,9 @@ func loadUnresolved() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.ValidateLive(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateRerank(); err != nil {
 		return nil, err
 	}
 

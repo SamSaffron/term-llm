@@ -223,6 +223,9 @@ const (
 	DefaultTranscriptionVeniceModel     = "nvidia/parakeet-tdt-0.6b-v3"
 	DefaultTranscriptionElevenLabsModel = "scribe_v2"
 
+	DefaultRerankPool    = 64
+	DefaultRerankTimeout = "20s"
+
 	DefaultEmbedOpenAIModel   = "text-embedding-3-small"
 	DefaultEmbedChatGPTModel  = DefaultEmbedOpenAIModel
 	DefaultEmbedVeniceModel   = "text-embedding-qwen3-8b"
@@ -434,6 +437,18 @@ var keySpecs = []KeySpec{
 	def("live.chatgpt.voice", DefaultLiveChatGPTVoice),
 	def("live.chatgpt.call_base_url", DefaultLiveChatGPTCallBaseURL),
 	def("live.chatgpt.sideband_base_url", DefaultLiveChatGPTSidebandBaseURL),
+
+	optional("rerank.provider"),
+	def("rerank.model", "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"),
+	optional("rerank.base_url"),
+	optional("rerank.path"),
+	optional("rerank.api_key", sensitive()),
+	def("rerank.pool", DefaultRerankPool),
+	def("rerank.timeout", DefaultRerankTimeout),
+	optional("rerank.llamacpp.binary"),
+	optional("rerank.llamacpp.args"),
+	def("rerank.llamacpp.startup_timeout", "10m"),
+	def("rerank.llamacpp.idle_timeout", "10m"),
 
 	optional("embed.provider"),
 	def("embed.batch_size", 32),
