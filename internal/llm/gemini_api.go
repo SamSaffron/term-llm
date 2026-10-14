@@ -19,6 +19,7 @@ const (
 
 	geminiThinkingLevelMinimal geminiThinkingLevel = "MINIMAL"
 	geminiThinkingLevelLow     geminiThinkingLevel = "LOW"
+	geminiThinkingLevelMedium  geminiThinkingLevel = "MEDIUM"
 	geminiThinkingLevelHigh    geminiThinkingLevel = "HIGH"
 
 	geminiFunctionCallingConfigModeAuto geminiFunctionCallingMode = "AUTO"
@@ -182,7 +183,7 @@ type geminiUsageMetadata struct {
 	TotalTokenCount      int32 `json:"totalTokenCount,omitempty"`
 }
 
-func streamGeminiResponses(ctx context.Context, client *http.Client, baseURL, apiKey, model string, request geminiGenerateContentRequest, handle func(*geminiGenerateContentResponse) error) error {
+func streamGeminiResponses(ctx context.Context, client *http.Client, baseURL, apiKey, model string, extraHeaders map[string]string, request geminiGenerateContentRequest, handle func(*geminiGenerateContentResponse) error) error {
 	body, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -196,6 +197,7 @@ func streamGeminiResponses(ctx context.Context, client *http.Client, baseURL, ap
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("x-goog-api-key", apiKey)
+	setNonEmptyHeaders(httpReq.Header, extraHeaders)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {

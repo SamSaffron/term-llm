@@ -166,12 +166,14 @@ func resolveGuardianTargetFor(cfg *config.Config, provider, model string) (guard
 	if providerConfig != nil {
 		if model := strings.TrimSpace(providerConfig.FastModel); model != "" {
 			targetProvider := providerName
-			if !explicitProvider {
-				if fastProvider := strings.TrimSpace(providerConfig.FastProvider); fastProvider != "" {
-					targetProvider = fastProvider
-				}
+			if fastProvider := strings.TrimSpace(providerConfig.FastProvider); fastProvider != "" {
+				targetProvider = fastProvider
 			}
-			return guardianTarget{Provider: targetProvider, Model: model}, nil
+			// An explicit guardian.provider pins the provider. fast_model belongs to
+			// fast_provider, so it can only be used when it targets the same provider.
+			if !explicitProvider || targetProvider == providerName {
+				return guardianTarget{Provider: targetProvider, Model: model}, nil
+			}
 		}
 		// A configured model is the user's only known-good option for custom and
 		// local providers that predate fast_model. Keep it as a compatibility
@@ -181,12 +183,7 @@ func resolveGuardianTargetFor(cfg *config.Config, provider, model string) (guard
 		}
 	}
 
-	providerType := config.ProviderType("")
-	if providerConfig != nil {
-		providerType = providerConfig.Type
-	}
-	providerType = config.InferProviderType(providerName, providerType)
-	if model := strings.TrimSpace(llm.ProviderFastModels[string(providerType)]); model != "" {
+	if model := llm.BuiltinFastModel(cfg, providerName); model != "" {
 		return guardianTarget{Provider: providerName, Model: model}, nil
 	}
 	return guardianTarget{}, fmt.Errorf("guardian provider %q has no fast model; set guardian.model or providers.%s.fast_model", providerName, providerName)

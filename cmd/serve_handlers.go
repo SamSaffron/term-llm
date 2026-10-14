@@ -2266,8 +2266,8 @@ func interruptFastProvider(cfg *config.Config, rt *serveRuntime) (llm.Provider, 
 		return nil, nil
 	}
 	if !rt.modelPolicy.Restricted() {
-		// Keep the original session-provider-only candidate list for all users
-		// without allowed_models, even if the default provider has a fast model.
+		// NewFastProvider falls back to the default provider's fast target when
+		// the session provider has no fast model of its own.
 		return llm.NewFastProvider(cfg, rt.providerKey)
 	}
 	return auxProviderForPolicy(cfg, rt.modelPolicy, modelSelection{Provider: rt.providerKey, Model: rt.defaultModel}, rt.providerKey, cfg.DefaultProvider)

@@ -717,7 +717,7 @@ var providerSpecs = []ProviderSpec{
 	{
 		Name: "opencode-go", Type: ProviderTypeOpenCodeGo, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "glm-5.2"}, {"fast_model", "deepseek-v4-flash"}},
-		Description: "OpenCode Go subscription (dynamic Chat Completions, Responses, and Messages routing)",
+		Description: "OpenCode Go subscription (dynamic Chat Completions, Responses, Messages, and Gemini routing)",
 		Credential:  CredentialAPIKey, APIKeyEnv: "OPENCODE_API_KEY", ListModels: true,
 	},
 	{

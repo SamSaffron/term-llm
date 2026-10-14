@@ -478,20 +478,8 @@ func resolveMemoryMineFastModelName(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	providerKey := strings.TrimSpace(cfg.DefaultProvider)
-	targetKey := providerKey
-	model := ""
-	if pc, ok := cfg.Providers[providerKey]; ok {
-		if strings.TrimSpace(pc.FastProvider) != "" {
-			targetKey = strings.TrimSpace(pc.FastProvider)
-		}
-		model = strings.TrimSpace(pc.FastModel)
-	}
-	if model != "" {
-		return model
-	}
-	providerType := string(config.InferProviderType(targetKey, ""))
-	return llm.ProviderFastModels[providerType]
+	_, model, _ := llm.ResolveFastTarget(cfg, cfg.DefaultProvider)
+	return model
 }
 
 func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []string {

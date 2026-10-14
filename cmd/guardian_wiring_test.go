@@ -430,8 +430,9 @@ func TestInstallGuardianReviewerCallbacksExplicitProviderDoesNotHopToFastProvide
 	if err := installGuardianReviewerCallbacks(cfg, mgr, false); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
-	if gotName != "main" || gotModel != "small" {
-		t.Fatalf("factory target = %s:%s, want main:small", gotName, gotModel)
+	// fast_model belongs to fast_provider; pinning main must not send it there.
+	if gotName != "main" || gotModel != "large" {
+		t.Fatalf("factory target = %s:%s, want main:large", gotName, gotModel)
 	}
 }
 
@@ -450,6 +451,23 @@ func TestResolveGuardianTarget(t *testing.T) {
 				Providers:       map[string]config.ProviderConfig{"main": {FastProvider: "fast", FastModel: "small"}},
 			},
 			want: guardianTarget{Provider: "main", Model: "pinned"},
+		},
+		{
+			name: "explicit provider ignores fast model meant for another provider",
+			cfg: &config.Config{
+				DefaultProvider: "default",
+				Guardian:        config.GuardianConfig{Provider: "main"},
+				Providers:       map[string]config.ProviderConfig{"main": {Model: "large", FastProvider: "fast", FastModel: "small"}},
+			},
+			want: guardianTarget{Provider: "main", Model: "large"},
+		},
+		{
+			name: "custom endpoint gets no built-in fast model",
+			cfg: &config.Config{
+				DefaultProvider: "muse",
+				Providers:       map[string]config.ProviderConfig{"muse": {Type: config.ProviderTypeOpenAI, BaseURL: "https://example.test/v1"}},
+			},
+			wantErr: "has no fast model",
 		},
 		{
 			name: "explicit model uses default provider",

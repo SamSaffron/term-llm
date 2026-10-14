@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/cache"
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestOpenCodeGoListModelsMergesLiveCatalog(t *testing.T) {
@@ -27,8 +28,8 @@ func TestOpenCodeGoListModelsMergesLiveCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if len(models) != 6 { // deprecated-model is intentionally hidden
-		t.Fatalf("models = %#v, want six active models", models)
+	if len(models) != 7 { // deprecated-model is intentionally hidden
+		t.Fatalf("models = %#v, want seven active models", models)
 	}
 	byID := make(map[string]ModelInfo)
 	for _, model := range models {
@@ -46,7 +47,7 @@ func TestOpenCodeGoListModelsMergesLiveCatalog(t *testing.T) {
 	if got := byID["unknown-preview"].DisplayName; got != "" {
 		t.Fatalf("unknown preview display name = %q, want empty fallback metadata", got)
 	}
-	if ids := GetCachedOpenCodeGoModels(); strings.Join(ids, ",") != "chat-model,messages-model,muse-spark-1.2,qwen3.8-max,responses-model,unknown-preview" {
+	if ids := GetCachedOpenCodeGoModels(); strings.Join(ids, ",") != "chat-model,gemini-model,messages-model,muse-spark-1.2,qwen3.8-max,responses-model,unknown-preview" {
 		t.Fatalf("cached IDs = %v", ids)
 	}
 	cachedInfos, fresh, err := CachedOpenCodeGoModels()
@@ -97,6 +98,161 @@ func TestEffectiveOpenCodeGoInputLimitPrefersExplicitInput(t *testing.T) {
 	}
 	if got := effectiveOpenCodeGoInputLimit(1_000, 0, 100); got != 900 {
 		t.Fatalf("derived input limit = %d, want 900", got)
+	}
+}
+
+func TestOpenCodeGoProtocolForMetadataGoogleFamily(t *testing.T) {
+	for value, want := range map[string]opencodeGoProtocol{
+		"@ai-sdk/google":                                       opencodeGoProtocolGemini,
+		"@opencode/ai/providers/google":                        opencodeGoProtocolGemini,
+		"@opencode/ai/providers/google/interactions":           opencodeGoProtocolGemini,
+		"google-interactions":                                  opencodeGoProtocolGemini,
+		"https://gateway.example.com/v1beta/models":            opencodeGoProtocolGemini,
+		"https://gateway.example.com/models/x:generateContent": opencodeGoProtocolGemini,
+		"@ai-sdk/openai":                                       opencodeGoProtocolResponses,
+		"@ai-sdk/anthropic":                                    opencodeGoProtocolMessages,
+		"@ai-sdk/openai-compatible":                            opencodeGoProtocolChat,
+		"":                                                     opencodeGoProtocolChat,
+	} {
+		if got := openCodeGoProtocolForMetadata(value); got != want {
+			t.Fatalf("openCodeGoProtocolForMetadata(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestUnknownOpenCodeGoModelProtocols(t *testing.T) {
+	for id, want := range map[string]opencodeGoProtocol{
+		"gemini-4-argon-contributor": opencodeGoProtocolGemini,
+		"muse-spark-9.9-preview":     opencodeGoProtocolResponses,
+		"some-other-model":           opencodeGoProtocolChat,
+	} {
+		if got := unknownOpenCodeGoModel(id).Protocol; got != want {
+			t.Fatalf("unknownOpenCodeGoModel(%q).Protocol = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestOpenCodeGoGeminiBaseURLTranslation(t *testing.T) {
+	// The legacy zen/go shim 404s the Google route; only the default base
+	// is translated to the inference base the catalog advertises.
+	if got := openCodeGoGeminiBaseURL(opencodeGoBaseURL + "/"); got != opencodeGoInferenceBaseURL {
+		t.Fatalf("default base translated to %q, want %q", got, opencodeGoInferenceBaseURL)
+	}
+	if got := openCodeGoGeminiBaseURL(opencodeGoInferenceBaseURL); got != opencodeGoInferenceBaseURL {
+		t.Fatalf("inference base = %q, want unchanged", got)
+	}
+	if got := openCodeGoGeminiBaseURL("https://gateway.example.com/v1/"); got != "https://gateway.example.com/v1" {
+		t.Fatalf("custom base = %q, want unchanged", got)
+	}
+	provider := NewOpenCodeGoProvider("test-key", "gemini-model")
+	if want := opencodeGoInferenceBaseURL + "/models"; provider.gemini.baseURL != want {
+		t.Fatalf("default Gemini baseURL = %q, want %q", provider.gemini.baseURL, want)
+	}
+}
+
+func TestOpenCodeGoGeminiThinkingWithTools(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	server, recorder := newOpenCodeGoTestServer(t)
+	defer server.Close()
+	provider := newOpenCodeGoProvider("test-key", "gemini-model", server.URL, server.URL+"/catalog", server.Client())
+	drainOpenCodeGoStream(t, mustOpenCodeGoStream(t, provider, Request{
+		Messages:        []Message{UserText("call live_probe")},
+		Tools:           []ToolSpec{{Name: "live_probe", Description: "probe", Schema: map[string]any{"type": "object", "properties": map[string]any{"token": map[string]any{"type": "string"}}, "required": []string{"token"}}}},
+		ReasoningEffort: "high",
+		Search:          true,
+	}))
+	request := recorder.lastInferenceRequest(t)
+	var body map[string]any
+	if err := json.Unmarshal(request.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	generation, _ := body["generationConfig"].(map[string]any)
+	thinking, _ := generation["thinkingConfig"].(map[string]any)
+	if thinking["thinkingLevel"] != "HIGH" {
+		t.Fatalf("thinking with tools = %#v, want HIGH level", body["generationConfig"])
+	}
+	if strings.Contains(string(request.Body), "googleSearch") {
+		t.Fatalf("OpenCode Go Gemini route sent native search tool: %s", request.Body)
+	}
+}
+
+func TestOpenCodeGoGeminiSendsThinkingBudgetForBudgetModels(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	server, recorder := newOpenCodeGoTestServer(t)
+	defer server.Close()
+	provider := newOpenCodeGoProvider("test-key", "gemini-budget-high", server.URL, server.URL+"/catalog", server.Client())
+	provider.catalog.store(map[string]opencodeGoModel{
+		"gemini-budget": {
+			ModelInfo:        ModelInfo{ID: "gemini-budget", ReasoningEfforts: []string{"high", "max"}},
+			Protocol:         opencodeGoProtocolGemini,
+			ReasoningBudgets: map[string]int64{"high": 1234, "max": 31999},
+			Available:        true,
+		},
+	}, time.Now(), time.Now(), nil)
+
+	drainOpenCodeGoStream(t, mustOpenCodeGoStream(t, provider, Request{Messages: []Message{UserText("hello")}}))
+	request := recorder.lastRequestForPath(t, "/models/gemini-budget:streamGenerateContent")
+	var body map[string]any
+	if err := json.Unmarshal(request.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	generation, _ := body["generationConfig"].(map[string]any)
+	thinking, _ := generation["thinkingConfig"].(map[string]any)
+	if thinking["thinkingBudget"] != float64(1234) {
+		t.Fatalf("thinkingBudget = %#v, want 1234 in %#v", thinking["thinkingBudget"], body)
+	}
+	if _, exists := thinking["thinkingLevel"]; exists {
+		t.Fatalf("budget model also sent thinkingLevel: %#v", thinking)
+	}
+}
+
+func TestOpenCodeGoGeminiRefusesRedirects(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	var targetHits int
+	var targetMu sync.Mutex
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetMu.Lock()
+		targetHits++
+		targetMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer gateway.Close()
+
+	sharedClient := gateway.Client()
+	provider := newOpenCodeGoProvider("test-key", "gemini-model", gateway.URL, gateway.URL+"/catalog", sharedClient)
+	provider.catalog.store(map[string]opencodeGoModel{
+		"gemini-model": {ModelInfo: ModelInfo{ID: "gemini-model"}, Protocol: opencodeGoProtocolGemini, Available: true},
+	}, time.Now(), time.Now(), nil)
+
+	stream := mustOpenCodeGoStream(t, provider, Request{Messages: []Message{UserText("hello")}})
+	defer stream.Close()
+	var sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("redirected Gemini stream did not surface an error")
+	}
+	targetMu.Lock()
+	defer targetMu.Unlock()
+	if targetHits != 0 {
+		t.Fatalf("redirect target received %d requests, want 0 (credential headers must not follow redirects)", targetHits)
+	}
+	if sharedClient.CheckRedirect != nil {
+		t.Fatal("shared HTTP client redirect policy was mutated")
 	}
 }
 
@@ -180,7 +336,7 @@ func TestOpenCodeGoCatalogFailureUsesAvailabilityThenStaleMetadata(t *testing.T)
 	recorder.setCatalogFailure(true)
 	fallbackProvider := newOpenCodeGoProvider("test-key", "responses-model", server.URL, server.URL+"/catalog", server.Client())
 	models, fresh, err := fallbackProvider.ListModelsWithFreshness(context.Background())
-	if err != nil || len(models) != 7 || fresh {
+	if err != nil || len(models) != 8 || fresh {
 		t.Fatalf("availability-only ListModels = %d, fresh %v, %v", len(models), fresh, err)
 	}
 	requestsBeforeStream := recorder.metadataRequestCount()
@@ -272,7 +428,7 @@ func TestGetCachedOpenCodeGoModelsForAPIKeyReadsDiskCache(t *testing.T) {
 
 	cacheKey := openCodeGoCatalogScope("fresh-key", opencodeGoBaseURL)
 	models := []opencodeGoModel{
-		{ModelInfo: ModelInfo{ID: "active-model"}},
+		{ModelInfo: ModelInfo{ID: "active-model", ReasoningEfforts: []string{"low", "medium", "high"}}},
 		{ModelInfo: ModelInfo{ID: "retired-model"}, Deprecated: true},
 		{ModelInfo: ModelInfo{ID: ""}},
 	}
@@ -280,15 +436,90 @@ func TestGetCachedOpenCodeGoModelsForAPIKeyReadsDiskCache(t *testing.T) {
 		t.Fatalf("write cache: %v", err)
 	}
 
-	// No provider has been constructed, so the in-memory catalog is unset for
-	// this scope; completion must still read the on-disk cache.
+	// No provider has been constructed for this scope; completion must still
+	// read the on-disk cache directly, and priming the scope must make its
+	// reasoning efforts visible to the provider-aware effort helpers.
 	got := GetCachedOpenCodeGoModelsForAPIKey("fresh-key")
 	if strings.Join(got, ",") != "active-model" {
 		t.Fatalf("GetCachedOpenCodeGoModelsForAPIKey(fresh-key) = %v, want [active-model]", got)
 	}
+	primeOpenCodeGoCatalogScope("fresh-key", "")
+	if efforts := ReasoningEffortsForProviderModel("opencode-go", "active-model"); strings.Join(efforts, ",") != "low,medium,high" {
+		t.Fatalf("ReasoningEffortsForProviderModel(active-model) = %v, want low/medium/high", efforts)
+	}
 
 	if got := GetCachedOpenCodeGoModelsForAPIKey("other-key"); got != nil {
 		t.Fatalf("GetCachedOpenCodeGoModelsForAPIKey(other-key) = %v, want nil", got)
+	}
+}
+
+func TestOpenCodeGoCompletionRevealsCachedReasoningEfforts(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	const apiKey = "completion-key"
+	cacheKey := openCodeGoCatalogScope(apiKey, opencodeGoBaseURL)
+	models := []opencodeGoModel{
+		{ModelInfo: ModelInfo{ID: "gemini-model", ReasoningEfforts: []string{"low", "medium", "high"}}, Protocol: opencodeGoProtocolGemini},
+		{ModelInfo: ModelInfo{ID: "chat-model", ReasoningEfforts: []string{"high", "max"}}, Protocol: opencodeGoProtocolChat},
+	}
+	if err := writeCachedOpenCodeGoModels(cacheKey, models); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	providerCfg := config.ProviderConfig{Type: config.ProviderTypeOpenCodeGo, APIKey: apiKey}
+	for name, cfg := range map[string]*config.Config{
+		"cached models":     {Providers: map[string]config.ProviderConfig{"opencode-go": providerCfg}},
+		"configured models": {Providers: map[string]config.ProviderConfig{"opencode-go": {Type: providerCfg.Type, APIKey: apiKey, Models: []string{"gemini-model", "chat-model"}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Fresh-process completion: no provider has been constructed, so
+			// effort variants must come from the primed disk cache, revealed
+			// only once the parent model is fully typed.
+			if got, want := GetProviderCompletions("opencode-go:gemini-model", false, cfg), []string{
+				"opencode-go:gemini-model",
+				"opencode-go:gemini-model-low",
+				"opencode-go:gemini-model-medium",
+				"opencode-go:gemini-model-high",
+			}; !equalSlice(got, want) {
+				t.Fatalf("full model completions = %v, want %v", got, want)
+			}
+			if got, want := GetProviderCompletions("opencode-go:gemini-m", false, cfg), []string{"opencode-go:gemini-model"}; !equalSlice(got, want) {
+				t.Fatalf("partial model completions = %v, want %v", got, want)
+			}
+			if got, want := GetProviderCompletions("opencode-go:gemini-model-l", false, cfg), []string{"opencode-go:gemini-model-low"}; !equalSlice(got, want) {
+				t.Fatalf("partial effort completions = %v, want %v", got, want)
+			}
+			if got := GetProviderCompletions("opencode-go:chat-model", false, cfg); !containsModelID(got, "opencode-go:chat-model-max") {
+				t.Fatalf("chat model completions = %v, want max variant", got)
+			}
+		})
+	}
+
+	// A custom base_url scopes the cache by gateway: models cached for one
+	// scope must not complete (or lend their efforts) under the other.
+	const gatewayBase = "https://gateway.example.com/v1"
+	gatewayModels := []opencodeGoModel{
+		{ModelInfo: ModelInfo{ID: "gateway-model", ReasoningEfforts: []string{"low", "high"}}, Protocol: opencodeGoProtocolGemini},
+	}
+	if err := writeCachedOpenCodeGoModels(openCodeGoCatalogScope(apiKey, gatewayBase), gatewayModels); err != nil {
+		t.Fatalf("write gateway cache: %v", err)
+	}
+	gatewayCfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"opencode-go": {Type: config.ProviderTypeOpenCodeGo, APIKey: apiKey, BaseURL: gatewayBase},
+	}}
+	if got, want := GetProviderCompletions("opencode-go:gateway-model", false, gatewayCfg), []string{
+		"opencode-go:gateway-model",
+		"opencode-go:gateway-model-low",
+		"opencode-go:gateway-model-high",
+	}; !equalSlice(got, want) {
+		t.Fatalf("custom base completions = %v, want %v", got, want)
+	}
+	defaultCfg := &config.Config{Providers: map[string]config.ProviderConfig{"opencode-go": providerCfg}}
+	if got := GetProviderCompletions("opencode-go:gateway-", false, defaultCfg); len(got) != 0 {
+		t.Fatalf("default scope offered gateway-scoped models: %v", got)
+	}
+	if got := GetProviderCompletions("opencode-go:gemini-model", false, gatewayCfg); len(got) != 0 {
+		t.Fatalf("gateway scope offered default-scoped models: %v", got)
 	}
 }
 
@@ -346,6 +577,7 @@ func TestOpenCodeGoRoutesProtocolsAuthLimitsAndDeprecatedModel(t *testing.T) {
 		wantMaxOutput float64
 		wantThinking  bool
 		wantBaseModel string
+		wantLevel     string
 	}{
 		{model: "chat-model", wantPath: "/chat/completions", wantHeader: "Authorization", wantValue: "Bearer test-key"},
 		{model: "messages-model", wantPath: "/v1/messages", wantHeader: "x-api-key", wantValue: "test-key"},
@@ -356,6 +588,9 @@ func TestOpenCodeGoRoutesProtocolsAuthLimitsAndDeprecatedModel(t *testing.T) {
 		{model: "responses-model", reasoning: "none", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key"},
 		{model: "responses-model-high", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key", wantBaseModel: "responses-model"},
 		{model: "responses-model", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key", maxOutput: 1000, wantMaxOutput: 100},
+		{model: "gemini-model", wantPath: "/models/gemini-model:streamGenerateContent", wantHeader: "x-goog-api-key", wantValue: "test-key"},
+		{model: "gemini-model", reasoning: "medium", wantPath: "/models/gemini-model:streamGenerateContent", wantHeader: "x-goog-api-key", wantValue: "test-key", wantLevel: "MEDIUM"},
+		{model: "gemini-model-high", wantPath: "/models/gemini-model:streamGenerateContent", wantHeader: "x-goog-api-key", wantValue: "test-key", wantLevel: "HIGH"},
 		{model: "unknown-preview", wantPath: "/chat/completions", wantHeader: "Authorization", wantValue: "Bearer test-key"},
 		{model: "deprecated-model", wantPath: "/chat/completions", wantHeader: "Authorization", wantValue: "Bearer test-key"},
 	} {
@@ -391,6 +626,16 @@ func TestOpenCodeGoRoutesProtocolsAuthLimitsAndDeprecatedModel(t *testing.T) {
 			if tc.wantBaseModel != "" && body["model"] != tc.wantBaseModel {
 				t.Fatalf("model = %#v, want %q", body["model"], tc.wantBaseModel)
 			}
+			if tc.wantLevel != "" {
+				generation, _ := body["generationConfig"].(map[string]any)
+				thinking, _ := generation["thinkingConfig"].(map[string]any)
+				if thinking["thinkingLevel"] != tc.wantLevel {
+					t.Fatalf("thinkingLevel = %#v, want %q in %#v", thinking["thinkingLevel"], tc.wantLevel, body)
+				}
+			}
+			if strings.HasSuffix(tc.wantPath, ":streamGenerateContent") && request.Header.Get("Authorization") != "Bearer test-key" {
+				t.Fatalf("Gemini Authorization = %q, want bearer key", request.Header.Get("Authorization"))
+			}
 			if tc.wantThinking {
 				thinking, ok := body["thinking"].(map[string]any)
 				if !ok || thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(50) {
@@ -422,7 +667,7 @@ func TestOpenCodeGoRoutesProtocolsAuthLimitsAndDeprecatedModel(t *testing.T) {
 }
 
 func TestOpenCodeGoToolCallsAllProtocols(t *testing.T) {
-	for _, model := range []string{"chat-model", "messages-model", "responses-model"} {
+	for _, model := range []string{"chat-model", "gemini-model", "messages-model", "responses-model"} {
 		t.Run(model, func(t *testing.T) {
 			t.Setenv("XDG_CACHE_HOME", t.TempDir())
 			server, _ := newOpenCodeGoTestServer(t)
@@ -476,6 +721,7 @@ func TestOpenCodeGoSendsSessionAttributionHeaders(t *testing.T) {
 		wantPath string
 	}{
 		{model: "chat-model", wantPath: "/chat/completions"},
+		{model: "gemini-model", wantPath: "/models/gemini-model:streamGenerateContent"},
 		{model: "messages-model", wantPath: "/v1/messages"},
 		{model: "responses-model", wantPath: "/responses"},
 	} {
@@ -643,7 +889,7 @@ func (r *openCodeGoTestRecorder) lastInferenceRequest(t *testing.T) openCodeGoRe
 	defer r.mu.Unlock()
 	for i := len(r.requests) - 1; i >= 0; i-- {
 		switch r.requests[i].Path {
-		case "/chat/completions", "/v1/messages", "/responses":
+		case "/chat/completions", "/v1/messages", "/responses", "/models/gemini-model:streamGenerateContent":
 			return r.requests[i]
 		}
 	}
@@ -659,14 +905,14 @@ func newOpenCodeGoTestServer(t *testing.T) (*httptest.Server, *openCodeGoTestRec
 		switch r.URL.Path {
 		case "/models":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"object":"list","data":[{"id":"chat-model"},{"id":"messages-model"},{"id":"muse-spark-1.2"},{"id":"qwen3.8-max"},{"id":"responses-model"},{"id":"deprecated-model"},{"id":"unknown-preview"}]}`)
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"chat-model"},{"id":"gemini-model"},{"id":"messages-model"},{"id":"muse-spark-1.2"},{"id":"qwen3.8-max"},{"id":"responses-model"},{"id":"deprecated-model"},{"id":"unknown-preview"}]}`)
 		case "/catalog":
 			if recorder.catalogFailure() {
 				http.Error(w, "catalog unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"opencode-go":{"npm":"@ai-sdk/openai-compatible","models":{"chat-model":{"id":"chat-model","name":"Chat Model","limit":{"context":1000,"output":100},"cost":{"input":0.5,"output":1}},"messages-model":{"id":"messages-model","name":"Messages Model","provider":{"npm":"@ai-sdk/anthropic"},"limit":{"context":1000,"output":100}},"qwen3.8-max":{"id":"qwen3.8-max","name":"Qwen3.8 Max","provider":{"npm":"@ai-sdk/anthropic"},"limit":{"context":1000,"output":100},"reasoning_options":[{"type":"toggle"},{"type":"budget_tokens","max":250}]},"responses-model":{"id":"responses-model","name":"Responses Model","provider":{"npm":"@ai-sdk/openai"},"limit":{"context":1000,"output":100},"cost":{"input":1.25,"output":5},"reasoning_options":[{"type":"effort","values":["low","high"]}]},"deprecated-model":{"id":"deprecated-model","status":"deprecated"}}}}`)
+			fmt.Fprint(w, `{"opencode-go":{"npm":"@ai-sdk/openai-compatible","models":{"chat-model":{"id":"chat-model","name":"Chat Model","limit":{"context":1000,"output":100},"cost":{"input":0.5,"output":1}},"gemini-model":{"id":"gemini-model","name":"Gemini Model","provider":{"npm":"@ai-sdk/google"},"limit":{"context":1000,"output":100},"cost":{"input":4,"output":20},"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]},"messages-model":{"id":"messages-model","name":"Messages Model","provider":{"npm":"@ai-sdk/anthropic"},"limit":{"context":1000,"output":100}},"qwen3.8-max":{"id":"qwen3.8-max","name":"Qwen3.8 Max","provider":{"npm":"@ai-sdk/anthropic"},"limit":{"context":1000,"output":100},"reasoning_options":[{"type":"toggle"},{"type":"budget_tokens","max":250}]},"responses-model":{"id":"responses-model","name":"Responses Model","provider":{"npm":"@ai-sdk/openai"},"limit":{"context":1000,"output":100},"cost":{"input":1.25,"output":5},"reasoning_options":[{"type":"effort","values":["low","high"]}]},"deprecated-model":{"id":"deprecated-model","status":"deprecated"}}}}`)
 		case "/chat/completions":
 			w.Header().Set("Content-Type", "text/event-stream")
 			if strings.Contains(string(body), `"tools"`) {
@@ -688,7 +934,19 @@ func newOpenCodeGoTestServer(t *testing.T) (*httptest.Server, *openCodeGoTestRec
 			} else {
 				fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"responses\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 			}
+		case "/models/gemini-model:streamGenerateContent":
+			w.Header().Set("Content-Type", "text/event-stream")
+			if strings.Contains(string(body), `"functionDeclarations"`) {
+				fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"id\":\"call_gemini\",\"name\":\"live_probe\",\"args\":{\"token\":\"TOOL_OK\"}}}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\ndata: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n")
+			} else {
+				fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"gemini\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\ndata: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n")
+			}
 		default:
+			if strings.HasPrefix(r.URL.Path, "/models/") && strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"gemini\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\ndata: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n")
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}))

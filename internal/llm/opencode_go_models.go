@@ -17,12 +17,16 @@ import (
 )
 
 const (
-	opencodeGoBaseURL     = "https://opencode.ai/zen/go/v1"
-	opencodeGoCatalogURL  = "https://models.opencode.ai/api.json"
-	opencodeGoDisplayName = "OpenCode Go"
-	// v2 invalidates early catalog caches that predated protocol and
-	// budget-derived reasoning metadata.
-	opencodeGoModelCacheKey      = "opencode-go-v2"
+	opencodeGoBaseURL = "https://opencode.ai/zen/go/v1"
+	// The legacy zen/go shim does not serve the Google generateContent
+	// route; Google-family models are served from the inference base that
+	// the live catalog now advertises as the provider API URL.
+	opencodeGoInferenceBaseURL = "https://opencode.ai/inference/go/v1"
+	opencodeGoCatalogURL       = "https://models.opencode.ai/api.json"
+	opencodeGoDisplayName      = "OpenCode Go"
+	// v3 invalidates catalog caches that routed Google-family models to
+	// Chat Completions before the Gemini protocol was recognized.
+	opencodeGoModelCacheKey      = "opencode-go-v3"
 	opencodeGoCatalogProviderKey = "opencode-go"
 	opencodeGoModelCacheTTL      = 5 * time.Minute
 	opencodeGoRefreshBackoff     = 30 * time.Second
@@ -36,6 +40,7 @@ const (
 	opencodeGoProtocolChat      opencodeGoProtocol = "chat"
 	opencodeGoProtocolMessages  opencodeGoProtocol = "messages"
 	opencodeGoProtocolResponses opencodeGoProtocol = "responses"
+	opencodeGoProtocolGemini    opencodeGoProtocol = "gemini"
 )
 
 type opencodeGoModel struct {
@@ -254,9 +259,13 @@ func unknownOpenCodeGoModel(id string) opencodeGoModel {
 	// default is OpenAI-compatible chat, which the Go gateway translates to the
 	// selected upstream protocol. Muse Spark is the exception: OpenCode Go exposes
 	// preview IDs before their catalog metadata and serves them on Responses.
+	// Gemini IDs are likewise only served on the Google generateContent route.
 	protocol := opencodeGoProtocolChat
-	if strings.HasPrefix(strings.ToLower(id), "muse-spark-") {
+	switch lower := strings.ToLower(id); {
+	case strings.HasPrefix(lower, "muse-spark-"):
 		protocol = opencodeGoProtocolResponses
+	case strings.HasPrefix(lower, "gemini-"):
+		protocol = opencodeGoProtocolGemini
 	}
 	return opencodeGoModel{ModelInfo: ModelInfo{ID: id, InputPrice: -1, OutputPrice: -1}, Protocol: protocol}
 }
@@ -428,9 +437,28 @@ func openCodeGoProtocolForMetadata(value string) opencodeGoProtocol {
 		return opencodeGoProtocolResponses
 	case value == "messages", value == "@ai-sdk/anthropic", strings.HasSuffix(value, "/messages"):
 		return opencodeGoProtocolMessages
+	case isOpenCodeGoGoogleMetadata(value):
+		return opencodeGoProtocolGemini
 	default:
 		return opencodeGoProtocolChat
 	}
+}
+
+// isOpenCodeGoGoogleMetadata reports whether catalog metadata marks a model
+// for Google's Gemini API family. The Go gateway exposes those models only
+// on its generateContent surface: the OpenAI- and Anthropic-shaped routes
+// reject them with ModelProtocolUnsupported, and the gateway has no
+// Interactions route, so Interactions-flavored package names route to the
+// same Gemini transport.
+func isOpenCodeGoGoogleMetadata(value string) bool {
+	switch value {
+	case "google", "gemini", "google-interactions", "@ai-sdk/google", "@opencode/ai/providers/google":
+		return true
+	}
+	return strings.HasSuffix(value, "/google") ||
+		strings.HasSuffix(value, "/interactions") ||
+		strings.HasSuffix(value, "/v1beta/models") ||
+		strings.Contains(value, ":generatecontent")
 }
 
 func openCodeGoModelMap(models []opencodeGoModel) map[string]opencodeGoModel {
@@ -603,12 +631,38 @@ func GetCachedOpenCodeGoModels() []string {
 // runs in a fresh process where no provider has been constructed) can read the
 // cache directly.
 func GetCachedOpenCodeGoModelsForAPIKey(apiKey string) []string {
-	cacheKey := openCodeGoCatalogScope(apiKey, opencodeGoBaseURL)
-	cached, err := readCachedOpenCodeGoModels(cacheKey)
+	return getCachedOpenCodeGoModelsForScope(apiKey, "")
+}
+
+func getCachedOpenCodeGoModelsForScope(apiKey, baseURL string) []string {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = opencodeGoBaseURL
+	}
+	cached, err := readCachedOpenCodeGoModels(openCodeGoCatalogScope(apiKey, baseURL))
 	if err != nil || len(cached.models) == 0 {
 		return nil
 	}
 	return activeOpenCodeGoModelIDs(cached.models)
+}
+
+// primeOpenCodeGoCatalogScope registers the shared catalog for a credential
+// scope without network access, makes it the latest catalog, and loads its
+// on-disk cache into memory once. Disk-backed metadata helpers (reasoning
+// efforts, input limits) key off that catalog, so priming is what lets them
+// see the cache in fresh processes such as shell completion, where no
+// provider has been constructed. Callers in long-lived processes should
+// prime deliberately (as provider construction does), not from pure reads.
+func primeOpenCodeGoCatalogScope(apiKey, baseURL string) *opencodeGoModelCatalog {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = opencodeGoBaseURL
+	}
+	catalog := sharedOpenCodeGoCatalog(apiKey, baseURL)
+	if len(catalog.snapshot()) == 0 {
+		if cached, err := readCachedOpenCodeGoModels(catalog.cacheKey); err == nil && len(cached.models) > 0 {
+			catalog.store(cached.models, cached.fetchedAt, time.Time{}, nil)
+		}
+	}
+	return catalog
 }
 
 func activeOpenCodeGoModelIDs(models map[string]opencodeGoModel) []string {
@@ -645,4 +699,38 @@ func newOpenCodeGoAnthropicProvider(apiKey, baseURL, model string, client *http.
 		ac.baseURL = parsed
 	}
 	return &AnthropicProvider{client: ac, model: model, credential: "api_key"}
+}
+
+func newOpenCodeGoGeminiProvider(apiKey, baseURL, model string, client *http.Client) *GeminiProvider {
+	if client == nil {
+		client = defaultHTTPClient
+	}
+	// Never follow redirects: Go strips Authorization cross-host but
+	// forwards custom credential headers such as x-goog-api-key. Copy so
+	// the client shared with the other OpenCode protocols is untouched.
+	copied := *client
+	copied.CheckRedirect = refuseAnthropicRedirect
+	client = &copied
+	return &GeminiProvider{
+		apiKey:  apiKey,
+		model:   model,
+		baseURL: openCodeGoGeminiBaseURL(baseURL) + "/models",
+		client:  client,
+		// The gateway accepts Gemini thinking levels alongside function
+		// tools for its Google-family models.
+		allowThinkingWithTools: true,
+	}
+}
+
+// openCodeGoGeminiBaseURL returns the gateway base that serves the Google
+// generateContent route. The legacy zen/go shim covers chat, responses,
+// and messages but returns the web app's 404 for /models/...:generateContent,
+// so the default base is translated to the inference base the live catalog
+// advertises. Custom gateway bases are used as configured.
+func openCodeGoGeminiBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == opencodeGoBaseURL {
+		return opencodeGoInferenceBaseURL
+	}
+	return baseURL
 }

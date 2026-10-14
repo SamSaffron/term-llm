@@ -172,13 +172,16 @@ func TestJobsExecutorParentSelectionAndPolicyPersistence(t *testing.T) {
 }
 
 func TestUnrestrictedAuxiliaryCandidateParity(t *testing.T) {
-	cfg := &config.Config{DefaultProvider: "fallback", Providers: map[string]config.ProviderConfig{"debug": {Model: "main"}, "fallback": {Model: "main", FastModel: "fast"}}}
-	rt := &serveRuntime{providerKey: "debug", defaultModel: "main"}
+	cfg := &config.Config{DefaultProvider: "fallback", Providers: map[string]config.ProviderConfig{
+		"session":  {Type: config.ProviderTypeOpenAICompat, BaseURL: "https://session.example.test/v1", Model: "main"},
+		"fallback": {Model: "main", FastProvider: "debug", FastModel: "random"},
+	}}
+	rt := &serveRuntime{providerKey: "session", defaultModel: "main"}
 	got, err := interruptFastProvider(cfg, rt)
-	if err != nil || got != nil {
-		t.Fatalf("unrestricted interrupt candidate = %v, %v; must not use default provider", got, err)
+	if err != nil || got == nil {
+		t.Fatalf("unrestricted interrupt candidate = %v, %v; want default provider fast target", got, err)
 	}
-	rt.modelPolicy = modelpolicy.Policy{}.With("boss", []string{"debug:main", "fallback:fast"})
+	rt.modelPolicy = modelpolicy.Policy{}.With("boss", []string{"session:main", "debug:random"})
 	got, err = interruptFastProvider(cfg, rt)
 	if err != nil || got == nil {
 		t.Fatalf("restricted interrupt candidate = %v, %v", got, err)

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -130,6 +131,9 @@ func (s *serveServer) runAutoTitle(ctx context.Context, sessionID, providerKey s
 	}
 	candidate, err := sessiontitle.Generate(ctx, provider, sess, messages)
 	if err != nil {
+		if !errors.Is(err, sessiontitle.ErrRejected) {
+			log.Printf("[serve] automatic title generation failed for %s: %v", sessionID, err)
+		}
 		// Persist the skip as a cross-restart damper. Updated conversations may
 		// retry, while the in-memory attempt cap prevents per-turn amplification.
 		_ = s.store.MarkTitleSkipped(ctx, sessionID, time.Now().UTC())

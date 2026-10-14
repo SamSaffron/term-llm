@@ -1015,6 +1015,13 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 
 func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *config.Config, getModelIDs func(string) []string) []string {
 	providerCfg := providerConfigForCompletion(provider, isImage, cfg)
+	// OpenCode Go efforts and limits come from its credential-scoped disk
+	// cache, which the provider-aware helpers only see once the scope is
+	// primed. Prime once up front so candidate lookup, configured model
+	// lists, and effort expansion below all share the same metadata.
+	if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeOpenCodeGo {
+		primeOpenCodeGoCatalogScope(resolvedProviderAPIKey(cfg, provider), providerCfg.BaseURL)
+	}
 	models, configured := configuredCompletionModels(provider, isImage, providerCfg)
 	if !configured {
 		var continueCompletion bool
@@ -1136,7 +1143,7 @@ func completionModelCandidates(provider string, isImage bool, providerCfg config
 			return models, true
 		case providerType == "opencode-go":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
-			models := GetCachedOpenCodeGoModelsForAPIKey(apiKey)
+			models := getCachedOpenCodeGoModelsForScope(apiKey, providerCfg.BaseURL)
 			if len(models) == 0 && providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}

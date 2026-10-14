@@ -266,7 +266,8 @@ func wizardGuardianDefault(provider string, providers map[string]config.Provider
 	}
 	model := strings.TrimSpace(providerCfg.FastModel)
 	if model == "" {
-		model = config.DefaultProviderFastModel(provider)
+		// The default belongs to the provider that will receive the request.
+		model = config.DefaultProviderFastModel(targetProvider)
 	}
 	return targetProvider, model
 }

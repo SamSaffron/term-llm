@@ -116,6 +116,16 @@ func TestWizardGuardianDefaultUsesSelectedProviderFastModel(t *testing.T) {
 	}
 }
 
+func TestWizardGuardianDefaultUsesFastProviderOwnModel(t *testing.T) {
+	providers := map[string]config.ProviderConfig{
+		"chatgpt": {Model: "large", FastProvider: "claude-bin"},
+	}
+	provider, model := wizardGuardianDefault("chatgpt", providers)
+	if want := config.DefaultProviderFastModel("claude-bin"); provider != "claude-bin" || model != want {
+		t.Fatalf("wizardGuardianDefault() = %s:%s, want claude-bin:%s", provider, model, want)
+	}
+}
+
 func TestZenSetupRequiresKey(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, key := range []string{"", "test-key"} {

@@ -16,10 +16,35 @@ import (
 type GeminiProvider struct {
 	apiKey         string
 	model          string
-	thinkingLevel  geminiThinkingLevel // for Gemini 3: MINIMAL, LOW, HIGH
+	thinkingLevel  geminiThinkingLevel // for Gemini 3+: MINIMAL, LOW, MEDIUM, HIGH
 	thinkingBudget *int32              // for Gemini 2.5: 0, 8192, etc.
 	baseURL        string
 	client         *http.Client
+	// extraHeaders supplies per-request headers for gateway-fronted
+	// deployments (OpenCode Go attribution and bearer auth).
+	extraHeaders func(ctx context.Context) map[string]string
+	// allowThinkingWithTools permits thinking config alongside function
+	// tools on models that accept the combination.
+	allowThinkingWithTools bool
+}
+
+// geminiThinkingLevelForEffort maps a portable reasoning effort onto the
+// Gemini thinking level accepted by the generateContent API. Unknown
+// efforts, and "none" (Gemini has no portable off level — some models
+// reject MINIMAL), yield no explicit level and keep the model default.
+func geminiThinkingLevelForEffort(effort string) geminiThinkingLevel {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal":
+		return geminiThinkingLevelMinimal
+	case "low":
+		return geminiThinkingLevelLow
+	case "medium":
+		return geminiThinkingLevelMedium
+	case "high", "xhigh", "max":
+		return geminiThinkingLevelHigh
+	default:
+		return ""
+	}
 }
 
 // geminiThinkingConfig holds thinking configuration for a Gemini model
@@ -29,7 +54,7 @@ type geminiThinkingConfig struct {
 }
 
 // parseGeminiModelThinking extracts the base model name and determines thinking config.
-// Gemini 3 models use thinkingLevel (MINIMAL/LOW/HIGH).
+// Gemini 3 models use thinkingLevel (MINIMAL/LOW/MEDIUM/HIGH).
 // Gemini 2.5 models use thinkingBudget (0 = disabled).
 func parseGeminiModelThinking(model string) (string, geminiThinkingConfig) {
 	hasThinkingSuffix := strings.HasSuffix(model, "-thinking")
@@ -113,8 +138,9 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 
 		generation := &geminiGenerationConfig{}
-		// Thinking is not supported together with search or function tools.
-		if !req.Search && len(req.Tools) == 0 {
+		// Thinking is not supported together with search, and older models
+		// reject it alongside function tools.
+		if !req.Search && (len(req.Tools) == 0 || p.allowThinkingWithTools) {
 			if p.thinkingLevel != "" {
 				generation.ThinkingConfig = &geminiThinkingAPIConfig{ThinkingLevel: p.thinkingLevel}
 			} else if p.thinkingBudget != nil {
@@ -151,7 +177,11 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 		var sources []string
 		var usageResp *geminiGenerateContentResponse
 		sawCandidateContent := false
-		err := streamGeminiResponses(ctx, p.client, p.baseURL, p.apiKey, effectiveModel, apiReq, func(resp *geminiGenerateContentResponse) error {
+		var extraHeaders map[string]string
+		if p.extraHeaders != nil {
+			extraHeaders = p.extraHeaders(ctx)
+		}
+		err := streamGeminiResponses(ctx, p.client, p.baseURL, p.apiKey, effectiveModel, extraHeaders, apiReq, func(resp *geminiGenerateContentResponse) error {
 			if resp.UsageMetadata != nil {
 				usageResp = resp
 			}

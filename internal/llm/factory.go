@@ -252,33 +252,85 @@ func NewProviderByNameNoRetry(cfg *config.Config, name string, model string) (Pr
 	return newNamedProvider(cfg, name, model)
 }
 
-// NewFastProvider creates a lightweight provider instance for the specified provider key.
-// Resolution order:
-// 1. providers.<name>.fast_provider + fast_model
-// 2. providers.<name>.fast_model on the same provider key
-// 3. built-in ProviderFastModels fallback for inferred provider type
-// Returns nil, nil if no fast model can be resolved.
+// ResolveFastTarget resolves the provider and lightweight model for background
+// work on behalf of the named provider. A model is only ever paired with the
+// provider it was configured or defined for. Resolution order:
+//  1. providers.<name>.fast_model, sent to fast_provider when set, else <name>
+//  2. the redirect target's own fast_model, or its built-in default
+//  3. the built-in default fast model when <name> runs on its stock endpoint
+//  4. the same resolution (steps 1–3) for the configured default provider
+//
+// Custom endpoints (for example type: openai with a base_url) never inherit a
+// built-in fast model, because that endpoint is unlikely to serve it.
 func ResolveFastTarget(cfg *config.Config, name string) (string, string, bool) {
 	if cfg == nil {
 		return "", "", false
 	}
-	targetName, targetModel := name, ""
-	if pc, ok := cfg.Providers[name]; ok {
-		if strings.TrimSpace(pc.FastProvider) != "" {
-			targetName = strings.TrimSpace(pc.FastProvider)
-		}
-		targetModel = strings.TrimSpace(pc.FastModel)
+	name = strings.TrimSpace(name)
+	if target, model, ok := ownFastTarget(cfg, name); ok {
+		return target, model, true
 	}
-	if targetModel == "" {
-		var explicitType config.ProviderType
-		if pc, ok := cfg.Providers[targetName]; ok {
-			explicitType = pc.Type
-		}
-		targetModel = ProviderFastModels[string(config.InferProviderType(targetName, explicitType))]
+	if fallback := cfg.GuardianDefaultProvider(); fallback != "" && fallback != name {
+		return ownFastTarget(cfg, fallback)
 	}
-	return targetName, targetModel, targetModel != ""
+	return "", "", false
 }
 
+// ownFastTarget resolves a fast target without falling back to another provider.
+func ownFastTarget(cfg *config.Config, name string) (string, string, bool) {
+	if name == "" {
+		return "", "", false
+	}
+	target := name
+	if pc, ok := cfg.Providers[name]; ok {
+		if fastProvider := strings.TrimSpace(pc.FastProvider); fastProvider != "" {
+			target = fastProvider
+		}
+		if model := strings.TrimSpace(pc.FastModel); model != "" {
+			return target, model, true
+		}
+	}
+	if target != name {
+		if pc, ok := cfg.Providers[target]; ok && strings.TrimSpace(pc.FastProvider) == "" {
+			if model := strings.TrimSpace(pc.FastModel); model != "" {
+				return target, model, true
+			}
+		}
+	}
+	if model := BuiltinFastModel(cfg, target); model != "" {
+		return target, model, true
+	}
+	return "", "", false
+}
+
+// BuiltinFastModel returns the built-in default fast model for the named
+// provider when it talks to its provider type's stock endpoint. Providers with
+// a custom base_url or url get no default: the built-in model belongs to a
+// different service.
+func BuiltinFastModel(cfg *config.Config, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	var pc config.ProviderConfig
+	if cfg != nil {
+		pc = cfg.Providers[name]
+	}
+	providerType := config.InferProviderType(name, pc.Type)
+	if strings.TrimSpace(pc.URL) != "" {
+		return ""
+	}
+	if baseURL := strings.TrimSpace(pc.BaseURL); baseURL != "" {
+		stock, _ := config.DefaultProviderValue(string(providerType), "base_url")
+		if stockURL, _ := stock.(string); strings.TrimRight(baseURL, "/") != strings.TrimRight(stockURL, "/") {
+			return ""
+		}
+	}
+	return ProviderFastModels[string(providerType)]
+}
+
+// NewFastProvider creates the provider chosen by ResolveFastTarget.
+// Returns nil, nil if no fast model can be resolved.
 func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
 	target, model, ok := ResolveFastTarget(cfg, name)
 	if !ok {

@@ -114,7 +114,7 @@ Per-agent preferences in your main config can override provider/model choices wi
 term-llm agents set reviewer provider=openai model=gpt-5.2
 ```
 
-The special agent model value `fast` resolves through the active provider's fast-model settings: `providers.<active>.fast_model`, or `providers.<active>.fast_provider` plus `fast_model` when the lightweight model should run on a different provider key. It is not sent to the provider as a literal model named `fast`.
+The special agent model value `fast` resolves through the active provider's fast-model settings: `providers.<active>.fast_model`, or `providers.<active>.fast_provider` plus `fast_model` when the lightweight model should run on a different provider key. A provider with no fast model of its own (for example a custom `base_url` endpoint without `fast_model`) uses the `default_provider`'s fast model and provider. It is not sent to the provider as a literal model named `fast`.
 
 Built-in `developer` can spawn up to five subagents in parallel. Its built-in spawn configuration runs spawned `codebase` subagents with `model: fast`, so developer-led repository investigations use the lightweight model without changing direct `@codebase` sessions:
 

@@ -282,6 +282,51 @@ func TestGeminiStreamRejectsTruncatedResponse(t *testing.T) {
 	}
 }
 
+func TestGeminiNativeProviderOmitsThinkingWithToolsAndBearerAuth(t *testing.T) {
+	var gotBody []byte
+	var gotHeader http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotHeader = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n")
+	}))
+	defer server.Close()
+
+	provider := NewGeminiProvider("test-key", "gemini-test")
+	provider.baseURL = server.URL
+	provider.client = server.Client()
+	provider.thinkingLevel = geminiThinkingLevelHigh
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hi")},
+		Tools:    []ToolSpec{{Name: "probe", Description: "probe", Schema: map[string]any{"type": "object", "properties": map[string]any{}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = stream.Close()
+	// The OpenCode Go allowances (thinking alongside tools, bearer auth)
+	// must stay opt-in; the native provider keeps its zero-value defaults.
+	if strings.Contains(string(gotBody), "thinkingConfig") {
+		t.Fatalf("native Gemini sent thinkingConfig with tools: %s", gotBody)
+	}
+	if got := gotHeader.Get("Authorization"); got != "" {
+		t.Fatalf("native Gemini Authorization = %q, want unset", got)
+	}
+	if got := gotHeader.Get("x-goog-api-key"); got != "test-key" {
+		t.Fatalf("native Gemini x-goog-api-key = %q, want test-key", got)
+	}
+}
+
 func TestReadGeminiSSEReportsAPIAndBlockedResponses(t *testing.T) {
 	tests := []struct {
 		name string

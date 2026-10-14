@@ -36,6 +36,7 @@ type OpenCodeGoProvider struct {
 	chat       *OpenAICompatProvider
 	messages   *AnthropicProvider
 	responses  *ResponsesClient
+	gemini     *GeminiProvider
 }
 
 var (
@@ -113,6 +114,7 @@ func newOpenCodeGoProvider(apiKey, model, baseURL, catalogURL string, client *ht
 		return p.requestHeaders(openCodeGoSessionFromContext(ctx))
 	}
 	p.messages = newOpenCodeGoAnthropicProvider(apiKey, baseURL, model, client)
+	p.gemini = newOpenCodeGoGeminiProvider(apiKey, baseURL, model, client)
 	p.responses = &ResponsesClient{
 		BaseURL:            baseURL + "/responses",
 		GetAuthHeader:      func() string { return "Bearer " + apiKey },
@@ -287,6 +289,16 @@ func (p *OpenCodeGoProvider) Stream(ctx context.Context, req Request) (Stream, e
 			http.Header{openCodeGoClientHeader: {openCodeGoClientID}, openCodeGoSessionHeader: {sessionID}})
 	case opencodeGoProtocolResponses:
 		return p.streamResponses(ctx, req, sessionID)
+	case opencodeGoProtocolGemini:
+		// Google-family models are only served on the gateway's Gemini
+		// generateContent route. Keep search on term-llm's portable tool
+		// loop rather than Gemini's native grounding tool.
+		req.Search = false
+		budget := metadata.ReasoningBudgets[strings.ToLower(strings.TrimSpace(req.ReasoningEffort))]
+		if req.DebugRaw {
+			DebugRawSection(true, "OpenCode Go Routed Request", fmt.Sprintf("protocol: gemini\nmodel: %s\nreasoning_effort: %s\nthinking_budget: %d\nmax_output_tokens: %d", req.Model, req.ReasoningEffort, budget, req.MaxOutputTokens))
+		}
+		return p.streamGemini(ctx, req, sessionID, budget)
 	default:
 		return p.chat.Stream(withOpenCodeGoSession(ctx, sessionID), req)
 	}
@@ -311,6 +323,30 @@ func splitOpenCodeGoModelEffort(model string, metadata opencodeGoModel) (string,
 		}
 	}
 	return model, ""
+}
+
+func (p *OpenCodeGoProvider) streamGemini(ctx context.Context, req Request, sessionID string, thinkingBudget int64) (Stream, error) {
+	// Clone the shared Gemini transport so per-request model, thinking
+	// level, and session headers never race across concurrent streams.
+	gemini := *p.gemini
+	gemini.model = req.Model
+	// Budget-based models expect thinkingBudget; level-based models get a
+	// thinkingLevel. Send exactly one, mirroring the Messages route.
+	gemini.thinkingLevel = geminiThinkingLevelForEffort(req.ReasoningEffort)
+	gemini.thinkingBudget = nil
+	if thinkingBudget > 0 {
+		budget := int32(thinkingBudget)
+		gemini.thinkingBudget = &budget
+		gemini.thinkingLevel = ""
+	}
+	gemini.extraHeaders = func(context.Context) map[string]string {
+		headers := p.requestHeaders(sessionID)
+		if p.apiKey != "" {
+			headers["Authorization"] = "Bearer " + p.apiKey
+		}
+		return headers
+	}
+	return gemini.Stream(ctx, req)
 }
 
 func (p *OpenCodeGoProvider) streamResponses(ctx context.Context, req Request, sessionID string) (Stream, error) {
