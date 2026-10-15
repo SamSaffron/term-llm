@@ -71,9 +71,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 			return nil, nil, nil, true, err
 		}
 	}
-	if !cmd.Flags().Changed("search") {
-		settings.Search = sess.Search
-	}
+	settings.Search = resumedSessionSearch(settings.Search, sess.Search, cmd.Flags().Changed("search"), askNoSearch)
 	if !cmd.Flags().Changed("tools") {
 		settings.Tools = sess.Tools
 	}

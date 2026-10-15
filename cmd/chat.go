@@ -305,6 +305,22 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// resumedSessionSearch decides web search for a resumed session. The saved
+// session setting applies unless this invocation is explicit: --no-search
+// always disables search (including provider-native search), and --search
+// keeps the CLI-resolved value. Explicit flags apply to this invocation only;
+// the saved session setting is not rewritten.
+func resumedSessionSearch(resolved, saved, searchFlagSet, noSearch bool) bool {
+	switch {
+	case noSearch:
+		return false
+	case searchFlagSet:
+		return resolved
+	default:
+		return saved
+	}
+}
+
 func applyChatSearchDefault(settings *SessionSettings, noSearch bool, sess *session.Session, agentActive bool) {
 	if settings == nil || noSearch || sess != nil || agentActive {
 		return
@@ -544,7 +560,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 
 	// Saved session settings win on resume.
 	if sess != nil {
-		settings.Search = sess.Search
+		settings.Search = resumedSessionSearch(settings.Search, sess.Search, cmd.Flags().Changed("search"), chatNoSearch)
 		if inputTicket == nil {
 			settings.Tools = sess.Tools
 		}
