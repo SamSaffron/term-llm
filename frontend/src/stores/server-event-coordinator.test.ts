@@ -65,10 +65,14 @@ function harness() {
           }),
       ),
   };
+  const eventFeedHealthy = signal(false);
   const services = {
     endpoints,
     isDisposed: false,
-    eventFeedHealthy: signal(false),
+    eventFeedHealthy,
+    setEventFeedHealthy: (healthy: boolean) => {
+      eventFeedHealthy.value = healthy;
+    },
     bumpDiagnostic: (key: string) => diagnostics.push(key),
   } as unknown as AppStoreServices;
   return {
@@ -121,6 +125,99 @@ describe('ServerEventCoordinator', () => {
     expect(diagnostics).not.toContain('serverEventPollFallbacks');
     coordinator.dispose();
     expect(services.eventFeedHealthy.value).toBe(false);
+  });
+
+  it('releases the feed while parked and resumes from its cursor without a failure', async () => {
+    const { coordinator, services, endpoints, diagnostics } = harness();
+    const encoder = new TextEncoder();
+    endpoints.serverEventStream.mockImplementation(
+      async (_after: number | null, _channels: string[], signal: AbortSignal) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `event: ready\ndata: ${JSON.stringify({
+                    v: 1,
+                    instance_id: 'evt_test',
+                    latest_sequence: 7,
+                    heartbeat_ms: 10_000,
+                    replay_limit: 2_048,
+                  })}\n\n`,
+                ),
+              );
+              signal.addEventListener(
+                'abort',
+                () => controller.error(signal.reason || new DOMException('Aborted', 'AbortError')),
+                { once: true },
+              );
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+    );
+
+    await coordinator.prepare();
+    expect(services.eventFeedHealthy.value).toBe(true);
+    const firstSignal = endpoints.serverEventStream.mock.calls[0][2] as AbortSignal;
+
+    coordinator.park();
+    expect(firstSignal.aborted).toBe(true);
+    expect(coordinator.parked).toBe(true);
+    expect(services.eventFeedHealthy.value).toBe(false);
+    // A parked feed stays closed rather than reconnecting or falling back to poll.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(endpoints.serverEventStream).toHaveBeenCalledOnce();
+    expect(endpoints.serverEventPoll).not.toHaveBeenCalled();
+
+    coordinator.resume();
+    await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalledTimes(2));
+    expect(endpoints.serverEventStream.mock.calls[1][0]).toBe(7);
+    await vi.waitFor(() => expect(services.eventFeedHealthy.value).toBe(true));
+    expect(diagnostics).not.toContain('serverEventReconnects');
+    expect(diagnostics).not.toContain('serverEventPollFallbacks');
+    coordinator.dispose();
+  });
+
+  it('keeps a connection attempt closed when parked mid-connect, and a quick show is not a failure', async () => {
+    const { coordinator, endpoints, diagnostics } = harness();
+    void coordinator.prepare();
+    expect(endpoints.serverEventStream).toHaveBeenCalledOnce();
+    coordinator.park();
+    expect((endpoints.serverEventStream.mock.calls[0][2] as AbortSignal).aborted).toBe(true);
+    // The tab becomes visible again before the abort reaches the loop; the
+    // visibility handler restarts right after resuming.
+    coordinator.resume();
+    coordinator.restart();
+    await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalledTimes(2));
+    expect(endpoints.serverEventPoll).not.toHaveBeenCalled();
+    expect(diagnostics).not.toContain('serverEventPollFallbacks');
+
+    coordinator.park();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(endpoints.serverEventStream).toHaveBeenCalledTimes(2);
+    coordinator.dispose();
+  });
+
+  it('stops long polling when parked while a poll result is being applied', async () => {
+    const { coordinator, endpoints, calls } = harness();
+    endpoints.serverEventStream.mockRejectedValue(new TypeError('network down'));
+    (coordinator as unknown as { instanceId: string }).instanceId = 'evt_previous';
+    let finishRecovery!: () => void;
+    calls.recovery.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishRecovery = () => resolve(undefined);
+        }),
+    );
+
+    void coordinator.prepare();
+    await vi.waitFor(() => expect(calls.recovery).toHaveBeenCalledOnce());
+    coordinator.park();
+    finishRecovery();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(endpoints.serverEventPoll).toHaveBeenCalledOnce();
+    coordinator.dispose();
   });
 
   it('runs authoritative recovery for a snapshot-required event', async () => {

@@ -29,6 +29,8 @@ Start a conversation, choose a model, and ask a question. To work on code, selec
 
 For a remote deployment, configure [authentication](#authentication) and HTTPS before exposing the listener. A shared bearer token represents one operator security domain, not separate user accounts or tenant isolation.
 
+HTTPS also matters for using several windows at once. Browsers allow only six plain HTTP/1.1 connections per origin, shared by every tab. Each visible Web UI tab keeps its event feed open, plus the response stream of a running conversation; hidden tabs release theirs until shown again. Three or more visible windows streaming at once can therefore exhaust plain HTTP, while an HTTPS proxy that negotiates HTTP/2 removes the limit. `serve` prints a warning when it binds the UI to a non-loopback address without an `https://` `--public-url`.
+
 Useful variants:
 
 ```bash

@@ -50,6 +50,9 @@ export interface StoreDiagnostics {
   serverEventSSEJams: number;
 }
 
+/** Consecutive request failures that show "Reconnecting…" without an event feed. */
+const RETRYING_AFTER_FAILURES = 2;
+
 /**
  * Infrastructure shared by feature stores. It deliberately owns no session,
  * composer, response, or panel domain state.
@@ -61,6 +64,12 @@ export class AppStoreServices {
   readonly networkState = signal<'unknown' | 'online' | 'offline' | 'retrying'>('unknown');
   readonly connected = signal(false);
   readonly eventFeedHealthy = signal(false);
+  /**
+   * A hidden tab releases its long-lived connections. Browsers share six
+   * HTTP/1.1 connections per origin across every tab, so idle tabs holding
+   * streams starve the visible one.
+   */
+  readonly backgrounded = signal(false);
   readonly toasts = signal<Toast[]>([]);
   readonly diagnostics = signal<StoreDiagnostics>({
     staleStatusResults: 0,
@@ -103,6 +112,7 @@ export class AppStoreServices {
    */
   authFailures = 0;
 
+  private requestFailures = 0;
   private readonly ownedTimers = new Set<number>();
   private disposed = false;
 
@@ -126,10 +136,7 @@ export class AppStoreServices {
         this.authFailures += 1;
         this.authRequired.value = true;
       },
-      onNetworkState: (state) => {
-        this.networkState.value = state;
-        this.connected.value = state === 'online';
-      },
+      onNetworkState: (state) => this.reportNetworkState(state),
       onVersionMismatch: () => {
         void this.hardRefresh();
       },
@@ -144,6 +151,31 @@ export class AppStoreServices {
     this.notificationController.setListener((state) => {
       this.notifications.value = state;
     });
+  }
+
+  /**
+   * The header reflects the event feed first and request failures second. A
+   * request queued behind the browser's connection limit times out exactly
+   * like a network failure, so failures alone never contradict a live feed,
+   * and one failure without a feed is not yet an outage. The feed's stall
+   * watchdog (about 25s) bounds how long a dead server can look online.
+   */
+  reportNetworkState(state: 'online' | 'offline' | 'retrying'): void {
+    if (state === 'retrying') {
+      // Failures behind a live feed are not evidence; they must not pre-load
+      // the count that decides the moment the feed drops.
+      this.requestFailures = this.eventFeedHealthy.peek() ? 0 : this.requestFailures + 1;
+      if (this.requestFailures < RETRYING_AFTER_FAILURES) return;
+    } else {
+      this.requestFailures = 0;
+    }
+    this.networkState.value = state;
+    this.connected.value = state === 'online';
+  }
+
+  setEventFeedHealthy(healthy: boolean): void {
+    this.eventFeedHealthy.value = healthy;
+    if (healthy && this.networkState.peek() === 'retrying') this.reportNetworkState('online');
   }
 
   get isDisposed(): boolean {

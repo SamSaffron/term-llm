@@ -298,10 +298,13 @@ function SessionRow({
       computed(() => {
         const projection = store.runs.value[session.id];
         return (
+          // A parked background run has no transport; the server's activeRun
+          // flag keeps it lit while the event feed reconnects.
           Boolean(
             projection &&
             ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
-            store.runEngine.hasActiveResponseTransport(session.id, projection.run.responseId),
+            (session.activeRun ||
+              store.runEngine.hasActiveResponseTransport(session.id, projection.run.responseId)),
           ) || Boolean(store.services.eventFeedHealthy.value && session.activeRun)
         );
       }),

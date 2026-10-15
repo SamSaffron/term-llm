@@ -4244,6 +4244,274 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it('shows Reconnecting only for repeated failures without a live event feed', () => {
+    const store = new AppStore(config);
+    try {
+      const services = store.services;
+      services.reportNetworkState('online');
+      // A request queued behind the browser's connection limit times out like
+      // a network failure; a live feed outranks it.
+      services.setEventFeedHealthy(true);
+      services.reportNetworkState('retrying');
+      services.reportNetworkState('retrying');
+      services.reportNetworkState('retrying');
+      expect(services.networkState.value).toBe('online');
+
+      services.setEventFeedHealthy(false);
+      // Failures suppressed behind the feed do not count once it drops.
+      services.reportNetworkState('retrying');
+      expect(services.networkState.value).toBe('online');
+      services.reportNetworkState('retrying');
+      expect(services.networkState.value).toBe('retrying');
+      expect(services.connected.value).toBe(false);
+
+      services.setEventFeedHealthy(true);
+      expect(services.networkState.value).toBe('online');
+      expect(services.connected.value).toBe(true);
+
+      services.reportNetworkState('offline');
+      expect(services.networkState.value).toBe('offline');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  describe('response transport budget', () => {
+    const streamingProjection = (sessionId: string, responseId: string) =>
+      initialProjection({
+        responseId,
+        sessionId,
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      });
+    const openTransports = (store: AppStore) => {
+      const signals = new Map<string, AbortSignal>();
+      store.endpoints.responseEvents = vi.fn(async (responseId, _after, signal) => {
+        signals.set(responseId, signal);
+        return new Response(new ReadableStream<Uint8Array>({ start() {} }));
+      });
+      store.endpoints.response = vi.fn(async (responseId: string) => ({
+        id: responseId,
+        status: 'in_progress',
+        run_epoch: 1,
+        last_sequence_number: 1,
+        recovery: { sequence_number: 1 },
+      }));
+      return signals;
+    };
+
+    it('streams only the shown conversation and resumes others on selection', async () => {
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [
+          { ...session(), activeRun: true, activeResponseId: 'r1' },
+          { ...session(), id: 's2', activeRun: true, activeResponseId: 'r2' },
+        ];
+        store.activeSessionId.value = 's1';
+        store.runs.value = {
+          s1: streamingProjection('s1', 'r1'),
+          s2: streamingProjection('s2', 'r2'),
+        };
+        const signals = openTransports(store);
+
+        void store.streamResponse('r1', 's1', 1);
+        await store.runEngine.resumeResponse('s2', 'r2');
+        store.runEngine.recoverActiveSupervisors();
+        await vi.waitFor(() => expect(signals.has('r1')).toBe(true));
+        expect(signals.has('r2')).toBe(false);
+        expect(store.endpoints.response).not.toHaveBeenCalledWith('r2', expect.anything());
+
+        store.activeSessionId.value = 's2';
+        expect(signals.get('r1')?.aborted).toBe(true);
+        expect(store.runEngine.hasActiveResponseTransport('s1', 'r1')).toBe(false);
+        // Parking keeps the projection and its replay cursor for the return.
+        expect(store.runs.value.s1.run).toMatchObject({ status: 'streaming', lastSequence: 1 });
+
+        void store.runEngine.attachResponse('s2', 'r2');
+        await vi.waitFor(() => expect(signals.has('r2')).toBe(true));
+      } finally {
+        store.dispose();
+      }
+    });
+
+    it('parks the shown response while hidden and reattaches when visible', async () => {
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+        store.activeSessionId.value = 's1';
+        store.runs.value = { s1: streamingProjection('s1', 'r1') };
+        const signals = openTransports(store);
+
+        void store.streamResponse('r1', 's1', 1);
+        await vi.waitFor(() => expect(signals.has('r1')).toBe(true));
+        const first = signals.get('r1');
+
+        store.services.backgrounded.value = true;
+        expect(first?.aborted).toBe(true);
+        expect(store.runs.value.s1.run).toMatchObject({ status: 'streaming', lastSequence: 1 });
+        store.runEngine.recoverActiveSupervisors();
+        await store.runEngine.resumeResponse('s1', 'r1');
+        expect(store.endpoints.responseEvents).toHaveBeenCalledOnce();
+
+        store.services.backgrounded.value = false;
+        await vi.waitFor(() => expect(store.endpoints.responseEvents).toHaveBeenCalledTimes(2));
+        expect(signals.get('r1')).not.toBe(first);
+        expect(signals.get('r1')?.aborted).toBe(false);
+      } finally {
+        store.dispose();
+      }
+    });
+
+    it('parks a send admitted after the user left and resumes it on return', async () => {
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [session(), { ...session(), id: 's2', title: 'Other' }];
+        store.activeSessionId.value = 's1';
+        const signals = openTransports(store);
+        let admit!: (response: Response) => void;
+        let postSignal: AbortSignal | undefined;
+        store.endpoints.createResponse = vi.fn(
+          (_body: unknown, _sessionId: string, _requestId: string, signal?: AbortSignal) =>
+            new Promise<Response>((resolve) => {
+              postSignal = signal;
+              admit = resolve;
+            }),
+        );
+
+        store.prompt.value = 'long task';
+        const sending = store.send();
+        await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledOnce());
+        store.activeSessionId.value = 's2';
+        // Admission is still pending: leaving must not abort the POST.
+        expect(postSignal?.aborted).toBe(false);
+        admit(
+          new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+            headers: { 'x-response-id': 'r1', 'x-session-id': 's1' },
+          }),
+        );
+        await sending;
+
+        expect(postSignal?.aborted).toBe(true);
+        expect(store.runs.value.s1.run).toMatchObject({ responseId: 'r1', status: 'streaming' });
+        expect(store.sessions.value.find((entry) => entry.id === 's1')).toMatchObject({
+          activeResponseId: 'r1',
+        });
+        expect(store.runEngine.hasActiveResponseTransport('s1', 'r1')).toBe(false);
+
+        store.activeSessionId.value = 's1';
+        void store.runEngine.attachResponse('s1', 'r1');
+        await vi.waitFor(() => expect(signals.has('r1')).toBe(true));
+        expect(store.endpoints.response).toHaveBeenCalledWith('r1', expect.anything());
+      } finally {
+        store.dispose();
+      }
+    });
+
+    it('does not replace an admitting send when the tab becomes visible', () => {
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+        store.activeSessionId.value = 's1';
+        store.runs.value = { s1: streamingProjection('s1', 'pending_send') };
+        openTransports(store);
+
+        store.services.backgrounded.value = true;
+        store.services.backgrounded.value = false;
+
+        expect(store.endpoints.response).not.toHaveBeenCalled();
+        expect(store.runs.value.s1.run.responseId).toBe('pending_send');
+      } finally {
+        store.dispose();
+      }
+    });
+
+    it('keeps a hidden tab live during a voice call', () => {
+      const store = new AppStore(config);
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      try {
+        const sync = () => (store as unknown as { syncBackgrounded(): void }).syncBackgrounded();
+        store.liveStore.liveId.value = 'live-1';
+        sync();
+        expect(store.services.backgrounded.value).toBe(false);
+        expect(store.serverEventCoordinator.parked).toBe(false);
+
+        store.liveStore.liveId.value = '';
+        sync();
+        expect(store.services.backgrounded.value).toBe(true);
+        expect(store.serverEventCoordinator.parked).toBe(true);
+
+        visibility.mockReturnValue('visible');
+        sync();
+        expect(store.services.backgrounded.value).toBe(false);
+        expect(store.serverEventCoordinator.parked).toBe(false);
+      } finally {
+        visibility.mockRestore();
+        store.dispose();
+      }
+    });
+
+    it('keeps following a background response whose page tools this tab runs', async () => {
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [
+          session(),
+          { ...session(), id: 's2', activeRun: true, activeResponseId: 'r2' },
+        ];
+        store.activeSessionId.value = 's1';
+        store.runs.value = { s2: streamingProjection('s2', 'r2') };
+        const signals = openTransports(store);
+        (
+          store.runEngine as unknown as { clientTools: { recordOffer(id: string): void } }
+        ).clientTools.recordOffer('r2');
+
+        void store.runEngine.resumeResponse('s2', 'r2');
+        await vi.waitFor(() => expect(signals.has('r2')).toBe(true));
+        store.activeSessionId.value = 's3';
+        store.services.backgrounded.value = true;
+        expect(signals.get('r2')?.aborted).toBe(false);
+      } finally {
+        store.dispose();
+      }
+    });
+
+    it('does not reconnect a healthy stream when the selected session reloads', async () => {
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+        store.activeSessionId.value = 's1';
+        store.runs.value = { s1: streamingProjection('s1', 'r1') };
+        const signals = openTransports(store);
+        store.endpoints.selectedSession = vi.fn(async () => ({
+          selected_session: { ...session(), active_run: true, active_response_id: 'r1' },
+          selected_transcript: { bodies: { rev: 1, messages: [] } },
+        }));
+        store.endpoints.sessionState = vi.fn(async () => ({
+          active_run: true,
+          active_response_id: 'r1',
+        }));
+        store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+        store.endpoints.tree = vi.fn(async () => ({}));
+
+        void store.streamResponse('r1', 's1', 1);
+        await vi.waitFor(() =>
+          expect(store.runEngine.hasActiveResponseTransport('s1', 'r1')).toBe(true),
+        );
+        // Every selected-session server event reloads the session.
+        await store.loadSession('s1');
+        await store.loadSession('s1');
+
+        expect(signals.get('r1')?.aborted).toBe(false);
+        expect(store.endpoints.response).not.toHaveBeenCalled();
+        expect(store.endpoints.responseEvents).toHaveBeenCalledOnce();
+      } finally {
+        store.dispose();
+      }
+    });
+  });
+
   it('retries when a replacement response stream never returns headers', async () => {
     vi.useFakeTimers();
     const store = new AppStore(config);

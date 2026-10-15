@@ -1,5 +1,12 @@
 import type { RushOperation } from '../domain/steering';
-import { computed, effect, signal, type ReadonlySignal, type Signal } from '@preact/signals';
+import {
+  computed,
+  effect,
+  signal,
+  untracked,
+  type ReadonlySignal,
+  type Signal,
+} from '@preact/signals';
 import type { AppConfig } from '../app/config';
 import { APIError, type APIClient } from '../api/client';
 import type { Endpoints } from '../api/endpoints';
@@ -1075,6 +1082,7 @@ export class AppStore {
     document.addEventListener(
       'visibilitychange',
       () => {
+        this.syncBackgrounded();
         if (document.visibilityState === 'visible') {
           this.serverEventCoordinator.restart();
           void this.reconcile('visibility', { authoritative: true });
@@ -1088,6 +1096,22 @@ export class AppStore {
     );
     this.ensureSessionSyncChannel();
     this.tabSyncCoordinator.installStorageListener(this.lifecycleAbort.signal);
+    // A call keeps its tab live: ending it while hidden releases the tab.
+    this.disposeEffects.push(
+      effect(() => {
+        void this.liveStore.active.value;
+        untracked(() => this.syncBackgrounded());
+      }),
+    );
+  }
+
+  /** Hidden tabs release their long-lived connections; see AppStoreServices.backgrounded. */
+  private syncBackgrounded(): void {
+    const backgrounded = document.visibilityState === 'hidden' && !this.liveStore.active.peek();
+    if (backgrounded === this.services.backgrounded.peek()) return;
+    this.services.backgrounded.value = backgrounded;
+    if (backgrounded) this.serverEventCoordinator.park();
+    else this.serverEventCoordinator.resume();
   }
 
   private async navigateFromHistory(): Promise<void> {

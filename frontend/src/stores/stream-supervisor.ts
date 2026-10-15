@@ -26,6 +26,10 @@ export class StreamSupervisors {
     return this.owners.get(sessionId);
   }
 
+  list(): StreamSupervisor[] {
+    return [...this.owners.values()];
+  }
+
   begin(sessionId: string, responseId: string, lastSequence = 0): StreamSupervisor {
     const previous = this.owners.get(sessionId);
     const generation = (this.generations.get(sessionId) || 0) + 1;

@@ -919,6 +919,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", s.cfg.ui)
+		if warning := plainHTTPConnectionWarning(s.cfg.ui, serveHost, servePublicURL); warning != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), warning)
+		}
 		if hasJobs {
 			fmt.Fprintf(cmd.ErrOrStderr(), "jobs workers: %d\n", serveJobsWorkers)
 		}
@@ -1170,6 +1173,19 @@ func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool
 func isLoopbackHost(host string) bool {
 	h := strings.TrimSpace(strings.ToLower(host))
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+// plainHTTPConnectionWarning explains the browser connection limit when
+// browsers are likely to reach the web UI directly over plain HTTP. Browsers
+// cap HTTP/1.1 at six connections per origin across every tab, and each
+// visible tab keeps up to two streams open. Loopback binds are normally fronted
+// by a local proxy, and an https public URL means a proxy terminates TLS.
+func plainHTTPConnectionWarning(ui bool, host, publicURL string) string {
+	if !ui || isLoopbackHost(host) || strings.HasPrefix(strings.ToLower(publicURL), "https://") {
+		return ""
+	}
+	return "warning: browsers share 6 HTTP/1.1 connections per origin across all tabs; " +
+		"serve the UI through an HTTPS (HTTP/2) proxy to use several visible windows at once"
 }
 
 // Sources reported by resolveServeToken for use in the startup banner.

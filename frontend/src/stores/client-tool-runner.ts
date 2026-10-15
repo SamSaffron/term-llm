@@ -73,6 +73,11 @@ export class ClientToolRunner {
     this.offered.add(responseId);
   }
 
+  /** Whether this tab must run the client tools `responseId` calls. */
+  offers(responseId: string): boolean {
+    return this.offered.has(responseId);
+  }
+
   /** A user turn starts a fresh budget of continuations. */
   userTurn(sessionId: string): void {
     this.rounds.delete(sessionId);

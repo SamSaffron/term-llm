@@ -68,6 +68,10 @@ export class ServerEventCoordinator {
   private readonly fileSessions = new Set<string>();
   private readonly childrenParents = new Set<string>();
   private interestChannels: string[] = [];
+  private parkedGate: Promise<void> | null = null;
+  /** park() aborted the transport; restart() must not reclassify that as a failure. */
+  private parkAborted = false;
+  private unpark: (() => void) | null = null;
 
   constructor(
     private readonly services: AppStoreServices,
@@ -137,6 +141,44 @@ export class ServerEventCoordinator {
     if (!this.running) void this.prepare();
   }
 
+  /**
+   * Releases the feed's connection while the tab is hidden. The cursor is
+   * kept, so resume() replays what was missed (or recovers authoritatively
+   * once the replay window has passed).
+   */
+  park(): void {
+    if (this.parkedGate || this.mode === 'unsupported' || this.services.isDisposed) return;
+    this.parkedGate = new Promise<void>((resolve) => {
+      this.unpark = resolve;
+    });
+    if (this.transport && !this.transport.signal.aborted) {
+      this.parkAborted = true;
+      this.transport.abort(new DOMException('Server events parked', 'AbortError'));
+    }
+    this.setMode('stopped');
+  }
+
+  resume(): void {
+    if (!this.parkedGate) return;
+    this.parkedGate = null;
+    this.unpark?.();
+    this.unpark = null;
+    // Releasing the gate resumes a waiting loop; only a finished loop needs a new one.
+    if (!this.running) void this.prepare();
+  }
+
+  get parked(): boolean {
+    return this.parkedGate !== null;
+  }
+
+  /** Consumes the reason the current transport was aborted on purpose, if any. */
+  private takeIntentionalAbort(): boolean {
+    const intentional = this.intentionalRestart || this.parkAborted;
+    this.intentionalRestart = false;
+    this.parkAborted = false;
+    return intentional;
+  }
+
   isHealthy(): boolean {
     return this.mode === 'sse' || this.mode === 'poll';
   }
@@ -144,7 +186,7 @@ export class ServerEventCoordinator {
   private setMode(mode: ServerEventTransport): void {
     const wasHealthy = this.isHealthy();
     this.mode = mode;
-    this.services.eventFeedHealthy.value = this.isHealthy();
+    this.services.setEventFeedHealthy(this.isHealthy());
     if (
       wasHealthy &&
       !this.isHealthy() &&
@@ -161,17 +203,20 @@ export class ServerEventCoordinator {
 
   private async run(): Promise<void> {
     while (!this.lifetime.signal.aborted && this.mode !== 'unsupported') {
+      // Checked synchronously before every connection attempt, so a park() that
+      // races a pending attempt is seen before the next transport opens.
+      while (this.parkedGate && !this.lifetime.signal.aborted) await this.parkedGate;
+      if (this.lifetime.signal.aborted) break;
       try {
         const sseHealthy = await this.consumeSSE();
         if (sseHealthy) {
-          this.intentionalRestart = false;
+          this.takeIntentionalAbort();
           this.failures = 0;
           continue;
         }
       } catch (error) {
         if (this.lifetime.signal.aborted) break;
-        if (this.intentionalRestart) {
-          this.intentionalRestart = false;
+        if (this.takeIntentionalAbort()) {
           this.setMode('stopped');
           continue;
         }
@@ -184,12 +229,12 @@ export class ServerEventCoordinator {
         this.services.bumpDiagnostic('serverEventPollFallbacks');
         try {
           await this.consumePolls();
+          this.takeIntentionalAbort();
           this.failures = 0;
           continue;
         } catch {
           if (this.lifetime.signal.aborted) break;
-          if (this.intentionalRestart) {
-            this.intentionalRestart = false;
+          if (this.takeIntentionalAbort()) {
             this.setMode('stopped');
             continue;
           }
@@ -296,7 +341,11 @@ export class ServerEventCoordinator {
 
   private async consumePolls(): Promise<void> {
     this.pollStartedAt = Date.now();
-    while (!this.lifetime.signal.aborted && Date.now() - this.pollStartedAt < 60_000) {
+    while (
+      !this.lifetime.signal.aborted &&
+      !this.parkedGate &&
+      Date.now() - this.pollStartedAt < 60_000
+    ) {
       const controller = this.newTransport();
       const response = await this.services.endpoints.serverEventPoll(
         this.cursor,
@@ -447,7 +496,8 @@ export class ServerEventCoordinator {
     this.transport?.abort(this.lifetime.signal.reason);
     window.clearTimeout(this.flushTimer);
     this.mode = 'stopped';
-    this.services.eventFeedHealthy.value = false;
+    this.services.setEventFeedHealthy(false);
+    this.unpark?.();
     this.markPrepared();
   }
 }

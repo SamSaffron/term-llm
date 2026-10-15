@@ -1,6 +1,6 @@
 import { normalizeSteering, rushActive, type RushOperation } from '../domain/steering';
 import { extensionRuntime } from './extension-runtime';
-import { batch, computed, signal, type ReadonlySignal } from '@preact/signals';
+import { batch, computed, effect, signal, untracked, type ReadonlySignal } from '@preact/signals';
 import { APIError, decodeSSE } from '../api/client';
 import {
   initialProjection,
@@ -137,6 +137,7 @@ export class RunEngine {
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private readonly supervisors = new StreamSupervisors();
+  private readonly disposeParking: () => void;
   private readonly activeResponseTransports = signal<
     Record<string, { responseId: string; generation: number }>
   >({});
@@ -299,6 +300,59 @@ export class RunEngine {
         )
       );
     });
+    // Leaving a conversation or hiding the tab releases response transports;
+    // returning resumes them from the projected cursor.
+    let wasBackgrounded = services.backgrounded.peek();
+    this.disposeParking = effect(() => {
+      void sessionStore.activeSessionId.value;
+      const backgrounded = services.backgrounded.value;
+      untracked(() => {
+        this.parkBackgroundResponses();
+        if (wasBackgrounded && !backgrounded) this.attachForeground();
+        wasBackgrounded = backgrounded;
+      });
+    });
+  }
+
+  /**
+   * Browsers share six HTTP/1.1 connections per origin across every window.
+   * Following every running conversation therefore starves ordinary requests
+   * once two windows run two conversations. A visible window streams only the
+   * conversation it shows and a hidden one streams nothing, except responses
+   * whose page tools this tab must run; the server event feed tracks the rest
+   * until selection or visibility resumes them.
+   */
+  private followsResponse(sessionId: string, responseId: string): boolean {
+    if (this.clientTools.offers(responseId)) return true;
+    return (
+      !this.services.backgrounded.peek() && sessionId === this.sessionStore.activeSessionId.peek()
+    );
+  }
+
+  /** A run can start or finish while the tab is hidden; reattach to whatever is current. */
+  private attachForeground(): void {
+    const session = this.sessionStore.activeSession.peek();
+    if (!session) return;
+    const run = this.runs.peek()[session.id]?.run;
+    // Admission owns its stream; replacing its supervisor would abort the POST.
+    if (run?.responseId.startsWith('pending_')) return;
+    const projected = run && ['connecting', 'streaming'].includes(run.status) ? run.responseId : '';
+    const responseId = projected || session.activeResponseId || '';
+    if (responseId) void this.attachResponse(session.id, responseId);
+  }
+
+  private parkBackgroundResponses(): void {
+    for (const owner of this.supervisors.list()) {
+      // Admission owns intent delivery and must settle before its stream parks.
+      if (owner.responseId.startsWith('pending_')) continue;
+      if (!this.followsResponse(owner.sessionId, owner.responseId)) this.parkResponse(owner);
+    }
+  }
+
+  /** Releases the transport but keeps the projection and its replay cursor. */
+  private parkResponse(owner: StreamSupervisor): void {
+    this.supervisors.cancel(owner.sessionId, owner.responseId);
+    this.clearResponseTransport(owner.sessionId, owner.responseId);
   }
 
   private clearResponseRecoveryFailures(sessionId: string, responseId: string): void {
@@ -384,7 +438,11 @@ export class RunEngine {
     );
     for (const session of active) {
       const run = this.runs.value[session.id].run;
-      if (run.responseId && !run.responseId.startsWith('pending_')) {
+      if (
+        run.responseId &&
+        !run.responseId.startsWith('pending_') &&
+        this.followsResponse(session.id, run.responseId)
+      ) {
         const owner = this.supervisors.current(session.id);
         if (
           owner?.responseId === run.responseId &&
@@ -841,6 +899,11 @@ export class RunEngine {
         },
       },
     };
+    if (!this.followsResponse(ownerID, responseId)) {
+      // The user left before admission finished; the run continues server-side.
+      this.parkResponse(streamOwner);
+      return ownerID;
+    }
     const transportGeneration = streamOwner.transportGeneration;
     this.markResponseTransportActive(ownerID, responseId, transportGeneration);
     await this.consumeResponseBody(response.body, streamOwner, transportGeneration);
@@ -981,7 +1044,8 @@ export class RunEngine {
   }
 
   async streamResponse(responseId: string, sessionId: string, after: number): Promise<void> {
-    if (this.retiredResponses.has(responseId)) return;
+    if (this.retiredResponses.has(responseId) || !this.followsResponse(sessionId, responseId))
+      return;
     const current = this.supervisors.current(sessionId);
     if (
       current?.responseId === responseId &&
@@ -998,6 +1062,10 @@ export class RunEngine {
   }
 
   private async subscribeSupervisor(owner: StreamSupervisor): Promise<void> {
+    if (!this.followsResponse(owner.sessionId, owner.responseId)) {
+      this.parkResponse(owner);
+      return;
+    }
     if (!this.supervisors.startSubscription(owner)) return;
     const abort = this.supervisors.replaceAbort(owner);
     const transportGeneration = owner.transportGeneration;
@@ -1471,8 +1539,26 @@ export class RunEngine {
     }
   }
 
+  /**
+   * Attaches to a response unless its transport is already open or opening.
+   * Hydration repeats on every selected-session event; forcing recovery there
+   * would abort a healthy stream and reconnect it each time.
+   */
+  async attachResponse(sessionId: string, responseId: string): Promise<void> {
+    const current = this.supervisors.current(sessionId);
+    if (
+      current?.responseId === responseId &&
+      (current.recoveryInFlight ||
+        current.subscriptionInFlight ||
+        this.hasActiveResponseTransport(sessionId, responseId))
+    )
+      return;
+    await this.resumeResponse(sessionId, responseId);
+  }
+
   async resumeResponse(sessionId: string, responseId: string): Promise<void> {
-    if (this.retiredResponses.has(responseId)) return;
+    if (this.retiredResponses.has(responseId) || !this.followsResponse(sessionId, responseId))
+      return;
     const projected = this.runs.peek()[sessionId];
     if (!projected || projected.run.responseId !== responseId) {
       this.runs.value = {
@@ -1550,6 +1636,10 @@ export class RunEngine {
   }
 
   private async recoverSupervisor(owner: StreamSupervisor): Promise<void> {
+    if (!this.followsResponse(owner.sessionId, owner.responseId)) {
+      this.parkResponse(owner);
+      return;
+    }
     if (!this.supervisors.startRecovery(owner)) return;
     this.services.bumpDiagnostic('supervisorRecoveries');
     const abort = this.supervisors.replaceAbort(owner, true);
@@ -2211,6 +2301,7 @@ export class RunEngine {
 
   dispose(): void {
     this.disposed = true;
+    this.disposeParking();
     this.clientTools.dispose();
     for (const timers of this.titleRefreshTimers.values())
       timers.forEach((timer) => window.clearTimeout(timer));

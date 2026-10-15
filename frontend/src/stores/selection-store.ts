@@ -142,7 +142,7 @@ export class SelectionStore {
     // adopting it immediately instead of waiting for transcript hydration,
     // which does not own live-run state.
     if (session.activeResponseId)
-      void this.runEngine.resumeResponse(session.id, session.activeResponseId);
+      void this.runEngine.attachResponse(session.id, session.activeResponseId);
     // Hydrate independent header sources together; branch discovery must not
     // wait behind skills before appearing as a separate header layer.
     const hydration = this.loadSession(session.id, epoch);
@@ -184,7 +184,7 @@ export class SelectionStore {
       if (epoch === this.epoch) this.skillStore.skills.value = [];
     });
     if (current.activeResponseId)
-      void this.runEngine.resumeResponse(current.id, current.activeResponseId);
+      void this.runEngine.attachResponse(current.id, current.activeResponseId);
     return outcome;
   }
 
@@ -451,7 +451,7 @@ export class SelectionStore {
       else this.sessionsStore.prepend(updated);
       if (updated.id !== id) this.runEngine.rekeySession(id, updated.id, selectedSource);
       if (stateActiveResponseId)
-        void this.runEngine.resumeResponse(updated.id, stateActiveResponseId);
+        void this.runEngine.attachResponse(updated.id, stateActiveResponseId);
       const planSource = state.current_plan || selectedSource.plan_summary;
       let loadedPlan: CurrentPlan | null = null;
       if (planSource && typeof planSource === 'object') {
