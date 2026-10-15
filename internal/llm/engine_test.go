@@ -7175,3 +7175,73 @@ func TestEngineForcedRetrySurvivesUncommittedStreamRetry(t *testing.T) {
 		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
 	}
 }
+
+// A soft-compaction summary that runs in place of the owed forced retry must not
+// spend it: the retry follows the summary, still forced.
+func TestEngineForcedRetrySurvivesSoftCompaction(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-forced", InputLimit: 200}})
+	defer RegisterConfigLimits(nil)
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
+		script: func(call int, req Request) []Event {
+			switch {
+			case call == 0:
+				// Ignore the force; report enough usage to cross the soft threshold.
+				return []Event{{Type: EventTextDelta, Text: "ignored"}, {Type: EventUsage, Use: &Usage{InputTokens: 180, OutputTokens: 2}}}
+			case req.ToolChoice.Mode == ToolChoiceNone:
+				return []Event{{Type: EventTextDelta, Text: "checkpoint: brief"}, {Type: EventUsage, Use: &Usage{InputTokens: 60, OutputTokens: 2}}}
+			case req.ToolChoice.Mode == ToolChoiceName:
+				return []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: name, Arguments: json.RawMessage(`{}`)}}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 2}}}
+			default:
+				return []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 2}}}
+			}
+		},
+	}
+	e := NewEngine(provider, registry)
+	e.ConfigureContextManagement(provider, "fake", "compact-forced", true)
+	e.SetCompactionCallback(func(ctx context.Context, result *CompactionResult) error { return nil })
+	defer e.SetCompactionCallback(nil)
+	stream, err := e.Stream(context.Background(), Request{
+		Model:      "compact-forced",
+		Messages:   []Message{SystemText("system"), UserText("earlier question"), AssistantText("earlier answer"), UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("stream error event: %v", event.Err)
+		}
+	}
+	var modes []string
+	briefSeen := false
+	for _, call := range provider.calls {
+		modes = append(modes, string(call.ToolChoice.Mode))
+		if call.ToolChoice.Mode == ToolChoiceNone {
+			briefSeen = true
+		}
+	}
+	if !briefSeen {
+		t.Fatalf("soft compaction brief never ran; tool_choice sequence %v", modes)
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1 (forced retry after the brief); tool_choice sequence %v", tool.calls.Load(), modes)
+	}
+	t.Logf("tool_choice sequence %v", modes)
+}

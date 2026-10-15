@@ -72,8 +72,10 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 	// text-only turn is accepted as the answer instead of being re-forced, which
 	// streamed the final answer twice and, for native discovery, discarded the
 	// discovery and repeated the search. A completed forced retry turn also
-	// spends it: the retry is granted once.
-	if len(toolCalls) > 0 || syncToolsExecuted || recoveredToolWork || partsContainDiscoveryCall(providerReplayParts) || forcedChoice == forcedChoiceRetryNext {
+	// spends it (the retry is granted once), but a soft-compaction summary turn
+	// does not: it ran instead of the owed forced retry, which follows it.
+	if len(toolCalls) > 0 || syncToolsExecuted || recoveredToolWork || partsContainDiscoveryCall(providerReplayParts) ||
+		(forcedChoice == forcedChoiceRetryNext && !compaction.softActive) {
 		forcedChoice = forcedChoiceSpent
 	}
 	if len(toolCalls) == 0 && !syncToolsExecuted {
