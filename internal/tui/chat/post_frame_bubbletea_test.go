@@ -52,6 +52,10 @@ type postFramePipelineProbe struct {
 	frame   string
 	script  tea.Cmd
 	onRetry func()
+	// afterInitialResize runs once, after Bubble Tea's asynchronous startup
+	// WindowSizeMsg has been applied. Tests that count placement attempts use
+	// it so a late startup resize cannot start a second image generation.
+	afterInitialResize func(*postFramePipelineProbe) tea.Cmd
 }
 
 func (p *postFramePipelineProbe) Init() tea.Cmd { return p.script }
@@ -85,6 +89,11 @@ func (p *postFramePipelineProbe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.frame = probeResizeFrame
 		updated, cmd := p.model.Update(msg)
 		p.model = updated.(*Model)
+		if hook := p.afterInitialResize; hook != nil {
+			p.afterInitialResize = nil
+			p.frame = probeImageFrame
+			return p, tea.Batch(cmd, hook(p))
+		}
 		return p, cmd
 	case probeResizeSettledMsg:
 		p.model.viewCache.lastSetContentAt = time.Time{}
@@ -412,16 +421,23 @@ func TestRealBubbleTeaPersistentPostFrameFailurePausesUntilNextGeneration(t *tes
 	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
 	termimage.ClearCache()
 
-	probe := newImagePipelineProbe(t, probeImageFrame)
-	probe.model.tracker = ui.NewToolTracker()
-	probe.model.tracker.AddImageSegment(probe.path)
-	probe.model.streaming = true
-	probe.model.bumpContentVersion()
+	probe := newImagePipelineProbe(t, "<blank-frame>")
+	// Activate the image only after the startup WindowSizeMsg. Bubble Tea sends
+	// that message asynchronously, so under load it can land after the first
+	// placement attempt and legitimately begin a second image generation.
+	probe.afterInitialResize = func(p *postFramePipelineProbe) tea.Cmd {
+		p.model.tracker = ui.NewToolTracker()
+		p.model.tracker.AddImageSegment(p.path)
+		p.model.streaming = true
+		p.model.scrollToBottom = true
+		p.model.viewCache.lastSetContentAt = time.Time{}
+		p.model.bumpContentVersion()
+		return delayedProbeMsg(180*time.Millisecond, probeRetryImagesMsg{})
+	}
 
 	postFrameErr := errors.New("injected persistent post-frame failure")
 	writer := &failPostFrameCapture{capture: testutil.NewByteCapture(), err: postFrameErr}
 	probe.onRetry = writer.recover
-	probe.script = delayedProbeMsg(180*time.Millisecond, probeRetryImagesMsg{})
 	programOpts := []tea.ProgramOption{
 		tea.WithInput(bytes.NewReader(nil)),
 		tea.WithOutput(writer),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -176,6 +177,15 @@ func TestChildAskUserCanonicalGateEarlyAnswer(t *testing.T) {
 }
 
 func TestChildAskUserCanonicalGateConcurrentEndpoints(t *testing.T) {
+	// Exercise the ownership checks while the other surface atomically replaces
+	// its pending prompt with a resolved outcome. One attempt rarely hits that
+	// window, even under the race detector.
+	for iteration := range 32 {
+		t.Run(fmt.Sprintf("round-%d", iteration), testChildAskUserCanonicalGateConcurrentEndpoints)
+	}
+}
+
+func testChildAskUserCanonicalGateConcurrentEndpoints(t *testing.T) {
 	h := newChildAskUserHarness(t, "ask-child-race")
 	done := h.start(t, context.Background())
 	start := make(chan struct{})
@@ -196,10 +206,17 @@ func TestChildAskUserCanonicalGateConcurrentEndpoints(t *testing.T) {
 	close(start)
 	wg.Wait()
 	close(responses)
+	accepted := 0
 	for rr := range responses {
 		if rr.Code != http.StatusOK || (!strings.Contains(rr.Body.String(), `"status":"ok"`) && !strings.Contains(rr.Body.String(), `"status":"already_resolved"`)) {
 			t.Fatalf("concurrent answer = %d %s", rr.Code, rr.Body.String())
 		}
+		if strings.Contains(rr.Body.String(), `"status":"ok"`) {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted %d concurrent answers, want one winner and one idempotent retry", accepted)
 	}
 	outcome := <-done
 	if outcome.err != nil || len(outcome.answers) != 1 || (outcome.answers[0].Selected != "v2" && outcome.answers[0].Selected != "v3") {

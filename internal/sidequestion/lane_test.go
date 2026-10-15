@@ -22,6 +22,7 @@ type forkableProvider struct {
 	forkRequest  []llm.Message
 	forks        int
 	refuse       bool
+	branchErr    error
 	exportState  []byte
 	cleanupCalls int
 	branch       *forkableProvider
@@ -64,6 +65,9 @@ func (p *forkableProvider) ForkConversationAtBoundary(state []byte, requestMessa
 	p.state = append([]byte(nil), state...)
 	p.forkRequest = append([]llm.Message(nil), requestMessages...)
 	branch := newForkableProvider(p.MockProvider.Name()+"-branch", "forked answer", "second forked answer")
+	if p.branchErr != nil {
+		branch = &forkableProvider{MockProvider: llm.NewMockProvider(p.MockProvider.Name() + "-branch").AddError(p.branchErr)}
+	}
 	p.branch = branch
 	return branch, true
 }
@@ -702,6 +706,10 @@ func TestLaneTranscriptHoldsOnlyItsOwnConversation(t *testing.T) {
 
 func TestLaneDropsItsSessionAfterAFailedTurn(t *testing.T) {
 	live := newForkableProvider("live")
+	// Script the failure on the branch itself. A pre-cancelled context is not
+	// deterministic: the mock stream's sends race ctx.Done against a buffered
+	// channel, so the scripted answer can still be delivered.
+	live.branchErr = errors.New("branch turn failed")
 	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
@@ -709,12 +717,8 @@ func TestLaneDropsItsSessionAfterAFailedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The branch has no scripted turn left after its two responses are consumed;
-	// force a failure by cancelling instead.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := turn.Run(ctx, nil); err == nil {
-		t.Fatal("expected the cancelled turn to fail")
+	if _, err := turn.Run(context.Background(), nil); !errors.Is(err, live.branchErr) {
+		t.Fatalf("turn error = %v, want the scripted branch failure", err)
 	}
 	if lane.Continuing() {
 		t.Fatal("a failed lane turn left an unverified session in place")

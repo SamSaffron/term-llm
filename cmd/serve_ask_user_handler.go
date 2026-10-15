@@ -37,13 +37,16 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		run = candidate
-		if resolved, ok := run.resolvedInteraction("ask_user", callID); ok {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
-			})
-			return
-		}
+		// Resolution records the outcome and removes the pending prompt under
+		// one lock. Check pending first so a concurrent answer on another
+		// surface cannot fall between a missing outcome and a removed prompt.
 		if !run.hasPendingInteraction("ask_user", callID) {
+			if resolved, ok := run.resolvedInteraction("ask_user", callID); ok {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+				})
+				return
+			}
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response does not own this ask_user request")
 			return
 		}
