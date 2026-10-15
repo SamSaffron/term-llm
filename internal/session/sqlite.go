@@ -427,7 +427,56 @@ CREATE INDEX IF NOT EXISTS session_attention_unseen
     WHERE latest_attention_seq > seen_through_seq;
 `
 
-const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58 + agentRunSchemaV63
+// attentionSchemaV54 remains frozen for released migrations.
+const attentionSchemaV65 = `
+CREATE TABLE IF NOT EXISTS serve_response_lifecycle (
+    response_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_epoch INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('running','completed','failed','cancelled','orphaned')),
+    owner_instance_id TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    lease_expires_at INTEGER NOT NULL,
+    started_rev INTEGER NOT NULL DEFAULT 0,
+    final_rev INTEGER NOT NULL DEFAULT 0,
+    durable_output_count INTEGER NOT NULL DEFAULT 0,
+    attention_seq INTEGER NOT NULL DEFAULT 0,
+    interaction_required_count INTEGER NOT NULL DEFAULT 0,
+    interaction_required_kinds TEXT NOT NULL DEFAULT '',
+    interaction_required_since INTEGER,
+    interaction_state_rev INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS serve_response_lifecycle_expired
+    ON serve_response_lifecycle(state, lease_expires_at) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS serve_response_lifecycle_session
+    ON serve_response_lifecycle(session_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS serve_response_lifecycle_terminal_retention
+    ON serve_response_lifecycle(ended_at) WHERE state <> 'running';
+
+CREATE TABLE IF NOT EXISTS session_attention (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    latest_attention_seq INTEGER NOT NULL DEFAULT 0,
+    response_id TEXT NOT NULL DEFAULT '',
+    run_epoch INTEGER NOT NULL DEFAULT 0,
+    outcome TEXT NOT NULL DEFAULT '',
+    started_rev INTEGER NOT NULL DEFAULT 0,
+    final_rev INTEGER NOT NULL DEFAULT 0,
+    terminal_at INTEGER,
+    seen_through_seq INTEGER NOT NULL DEFAULT 0,
+    seen_at INTEGER,
+    seen_rev INTEGER NOT NULL DEFAULT 0,
+    seen_source TEXT,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_attention_unseen
+    ON session_attention(latest_attention_seq DESC)
+    WHERE latest_attention_seq > seen_through_seq;
+`
+
+const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV65 + rushSchemaV57 + modelUsageSchemaV58 + agentRunSchemaV63
 
 // unrankedPinKeySQL orders a pinned row that somehow lacks a persisted rank
 // after every ranked pin rather than first. It must stay textually identical in

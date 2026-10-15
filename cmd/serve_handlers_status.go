@@ -192,6 +192,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		AttentionResponseID      string   `json:"attention_response_id,omitempty"`
 		AttentionFinalRev        int64    `json:"attention_final_rev,omitempty"`
 		SeenThroughSeq           int64    `json:"seen_through_seq,omitempty"`
+		SeenRev                  int64    `json:"seen_rev"`
+		SeenSource               string   `json:"seen_source,omitempty"`
 		AttentionUnseen          bool     `json:"attention_unseen,omitempty"`
 		AttentionOutcome         string   `json:"attention_outcome,omitempty"`
 		AttentionTerminalAt      int64    `json:"attention_terminal_at,omitempty"`
@@ -313,6 +315,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			AttentionResponseID:      attention.ResponseID,
 			AttentionFinalRev:        attention.FinalRev,
 			SeenThroughSeq:           attention.SeenThroughSeq,
+			SeenRev:                  attention.SeenRev,
+			SeenSource:               attention.SeenSource,
 			AttentionUnseen:          attention.Unseen,
 			AttentionOutcome:         string(attention.Outcome),
 			AttentionTerminalAt:      attentionTerminalAt,

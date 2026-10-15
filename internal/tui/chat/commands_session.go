@@ -29,6 +29,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	}
 
 	// Create new session with current settings
+	m.pendingAttention = nil
 	m.sess = &session.Session{
 		ID:           session.NewID(),
 		Provider:     m.providerName,

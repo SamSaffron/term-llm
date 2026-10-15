@@ -182,6 +182,8 @@ type SessionSummary struct {
 	AttentionResponseID      string             `json:"attention_response_id,omitempty"`
 	AttentionFinalRev        int64              `json:"attention_final_rev,omitempty"`
 	SeenThroughSeq           int64              `json:"seen_through_seq,omitempty"`
+	SeenRev                  int64              `json:"seen_rev"`
+	SeenSource               string             `json:"seen_source,omitempty"`
 	AttentionUnseen          bool               `json:"attention_unseen,omitempty"`
 	AttentionOutcome         ResponseRunState   `json:"attention_outcome,omitempty"`
 	AttentionTerminalAt      int64              `json:"attention_terminal_at,omitempty"`

@@ -189,7 +189,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// fallback, decoder-error state), trusted-placeholder Markdown sanitizing
 		// and the transcript-scoped single-player policy. Generated audio renders
 		// inline in history, so it is eager: ~536.5/158.3 kB. Same ~1% rule.
-		"dist/app.js":                {raw: 542_000, gzip: 160_000},
+		// Attention acknowledgement now requires presence evidence (focus,
+		// recent input, transcript tail, and a dwell) plus explicit mark
+		// seen/unread controls and seen-revision merging. The presence tracker
+		// runs from startup, so it is eager: ~545.8/160.9 kB. Same ~1% rule.
+		"dist/app.js":                {raw: 551_000, gzip: 162_500},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
@@ -224,7 +228,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// The online/offline/all node filter menu, its URL sync, and the
 		// filtered-grid order merge take JS from 97.5/30.9 to 100.7/31.7 KiB
 		// and CSS from 17.9 to 19.3 KiB.
-		"dist/hub.js":  {raw: 105_000, gzip: 34_000},
+		// Per-item "Mark seen" on review inbox rows, with its in-flight state
+		// and reconciliation, takes JS to 105.5/34.5 KiB.
+		"dist/hub.js":  {raw: 107_500, gzip: 35_000},
 		"dist/hub.css": {raw: 20_500, gzip: 5_500},
 	}
 	for name, budget := range budgets {

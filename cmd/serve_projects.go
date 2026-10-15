@@ -827,6 +827,8 @@ func applySessionSummaryAttention(summary *session.SessionSummary, attention ses
 	summary.AttentionResponseID = attention.ResponseID
 	summary.AttentionFinalRev = attention.FinalRev
 	summary.SeenThroughSeq = attention.SeenThroughSeq
+	summary.SeenRev = attention.SeenRev
+	summary.SeenSource = attention.SeenSource
 	summary.AttentionUnseen = attention.Unseen
 	summary.AttentionOutcome = attention.Outcome
 	if !attention.TerminalAt.IsZero() {

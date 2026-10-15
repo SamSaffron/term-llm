@@ -74,6 +74,12 @@ type conflictOnceAttentionStore struct {
 func (s *conflictOnceAttentionStore) MarkAttentionSeen(ctx context.Context, sessionID, storeID string, seq int64) (session.AttentionState, error) {
 	return s.attention.MarkAttentionSeen(ctx, sessionID, storeID, seq)
 }
+func (s *conflictOnceAttentionStore) MarkAttentionSeenFrom(ctx context.Context, sessionID, storeID string, seq int64, source string) (session.AttentionState, error) {
+	return s.attention.MarkAttentionSeenFrom(ctx, sessionID, storeID, seq, source)
+}
+func (s *conflictOnceAttentionStore) MarkAttentionUnseen(ctx context.Context, sessionID, storeID string, seq int64) (session.AttentionState, error) {
+	return s.attention.MarkAttentionUnseen(ctx, sessionID, storeID, seq)
+}
 func (s *conflictOnceAttentionStore) GetAttention(ctx context.Context, sessionID string) (session.AttentionState, error) {
 	return s.attention.GetAttention(ctx, sessionID)
 }
@@ -196,5 +202,87 @@ func TestAttentionSnapshotHandlerETagAndNoTranscriptContent(t *testing.T) {
 	srv.handleAttention(notModified, revalidate)
 	if notModified.Code != http.StatusNotModified {
 		t.Fatalf("revalidation status = %d", notModified.Code)
+	}
+}
+
+func TestSessionAttentionUnseenHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, contentType, sessionID, body string
+		want                                       int
+	}{
+		{name: "success", want: 200},
+		{name: "malformed", body: `{`, want: 400},
+		{name: "zero", body: `{"store_instance_id":"store","through_seq":0}`, want: 400},
+		{name: "unknown-field", body: `{"store_instance_id":"store","through_seq":1,"source":"web"}`, want: 400},
+		{name: "missing", sessionID: "missing", want: 404},
+		{name: "wrong-store", body: `{"store_instance_id":"wrong","through_seq":1}`, want: 409},
+		{name: "content-type", contentType: "text/plain", want: 415},
+		{name: "method", method: http.MethodGet, want: 405},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, store, id, latest := attentionHandlerFixture(t)
+			if _, err := store.MarkAttentionSeen(context.Background(), id, latest.StoreInstanceID, latest.LatestAttentionSeq); err != nil {
+				t.Fatal(err)
+			}
+			body := tc.body
+			if body == "" {
+				data, _ := json.Marshal(markAttentionSeenRequest{StoreInstanceID: latest.StoreInstanceID, ThroughSeq: latest.LatestAttentionSeq})
+				body = string(data)
+			}
+			method := tc.method
+			if method == "" {
+				method = http.MethodPost
+			}
+			contentType := tc.contentType
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			if tc.sessionID != "" {
+				id = tc.sessionID
+			}
+			r := httptest.NewRequest(method, "/v1/sessions/"+id+"/attention/unseen", bytes.NewBufferString(body))
+			r.Header.Set("Content-Type", contentType)
+			w := httptest.NewRecorder()
+			if !srv.routeSessionCore(w, r, id, id, "attention/unseen") {
+				t.Fatal("unseen route not registered")
+			}
+			if w.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.want, w.Body.String())
+			}
+			if tc.want == 200 {
+				var state session.AttentionState
+				if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+					t.Fatal(err)
+				}
+				if !state.Unseen || state.SeenThroughSeq != 0 || state.SeenRev != 2 || state.SeenSource != "manual" {
+					t.Fatalf("unseen=%+v", state)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionAttentionSeenSourceHeader(t *testing.T) {
+	for _, source := range []string{"web", "hub", "unknown"} {
+		t.Run(source, func(t *testing.T) {
+			srv, store, id, latest := attentionHandlerFixture(t)
+			data, _ := json.Marshal(markAttentionSeenRequest{StoreInstanceID: latest.StoreInstanceID, ThroughSeq: latest.LatestAttentionSeq})
+			r := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+id+"/attention/seen", bytes.NewReader(data))
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("X-Term-LLM-Attention-Source", source)
+			w := httptest.NewRecorder()
+			srv.handleSessionAttentionSeen(w, r, id)
+			if w.Code != 200 {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			state, err := store.GetAttention(context.Background(), id)
+			want := source
+			if source == "unknown" {
+				want = ""
+			}
+			if err != nil || state.SeenSource != want || state.SeenRev != 1 {
+				t.Fatalf("source state=%+v err=%v", state, err)
+			}
+		})
 	}
 }

@@ -139,6 +139,44 @@ describe('Hub components', () => {
     value.dispose();
   });
 
+  it('marks one review item seen only once attention is authoritative', async () => {
+    const markAttentionSeen = vi.fn(async () => ({ cleared: 1 }));
+    const value = store({
+      markAttentionSeen,
+      listNodes: vi.fn(async () => ({ nodes: [] })),
+      listAttention: vi.fn(async () => ({ inbox: [], input_required: [], total_unseen: 0 })),
+      listDelegations: vi.fn(async () => ({ delegations: [] })),
+    });
+    value.inbox.value = [
+      {
+        node_id: 'alpha',
+        node_name: 'Alpha',
+        session_id: 'ready',
+        store_instance_id: 'store-a',
+        title: 'Ready conversation',
+        outcome: 'succeeded',
+        attention_seq: 3,
+        resume_path: '/node/alpha/chat/ready',
+      },
+    ];
+    render(<AttentionPanels store={value} />);
+    const button = screen.getByRole('button', { name: 'Mark Ready conversation as seen' });
+    expect(button).toBeDisabled();
+    await act(() => {
+      value.attentionVerified.value = true;
+    });
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(markAttentionSeen).toHaveBeenCalledWith({
+        store_instance_id: 'store-a',
+        session_id: 'ready',
+        attention_seq: 3,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByText('Ready conversation')).not.toBeInTheDocument());
+    value.dispose();
+  });
+
   it('keeps closed local node cards independent of operations but disables open menu actions', async () => {
     const value = store();
     const node = {

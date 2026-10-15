@@ -1255,6 +1255,21 @@ body {
   background: color-mix(in srgb, var(--surface) 80%, #22c55e 6%);
 }
 
+.attention-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.attention-item > .attention-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.attention-item-action {
+  flex: none;
+}
+
 .attention-row:hover {
   background: color-mix(in srgb, var(--surface) 75%, #22c55e 12%);
 }

@@ -1,4 +1,5 @@
 import { responseSubagentProgress } from './response';
+import { parseSeenRev } from './attention-seen';
 import type {
   ApprovalMode,
   Attachment,
@@ -758,6 +759,7 @@ export function sanitizeSession(
   const transcriptRev = Number(rawTranscriptRev);
   const attentionSeq = Number(source.attention_seq ?? source.latest_attention_seq);
   const seenThroughSeq = Number(source.seen_through_seq);
+  const seenRev = parseSeenRev(source.seen_rev);
   const attentionFinalRev = Number(source.attention_final_rev ?? source.final_rev);
   const hasApprovalPolicy =
     Object.hasOwn(source, 'approval_requested_mode') ||
@@ -838,6 +840,7 @@ export function sanitizeSession(
       ? { attentionFinalRev }
       : {}),
     ...(Number.isSafeInteger(seenThroughSeq) && seenThroughSeq >= 0 ? { seenThroughSeq } : {}),
+    ...(seenRev !== undefined ? { seenRev } : {}),
     ...(source.attention_unseen !== undefined
       ? { attentionUnseen: Boolean(source.attention_unseen) }
       : {}),

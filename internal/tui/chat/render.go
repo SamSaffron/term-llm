@@ -36,6 +36,9 @@ func (m *Model) View() (view tea.View) {
 		m.beginPostFrameImageComposition()
 	}
 	defer func() {
+		// Keep focus reporting enabled across inline, alt-screen, and embedded
+		// views, but release it along with all other modes for terminal handoff.
+		view.ReportFocus = !m.externalProcessActive && !m.quitting
 		if composePostFrameImages {
 			m.finishPostFrameImageComposition()
 		}

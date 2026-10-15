@@ -5825,6 +5825,47 @@ describe('Preact-owned chat surfaces', () => {
     expect(row).not.toHaveClass('menu-open');
   });
 
+  it.each([
+    [false, 'Mark as unread', 'markSessionUnread'],
+    [true, 'Mark as seen', 'markSessionSeen'],
+  ] as const)(
+    'offers explicit attention control when unseen is %s',
+    async (unseen, label, method) => {
+      const store = createStore();
+      store.sessions.value = store.sessions.value.map((entry) => ({
+        ...entry,
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 42,
+        seenThroughSeq: unseen ? 40 : 42,
+        attentionUnseen: unseen,
+      }));
+      store[method] = vi.fn(async () => undefined);
+      render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /^Actions for Test/ }));
+      fireEvent.click(screen.getByRole('menuitem', { name: label }));
+
+      await waitFor(() =>
+        expect(store[method]).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' })),
+      );
+    },
+  );
+
+  it('omits explicit attention control for sessions without an attention marker', () => {
+    const store = createStore();
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+    expect(screen.queryByRole('menuitem', { name: /Mark as/ })).toBeNull();
+  });
+
   it('keeps archived rows visible when Show archived sessions is enabled', async () => {
     const store = createStore();
     store.showArchived.value = true;

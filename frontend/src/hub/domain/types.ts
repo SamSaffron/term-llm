@@ -85,6 +85,7 @@ export interface HubAttentionInboxItem {
   node_id: string;
   node_name: string;
   session_id: string;
+  store_instance_id?: string;
   session_number?: number;
   title: string;
   outcome: string;

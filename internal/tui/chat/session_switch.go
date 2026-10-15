@@ -73,6 +73,7 @@ func (m *Model) restoreSessionTransitionSource(transition *sessionTransition) {
 // historical quit-and-relaunch path driven by RequestedResumeSessionID.
 func (m *Model) beginSessionSwitch(request SessionSwitchRequest) (tea.Model, tea.Cmd) {
 	if m.sessionSwitcher == nil {
+		m.pendingAttention = nil
 		prefill := request.BranchPrefill
 		if m.sessionTransition != nil {
 			prefill = m.textarea.Value()
@@ -89,6 +90,7 @@ func (m *Model) beginSessionSwitch(request SessionSwitchRequest) (tea.Model, tea
 		return m.showFooterWarning("A session switch is already in progress.")
 	}
 	m.sessionSwitchPending = true
+	m.pendingAttention = nil
 	transitionActive := m.sessionTransition != nil
 	if transitionActive {
 		m.sessionTransition.request = request
@@ -163,6 +165,13 @@ func (m *Model) handleSessionSwitched(msg sessionSwitchedMsg) (tea.Model, tea.Cm
 	}
 	next := msg.model
 	next.program = m.program
+	// Presence belongs to the terminal, not the session. Pending watermarks do
+	// not survive navigation, even if the old model is later reused.
+	m.pendingAttention = nil
+	next.pendingAttention = nil
+	next.lastPresenceAt = m.lastPresenceAt
+	next.focusKnown, next.focused = m.focusKnown, m.focused
+	next.attentionNow = m.attentionNow
 	// The transition composer is the target session's composer. It starts with
 	// any branch prefill and may be edited while the full runtime is built, so it
 	// must win over the original relaunch handoff during the replacement's Init.

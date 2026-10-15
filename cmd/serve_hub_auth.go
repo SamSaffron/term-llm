@@ -28,6 +28,7 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/api/nodes", s.handleNodes)
 	mux.HandleFunc("/api/attention", s.handleHubAttention)
 	mux.HandleFunc("/api/attention/clear", s.handleClearHubAttention)
+	mux.HandleFunc("/api/attention/seen", s.handleSeenHubAttention)
 	mux.HandleFunc("/api/delegations/", s.handleDelegationItem)
 	mux.HandleFunc("/api/delegations", s.handleDelegations)
 	mux.HandleFunc("/api/connect", s.handleReverseConnect)

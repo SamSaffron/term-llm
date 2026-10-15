@@ -521,8 +521,9 @@ func TestModelUsageTimingMigrationCreatesMissingTable(t *testing.T) {
 	}
 	db.SetMaxOpenConns(1)
 	defer db.Close()
-	// Every version 58 database has the projects table from migrations 47-49.
-	if _, err := db.Exec(schema + projectsSchemaV47); err != nil {
+	// Synthetic v58 fixture focused on model usage, retaining the historical
+	// attention table so subsequent attention migrations have their baseline.
+	if _, err := db.Exec(schema + projectsSchemaV47 + attentionSchemaV54); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(58)`); err != nil {
@@ -549,8 +550,9 @@ func TestModelUsageTimingMigrationUpgradesExistingTable(t *testing.T) {
 	}
 	db.SetMaxOpenConns(1)
 	defer db.Close()
-	// Every version 58 database has the projects table from migrations 47-49.
-	if _, err := db.Exec(schema + projectsSchemaV47); err != nil {
+	// Synthetic v58 fixture focused on model usage, retaining the historical
+	// attention table so subsequent attention migrations have their baseline.
+	if _, err := db.Exec(schema + projectsSchemaV47 + attentionSchemaV54); err != nil {
 		t.Fatal(err)
 	}
 	// The v58 table as it shipped, without the timing columns.

@@ -165,6 +165,12 @@ type Model struct {
 	// claim stays reachable for suspend/reload.
 	pendingTurnLease atomic.Pointer[turnLease]
 	activeTurnLease  atomic.Pointer[turnLease]
+	// Terminal presence is UI-owned; lease finalization reports back via a message.
+	lastPresenceAt   time.Time
+	focusKnown       bool
+	focused          bool
+	pendingAttention *pendingAttentionAck
+	attentionNow     func() time.Time // nil uses the wall clock
 	// knownTranscriptRev is the durable revision this process is synchronized
 	// with; a different revision at turn start that this process's store did
 	// not produce means another process wrote.
@@ -2355,6 +2361,11 @@ func (m *Model) flushBeforeExternalUI(done chan<- struct{}) (tea.Model, tea.Cmd)
 
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	attentionCmd := m.updateAttention(msg)
+	defer func() {
+		m.dropHiddenAttention()
+		cmd = tea.Batch(cmd, attentionCmd)
+	}()
 	if _, ok := msg.(ReloadResumeMsg); ok {
 		return m.resumeAfterReload()
 	}

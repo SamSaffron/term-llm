@@ -317,6 +317,8 @@ export interface Session {
   attentionResponseId?: string;
   attentionFinalRev?: number;
   seenThroughSeq?: number;
+  /** Server revision of seenThroughSeq; a newer revision may lower it (mark unread). */
+  seenRev?: number;
   attentionUnseen?: boolean;
   attentionOutcome?: 'completed' | 'failed' | 'cancelled' | 'orphaned' | string;
   attentionTerminalAt?: number;

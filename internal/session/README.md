@@ -20,5 +20,7 @@ Migration 56 renames the pending table/index, backfills deterministic historical
 
 Migration 64 adds the nullable inherited agent `model_policy` JSON column to sessions. Existing sessions without a policy are unrestricted by inheritance. Branches and handover sessions copy the inherited chain; new child sessions store their ancestors' rules separately from their own agent definition. As with earlier migrations, do not run old and new binaries concurrently against this database.
 
+Migration 65 adds `session_attention.seen_rev` (default 0) and nullable `seen_source`. Seen acknowledgements and manual unseen changes increment the revision only when the watermark changes. Manual unseen clears `seen_at`; it records no acknowledgement of the latest completion. The immediately previous v64 binary rejects v65 for read-write use; its read-only queries still understand the original columns but cannot track manual watermark reversals. Stop older writers before upgrading and restore a backup to downgrade.
+
 Do not run old and new binaries concurrently against this database. Older binaries are not supported after schema upgrade. Back up the database before upgrading; downgrade by stopping the server and restoring the backup, not by a destructive reverse migration.
 

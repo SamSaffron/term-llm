@@ -5,6 +5,7 @@ import { initialProjection } from '../domain/response';
 import type { ActiveRun, Session } from '../domain/types';
 import { persistPendingIntent, readDrafts, saveDraft } from '../platform/storage';
 import { AppStore } from './app-store';
+import { ATTENTION_POLICY } from '../platform/presence';
 
 const config: AppConfig = {
   prefix: '/ui',
@@ -41,6 +42,21 @@ const deferred = <T>() => {
 };
 
 beforeEach(() => localStorage.clear());
+
+/** Simulate a present, focused user at the transcript tail for one dwell. */
+const attendSelected = async (store: AppStore, sessionId = 's1') => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    store.presence.mark();
+    store.attentionAck.setAtTail(sessionId, true);
+    store.attentionAck.evaluate();
+    await vi.advanceTimersByTimeAsync(ATTENTION_POLICY.dwellMs);
+  } finally {
+    focus.mockRestore();
+    vi.useRealTimers();
+  }
+};
 
 describe('AppStore compatibility behavior', () => {
   it('resolves a delegated session through the standard response lifecycle without cataloging it', async () => {
@@ -121,6 +137,7 @@ describe('AppStore compatibility behavior', () => {
     }));
 
     await store.loadSession('s1');
+    await attendSelected(store);
     await vi.waitFor(() =>
       expect(store.endpoints.markAttentionSeen).toHaveBeenCalledWith('s1', 'store-a', 42),
     );
@@ -162,6 +179,7 @@ describe('AppStore compatibility behavior', () => {
     }));
 
     await store.loadSession('s1');
+    await attendSelected(store);
     await vi.waitFor(() => expect(store.endpoints.markAttentionSeen).toHaveBeenCalledOnce());
     expect(store.sessions.value[0]).toMatchObject({ attentionUnseen: false, seenThroughSeq: 42 });
     store.dispose();
@@ -206,6 +224,7 @@ describe('AppStore compatibility behavior', () => {
     }));
 
     await store.loadSession('s1');
+    await attendSelected(store);
     await vi.waitFor(() => expect(store.endpoints.markAttentionSeen).toHaveBeenCalledOnce());
 
     expect(store.sessions.value[0]).toMatchObject({
@@ -258,6 +277,173 @@ describe('AppStore compatibility behavior', () => {
       else delete (document as unknown as Record<string, unknown>).visibilityState;
       store.dispose();
     }
+  });
+
+  it('does not acknowledge a visible but unfocused window', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 42,
+        attentionFinalRev: 0,
+        attentionUnseen: true,
+        messageBodiesRev: 0,
+      },
+    ];
+    store.activeSessionId.value = 's1';
+    store.endpoints.markAttentionSeen = vi.fn();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    try {
+      store.presence.mark();
+      store.attentionAck.setAtTail('s1', true);
+      await vi.advanceTimersByTimeAsync(10 * ATTENTION_POLICY.dwellMs);
+      expect(store.endpoints.markAttentionSeen).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+      vi.useRealTimers();
+      store.dispose();
+    }
+  });
+
+  it('acknowledges the selected completion immediately when sending a follow-up', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 42,
+        attentionFinalRev: 0,
+        attentionUnseen: true,
+        messageBodiesRev: 0,
+      },
+    ];
+    store.activeSessionId.value = 's1';
+    store.endpoints.markAttentionSeen = vi.fn(async () => ({
+      store_instance_id: 'store-a',
+      latest_attention_seq: 42,
+      seen_through_seq: 42,
+    }));
+    vi.spyOn(store.runEngine, 'send').mockResolvedValue(undefined);
+
+    await store.send();
+
+    expect(store.endpoints.markAttentionSeen).toHaveBeenCalledWith('s1', 'store-a', 42);
+    store.dispose();
+  });
+
+  it('marks the selected session unread and keeps automatic acknowledgement away', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 42,
+        attentionFinalRev: 0,
+        seenThroughSeq: 42,
+        seenRev: 3,
+        attentionUnseen: false,
+        messageBodiesRev: 0,
+      },
+    ];
+    store.activeSessionId.value = 's1';
+    store.endpoints.markAttentionUnseen = vi.fn(async () => ({
+      store_instance_id: 'store-a',
+      latest_attention_seq: 42,
+      seen_through_seq: 40,
+      seen_rev: 4,
+      attention_unseen: true,
+    }));
+    store.endpoints.markAttentionSeen = vi.fn();
+
+    await store.markSessionUnread(store.sessions.value[0]);
+
+    expect(store.endpoints.markAttentionUnseen).toHaveBeenCalledWith('s1', 'store-a', 42);
+    expect(store.sessions.value[0]).toMatchObject({
+      seenThroughSeq: 40,
+      seenRev: 4,
+      attentionUnseen: true,
+    });
+    await attendSelected(store);
+    expect(store.endpoints.markAttentionSeen).not.toHaveBeenCalled();
+    store.dispose();
+  });
+
+  it('discards an attention response for a store the session has since left', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 42,
+        seenThroughSeq: 42,
+        seenRev: 3,
+        attentionUnseen: false,
+      },
+    ];
+    let respond!: (value: Record<string, unknown>) => void;
+    store.endpoints.markAttentionUnseen = vi.fn(
+      () => new Promise<Record<string, unknown>>((resolve) => (respond = resolve)),
+    );
+
+    const marking = store.markSessionUnread(store.sessions.value[0]);
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        attentionStoreInstanceId: 'store-b',
+        attentionSeq: 2,
+        seenThroughSeq: 2,
+        seenRev: 1,
+      },
+    ];
+    respond({
+      store_instance_id: 'store-a',
+      latest_attention_seq: 42,
+      seen_through_seq: 40,
+      seen_rev: 4,
+      attention_unseen: true,
+    });
+    await marking;
+
+    expect(store.sessions.value[0]).toMatchObject({
+      attentionStoreInstanceId: 'store-b',
+      attentionSeq: 2,
+      seenThroughSeq: 2,
+      attentionUnseen: false,
+    });
+    store.dispose();
+  });
+
+  it('marks a session seen explicitly with the manual source', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 42,
+        seenThroughSeq: 40,
+        seenRev: 4,
+        attentionUnseen: true,
+      },
+    ];
+    store.endpoints.markAttentionSeen = vi.fn(async () => ({
+      store_instance_id: 'store-a',
+      latest_attention_seq: 42,
+      seen_through_seq: 42,
+      seen_rev: 5,
+      attention_unseen: false,
+    }));
+
+    await store.markSessionSeen(store.sessions.value[0]);
+
+    expect(store.endpoints.markAttentionSeen).toHaveBeenCalledWith('s1', 'store-a', 42, 'manual');
+    expect(store.sessions.value[0]).toMatchObject({
+      seenThroughSeq: 42,
+      seenRev: 5,
+      attentionUnseen: false,
+    });
+    store.dispose();
   });
 
   it('does not acknowledge a stale selection after the route changes', async () => {
@@ -1717,6 +1903,8 @@ describe('AppStore compatibility behavior', () => {
         expect(store.endpoints.selectedSession).toHaveBeenCalledWith('5093');
         expect(store.activeSessionId.value).toBe('older-session');
         expect(location.pathname).toBe('/ui/chat/5093');
+        expect(store.endpoints.markAttentionSeen).not.toHaveBeenCalled();
+        await attendSelected(store, 'older-session');
         expect(store.endpoints.markAttentionSeen).toHaveBeenCalledWith(
           'older-session',
           'store-a',

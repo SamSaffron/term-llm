@@ -79,8 +79,14 @@ func seenSession(path string) string {
 }
 func strictSeen(store string, seq map[string]int64, calls *atomic.Int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Term-LLM-Attention-Source") != "hub" {
+			http.Error(w, "missing Hub attention source", http.StatusBadRequest)
+			return
+		}
 		var q markAttentionSeenRequest
-		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&q); err != nil {
 			http.Error(w, "bad", 400)
 			return
 		}
@@ -482,5 +488,113 @@ func TestHubAttentionClearUsesStoreAliasWithoutSessionRow(t *testing.T) {
 				t.Fatalf("acknowledgements = %d, want 1", calls.Load())
 			}
 		})
+	}
+}
+
+func TestHubAttentionSeenItem(t *testing.T) {
+	for _, tc := range []struct {
+		name, origin, method, body string
+		want                       int
+	}{
+		{name: "success", want: 200},
+		{name: "not-cached", body: `{"store_instance_id":"store-a","session_id":"missing","attention_seq":5}`, want: 404},
+		{name: "uncached-sequence", body: `{"store_instance_id":"store-a","session_id":"done","attention_seq":6}`, want: 404},
+		{name: "wrong-store", body: `{"store_instance_id":"other","session_id":"done","attention_seq":5}`, want: 404},
+		{name: "cross-origin", origin: "https://elsewhere.example", want: 403},
+		{name: "invalid", body: `{`, want: 400},
+		{name: "method", method: http.MethodGet, want: 405},
+		{name: "node-fails", want: 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			srv := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+				if tc.name == "node-fails" {
+					http.Error(w, "failed", 500)
+					return
+				}
+				strictSeen("store-a", map[string]int64{"done": 5}, &calls)(w, r)
+			})
+			srv.basePath = "/hub"
+			srv.attentionStore = openProjection(t)
+			seedRows(t, srv.attentionStore, "alpha", "store-a", hub.SessionActivity{SessionID: "done", Kind: "terminal_unseen", AttentionSeq: 5})
+			body := tc.body
+			if body == "" {
+				body = `{"store_instance_id":"store-a","session_id":"done","attention_seq":5}`
+			}
+			method := tc.method
+			if method == "" {
+				method = http.MethodPost
+			}
+			r := httptest.NewRequest(method, "/hub/api/attention/seen", strings.NewReader(body))
+			r.Header.Set("Content-Type", "application/json")
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			w := httptest.NewRecorder()
+			srv.handler().ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.want, w.Body.String())
+			}
+			if tc.want == 200 {
+				if strings.TrimSpace(w.Body.String()) != `{"cleared":1}` || calls.Load() != 1 || srv.attentionGeneration != 1 {
+					t.Fatalf("ack body=%s calls=%d generation=%d", w.Body.String(), calls.Load(), srv.attentionGeneration)
+				}
+				requireKeys(t, srv.attentionStore)
+			} else {
+				if calls.Load() != 0 || srv.attentionGeneration != 0 {
+					t.Fatalf("rejected ack calls=%d generation=%d", calls.Load(), srv.attentionGeneration)
+				}
+				requireKeys(t, srv.attentionStore, "alpha/done/terminal_unseen@5")
+			}
+		})
+	}
+}
+
+func TestHubAttentionManualUnseenResurfacesAfterSync(t *testing.T) {
+	nodeServe, sessions, id, latest := attentionHandlerFixture(t)
+	srv := hubWithBackend(t, "", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/attention" {
+			nodeServe.handleAttention(w, r)
+			return
+		}
+		nodeServe.handleSessionAttentionSeen(w, r, id)
+	})
+	srv.attentionStore = openProjection(t)
+	nodes, err := srv.registry.Nodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncNode := func() {
+		t.Helper()
+		if err := srv.collectNodeAttention(context.Background(), nodes[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := fmt.Sprintf("alpha/%s/terminal_unseen@%d", id, latest.LatestAttentionSeq)
+	syncNode()
+	requireKeys(t, srv.attentionStore, key)
+	before, err := srv.attentionStore.GetSync(context.Background(), "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireClear(t, doClear(srv.handler(), "/api/attention/clear"), 1, 0)
+	requireKeys(t, srv.attentionStore)
+	// First exercise recollection after a clear, then a conditional 304 while
+	// seen. A later manual reversal must invalidate that empty snapshot too.
+	syncNode()
+	syncNode()
+	requireKeys(t, srv.attentionStore)
+	state, err := sessions.GetAttention(context.Background(), id)
+	if err != nil || state.SeenSource != "hub" {
+		t.Fatalf("Hub source=%+v err=%v", state, err)
+	}
+	if _, err := sessions.MarkAttentionUnseen(context.Background(), id, latest.StoreInstanceID, latest.LatestAttentionSeq); err != nil {
+		t.Fatal(err)
+	}
+	syncNode()
+	requireKeys(t, srv.attentionStore, key)
+	after, err := srv.attentionStore.GetSync(context.Background(), "alpha")
+	if err != nil || before.ETag == after.ETag {
+		t.Fatalf("snapshot failed to advance: before=%+v after=%+v err=%v", before, after, err)
 	}
 }

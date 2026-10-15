@@ -1,6 +1,6 @@
 import { relativeSessionTime } from '../domain/formatting';
 import type { HubAttentionInboxItem, HubInputRequiredItem } from '../domain/types';
-import type { HubStore } from '../stores/hub-store';
+import { inboxItemKey, type HubStore } from '../stores/hub-store';
 import { HubRenderBoundary } from './HubRenderBoundary';
 
 /** One conversation waiting on a question or approval. */
@@ -128,9 +128,24 @@ export function AttentionPanels({ store }: { store: HubStore }) {
           {inbox.length > 0 && (
             <ul class="attention-list">
               {inbox.map((item) => (
-                <li key={`${item.node_id}:${item.session_id}`}>
+                <li key={`${item.node_id}:${item.session_id}`} class="attention-item">
                   <HubRenderBoundary resetKey={item} label="Conversation">
                     <InboxRow item={item} stale={stale} />
+                    {item.store_instance_id && (
+                      <button
+                        type="button"
+                        class="hub-btn small ghost attention-item-action"
+                        aria-label={`Mark ${item.title || item.session_id || 'conversation'} as seen`}
+                        disabled={
+                          stale ||
+                          store.clearingAttention.value ||
+                          store.markingSeen.value.has(inboxItemKey(item))
+                        }
+                        onClick={() => void store.markInboxItemSeen(item)}
+                      >
+                        {store.markingSeen.value.has(inboxItemKey(item)) ? 'Marking…' : 'Mark seen'}
+                      </button>
+                    )}
                   </HubRenderBoundary>
                 </li>
               ))}

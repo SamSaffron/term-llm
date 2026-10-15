@@ -44,8 +44,8 @@ describe('session mutation request contracts', () => {
       [() => routes.commitStage(id, body), 'commit/stage', body, {}],
       [() => routes.createCommitRun(id, body), 'commit-runs', body, {}],
       [
-        () => routes.markAttentionSeen(id, 'store', 42),
-        'attention/seen',
+        () => routes.markAttentionUnseen(id, 'store', 42),
+        'attention/unseen',
         { store_instance_id: 'store', through_seq: 42 },
         {},
       ],
@@ -88,6 +88,27 @@ describe('session mutation request contracts', () => {
         { policy: 'mutation', auth: 'session', ...controls },
       );
     }
+  });
+
+  it.each([
+    [undefined, 'web'],
+    ['manual', 'manual'],
+  ] as const)('labels attention acknowledgements with source %s', async (source, expected) => {
+    const json = vi.fn(async () => ({}));
+    const routes = endpoints({ json } as unknown as APIClient);
+    await routes.markAttentionSeen('session/one', 'store', 42, source);
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/sessions/session%2Fone/attention/seen',
+      {
+        method: 'POST',
+        headers: {
+          'X-Term-LLM-Session-ID': 'session/one',
+          'X-Term-LLM-Attention-Source': expected,
+        },
+        body: JSON.stringify({ store_instance_id: 'store', through_seq: 42 }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    );
   });
 });
 

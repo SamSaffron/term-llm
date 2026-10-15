@@ -131,6 +131,52 @@ describe('HubStore', () => {
     },
   );
 
+  it('marks one review item seen and reconciles from the server', async () => {
+    const markAttentionSeen = vi.fn(async () => ({ cleared: 1 }));
+    const client = fakeClient({ markAttentionSeen });
+    vi.mocked(client.listAttention).mockResolvedValueOnce({
+      ...attention(),
+      inbox: [{ ...attention().inbox[0], store_instance_id: 'store-a' }],
+    });
+    const store = new HubStore(client);
+    await store.refresh();
+    vi.mocked(client.listAttention).mockResolvedValue({
+      ...attention(),
+      inbox: [],
+      total_unseen: 0,
+    });
+
+    const marking = store.markInboxItemSeen(store.inbox.value[0]);
+    expect(store.markingSeen.value.size).toBe(1);
+    await marking;
+
+    expect(markAttentionSeen).toHaveBeenCalledWith({
+      store_instance_id: 'store-a',
+      session_id: 's1',
+      attention_seq: 1,
+    });
+    expect(store.inbox.value).toEqual([]);
+    expect(store.markingSeen.value.size).toBe(0);
+    expect(store.attentionClearStatus.value).toBe('');
+    store.dispose();
+  });
+
+  it('reports a failed per-item acknowledgement and skips items without a store identity', async () => {
+    const markAttentionSeen = vi.fn().mockRejectedValue(new Error('node offline'));
+    const client = fakeClient({ markAttentionSeen });
+    const store = new HubStore(client);
+    await store.refresh();
+
+    await store.markInboxItemSeen(store.inbox.value[0]);
+    expect(markAttentionSeen).not.toHaveBeenCalled();
+
+    await store.markInboxItemSeen({ ...store.inbox.value[0], store_instance_id: 'store-a' });
+    expect(markAttentionSeen).toHaveBeenCalledOnce();
+    expect(store.attentionClearStatus.value).toContain('node offline');
+    expect(store.markingSeen.value.size).toBe(0);
+    store.dispose();
+  });
+
   it('does not clear last-known attention before an authoritative response', async () => {
     const client = fakeClient({ clearAttention: vi.fn(async () => ({ cleared: 1, failed: 0 })) });
     const store = new HubStore(client);

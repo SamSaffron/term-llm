@@ -58,6 +58,10 @@ import { ReviewStore } from './review-store';
 import { TabSyncCoordinator } from './tab-sync-coordinator';
 import { ServerEventCoordinator } from './server-event-coordinator';
 import { ComposerStore } from './composer-store';
+import { AttentionAckScheduler, type AttentionCandidate } from './attention-ack';
+import { PresenceTracker } from '../platform/presence';
+import { overlayManager } from '../platform/overlay-manager';
+import { mergeSeenState, parseSeenRev } from '../domain/attention-seen';
 import { SessionStore, type SidebarView } from './session-store';
 import { SkillStore } from './skill-store';
 import { StatusReconciler } from './status-reconciler';
@@ -283,6 +287,16 @@ export class AppStore {
   private recoveryPromise: Promise<void> | null = null;
   private sessionCreationPromise: Promise<string> | null = null;
   private readonly attentionAcks = new Map<string, number>();
+  readonly presence = new PresenceTracker();
+  readonly attentionAck = new AttentionAckScheduler(
+    {
+      candidate: () => this.selectedAttentionCandidate(),
+      commit: (candidate) => this.commitAttentionSeen(candidate),
+      online: () => navigator.onLine !== false,
+      obstructed: () => overlayManager.size > 0,
+    },
+    this.presence,
+  );
   private serverEventFeedEnabled = false;
   private readonly locallyStoppedResponses: Set<string>;
   // Bindings this client asked the server for, newest last, with the selection
@@ -644,7 +658,7 @@ export class AppStore {
           requestedAt,
         ),
       eventFeedHealthy: () => this.serverEventCoordinator?.isHealthy() || false,
-      acknowledgeAttention: () => this.acknowledgeSelectedAttention(),
+      acknowledgeAttention: () => this.attentionAck.evaluate(),
     });
     this.serverEventCoordinator = new ServerEventCoordinator(this.services, {
       startupDone: this.startupDone,
@@ -675,6 +689,8 @@ export class AppStore {
       return '';
     });
     this.installWorkspacePersistence();
+    this.presence.install(this.lifecycleAbort.signal);
+    this.presence.subscribe(() => this.attentionAck.evaluate());
   }
 
   /**
@@ -1155,14 +1171,13 @@ export class AppStore {
       await this.refreshStatus(options.authoritative).catch(() => undefined);
     }
     if (options.authoritative) await this.performRecovery();
-    void this.acknowledgeSelectedAttention();
+    this.attentionAck.evaluate();
   }
 
-  private async acknowledgeSelectedAttention(): Promise<void> {
-    if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
+  /** The selected session's exact unseen marker once its final bodies are installed. */
+  private selectedAttentionCandidate(): AttentionCandidate | null {
     const sessionId = this.activeSessionId.peek();
-    const epoch = this.selectionEpoch;
-    if (!sessionId) return;
+    if (!sessionId) return null;
     const selected = this.sessions.peek().find((session) => session.id === sessionId);
     if (
       !selected?.attentionUnseen ||
@@ -1170,55 +1185,35 @@ export class AppStore {
       !selected.attentionSeq ||
       selected.attentionSeq <= (selected.seenThroughSeq || 0)
     )
-      return;
+      return null;
     const installedRev = selected.messageBodiesRev;
     const finalRev = selected.attentionFinalRev || 0;
     // A zero/unknown final revision means there is no later durable body to
     // wait for. The selected-session load that installed messageBodiesRev is
     // still authoritative, including for orphan recovery in a fresh window.
-    if (installedRev === undefined || (finalRev > 0 && installedRev < finalRev)) return;
-    const throughSeq = selected.attentionSeq;
+    if (installedRev === undefined || (finalRev > 0 && installedRev < finalRev)) return null;
+    return {
+      sessionId,
+      storeInstanceId: selected.attentionStoreInstanceId,
+      throughSeq: selected.attentionSeq,
+      epoch: this.selectionEpoch,
+    };
+  }
+
+  /** Durably acknowledge one marker chosen by {@link AttentionAckScheduler}. */
+  private async commitAttentionSeen(candidate: AttentionCandidate): Promise<void> {
+    const { sessionId, throughSeq } = candidate;
     if ((this.attentionAcks.get(sessionId) || 0) >= throughSeq) return;
-    if (this.activeSessionId.peek() !== sessionId || this.selectionEpoch !== epoch) return;
+    if (this.activeSessionId.peek() !== sessionId || this.selectionEpoch !== candidate.epoch)
+      return;
     this.attentionAcks.set(sessionId, throughSeq);
     try {
       const state = await this.endpoints.markAttentionSeen(
         sessionId,
-        selected.attentionStoreInstanceId,
+        candidate.storeInstanceId,
         throughSeq,
       );
-      const latestValue = Number(state.latest_attention_seq);
-      const seenValue = Number(state.seen_through_seq);
-      const latest = Number.isFinite(latestValue) ? Math.max(0, latestValue) : throughSeq;
-      const seen = Number.isFinite(seenValue) ? Math.max(0, seenValue) : throughSeq;
-      const storeInstanceId = String(state.store_instance_id || selected.attentionStoreInstanceId);
-      const terminalAt = Date.parse(String(state.terminal_at || ''));
-      this.sessionStore.update(sessionId, (current) => {
-        const storeReplaced = Boolean(
-          current.attentionStoreInstanceId &&
-          storeInstanceId &&
-          current.attentionStoreInstanceId !== storeInstanceId,
-        );
-        const currentSeq = current.attentionSeq || 0;
-        const nextSeq = storeReplaced ? latest : Math.max(currentSeq, latest);
-        const nextSeen = storeReplaced ? seen : Math.max(current.seenThroughSeq || 0, seen);
-        const markerIsCurrent = storeReplaced || latest >= currentSeq;
-        return {
-          ...current,
-          attentionStoreInstanceId: storeInstanceId,
-          attentionSeq: nextSeq,
-          seenThroughSeq: nextSeen,
-          ...(markerIsCurrent
-            ? {
-                attentionResponseId: String(state.response_id || ''),
-                attentionFinalRev: Math.max(0, Number(state.final_rev) || 0),
-                attentionOutcome: String(state.outcome || '') as Session['attentionOutcome'],
-                ...(Number.isFinite(terminalAt) ? { attentionTerminalAt: terminalAt } : {}),
-              }
-            : {}),
-          attentionUnseen: nextSeq > nextSeen,
-        };
-      });
+      this.applyAttentionState(sessionId, state, candidate.storeInstanceId, throughSeq);
       this.tabSyncCoordinator.publish('attention-changed', sessionId);
     } catch {
       // Durable state remains unseen; normal status, event, online, and visibility
@@ -1226,6 +1221,94 @@ export class AppStore {
     } finally {
       if (this.attentionAcks.get(sessionId) === throughSeq) this.attentionAcks.delete(sessionId);
     }
+  }
+
+  /** Explicitly acknowledge a session's latest completion, bypassing presence evidence. */
+  async markSessionSeen(session: Session): Promise<void> {
+    const current = this.sessions.peek().find((entry) => entry.id === session.id) || session;
+    const storeInstanceId = current.attentionStoreInstanceId;
+    const throughSeq = current.attentionSeq || 0;
+    if (!current.attentionUnseen || !storeInstanceId || !throughSeq) return;
+    const state = await this.endpoints.markAttentionSeen(
+      current.id,
+      storeInstanceId,
+      throughSeq,
+      'manual',
+    );
+    this.applyAttentionState(current.id, state, storeInstanceId, throughSeq);
+    this.tabSyncCoordinator.publish('attention-changed', current.id);
+  }
+
+  /**
+   * Restore the unseen indicator for a session's latest completion. While that
+   * session stays selected, automatic acknowledgement leaves it alone until the
+   * user navigates back to it or a newer completion arrives.
+   */
+  async markSessionUnread(session: Session): Promise<void> {
+    const current = this.sessions.peek().find((entry) => entry.id === session.id) || session;
+    const storeInstanceId = current.attentionStoreInstanceId;
+    const throughSeq = current.attentionSeq || 0;
+    if (current.attentionUnseen || !storeInstanceId || !throughSeq) return;
+    const epoch = this.selectionEpoch;
+    const state = await this.endpoints.markAttentionUnseen(current.id, storeInstanceId, throughSeq);
+    // Suppress before installing the unseen state so no evaluation can ack it.
+    if (this.activeSessionId.peek() === current.id && this.selectionEpoch === epoch)
+      this.attentionAck.suppress({ sessionId: current.id, storeInstanceId, throughSeq, epoch });
+    this.applyAttentionState(current.id, state, storeInstanceId, throughSeq);
+    this.tabSyncCoordinator.publish('attention-changed', current.id);
+  }
+
+  /** Merge an authoritative attention response from the seen/unseen endpoints. */
+  private applyAttentionState(
+    sessionId: string,
+    state: Record<string, unknown>,
+    requestStoreInstanceId: string,
+    throughSeq: number,
+  ): void {
+    const latestValue = Number(state.latest_attention_seq);
+    const seenValue = Number(state.seen_through_seq);
+    const latest = Number.isFinite(latestValue) ? Math.max(0, latestValue) : throughSeq;
+    const seen = Number.isFinite(seenValue) ? Math.max(0, seenValue) : throughSeq;
+    const storeInstanceId = String(state.store_instance_id || requestStoreInstanceId);
+    const terminalAt = Date.parse(String(state.terminal_at || ''));
+    this.sessionStore.update(sessionId, (current) => {
+      // A response to a request issued against a store the session has since
+      // left is obsolete; authoritative reconciliation owns the new store.
+      if (
+        current.attentionStoreInstanceId &&
+        current.attentionStoreInstanceId !== requestStoreInstanceId
+      )
+        return current;
+      const storeReplaced = Boolean(
+        current.attentionStoreInstanceId &&
+        storeInstanceId &&
+        current.attentionStoreInstanceId !== storeInstanceId,
+      );
+      const currentSeq = current.attentionSeq || 0;
+      const nextSeq = storeReplaced ? latest : Math.max(currentSeq, latest);
+      const nextSeen = mergeSeenState(
+        current,
+        { seenThroughSeq: seen, seenRev: parseSeenRev(state.seen_rev) },
+        storeReplaced,
+      );
+      const markerIsCurrent = storeReplaced || latest >= currentSeq;
+      return {
+        ...current,
+        attentionStoreInstanceId: storeInstanceId,
+        attentionSeq: nextSeq,
+        seenThroughSeq: nextSeen.seenThroughSeq,
+        seenRev: nextSeen.seenRev,
+        ...(markerIsCurrent
+          ? {
+              attentionResponseId: String(state.response_id || ''),
+              attentionFinalRev: Math.max(0, Number(state.final_rev) || 0),
+              attentionOutcome: String(state.outcome || '') as Session['attentionOutcome'],
+              ...(Number.isFinite(terminalAt) ? { attentionTerminalAt: terminalAt } : {}),
+            }
+          : {}),
+        attentionUnseen: nextSeq > nextSeen.seenThroughSeq,
+      };
+    });
   }
 
   private async performRecovery(): Promise<void> {
@@ -1403,7 +1486,7 @@ export class AppStore {
     // During startup the bootstrap owns the missing-route fallback.
     if (outcome === 'missing' && this.startupDone.peek()) this.dropMissingSession(session);
     this.syncSessionInterest();
-    void this.acknowledgeSelectedAttention();
+    this.attentionAck.evaluate();
     return outcome;
   }
 
@@ -1598,7 +1681,7 @@ export class AppStore {
     }
     if (rebind && session.id !== previous)
       this.rebindLiveCall(liveId, session, this.selectionStore.generation);
-    void this.acknowledgeSelectedAttention();
+    this.attentionAck.evaluate();
     return session;
   }
 
@@ -1632,13 +1715,15 @@ export class AppStore {
     }
     if (this.activeSessionId.peek() === id && this.selectionEpoch === epoch) {
       this.syncSessionInterest();
-      void this.acknowledgeSelectedAttention();
+      this.attentionAck.evaluate();
     }
     return outcome;
   }
 
   async send(options: SendOptions = {}): Promise<void> {
     if (this.sendBlocked.peek() && !this.runEngine.sendBlocked.peek()) return;
+    // Sending a follow-up is unambiguous engagement with the selected outcome.
+    this.attentionAck.evaluate({ immediate: true });
     await this.runEngine.send(options);
   }
 
@@ -1668,7 +1753,7 @@ export class AppStore {
       preserveLiveRun,
       propagateError,
     );
-    if (this.activeSessionId.peek() === sessionId) void this.acknowledgeSelectedAttention();
+    if (this.activeSessionId.peek() === sessionId) this.attentionAck.evaluate();
   }
 
   private async resumeResponse(sessionId: string, responseId: string): Promise<void> {
@@ -2097,6 +2182,7 @@ export class AppStore {
     this.disposed = true;
     this.persistCurrentDraft();
     this.disposeEffects.splice(0).forEach((dispose) => dispose());
+    this.attentionAck.dispose();
     this.lifecycleAbort.abort();
     this.sideQuestions.dispose();
     this.webMCP.dispose();

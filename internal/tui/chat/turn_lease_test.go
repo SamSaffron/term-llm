@@ -277,9 +277,10 @@ func TestTurnLeaseRunsAndReleasesForCompletedTurn(t *testing.T) {
 	if attention.Outcome != session.ResponseRunCompleted || attention.FinalRev == 0 {
 		t.Fatalf("terminal lifecycle state = %+v", attention)
 	}
-	// The terminal user watched the turn finish; no unseen badge elsewhere.
-	if attention.Unseen || attention.SeenThroughSeq < attention.LatestAttentionSeq {
-		t.Fatalf("completed terminal turn left unseen attention: %+v", attention)
+	// No UI loop or presence was attached to this execution, so completing the
+	// lease alone must leave the outcome unseen on other surfaces.
+	if !attention.Unseen || attention.SeenThroughSeq >= attention.LatestAttentionSeq {
+		t.Fatalf("unobserved terminal turn was marked seen: %+v", attention)
 	}
 	messages, err := store.GetMessages(ctx, m.SessionID(), 0, 0)
 	if err != nil {

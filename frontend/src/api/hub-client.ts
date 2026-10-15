@@ -148,6 +148,22 @@ export class HubClient {
     return this.request('/api/attention/clear', { method: 'POST', body: {} });
   }
 
+  /** Acknowledge exactly one cached review item on its originating node. */
+  markAttentionSeen(item: {
+    store_instance_id: string;
+    session_id: string;
+    attention_seq: number;
+  }): Promise<{ cleared: number }> {
+    return this.request('/api/attention/seen', {
+      method: 'POST',
+      body: {
+        store_instance_id: item.store_instance_id,
+        session_id: item.session_id,
+        attention_seq: item.attention_seq,
+      },
+    });
+  }
+
   listDelegations(signal?: AbortSignal): Promise<DelegationsResponse> {
     return this.request('/api/delegations', { signal });
   }

@@ -148,7 +148,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 64
+	schemaVersion        = 65
 )
 
 // migration represents a schema migration.
@@ -1349,6 +1349,27 @@ var migrations = []migration{
 			if !exists {
 				if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN model_policy TEXT"); err != nil {
 					return fmt.Errorf("add sessions.model_policy: %w", err)
+				}
+			}
+			return nil
+		},
+	},
+	{
+		version:     65,
+		description: "version attention seen changes and record their source",
+		up: func(db schemaExecutor) error {
+			for _, column := range []struct{ name, ddl string }{
+				{"seen_rev", "seen_rev INTEGER NOT NULL DEFAULT 0"},
+				{"seen_source", "seen_source TEXT"},
+			} {
+				exists, err := sqliteutil.ColumnExists(db, "session_attention", column.name)
+				if err != nil {
+					return fmt.Errorf("inspect session_attention.%s: %w", column.name, err)
+				}
+				if !exists {
+					if _, err := db.Exec("ALTER TABLE session_attention ADD COLUMN " + column.ddl); err != nil {
+						return fmt.Errorf("add session_attention.%s: %w", column.name, err)
+					}
 				}
 			}
 			return nil

@@ -6,6 +6,7 @@ import type { Project, Session } from '../domain/types';
 import type { Modal, HubAgent } from './store-types';
 import type { AppStoreServices } from './app-store-services';
 import { SavedOrder, type OrderEntry, type OrderRanks } from './saved-order';
+import { mergeSeenState } from '../domain/attention-seen';
 import {
   array,
   compareProjects,
@@ -392,9 +393,8 @@ export class SessionStore {
         ? incoming
         : existing;
     const attentionSeq = storeReplaced ? incomingSeq : Math.max(existingSeq, incomingSeq);
-    const seenThroughSeq = storeReplaced
-      ? incoming.seenThroughSeq || 0
-      : Math.max(existing.seenThroughSeq || 0, incoming.seenThroughSeq || 0);
+    const seen = mergeSeenState(existing, incoming, storeReplaced);
+    const seenThroughSeq = seen.seenThroughSeq;
     const hasAttention = Boolean(
       existing.attentionStoreInstanceId ||
       incoming.attentionStoreInstanceId ||
@@ -436,6 +436,7 @@ export class SessionStore {
               ? incoming.attentionTerminalAt
               : (markerSource.attentionTerminalAt ?? existing.attentionTerminalAt),
             seenThroughSeq,
+            seenRev: seen.seenRev,
             attentionUnseen: attentionSeq > seenThroughSeq,
           }
         : {}),

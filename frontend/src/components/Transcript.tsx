@@ -1391,6 +1391,12 @@ export function Transcript() {
   const prependAnchor = useRef<{ id: string; top: number } | null>(null);
   const messages = store.visibleMessages.value;
   const sessionId = store.activeSession.value?.id;
+  // Attention is only acknowledged while the completed outcome is in view.
+  useEffect(() => {
+    if (!sessionId) return;
+    store.attentionAck.setAtTail(sessionId, nearTail);
+    return () => store.attentionAck.setAtTail(sessionId, false);
+  }, [store, sessionId, nearTail]);
   useLayoutEffect(() => {
     const root = scroll.current;
     if (root) return bindTranscriptMedia(root);

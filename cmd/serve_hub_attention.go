@@ -448,6 +448,7 @@ type hubAttentionInboxItem struct {
 	NodeID        string    `json:"node_id"`
 	NodeName      string    `json:"node_name"`
 	SessionID     string    `json:"session_id"`
+	StoreID       string    `json:"store_instance_id,omitempty"`
 	SessionNumber int64     `json:"session_number,omitempty"`
 	Title         string    `json:"title"`
 	Outcome       string    `json:"outcome"`
@@ -600,7 +601,7 @@ func (s *hubServer) handleHubAttention(w http.ResponseWriter, r *http.Request) {
 		}
 		state.UnseenCount++
 		totalUnseen++
-		inbox = append(inbox, hubAttentionInboxItem{NodeID: activity.NodeID, NodeName: names[activity.NodeID], SessionID: activity.SessionID,
+		inbox = append(inbox, hubAttentionInboxItem{NodeID: activity.NodeID, NodeName: names[activity.NodeID], SessionID: activity.SessionID, StoreID: activity.StoreInstanceID,
 			SessionNumber: activity.SessionNumber, Title: title, Outcome: activity.Outcome, TerminalAt: activity.TerminalAt,
 			AttentionSeq: activity.AttentionSeq, ResumePath: s.hubSessionResumePath(activity.NodeID, activity.SessionID, activity.SessionNumber)})
 	}

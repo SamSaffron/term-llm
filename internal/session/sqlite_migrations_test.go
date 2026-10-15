@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -373,5 +374,114 @@ func TestSessionFreshMarkerIsStructurallySingleton(t *testing.T) {
 	}
 	if _, err := db.Exec(`INSERT INTO schema_version(id,version) VALUES(2,?)`, schemaVersion); err == nil {
 		t.Fatal("singleton marker accepted a second row")
+	}
+}
+
+// Faithful v64 fresh schema: the frozen v54 attention table and all v64
+// bootstrap indexes/triggers, including project ordering installed separately.
+func openAttentionV64DB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58 + agentRunSchemaV63); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCurrentSessionIndexes(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := createMessageCountTriggersV27(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(pinOrderSchemaV60); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateProjectOrderV61(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL);
+		INSERT INTO schema_version VALUES(1,64);
+		INSERT INTO sessions(id,provider,model) VALUES('old','test','test');
+		INSERT INTO session_attention(session_id, latest_attention_seq, seen_through_seq, seen_at, updated_at) VALUES('old',17,17,123,123)`); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func TestAttentionMigrationV65PreservesRowsAndMatchesFresh(t *testing.T) {
+	db := openAttentionV64DB(t)
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	var latest, through, rev, seenAt int64
+	var source sql.NullString
+	if err := db.QueryRow(`SELECT latest_attention_seq, seen_through_seq, seen_rev, seen_source, seen_at FROM session_attention WHERE session_id='old'`).Scan(&latest, &through, &rev, &source, &seenAt); err != nil {
+		t.Fatal(err)
+	}
+	if latest != 17 || through != 17 || rev != 0 || source.Valid || seenAt != 123 {
+		t.Fatalf("migration lost data: %d/%d/%d/%v/%d", latest, through, rev, source, seenAt)
+	}
+	fresh, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	if err := initSchema(fresh); err != nil {
+		t.Fatal(err)
+	}
+	want, err := sqliteutil.SchemaSignature(context.Background(), fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := sqliteutil.SchemaSignature(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		for _, entry := range want {
+			if !slices.Contains(got, entry) {
+				t.Errorf("fresh only: %s", entry)
+			}
+		}
+		for _, entry := range got {
+			if !slices.Contains(want, entry) {
+				t.Errorf("migrated only: %s", entry)
+			}
+		}
+	}
+}
+
+func TestAttentionMigrationV65RollbackAndRetry(t *testing.T) {
+	db := openAttentionV64DB(t)
+	original := migrations
+	defer func() { migrations = original }()
+	migrations = append([]migration(nil), original...)
+	last := len(migrations) - 1
+	up := migrations[last].up
+	migrations[last].up = func(db schemaExecutor) error {
+		if err := up(db); err != nil {
+			return err
+		}
+		return errors.New("injected v65 failure")
+	}
+	if err := initSchema(db); err == nil || !strings.Contains(err.Error(), "injected v65 failure") {
+		t.Fatalf("failure=%v", err)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 64 {
+		t.Fatalf("marker=%d err=%v", version, err)
+	}
+	if exists, err := sqliteutil.ColumnExists(db, "session_attention", "seen_rev"); err != nil || exists {
+		t.Fatalf("rolled-back column exists=%v err=%v", exists, err)
+	}
+	migrations = original
+	if err := initSchema(db); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 65 {
+		t.Fatalf("retried marker=%d err=%v", version, err)
 	}
 }

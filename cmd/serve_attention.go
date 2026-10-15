@@ -41,6 +41,14 @@ type markAttentionSeenRequest struct {
 }
 
 func (s *serveServer) handleSessionAttentionSeen(w http.ResponseWriter, r *http.Request, sessionID string) {
+	s.handleSessionAttentionWrite(w, r, sessionID, false)
+}
+
+func (s *serveServer) handleSessionAttentionUnseen(w http.ResponseWriter, r *http.Request, sessionID string) {
+	s.handleSessionAttentionWrite(w, r, sessionID, true)
+}
+
+func (s *serveServer) handleSessionAttentionWrite(w http.ResponseWriter, r *http.Request, sessionID string, unseen bool) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -62,7 +70,13 @@ func (s *serveServer) handleSessionAttentionSeen(w http.ResponseWriter, r *http.
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "store_instance_id and a positive through_seq are required")
 		return
 	}
-	state, err := store.MarkAttentionSeen(r.Context(), sessionID, request.StoreInstanceID, request.ThroughSeq)
+	var state session.AttentionState
+	var err error
+	if unseen {
+		state, err = store.MarkAttentionUnseen(r.Context(), sessionID, request.StoreInstanceID, request.ThroughSeq)
+	} else {
+		state, err = store.MarkAttentionSeenFrom(r.Context(), sessionID, request.StoreInstanceID, request.ThroughSeq, r.Header.Get("X-Term-LLM-Attention-Source"))
+	}
 	switch {
 	case errors.Is(err, session.ErrNotFound):
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
@@ -74,7 +88,9 @@ func (s *serveServer) handleSessionAttentionSeen(w http.ResponseWriter, r *http.
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to acknowledge attention")
 		return
 	}
-	s.attentionDiagnostics.SeenAcknowledgements.Add(1)
+	if !unseen {
+		s.attentionDiagnostics.SeenAcknowledgements.Add(1)
+	}
 	writeJSON(w, http.StatusOK, state)
 }
 

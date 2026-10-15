@@ -81,6 +81,8 @@ export class HubStore {
   readonly attentionError = signal('');
   readonly clearingAttention = signal(false);
   readonly attentionClearStatus = signal('');
+  /** Inbox rows with an in-flight per-item acknowledgement, keyed by {@link inboxItemKey}. */
+  readonly markingSeen = signal<ReadonlySet<string>>(new Set());
   readonly delegationError = signal('');
   readonly lastNodesRefresh = signal(0);
   readonly lastAttentionRefresh = signal(0);
@@ -221,6 +223,45 @@ export class HubStore {
           await this.refresh();
         } finally {
           if (!this.disposed && !this.cacheRevoked) this.clearingAttention.value = false;
+        }
+      }
+    }
+  }
+
+  /** Acknowledge one review item without visiting it. */
+  async markInboxItemSeen(item: HubAttentionInboxItem): Promise<void> {
+    const key = inboxItemKey(item);
+    if (
+      this.disposed ||
+      this.cacheRevoked ||
+      !item.store_instance_id ||
+      this.markingSeen.peek().has(key) ||
+      !this.attentionVerified.peek()
+    )
+      return;
+    this.markingSeen.value = new Set([...this.markingSeen.peek(), key]);
+    this.attentionClearStatus.value = '';
+    try {
+      await this.client.markAttentionSeen({
+        store_instance_id: item.store_instance_id,
+        session_id: item.session_id,
+        attention_seq: item.attention_seq,
+      });
+    } catch (error) {
+      if (this.disposed || this.cacheRevoked) return;
+      if (error instanceof HubAPIError && [401, 403].includes(error.status)) {
+        await this.invalidateCache();
+        return;
+      }
+      this.attentionClearStatus.value = `Could not mark “${item.title || item.session_id}” seen: ${message(error)}.`;
+    } finally {
+      if (!this.disposed && !this.cacheRevoked) {
+        try {
+          await this.refresh();
+        } finally {
+          const next = new Set(this.markingSeen.peek());
+          next.delete(key);
+          this.markingSeen.value = next;
         }
       }
     }
@@ -435,6 +476,7 @@ export class HubStore {
     this.attentionVerified.value = false;
     this.clearingAttention.value = false;
     this.attentionClearStatus.value = '';
+    this.markingSeen.value = new Set();
     this.delegationsVerified.value = false;
     this.cachedSections.value = [];
     this.initialLoading.value = false;
@@ -800,4 +842,11 @@ export class HubStore {
     this.interval = undefined;
     this.closeAddDialog();
   }
+}
+
+/** Stable identity of one review item across Hub refreshes. */
+export function inboxItemKey(item: HubAttentionInboxItem): string {
+  return [item.store_instance_id || item.node_id, item.session_id, item.attention_seq].join(
+    '\u0000',
+  );
 }

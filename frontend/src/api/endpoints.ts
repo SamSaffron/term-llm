@@ -177,6 +177,9 @@ export interface CreateBlankSessionResponse {
 
 const steeringAPI = () => import('./steering');
 const encoded = (value: string): string => encodeURIComponent(value);
+/** Which surface acknowledged attention; recorded for diagnostics only. */
+export type AttentionSeenSource = 'web' | 'manual';
+
 const sessionHeaders = (id: string): Record<string, string> => ({ 'X-Term-LLM-Session-ID': id });
 // Keep ordinary session POSTs identical; idempotent mutations and streams retain
 // their explicit request construction and policies below.
@@ -373,8 +376,23 @@ export const endpoints = (api: APIClient) => ({
       `/v1/sessions/${encoded(id)}/commit-operations/${encoded(operationId)}`,
       signal,
     ),
-  markAttentionSeen: (id: string, storeInstanceId: string, throughSeq: number) =>
-    sessionPost(api, id, 'attention/seen', {
+  markAttentionSeen: (
+    id: string,
+    storeInstanceId: string,
+    throughSeq: number,
+    source: AttentionSeenSource = 'web',
+  ) =>
+    api.json<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/attention/seen`,
+      {
+        method: 'POST',
+        headers: { ...sessionHeaders(id), 'X-Term-LLM-Attention-Source': source },
+        body: JSON.stringify({ store_instance_id: storeInstanceId, through_seq: throughSeq }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    ),
+  markAttentionUnseen: (id: string, storeInstanceId: string, throughSeq: number) =>
+    sessionPost(api, id, 'attention/unseen', {
       store_instance_id: storeInstanceId,
       through_seq: throughSeq,
     }),

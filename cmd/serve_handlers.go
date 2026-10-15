@@ -1330,6 +1330,8 @@ type webSessionEntry struct {
 	AttentionResponseID      string                   `json:"attention_response_id,omitempty"`
 	AttentionFinalRev        int64                    `json:"attention_final_rev,omitempty"`
 	SeenThroughSeq           int64                    `json:"seen_through_seq,omitempty"`
+	SeenRev                  int64                    `json:"seen_rev"`
+	SeenSource               string                   `json:"seen_source,omitempty"`
 	AttentionUnseen          bool                     `json:"attention_unseen,omitempty"`
 	AttentionOutcome         session.ResponseRunState `json:"attention_outcome,omitempty"`
 	AttentionTerminalAt      int64                    `json:"attention_terminal_at,omitempty"`
@@ -1439,6 +1441,8 @@ func applyWebSessionAttention(entry *webSessionEntry, attention session.Attentio
 	entry.AttentionResponseID = attention.ResponseID
 	entry.AttentionFinalRev = attention.FinalRev
 	entry.SeenThroughSeq = attention.SeenThroughSeq
+	entry.SeenRev = attention.SeenRev
+	entry.SeenSource = attention.SeenSource
 	entry.AttentionUnseen = attention.Unseen
 	entry.AttentionOutcome = attention.Outcome
 	if !attention.TerminalAt.IsZero() {
@@ -1755,6 +1759,8 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 		AttentionResponseID      string                   `json:"attention_response_id,omitempty"`
 		AttentionFinalRev        int64                    `json:"attention_final_rev,omitempty"`
 		SeenThroughSeq           int64                    `json:"seen_through_seq,omitempty"`
+		SeenRev                  int64                    `json:"seen_rev"`
+		SeenSource               string                   `json:"seen_source,omitempty"`
 		AttentionUnseen          bool                     `json:"attention_unseen,omitempty"`
 		AttentionOutcome         session.ResponseRunState `json:"attention_outcome,omitempty"`
 		AttentionTerminalAt      int64                    `json:"attention_terminal_at,omitempty"`
@@ -1829,6 +1835,8 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 			AttentionResponseID:      attention.ResponseID,
 			AttentionFinalRev:        attention.FinalRev,
 			SeenThroughSeq:           attention.SeenThroughSeq,
+			SeenRev:                  attention.SeenRev,
+			SeenSource:               attention.SeenSource,
 			AttentionUnseen:          attention.Unseen,
 			AttentionOutcome:         attention.Outcome,
 			AttentionTerminalAt:      attentionTerminalAt,
@@ -3052,7 +3060,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Term-LLM-Steering-Protocol, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Term-LLM-Steering-Protocol, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, X-Term-LLM-Attention-Source, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version, x-term-llm-response-status")
 		}
 

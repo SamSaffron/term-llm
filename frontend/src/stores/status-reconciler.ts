@@ -6,6 +6,7 @@ import type { Session } from '../domain/types';
 import type { SessionStore } from './session-store';
 import type { AppStoreServices } from './app-store-services';
 import { compareSessionsByActivity, listFrom } from './store-utils';
+import { mergeSeenState, parseSeenRev } from '../domain/attention-seen';
 
 export interface StatusRequestMetadata {
   generation: number;
@@ -58,7 +59,7 @@ export interface StatusReconcilerHost {
     statusRequestedAt: number,
   ) => void;
   eventFeedHealthy: () => boolean;
-  acknowledgeAttention?: () => Promise<void>;
+  acknowledgeAttention?: () => void;
 }
 
 /** Owns polling generations and reconciliation of authoritative server status. */
@@ -371,9 +372,15 @@ export class StatusReconciler {
         const attentionSeq = storeReplaced
           ? statusAttentionSeq
           : Math.max(session.attentionSeq || 0, statusAttentionSeq);
-        const seenThroughSeq = storeReplaced
-          ? Math.max(0, Number(status.seen_through_seq) || 0)
-          : Math.max(session.seenThroughSeq || 0, Number(status.seen_through_seq) || 0);
+        const seen = mergeSeenState(
+          session,
+          {
+            seenThroughSeq: Math.max(0, Number(status.seen_through_seq) || 0),
+            seenRev: parseSeenRev(status.seen_rev),
+          },
+          storeReplaced,
+        );
+        const seenThroughSeq = seen.seenThroughSeq;
         const markerAdvanced = storeReplaced || statusAttentionSeq >= (session.attentionSeq || 0);
         const hasAttentionStatus = Boolean(
           statusStoreInstanceId ||
@@ -422,6 +429,7 @@ export class StatusReconciler {
                 attentionStoreInstanceId: statusStoreInstanceId || session.attentionStoreInstanceId,
                 attentionSeq,
                 seenThroughSeq,
+                seenRev: seen.seenRev,
                 attentionUnseen: attentionSeq > seenThroughSeq,
                 attentionResponseId: storeReplaced
                   ? String(status.attention_response_id || '')
@@ -478,6 +486,7 @@ export class StatusReconciler {
           candidate.attentionStoreInstanceId === session.attentionStoreInstanceId &&
           candidate.attentionSeq === session.attentionSeq &&
           candidate.seenThroughSeq === session.seenThroughSeq &&
+          candidate.seenRev === session.seenRev &&
           candidate.attentionUnseen === session.attentionUnseen &&
           candidate.attentionResponseId === session.attentionResponseId &&
           candidate.attentionFinalRev === session.attentionFinalRev &&
@@ -513,7 +522,7 @@ export class StatusReconciler {
         metadata.requestedAt,
       );
     }
-    if (this.host.acknowledgeAttention) void this.host.acknowledgeAttention();
+    this.host.acknowledgeAttention?.();
     this.unknownActiveSessionIds = unknownActive;
     this.coordinator.lastAppliedGeneration = metadata.generation;
     this.coordinator.lastAppliedRequestedAt = metadata.requestedAt;

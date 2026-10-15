@@ -13,6 +13,11 @@ func (s *serveServer) routeSessionCore(w http.ResponseWriter, r *http.Request, s
 		return true
 	}
 
+	if suffix == "attention/unseen" {
+		s.handleSessionAttentionUnseen(w, r, sessionID)
+		return true
+	}
+
 	if suffix == "attention/seen" {
 		s.handleSessionAttentionSeen(w, r, sessionID)
 		return true

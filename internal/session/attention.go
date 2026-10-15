@@ -394,7 +394,7 @@ func scanAttentionState(row interface{ Scan(...any) error }) (AttentionState, er
 	var state AttentionState
 	var terminalAt, seenAt sql.NullInt64
 	if err := row.Scan(&state.SessionID, &state.LatestAttentionSeq, &state.ResponseID, &state.RunEpoch,
-		&state.Outcome, &state.StartedRev, &state.FinalRev, &terminalAt, &state.SeenThroughSeq, &seenAt); err != nil {
+		&state.Outcome, &state.StartedRev, &state.FinalRev, &terminalAt, &state.SeenThroughSeq, &seenAt, &state.SeenRev, &state.SeenSource); err != nil {
 		return AttentionState{}, err
 	}
 	state.TerminalAt = timeFromMillis(terminalAt)
@@ -405,7 +405,7 @@ func scanAttentionState(row interface{ Scan(...any) error }) (AttentionState, er
 
 func getAttentionTx(ctx context.Context, tx *sql.Tx, sessionID string) (AttentionState, error) {
 	return scanAttentionState(tx.QueryRowContext(ctx, `SELECT session_id, latest_attention_seq, response_id, run_epoch,
-		outcome, started_rev, final_rev, terminal_at, seen_through_seq, seen_at
+		outcome, started_rev, final_rev, terminal_at, seen_through_seq, seen_at, seen_rev, COALESCE(seen_source, '')
 		FROM session_attention WHERE session_id = ?`, sessionID))
 }
 
@@ -644,7 +644,7 @@ func (s *SQLiteStore) GetAttentionBatch(ctx context.Context, sessionIDs []string
 			placeholders = append(placeholders, "?")
 		}
 		rows, queryErr := s.queryDB().QueryContext(ctx, `SELECT session_id, latest_attention_seq, response_id, run_epoch,
-			outcome, started_rev, final_rev, terminal_at, seen_through_seq, seen_at
+			outcome, started_rev, final_rev, terminal_at, seen_through_seq, seen_at, seen_rev, COALESCE(seen_source, '')
 			FROM session_attention WHERE session_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 		if queryErr != nil {
 			return nil, fmt.Errorf("get session attention batch: %w", queryErr)
@@ -667,7 +667,7 @@ func (s *SQLiteStore) GetAttentionBatch(ctx context.Context, sessionIDs []string
 
 func (s *SQLiteStore) GetAttention(ctx context.Context, sessionID string) (AttentionState, error) {
 	state, err := scanAttentionState(s.queryDB().QueryRowContext(ctx, `SELECT session_id, latest_attention_seq, response_id,
-		run_epoch, outcome, started_rev, final_rev, terminal_at, seen_through_seq, seen_at
+		run_epoch, outcome, started_rev, final_rev, terminal_at, seen_through_seq, seen_at, seen_rev, COALESCE(seen_source, '')
 		FROM session_attention WHERE session_id = ?`, sessionID))
 	if errors.Is(err, sql.ErrNoRows) {
 		var exists int
@@ -684,7 +684,26 @@ func (s *SQLiteStore) GetAttention(ctx context.Context, sessionID string) (Atten
 	return state, err
 }
 
+// Attention seen sources record which surface advanced the watermark.
+const (
+	AttentionSourceWeb    = "web"
+	AttentionSourceTUI    = "tui"
+	AttentionSourceHub    = "hub"
+	AttentionSourceManual = "manual"
+)
+
 func (s *SQLiteStore) MarkAttentionSeen(ctx context.Context, sessionID, storeInstanceID string, throughSeq int64) (AttentionState, error) {
+	return s.MarkAttentionSeenFrom(ctx, sessionID, storeInstanceID, throughSeq, "")
+}
+
+// MarkAttentionSeenFrom advances a captured lifecycle marker. Sources describe
+// the writer, not a separate user or authorization boundary.
+func (s *SQLiteStore) MarkAttentionSeenFrom(ctx context.Context, sessionID, storeInstanceID string, throughSeq int64, source string) (AttentionState, error) {
+	switch source {
+	case AttentionSourceWeb, AttentionSourceTUI, AttentionSourceHub, AttentionSourceManual:
+	default:
+		source = ""
+	}
 	if throughSeq <= 0 {
 		return AttentionState{}, ErrAttentionConflict
 	}
@@ -715,15 +734,19 @@ func (s *SQLiteStore) MarkAttentionSeen(ctx context.Context, sessionID, storeIns
 		return AttentionState{}, ErrAttentionConflict
 	}
 	if throughSeq > state.SeenThroughSeq {
-		var exactMarker int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM serve_response_lifecycle WHERE session_id = ? AND attention_seq = ?`, sessionID, throughSeq).Scan(&exactMarker); errors.Is(err, sql.ErrNoRows) {
-			return AttentionState{}, ErrAttentionConflict
-		} else if err != nil {
-			return AttentionState{}, err
+		// The latest marker is authoritative on its own; retention may have
+		// pruned its lifecycle row after a manual unseen reopened it.
+		if throughSeq != state.LatestAttentionSeq {
+			var exactMarker int
+			if err := tx.QueryRowContext(ctx, `SELECT 1 FROM serve_response_lifecycle WHERE session_id = ? AND attention_seq = ?`, sessionID, throughSeq).Scan(&exactMarker); errors.Is(err, sql.ErrNoRows) {
+				return AttentionState{}, ErrAttentionConflict
+			} else if err != nil {
+				return AttentionState{}, err
+			}
 		}
 		now := time.Now().UTC()
 		if _, err := tx.ExecContext(ctx, `UPDATE session_attention SET seen_through_seq = MAX(seen_through_seq, ?),
-			seen_at = ?, updated_at = ? WHERE session_id = ?`, throughSeq, unixMilli(now), unixMilli(now), sessionID); err != nil {
+			seen_rev = seen_rev + 1, seen_source = ?, seen_at = ?, updated_at = ? WHERE session_id = ?`, throughSeq, source, unixMilli(now), unixMilli(now), sessionID); err != nil {
 			return AttentionState{}, err
 		}
 		if _, err := insertAttentionChange(ctx, tx, sessionID, state.FinalRev); err != nil {
@@ -739,6 +762,55 @@ func (s *SQLiteStore) MarkAttentionSeen(ctx context.Context, sessionID, storeIns
 		return AttentionState{}, err
 	}
 	state.StoreInstanceID = currentStoreID
+	return state, nil
+}
+
+// MarkAttentionUnseen reopens only the latest, already acknowledged completion.
+// Clear seen_at because it no longer describes an acknowledgement of the latest
+// marker. Use the previous lifecycle marker, not an arbitrary change-log offset.
+func (s *SQLiteStore) MarkAttentionUnseen(ctx context.Context, sessionID, storeInstanceID string, throughSeq int64) (AttentionState, error) {
+	currentStoreID, err := s.StoreInstanceID(ctx)
+	if err != nil {
+		return AttentionState{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AttentionState{}, err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id = ?`, sessionID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return AttentionState{}, ErrNotFound
+	} else if err != nil {
+		return AttentionState{}, err
+	}
+	state, err := getAttentionTx(ctx, tx, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AttentionState{}, ErrAttentionConflict
+	} else if err != nil {
+		return AttentionState{}, err
+	}
+	if storeInstanceID != currentStoreID || throughSeq <= 0 || throughSeq != state.LatestAttentionSeq || state.SeenThroughSeq < throughSeq {
+		return AttentionState{}, ErrAttentionConflict
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE session_attention SET seen_through_seq = (
+		SELECT COALESCE(MAX(attention_seq), 0) FROM serve_response_lifecycle WHERE session_id = ? AND attention_seq < ?
+	), seen_rev = seen_rev + 1, seen_source = 'manual', seen_at = NULL, updated_at = ? WHERE session_id = ?`,
+		sessionID, throughSeq, unixMilli(time.Now().UTC()), sessionID); err != nil {
+		return AttentionState{}, err
+	}
+	if _, err := insertAttentionChange(ctx, tx, sessionID, state.FinalRev); err != nil {
+		return AttentionState{}, err
+	}
+	state, err = getAttentionTx(ctx, tx, sessionID)
+	if err != nil {
+		return AttentionState{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AttentionState{}, err
+	}
+	state.StoreInstanceID = currentStoreID
+	state.Changed = true
 	return state, nil
 }
 
@@ -812,7 +884,7 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 		rows, err = tx.QueryContext(ctx, `SELECT a.session_id, COALESCE(s.number, 0), a.response_id, COALESCE(l.state, a.outcome), a.latest_attention_seq,
 			a.started_rev, a.final_rev, COALESCE(s.generated_short_title, s.name, ''),
 			COALESCE(s.generated_long_title, ''), COALESCE(s.project_id, ''), a.outcome,
-			COALESCE(l.started_at, a.terminal_at, 0), a.terminal_at, l.lease_expires_at, 0, '', NULL, 0
+			COALESCE(l.started_at, a.terminal_at, 0), a.terminal_at, l.lease_expires_at, 0, '', NULL, 0, a.seen_through_seq, a.seen_rev, COALESCE(a.seen_source, '')
 			FROM session_attention a JOIN sessions s ON s.id = a.session_id
 			LEFT JOIN serve_response_lifecycle l ON l.response_id = a.response_id
 			WHERE a.latest_attention_seq > a.seen_through_seq AND s.parent_id IS NULL
@@ -821,8 +893,9 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 	case AttentionKindRunning:
 		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, COALESCE(s.number, 0), l.response_id, l.state, 0, l.started_rev, l.final_rev,
 			COALESCE(s.generated_short_title, s.name, ''), COALESCE(s.generated_long_title, ''),
-			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at, 0, '', NULL, 0
+			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at, 0, '', NULL, 0, COALESCE(a.seen_through_seq, 0), COALESCE(a.seen_rev, 0), COALESCE(a.seen_source, '')
 			FROM serve_response_lifecycle l JOIN sessions s ON s.id = l.session_id
+			LEFT JOIN session_attention a ON a.session_id = l.session_id
 			WHERE l.state = 'running' AND s.parent_id IS NULL
 			  AND NOT EXISTS (SELECT 1 FROM serve_response_lifecycle newer
 			      WHERE newer.session_id = l.session_id AND newer.state = 'running'
@@ -833,8 +906,9 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, COALESCE(s.number, 0), l.response_id, l.state, 0, l.started_rev, l.final_rev,
 			COALESCE(s.generated_short_title, s.name, ''), COALESCE(s.generated_long_title, ''),
 			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at,
-			l.interaction_required_count, l.interaction_required_kinds, l.interaction_required_since, l.interaction_state_rev
+			l.interaction_required_count, l.interaction_required_kinds, l.interaction_required_since, l.interaction_state_rev, COALESCE(a.seen_through_seq, 0), COALESCE(a.seen_rev, 0), COALESCE(a.seen_source, '')
 			FROM serve_response_lifecycle l JOIN sessions s ON s.id = l.session_id
+			LEFT JOIN session_attention a ON a.session_id = l.session_id
 			WHERE l.state = 'running' AND l.interaction_required_count > 0 AND s.parent_id IS NULL
 			  AND NOT EXISTS (SELECT 1 FROM serve_response_lifecycle newer
 			      WHERE newer.session_id = l.session_id AND newer.state = 'running'
@@ -857,7 +931,7 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 		if err := rows.Scan(&item.SessionID, &item.SessionNumber, &item.ResponseID, &item.LifecycleState, &item.AttentionSeq,
 			&item.StartedRev, &item.FinalRev, &item.ShortTitle, &item.LongTitle, &item.ProjectID,
 			&item.Outcome, &startedAt, &terminalAt, &leaseExpires, &item.PendingInteractionCount,
-			&kindsJSON, &requiredSince, &item.InteractionStateRev); err != nil {
+			&kindsJSON, &requiredSince, &item.InteractionStateRev, &item.SeenThroughSeq, &item.SeenRev, &item.SeenSource); err != nil {
 			return AttentionPage{}, err
 		}
 		item.Kind = opts.Kind

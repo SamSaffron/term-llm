@@ -243,6 +243,21 @@ function SessionMenu({
               Move down
             </button>
           )}
+          {session.attentionStoreInstanceId && Boolean(session.attentionSeq) && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const change = session.attentionUnseen
+                  ? store.markSessionSeen(session)
+                  : store.markSessionUnread(session);
+                void change.catch((error) => store.toast(error, 'error'));
+                onOpenChange(false);
+              }}
+            >
+              {session.attentionUnseen ? 'Mark as seen' : 'Mark as unread'}
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

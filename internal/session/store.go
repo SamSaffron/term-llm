@@ -290,6 +290,8 @@ type AttentionState struct {
 	FinalRev           int64            `json:"final_rev,omitempty"`
 	TerminalAt         time.Time        `json:"terminal_at,omitempty"`
 	SeenThroughSeq     int64            `json:"seen_through_seq"`
+	SeenRev            int64            `json:"seen_rev"`
+	SeenSource         string           `json:"seen_source,omitempty"`
 	SeenAt             time.Time        `json:"seen_at,omitempty"`
 	Unseen             bool             `json:"attention_unseen"`
 	Changed            bool             `json:"-"`
@@ -311,6 +313,9 @@ type AttentionListOptions struct {
 }
 
 type AttentionItem struct {
+	SeenThroughSeq           int64            `json:"seen_through_seq"`
+	SeenRev                  int64            `json:"seen_rev"`
+	SeenSource               string           `json:"seen_source,omitempty"`
 	SessionID                string           `json:"session_id"`
 	SessionNumber            int64            `json:"session_number,omitempty"`
 	ResponseID               string           `json:"response_id"`
@@ -376,6 +381,8 @@ type ResponseRunInteractionStore interface {
 // AttentionStore owns durable terminal markers and exact-sequence acknowledgements.
 type AttentionStore interface {
 	MarkAttentionSeen(context.Context, string, string, int64) (AttentionState, error)
+	MarkAttentionSeenFrom(context.Context, string, string, int64, string) (AttentionState, error)
+	MarkAttentionUnseen(context.Context, string, string, int64) (AttentionState, error)
 	GetAttention(context.Context, string) (AttentionState, error)
 	ListAttention(context.Context, AttentionListOptions) (AttentionPage, error)
 	StoreInstanceID(context.Context) (string, error)
@@ -558,6 +565,20 @@ func (s *loggingAttentionStore) MarkAttentionSeen(ctx context.Context, sessionID
 	result, err := s.store.MarkAttentionSeen(ctx, sessionID, storeID, seq)
 	if err != nil && !errors.Is(err, ErrAttentionConflict) && !errors.Is(err, ErrNotFound) {
 		s.logger.logOnce("MarkAttentionSeen", err)
+	}
+	return result, err
+}
+func (s *loggingAttentionStore) MarkAttentionSeenFrom(ctx context.Context, sessionID, storeID string, seq int64, source string) (AttentionState, error) {
+	result, err := s.store.MarkAttentionSeenFrom(ctx, sessionID, storeID, seq, source)
+	if err != nil && !errors.Is(err, ErrAttentionConflict) && !errors.Is(err, ErrNotFound) {
+		s.logger.logOnce("MarkAttentionSeenFrom", err)
+	}
+	return result, err
+}
+func (s *loggingAttentionStore) MarkAttentionUnseen(ctx context.Context, sessionID, storeID string, seq int64) (AttentionState, error) {
+	result, err := s.store.MarkAttentionUnseen(ctx, sessionID, storeID, seq)
+	if err != nil && !errors.Is(err, ErrAttentionConflict) && !errors.Is(err, ErrNotFound) {
+		s.logger.logOnce("MarkAttentionUnseen", err)
 	}
 	return result, err
 }

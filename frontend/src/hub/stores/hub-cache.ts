@@ -94,6 +94,7 @@ export function cacheAttention(data: HubCacheData['attention']): HubCacheData['a
     })),
     inbox: data.inbox.slice(0, 50).map((item) => ({
       ...summary(item),
+      store_instance_id: text(item.store_instance_id),
       outcome: text(item.outcome),
       attention_seq: item.attention_seq,
       terminal_at: item.terminal_at,

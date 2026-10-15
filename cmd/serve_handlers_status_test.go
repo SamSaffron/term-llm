@@ -382,7 +382,7 @@ var sessionsStatusEntryKeys = map[string]bool{
 	"client_message_id": true, "anchor_row_id": true, "transcript_rev": true, "message_count": true,
 	"last_message_at": true, "transcript_updated_at": true, "attention_store_instance_id": true,
 	"attention_seq": true, "attention_response_id": true, "attention_final_rev": true,
-	"seen_through_seq": true, "attention_unseen": true, "attention_outcome": true,
+	"seen_through_seq": true, "seen_rev": true, "seen_source": true, "attention_unseen": true, "attention_outcome": true,
 	"attention_terminal_at": true, "interaction_required": true, "interaction_response_id": true,
 	"interaction_state_rev": true, "pending_interaction_count": true, "pending_interaction_kinds": true,
 	"interaction_required_since": true,

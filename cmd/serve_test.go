@@ -877,7 +877,7 @@ func TestServeCORSExposesUIVersionHeader(t *testing.T) {
 		}
 	}
 	allowHeaders := strings.ToLower(rr.Header().Get("Access-Control-Allow-Headers"))
-	for _, name := range []string{"x-term-llm-ui-version", strings.ToLower(requestSessionIDHeader), legacyRequestSessionIDHeader} {
+	for _, name := range []string{"x-term-llm-ui-version", "x-term-llm-attention-source", strings.ToLower(requestSessionIDHeader), legacyRequestSessionIDHeader} {
 		if !strings.Contains(allowHeaders, strings.ToLower(name)) {
 			t.Fatalf("Access-Control-Allow-Headers = %q, want %s", allowHeaders, name)
 		}

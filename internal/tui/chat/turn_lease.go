@@ -180,9 +180,9 @@ func (l *turnLease) lost() {
 // release stops renewals and finalizes the durable lease so another process may
 // own the next turn. It is best effort: an unreachable store leaves a lease that
 // expires on its own.
-func (l *turnLease) release(outcome session.ResponseRunState) {
+func (l *turnLease) release(outcome session.ResponseRunState) (finalized *attentionFinalizedMsg) {
 	if l == nil {
-		return
+		return nil
 	}
 	l.released.Do(func() {
 		close(l.stop)
@@ -201,13 +201,11 @@ func (l *turnLease) release(outcome session.ResponseRunState) {
 			FinalRev:        rev,
 			EndedAt:         time.Now(),
 		})
-		// The terminal marker exists for surfaces that were not watching. This
-		// process showed the outcome as it happened, so do not leave an unseen
-		// badge behind in the web sidebar or hub for every terminal turn.
 		if err == nil && attention.Changed && l.attention != nil {
-			_, _ = l.attention.MarkAttentionSeen(ctx, l.sessionID, attention.StoreInstanceID, attention.LatestAttentionSeq)
+			finalized = &attentionFinalizedMsg{sessionID: l.sessionID, state: attention, store: l.attention}
 		}
 	})
+	return finalized
 }
 
 func (l *turnLease) transcriptRev(ctx context.Context) (int64, bool) {
@@ -238,7 +236,11 @@ func (m *Model) releaseTurnLease(lease *turnLease, outcome session.ResponseRunSt
 	}
 	m.pendingTurnLease.CompareAndSwap(lease, nil)
 	m.activeTurnLease.CompareAndSwap(lease, nil)
-	lease.release(outcome)
+	if finalized := lease.release(outcome); finalized != nil && m.program != nil {
+		// Cleanup can run on Update as well as a worker. Never block Update on
+		// Program.Send, and let the currently displayed model decide what was seen.
+		go m.program.Send(*finalized)
+	}
 }
 
 func turnLeaseOutcome(runErr error) session.ResponseRunState {

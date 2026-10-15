@@ -181,7 +181,7 @@ func (s *hubServer) findLatestDelegationRun(ctx context.Context, target hub.Node
 // the node's base path) with the node's token injected server-side. It uses
 // the hub's direct-dial client: routing token-carrying requests through an
 // environment HTTP proxy would leak node tokens.
-func (s *hubServer) doNodeJSON(ctx context.Context, node hub.Node, method, path string, payload, out any) error {
+func (s *hubServer) doNodeJSON(ctx context.Context, node hub.Node, method, path string, payload, out any, headers ...http.Header) error {
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
@@ -202,6 +202,11 @@ func (s *hubServer) doNodeJSON(ctx context.Context, node hub.Node, method, path 
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for _, header := range headers {
+		for key, values := range header {
+			req.Header[key] = append([]string(nil), values...)
+		}
 	}
 	if node.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+node.Token)

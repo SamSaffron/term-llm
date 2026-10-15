@@ -484,3 +484,105 @@ func TestReadOnlyStoreDoesNotAdvertiseDurableAttention(t *testing.T) {
 		t.Fatal("read-only store advertised response interaction writes")
 	}
 }
+
+func TestAttentionReseenAfterLifecycleRetention(t *testing.T) {
+	store, ctx, id := newAttentionTestStore(t)
+	lease := admitAttentionRun(t, store, ctx, id, "retained", "owner", 0)
+	latest, err := store.FinalizeResponseRun(ctx, ResponseRunTerminal{ResponseID: "retained", OwnerInstanceID: "owner", FencingToken: lease.FencingToken, Outcome: ResponseRunCompleted, FinalRev: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkAttentionSeenFrom(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq, AttentionSourceWeb); err != nil {
+		t.Fatal(err)
+	}
+	// Retention prunes seen terminal lifecycle rows, including the latest.
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM serve_response_lifecycle WHERE session_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkAttentionUnseen(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq); err != nil {
+		t.Fatalf("unseen after retention: %v", err)
+	}
+	seen, err := store.MarkAttentionSeenFrom(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq, AttentionSourceManual)
+	if err != nil || seen.Unseen || seen.SeenThroughSeq != latest.LatestAttentionSeq {
+		t.Fatalf("re-seen after retention = %+v, %v", seen, err)
+	}
+}
+
+func TestAttentionManualUnseenRevisions(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			store, ctx, id := newAttentionTestStore(t)
+			var latest AttentionState
+			var previous int64
+			for i := 0; i < count; i++ {
+				previous = latest.LatestAttentionSeq
+				response := fmt.Sprintf("manual-%d", i)
+				lease := admitAttentionRun(t, store, ctx, id, response, "owner", int64(i))
+				var err error
+				latest, err = store.FinalizeResponseRun(ctx, ResponseRunTerminal{ResponseID: response, OwnerInstanceID: "owner", FencingToken: lease.FencingToken, Outcome: ResponseRunCompleted, FinalRev: int64(i + 1)})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.MarkAttentionUnseen(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq); !errors.Is(err, ErrAttentionConflict) {
+				t.Fatalf("not-yet-seen unseen: %v", err)
+			}
+			seen, err := store.MarkAttentionSeenFrom(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq, "web")
+			if err != nil || seen.SeenRev != 1 || seen.SeenSource != "web" || seen.Unseen || !seen.Changed {
+				t.Fatalf("seen=%+v err=%v", seen, err)
+			}
+			noop, err := store.MarkAttentionSeenFrom(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq, "hub")
+			if err != nil || noop.SeenRev != 1 || noop.SeenSource != "web" || noop.Changed {
+				t.Fatalf("noop=%+v err=%v", noop, err)
+			}
+			for _, tc := range []struct {
+				store string
+				seq   int64
+			}{{"wrong", latest.LatestAttentionSeq}, {latest.StoreInstanceID, latest.LatestAttentionSeq + 1}, {latest.StoreInstanceID, 0}, {latest.StoreInstanceID, previous}} {
+				if _, err := store.MarkAttentionUnseen(ctx, id, tc.store, tc.seq); !errors.Is(err, ErrAttentionConflict) {
+					t.Fatalf("conflict %+v: %v", tc, err)
+				}
+			}
+			unseen, err := store.MarkAttentionUnseen(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq)
+			if err != nil || unseen.SeenThroughSeq != previous || unseen.SeenRev != 2 || unseen.SeenSource != "manual" || !unseen.Unseen || !unseen.Changed || !unseen.SeenAt.IsZero() {
+				t.Fatalf("unseen=%+v previous=%d err=%v", unseen, previous, err)
+			}
+			page, err := store.ListAttention(ctx, AttentionListOptions{Kind: AttentionKindUnseen})
+			if err != nil || len(page.Items) != 1 || page.Items[0].SeenRev != 2 || page.Items[0].SeenSource != "manual" || page.Items[0].SeenThroughSeq != previous {
+				t.Fatalf("unseen page=%+v err=%v", page, err)
+			}
+			seen, err = store.MarkAttentionSeenFrom(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq, "unknown")
+			if err != nil || seen.SeenRev != 3 || seen.SeenSource != "" || seen.Unseen {
+				t.Fatalf("re-seen=%+v err=%v", seen, err)
+			}
+			batch, err := store.GetAttentionBatch(ctx, []string{id})
+			if err != nil || batch[id].SeenRev != 3 {
+				t.Fatalf("batch=%+v err=%v", batch, err)
+			}
+			if _, err := store.MarkAttentionUnseen(ctx, "missing", latest.StoreInstanceID, latest.LatestAttentionSeq); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("missing session: %v", err)
+			}
+		})
+	}
+}
+
+func TestAttentionSeenSources(t *testing.T) {
+	for _, source := range []string{"web", "tui", "hub", "manual", "", "invalid"} {
+		t.Run(source, func(t *testing.T) {
+			store, ctx, id := newAttentionTestStore(t)
+			lease := admitAttentionRun(t, store, ctx, id, "source", "owner", 0)
+			latest, err := store.FinalizeResponseRun(ctx, ResponseRunTerminal{ResponseID: "source", OwnerInstanceID: "owner", FencingToken: lease.FencingToken, Outcome: ResponseRunCompleted})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := store.MarkAttentionSeenFrom(ctx, id, latest.StoreInstanceID, latest.LatestAttentionSeq, source)
+			want := source
+			if source == "invalid" {
+				want = ""
+			}
+			if err != nil || state.SeenSource != want {
+				t.Fatalf("source=%q state=%+v err=%v", source, state, err)
+			}
+		})
+	}
+}
