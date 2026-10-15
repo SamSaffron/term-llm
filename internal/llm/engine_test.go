@@ -6932,3 +6932,88 @@ func TestEnginePendingServiceTierCleanup(t *testing.T) {
 		})
 	}
 }
+
+// A forced tool that was called satisfies the force: the following text turn is
+// the answer and must not be re-forced and streamed a second time.
+func TestEngineForcedToolChoiceDoesNotRepeatFinalAnswer(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := NewMockProvider("forced")
+	provider.AddToolCall("c1", name, map[string]any{})
+	provider.AddTextResponse("final")
+	provider.AddTextResponse("final-again")
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+	if got := len(provider.RecordedRequests()); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (forced tool, answer)", got)
+	}
+	if text.String() != "final" {
+		t.Fatalf("streamed text = %q, want %q", text.String(), "final")
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
+
+// A forced tool the model ignored still earns exactly one retry turn. Note the
+// retry currently runs with tool_choice auto (follow-up turns reset to auto in
+// openProviderTurnStream); this pins the retry count, not re-forcing.
+func TestEngineForcedToolChoiceRetriesOnceWhenIgnored(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := NewMockProvider("ignored")
+	provider.AddTextResponse("ignored the force")
+	provider.AddToolCall("c1", name, map[string]any{})
+	provider.AddTextResponse("final")
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d, want 3", len(requests))
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}

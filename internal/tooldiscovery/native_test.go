@@ -485,3 +485,52 @@ func TestForcedNativeUnsupportedProviderFailsClearly(t *testing.T) {
 		t.Fatalf("unsupported forced native reached provider: %d requests", len(provider.requests))
 	}
 }
+
+// A forced tool_search is satisfied by a native discovery call. The engine must
+// keep that discovery in history and move on, not treat the discovery-only turn
+// as an ignored force and re-issue the search with the discovery discarded.
+func TestNativeForcedToolSearchKeepsDiscoveryAndDoesNotRepeat(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
+		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+	}}
+	engine := llm.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		EnableToolDiscovery: true,
+		SessionID:           "forced-native",
+		Model:               "native-model",
+		Messages:            []llm.Message{llm.UserText("perform the special action")},
+		Tools:               []llm.ToolSpec{(&SearchTool{}).Spec()},
+		ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName},
+		MaxTurns:            4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStream(t, stream)
+
+	if len(provider.requests) != 3 {
+		t.Fatalf("provider requests = %d, want 3 (search, tool call, answer)", len(provider.requests))
+	}
+	second := provider.requests[1]
+	if second.ToolChoice.Mode == llm.ToolChoiceName && second.ToolChoice.Name == ToolSearchName {
+		t.Fatalf("second request re-forced tool_search: %+v", second.ToolChoice)
+	}
+	var discoverySeen bool
+	for _, message := range second.Messages {
+		for _, part := range message.Parts {
+			if part.Type == llm.PartDiscoveryCall && part.DiscoveryCall != nil && part.DiscoveryCall.ID == "search-1" {
+				discoverySeen = true
+			}
+		}
+	}
+	if !discoverySeen {
+		t.Fatal("second request dropped the forced turn's discovery call from history")
+	}
+}

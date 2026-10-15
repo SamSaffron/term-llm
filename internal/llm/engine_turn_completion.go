@@ -66,6 +66,14 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 		*c.restoredToolChoice = restoredToolChoice
 		compaction.req = c.req
 	}()
+	// A forced tool_choice is satisfied by any tool use, including a native
+	// discovery call (which is not an ordinary tool call). Spend the one-time
+	// restore so a later text-only turn is accepted as the answer instead of
+	// being re-forced, which streamed the final answer twice and, for native
+	// discovery, discarded the discovery and repeated the search.
+	if len(toolCalls) > 0 || syncToolsExecuted || partsContainDiscoveryCall(providerReplayParts) {
+		restoredToolChoice = true
+	}
 	if len(toolCalls) == 0 && !syncToolsExecuted {
 		if recoveredToolWork && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && len(providerReplayParts) == 0 && recoveryPriorErr != nil {
 			return true, recoveryPriorErr
@@ -569,4 +577,13 @@ func (e *Engine) completeAsyncTurn(c *engineTurnCompletion) error {
 		}
 	}
 	return errEngineTurnAdvance
+}
+
+func partsContainDiscoveryCall(parts []Part) bool {
+	for _, part := range parts {
+		if part.Type == PartDiscoveryCall && part.DiscoveryCall != nil {
+			return true
+		}
+	}
+	return false
 }
