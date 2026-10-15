@@ -6978,9 +6978,8 @@ func TestEngineForcedToolChoiceDoesNotRepeatFinalAnswer(t *testing.T) {
 	}
 }
 
-// A forced tool the model ignored still earns exactly one retry turn. Note the
-// retry currently runs with tool_choice auto (follow-up turns reset to auto in
-// openProviderTurnStream); this pins the retry count, not re-forcing.
+// A forced tool the model ignored earns exactly one retry, and that retry keeps
+// the force (follow-up turns otherwise reset to auto).
 func TestEngineForcedToolChoiceRetriesOnceWhenIgnored(t *testing.T) {
 	tool := &countingTool{}
 	registry := NewToolRegistry()
@@ -7013,7 +7012,56 @@ func TestEngineForcedToolChoiceRetriesOnceWhenIgnored(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("provider requests = %d, want 3", len(requests))
 	}
+	if requests[1].ToolChoice.Mode != ToolChoiceName || requests[1].ToolChoice.Name != name {
+		t.Fatalf("retry tool_choice = %+v, want forced %q", requests[1].ToolChoice, name)
+	}
+	if requests[2].ToolChoice.Mode != ToolChoiceAuto {
+		t.Fatalf("turn after the forced tool ran: tool_choice = %+v, want auto", requests[2].ToolChoice)
+	}
 	if tool.calls.Load() != 1 {
 		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
+
+// A force ignored twice is retried only once; the run then continues with auto
+// and accepts the text answer rather than looping.
+func TestEngineForcedToolChoiceRetriesOnlyOnce(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := NewMockProvider("ignored-twice")
+	provider.AddTextResponse("ignored once")
+	provider.AddTextResponse("ignored twice")
+	provider.AddTextResponse("unexpected third")
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2 (original, one forced retry)", len(requests))
+	}
+	if requests[1].ToolChoice.Mode != ToolChoiceName || requests[1].ToolChoice.Name != name {
+		t.Fatalf("retry tool_choice = %+v, want forced %q", requests[1].ToolChoice, name)
 	}
 }

@@ -25,7 +25,7 @@ func (e *Engine) requestNativeToolFallback(req *Request, planner ToolSurfacePlan
 	return fallback, reason
 }
 
-func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send eventSender, task *restart.Task, checkpointErr error, baseMessageCount, maxTurns int, planner ToolSurfacePlanner, runID string, modelSwitchOrdinal *int, originalToolChoice ToolChoice, originalTools *[]ToolSpec, compaction *runCompactionController, requestNativeFallback func(error, bool) (bool, string), attempt int, providerInFlight *bool) (Stream, error) {
+func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send eventSender, task *restart.Task, checkpointErr error, baseMessageCount, maxTurns int, planner ToolSurfacePlanner, runID string, modelSwitchOrdinal *int, originalToolChoice ToolChoice, forcedChoice *forcedChoiceState, originalTools *[]ToolSpec, compaction *runCompactionController, requestNativeFallback func(error, bool) (bool, string), attempt int, providerInFlight *bool) (Stream, error) {
 	if task.Pending() && checkpointErr == nil {
 		return nil, e.suspend(*req, attempt, nil, false, baseMessageCount)
 	}
@@ -86,8 +86,14 @@ func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send 
 			req.ToolChoice = *req.LastTurnToolChoice
 		}
 	} else if attempt > 0 && !compaction.softActive {
-		// Ensure we are in Auto mode for follow-up turns in the loop
-		req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
+		if *forcedChoice == forcedChoiceRetryNext {
+			// The previous turn ignored a forced tool_choice; retry it forced, once.
+			req.ToolChoice = originalToolChoice
+			*forcedChoice = forcedChoiceSpent
+		} else {
+			// Ensure we are in Auto mode for follow-up turns in the loop
+			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
+		}
 	}
 
 	if err := compaction.emitResumePhase(); err != nil {

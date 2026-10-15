@@ -2773,7 +2773,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (re
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
 	originalTools := append([]ToolSpec(nil), req.Tools...)
-	restoredToolChoice := false
+	forcedChoice := forcedChoiceUnspent
 
 	// Snapshot callbacks and compaction config at start — protects against
 	// concurrent modification from the UI thread (e.g., SetCompaction called
@@ -2846,7 +2846,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (re
 			ctx: ctx, req: &req, send: send, syncBridgeCtx: syncBridgeCtx, task: task,
 			checkpointErr: &checkpointErr, baseMessageCount: baseMessageCount, maxTurns: maxTurns,
 			planner: planner, runID: runID, modelSwitchOrdinal: &modelSwitchOrdinal,
-			originalToolChoice: originalToolChoice, originalTools: &originalTools, restoredToolChoice: &restoredToolChoice,
+			originalToolChoice: originalToolChoice, originalTools: &originalTools, forcedChoice: &forcedChoice,
 			turnCallback: turnCallback, responseCallback: responseCallback, snapshotCallback: snapshotCallback,
 			compaction: compaction, recoveredToolWork: &recoveredToolWork, recoveredToolCallIDs: &recoveredToolCallIDs,
 			recoveredAtMessageCount: &recoveredAtMessageCount, recoveryPriorErr: &recoveryPriorErr,

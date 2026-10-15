@@ -22,7 +22,7 @@ var (
 // provider turn. It is copied back to the run-loop owner before returning.
 type providerTurnRunFrame struct {
 	req                      Request
-	restoredToolChoice       bool
+	forcedChoice             forcedChoiceState
 	recoveredToolWork        bool
 	recoveredToolCallIDs     map[string]bool
 	recoveredAtMessageCount  int
@@ -256,7 +256,7 @@ type engineRunTurnContext struct {
 	modelSwitchOrdinal       *int
 	originalToolChoice       ToolChoice
 	originalTools            *[]ToolSpec
-	restoredToolChoice       *bool
+	forcedChoice             *forcedChoiceState
 	turnCallback             TurnCompletedCallback
 	responseCallback         ResponseCompletedCallback
 	snapshotCallback         AssistantSnapshotCallback
@@ -276,7 +276,7 @@ type engineRunTurnContext struct {
 func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error {
 	ctx, send := state.ctx, state.send
 	run := &providerTurnRunFrame{
-		req: *state.req, restoredToolChoice: *state.restoredToolChoice,
+		req: *state.req, forcedChoice: *state.forcedChoice,
 		recoveredToolWork: *state.recoveredToolWork, recoveredToolCallIDs: *state.recoveredToolCallIDs,
 		recoveredAtMessageCount: *state.recoveredAtMessageCount, recoveryPriorErr: *state.recoveryPriorErr,
 		uncommittedStreamRetries: *state.uncommittedStreamRetries, uncommittedPriorErr: *state.uncommittedPriorErr,
@@ -298,7 +298,7 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 	defer func() {
 		*state.req = run.req
 		*state.originalTools = originalTools
-		*state.restoredToolChoice = run.restoredToolChoice
+		*state.forcedChoice = run.forcedChoice
 		*state.recoveredToolWork = run.recoveredToolWork
 		*state.recoveredToolCallIDs = run.recoveredToolCallIDs
 		*state.recoveredAtMessageCount = run.recoveredAtMessageCount
@@ -311,7 +311,7 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 		*state.modelSwitchOrdinal = run.modelSwitchOrdinal
 		compaction.req = state.req
 	}()
-	stream, err := e.openProviderTurnStream(ctx, &run.req, send, task, checkpointErr, baseMessageCount, maxTurns, planner, runID, &run.modelSwitchOrdinal, originalToolChoice, &originalTools, compaction, requestNativeFallback, attempt, &run.providerInFlight)
+	stream, err := e.openProviderTurnStream(ctx, &run.req, send, task, checkpointErr, baseMessageCount, maxTurns, planner, runID, &run.modelSwitchOrdinal, originalToolChoice, &run.forcedChoice, &originalTools, compaction, requestNativeFallback, attempt, &run.providerInFlight)
 	if err != nil {
 		return err
 	}
@@ -632,7 +632,7 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 
 	completion := &engineTurnCompletion{
 		ctx: ctx, send: send, req: &run.req, attempt: attempt, maxTurns: maxTurns, runID: runID,
-		modelSwitchOrdinal: &run.modelSwitchOrdinal, nextTurn: &run.nextTurn, restoredToolChoice: &run.restoredToolChoice,
+		modelSwitchOrdinal: &run.modelSwitchOrdinal, nextTurn: &run.nextTurn, forcedChoice: &run.forcedChoice,
 		originalToolChoice: originalToolChoice, originalTools: originalTools, turnCallback: turnCallback,
 		responseCallback: responseCallback, compaction: compaction, sendDone: sendDone, task: task,
 		checkpointErr: state.checkpointErr, baseMessageCount: baseMessageCount, toolCalls: turn.toolCalls,
