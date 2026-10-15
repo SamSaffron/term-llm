@@ -337,7 +337,9 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 // 'tool_search'", and allowed_tools cannot list it). Declaring tool_search as
 // the only tool with "required" forces it exactly, so the other tools are
 // withheld for that one turn. Verified live on gpt-6.1-sol, gpt-6-luna and
-// gpt-5.6-luna.
+// gpt-5.6-luna. web_search is withheld too, even when search is on; with
+// replayed searches in history the replay guard then strips them for this
+// turn. Do not keep web_search here: tool_choice could not exclude it.
 func chatGPTToolsAndChoice(tools []any, choice ToolChoice, toolSearch *ResponsesToolSearchTool) ([]any, any) {
 	if toolSearch != nil && choice.Mode == ToolChoiceName && choice.Name == "tool_search" {
 		return []any{*toolSearch}, "required"

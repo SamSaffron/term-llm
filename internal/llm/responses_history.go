@@ -131,7 +131,11 @@ var responsesAllowedToolsAcceptsType = map[string]bool{
 }
 
 // withoutReplayedWebSearchCalls returns messages without replayed
-// web_search_call parts, copying only the messages that change.
+// web_search_call parts, copying only the messages that change. This can leave
+// a reasoning item without the item that followed it; the ChatGPT backend
+// accepts that (verified live). The strip path is only reachable with native
+// tool discovery, which only the ChatGPT adapter enables; re-verify before
+// enabling it elsewhere, as the public API has been stricter about reasoning.
 func withoutReplayedWebSearchCalls(messages []Message) []Message {
 	out := messages
 	copied := false
