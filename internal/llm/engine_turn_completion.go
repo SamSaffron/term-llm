@@ -66,12 +66,14 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 		*c.forcedChoice = forcedChoice
 		compaction.req = c.req
 	}()
-	// A forced tool_choice is satisfied by any tool use, including a native
-	// discovery call (which is not an ordinary tool call). Spend the one-time
-	// restore so a later text-only turn is accepted as the answer instead of
-	// being re-forced, which streamed the final answer twice and, for native
-	// discovery, discarded the discovery and repeated the search.
-	if len(toolCalls) > 0 || syncToolsExecuted || partsContainDiscoveryCall(providerReplayParts) {
+	// A forced tool_choice is satisfied by any tool use: ordinary or inline-sync
+	// tool calls, tool work recovered after a stream failure, or a native
+	// discovery call (not an ordinary tool call). Spend the force so a later
+	// text-only turn is accepted as the answer instead of being re-forced, which
+	// streamed the final answer twice and, for native discovery, discarded the
+	// discovery and repeated the search. A completed forced retry turn also
+	// spends it: the retry is granted once.
+	if len(toolCalls) > 0 || syncToolsExecuted || recoveredToolWork || partsContainDiscoveryCall(providerReplayParts) || forcedChoice == forcedChoiceRetryNext {
 		forcedChoice = forcedChoiceSpent
 	}
 	if len(toolCalls) == 0 && !syncToolsExecuted {

@@ -207,9 +207,6 @@ func (p *ChatGPTProvider) Capabilities() Capabilities {
 	}
 }
 
-// NativeToolDiscoverySupport is intentionally narrower than the public API's
-// general model family support. It records only the exact ChatGPT OAuth
-// Responses WebSocket combination verified by this integration.
 // chatGPTNativeToolDiscoveryModels lists models whose full native tool_search
 // round trip (discovery call, planner output, discovered tool call, answer;
 // unforced and forced) has been verified live over the ChatGPT WebSocket path.
@@ -229,6 +226,9 @@ func chatGPTNativeToolDiscoveryModelList() []string {
 	return models
 }
 
+// NativeToolDiscoverySupport is intentionally narrower than the public API's
+// general model family support. It records only the exact ChatGPT OAuth
+// Responses WebSocket combinations verified by this integration.
 func (p *ChatGPTProvider) NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport {
 	if p == nil || !p.useWebSocket {
 		return NativeToolDiscoverySupport{Reason: "ChatGPT native tool discovery requires Responses WebSocket transport"}

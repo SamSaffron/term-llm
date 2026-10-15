@@ -227,7 +227,7 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 					seen[matches[0]] = true
 				}
 			default:
-				return nil, nil, nil, 0, unavailable, label, fmt.Errorf("original tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
+				return nil, nil, nil, 0, unavailable, label, fmt.Errorf("tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
 			}
 		}
 		if len(candidateIDs) == 0 && len(unavailable) > 0 {

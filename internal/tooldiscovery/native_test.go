@@ -581,3 +581,36 @@ func TestNativeDiscoveryResolvesQualifiedToolNames(t *testing.T) {
 		})
 	}
 }
+
+// With a small turn budget the turn after a forced native discovery is already
+// past the discovery cutoff. The satisfied force must not reach PrepareTurn,
+// which rejects forced tool_search after the cutoff.
+func TestNativeForcedToolSearchWithinSmallTurnBudget(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
+		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+	}}
+	engine := llm.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		EnableToolDiscovery: true,
+		SessionID:           "forced-small",
+		Model:               "native-model",
+		Messages:            []llm.Message{llm.UserText("perform the special action")},
+		Tools:               []llm.ToolSpec{(&SearchTool{}).Spec()},
+		ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName},
+		MaxTurns:            3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStream(t, stream)
+	if len(provider.requests) != 3 {
+		t.Fatalf("provider requests = %d, want 3", len(provider.requests))
+	}
+}
