@@ -277,13 +277,14 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	if req.Search {
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)
 	}
+	history := scanResponsesHistory(req.Messages)
 
 	// Send system messages via the instructions field but leave the transcript in
 	// raw message form so the Responses client can lazily build a continuation-only
 	// suffix on follow-up WebSocket turns. Native discovery replay is translated
 	// here, at the exact capable adapter boundary, rather than in ToolSpec.
 	messages := req.Messages
-	if req.NativeToolDiscovery != nil || messagesContainDiscoveryParts(messages) {
+	if req.NativeToolDiscovery != nil || history.HasDiscoveryParts {
 		var err error
 		messages, err = translateChatGPTDiscoveryMessages(messages)
 		if err != nil {
@@ -307,7 +308,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		Store:          boolPtr(false),
 		Stream:         true,
 		SessionID:      req.SessionID,
-		ForceWebSocket: req.NativeToolDiscovery != nil || messagesContainDiscoveryParts(req.Messages),
+		ForceWebSocket: req.NativeToolDiscovery != nil || history.HasDiscoveryParts,
 	}
 
 	responsesReq.ServiceTier = firstNonEmpty(tier, p.serviceTier)
@@ -322,6 +323,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 			responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
 		}
 	}
+	guardReplayedWebSearch(&responsesReq, history)
 	if req.ParallelToolCalls {
 		responsesReq.ParallelToolCalls = boolPtr(true)
 	}
@@ -412,17 +414,6 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 			return nil
 		},
 	}
-}
-
-func messagesContainDiscoveryParts(messages []Message) bool {
-	for _, message := range messages {
-		for _, part := range message.Parts {
-			if part.Type == PartDiscoveryCall || part.Type == PartDiscoveryOutput {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func translateChatGPTDiscoveryMessages(messages []Message) ([]Message, error) {

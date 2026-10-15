@@ -215,6 +215,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	if req.ToolChoice.Mode != "" {
 		responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
 	}
+	guardReplayedWebSearch(&responsesReq, scanResponsesHistory(req.Messages))
 	if len(tools) > 0 {
 		responsesReq.ParallelToolCalls = boolPtr(req.ParallelToolCalls)
 	}
