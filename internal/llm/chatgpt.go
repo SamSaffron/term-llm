@@ -261,18 +261,20 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	// Build tools. Public-API Pro and advanced Responses controls are not
 	// synthesized for the ChatGPT Codex backend.
 	tools := BuildResponsesTools(req.Tools)
+	var toolSearch *ResponsesToolSearchTool
 	if req.NativeToolDiscovery != nil {
 		support := p.NativeToolDiscoverySupport(model)
 		if !support.Supported {
 			return nil, fmt.Errorf("native tool discovery unsupported: %s", support.Reason)
 		}
 		search := req.NativeToolDiscovery.Search
-		tools = append(tools, ResponsesToolSearchTool{
+		toolSearch = &ResponsesToolSearchTool{
 			Type:        "tool_search",
 			Execution:   "client",
 			Description: search.Description,
 			Parameters:  deepCopyMap(search.Schema),
-		})
+		}
+		tools = append(tools, *toolSearch)
 	}
 	if req.Search {
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)
@@ -316,13 +318,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		responsesReq.ServiceTier = NormalizeServiceTier(req.ServiceTier)
 	}
 
-	if req.ToolChoice.Mode != "" {
-		if req.ToolChoice.Mode == ToolChoiceName && req.ToolChoice.Name == "tool_search" && req.NativeToolDiscovery != nil {
-			responsesReq.ToolChoice = map[string]any{"type": "tool_search"}
-		} else {
-			responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
-		}
-	}
+	responsesReq.Tools, responsesReq.ToolChoice = chatGPTToolsAndChoice(tools, req.ToolChoice, toolSearch)
 	guardReplayedWebSearch(&responsesReq, history)
 	if req.ParallelToolCalls {
 		responsesReq.ParallelToolCalls = boolPtr(true)
@@ -333,6 +329,23 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	}
 
 	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)
+}
+
+// chatGPTToolsAndChoice returns the tools and tool_choice to send. Forcing the
+// native tool_search needs special handling: the backend has no tool_choice that
+// names it ({"type":"tool_search"} is rejected with "Invalid value:
+// 'tool_search'", and allowed_tools cannot list it). Declaring tool_search as
+// the only tool with "required" forces it exactly, so the other tools are
+// withheld for that one turn. Verified live on gpt-6.1-sol, gpt-6-luna and
+// gpt-5.6-luna.
+func chatGPTToolsAndChoice(tools []any, choice ToolChoice, toolSearch *ResponsesToolSearchTool) ([]any, any) {
+	if toolSearch != nil && choice.Mode == ToolChoiceName && choice.Name == "tool_search" {
+		return []any{*toolSearch}, "required"
+	}
+	if choice.Mode == "" {
+		return tools, nil
+	}
+	return tools, BuildResponsesToolChoice(choice)
 }
 
 // ResetConversation clears server state for the Responses API client.

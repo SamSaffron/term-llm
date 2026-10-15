@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -333,5 +334,69 @@ func TestRestoreToolDiscoveryReplaySurvivesCompactionProjection(t *testing.T) {
 	}
 	if !foundCall || !foundOutput || !foundNamespace {
 		t.Fatalf("full replay call=%v output=%v namespace=%v items=%#v", foundCall, foundOutput, foundNamespace, items)
+	}
+}
+
+func TestChatGPTToolsAndChoiceForcesNativeToolSearch(t *testing.T) {
+	fn := ResponsesTool{Type: "function", Name: "example_tool"}
+	search := ResponsesToolSearchTool{Type: "tool_search", Execution: "client"}
+	tests := []struct {
+		name       string
+		tools      []any
+		choice     ToolChoice
+		toolSearch *ResponsesToolSearchTool
+		wantTools  []any
+		wantChoice any
+	}{
+		{
+			// {"type":"tool_search"} is rejected by the backend; tool_search alone
+			// with "required" forces it exactly.
+			name:       "forced native tool_search",
+			tools:      []any{fn, search},
+			choice:     ToolChoice{Mode: ToolChoiceName, Name: "tool_search"},
+			toolSearch: &search,
+			wantTools:  []any{search},
+			wantChoice: "required",
+		},
+		{
+			name:       "named tool_search without native discovery is a function choice",
+			tools:      []any{ResponsesTool{Type: "function", Name: "tool_search"}},
+			choice:     ToolChoice{Mode: ToolChoiceName, Name: "tool_search"},
+			wantTools:  []any{ResponsesTool{Type: "function", Name: "tool_search"}},
+			wantChoice: map[string]interface{}{"type": "function", "name": "tool_search"},
+		},
+		{
+			name:       "other named tool is unchanged",
+			tools:      []any{fn, search},
+			choice:     ToolChoice{Mode: ToolChoiceName, Name: "example_tool"},
+			toolSearch: &search,
+			wantTools:  []any{fn, search},
+			wantChoice: map[string]interface{}{"type": "function", "name": "example_tool"},
+		},
+		{
+			name:       "auto is unchanged",
+			tools:      []any{fn, search},
+			choice:     ToolChoice{Mode: ToolChoiceAuto},
+			toolSearch: &search,
+			wantTools:  []any{fn, search},
+			wantChoice: "auto",
+		},
+		{
+			name:       "unset choice stays unset",
+			tools:      []any{fn},
+			wantTools:  []any{fn},
+			wantChoice: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tools, choice := chatGPTToolsAndChoice(tt.tools, tt.choice, tt.toolSearch)
+			if !reflect.DeepEqual(tools, tt.wantTools) {
+				t.Fatalf("tools = %#v, want %#v", tools, tt.wantTools)
+			}
+			if !reflect.DeepEqual(choice, tt.wantChoice) {
+				t.Fatalf("tool_choice = %#v, want %#v", choice, tt.wantChoice)
+			}
+		})
 	}
 }
