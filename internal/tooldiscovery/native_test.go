@@ -534,3 +534,50 @@ func TestNativeForcedToolSearchKeepsDiscoveryAndDoesNotRepeat(t *testing.T) {
 		t.Fatal("second request dropped the forced turn's discovery call from history")
 	}
 }
+
+// Native discovery presents tools as namespace children, so models may request
+// them by "namespace.child". Every exact spelling must resolve to the same tool.
+func TestNativeDiscoveryResolvesQualifiedToolNames(t *testing.T) {
+	for _, requested := range []string{"special_action", "federation__special_action", "federation.special_action", "federation/special_action", "Federation.Special_Action"} {
+		t.Run(requested, func(t *testing.T) {
+			manager := startDiscoveryTestManager(t)
+			defer manager.StopAll()
+			args, _ := json.Marshal(map[string]any{"tool_names": []string{requested}})
+			provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
+				{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: args}}}},
+				{events: []llm.Event{{Type: llm.EventTextDelta, Text: "loaded"}}},
+			}}
+			engine := llm.NewEngine(provider, nil)
+			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+				t.Fatal(err)
+			}
+			stream, err := engine.Stream(context.Background(), llm.Request{
+				EnableToolDiscovery: true,
+				SessionID:           "qualified",
+				Model:               "native-model",
+				Messages:            []llm.Message{llm.UserText("load it")},
+				MaxTurns:            4,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainStream(t, stream)
+			if len(provider.requests) != 2 {
+				t.Fatalf("provider requests = %d, want 2", len(provider.requests))
+			}
+			var loaded []string
+			for _, message := range provider.requests[1].Messages {
+				for _, part := range message.Parts {
+					if part.Type == llm.PartDiscoveryOutput && part.DiscoveryOutput != nil {
+						for _, tool := range part.DiscoveryOutput.Tools {
+							loaded = append(loaded, tool.Spec.Name)
+						}
+					}
+				}
+			}
+			if len(loaded) != 1 || loaded[0] != "federation__special_action" {
+				t.Fatalf("discovery output tools = %v, want [federation__special_action]", loaded)
+			}
+		})
+	}
+}
