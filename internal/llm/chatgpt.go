@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -209,16 +210,35 @@ func (p *ChatGPTProvider) Capabilities() Capabilities {
 // NativeToolDiscoverySupport is intentionally narrower than the public API's
 // general model family support. It records only the exact ChatGPT OAuth
 // Responses WebSocket combination verified by this integration.
+// chatGPTNativeToolDiscoveryModels lists models whose full native tool_search
+// round trip (discovery call, planner output, discovered tool call, answer;
+// unforced and forced) has been verified live over the ChatGPT WebSocket path.
+var chatGPTNativeToolDiscoveryModels = map[string]bool{
+	"gpt-5.6-luna": true,
+	"gpt-6.1-sol":  true,
+	"gpt-6-luna":   true,
+	"gpt-6-astra":  true,
+}
+
+func chatGPTNativeToolDiscoveryModelList() []string {
+	models := make([]string, 0, len(chatGPTNativeToolDiscoveryModels))
+	for model := range chatGPTNativeToolDiscoveryModels {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models
+}
+
 func (p *ChatGPTProvider) NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport {
 	if p == nil || !p.useWebSocket {
 		return NativeToolDiscoverySupport{Reason: "ChatGPT native tool discovery requires Responses WebSocket transport"}
 	}
 	model, _ = chatGPTModelServiceTier(chooseModel(model, p.model))
 	actualModel, _ := parseModelEffortForProvider("chatgpt", model)
-	if actualModel != "gpt-5.6-luna" {
-		return NativeToolDiscoverySupport{Reason: fmt.Sprintf("ChatGPT native tool discovery is verified only for gpt-5.6-luna, not %s", actualModel)}
+	if !chatGPTNativeToolDiscoveryModels[actualModel] {
+		return NativeToolDiscoverySupport{Reason: fmt.Sprintf("ChatGPT native tool discovery is verified only for %s, not %s", strings.Join(chatGPTNativeToolDiscoveryModelList(), ", "), actualModel)}
 	}
-	return NativeToolDiscoverySupport{Supported: true, Name: "chatgpt-oauth-responses-websocket/tool_search", Reason: "exact verified gpt-5.6-luna WebSocket path"}
+	return NativeToolDiscoverySupport{Supported: true, Name: "chatgpt-oauth-responses-websocket/tool_search", Reason: "exact verified " + actualModel + " WebSocket path"}
 }
 
 func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, error) {

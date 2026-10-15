@@ -20,7 +20,12 @@ func TestChatGPTNativeToolDiscoveryCapabilityIsExact(t *testing.T) {
 	}{
 		{name: "luna websocket", model: "gpt-5.6-luna-medium", websocket: true, want: true},
 		{name: "luna HTTP", model: "gpt-5.6-luna-medium", websocket: false},
-		{name: "sol websocket", model: "gpt-5.6-sol-medium", websocket: true},
+		{name: "6.1 sol websocket", model: "gpt-6.1-sol-medium", websocket: true, want: true},
+		{name: "6 luna websocket", model: "gpt-6-luna", websocket: true, want: true},
+		{name: "6 astra websocket", model: "gpt-6-astra-xhigh", websocket: true, want: true},
+		{name: "6 astra HTTP", model: "gpt-6-astra", websocket: false},
+		{name: "5.6 sol websocket", model: "gpt-5.6-sol-medium", websocket: true},
+		{name: "6 sol websocket (unverified)", model: "gpt-6-sol", websocket: true},
 		{name: "older websocket", model: "gpt-5.5-medium", websocket: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
