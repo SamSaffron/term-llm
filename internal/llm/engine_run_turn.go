@@ -311,6 +311,12 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 		*state.modelSwitchOrdinal = run.modelSwitchOrdinal
 		compaction.req = state.req
 	}()
+	// Tool work recovered after a stream failure satisfies a forced tool_choice.
+	// Recovery advances without completing the turn, so settle a pending forced
+	// retry here, before the next turn's tool_choice is chosen.
+	if run.recoveredToolWork && run.forcedChoice == forcedChoiceRetryNext {
+		run.forcedChoice = forcedChoiceSpent
+	}
 	stream, err := e.openProviderTurnStream(ctx, &run.req, send, task, checkpointErr, baseMessageCount, maxTurns, planner, runID, &run.modelSwitchOrdinal, originalToolChoice, &run.forcedChoice, &originalTools, compaction, requestNativeFallback, attempt, &run.providerInFlight)
 	if err != nil {
 		return err

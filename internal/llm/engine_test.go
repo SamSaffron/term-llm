@@ -7245,3 +7245,69 @@ func TestEngineForcedRetrySurvivesSoftCompaction(t *testing.T) {
 	}
 	t.Logf("tool_choice sequence %v", modes)
 }
+
+// forcedRetryRecoveryProvider ignores the force, then on the forced retry calls
+// the tool and drops the stream, then answers.
+type forcedRetryRecoveryProvider struct {
+	calls    []Request
+	toolName string
+}
+
+func (p *forcedRetryRecoveryProvider) Name() string       { return "forced-retry-recovery" }
+func (p *forcedRetryRecoveryProvider) Credential() string { return "test" }
+func (p *forcedRetryRecoveryProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: true}
+}
+func (p *forcedRetryRecoveryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls = append(p.calls, req)
+	switch len(p.calls) {
+	case 1:
+		return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "ignored"}, {Type: EventDone}}}, nil
+	case 2:
+		return &errAfterEventsStream{
+			events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: p.toolName, Arguments: json.RawMessage(`{}`)}}},
+			err:    &NonRecoverableStreamError{Err: errors.New("disconnected after tool call")},
+		}, nil
+	default:
+		return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventDone}}}, nil
+	}
+}
+
+// Tool work recovered on the forced retry satisfies the force; the recovered
+// answer turn runs auto instead of being forced again.
+func TestEngineForcedRetrySpentByRecoveredToolWork(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := &forcedRetryRecoveryProvider{toolName: name}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var modes []ToolChoiceMode
+	for _, call := range provider.calls {
+		modes = append(modes, call.ToolChoice.Mode)
+	}
+	if len(provider.calls) != 3 || modes[1] != ToolChoiceName || modes[2] != ToolChoiceAuto {
+		t.Fatalf("tool_choice sequence = %v, want [name name auto]", modes)
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
