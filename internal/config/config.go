@@ -1323,6 +1323,11 @@ func LiveChatGPTVoices() []string {
 
 var liveChatGPTVoices = []string{
 	"juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove",
+	// Added with GPT-Live-1.1 (October 2026): language-specific voices for
+	// Brazilian Portuguese, French, German, Hindi, Japanese, Korean and Mexican
+	// Spanish, plus an additional English voice.
+	"viola", "rio", "aube", "rivage", "sonna", "miko", "leher", "neer",
+	"himari", "rindo", "haetsal", "hanul", "tinta", "arrullo", "bubbie",
 }
 
 // ValidateVoice accepts the V3/frameless voice family. V2 voices such as marin
