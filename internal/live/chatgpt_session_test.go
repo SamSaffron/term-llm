@@ -87,6 +87,19 @@ func TestLiveChatGPTVoicesReturnsCopyUsedByValidation(t *testing.T) {
 	}
 }
 
+func TestLiveChatGPTVoicesIncludeGPTLive11Voices(t *testing.T) {
+	// Wire IDs verified against the ChatGPT backend on 2026-10-16: each produced
+	// audio and a transcript, while an unknown voice ended the session.
+	for _, voice := range []string{
+		"viola", "rio", "aube", "rivage", "sonna", "miko", "leher", "neer",
+		"himari", "rindo", "haetsal", "hanul", "tinta", "arrullo", "bubbie",
+	} {
+		if err := (config.LiveChatGPTConfig{Voice: voice}).ValidateVoice(); err != nil {
+			t.Errorf("GPT-Live-1.1 voice %q rejected: %v", voice, err)
+		}
+	}
+}
+
 func TestDefaultProviderUsesDirectChatGPT(t *testing.T) {
 	for _, name := range []string{"", config.DefaultLiveProvider, config.LiveProviderChatGPT} {
 		p, err := NewProvider(config.LiveConfig{Provider: name})
