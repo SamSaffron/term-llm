@@ -188,3 +188,14 @@ func TestResolveHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvePassesImagesOptIn(t *testing.T) {
+	provider := config.ClassifyProviderConfig{Type: config.ClassifyProviderTypeSafe, APIKey: "k", BaseURL: "https://systemone.example", Images: config.ClassifyImagesInline}
+	conn, err := Resolve(provider, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.Images != config.ClassifyImagesInline {
+		t.Fatal("Resolve dropped images opt-in")
+	}
+}

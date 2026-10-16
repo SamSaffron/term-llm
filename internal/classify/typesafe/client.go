@@ -28,12 +28,28 @@ type Options struct {
 	BaseURL string
 	Timeout time.Duration
 	Headers map[string]string // extra request headers
+	// ImageFormat selects how request images are sent: ImageFormatAssets
+	// (the default when empty) or ImageFormatInline.
+	ImageFormat string
 }
 
 // Client is a native HTTP client for the TypeSafe System One API. It
 // implements classify.Backend.
 type Client struct {
 	http *transport.Client
+	// imageHTTP sends requests that carry images; it adds the images opt-in
+	// header for ImageFormatAssets.
+	imageHTTP   *transport.Client
+	imageFormat string
+}
+
+// wireRequest is the System One request plus the optional image encodings.
+type wireRequest struct {
+	State     json.RawMessage              `json:"state"`
+	Model     string                       `json:"model"`
+	Questions map[string]classify.Question `json:"questions"`
+	Assets    map[string]asset             `json:"assets,omitempty"`
+	Images    []string                     `json:"images,omitempty"`
 }
 
 // APIError reports a non-successful TypeSafe API response.
@@ -41,7 +57,14 @@ type APIError = transport.APIError
 
 // NewClient creates a TypeSafe client.
 func NewClient(opts Options) (*Client, error) {
-	http, err := transport.New(transport.Config{
+	switch opts.ImageFormat {
+	case "":
+		opts.ImageFormat = ImageFormatAssets
+	case ImageFormatAssets, ImageFormatInline:
+	default:
+		return nil, fmt.Errorf("typesafe: unsupported image format %q; use %q or %q", opts.ImageFormat, ImageFormatAssets, ImageFormatInline)
+	}
+	cfg := transport.Config{
 		Provider:       "typesafe",
 		APIKey:         opts.APIKey,
 		Headers:        opts.Headers,
@@ -51,11 +74,23 @@ func NewClient(opts Options) (*Client, error) {
 		DefaultTimeout: DefaultTimeout,
 		MissingKeyHint: "set TYPESAFE_API_KEY (used only with the default endpoint) or classify.providers.<name>.api_key",
 		ErrorMessage:   errorMessage,
-	})
+	}
+	http, err := transport.New(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{http: http}, nil
+	imageHTTP := http
+	if opts.ImageFormat == ImageFormatAssets {
+		cfg.Headers = make(map[string]string, len(opts.Headers)+1)
+		for k, v := range opts.Headers {
+			cfg.Headers[k] = v
+		}
+		cfg.Headers[imagesHeader] = "true"
+		if imageHTTP, err = transport.New(cfg); err != nil {
+			return nil, err
+		}
+	}
+	return &Client{http: http, imageHTTP: imageHTTP, imageFormat: opts.ImageFormat}, nil
 }
 
 // Classify evaluates a state against typed questions.
@@ -63,17 +98,22 @@ func (c *Client) Classify(ctx context.Context, req classify.Request) (*classify.
 	if c == nil {
 		return nil, errors.New("typesafe: nil client")
 	}
-	if len(req.Images) > 0 {
-		return nil, classify.ErrImagesUnsupported
-	}
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(req)
+	wire, err := c.wireRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(wire)
 	if err != nil {
 		return nil, fmt.Errorf("typesafe: encode request: %w", err)
 	}
-	respBody, err := c.http.Do(ctx, http.MethodPost, classifyPath, body, req.State)
+	client := c.http
+	if len(req.Images) > 0 {
+		client = c.imageHTTP
+	}
+	respBody, err := client.Do(ctx, http.MethodPost, classifyPath, body, req.State)
 	if err != nil {
 		return nil, err
 	}

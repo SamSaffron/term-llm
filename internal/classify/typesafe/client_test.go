@@ -631,19 +631,153 @@ func TestTruncateUTF8(t *testing.T) {
 	}
 }
 
-func TestClassifyRejectsImagesWithoutRequest(t *testing.T) {
+func TestClassifySendsInlineImages(t *testing.T) {
+	const image = "data:image/png;base64,AA=="
+	for _, tc := range []struct {
+		name, state, wantState string
+	}{
+		{"with state", `"s"`, `"s"`},
+		{"image only", ``, `""`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]json.RawMessage
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				fmt.Fprint(w, `{"model":"d3","answers":{"q":{"type":"noul","noul":0.9}}}`)
+			}))
+			defer srv.Close()
+			c, err := NewClient(Options{APIKey: "k", BaseURL: srv.URL, ImageFormat: ImageFormatInline})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := classify.Request{Model: "d3", Images: []string{image},
+				Questions: map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}}
+			if tc.state != "" {
+				req.State = json.RawMessage(tc.state)
+			}
+			if _, err := c.Classify(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if string(got["state"]) != tc.wantState {
+				t.Errorf("state = %s, want %s", got["state"], tc.wantState)
+			}
+			if string(got["images"]) != `["`+image+`"]` {
+				t.Errorf("images = %s", got["images"])
+			}
+		})
+	}
+}
+
+func TestClassifySendsAssetImagesWithOptInHeader(t *testing.T) {
+	refs := 0
+	orig := newAssetRef
+	newAssetRef = func() (string, error) { refs++; return fmt.Sprintf("ref-%d", refs), nil }
+	t.Cleanup(func() { newAssetRef = orig })
+	png, jpeg := "data:image/png;base64,iVBO", "data:image/jpeg;base64,/9j/"
+	for _, tc := range []struct {
+		name, state string
+		images      []string
+		wantState   string
+		wantAssets  string
+	}{
+		{"image only", "", []string{png}, `"ref-1"`, `{"ref-1":{"type":"image","data_base64":"iVBO","format":"png"}}`},
+		{"several images only", "", []string{png, jpeg}, `["ref-1","ref-2"]`,
+			`{"ref-1":{"type":"image","data_base64":"iVBO","format":"png"},"ref-2":{"type":"image","data_base64":"/9j/","format":"jpg"}}`},
+		{"text and image", `"a photo"`, []string{png}, `{"state":"a photo","images":["ref-1"]}`, `{"ref-1":{"type":"image","data_base64":"iVBO","format":"png"}}`},
+		{"json and image", `{"order":1}`, []string{png}, `{"state":{"order":1},"images":["ref-1"]}`, `{"ref-1":{"type":"image","data_base64":"iVBO","format":"png"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refs = 0
+			var got map[string]json.RawMessage
+			var header string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				header = r.Header.Get("TypeSafe-Danger-Zone-Images")
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				fmt.Fprint(w, `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.9}}}`)
+			}))
+			defer srv.Close()
+			// The default image format is assets.
+			c, err := NewClient(Options{APIKey: "k", BaseURL: srv.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := classify.Request{Model: "jev-latest", Images: tc.images,
+				Questions: map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}}
+			if tc.state != "" {
+				req.State = json.RawMessage(tc.state)
+			}
+			if _, err := c.Classify(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if header != "true" {
+				t.Errorf("images header = %q, want true", header)
+			}
+			if string(got["state"]) != tc.wantState {
+				t.Errorf("state = %s, want %s", got["state"], tc.wantState)
+			}
+			if string(got["assets"]) != tc.wantAssets {
+				t.Errorf("assets = %s, want %s", got["assets"], tc.wantAssets)
+			}
+			if _, ok := got["images"]; ok {
+				t.Errorf("assets request sent images array: %s", got["images"])
+			}
+		})
+	}
+}
+
+func TestClassifyAssetFormatRejectsUnsupportedImagesWithoutRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("image request must not reach TypeSafe")
+		t.Error("unsupported image must not be sent")
 	}))
 	defer srv.Close()
-	c, err := NewClient(Options{APIKey: "k", BaseURL: srv.URL})
+	c, err := NewClient(Options{APIKey: "k", BaseURL: srv.URL, ImageFormat: ImageFormatAssets})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.Classify(context.Background(), classify.Request{State: json.RawMessage(`"s"`), Model: "m", Images: []string{"data:image/png;base64,AA=="},
+	_, err = c.Classify(context.Background(), classify.Request{State: json.RawMessage(`"s"`), Model: "m", Images: []string{"data:image/webp;base64,UklGRg=="},
 		Questions: map[string]classify.Question{"q": {Type: "noul", Instructions: json.RawMessage(`"?"`)}}})
-	if !errors.Is(err, classify.ErrImagesUnsupported) {
-		t.Fatalf("err = %v, want ErrImagesUnsupported", err)
+	if err == nil || !strings.Contains(err.Error(), "PNG or JPEG") {
+		t.Fatalf("err = %v, want PNG or JPEG error", err)
+	}
+}
+
+func TestClassifyWithoutImagesIsUnchangedWhenImagesEnabled(t *testing.T) {
+	for _, format := range []string{ImageFormatAssets, ImageFormatInline} {
+		t.Run(format, func(t *testing.T) {
+			var got map[string]json.RawMessage
+			var header string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				header = r.Header.Get("TypeSafe-Danger-Zone-Images")
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				fmt.Fprint(w, `{"model":"jev-latest","answers":{"q":{"type":"noul","noul":0}}}`)
+			}))
+			defer srv.Close()
+			c, err := NewClient(Options{APIKey: "k", BaseURL: srv.URL, ImageFormat: format})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Classify(context.Background(), classify.Request{State: json.RawMessage(`"s"`), Model: "jev-latest", Questions: validQuestions()}); err != nil {
+				t.Fatal(err)
+			}
+			if header != "" {
+				t.Errorf("text-only request sent images header %q", header)
+			}
+			if string(got["state"]) != `"s"` || got["images"] != nil || got["assets"] != nil {
+				t.Errorf("text-only request changed: %v", got)
+			}
+		})
+	}
+}
+
+func TestNewClientRejectsUnknownImageFormat(t *testing.T) {
+	if _, err := NewClient(Options{APIKey: "k", ImageFormat: "true"}); err == nil {
+		t.Fatal("unknown image format was accepted")
 	}
 }
 

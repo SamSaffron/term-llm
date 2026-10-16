@@ -28,6 +28,9 @@ type Connection struct {
 	// Headers are the resolved extra request headers. For the openai type,
 	// OpenAI-Organization/OpenAI-Project fall back to OPENAI_ORG_ID/OPENAI_PROJECT_ID.
 	Headers map[string]string
+	// Images is the typesafe image format (classify.providers.<name>.images);
+	// empty disables images for that type.
+	Images string
 }
 
 // Overrides are per-invocation settings that take precedence over the
@@ -45,7 +48,7 @@ type Factory func(Connection) (classify.Backend, error)
 // effective endpoint: a --base-url override pointing away from the type's
 // default endpoint never receives the shared environment key.
 func Resolve(provider config.ClassifyProviderConfig, overrides Overrides) (Connection, error) {
-	conn := Connection{Type: provider.Type, Timeout: overrides.Timeout}
+	conn := Connection{Type: provider.Type, Timeout: overrides.Timeout, Images: provider.Images}
 	var err error
 	conn.BaseURL = strings.TrimSpace(overrides.BaseURL)
 	if conn.BaseURL == "" {
@@ -94,7 +97,7 @@ func ProviderTimeout(provider config.ClassifyProviderConfig) (time.Duration, err
 func New(conn Connection) (classify.Backend, error) {
 	switch conn.Type {
 	case config.ClassifyProviderTypeSafe:
-		return typesafe.NewClient(typesafe.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout, Headers: conn.Headers})
+		return typesafe.NewClient(typesafe.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout, Headers: conn.Headers, ImageFormat: conn.Images})
 	case config.ClassifyProviderOpenAI:
 		return openai.NewClient(openai.Options{APIKey: conn.APIKey, BaseURL: conn.BaseURL, Timeout: conn.Timeout, Headers: conn.Headers})
 	case config.ClassifyProviderCloudflare:

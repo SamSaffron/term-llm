@@ -27,10 +27,6 @@ const (
 	TypeNoul   = "noul"
 )
 
-// ErrImagesUnsupported reports image inputs sent to a backend that cannot
-// evaluate them.
-var ErrImagesUnsupported = errors.New("classify: image inputs are not supported by this provider; use a classify provider with type openai or cloudflare")
-
 // Backend evaluates classification requests.
 type Backend interface {
 	Classify(context.Context, Request) (*Response, error)
@@ -42,8 +38,9 @@ type Request struct {
 	State     json.RawMessage     `json:"state"`
 	Model     string              `json:"model"`
 	Questions map[string]Question `json:"questions"`
-	// Images holds base64 data:image URLs evaluated alongside the state. Only
-	// image-capable backends accept them; others return ErrImagesUnsupported.
+	// Images holds base64 data:image URLs evaluated alongside the state.
+	// Backends translate them to their wire format and may reject formats
+	// their API does not accept.
 	Images []string `json:"-"`
 }
 

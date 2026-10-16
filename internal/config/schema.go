@@ -467,6 +467,7 @@ var keySpecs = []KeySpec{
 	def("classify.providers.typesafe.model", DefaultTypeSafeModel),
 	def("classify.providers.typesafe.base_url", DefaultTypeSafeBaseURL),
 	def("classify.providers.typesafe.timeout_seconds", DefaultTypeSafeTimeoutSeconds),
+	def("classify.providers.typesafe.images", ClassifyImagesAssets),
 	optional("classify.providers.typesafe.headers", withPlaceholder(map[string]any{})),
 
 	def("reasoning.display", ReasoningDisplayAuto),

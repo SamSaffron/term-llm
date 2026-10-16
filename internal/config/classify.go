@@ -15,6 +15,12 @@ const (
 	ClassifyProviderCloudflare = "cloudflare" // Cloudflare Workers AI (Clef)
 )
 
+// Image formats for classify.providers.<name>.images on typesafe-type providers.
+const (
+	ClassifyImagesAssets = "assets" // TypeSafe assets map and opt-in header
+	ClassifyImagesInline = "inline" // "images" array of data URLs
+)
+
 // classifyTypeDefaults holds each provider type's built-in settings.
 type classifyTypeDefaults struct {
 	model          string
@@ -22,7 +28,6 @@ type classifyTypeDefaults struct {
 	timeoutSeconds int
 	// keyEnv lists environment fallbacks for api_key, used only with baseURL.
 	keyEnv []string
-	images bool
 	// models lists known models beyond the default, for completion.
 	models []string
 }
@@ -34,11 +39,11 @@ var classifyTypes = map[string]classifyTypeDefaults{
 	},
 	ClassifyProviderOpenAI: {
 		model: DefaultOpenAIDecisionsModel, baseURL: DefaultOpenAIDecisionsBaseURL, timeoutSeconds: DefaultOpenAIDecisionsTimeoutSeconds,
-		keyEnv: []string{"OPENAI_API_KEY"}, images: true,
+		keyEnv: []string{"OPENAI_API_KEY"},
 	},
 	ClassifyProviderCloudflare: {
 		model: DefaultCloudflareClassifyModel, baseURL: DefaultCloudflareClassifyBaseURL, timeoutSeconds: DefaultCloudflareClassifyTimeoutSeconds,
-		keyEnv: []string{"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN"}, images: true,
+		keyEnv: []string{"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN"},
 		models: []string{"clef-flash"},
 	},
 }
@@ -91,6 +96,13 @@ func (c ClassifyConfig) ResolveProvider(name string) (ClassifyProviderConfig, er
 	if !ok {
 		return p, fmt.Errorf("classify provider %q has unsupported type %q; set classify.providers.%s.type to one of %s", name, p.Type, name, strings.Join(ClassifyProviderTypes(), ", "))
 	}
+	p.Images = strings.TrimSpace(p.Images)
+	if err := p.validateImages(name); err != nil {
+		return p, err
+	}
+	if p.Type == ClassifyProviderTypeSafe && p.Images == "" {
+		p.Images = ClassifyImagesAssets
+	}
 	if strings.TrimSpace(p.Model) == "" {
 		p.Model = defaults.model
 	}
@@ -123,8 +135,17 @@ func (p ClassifyProviderConfig) DefaultTimeoutSeconds() int { return p.typeDefau
 // DefaultBaseURL returns the built-in endpoint for the provider's type.
 func (p ClassifyProviderConfig) DefaultBaseURL() string { return p.typeDefaults().baseURL }
 
-// SupportsImages reports whether the provider's type accepts image inputs.
-func (p ClassifyProviderConfig) SupportsImages() bool { return p.typeDefaults().images }
+func (p ClassifyProviderConfig) validateImages(name string) error {
+	switch {
+	case p.Images == "":
+		return nil
+	case p.Type != ClassifyProviderTypeSafe:
+		return fmt.Errorf("classify.providers.%s.images applies only to type %s; type %s always accepts images", name, ClassifyProviderTypeSafe, p.Type)
+	case p.Images != ClassifyImagesAssets && p.Images != ClassifyImagesInline:
+		return fmt.Errorf("classify.providers.%s.images must be %q (TypeSafe) or %q (images array), got %q", name, ClassifyImagesAssets, ClassifyImagesInline, p.Images)
+	}
+	return nil
+}
 
 // ClassifyKeySpecs expands the canonical provider fields for configured aliases.
 // Alias fields have runtime type defaults, not persisted built-in defaults.

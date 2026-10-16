@@ -13,7 +13,7 @@ Classification has its own providers, separate from chat LLM providers, and one 
 
 | Provider (`-p`) | Service | Models | API key fallback | Images |
 | --- | --- | --- | --- | --- |
-| `typesafe` (default) | [TypeSafe System One](https://docs.typesafe.ai/) | `jev-latest` | `TYPESAFE_API_KEY` | No |
+| `typesafe` (default) | [TypeSafe System One](https://docs.typesafe.ai/) | `jev-latest` | `TYPESAFE_API_KEY` | Yes (experimental) |
 | `openai` | [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions) | `gpt-6-luna` | `OPENAI_API_KEY` | Yes |
 | `cloudflare` | [Clef on Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/clef/) | `clef`, `clef-flash` | `CLOUDFLARE_API_TOKEN`, then `CLOUDFLARE_AUTH_TOKEN` | Yes |
 
@@ -108,16 +108,43 @@ term-llm classify -p cloudflare "Checkout is failing for every customer" \
 term-llm classify -p cloudflare --model clef-flash -q routing.yaml -f ticket.txt
 ```
 
+### TypeSafe images
+
+TypeSafe's [image support](https://docs.typesafe.ai/images) is experimental; `--image` uses it with no extra configuration (`images: assets` is the default for `type: typesafe`):
+
+```bash
+term-llm classify --image photo.png --type noul --question "Is there a red square in the image?"
+```
+
+Each image is sent once in the request's `assets` map under a random reference, and that reference is placed in the state: an image-only request's state is the reference itself (an array for several images), and text or JSON state becomes `{"state": <your state>, "images": [<references>]}`. Questions can refer to "the image" or to `images` by name. Requests with images also send the `TypeSafe-Danger-Zone-Images: true` header; requests without images are unchanged. TypeSafe accepts only PNG and JPEG, 280 to 1568 pixels per side, and does not resize; term-llm rejects other formats before sending, and the API rejects other dimensions. Jev 1.13 (`jev-latest`) and Jev 1.14 (`jev-preview`) both accept images.
+
+### Self-hosted System One endpoints
+
+Any server that implements `POST /v1/systemone` can be used through a `type: typesafe` alias with its own `base_url`. Images use TypeSafe's `assets` format by default; set `images: inline` if the server instead expects a top-level `images` array of data URLs beside the state, as Clef uses:
+
+```yaml
+classify:
+  providers:
+    inhouse:
+      type: typesafe
+      model: my-model
+      base_url: https://systemone.internal.example
+      api_key: $(op-cache read "op://Vault/System One/credential")
+      images: inline
+```
+
+With `inline`, images are sent unchanged after term-llm's own `--image` checks, so the server enforces any format or size limits. `classify models` works only if the server also implements `GET /v1/models`.
+
 ## Privacy
 
 The entire state, any images, and all questions, instructions, and criteria are sent to the selected provider (or the endpoint you configure); classification never runs locally. Do not include secrets or personal data unless you are authorized to send them. Output can include your criteria, so treat output files as sensitive. Error messages are bounded and redact the API key and the state in its raw, unquoted, compact, and JSON-escaped forms; model, type, instruction, and rubric diagnostics remain visible. Redaction is not a substitute for minimizing sensitive input.
 
 ## Images
 
-The `openai` and `cloudflare` providers can evaluate images; `--image` with a TypeSafe provider fails before anything is sent. Repeat `--image` to attach PNG, JPEG, GIF, or WebP files, or `data:image/...;base64,` URLs (Clef does not accept GIF). Hosted image URLs are not supported by either API. Text state is optional when an image is given:
+Every provider can evaluate images; for TypeSafe see [TypeSafe images](#typesafe-images). Repeat `--image` to attach PNG, JPEG, GIF, or WebP files, or `data:image/...;base64,` URLs (Clef does not accept GIF; TypeSafe accepts only PNG and JPEG). Hosted image URLs are not supported by either API. Text state is optional when an image is given:
 
 ```bash
-term-llm classify -p openai --image product.png \
+term-llm classify --image product.png \
   --type noul --question "Does the product have visible damage?" --format value
 term-llm classify -p cloudflare "Customer photo for order 1234" --image a.jpg --image b.jpg -q checks.yaml
 ```

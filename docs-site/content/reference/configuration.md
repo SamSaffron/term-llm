@@ -63,7 +63,7 @@ classify:
 - **Aliases:** other names under `classify.providers` must declare one of the types and inherit its defaults. They expand into their own keys for `config show`, `config get`, and completion, and their `api_key` is redacted like the built-in ones.
 - **Credentials:** `api_key` is sensitive and resolved only for the selected provider, when a command runs or when a classify-backed Guardian starts. The environment fallback is used only with the type's default endpoint; a custom `base_url` or a `--base-url` override sends only the configured `api_key`.
 - **Cloudflare account:** `{account_id}` is filled from `CLOUDFLARE_ACCOUNT_ID`; or write the account ID into `base_url`.
-- **Images:** `openai` and `cloudflare` accept `classify --image`.
+- **Images:** every provider accepts `classify --image`. For `typesafe`-type providers, `images` selects the wire format: `assets` (default) for TypeSafe's experimental assets map, with the `TypeSafe-Danger-Zone-Images` header added to image requests only, or `inline` for an `images` array of data URLs on compatible self-hosted servers. Other values, and `images` on other types, are rejected.
 - **Overrides:** `--provider/-p` replaces `classify.default_provider`; `--model`, `--base-url`, and `--timeout` override one run.
 
 Other commands call a classification provider only when `guardian.backend: classify` or `live.control_plane: classify` is set. State and questions are sent to the configured endpoint; see the [privacy guidance](/guides/classify/#privacy).

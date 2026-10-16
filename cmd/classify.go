@@ -75,7 +75,7 @@ Select classify.default_provider from classify.providers, or override it with --
 
 Questions can be supplied together in a JSON/YAML file, or defined inline for
 a single choice, score, or noul. State and questions are sent to the configured endpoint. Images
-(--image) are supported by providers with type openai or cloudflare. Classification may also be used for automatic approvals when guardian.backend is set to classify.`,
+(--image) are supported by every provider type. Classification may also be used for automatic approvals when guardian.backend is set to classify.`,
 		Example: `  term-llm classify "Production is down" --type noul --question "Is this urgent?" --format value
   term-llm classify "Sam is eating ice cream" --type choice --question "Am I happy?" --option yes --option no --pretty-print
   term-llm classify "My invoice is wrong" -q routing.yaml --format table
@@ -115,7 +115,7 @@ func addClassifyFlags(cmd *cobra.Command, opts *classifyOptions) {
 	cmd.Flags().StringVar(&opts.trueDescription, "true-description", "", "NOUL true description")
 	cmd.Flags().StringVar(&opts.falseDescription, "false-description", "", "NOUL false description")
 	cmd.Flags().StringVar(&opts.answer, "answer", "", "Answer id for --format value")
-	cmd.Flags().StringArrayVar(&opts.images, "image", nil, "Image file (PNG, JPEG, GIF, or WebP) or data:image URL to evaluate with the state; requires an openai or cloudflare provider (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.images, "image", nil, "Image file (PNG, JPEG, GIF, or WebP) or data:image URL to evaluate with the state (repeatable)")
 	registerClassifyCompletion(cmd, "type", classifyStaticCompletion(classifyQuestionTypes))
 	registerClassifyCompletion(cmd, "answer", classifyAnswerCompletion)
 	// Free-text flags: suggest nothing instead of unrelated file names.
@@ -188,9 +188,6 @@ func runClassify(cmd *cobra.Command, args []string, opts *classifyOptions, deps 
 	model := strings.TrimSpace(opts.model)
 	if model == "" {
 		model = strings.TrimSpace(provider.Model)
-	}
-	if len(opts.images) > 0 && !provider.SupportsImages() {
-		return fmt.Errorf("--image requires a classify provider with type openai or cloudflare (provider type is %q); try --provider openai or --provider cloudflare", provider.Type)
 	}
 	images, err := loadClassifyImages(opts.images)
 	if err != nil {

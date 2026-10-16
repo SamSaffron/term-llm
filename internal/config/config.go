@@ -1445,6 +1445,11 @@ type ClassifyProviderConfig struct {
 	Model          string `mapstructure:"model" yaml:"model,omitempty"`
 	BaseURL        string `mapstructure:"base_url" yaml:"base_url,omitempty"`
 	TimeoutSeconds int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+	// Images selects a typesafe-type provider's image wire format: "assets"
+	// (the default; TypeSafe's assets map plus its images opt-in header) or
+	// "inline" (an "images" array of data URLs, as Clef and compatible System
+	// One servers accept). Other provider types do not use this field.
+	Images string `mapstructure:"images" yaml:"images,omitempty"`
 	// Headers are sent with every request. For type openai,
 	// OpenAI-Organization/OpenAI-Project fall back to OPENAI_ORG_ID/OPENAI_PROJECT_ID.
 	// Values support ${ENV}, $(), op://, file://.

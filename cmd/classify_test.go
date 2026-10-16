@@ -902,6 +902,58 @@ func TestClassifyOpenAIProviderSendsImages(t *testing.T) {
 	}
 }
 
+func TestClassifySystemOneProviderWithImagesSendsImages(t *testing.T) {
+	var got classify.Request
+	client := &recordingClassifyClient{onClassify: func(req classify.Request) { got = req }}
+	cfg := &config.Config{Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
+		"self": {Type: config.ClassifyProviderTypeSafe, APIKey: "self-key", Model: "d3", BaseURL: "https://systemone.example", Images: config.ClassifyImagesInline},
+	}}}
+	c := newClassifyCmd(classifyDeps{
+		loadConfig: func() (*config.Config, error) { return cfg, nil },
+		newBackend: func(o backends.Connection) (classify.Backend, error) {
+			if o.Type != config.ClassifyProviderTypeSafe || o.Images != config.ClassifyImagesInline || o.APIKey != "self-key" {
+				t.Fatalf("options: %#v", o)
+			}
+			return client, nil
+		},
+		stdinData: func(*cobra.Command) bool { return false },
+	})
+	c.SetArgs([]string{"--image", "data:image/png;base64,iVBO", "-p", "self", "--type", "noul", "--question", "Is it red?", "--format", "value"})
+	c.SetOut(&bytes.Buffer{})
+	c.SetErr(&bytes.Buffer{})
+	if err := c.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "d3" || len(got.Images) != 1 {
+		t.Fatalf("request: model=%q images=%d", got.Model, len(got.Images))
+	}
+}
+
+func TestClassifyTypeSafeDefaultsToAssetImages(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "env-typesafe-key")
+	var got classify.Request
+	client := &recordingClassifyClient{onClassify: func(req classify.Request) { got = req }}
+	c := newClassifyCmd(classifyDeps{
+		loadConfig: func() (*config.Config, error) { return &config.Config{}, nil },
+		newBackend: func(o backends.Connection) (classify.Backend, error) {
+			if o.Type != config.ClassifyProviderTypeSafe || o.Images != config.ClassifyImagesAssets {
+				t.Fatalf("options: %#v", o)
+			}
+			return client, nil
+		},
+		stdinData: func(*cobra.Command) bool { return false },
+	})
+	c.SetArgs([]string{"--image", "data:image/png;base64,iVBO", "--type", "noul", "--question", "Is it red?", "--format", "value"})
+	c.SetOut(&bytes.Buffer{})
+	c.SetErr(&bytes.Buffer{})
+	if err := c.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Images) != 1 {
+		t.Fatalf("images = %d, want 1", len(got.Images))
+	}
+}
+
 func TestClassifyImageRejections(t *testing.T) {
 	text := filepath.Join(t.TempDir(), "notes.txt")
 	if err := os.WriteFile(text, []byte("hello"), 0o600); err != nil {
@@ -910,13 +962,11 @@ func TestClassifyImageRejections(t *testing.T) {
 	for _, tc := range []struct {
 		name, provider, image, want string
 	}{
-		{"typesafe provider", "typesafe", "data:image/png;base64,iVBO", "requires a classify provider with type openai or cloudflare"},
 		{"not an image", "openai", text, "unsupported image type"},
 		{"hosted url", "openai", "https://example.com/a.png", "hosted image URLs are not supported"},
 		{"bad data url", "openai", "data:text/plain;base64,aGk=", "data URL must be"},
 		{"stdin", "openai", "-", "does not read stdin"},
 		{"empty data url", "openai", "data:image/png;base64,", "data URL is empty"},
-		{"typesafe checked before reading", "typesafe", text, "requires a classify provider with type openai or cloudflare"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newClassifyCmd(classifyDeps{

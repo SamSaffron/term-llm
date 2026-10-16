@@ -182,7 +182,7 @@ func TestClassifyOpenAIProviderResolutionAndKey(t *testing.T) {
 }
 
 func TestClassifyAliasSchema(t *testing.T) {
-	for _, field := range []string{"type", "api_key", "model", "base_url", "timeout_seconds", "headers", "headers.OpenAI-Organization"} {
+	for _, field := range []string{"type", "api_key", "model", "base_url", "timeout_seconds", "images", "headers", "headers.OpenAI-Organization"} {
 		if !IsKnownKey("classify.providers.custom." + field) {
 			t.Fatalf("unknown field %s", field)
 		}
@@ -193,7 +193,7 @@ func TestClassifyAliasSchema(t *testing.T) {
 		}
 	}
 	specs := ClassifyKeySpecs([]string{"custom"})
-	if len(specs) != 6 {
+	if len(specs) != 7 {
 		t.Fatalf("specs: %v", specs)
 	}
 	for _, spec := range specs {
@@ -235,6 +235,41 @@ func TestGuardianClassifyConfidenceRejectsNonFinite(t *testing.T) {
 	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		if err := (GuardianClassifyConfig{MinConfidence: value}).Validate(); err == nil {
 			t.Fatalf("accepted %g", value)
+		}
+	}
+}
+
+func TestClassifyProviderImagesDefault(t *testing.T) {
+	cfg := ClassifyConfig{Providers: map[string]ClassifyProviderConfig{
+		"self":  {Type: ClassifyProviderTypeSafe, BaseURL: "https://systemone.example", Images: ClassifyImagesInline},
+		"alias": {Type: ClassifyProviderTypeSafe, Images: " assets "},
+		"plain": {Type: ClassifyProviderTypeSafe, BaseURL: "https://systemone.example"},
+	}}
+	for name, want := range map[string]string{
+		"self": ClassifyImagesInline, "alias": ClassifyImagesAssets, "plain": ClassifyImagesAssets,
+		ClassifyProviderTypeSafe: ClassifyImagesAssets, ClassifyProviderOpenAI: "", ClassifyProviderCloudflare: "",
+	} {
+		provider, err := cfg.ResolveProvider(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if provider.Images != want {
+			t.Errorf("%s images = %q, want %q", name, provider.Images, want)
+		}
+	}
+	if got := GetDefaults()["classify.providers.typesafe.images"]; got != ClassifyImagesAssets {
+		t.Errorf("classify.providers.typesafe.images default = %#v, want %q", got, ClassifyImagesAssets)
+	}
+}
+
+func TestClassifyProviderImagesValidation(t *testing.T) {
+	cfg := ClassifyConfig{Providers: map[string]ClassifyProviderConfig{
+		"bool":   {Type: ClassifyProviderTypeSafe, Images: "true"},
+		"openai": {Type: ClassifyProviderOpenAI, Images: ClassifyImagesInline},
+	}}
+	for name, want := range map[string]string{"bool": `must be "assets"`, "openai": "applies only to type typesafe"} {
+		if _, err := cfg.ResolveProvider(name); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", name, err, want)
 		}
 	}
 }
