@@ -242,6 +242,13 @@ func (c TranscriptionConfig) ElevenLabsKey() CredentialRef {
 	return Cred(c.ElevenLabs.APIKey, "ELEVENLABS_API_KEY", "XI_API_KEY")
 }
 
+// --- Reranking -----------------------------------------------------------
+
+// Key returns the optional reranking HTTP credential, resolved only on use.
+func (c RerankConfig) Key() CredentialRef {
+	return Cred(c.APIKey)
+}
+
 // --- Embeddings ----------------------------------------------------------
 
 // OpenAIKey returns the OpenAI embedding credential.

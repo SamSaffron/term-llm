@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
 	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/samsaffron/term-llm/internal/rerank"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -215,6 +216,7 @@ func Execute() {
 	publisher := process.Start(versionString(), reloadExecutable)
 	err := executeWithArgs(os.Args[1:])
 	stopReload()
+	rerank.Shutdown() // Execute may call os.Exit below; stop the managed llama-server first.
 	publisher.Stop()
 	if err != nil {
 		writeRootError(rootCmd.ErrOrStderr(), err)

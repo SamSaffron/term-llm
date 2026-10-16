@@ -715,6 +715,26 @@ embed:
 
 Each feature block can hold provider-specific credentials and defaults. The image, audio, music, transcription, and embedding providers are independent of the main text provider. `image.provider` also accepts a named `providers` entry with `type: openai_compatible`, an API `base_url`, and a `model`; see [local image providers](/guides/image-generation/#local-and-openai-compatible-image-providers).
 
+### Grep reranking
+
+The `grep` tool accepts an optional plain-English `query`. Use it with a broad regex `pattern` to collect candidate blocks; when a reranker is available, grep lexically prefilters at most 64 blocks (configurable), sends at most 1,200 characters per block (including the path), and displays only the top `max_results` blocks in relevance order. Reranker scores are used **only for ordering**, never as absolute thresholds. Without `query`, grep is unchanged. `files_with_matches` is never reranked. If reranking is unavailable, errors, or exceeds the default 20-second request timeout, grep returns its normal results with a note.
+
+When `rerank.provider` is unset, reranking is automatically available **only if `llama-server` can be resolved**. It starts a local server in the background on first use of `query`; grep does not wait for it, and shows normal results with a note until the server is ready. The initial run downloads the default 639 MB GGUF to `~/.cache/huggingface/hub` (or the configured Hugging Face cache). The model's rerank chat template is applied by llama-server, without a custom prompt. Set `rerank.provider: none` to disable it.
+
+The managed server handles one request at a time. llama-server keeps working on a request after the client gives up, so a timed-out request finishes in the background and later searches fall back immediately (rather than queueing) until it completes. The measured throughput then caps later batches so they fit in about 75% of `rerank.timeout`. On a 32-core CPU (about 550 prompt tokens/s for the default model), that is roughly 15 blocks in about 6 seconds; a GPU-enabled llama.cpp build (CUDA, Vulkan, or Metal) keeps the full pool. A GPU build or a remote HTTP provider is recommended. For a remote Cohere/Jina-compatible HTTP endpoint:
+
+```yaml
+rerank:
+  provider: http
+  base_url: https://example.com
+  model: your-reranker-model
+  api_key: ${RERANK_API_KEY}
+  pool: 64
+  timeout: 20s
+```
+
+The HTTP endpoint defaults to `/v1/rerank`; set `rerank.path` for a different endpoint path (or put `/rerank` or `/reranking` directly in `base_url`). `rerank.llamacpp.binary` overrides the `llama-server` executable. The managed server uses `--reranking -hf <model> --host 127.0.0.1 --port <free port>` and the throughput defaults `-c 32768 -np 4 -b 2048 -ub 2048`; `rerank.llamacpp.args` is appended after the throughput defaults to override them (for example `[-ngl, "99"]`). The model defaults to `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF`, with `rerank.llamacpp.startup_timeout: 10m` for initial downloads and `rerank.llamacpp.idle_timeout: 10m`. HTTP credentials support the usual deferred `${ENV}` references.
+
 ## Provider-specific environment overrides
 
 Providers that shell out to local CLIs can accept extra subprocess environment variables via `providers.<name>.env`.

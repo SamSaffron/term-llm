@@ -71,6 +71,7 @@ func buildToolConfig(toolsFlag string, readDirs, writeDirs, shellAllow []string,
 		ShellAutoRunEnv: cfg.Tools.ShellAutoRunEnv,
 		ShellNonTTYEnv:  cfg.Tools.ShellNonTTYEnv,
 		ImageProvider:   cfg.Tools.ImageProvider,
+		Rerank:          cfg.Rerank,
 	}
 
 	// Override with CLI flags

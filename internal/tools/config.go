@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/pathutil"
+	"github.com/samsaffron/term-llm/internal/rerank"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -15,19 +18,21 @@ import (
 type ToolConfig struct {
 	mu *sync.RWMutex `mapstructure:"-"`
 
-	Enabled         []string    `mapstructure:"enabled"`            // Enabled tool spec names
-	ReadDirs        []string    `mapstructure:"read_dirs"`          // Directories for read operations
-	WriteDirs       []string    `mapstructure:"write_dirs"`         // Directories for write operations
-	ShellAllow      []string    `mapstructure:"shell_allow"`        // Shell command patterns
-	ScriptCommands  []string    `mapstructure:"script_commands"`    // Exact script commands (auto-approved)
-	ShellAutoRun    bool        `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
-	ShellAutoRunEnv string      `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
-	ShellNonTTYEnv  string      `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
-	ImageProvider   string      `mapstructure:"image_provider"`     // Override for image provider
-	Spawn           SpawnConfig `mapstructure:"spawn"`              // Spawn agent configuration
-	AgentDir        string      `mapstructure:"-"`                  // Agent source directory (set at runtime)
-	PlanGuidance    bool        `mapstructure:"-"`                  // Add built-in developer guidance only when update_plan is callable
-	Workspace       string      `mapstructure:"-"`                  // Agent workspace policy: auto/default or none
+	Enabled         []string            `mapstructure:"enabled"`            // Enabled tool spec names
+	ReadDirs        []string            `mapstructure:"read_dirs"`          // Directories for read operations
+	WriteDirs       []string            `mapstructure:"write_dirs"`         // Directories for write operations
+	ShellAllow      []string            `mapstructure:"shell_allow"`        // Shell command patterns
+	ScriptCommands  []string            `mapstructure:"script_commands"`    // Exact script commands (auto-approved)
+	ShellAutoRun    bool                `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
+	ShellAutoRunEnv string              `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
+	ShellNonTTYEnv  string              `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
+	ImageProvider   string              `mapstructure:"image_provider"`     // Override for image provider
+	Rerank          config.RerankConfig `mapstructure:"-"`                  // Optional grep reranking settings
+	RerankProvider  rerank.Provider     `mapstructure:"-"`                  // Optional injected provider (e.g. tests)
+	Spawn           SpawnConfig         `mapstructure:"spawn"`              // Spawn agent configuration
+	AgentDir        string              `mapstructure:"-"`                  // Agent source directory (set at runtime)
+	PlanGuidance    bool                `mapstructure:"-"`                  // Add built-in developer guidance only when update_plan is callable
+	Workspace       string              `mapstructure:"-"`                  // Agent workspace policy: auto/default or none
 	// BaseDir, when set, is the per-run/session working directory used to
 	// resolve relative tool paths and default process-spawn directories. It is
 	// deliberately implemented through explicit path resolution / exec.Cmd.Dir;
@@ -186,6 +191,12 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 	}
 	if other.ImageProvider != "" {
 		result.ImageProvider = other.ImageProvider
+	}
+	if !reflect.DeepEqual(other.Rerank, config.RerankConfig{}) {
+		result.Rerank = other.Rerank
+	}
+	if other.RerankProvider != nil {
+		result.RerankProvider = other.RerankProvider
 	}
 
 	if other.AgentDir != "" {
