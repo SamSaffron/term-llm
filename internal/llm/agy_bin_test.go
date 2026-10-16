@@ -67,10 +67,62 @@ func TestAgyBuildArgs(t *testing.T) {
 	p := NewAgyBinProvider("gemini-3.6-flash-high", nil)
 	args := p.buildArgs(Request{}, "")
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--output-format stream-json", "--model gemini-3.6-flash-high"} {
+	for _, want := range []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--output-format stream-json", "--agent " + agyAgentName, "--model gemini-3.6-flash-high"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args %q missing %q", joined, want)
 		}
+	}
+	if strings.Contains(joined, "--print-timeout") {
+		t.Fatalf("args %q cap the whole inline tool loop", joined)
+	}
+}
+
+func TestAgyVersionAtLeast(t *testing.T) {
+	for _, test := range []struct {
+		version string
+		want    bool
+	}{
+		{version: "1.1.11", want: true},
+		{version: "v1.1.22", want: true},
+		{version: "agy version 2.0.0-beta.1", want: true},
+		{version: "1.1.12-beta.1", want: true},
+		{version: "1.1.11-beta.1", want: false},
+		{version: "node v20.11.0 agy 1.1.10", want: false},
+		{version: "2026.08.29 agy 1.1.22", want: false},
+		{version: "1.1.10", want: false},
+		{version: "1.0.99", want: false},
+		{version: "unknown", want: false},
+	} {
+		if got := AgyVersionAtLeast(test.version, 1, 1, 11); got != test.want {
+			t.Errorf("AgyVersionAtLeast(%q) = %v, want %v", test.version, got, test.want)
+		}
+	}
+}
+
+func TestAgyEnsureSupportedVersion(t *testing.T) {
+	original := agyVersionOutput
+	t.Cleanup(func() { agyVersionOutput = original })
+	calls := 0
+	version := "1.3.2"
+	agyVersionOutput = func(context.Context, string, []string) ([]byte, error) {
+		calls++
+		return []byte(version + "\n"), nil
+	}
+	p := NewAgyBinProvider("", nil)
+	p.agyBinary = "/usr/bin/agy"
+	err := p.ensureSupportedVersion(context.Background())
+	var userErr *UserFacingProviderError
+	if !errors.As(err, &userErr) || !strings.Contains(userErr.Summary, "1.3.3") || !strings.Contains(userErr.Summary, "1.3.2") {
+		t.Fatalf("old agy error = %v", err)
+	}
+	version = "1.3.6"
+	for range 2 {
+		if err := p.ensureSupportedVersion(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("version checks = %d, want the passing result cached", calls)
 	}
 }
 
@@ -177,7 +229,16 @@ func TestAgyProviderStateRoundTrip(t *testing.T) {
 		t.Fatalf("restored state = (%q,%q,%d,%q)", restored.agyHome, restored.conversationID, restored.messagesSent, restored.transcriptHash)
 	}
 
-	malicious, _ := json.Marshal(agyBinProviderState{AgyHome: filepath.Join(base, "..", id), ConversationID: "attacker", MessagesSent: 1, TranscriptHash: "hash"})
+	legacy, _ := json.Marshal(agyBinProviderState{AgyHome: home, ConversationID: conversationID, MessagesSent: 4, TranscriptHash: "transcript-hash"})
+	upgraded := NewAgyBinProvider("", nil)
+	if err := upgraded.ImportProviderState(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.agyHome != home || upgraded.conversationID != "" || upgraded.messagesSent != 0 || upgraded.transcriptHash != "" {
+		t.Fatalf("pre-agent state resumed its agy conversation: (%q,%q,%d,%q)", upgraded.agyHome, upgraded.conversationID, upgraded.messagesSent, upgraded.transcriptHash)
+	}
+
+	malicious, _ := json.Marshal(agyBinProviderState{Format: agyBinStateFormat, AgyHome: filepath.Join(base, "..", id), ConversationID: "attacker", MessagesSent: 1, TranscriptHash: "hash"})
 	if err := restored.ImportProviderState(malicious); err == nil {
 		t.Fatal("ImportProviderState accepted path traversal")
 	}
@@ -331,21 +392,10 @@ func TestHandleAgyStreamLineAllowsOmittedIDAfterResume(t *testing.T) {
 	}
 }
 
-func TestAgyPathReplacerMapsPrivateScratchToWorkspace(t *testing.T) {
-	home := filepath.Join(string(filepath.Separator), "tmp", "term-llm-agy-home-123")
-	workspace := filepath.Join(string(filepath.Separator), "src", "term-llm")
-	replacer := agyPathReplacer(home, workspace)
-	input := "See [embed.go](file://" + filepath.ToSlash(filepath.Join(home, ".gemini", "antigravity-cli", "scratch", "internal", "serveui", "embed.go")) + ")"
-	want := "See [embed.go](file://" + filepath.ToSlash(filepath.Join(workspace, "internal", "serveui", "embed.go")) + ")"
-	if got := replacer.Replace(input); got != want {
-		t.Fatalf("rewritten path = %q, want %q", got, want)
-	}
-}
-
 func TestBuildAgyPromptIdentifiesActualWorkspace(t *testing.T) {
 	workspace := filepath.Join(string(filepath.Separator), "src", "term-llm")
 	prompt := buildAgyPrompt([]Message{UserText("inspect files")}, workspace)
-	if !strings.Contains(prompt, workspace) || !strings.Contains(prompt, "temporary Antigravity scratch") {
+	if !strings.Contains(prompt, "<workspace>\nThe user's workspace is "+workspace+".") {
 		t.Fatalf("prompt does not anchor workspace: %q", prompt)
 	}
 }
@@ -355,8 +405,18 @@ func TestAgyMCPConfigIsPrivate(t *testing.T) {
 	p.agyHome = t.TempDir()
 	p.mcpURL = "http://127.0.0.1:1234/mcp"
 	p.mcpToken = "secret"
-	for _, d := range []string{"config", "antigravity", "antigravity-cli"} {
-		if err := os.MkdirAll(filepath.Join(p.agyHome, ".gemini", d), 0o700); err != nil {
+	if err := ensureAgyHomeLayout(p.agyHome); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []string{
+		filepath.Join(p.agyHome, ".gemini", "antigravity", "mcp_config.json"),
+		filepath.Join(p.agyHome, ".gemini", "antigravity-cli", "mcp_config.json"),
+	}
+	for _, path := range legacy {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{"mcpServers":{"term-llm":{"serverUrl":"stale"}}}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -371,12 +431,74 @@ func TestAgyMCPConfigIsPrivate(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o", info.Mode().Perm())
 	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "serverUrl") || !strings.Contains(string(data), "Bearer secret") {
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	server := cfg.MCPServers[agyMCPServerName]
+	if server.URL != p.mcpURL || server.Headers["Authorization"] != "Bearer secret" {
 		t.Fatalf("config = %s", data)
+	}
+	for _, path := range legacy {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("legacy MCP config %s was not removed: %v", path, err)
+		}
+	}
+}
+
+func TestAgyAgentConfigExcludesDefaultComponents(t *testing.T) {
+	p := NewAgyBinProvider("", nil)
+	p.agyHome = t.TempDir()
+	if err := ensureAgyHomeLayout(p.agyHome); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.writeAgentConfig(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(p.agyHome, ".gemini", "config", "agents", agyAgentName+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+	text := string(data)
+	for _, want := range []string{"name: " + agyAgentName + "\n", "excludeDefaultComponents: true\n", "inheritCustomizations: true\n", "tools: []\n"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("agent config missing %q:\n%s", want, text)
+		}
+	}
+	// agy turns every "# " line of an agent body into a section tag.
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "# ") {
+			t.Fatalf("agent body contains an H1 line: %q", line)
+		}
+	}
+}
+
+func TestAgyMCPToolSpecsAreAlwaysLoaded(t *testing.T) {
+	specs := agyMCPToolSpecs([]ToolSpec{{Name: "read_file"}, {Name: "grep"}})
+	if len(specs) != 2 {
+		t.Fatalf("specs = %+v", specs)
+	}
+	for _, spec := range specs {
+		if spec.Meta[agyAlwaysLoadMeta] != true {
+			t.Fatalf("%s meta = %#v, want antigravity/alwaysLoad", spec.Name, spec.Meta)
+		}
 	}
 }
 

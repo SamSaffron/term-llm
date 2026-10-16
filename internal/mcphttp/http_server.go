@@ -85,6 +85,9 @@ type ToolSpec struct {
 	// MCP calls only when readOnlyHint is true; this does not alter term-llm's
 	// permissions, approvals, or execution policy.
 	Parallelizable bool
+	// Meta is published as the tool's _meta object in tools/list, for
+	// client-specific hints such as agy's antigravity/alwaysLoad.
+	Meta map[string]any
 }
 
 const defaultToolProgressInterval = 30 * time.Second
@@ -247,6 +250,7 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 			Description: tool.Description,
 			InputSchema: tool.Schema, // Pass map directly - SDK handles marshaling
 			Annotations: annotations,
+			Meta:        tool.Meta,
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			// The SDK may stop waiting before a cancelled executor actually returns.
 			ctx, release, ownershipErr := restart.Child(ctx)

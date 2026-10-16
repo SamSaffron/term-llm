@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,8 +17,6 @@ import (
 )
 
 const agyBinUsageMinimumVersion = "1.1.11"
-
-var agyUsageSemverPattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*))?(\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$`)
 
 type agyBinUsageEnvelope struct {
 	ConversationID string `json:"conversation_id"`
@@ -120,7 +116,7 @@ func runAgyUsageCommand(ctx context.Context, binary string) ([]byte, error) {
 		return nil, agyUsageCommandFailure("check agy version", err, versionStderr)
 	}
 	version := strings.TrimSpace(string(versionOutput))
-	if !agyUsageVersionAtLeast(version, 1, 1, 11) {
+	if !llm.AgyVersionAtLeast(version, 1, 1, 11) {
 		if version == "" {
 			version = "unknown"
 		}
@@ -161,39 +157,6 @@ func agyUsageCommandFailure(action string, commandErr error, stderr string) erro
 		return fmt.Errorf("%s: %s: %w", action, detail, commandErr)
 	}
 	return fmt.Errorf("%s: %w", action, commandErr)
-}
-
-func agyUsageVersionAtLeast(version string, wantMajor, wantMinor, wantPatch int) bool {
-	var matches [][]string
-	for _, field := range strings.Fields(version) {
-		candidate := strings.Trim(strings.TrimSpace(field), "()[]{}<>,;")
-		if match := agyUsageSemverPattern.FindStringSubmatch(candidate); match != nil {
-			matches = append(matches, match)
-		}
-	}
-	// Fail closed if the output is unparseable or contains another version-like
-	// token (for example, a runtime version before the actual agy version).
-	if len(matches) != 1 {
-		return false
-	}
-	match := matches[0]
-	got := make([]int, 3)
-	for i := range got {
-		value, err := strconv.Atoi(match[i+1])
-		if err != nil {
-			return false
-		}
-		got[i] = value
-	}
-	want := []int{wantMajor, wantMinor, wantPatch}
-	for i := range got {
-		if got[i] != want[i] {
-			return got[i] > want[i]
-		}
-	}
-	// A prerelease of the minimum supported version sorts below the release that
-	// introduced zero-token print-mode /usage.
-	return match[4] == ""
 }
 
 func parseAgyBinUsageOutput(output []byte) (json.RawMessage, agyBinUsageReport, error) {

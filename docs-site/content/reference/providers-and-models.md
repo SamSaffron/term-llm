@@ -123,7 +123,7 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `vllm` | Configured endpoint/model; optional `VLLM_API_KEY` | Whether a key is required depends on your server. |
 | `claude-bin` | Installed `claude` CLI and its login | Uses Claude Code's authentication; no separate term-llm API key required. |
 | `cursor-bin` | Installed `cursor-agent` CLI and its login, or `CURSOR_API_KEY` | Model availability comes from the companion CLI/account. |
-| `agy-bin` | Installed `agy` CLI and its login | Uses Antigravity CLI credentials. |
+| `agy-bin` | Installed `agy` CLI (1.3.3 or newer) and its login | Uses Antigravity CLI credentials. |
 | `grok-bin` | Installed `grok` CLI; `GROK_AUTH_PATH` or `~/.grok/auth.json` | Grok Build CLI integration, separate from `grok` OAuth. |
 | `lmstudio` | Configured `openai_compatible` endpoint and loaded model | A custom provider name, not a separate built-in adapter. |
 | Other custom names | Explicit `type` and endpoint; `api_key` or `<PROVIDER_NAME>_API_KEY` when required | Unknown provider names default to `openai_compatible`; configure them before use. |

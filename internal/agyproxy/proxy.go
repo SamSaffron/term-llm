@@ -1,9 +1,9 @@
-// Package agyproxy contains the temporary request-filter compatibility layer
-// needed while agy cannot combine MCP with an empty native-tool set.
+// Package agyproxy is the loopback HTTPS proxy between agy and Cloud Code.
+// It keeps agent generation requests limited to the term-llm MCP bridge tools
+// and restores tool output that agy truncates or spills to private artifact
+// files, which the term-llm agent has no tool to read.
 //
-// Keep this package independent of internal/llm. Once agy supports that
-// combination directly, the provider can replace its agyToolIsolation
-// implementation and this package can be deleted.
+// Keep this package independent of internal/llm.
 package agyproxy
 
 import (
@@ -23,7 +23,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,10 +41,6 @@ const (
 	// filtered request sent upstream. These requests contain full conversation
 	// content and must be treated as sensitive.
 	GenerationTraceFileEnv = "TERM_LLM_AGY_PROXY_TRACE_FILE"
-
-	agyArtifactMarker     = "The output was large and was saved to: file://"
-	agyArtifactDelimiters = ".,;:)]}\"'`>"
-	maxAgyArtifactSize    = 1 << 20
 )
 
 // Server is a loopback-only HTTPS forward proxy. It intercepts only the Cloud
@@ -392,10 +387,10 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 		req.Header.Del("Content-Encoding")
 		req.Header.Del("Transfer-Encoding")
 		req.TransferEncoding = nil
-		// Tool-enabled agy turns may make auxiliary model requests (for example,
-		// context summarization) without a tools field before the actual agent
-		// generation. Forward those safely with an empty tool list, but do not let
-		// them satisfy the provider's evidence that call_mcp_tool was exposed.
+		// Tool-enabled agy turns also make auxiliary model requests (titles,
+		// context summaries) without a tools field. Forward those unchanged, but
+		// do not let them satisfy the provider's evidence that the bridge tools
+		// were exposed.
 		if !requireMCP || verified {
 			s.filtered.Add(1)
 		}
@@ -546,221 +541,4 @@ func (s *Server) leafCertificate(host string) (tls.Certificate, error) {
 
 func isGenerationPath(path string) bool {
 	return path == generationPath || strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent")
-}
-
-// ExpandGenerationArtifacts replaces agy's private spill-file notices in the
-// model request with their original contents. Only regular output.txt files in
-// <artifactRoot>/<conversation>/.system_generated/steps/<number>/ are eligible;
-// missing, malformed, oversized, symlinked, or external paths are left intact.
-func ExpandGenerationArtifacts(body []byte, artifactRoot string) ([]byte, error) {
-	artifactRoot = strings.TrimSpace(artifactRoot)
-	if artifactRoot == "" || !strings.Contains(string(body), agyArtifactMarker) {
-		return body, nil
-	}
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, fmt.Errorf("decode generation request for artifact expansion: %w", err)
-	}
-	request, ok := root["request"].(map[string]any)
-	if !ok {
-		return body, nil
-	}
-	if !expandAgyArtifactValue(request, artifactRoot) {
-		return body, nil
-	}
-	out, err := json.Marshal(root)
-	if err != nil {
-		return nil, fmt.Errorf("encode generation request after artifact expansion: %w", err)
-	}
-	return out, nil
-}
-
-func expandAgyArtifactValue(value any, artifactRoot string) bool {
-	changed := false
-	switch value := value.(type) {
-	case map[string]any:
-		for key, child := range value {
-			if text, ok := child.(string); ok {
-				expanded, replaced := expandAgyArtifactNotices(text, artifactRoot)
-				if replaced {
-					value[key] = expanded
-					changed = true
-				}
-				continue
-			}
-			if expandAgyArtifactValue(child, artifactRoot) {
-				changed = true
-			}
-		}
-	case []any:
-		for index, child := range value {
-			if text, ok := child.(string); ok {
-				expanded, replaced := expandAgyArtifactNotices(text, artifactRoot)
-				if replaced {
-					value[index] = expanded
-					changed = true
-				}
-				continue
-			}
-			if expandAgyArtifactValue(child, artifactRoot) {
-				changed = true
-			}
-		}
-	}
-	return changed
-}
-
-func expandAgyArtifactNotices(text, artifactRoot string) (string, bool) {
-	var out strings.Builder
-	changed := false
-	for {
-		marker := strings.Index(text, agyArtifactMarker)
-		if marker < 0 {
-			out.WriteString(text)
-			return out.String(), changed
-		}
-		pathStart := marker + len(agyArtifactMarker)
-		tokenEnd := pathStart
-		for tokenEnd < len(text) && text[tokenEnd] > ' ' {
-			tokenEnd++
-		}
-		pathEnd := tokenEnd
-		for pathEnd > pathStart && strings.ContainsRune(agyArtifactDelimiters, rune(text[pathEnd-1])) {
-			pathEnd--
-		}
-		out.WriteString(text[:marker])
-		if content, ok := readAgyArtifact("file://"+text[pathStart:pathEnd], artifactRoot); ok {
-			out.WriteString(content)
-			out.WriteString(text[pathEnd:tokenEnd])
-			changed = true
-		} else {
-			out.WriteString(text[marker:tokenEnd])
-		}
-		text = text[tokenEnd:]
-	}
-}
-
-func readAgyArtifact(rawURL, artifactRoot string) (string, bool) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme != "file" || (parsed.Host != "" && parsed.Host != "localhost") || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", false
-	}
-	root, err := filepath.EvalSymlinks(artifactRoot)
-	if err != nil {
-		return "", false
-	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return "", false
-	}
-	candidate, err := filepath.Abs(filepath.Clean(parsed.Path))
-	if err != nil {
-		return "", false
-	}
-	resolved, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", false
-	}
-	relative, err := filepath.Rel(root, resolved)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	parts := strings.Split(filepath.ToSlash(relative), "/")
-	if len(parts) != 5 || parts[0] == "" || parts[1] != ".system_generated" || parts[2] != "steps" || parts[4] != "output.txt" {
-		return "", false
-	}
-	if step, err := strconv.Atoi(parts[3]); err != nil || step < 0 {
-		return "", false
-	}
-	linkInfo, err := os.Lstat(candidate)
-	if err != nil || linkInfo.Mode()&os.ModeSymlink != 0 {
-		return "", false
-	}
-	file, err := os.Open(candidate)
-	if err != nil {
-		return "", false
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxAgyArtifactSize {
-		return "", false
-	}
-	resolvedInfo, err := os.Stat(resolved)
-	if err != nil || !os.SameFile(info, resolvedInfo) {
-		return "", false
-	}
-	content, err := io.ReadAll(io.LimitReader(file, maxAgyArtifactSize+1))
-	if err != nil || len(content) > maxAgyArtifactSize {
-		return "", false
-	}
-	return string(content), true
-}
-
-// FilterGenerationRequest removes every function declaration except the real
-// agy MCP dispatcher. Unknown fields are preserved. Requests without a tools
-// field are auxiliary generations and are forwarded with an empty tool list.
-func FilterGenerationRequest(body []byte, requireMCP bool) ([]byte, error) {
-	out, _, err := filterGenerationRequest(body, requireMCP)
-	return out, err
-}
-
-// filterGenerationRequest also reports whether the request exposed the MCP
-// dispatcher. Callers use that evidence to distinguish an agent generation
-// from agy's tool-less auxiliary generations.
-func filterGenerationRequest(body []byte, requireMCP bool) ([]byte, bool, error) {
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, false, fmt.Errorf("decode generation request: %w", err)
-	}
-	request, ok := root["request"].(map[string]any)
-	if !ok {
-		return nil, false, errors.New("generation request missing request object")
-	}
-	rawTools, exists := request["tools"]
-	if !exists {
-		request["tools"] = []any{}
-		out, err := json.Marshal(root)
-		if err != nil {
-			return nil, false, fmt.Errorf("encode generation request: %w", err)
-		}
-		return out, false, nil
-	}
-	tools, ok := rawTools.([]any)
-	if !ok {
-		return nil, false, errors.New("generation request has invalid tools array")
-	}
-	found := false
-	filtered := make([]any, 0, 1)
-	for _, raw := range tools {
-		group, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		decls, ok := group["functionDeclarations"].([]any)
-		if !ok {
-			continue
-		}
-		for _, d := range decls {
-			decl, ok := d.(map[string]any)
-			if !ok {
-				continue
-			}
-			if name, _ := decl["name"].(string); name == "call_mcp_tool" {
-				if found {
-					return nil, false, errors.New("generation request contains duplicate call_mcp_tool declarations")
-				}
-				found = true
-				filtered = append(filtered, map[string]any{"functionDeclarations": []any{decl}})
-			}
-		}
-	}
-	if requireMCP && !found {
-		return nil, false, errors.New("generation request missing call_mcp_tool")
-	}
-	request["tools"] = filtered
-	out, err := json.Marshal(root)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode generation request: %w", err)
-	}
-	return out, found, nil
 }

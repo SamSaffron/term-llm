@@ -692,6 +692,30 @@ func TestServerPublishesParallelHintAndPreservesClaudeToolUseID(t *testing.T) {
 	}
 }
 
+func TestServerPublishesToolMeta(t *testing.T) {
+	server := NewServer(func(context.Context, string, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "ok"}, nil
+	})
+	url, token, err := server.Start(context.Background(), []ToolSpec{
+		{Name: "eager", Schema: map[string]any{"type": "object"}, Meta: map[string]any{"antigravity/alwaysLoad": true}},
+		{Name: "plain", Schema: map[string]any{"type": "object"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+	listed, err := connectTestMCPClient(t, url, token, nil).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listed.Tools {
+		got := tool.Meta["antigravity/alwaysLoad"]
+		if (tool.Name == "eager") != (got == true) {
+			t.Fatalf("%s _meta = %#v", tool.Name, tool.Meta)
+		}
+	}
+}
+
 func TestServerSuppressesPrivateParallelHintOnNonLoopbackBind(t *testing.T) {
 	server := NewServer(func(context.Context, string, json.RawMessage) (ToolResult, error) {
 		return ToolResult{Content: "ok"}, nil

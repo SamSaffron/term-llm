@@ -209,28 +209,6 @@ func TestRunAgyBinUsageRequiresCLI(t *testing.T) {
 	}
 }
 
-func TestAgyUsageVersionAtLeast(t *testing.T) {
-	for _, test := range []struct {
-		version string
-		want    bool
-	}{
-		{version: "1.1.11", want: true},
-		{version: "v1.1.22", want: true},
-		{version: "agy version 2.0.0-beta.1", want: true},
-		{version: "1.1.12-beta.1", want: true},
-		{version: "1.1.11-beta.1", want: false},
-		{version: "node v20.11.0 agy 1.1.10", want: false},
-		{version: "2026.08.29 agy 1.1.22", want: false},
-		{version: "1.1.10", want: false},
-		{version: "1.0.99", want: false},
-		{version: "unknown", want: false},
-	} {
-		if got := agyUsageVersionAtLeast(test.version, 1, 1, 11); got != test.want {
-			t.Errorf("agyUsageVersionAtLeast(%q) = %v, want %v", test.version, got, test.want)
-		}
-	}
-}
-
 func TestUsageProviderCompletionIncludesAgyBin(t *testing.T) {
 	completions, _ := UsageProviderFlagCompletion(nil, nil, "agy")
 	if len(completions) != 1 || completions[0] != "agy-bin" {

@@ -144,7 +144,7 @@ Claude and Grok generation calls are generally readable HTTP/1.1 JSON. Cursor's 
 
 Those files preserve the decoded protobuf bytes without rewriting them; `strings`, `rg -a`, or a protobuf wire decoder can inspect prompt, tool, skill, path, and continuation markers. The original HTTP/2 stream remains alongside them.
 
-`agy-bin` retains its mandatory native-tool filtering proxy. In audit mode that proxy is chained through the wire proxy, and its CA bundle trusts both ephemeral authorities. This preserves agy's fail-closed tool filtering while allowing the forwarded traffic and all other agy HTTPS connections to be captured. The specialized `TERM_LLM_AGY_PROXY_TRACE_FILE` described below remains useful when you specifically need agy's original request next to term-llm's filtered request.
+`agy-bin` retains its mandatory request-filtering proxy, which keeps only term-llm's tools in agent requests and restores tool output that agy truncates. In audit mode that proxy is chained through the wire proxy, and its CA bundle trusts both ephemeral authorities. This preserves agy's fail-closed tool filtering while allowing the forwarded traffic and all other agy HTTPS connections to be captured. The specialized `TERM_LLM_AGY_PROXY_TRACE_FILE` described below remains useful when you specifically need agy's original request next to term-llm's filtered request.
 
 The audit proxy overrides inherited `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, and `NODE_EXTRA_CA_CERTS` **only in the audited CLI child**. Localhost remains excluded so CLI-to-term-llm MCP traffic does not loop through the proxy. An existing `SSL_CERT_FILE` is included in the generated bundle so private enterprise roots continue to work. The trace-root variable itself is removed from the child environment.
 
@@ -166,7 +166,7 @@ TERM_LLM_AGY_PROXY_TRACE_FILE=/tmp/term-llm-agy-trace/requests.jsonl term-llm ch
 rg 'output\.txt|brain/' /tmp/term-llm-agy-trace/requests.jsonl
 ```
 
-Each record contains both `original_request` from agy and `forwarded_request` after term-llm rehydrates agy's private spill artifacts and removes native tools. The trace writer rejects symlink targets and creates the file with mode `0600`. It contains complete prompts and conversation content, so enable it only while diagnosing a problem and delete it afterward.
+Each record contains both `original_request` from agy and `forwarded_request` after term-llm restores tool output that agy truncated or spilled to private artifact files removes every tool declaration except term-llm's own `mcp_term-llm_*` tools, and strips agy harness chatter (tool-result timestamps, model-selection notices, and the restart notice on resumed conversations). The trace writer rejects symlink targets and creates the file with mode `0600`. It contains complete prompts and conversation content, so enable it only while diagnosing a problem and delete it afterward.
 
 ## Live voice diagnostics
 

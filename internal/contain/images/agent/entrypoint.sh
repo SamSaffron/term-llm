@@ -100,7 +100,7 @@ write_default_config_once() {
       cat <<'CONFIG_YAML'
 providers:
   chatgpt:
-    model: gpt-5.6-sol-medium
+    model: gpt-6.1-sol-medium
 image:
   provider: "chatgpt:gpt-image-2.5-flare"
 CONFIG_YAML

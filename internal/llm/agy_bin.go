@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agyproxy"
 	"github.com/samsaffron/term-llm/internal/cliwire"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/procutil"
@@ -22,7 +23,9 @@ import (
 )
 
 const (
-	agyMCPServerName      = "term-llm"
+	agyMCPServerName      = agyproxy.BridgeServerName
+	agyAgentName          = "term-llm"
+	agyAlwaysLoadMeta     = "antigravity/alwaysLoad"
 	agyStderrTailMaxLines = 40
 	agyStdoutTailMaxLines = 40
 	agyToolLineGrace      = 75 * time.Millisecond
@@ -43,6 +46,7 @@ type AgyBinProvider struct {
 	transcriptHash         string
 	stateMu                sync.Mutex
 	agyBinary              string
+	versionCheckedBinary   string
 	toolExecutorConfigured bool
 	mcpServer              *mcphttp.Server
 	mcpURL, mcpToken       string
@@ -53,7 +57,13 @@ type AgyBinProvider struct {
 	active atomic.Bool
 }
 
+// agyBinStateFormat versions persisted resume state. Conversations recorded
+// before term-llm ran agy as the custom term-llm agent with eager bridge tools
+// (format 0) hold call_mcp_tool/view_file history and must not be resumed.
+const agyBinStateFormat = 1
+
 type agyBinProviderState struct {
+	Format         int    `json:"format,omitempty"`
 	AgyHome        string `json:"agy_home"`
 	ConversationID string `json:"conversation_id"`
 	MessagesSent   int    `json:"messages_sent"`
@@ -68,7 +78,6 @@ type agyStreamState struct {
 	fallbackText           string
 	usage                  *Usage
 	providerErr            error
-	pathReplacer           *strings.Replacer
 }
 
 type agyStreamEvent struct {
@@ -189,6 +198,7 @@ func (p *AgyBinProvider) ExportProviderState() ([]byte, bool) {
 		return nil, false
 	}
 	data, err := json.Marshal(agyBinProviderState{
+		Format:         agyBinStateFormat,
 		AgyHome:        p.agyHome,
 		ConversationID: p.conversationID,
 		MessagesSent:   p.messagesSent,
@@ -220,7 +230,7 @@ func (p *AgyBinProvider) ImportProviderState(data []byte) error {
 		return fmt.Errorf("decode agy-bin provider state: restore home: %w", err)
 	}
 	conversationDB := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", state.ConversationID+".db")
-	if _, err := os.Stat(conversationDB); !existed || err != nil {
+	if _, err := os.Stat(conversationDB); !existed || err != nil || state.Format != agyBinStateFormat {
 		state.ConversationID = ""
 		state.MessagesSent = 0
 		state.TranscriptHash = ""
@@ -246,6 +256,13 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req Request) (Stream, error
 		p.stateMu.Lock()
 		defer p.stateMu.Unlock()
 
+		// Check the binary before creating a home or copying credentials.
+		if err := p.resolveBinary(); err != nil {
+			return err
+		}
+		if err := p.ensureSupportedVersion(ctx); err != nil {
+			return err
+		}
 		previousHome := p.agyHome
 		if err := p.prepareHome(req.Ephemeral); err != nil {
 			if req.Ephemeral {
@@ -261,9 +278,6 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req Request) (Stream, error
 				_ = os.RemoveAll(ephemeralHome)
 			}
 		}()
-		if err := p.resolveBinary(); err != nil {
-			return err
-		}
 		messages, err := p.messagesForRequest(req)
 		if err != nil {
 			return err
@@ -283,6 +297,9 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req Request) (Stream, error
 			}
 		}
 		if err := p.writeMCPConfigs(exposeBridge); err != nil {
+			return err
+		}
+		if err := p.writeAgentConfig(); err != nil {
 			return err
 		}
 		wireAudit, err := startCLIWireServer("agy-bin", p.buildCommandEnv())
@@ -397,37 +414,10 @@ func agyWorkspaceDir(configured string) string {
 	return filepath.Clean(absolute)
 }
 
-func agyPathReplacer(home, workspace string) *strings.Replacer {
-	if home == "" || workspace == "" {
-		return nil
-	}
-	var pairs []string
-	for _, temporary := range []string{
-		filepath.Join(home, ".gemini", "antigravity-cli", "scratch"),
-		filepath.Join(home, "cwd"),
-	} {
-		temporary = filepath.Clean(temporary)
-		temporarySlash := filepath.ToSlash(temporary)
-		workspaceSlash := filepath.ToSlash(workspace)
-		pairs = append(pairs,
-			"file://"+temporarySlash+"/", "file://"+workspaceSlash+"/",
-			temporary+string(filepath.Separator), workspace+string(filepath.Separator),
-		)
-	}
-	return strings.NewReplacer(pairs...)
-}
-
-func (s *agyStreamState) rewritePaths(text string) string {
-	if s.pathReplacer == nil || text == "" {
-		return text
-	}
-	return s.pathReplacer.Replace(text)
-}
-
 func buildAgyPrompt(messages []Message, workspaceDir string) string {
 	var parts []string
 	if workspaceDir != "" {
-		parts = append(parts, "<workspace>\nThe user's actual workspace is "+workspaceDir+". Resolve relative file paths against this workspace. Never present paths or file links from the temporary Antigravity scratch or home directories; links to workspace files must use the actual workspace path.\n</workspace>")
+		parts = append(parts, "<workspace>\nThe user's workspace is "+workspaceDir+". Resolve relative file paths against this workspace.\n</workspace>")
 	}
 	if system := extractSystemPrompt(messages); system != "" {
 		parts = append(parts, "<system>\n"+system+"\n</system>")
@@ -439,7 +429,10 @@ func buildAgyPrompt(messages []Message, workspaceDir string) string {
 }
 
 func (p *AgyBinProvider) buildArgs(req Request, resumeID string) []string {
-	args := []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--output-format", "stream-json", "--print-timeout", "10m"}
+	// No --print-timeout: the whole inline tool loop runs inside one agy
+	// process, so a wall-clock cap would abort long agentic turns. Context
+	// cancellation stops agy instead.
+	args := []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--output-format", "stream-json", "--agent", agyAgentName}
 	model := strings.TrimSpace(chooseModel(req.Model, p.model))
 	if model != "" {
 		args = append(args, "--model", model)
@@ -452,9 +445,9 @@ func (p *AgyBinProvider) buildArgs(req Request, resumeID string) []string {
 
 func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, workspaceDir, expectedConversationID string, debug bool, send eventSender, exposeBridge bool) (*agyStreamState, error) {
 	// Keep agy out of the real workspace so it cannot auto-load workspace-local
-	// agents or MCP configuration. Antigravity consequently describes its own
-	// disposable scratch directory in some generated file links; output path
-	// rewriting maps those links back to workspaceDir before term-llm emits them.
+	// agents, rules, or MCP configuration. The term-llm agent has no default
+	// prompt sections, so the model never sees this neutral directory; the
+	// prompt names workspaceDir instead.
 	neutralCWD := filepath.Join(p.agyHome, "cwd")
 	fullArgs := append(append(append([]string{}, args...), "--print"), prompt)
 	if debug {
@@ -530,7 +523,6 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 	state := &agyStreamState{
 		conversationID:         expectedConversationID,
 		expectedConversationID: expectedConversationID,
-		pathReplacer:           agyPathReplacer(p.agyHome, workspaceDir),
 	}
 	dispatchErr := p.dispatchEvents(runCtx, lineCh, bridge.toolReqCh, send, state)
 	if dispatchErr != nil {
@@ -620,14 +612,14 @@ func handleAgyStreamLine(line string, send eventSender, state *agyStreamState) e
 		}
 		if message.StepUpdate.StepType == "agent_response" && message.StepUpdate.TextDelta != "" {
 			state.sawText = true
-			return send.Send(Event{Type: EventTextDelta, Text: state.rewritePaths(message.StepUpdate.TextDelta)})
+			return send.Send(Event{Type: EventTextDelta, Text: message.StepUpdate.TextDelta})
 		}
 	case "result":
 		if err := state.observeConversationID("result", message.Result.ConversationID); err != nil {
 			return err
 		}
 		state.sawResult = true
-		state.fallbackText = state.rewritePaths(message.Result.Response)
+		state.fallbackText = message.Result.Response
 		state.usage = &Usage{InputTokens: message.Result.Usage.InputTokens, OutputTokens: message.Result.Usage.OutputTokens, CachedInputTokens: message.Result.Usage.CacheReadTokens, ReasoningTokens: message.Result.Usage.ThinkingTokens}
 		if message.Result.Status != "SUCCESS" {
 			detail := strings.TrimSpace(message.Result.Error)
@@ -655,12 +647,23 @@ func (p *AgyBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec, 
 	}
 	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(p.formatToolOutput))
 	server.SetDebug(debug)
-	url, token, err := server.Start(ctx, mcpToolSpecs(tools))
+	url, token, err := server.Start(ctx, agyMCPToolSpecs(tools))
 	if err != nil {
 		return fmt.Errorf("start agy-bin MCP server: %w", err)
 	}
 	p.mcpServer, p.mcpURL, p.mcpToken = server, url, token
 	return nil
+}
+
+// agyMCPToolSpecs registers every bridge tool as a native agy tool with its
+// real schema. Lazily loaded tools are reachable only through call_mcp_tool,
+// which hides their schemas and which custom agents cannot call (agy #674).
+func agyMCPToolSpecs(tools []ToolSpec) []mcphttp.ToolSpec {
+	specs := mcpToolSpecs(tools)
+	for i := range specs {
+		specs[i].Meta = map[string]any{agyAlwaysLoadMeta: true}
+	}
+	return specs
 }
 
 func (p *AgyBinProvider) prepareHome(ephemeral bool) error {
@@ -722,7 +725,7 @@ func ensureAgyHomeLayout(home string) error {
 		home,
 		filepath.Join(home, "cwd"),
 		filepath.Join(home, ".gemini", "config"),
-		filepath.Join(home, ".gemini", "antigravity"),
+		filepath.Join(home, ".gemini", "config", "agents"),
 		filepath.Join(home, ".gemini", "antigravity-cli"),
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -762,25 +765,61 @@ func (p *AgyBinProvider) copyCredentials() error {
 	return &UserFacingProviderError{Summary: "agy is not logged in", Detail: "Run `agy` and complete Antigravity authentication.", Cause: fileErr}
 }
 
+// writeMCPConfigs writes agy's user-level MCP configuration. agy reads only
+// ~/.gemini/config/mcp_config.json; copies left in the antigravity and
+// antigravity-cli directories by older term-llm releases are removed so a
+// stale bridge URL or token cannot linger in a persisted home.
 func (p *AgyBinProvider) writeMCPConfigs(enabled bool) error {
 	servers := map[string]any{}
 	if enabled {
-		servers[agyMCPServerName] = map[string]any{"serverUrl": p.mcpURL, "headers": map[string]string{"Authorization": "Bearer " + p.mcpToken}}
+		servers[agyMCPServerName] = map[string]any{"url": p.mcpURL, "headers": map[string]string{"Authorization": "Bearer " + p.mcpToken}}
 	}
 	data, err := json.Marshal(map[string]any{"mcpServers": servers})
 	if err != nil {
 		return err
 	}
-	for _, dir := range []string{"config", "antigravity", "antigravity-cli"} {
-		path := filepath.Join(p.agyHome, ".gemini", dir, "mcp_config.json")
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			return fmt.Errorf("write agy MCP config: %w", err)
-		}
-		if err := os.Chmod(path, 0o600); err != nil {
-			return err
+	if err := writePrivateFile(filepath.Join(p.agyHome, ".gemini", "config", "mcp_config.json"), data); err != nil {
+		return fmt.Errorf("write agy MCP config: %w", err)
+	}
+	for _, dir := range []string{"antigravity", "antigravity-cli"} {
+		if err := os.Remove(filepath.Join(p.agyHome, ".gemini", dir, "mcp_config.json")); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove legacy agy MCP config: %w", err)
 		}
 	}
 	return nil
+}
+
+// agyAgentDefinition is the custom agent term-llm runs agy as. It opts out of
+// agy's default prompt sections and built-in tools, so the model sees only the
+// term-llm MCP bridge tools (registered eagerly via antigravity/alwaysLoad) and
+// term-llm's own instructions. The term-llm system prompt stays in the user
+// message: agy rewrites every "# " line of an agent body into a section tag,
+// which would corrupt headings and code blocks in arbitrary system prompts.
+const agyAgentDefinition = `---
+name: ` + agyAgentName + `
+description: term-llm bridge agent that works only through term-llm tools.
+mainAgent: true
+subagent: false
+excludeDefaultComponents: true
+inheritCustomizations: true
+tools: []
+---
+You are the model behind term-llm, a terminal AI assistant. The conversation's first user message contains a <system> block with your operating instructions; follow them as your system prompt. Use only the tools provided to you.
+`
+
+func (p *AgyBinProvider) writeAgentConfig() error {
+	path := filepath.Join(p.agyHome, ".gemini", "config", "agents", agyAgentName+".md")
+	if err := writePrivateFile(path, []byte(agyAgentDefinition)); err != nil {
+		return fmt.Errorf("write agy agent config: %w", err)
+	}
+	return nil
+}
+
+func writePrivateFile(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func (p *AgyBinProvider) buildCommandEnv() []string {

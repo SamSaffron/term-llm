@@ -8,10 +8,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/agyproxy"
 )
 
-// agyToolIsolation is the single compatibility seam for agy issue #674.
-// Once agy can expose MCP while its native tool list is empty, replace
-// newAgyToolIsolation with a direct CLI implementation and delete
-// internal/agyproxy plus this proxy-backed implementation.
+// agyToolIsolation routes agy's model traffic through internal/agyproxy. The
+// term-llm custom agent already keeps agy's built-in tools out of agent
+// requests; the proxy additionally strips any non-bridge declarations agy adds
+// (MCP resource helpers, task management) and restores tool output that agy
+// truncates or spills into its private artifact directory.
 type agyToolIsolation interface {
 	SetUpstream(string, string)
 	EnsureStarted(string) error
