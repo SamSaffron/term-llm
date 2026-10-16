@@ -485,3 +485,132 @@ func TestForcedNativeUnsupportedProviderFailsClearly(t *testing.T) {
 		t.Fatalf("unsupported forced native reached provider: %d requests", len(provider.requests))
 	}
 }
+
+// A forced tool_search is satisfied by a native discovery call. The engine must
+// keep that discovery in history and move on, not treat the discovery-only turn
+// as an ignored force and re-issue the search with the discovery discarded.
+func TestNativeForcedToolSearchKeepsDiscoveryAndDoesNotRepeat(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
+		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+	}}
+	engine := llm.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		EnableToolDiscovery: true,
+		SessionID:           "forced-native",
+		Model:               "native-model",
+		Messages:            []llm.Message{llm.UserText("perform the special action")},
+		Tools:               []llm.ToolSpec{(&SearchTool{}).Spec()},
+		ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName},
+		MaxTurns:            4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStream(t, stream)
+
+	if len(provider.requests) != 3 {
+		t.Fatalf("provider requests = %d, want 3 (search, tool call, answer)", len(provider.requests))
+	}
+	second := provider.requests[1]
+	if second.ToolChoice.Mode == llm.ToolChoiceName && second.ToolChoice.Name == ToolSearchName {
+		t.Fatalf("second request re-forced tool_search: %+v", second.ToolChoice)
+	}
+	var discoverySeen bool
+	for _, message := range second.Messages {
+		for _, part := range message.Parts {
+			if part.Type == llm.PartDiscoveryCall && part.DiscoveryCall != nil && part.DiscoveryCall.ID == "search-1" {
+				discoverySeen = true
+			}
+		}
+	}
+	if !discoverySeen {
+		t.Fatal("second request dropped the forced turn's discovery call from history")
+	}
+}
+
+// Native discovery presents tools as namespace children, so models may request
+// them by "namespace.child". Every exact spelling must resolve to the same tool.
+func TestNativeDiscoveryResolvesQualifiedToolNames(t *testing.T) {
+	for _, requested := range []string{"special_action", "federation__special_action", "federation.special_action", "federation/special_action", "Federation.Special_Action"} {
+		t.Run(requested, func(t *testing.T) {
+			manager := startDiscoveryTestManager(t)
+			defer manager.StopAll()
+			args, _ := json.Marshal(map[string]any{"tool_names": []string{requested}})
+			provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
+				{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: args}}}},
+				{events: []llm.Event{{Type: llm.EventTextDelta, Text: "loaded"}}},
+			}}
+			engine := llm.NewEngine(provider, nil)
+			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+				t.Fatal(err)
+			}
+			stream, err := engine.Stream(context.Background(), llm.Request{
+				EnableToolDiscovery: true,
+				SessionID:           "qualified",
+				Model:               "native-model",
+				Messages:            []llm.Message{llm.UserText("load it")},
+				MaxTurns:            4,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainStream(t, stream)
+			if len(provider.requests) != 2 {
+				t.Fatalf("provider requests = %d, want 2", len(provider.requests))
+			}
+			var loaded []string
+			for _, message := range provider.requests[1].Messages {
+				for _, part := range message.Parts {
+					if part.Type == llm.PartDiscoveryOutput && part.DiscoveryOutput != nil {
+						for _, tool := range part.DiscoveryOutput.Tools {
+							loaded = append(loaded, tool.Spec.Name)
+						}
+					}
+				}
+			}
+			if len(loaded) != 1 || loaded[0] != "federation__special_action" {
+				t.Fatalf("discovery output tools = %v, want [federation__special_action]", loaded)
+			}
+		})
+	}
+}
+
+// With a small turn budget the turn after a forced native discovery is already
+// past the discovery cutoff. The satisfied force must not reach PrepareTurn,
+// which rejects forced tool_search after the cutoff.
+func TestNativeForcedToolSearchWithinSmallTurnBudget(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
+		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+	}}
+	engine := llm.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		EnableToolDiscovery: true,
+		SessionID:           "forced-small",
+		Model:               "native-model",
+		Messages:            []llm.Message{llm.UserText("perform the special action")},
+		Tools:               []llm.ToolSpec{(&SearchTool{}).Spec()},
+		ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName},
+		MaxTurns:            3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStream(t, stream)
+	if len(provider.requests) != 3 {
+		t.Fatalf("provider requests = %d, want 3", len(provider.requests))
+	}
+}

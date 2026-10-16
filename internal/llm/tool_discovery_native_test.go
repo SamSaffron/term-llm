@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -19,7 +20,12 @@ func TestChatGPTNativeToolDiscoveryCapabilityIsExact(t *testing.T) {
 	}{
 		{name: "luna websocket", model: "gpt-5.6-luna-medium", websocket: true, want: true},
 		{name: "luna HTTP", model: "gpt-5.6-luna-medium", websocket: false},
-		{name: "sol websocket", model: "gpt-5.6-sol-medium", websocket: true},
+		{name: "6.1 sol websocket", model: "gpt-6.1-sol-medium", websocket: true, want: true},
+		{name: "6 luna websocket", model: "gpt-6-luna-high", websocket: true, want: true},
+		{name: "6 astra websocket", model: "gpt-6-astra-xhigh", websocket: true, want: true},
+		{name: "6 astra HTTP", model: "gpt-6-astra", websocket: false},
+		{name: "5.6 sol websocket", model: "gpt-5.6-sol-medium", websocket: true},
+		{name: "6 sol websocket (unverified)", model: "gpt-6-sol", websocket: true},
 		{name: "older websocket", model: "gpt-5.5-medium", websocket: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -333,5 +339,101 @@ func TestRestoreToolDiscoveryReplaySurvivesCompactionProjection(t *testing.T) {
 	}
 	if !foundCall || !foundOutput || !foundNamespace {
 		t.Fatalf("full replay call=%v output=%v namespace=%v items=%#v", foundCall, foundOutput, foundNamespace, items)
+	}
+}
+
+func TestChatGPTToolsAndChoiceForcesNativeToolSearch(t *testing.T) {
+	fn := ResponsesTool{Type: "function", Name: "example_tool"}
+	search := ResponsesToolSearchTool{Type: "tool_search", Execution: "client"}
+	tests := []struct {
+		name       string
+		tools      []any
+		choice     ToolChoice
+		toolSearch *ResponsesToolSearchTool
+		wantTools  []any
+		wantChoice any
+	}{
+		{
+			// {"type":"tool_search"} is rejected by the backend; tool_search alone
+			// with "required" forces it exactly.
+			name:       "forced native tool_search",
+			tools:      []any{fn, search},
+			choice:     ToolChoice{Mode: ToolChoiceName, Name: "tool_search"},
+			toolSearch: &search,
+			wantTools:  []any{search},
+			wantChoice: "required",
+		},
+		{
+			name:       "named tool_search without native discovery is a function choice",
+			tools:      []any{ResponsesTool{Type: "function", Name: "tool_search"}},
+			choice:     ToolChoice{Mode: ToolChoiceName, Name: "tool_search"},
+			wantTools:  []any{ResponsesTool{Type: "function", Name: "tool_search"}},
+			wantChoice: map[string]any{"type": "function", "name": "tool_search"},
+		},
+		{
+			name:       "other named tool is unchanged",
+			tools:      []any{fn, search},
+			choice:     ToolChoice{Mode: ToolChoiceName, Name: "example_tool"},
+			toolSearch: &search,
+			wantTools:  []any{fn, search},
+			wantChoice: map[string]any{"type": "function", "name": "example_tool"},
+		},
+		{
+			name:       "auto is unchanged",
+			tools:      []any{fn, search},
+			choice:     ToolChoice{Mode: ToolChoiceAuto},
+			toolSearch: &search,
+			wantTools:  []any{fn, search},
+			wantChoice: "auto",
+		},
+		{
+			name:       "unset choice stays unset",
+			tools:      []any{fn},
+			wantTools:  []any{fn},
+			wantChoice: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tools, choice := chatGPTToolsAndChoice(tt.tools, tt.choice, tt.toolSearch)
+			if !reflect.DeepEqual(tools, tt.wantTools) {
+				t.Fatalf("tools = %#v, want %#v", tools, tt.wantTools)
+			}
+			if !reflect.DeepEqual(choice, tt.wantChoice) {
+				t.Fatalf("tool_choice = %#v, want %#v", choice, tt.wantChoice)
+			}
+		})
+	}
+}
+
+// TestChatGPTForcedToolSearchWithReplayedWebSearch pins the order used by
+// ChatGPTProvider.Stream: forcing tool_search narrows the tools first, then the
+// replay guard strips the replayed search instead of declaring a callable one.
+func TestChatGPTForcedToolSearchWithReplayedWebSearch(t *testing.T) {
+	search := ResponsesToolSearchTool{Type: "tool_search", Execution: "client"}
+	history := []Message{
+		UserText("q"),
+		{Role: RoleAssistant, Parts: []Part{
+			{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: json.RawMessage(`{"type":"web_search_call","id":"ws_1","status":"completed"}`)}},
+			{Type: PartText, Text: "answer"},
+		}},
+		UserText("find a tool"),
+	}
+	req := ResponsesRequest{Messages: history}
+	// Search on: web_search would be declared, but the forced turn withholds it.
+	tools := []any{ResponsesWebSearchTool{Type: "web_search"}, ResponsesTool{Type: "function", Name: "example_tool"}, search}
+	req.Tools, req.ToolChoice = chatGPTToolsAndChoice(tools, ToolChoice{Mode: ToolChoiceName, Name: "tool_search"}, &search)
+	guardReplayedWebSearch(&req, scanResponsesHistory(history))
+
+	if !reflect.DeepEqual(req.Tools, []any{search}) || req.ToolChoice != "required" {
+		t.Fatalf("tools=%#v tool_choice=%#v, want only tool_search with required", req.Tools, req.ToolChoice)
+	}
+	for _, item := range BuildResponsesInput(req.Messages) {
+		if len(item.Raw) > 0 && isResponsesWebSearchCall(item.Raw) {
+			t.Fatalf("input still replays web_search_call: %s", item.Raw)
+		}
+	}
+	if !scanResponsesHistory(history).HasReplayedWebSearch {
+		t.Fatal("caller history was mutated")
 	}
 }

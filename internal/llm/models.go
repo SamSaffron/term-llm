@@ -88,6 +88,10 @@ var ProviderModels = map[string][]ModelEntry{
 		// Codex advertises 872K as Astra's override ceiling, but its active
 		// context_window is 272K; term-llm selects a 372K input budget.
 		{ID: "gpt-6-astra", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
+		// Live /codex/models (2026-10-16): gpt-6.1-sol 500K input, gpt-6-luna 272K;
+		// both list low..max reasoning efforts. Output limit follows the family.
+		{ID: "gpt-6.1-sol", InputLimit: 500_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
+		{ID: "gpt-6-luna", InputLimit: 272_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
 		{ID: "gpt-5.6-sol", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
 		{ID: "gpt-5.6-terra", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
 		{ID: "gpt-5.6-luna", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},

@@ -16,7 +16,7 @@ type engineTurnCompletion struct {
 	attempt, maxTurns                                                 int
 	runID                                                             string
 	modelSwitchOrdinal, nextTurn                                      *int
-	restoredToolChoice                                                *bool
+	forcedChoice                                                      *forcedChoiceState
 	originalToolChoice                                                ToolChoice
 	originalTools                                                     []ToolSpec
 	turnCallback                                                      TurnCompletedCallback
@@ -45,7 +45,7 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 	ctx, send, req := c.ctx, c.send, *c.req
 	attempt, maxTurns, runID := c.attempt, c.maxTurns, c.runID
 	modelSwitchOrdinal, nextTurn := *c.modelSwitchOrdinal, *c.nextTurn
-	restoredToolChoice := *c.restoredToolChoice
+	forcedChoice := *c.forcedChoice
 	originalToolChoice, originalTools := c.originalToolChoice, c.originalTools
 	turnCallback := c.turnCallback
 	compaction, sendDone := c.compaction, c.sendDone
@@ -63,9 +63,21 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 		*c.req = req
 		*c.modelSwitchOrdinal = modelSwitchOrdinal
 		*c.nextTurn = nextTurn
-		*c.restoredToolChoice = restoredToolChoice
+		*c.forcedChoice = forcedChoice
 		compaction.req = c.req
 	}()
+	// A forced tool_choice is satisfied by any tool use: ordinary or inline-sync
+	// tool calls, tool work recovered after a stream failure, or a native
+	// discovery call (not an ordinary tool call). Spend the force so a later
+	// text-only turn is accepted as the answer instead of being re-forced, which
+	// streamed the final answer twice and, for native discovery, discarded the
+	// discovery and repeated the search. A completed forced retry turn also
+	// spends it (the retry is granted once), but a soft-compaction summary turn
+	// does not: it ran instead of the owed forced retry, which follows it.
+	if len(toolCalls) > 0 || syncToolsExecuted || recoveredToolWork || partsContainDiscoveryCall(providerReplayParts) ||
+		(forcedChoice == forcedChoiceRetryNext && !compaction.softActive) {
+		forcedChoice = forcedChoiceSpent
+	}
 	if len(toolCalls) == 0 && !syncToolsExecuted {
 		if recoveredToolWork && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && len(providerReplayParts) == 0 && recoveryPriorErr != nil {
 			return true, recoveryPriorErr
@@ -73,10 +85,11 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 		if uncommittedPriorErr != nil && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && len(providerReplayParts) == 0 {
 			return true, uncommittedPriorErr
 		}
-		// No tools called - check if we should restore original tool choice and retry once
-		if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice && !compaction.softInjected {
+		// The model ignored a forced tool_choice: retry once, still forced.
+		// openProviderTurnStream applies the force to that retry turn.
+		if originalToolChoice.Mode == ToolChoiceName && forcedChoice == forcedChoiceUnspent && !compaction.softInjected {
 			req.ToolChoice = originalToolChoice
-			restoredToolChoice = true
+			forcedChoice = forcedChoiceRetryNext
 			return true, errEngineTurnAdvance
 		}
 		// Call turnCallback with final text-only response (no tools)
@@ -173,7 +186,7 @@ func (e *Engine) completeSyncTurn(c *engineTurnCompletion) (bool, error) {
 	ctx, send, req := c.ctx, c.send, *c.req
 	attempt, maxTurns, runID := c.attempt, c.maxTurns, c.runID
 	modelSwitchOrdinal, nextTurn := *c.modelSwitchOrdinal, *c.nextTurn
-	restoredToolChoice := *c.restoredToolChoice
+	forcedChoice := *c.forcedChoice
 	turnCallback := c.turnCallback
 	compaction, sendDone := c.compaction, c.sendDone
 	compaction.req = &req
@@ -191,7 +204,7 @@ func (e *Engine) completeSyncTurn(c *engineTurnCompletion) (bool, error) {
 		*c.req = req
 		*c.modelSwitchOrdinal = modelSwitchOrdinal
 		*c.nextTurn = nextTurn
-		*c.restoredToolChoice = restoredToolChoice
+		*c.forcedChoice = forcedChoice
 		compaction.req = c.req
 	}()
 
@@ -328,7 +341,7 @@ func (e *Engine) completeAsyncTurn(c *engineTurnCompletion) error {
 	ctx, send, req := c.ctx, c.send, *c.req
 	attempt, maxTurns, runID := c.attempt, c.maxTurns, c.runID
 	modelSwitchOrdinal, nextTurn := *c.modelSwitchOrdinal, *c.nextTurn
-	restoredToolChoice := *c.restoredToolChoice
+	forcedChoice := *c.forcedChoice
 	turnCallback, responseCallback := c.turnCallback, c.responseCallback
 	compaction, sendDone := c.compaction, c.sendDone
 	compaction.req = &req
@@ -344,7 +357,7 @@ func (e *Engine) completeAsyncTurn(c *engineTurnCompletion) error {
 		*c.req = req
 		*c.modelSwitchOrdinal = modelSwitchOrdinal
 		*c.nextTurn = nextTurn
-		*c.restoredToolChoice = restoredToolChoice
+		*c.forcedChoice = forcedChoice
 		compaction.req = c.req
 	}()
 
@@ -569,4 +582,25 @@ func (e *Engine) completeAsyncTurn(c *engineTurnCompletion) error {
 		}
 	}
 	return errEngineTurnAdvance
+}
+
+// forcedChoiceState tracks a named (forced) tool_choice across turns of one run.
+type forcedChoiceState uint8
+
+const (
+	// forcedChoiceUnspent: no tool has been used yet; an ignored force earns one retry.
+	forcedChoiceUnspent forcedChoiceState = iota
+	// forcedChoiceRetryNext: the force was ignored; the next turn re-applies it.
+	forcedChoiceRetryNext
+	// forcedChoiceSpent: a tool was used or the retry was made; later turns run auto.
+	forcedChoiceSpent
+)
+
+func partsContainDiscoveryCall(parts []Part) bool {
+	for _, part := range parts {
+		if part.Type == PartDiscoveryCall && part.DiscoveryCall != nil {
+			return true
+		}
+	}
+	return false
 }

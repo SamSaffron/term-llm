@@ -25,7 +25,7 @@ func (e *Engine) requestNativeToolFallback(req *Request, planner ToolSurfacePlan
 	return fallback, reason
 }
 
-func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send eventSender, task *restart.Task, checkpointErr error, baseMessageCount, maxTurns int, planner ToolSurfacePlanner, runID string, modelSwitchOrdinal *int, originalToolChoice ToolChoice, originalTools *[]ToolSpec, compaction *runCompactionController, requestNativeFallback func(error, bool) (bool, string), attempt int, providerInFlight *bool) (Stream, error) {
+func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send eventSender, task *restart.Task, checkpointErr error, baseMessageCount, maxTurns int, planner ToolSurfacePlanner, runID string, modelSwitchOrdinal *int, originalToolChoice ToolChoice, forcedChoice *forcedChoiceState, originalTools *[]ToolSpec, compaction *runCompactionController, requestNativeFallback func(error, bool) (bool, string), attempt int, providerInFlight *bool) (Stream, error) {
 	if task.Pending() && checkpointErr == nil {
 		return nil, e.suspend(*req, attempt, nil, false, baseMessageCount)
 	}
@@ -36,6 +36,21 @@ func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send 
 	// now-disallowed ordinary definitions before the planner adds its narrowly
 	// owned control surface for this exact run.
 	req.Tools = e.FilterAllowedToolSpecs(req.Tools)
+	// Choose this follow-up turn's tool_choice before the planner prepares it:
+	// the planner validates forced tool_search against its discovery cutoff, so it
+	// must not see a force that a previous turn already satisfied. The final turn
+	// is handled below (LastTurnToolChoice); an active soft compaction owns it.
+	if attempt > 0 && attempt != maxTurns-1 && !compaction.softActive {
+		if *forcedChoice == forcedChoiceRetryNext {
+			// The previous turn ignored a forced tool_choice; retry it forced.
+			// The state is spent when this turn completes, so an uncommitted
+			// retry of the same turn stays forced.
+			req.ToolChoice = originalToolChoice
+		} else {
+			// Ensure we are in Auto mode for follow-up turns in the loop
+			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
+		}
+	}
 	if planner != nil {
 		resetReason, err := planner.PrepareTurn(ctx, e.provider, req, runID, attempt, maxTurns)
 		if err != nil {
@@ -79,15 +94,12 @@ func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send 
 			}
 		}
 	}
-	// Prepare turn
+	// Prepare the final turn (follow-up turns were prepared before the planner).
 	if attempt == maxTurns-1 && attempt > 0 {
 		req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
 		if req.LastTurnToolChoice != nil {
 			req.ToolChoice = *req.LastTurnToolChoice
 		}
-	} else if attempt > 0 && !compaction.softActive {
-		// Ensure we are in Auto mode for follow-up turns in the loop
-		req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 	}
 
 	if err := compaction.emitResumePhase(); err != nil {

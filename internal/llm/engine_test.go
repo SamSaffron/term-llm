@@ -6932,3 +6932,382 @@ func TestEnginePendingServiceTierCleanup(t *testing.T) {
 		})
 	}
 }
+
+// A forced tool that was called satisfies the force: the following text turn is
+// the answer and must not be re-forced and streamed a second time.
+func TestEngineForcedToolChoiceDoesNotRepeatFinalAnswer(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := NewMockProvider("forced")
+	provider.AddToolCall("c1", name, map[string]any{})
+	provider.AddTextResponse("final")
+	provider.AddTextResponse("final-again")
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+	if got := len(provider.RecordedRequests()); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (forced tool, answer)", got)
+	}
+	if text.String() != "final" {
+		t.Fatalf("streamed text = %q, want %q", text.String(), "final")
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
+
+// A forced tool the model ignored earns exactly one retry, and that retry keeps
+// the force (follow-up turns otherwise reset to auto).
+func TestEngineForcedToolChoiceRetriesOnceWhenIgnored(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := NewMockProvider("ignored")
+	provider.AddTextResponse("ignored the force")
+	provider.AddToolCall("c1", name, map[string]any{})
+	provider.AddTextResponse("final")
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d, want 3", len(requests))
+	}
+	if requests[1].ToolChoice.Mode != ToolChoiceName || requests[1].ToolChoice.Name != name {
+		t.Fatalf("retry tool_choice = %+v, want forced %q", requests[1].ToolChoice, name)
+	}
+	if requests[2].ToolChoice.Mode != ToolChoiceAuto {
+		t.Fatalf("turn after the forced tool ran: tool_choice = %+v, want auto", requests[2].ToolChoice)
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
+
+// A force ignored twice is retried only once; the run then continues with auto
+// and accepts the text answer rather than looping.
+func TestEngineForcedToolChoiceRetriesOnlyOnce(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := NewMockProvider("ignored-twice")
+	provider.AddTextResponse("ignored once")
+	provider.AddTextResponse("ignored twice")
+	provider.AddTextResponse("unexpected third")
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2 (original, one forced retry)", len(requests))
+	}
+	// The ignored turn's text was already streamed before the retry (pre-existing);
+	// the second ignore is accepted as the answer.
+	if text.String() != "ignored onceignored twice" {
+		t.Fatalf("text = %q, want the ignored turn then the accepted retry", text.String())
+	}
+	if requests[1].ToolChoice.Mode != ToolChoiceName || requests[1].ToolChoice.Name != name {
+		t.Fatalf("retry tool_choice = %+v, want forced %q", requests[1].ToolChoice, name)
+	}
+}
+
+// Tool work recovered after a stream failure satisfies the force: the answer
+// that follows is accepted, not re-forced.
+func TestEngineForcedToolChoiceSpentByRecoveredToolWork(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	provider := &recoverToolCallProvider{err: &NonRecoverableStreamError{Err: errors.New("disconnected after tool call")}}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: tool.Spec().Name},
+		MaxTurns:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+	if got := len(provider.calls); got != 2 {
+		t.Fatalf("provider calls = %d, want 2 (tool call then recovered answer)", got)
+	}
+	if text.String() != "recovered" {
+		t.Fatalf("text = %q, want a single %q", text.String(), "recovered")
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
+
+// forcedRetryFlakyProvider ignores the force, then fails the forced retry
+// before any output, then calls the tool, then answers.
+type forcedRetryFlakyProvider struct {
+	calls    []Request
+	toolName string
+}
+
+func (p *forcedRetryFlakyProvider) Name() string               { return "forced-retry-flaky" }
+func (p *forcedRetryFlakyProvider) Credential() string         { return "test" }
+func (p *forcedRetryFlakyProvider) Capabilities() Capabilities { return Capabilities{ToolCalls: true} }
+func (p *forcedRetryFlakyProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls = append(p.calls, req)
+	switch len(p.calls) {
+	case 1:
+		return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "ignored"}, {Type: EventDone}}}, nil
+	case 2:
+		return &errAfterEventsStream{err: &StreamIncompleteError{Transport: "test stream", Terminal: "done", Err: errors.New("disconnected before output")}}, nil
+	case 3:
+		return &sliceStream{events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: p.toolName, Arguments: json.RawMessage(`{}`)}}, {Type: EventDone}}}, nil
+	default:
+		return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventDone}}}, nil
+	}
+}
+
+// An uncommitted failure of the forced retry turn replays that same turn, which
+// must stay forced.
+func TestEngineForcedRetrySurvivesUncommittedStreamRetry(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := &forcedRetryFlakyProvider{toolName: name}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(provider.calls) != 4 {
+		t.Fatalf("provider calls = %d, want 4", len(provider.calls))
+	}
+	for i, want := range []ToolChoiceMode{ToolChoiceName, ToolChoiceName, ToolChoiceName, ToolChoiceAuto} {
+		if got := provider.calls[i].ToolChoice.Mode; got != want {
+			t.Fatalf("call %d tool_choice = %q, want %q (choices %+v)", i, got, want, provider.calls)
+		}
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
+
+// A soft-compaction summary that runs in place of the owed forced retry must not
+// spend it: the retry follows the summary, still forced.
+func TestEngineForcedRetrySurvivesSoftCompaction(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "fake", Model: "compact-forced", InputLimit: 200}})
+	defer RegisterConfigLimits(nil)
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
+		script: func(call int, req Request) []Event {
+			switch {
+			case call == 0:
+				// Ignore the force; report enough usage to cross the soft threshold.
+				return []Event{{Type: EventTextDelta, Text: "ignored"}, {Type: EventUsage, Use: &Usage{InputTokens: 180, OutputTokens: 2}}}
+			case req.ToolChoice.Mode == ToolChoiceNone:
+				return []Event{{Type: EventTextDelta, Text: "checkpoint: brief"}, {Type: EventUsage, Use: &Usage{InputTokens: 60, OutputTokens: 2}}}
+			case req.ToolChoice.Mode == ToolChoiceName:
+				return []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: name, Arguments: json.RawMessage(`{}`)}}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 2}}}
+			default:
+				return []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventUsage, Use: &Usage{InputTokens: 20, OutputTokens: 2}}}
+			}
+		},
+	}
+	e := NewEngine(provider, registry)
+	e.ConfigureContextManagement(provider, "fake", "compact-forced", true)
+	e.SetCompactionCallback(func(ctx context.Context, result *CompactionResult) error { return nil })
+	defer e.SetCompactionCallback(nil)
+	stream, err := e.Stream(context.Background(), Request{
+		Model:      "compact-forced",
+		Messages:   []Message{SystemText("system"), UserText("earlier question"), AssistantText("earlier answer"), UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("stream error event: %v", event.Err)
+		}
+	}
+	var modes []string
+	briefSeen := false
+	for _, call := range provider.calls {
+		modes = append(modes, string(call.ToolChoice.Mode))
+		if call.ToolChoice.Mode == ToolChoiceNone {
+			briefSeen = true
+		}
+	}
+	if !briefSeen {
+		t.Fatalf("soft compaction brief never ran; tool_choice sequence %v", modes)
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1 (forced retry after the brief); tool_choice sequence %v", tool.calls.Load(), modes)
+	}
+	t.Logf("tool_choice sequence %v", modes)
+}
+
+// forcedRetryRecoveryProvider ignores the force, then on the forced retry calls
+// the tool and drops the stream, then answers.
+type forcedRetryRecoveryProvider struct {
+	calls    []Request
+	toolName string
+}
+
+func (p *forcedRetryRecoveryProvider) Name() string       { return "forced-retry-recovery" }
+func (p *forcedRetryRecoveryProvider) Credential() string { return "test" }
+func (p *forcedRetryRecoveryProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: true}
+}
+func (p *forcedRetryRecoveryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls = append(p.calls, req)
+	switch len(p.calls) {
+	case 1:
+		return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "ignored"}, {Type: EventDone}}}, nil
+	case 2:
+		return &errAfterEventsStream{
+			events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: p.toolName, Arguments: json.RawMessage(`{}`)}}},
+			err:    &NonRecoverableStreamError{Err: errors.New("disconnected after tool call")},
+		}, nil
+	default:
+		return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventDone}}}, nil
+	}
+}
+
+// Tool work recovered on the forced retry satisfies the force; the recovered
+// answer turn runs auto instead of being forced again.
+func TestEngineForcedRetrySpentByRecoveredToolWork(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	name := tool.Spec().Name
+	provider := &forcedRetryRecoveryProvider{toolName: name}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("go")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: name},
+		MaxTurns:   6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var modes []ToolChoiceMode
+	for _, call := range provider.calls {
+		modes = append(modes, call.ToolChoice.Mode)
+	}
+	if len(provider.calls) != 3 || modes[1] != ToolChoiceName || modes[2] != ToolChoiceAuto {
+		t.Fatalf("tool_choice sequence = %v, want [name name auto]", modes)
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}

@@ -122,7 +122,10 @@ func (r ResponsesRequest) suppressReasoningSummaryDeltas() bool {
 
 // ResponsesWebSearchTool represents the web search tool for OpenAI
 type ResponsesWebSearchTool struct {
-	Type string `json:"type"` // "web_search_preview"
+	Type string `json:"type"` // "web_search" or "web_search_preview"
+	// ExternalWebAccess=false restricts the tool to the cached index. Used when
+	// the declaration only exists to satisfy replay validation.
+	ExternalWebAccess *bool `json:"external_web_access,omitempty"`
 }
 
 // ResponsesToolSearchTool is the provider wire shape for native

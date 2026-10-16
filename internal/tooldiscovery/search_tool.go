@@ -184,12 +184,16 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 	}
 	byName := make(map[string]mcp.CatalogTool, len(snapshot.Tools))
 	byOriginal := make(map[string][]string)
+	byQualified := make(map[string][]string)
 	for _, tool := range snapshot.Tools {
 		if !engine.IsToolAllowed(tool.Name) {
 			continue
 		}
 		byName[tool.Name] = tool
 		byOriginal[strings.ToLower(tool.OriginalName)] = append(byOriginal[strings.ToLower(tool.OriginalName)], tool.Name)
+		for _, key := range qualifiedToolNames(tool) {
+			byQualified[key] = append(byQualified[key], tool.Name)
+		}
 	}
 
 	var candidateIDs []string
@@ -207,6 +211,11 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 				continue
 			}
 			matches := byOriginal[strings.ToLower(requested)]
+			if len(matches) == 0 {
+				// Native discovery presents tools as namespace children, so models
+				// may name them "namespace.child" (or server/tool).
+				matches = byQualified[strings.ToLower(requested)]
+			}
 			sort.Strings(matches)
 			switch len(matches) {
 			case 0:
@@ -218,7 +227,7 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 					seen[matches[0]] = true
 				}
 			default:
-				return nil, nil, nil, 0, unavailable, label, fmt.Errorf("original tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
+				return nil, nil, nil, 0, unavailable, label, fmt.Errorf("tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
 			}
 		}
 		if len(candidateIDs) == 0 && len(unavailable) > 0 {
@@ -422,4 +431,27 @@ func annotationSummary(tool mcp.CatalogTool) string {
 		return " Potentially destructive write operation."
 	}
 	return " Write operation."
+}
+
+// qualifiedToolNames returns the lower-cased "namespace.child" and
+// "server.original" spellings of a catalogue tool (with "." and "/" separators)
+// that a model may use to request it by exact name.
+func qualifiedToolNames(tool mcp.CatalogTool) []string {
+	var keys []string
+	seen := map[string]bool{}
+	add := func(prefix, name string) {
+		if prefix == "" || name == "" {
+			return
+		}
+		for _, sep := range []string{".", "/"} {
+			key := strings.ToLower(prefix + sep + name)
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+	}
+	add(tool.Namespace, tool.ChildName)
+	add(tool.Server, tool.OriginalName)
+	return keys
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -206,19 +207,38 @@ func (p *ChatGPTProvider) Capabilities() Capabilities {
 	}
 }
 
+// chatGPTNativeToolDiscoveryModels lists models whose full native tool_search
+// round trip (discovery call, planner output, discovered tool call, answer;
+// unforced and forced) has been verified live over the ChatGPT WebSocket path.
+var chatGPTNativeToolDiscoveryModels = map[string]bool{
+	"gpt-5.6-luna": true,
+	"gpt-6.1-sol":  true,
+	"gpt-6-luna":   true,
+	"gpt-6-astra":  true,
+}
+
+func chatGPTNativeToolDiscoveryModelList() []string {
+	models := make([]string, 0, len(chatGPTNativeToolDiscoveryModels))
+	for model := range chatGPTNativeToolDiscoveryModels {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models
+}
+
 // NativeToolDiscoverySupport is intentionally narrower than the public API's
 // general model family support. It records only the exact ChatGPT OAuth
-// Responses WebSocket combination verified by this integration.
+// Responses WebSocket combinations verified by this integration.
 func (p *ChatGPTProvider) NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport {
 	if p == nil || !p.useWebSocket {
 		return NativeToolDiscoverySupport{Reason: "ChatGPT native tool discovery requires Responses WebSocket transport"}
 	}
 	model, _ = chatGPTModelServiceTier(chooseModel(model, p.model))
 	actualModel, _ := parseModelEffortForProvider("chatgpt", model)
-	if actualModel != "gpt-5.6-luna" {
-		return NativeToolDiscoverySupport{Reason: fmt.Sprintf("ChatGPT native tool discovery is verified only for gpt-5.6-luna, not %s", actualModel)}
+	if !chatGPTNativeToolDiscoveryModels[actualModel] {
+		return NativeToolDiscoverySupport{Reason: fmt.Sprintf("ChatGPT native tool discovery is verified only for %s, not %s", strings.Join(chatGPTNativeToolDiscoveryModelList(), ", "), actualModel)}
 	}
-	return NativeToolDiscoverySupport{Supported: true, Name: "chatgpt-oauth-responses-websocket/tool_search", Reason: "exact verified gpt-5.6-luna WebSocket path"}
+	return NativeToolDiscoverySupport{Supported: true, Name: "chatgpt-oauth-responses-websocket/tool_search", Reason: "exact verified " + actualModel + " WebSocket path"}
 }
 
 func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, error) {
@@ -261,29 +281,32 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	// Build tools. Public-API Pro and advanced Responses controls are not
 	// synthesized for the ChatGPT Codex backend.
 	tools := BuildResponsesTools(req.Tools)
+	var toolSearch *ResponsesToolSearchTool
 	if req.NativeToolDiscovery != nil {
 		support := p.NativeToolDiscoverySupport(model)
 		if !support.Supported {
 			return nil, fmt.Errorf("native tool discovery unsupported: %s", support.Reason)
 		}
 		search := req.NativeToolDiscovery.Search
-		tools = append(tools, ResponsesToolSearchTool{
+		toolSearch = &ResponsesToolSearchTool{
 			Type:        "tool_search",
 			Execution:   "client",
 			Description: search.Description,
 			Parameters:  deepCopyMap(search.Schema),
-		})
+		}
+		tools = append(tools, *toolSearch)
 	}
 	if req.Search {
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)
 	}
+	history := scanResponsesHistory(req.Messages)
 
 	// Send system messages via the instructions field but leave the transcript in
 	// raw message form so the Responses client can lazily build a continuation-only
 	// suffix on follow-up WebSocket turns. Native discovery replay is translated
 	// here, at the exact capable adapter boundary, rather than in ToolSpec.
 	messages := req.Messages
-	if req.NativeToolDiscovery != nil || messagesContainDiscoveryParts(messages) {
+	if req.NativeToolDiscovery != nil || history.HasDiscoveryParts {
 		var err error
 		messages, err = translateChatGPTDiscoveryMessages(messages)
 		if err != nil {
@@ -307,7 +330,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		Store:          boolPtr(false),
 		Stream:         true,
 		SessionID:      req.SessionID,
-		ForceWebSocket: req.NativeToolDiscovery != nil || messagesContainDiscoveryParts(req.Messages),
+		ForceWebSocket: req.NativeToolDiscovery != nil || history.HasDiscoveryParts,
 	}
 
 	responsesReq.ServiceTier = firstNonEmpty(tier, p.serviceTier)
@@ -315,13 +338,8 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		responsesReq.ServiceTier = NormalizeServiceTier(req.ServiceTier)
 	}
 
-	if req.ToolChoice.Mode != "" {
-		if req.ToolChoice.Mode == ToolChoiceName && req.ToolChoice.Name == "tool_search" && req.NativeToolDiscovery != nil {
-			responsesReq.ToolChoice = map[string]any{"type": "tool_search"}
-		} else {
-			responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
-		}
-	}
+	responsesReq.Tools, responsesReq.ToolChoice = chatGPTToolsAndChoice(tools, req.ToolChoice, toolSearch)
+	guardReplayedWebSearch(&responsesReq, history)
 	if req.ParallelToolCalls {
 		responsesReq.ParallelToolCalls = boolPtr(true)
 	}
@@ -331,6 +349,25 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	}
 
 	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)
+}
+
+// chatGPTToolsAndChoice returns the tools and tool_choice to send. Forcing the
+// native tool_search needs special handling: the backend has no tool_choice that
+// names it ({"type":"tool_search"} is rejected with "Invalid value:
+// 'tool_search'", and allowed_tools cannot list it). Declaring tool_search as
+// the only tool with "required" forces it exactly, so the other tools are
+// withheld for that one turn. Verified live on gpt-6.1-sol, gpt-6-luna and
+// gpt-5.6-luna. web_search is withheld too, even when search is on; with
+// replayed searches in history the replay guard then strips them for this
+// turn. Do not keep web_search here: tool_choice could not exclude it.
+func chatGPTToolsAndChoice(tools []any, choice ToolChoice, toolSearch *ResponsesToolSearchTool) ([]any, any) {
+	if toolSearch != nil && choice.Mode == ToolChoiceName && choice.Name == "tool_search" {
+		return []any{*toolSearch}, "required"
+	}
+	if choice.Mode == "" {
+		return tools, nil
+	}
+	return tools, BuildResponsesToolChoice(choice)
 }
 
 // ResetConversation clears server state for the Responses API client.
@@ -412,17 +449,6 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 			return nil
 		},
 	}
-}
-
-func messagesContainDiscoveryParts(messages []Message) bool {
-	for _, message := range messages {
-		for _, part := range message.Parts {
-			if part.Type == PartDiscoveryCall || part.Type == PartDiscoveryOutput {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func translateChatGPTDiscoveryMessages(messages []Message) ([]Message, error) {
