@@ -114,17 +114,13 @@ func configTable() string {
 
 func toolTable() string {
 	var b strings.Builder
-	b.WriteString("| Tool | Description | Permission policy | Surfaces | Default enabled | Aliases |\n|---|---|---|---|---|---|\n")
+	b.WriteString("| Tool | Description | Permission policy | Default enabled | Aliases |\n|---|---|---|---|---|\n")
 	for _, d := range tools.BuiltinToolDescriptors() {
-		modes := make([]string, len(d.Modes))
-		for i, mode := range d.Modes {
-			modes[i] = code(string(mode))
-		}
 		aliases := make([]string, len(d.Aliases))
 		for i, alias := range d.Aliases {
 			aliases[i] = code(alias)
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %t | %s |\n", code(d.Name), cell(summary(d.Description)), code(string(d.Policy)), strings.Join(modes, ", "), d.DefaultEnabled, cell(strings.Join(aliases, ", ")))
+		fmt.Fprintf(&b, "| %s | %s | %s | %t | %s |\n", code(d.Name), cell(summary(d.Description)), code(string(d.Policy)), d.DefaultEnabled, cell(strings.Join(aliases, ", ")))
 	}
 	return b.String()
 }
@@ -143,26 +139,9 @@ func credentials(s providerspec.Spec) string {
 	return strings.Join(parts, "; ")
 }
 
-func capabilities(s providerspec.Spec) string {
-	var parts []string
-	for _, item := range []struct {
-		enabled bool
-		label   string
-	}{
-		{s.Capabilities.Tools, "tools"}, {s.Capabilities.Images, "images"},
-		{s.Capabilities.ReasoningEffort, "reasoning effort"},
-		{s.Capabilities.CLI, "companion CLI"}, {s.Capabilities.FixedToolBridge, "fixed tool bridge"},
-	} {
-		if item.enabled {
-			parts = append(parts, item.label)
-		}
-	}
-	return cell(strings.Join(parts, ", "))
-}
-
 func providerTable() string {
 	var b strings.Builder
-	b.WriteString("| Provider | Type | Display name | Credentials / environment | Capabilities | Model listing |\n|---|---|---|---|---|---|\n")
+	b.WriteString("| Provider | Type | Credentials / environment | Model listing |\n|---|---|---|---|\n")
 	for _, s := range providerspec.All() {
 		listing := string(s.ModelListing)
 		if s.ListModels {
@@ -170,7 +149,7 @@ func providerTable() string {
 		} else if listing == "curated" {
 			listing += " (local catalog)"
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", code(s.Name), code(string(s.Type)), cell(s.DisplayName), cell(credentials(s)), capabilities(s), cell(listing))
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", code(s.Name), code(string(s.Type)), cell(credentials(s)), cell(listing))
 	}
 	return b.String()
 }

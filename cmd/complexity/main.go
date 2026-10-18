@@ -64,17 +64,7 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		for _, n := range notes {
-			fmt.Fprintln(os.Stderr, "size note:", n)
-		}
-		if len(notes) > 0 {
-			fmt.Fprintln(os.Stderr, "complexity: size baseline is out of date (not a failure); run `make complexity-baseline` to lock in the gain")
-		}
-		if len(violations) > 0 {
-			for _, v := range violations {
-				fmt.Fprintln(os.Stderr, "size violation:", v)
-			}
-			fmt.Fprintf(os.Stderr, "complexity: %d size violation(s); split the file or package (see ledger/go-size-baseline.json rules)\n", len(violations))
+		if !reportSizes(os.Stderr, violations, notes) {
 			os.Exit(1)
 		}
 	}
@@ -88,29 +78,12 @@ func main() {
 		}
 	}
 	if *jsonOutput {
-		filtered := report
-		filtered.Functions = nil
-		for _, fn := range report.Functions {
-			if fn.Complexity > *threshold {
-				filtered.Functions = append(filtered.Functions, fn)
-			}
-		}
-		data, err := complexity.Encode(filtered)
-		if err != nil {
+		if err := writeJSONReport(os.Stdout, report, *threshold); err != nil {
 			fatal(err)
 		}
-		_, _ = os.Stdout.Write(data)
 		return
 	}
-	s := summarize(report)
-	fmt.Printf("production=%t files=%d functions=%d median=%d above20=%d above50=%d above100=%d\n", !*includeTests, s.Files, s.Functions, s.Median, s.Above20, s.Above50, s.Above100)
-	for _, fn := range worstFirst(report.Functions, *threshold) {
-		name := fn.Name
-		if fn.Receiver != "" {
-			name = "(" + fn.Receiver + ")." + name
-		}
-		fmt.Printf("%4d %5d lines %s %s:%s\n", fn.Complexity, fn.Lines, fn.Module, fn.Path, name)
-	}
+	writeTextReport(os.Stdout, report, *threshold, !*includeTests)
 }
 
 // worstFirst orders the human report by descending complexity, then by span, so

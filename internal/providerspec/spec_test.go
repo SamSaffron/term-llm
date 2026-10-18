@@ -1,12 +1,15 @@
 package providerspec
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestRegistryUniqueAndComplete(t *testing.T) {
 	names := make(map[string]bool)
 	types := make(map[Type]bool)
 	for _, spec := range Types() {
-		if spec.Name == "" || spec.Type == "" || spec.DisplayName == "" {
+		if spec.Name == "" || spec.Type == "" {
 			t.Errorf("incomplete spec: %+v", spec)
 		}
 		if names[spec.Name] || types[spec.Type] {
@@ -25,10 +28,21 @@ func TestRegistryUniqueAndComplete(t *testing.T) {
 			t.Errorf("name lookup %s: %+v, %v", spec.Name, got, ok)
 		}
 		for _, alias := range spec.Aliases {
-			got, ok = Lookup(alias)
-			if !ok || got.Type != spec.Type {
-				t.Errorf("alias lookup %s: %+v, %v", alias, got, ok)
+			if _, ok = Lookup(alias); ok {
+				t.Errorf("Lookup must be name-only, but resolved alias %q", alias)
 			}
+			for _, label := range []string{alias, alias + " (model)"} {
+				got, ok = LookupSessionAlias(label)
+				if !ok || got.Type != spec.Type {
+					t.Errorf("session alias lookup %q: %+v, %v", label, got, ok)
+				}
+			}
+		}
+		if want := spec.ModelListing != "" && spec.ModelListing != ModelListingCurated; spec.ListModels != want {
+			t.Errorf("%s ListModels = %v, want %v from ModelListing %q", spec.Name, spec.ListModels, want, spec.ModelListing)
+		}
+		if spec.Availability != "" && !slices.Contains(Availabilities(), spec.Availability) {
+			t.Errorf("%s has undefined availability %q", spec.Name, spec.Availability)
 		}
 	}
 	if len(Fields()) == 0 {

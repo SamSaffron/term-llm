@@ -171,3 +171,27 @@ func TestHeadlessSetupRequiresConfiguredProvider(t *testing.T) {
 		t.Fatalf("unexpected headless defaults: %s %+v", cfg.DefaultProvider, cfg.Providers["zen"])
 	}
 }
+
+func TestWizardTrimsAPIKeyEnvUniformly(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "   ")
+	t.Setenv("ANTHROPIC_API_KEY", " sk-test ")
+	got := make(map[string]bool)
+	for _, p := range detectAvailableProviders() {
+		got[p.value] = p.available
+	}
+	if got["openai"] {
+		t.Error("whitespace-only OPENAI_API_KEY must not make openai available")
+	}
+	if !got["anthropic"] {
+		t.Error("ANTHROPIC_API_KEY should make anthropic available")
+	}
+}
+
+func TestWizardHasBinaryProbesForCompanionCLIs(t *testing.T) {
+	for _, name := range []string{"claude-bin", "grok-bin", "cursor-bin", "agy-bin"} {
+		if wizardBinaryProbes[name] == nil {
+			t.Errorf("missing binary probe for %s", name)
+		}
+	}
+}

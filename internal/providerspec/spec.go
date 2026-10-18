@@ -63,19 +63,20 @@ type DefaultField struct {
 type Spec struct {
 	Name                    string
 	Aliases                 []string
-	DisplayName             string
 	CredentialLabel         string
 	Wizard                  WizardSpec
-	Capabilities            Capabilities
 	ModelListing            ModelListing
 	ModelListTimeoutSeconds int
-	CacheOnly               bool
-	Availability            Availability
-	Type                    Type
-	ConfigDefault           bool
-	ShowInConfig            bool
-	ResetTemplate           bool
-	Defaults                []DefaultField
+	// FixedToolBridge marks CLI-backed providers whose tool set is fixed by an
+	// external bridge (tool discovery cannot add or remove tools).
+	FixedToolBridge bool
+	CacheOnly       bool
+	Availability    Availability
+	Type            Type
+	ConfigDefault   bool
+	ShowInConfig    bool
+	ResetTemplate   bool
+	Defaults        []DefaultField
 
 	Description string
 	Credential  Credential
@@ -87,20 +88,49 @@ type Spec struct {
 	// Setup is the step that sets the provider up, when it is not simply
 	// "set APIKeyEnv".
 	Setup string
-	// ListModels reports whether the provider can list models upstream.
+	// ListModels reports whether the provider can list models upstream. It is
+	// derived from ModelListing (anything but ModelListingCurated or empty).
 	ListModels bool
 }
 
-// Credential describes how a built-in provider authenticates.
-// Capabilities describes provider-wide behavior (true means some models can
-// support it; model-specific support is resolved by llm).
-type Capabilities struct{ Tools, Images, ReasoningEffort, CLI, FixedToolBridge bool }
-
-// ModelListing selects the model-lister implementation in cmd; static is for curated lists.
+// ModelListing selects the model-lister implementation in cmd; curated means
+// the provider has a local catalog and cannot list models upstream.
 type ModelListing string
+
+const (
+	ModelListingAnthropic  ModelListing = "anthropic"
+	ModelListingAPIKey     ModelListing = "api_key"
+	ModelListingChatGPT    ModelListing = "chatgpt"
+	ModelListingGrok       ModelListing = "grok"
+	ModelListingCurated    ModelListing = "curated"
+	ModelListingNearAI     ModelListing = "nearai"
+	ModelListingZen        ModelListing = "zen"
+	ModelListingOpenCodeGo ModelListing = "opencode-go"
+	ModelListingCopilot    ModelListing = "copilot"
+	ModelListingGrokBin    ModelListing = "grok-bin"
+	ModelListingCursorBin  ModelListing = "cursor-bin"
+	ModelListingAgyBin     ModelListing = "agy-bin"
+	ModelListingOllama     ModelListing = "ollama"
+	ModelListingCompatible ModelListing = "compatible"
+)
 
 // Availability identifies the local credential probe, if any.
 type Availability string
+
+const (
+	AvailabilityChatGPT   Availability = "chatgpt"
+	AvailabilityGrok      Availability = "grok"
+	AvailabilityClaude    Availability = "claude"
+	AvailabilityCopilot   Availability = "copilot"
+	AvailabilityGrokBin   Availability = "grok-bin"
+	AvailabilityCursorBin Availability = "cursor-bin"
+	AvailabilityAgyBin    Availability = "agy-bin"
+)
+
+// Availabilities lists every defined local credential probe kind.
+func Availabilities() []Availability {
+	return []Availability{AvailabilityChatGPT, AvailabilityGrok, AvailabilityClaude, AvailabilityCopilot, AvailabilityGrokBin, AvailabilityCursorBin, AvailabilityAgyBin}
+}
 
 // WizardSpec controls setup wizard order and presentation; zero Order omits the provider.
 type WizardSpec struct {
@@ -109,6 +139,7 @@ type WizardSpec struct {
 	Bootstrap   bool // setup can start an interactive OAuth login
 }
 
+// Credential describes how a built-in provider authenticates.
 type Credential string
 
 const (
@@ -174,14 +205,23 @@ func cloneSpec(s Spec) Spec {
 	return s
 }
 
-// Lookup finds a built-in by its name or alias.
+// Lookup finds a built-in by its exact name.
 func Lookup(name string) (Spec, bool) {
 	for _, s := range specs {
 		if s.Name == name {
 			return cloneSpec(s), true
 		}
+	}
+	return Spec{}, false
+}
+
+// LookupSessionAlias maps a lower-cased provider label from a saved chat
+// session ("github copilot" or "github copilot (gpt-4.1)") to its built-in.
+// It exists only for resuming sessions whose labels differ from the provider name.
+func LookupSessionAlias(label string) (Spec, bool) {
+	for _, s := range specs {
 		for _, a := range s.Aliases {
-			if a == name {
+			if label == a || strings.HasPrefix(label, a+" (") {
 				return cloneSpec(s), true
 			}
 		}
@@ -205,129 +245,138 @@ func ByType(t Type) (Spec, bool) {
 // Types returns every supported provider type, including generic custom endpoints.
 func Types() []Spec { out := All(); return append(out, customSpec) }
 
-var customSpec = Spec{Name: "openai_compatible", DisplayName: "openai_compatible", Type: TypeOpenAICompat, ListModels: true, ModelListing: "compatible", Credential: CredentialNone, Capabilities: Capabilities{Tools: true}}
+var customSpec = Spec{Name: "openai_compatible", Type: TypeOpenAICompat, ModelListing: ModelListingCompatible, Credential: CredentialNone}
+
+func init() {
+	for i := range specs {
+		specs[i].ListModels = listsModels(specs[i].ModelListing)
+	}
+	customSpec.ListModels = listsModels(customSpec.ModelListing)
+}
+
+func listsModels(l ModelListing) bool { return l != "" && l != ModelListingCurated }
 
 var specs = []Spec{
 	{
-		Name: "anthropic", Capabilities: Capabilities{Tools: true, ReasoningEffort: true}, DisplayName: "anthropic", Type: TypeAnthropic, ModelListing: "anthropic", Wizard: WizardSpec{Order: 4, Label: "Anthropic - API key", Hint: "set ANTHROPIC_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "anthropic", Type: TypeAnthropic, ModelListing: ModelListingAnthropic, Wizard: WizardSpec{Order: 4, Label: "Anthropic - API key", Hint: "set ANTHROPIC_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "claude-sonnet-4-6"}, {"fast_model", "claude-haiku-4-5"}},
 		Description: "Anthropic API (Claude models)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "ANTHROPIC_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "ANTHROPIC_API_KEY",
 	},
 	{
-		Name: "openai", Capabilities: Capabilities{Tools: true, Images: true, ReasoningEffort: true}, DisplayName: "openai", Type: TypeOpenAI, ModelListing: "api_key", Wizard: WizardSpec{Order: 9, Label: "OpenAI - OPENAI_API_KEY", Hint: "set OPENAI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "openai", Type: TypeOpenAI, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 9, Label: "OpenAI - OPENAI_API_KEY", Hint: "set OPENAI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "gpt-5.6-sol"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", false}},
 		Description: "OpenAI Responses API",
-		Credential:  CredentialAPIKey, APIKeyEnv: "OPENAI_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "OPENAI_API_KEY",
 	},
 	{
-		Name: "chatgpt", Capabilities: Capabilities{Tools: true, Images: true, ReasoningEffort: true}, ModelListTimeoutSeconds: 30, DisplayName: "chatgpt", CredentialLabel: "ChatGPT OAuth (interactive)", Type: TypeChatGPT, ModelListing: "chatgpt", Availability: "chatgpt", Wizard: WizardSpec{Order: 2, Label: "ChatGPT (Codex) - ChatGPT OAuth", Hint: "run 'term-llm auth login chatgpt' to sign in", Bootstrap: true}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "chatgpt", ModelListTimeoutSeconds: 30, CredentialLabel: "ChatGPT OAuth (interactive)", Type: TypeChatGPT, ModelListing: ModelListingChatGPT, Availability: AvailabilityChatGPT, Wizard: WizardSpec{Order: 2, Label: "ChatGPT (Codex) - ChatGPT OAuth", Hint: "run 'term-llm auth login chatgpt' to sign in", Bootstrap: true}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "gpt-5.6-sol-medium"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", true}},
 		Description: "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
-		Credential:  CredentialOAuth, Setup: "run term-llm auth login chatgpt", ListModels: true,
+		Credential:  CredentialOAuth, Setup: "run term-llm auth login chatgpt",
 	},
 	{
-		Name: "grok", Capabilities: Capabilities{Tools: true, ReasoningEffort: true}, ModelListTimeoutSeconds: 30, DisplayName: "grok", CredentialLabel: "Grok subscription OAuth (interactive)", Type: TypeGrok, ModelListing: "grok", Availability: "grok", Wizard: WizardSpec{Order: 3, Label: "Grok Subscription - xAI OAuth", Hint: "run 'term-llm auth login grok' to sign in", Bootstrap: true}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "grok", ModelListTimeoutSeconds: 30, CredentialLabel: "Grok subscription OAuth (interactive)", Type: TypeGrok, ModelListing: ModelListingGrok, Availability: AvailabilityGrok, Wizard: WizardSpec{Order: 3, Label: "Grok Subscription - xAI OAuth", Hint: "run 'term-llm auth login grok' to sign in", Bootstrap: true}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "grok-4.6"}, {"fast_model", "grok-4.6"}},
 		Description: "Grok subscription via native xAI device OAuth and Responses API",
-		Credential:  CredentialOAuth, Setup: "run term-llm auth login grok", ListModels: true,
+		Credential:  CredentialOAuth, Setup: "run term-llm auth login grok",
 	},
 	{
-		Name: "gemini", ModelListing: "curated", Capabilities: Capabilities{Tools: true, Images: true}, DisplayName: "gemini", Type: TypeGemini, Wizard: WizardSpec{Order: 10, Label: "Gemini - GEMINI_API_KEY", Hint: "set GEMINI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "gemini", ModelListing: ModelListingCurated, Type: TypeGemini, Wizard: WizardSpec{Order: 10, Label: "Gemini - GEMINI_API_KEY", Hint: "set GEMINI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "gemini-3-flash-preview"}, {"fast_model", "gemini-2.5-flash-lite"}},
 		Description: "Google Gemini API (consumer API key)",
 		Credential:  CredentialAPIKey, APIKeyEnv: "GEMINI_API_KEY",
 	},
 	{
-		Name: "openrouter", Capabilities: Capabilities{Tools: true, Images: true}, DisplayName: "openrouter", Type: TypeOpenRouter, ModelListing: "api_key", Wizard: WizardSpec{Order: 1, Label: "OpenRouter - free models (API key required)", Hint: "set OPENROUTER_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "openrouter", Type: TypeOpenRouter, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 1, Label: "OpenRouter - free models (API key required)", Hint: "set OPENROUTER_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "openrouter/free"}, {"fast_model", "openrouter/free"}, {"app_url", "https://github.com/samsaffron/term-llm"}, {"app_title", "term-llm"}},
 		Description: "OpenRouter API (access to many providers)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "OPENROUTER_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "OPENROUTER_API_KEY",
 	},
 	{
-		Name: "xai", Capabilities: Capabilities{Tools: true, Images: true}, DisplayName: "xai", Type: TypeXAI, ModelListing: "api_key", Wizard: WizardSpec{Order: 11, Label: "xAI - XAI_API_KEY", Hint: "set XAI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "xai", Type: TypeXAI, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 11, Label: "xAI - XAI_API_KEY", Hint: "set XAI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "grok-4-1-fast"}, {"fast_model", "grok-3-mini-fast"}},
 		Description: "xAI API (Grok models)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "XAI_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "XAI_API_KEY",
 	},
 	{
-		Name: "venice", Capabilities: Capabilities{Tools: true, Images: true}, DisplayName: "venice", Type: TypeVenice, ModelListing: "api_key", Wizard: WizardSpec{Order: 12, Label: "Venice - VENICE_API_KEY", Hint: "set VENICE_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "venice", Type: TypeVenice, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 12, Label: "Venice - VENICE_API_KEY", Hint: "set VENICE_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "venice-uncensored"}, {"fast_model", "llama-3.2-3b"}},
 		Description: "Venice AI (private, uncensored inference — OpenAI-compatible)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "VENICE_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "VENICE_API_KEY",
 	},
 	{
-		Name: "nearai", Capabilities: Capabilities{Tools: true}, DisplayName: "nearai", Type: TypeNearAI, ModelListing: "nearai", Wizard: WizardSpec{Order: 13, Label: "NEAR AI Cloud - NEARAI_API_KEY", Hint: "set NEARAI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "nearai", Type: TypeNearAI, ModelListing: ModelListingNearAI, Wizard: WizardSpec{Order: 13, Label: "NEAR AI Cloud - NEARAI_API_KEY", Hint: "set NEARAI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "zai-org/GLM-5.1-FP8"}, {"fast_model", "Qwen/Qwen3.6-35B-A3B-FP8"}},
 		Description: "NEAR AI Cloud (TEE-backed private inference — OpenAI-compatible)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "NEARAI_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "NEARAI_API_KEY",
 	},
 	{
-		Name: "sambanova", Capabilities: Capabilities{Tools: true}, DisplayName: "sambanova", Type: TypeSambaNova, ModelListing: "api_key", Wizard: WizardSpec{Order: 14, Label: "SambaNova - SAMBANOVA_API_KEY", Hint: "set SAMBANOVA_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "sambanova", Type: TypeSambaNova, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 14, Label: "SambaNova - SAMBANOVA_API_KEY", Hint: "set SAMBANOVA_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "gpt-oss-120b"}, {"fast_model", "Meta-Llama-3.3-70B-Instruct"}},
 		Description: "SambaNova Cloud (RDU-hosted inference — OpenAI-compatible)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "SAMBANOVA_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "SAMBANOVA_API_KEY",
 	},
 	{
-		Name: "zen", Capabilities: Capabilities{Tools: true}, DisplayName: "zen", Type: TypeZen, ModelListing: "zen", Wizard: WizardSpec{Order: 15, Label: "Zen - ZEN_API_KEY", Hint: "set ZEN_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "zen", Type: TypeZen, ModelListing: ModelListingZen, Wizard: WizardSpec{Order: 15, Label: "Zen - ZEN_API_KEY", Hint: "set ZEN_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "deepseek-v4-flash"}, {"fast_model", "deepseek-v4-flash"}},
 		Description: "OpenCode Zen API (paid models)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "ZEN_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "ZEN_API_KEY",
 	},
 	{
-		Name: "opencode-go", Capabilities: Capabilities{Tools: true, ReasoningEffort: true}, CacheOnly: true, DisplayName: "opencode-go", Type: TypeOpenCodeGo, ModelListing: "opencode-go", Wizard: WizardSpec{Order: 16, Label: "OpenCode Go - OPENCODE_API_KEY", Hint: "set OPENCODE_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Name: "opencode-go", CacheOnly: true, Type: TypeOpenCodeGo, ModelListing: ModelListingOpenCodeGo, Wizard: WizardSpec{Order: 16, Label: "OpenCode Go - OPENCODE_API_KEY", Hint: "set OPENCODE_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults:    []DefaultField{{"model", "glm-5.2"}, {"fast_model", "deepseek-v4-flash"}},
 		Description: "OpenCode Go subscription (dynamic Chat Completions, Responses, Messages, and Gemini routing)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "OPENCODE_API_KEY", ListModels: true,
+		Credential:  CredentialAPIKey, APIKeyEnv: "OPENCODE_API_KEY",
 	},
 	{
-		Name: "copilot", Capabilities: Capabilities{Tools: true, ReasoningEffort: true}, CacheOnly: true, ModelListTimeoutSeconds: 360, DisplayName: "copilot", CredentialLabel: "GitHub Copilot OAuth (interactive)", Aliases: []string{"github copilot"}, Type: TypeCopilot, ModelListing: "copilot", Availability: "copilot",
+		Name: "copilot", CacheOnly: true, ModelListTimeoutSeconds: 360, CredentialLabel: "GitHub Copilot OAuth (interactive)", Aliases: []string{"github copilot"}, Type: TypeCopilot, ModelListing: ModelListingCopilot, Availability: AvailabilityCopilot,
 		Defaults:    []DefaultField{{"model", "gpt-4.1"}, {"fast_model", "gpt-4.1"}},
 		Description: "GitHub Copilot API (chat via OAuth; usage via GITHUB_TOKEN/GH_TOKEN)",
-		Credential:  CredentialOAuth, Setup: "run term-llm auth login copilot", ListModels: true,
+		Credential:  CredentialOAuth, Setup: "run term-llm auth login copilot",
 	},
 	{
-		Name: "claude-bin", ModelListing: "curated", Capabilities: Capabilities{Tools: true, ReasoningEffort: true, CLI: true, FixedToolBridge: true}, DisplayName: "claude-bin", CredentialLabel: "claude-bin CLI (no key needed)", Aliases: []string{"claude cli"}, Type: TypeClaudeBin, Availability: "claude", Wizard: WizardSpec{Order: 5, Label: "Claude Code CLI - local credentials", Hint: "install Claude Code CLI"},
+		Name: "claude-bin", ModelListing: ModelListingCurated, FixedToolBridge: true, CredentialLabel: "claude-bin CLI (no key needed)", Aliases: []string{"claude cli"}, Type: TypeClaudeBin, Availability: AvailabilityClaude, Wizard: WizardSpec{Order: 5, Label: "Claude Code CLI - local credentials", Hint: "install Claude Code CLI"},
 		Defaults:    []DefaultField{{"model", "sonnet"}, {"fast_model", "haiku"}},
 		Description: "Local Claude Code credentials (claude-bin CLI)",
 		Credential:  CredentialNone, Setup: "install Claude Code (claude on PATH)",
 	},
 	{
-		Name: "grok-bin", Capabilities: Capabilities{Tools: true, ReasoningEffort: true, CLI: true, FixedToolBridge: true}, ModelListTimeoutSeconds: 45, DisplayName: "grok-bin", CredentialLabel: "grok CLI login (no key needed)", Aliases: []string{"grok cli"}, Type: TypeGrokBin, ModelListing: "grok-bin", Availability: "grok-bin", Wizard: WizardSpec{Order: 6, Label: "Grok Build CLI - grok.com OAuth", Hint: "install and log in with the Grok Build CLI"},
+		Name: "grok-bin", FixedToolBridge: true, ModelListTimeoutSeconds: 45, CredentialLabel: "grok CLI login (no key needed)", Aliases: []string{"grok cli"}, Type: TypeGrokBin, ModelListing: ModelListingGrokBin, Availability: AvailabilityGrokBin, Wizard: WizardSpec{Order: 6, Label: "Grok Build CLI - grok.com OAuth", Hint: "install and log in with the Grok Build CLI"},
 		Defaults:    []DefaultField{{"model", "grok-4.6"}, {"fast_model", "grok-composer-2.5-fast"}},
 		Description: "Grok Build CLI via local grok.com OAuth login",
-		Credential:  CredentialOAuth, Setup: "install the Grok Build CLI and log in", ListModels: true,
+		Credential:  CredentialOAuth, Setup: "install the Grok Build CLI and log in",
 	},
 	{
-		Name: "cursor-bin", Capabilities: Capabilities{Tools: true, CLI: true, FixedToolBridge: true}, ModelListTimeoutSeconds: 45, DisplayName: "cursor-bin", CredentialLabel: "Cursor Agent login or CURSOR_API_KEY", Aliases: []string{"cursor cli"}, Type: TypeCursorBin, ModelListing: "cursor-bin", Availability: "cursor-bin", Wizard: WizardSpec{Order: 7, Label: "Cursor Agent CLI - Cursor login", Hint: "install Cursor Agent and run 'cursor-agent login'"},
+		Name: "cursor-bin", FixedToolBridge: true, ModelListTimeoutSeconds: 45, CredentialLabel: "Cursor Agent login or CURSOR_API_KEY", Aliases: []string{"cursor cli"}, Type: TypeCursorBin, ModelListing: ModelListingCursorBin, Availability: AvailabilityCursorBin, Wizard: WizardSpec{Order: 7, Label: "Cursor Agent CLI - Cursor login", Hint: "install Cursor Agent and run 'cursor-agent login'"},
 		Defaults:    []DefaultField{{"model", "auto-smart"}, {"fast_model", "composer-2.5"}},
 		Description: "Cursor Agent via local Cursor login or CURSOR_API_KEY",
-		Credential:  CredentialOAuth, APIKeyEnv: "CURSOR_API_KEY", Setup: "run cursor-agent login or set CURSOR_API_KEY", ListModels: true,
+		Credential:  CredentialOAuth, APIKeyEnv: "CURSOR_API_KEY", Setup: "run cursor-agent login or set CURSOR_API_KEY",
 	},
 	{
-		Name: "agy-bin", Capabilities: Capabilities{Tools: true, CLI: true, FixedToolBridge: true}, ModelListTimeoutSeconds: 45, DisplayName: "agy-bin", CredentialLabel: "agy Antigravity login (no key needed)", Aliases: []string{"agy cli"}, Type: TypeAgyBin, ModelListing: "agy-bin", Availability: "agy-bin", Wizard: WizardSpec{Order: 8, Label: "Antigravity agy CLI - Google subscription", Hint: "install agy and complete its Antigravity login"},
+		Name: "agy-bin", FixedToolBridge: true, ModelListTimeoutSeconds: 45, CredentialLabel: "agy Antigravity login (no key needed)", Aliases: []string{"agy cli"}, Type: TypeAgyBin, ModelListing: ModelListingAgyBin, Availability: AvailabilityAgyBin, Wizard: WizardSpec{Order: 8, Label: "Antigravity agy CLI - Google subscription", Hint: "install agy and complete its Antigravity login"},
 		Defaults:    []DefaultField{{"model", "gemini-3.6-flash-high"}, {"fast_model", "gemini-3.6-flash-low"}},
 		Description: "Antigravity subscription through the local agy CLI",
-		Credential:  CredentialOAuth, Setup: "install agy and complete its login", ListModels: true,
+		Credential:  CredentialOAuth, Setup: "install agy and complete its login",
 	},
 	{
-		Name: "ollama", Capabilities: Capabilities{Tools: true}, DisplayName: "ollama", Type: TypeOllama, ModelListing: "ollama",
+		Name: "ollama", Type: TypeOllama, ModelListing: ModelListingOllama,
 		Defaults:    []DefaultField{{"model", "qwen2.5-coder:7b"}, {"fast_model", "qwen2.5-coder:7b"}, {"base_url", "http://127.0.0.1:11434"}},
 		Description: "Ollama local inference (native /api/chat, supports think/options.*)",
-		Credential:  CredentialNone, HostEnv: "OLLAMA_HOST", Setup: "set OLLAMA_HOST or add providers.ollama to config.yaml", ListModels: true,
+		Credential:  CredentialNone, HostEnv: "OLLAMA_HOST", Setup: "set OLLAMA_HOST or add providers.ollama to config.yaml",
 	},
 	{
 		// vLLM has no default endpoint, so it needs a providers.vllm block; its
 		// optional VLLM_API_KEY resolves like any openai_compatible provider.
-		Name: "vllm", Capabilities: Capabilities{Tools: true, ReasoningEffort: true}, DisplayName: "vllm", Type: TypeVLLM, ModelListing: "compatible",
+		Name: "vllm", Type: TypeVLLM, ModelListing: ModelListingCompatible,
 		Defaults:    []DefaultField{{"fast_model", "Qwen/Qwen3.5-122B-A10B"}},
 		Description: "vLLM OpenAI-compatible server with Qwen thinking controls",
-		Credential:  CredentialNone, Setup: "add providers.vllm (base_url) to config.yaml", ListModels: true,
+		Credential:  CredentialNone, Setup: "add providers.vllm (base_url) to config.yaml",
 	},
 	{
 		// Generic AWS variables (AWS_PROFILE, AWS_ACCESS_KEY_ID) are too common
 		// to prove Bedrock is set up, so it needs a providers.bedrock block.
-		Name: "bedrock", ModelListing: "curated", Capabilities: Capabilities{Tools: true, ReasoningEffort: true}, DisplayName: "bedrock", Type: TypeBedrock,
+		Name: "bedrock", ModelListing: ModelListingCurated, Type: TypeBedrock,
 		Defaults:    []DefaultField{{"fast_model", "claude-haiku-4-5"}},
 		Description: "AWS Bedrock (Anthropic Claude models via AWS credentials)",
 		Credential:  CredentialAWS,

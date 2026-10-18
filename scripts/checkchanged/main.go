@@ -19,7 +19,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check-changed", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "run every check regardless of the diff")
-	base := fs.String("base", "upstream/main", "base ref; diff is taken from its merge-base with HEAD")
+	base := fs.String("base", "", "base ref; diff is taken from its merge-base with HEAD (default: first of upstream/main, origin/main, main)")
 	dry := fs.Bool("dry-run", false, "print the planned steps without running them")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -27,11 +27,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
+	if *base == "" {
+		*base = defaultBase()
+	}
 	if err := execute(*all, *base, *dry, stdout, stderr); err != nil {
 		fmt.Fprintln(stderr, "check-changed:", err)
 		return 1
 	}
 	return 0
+}
+
+var baseCandidates = []string{"upstream/main", "origin/main", "main"}
+
+// defaultBase returns the first existing candidate ref, or the first candidate
+// so the later merge-base error names a sensible ref.
+func defaultBase() string {
+	for _, ref := range baseCandidates {
+		if _, err := git("rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
+			return ref
+		}
+	}
+	return baseCandidates[0]
 }
 
 func git(args ...string) ([]byte, error) {
@@ -116,20 +132,47 @@ func listPackages() ([]Pkg, error) {
 	return pkgs, nil
 }
 
-func nestedModules() ([]string, error) {
+// nestedModules returns nested module directories and their module paths.
+func nestedModules() ([]string, map[string]string, error) {
 	out, err := git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*go.mod")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var mods []string
+	paths := map[string]string{}
 	for _, f := range splitNUL(out) {
-		if d := filepath.ToSlash(filepath.Dir(f)); d != "." {
-			if _, err := os.Stat(f); err == nil {
-				mods = append(mods, d)
-			}
+		d := filepath.ToSlash(filepath.Dir(f))
+		if d == "." {
+			continue
+		}
+		if _, err := os.Stat(f); err != nil {
+			continue
+		}
+		mods = append(mods, d)
+		cmd := exec.Command("go", "list", "-m")
+		cmd.Dir = d
+		if mp, err := cmd.Output(); err == nil {
+			paths[d] = strings.TrimSpace(string(mp))
 		}
 	}
-	return mods, nil
+	return mods, paths, nil
+}
+
+// npmCache returns the real npm cache directory so the isolated HOME does not
+// force a cold cache (and network fetches) on every run.
+func npmCache() string {
+	if c := os.Getenv("npm_config_cache"); c != "" {
+		return c
+	}
+	if out, err := exec.Command("npm", "config", "get", "cache").Output(); err == nil {
+		if c := strings.TrimSpace(string(out)); c != "" && c != "undefined" {
+			return c
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".npm")
+	}
+	return ""
 }
 
 func isolatedEnv(tmp string) ([]string, error) {
@@ -149,7 +192,7 @@ func isolatedEnv(tmp string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(os.Environ(),
+	env := append(os.Environ(),
 		"HOME="+filepath.Join(tmp, "home"),
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, "config"),
 		"XDG_DATA_HOME="+filepath.Join(tmp, "data"),
@@ -157,7 +200,11 @@ func isolatedEnv(tmp string) ([]string, error) {
 		"GOMODCACHE="+modcache,
 		"GOCACHE="+gocache,
 		"GOPATH="+gopath,
-	), nil
+	)
+	if c := npmCache(); c != "" {
+		env = append(env, "npm_config_cache="+c)
+	}
+	return env, nil
 }
 
 func execute(all bool, base string, dry bool, stdout, stderr io.Writer) error {
@@ -172,11 +219,11 @@ func execute(all bool, base string, dry bool, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	mods, err := nestedModules()
+	mods, modPaths, err := nestedModules()
 	if err != nil {
 		return err
 	}
-	pl := BuildPlan(Input{Files: files, All: all, Pkgs: pkgs, NestedMods: mods,
+	pl := BuildPlan(Input{Files: files, All: all, Pkgs: pkgs, NestedMods: mods, NestedModPaths: modPaths,
 		ExistsFile: func(f string) bool { _, err := os.Stat(f); return err == nil }})
 
 	fmt.Fprintf(stdout, "base=%s all=%v changed files=%d changed pkgs=%d affected pkgs=%d\n",

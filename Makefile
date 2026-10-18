@@ -33,7 +33,7 @@ complexity-report:
 plans-lint:
 	scripts/lint-plans.sh
 
-docs:
+docs: frontend
 	go run ./cmd/gendocs
 
 check-changed:

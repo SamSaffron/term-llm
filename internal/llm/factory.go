@@ -395,109 +395,115 @@ func newAPIKeyProvider(name string, providerType config.ProviderType, cfg *confi
 	return constructor(name, key, cfg)
 }
 
+type providerConstructor func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error)
+
 // providerConstructors binds implementation-specific constructors to the leaf
-// provider registry. The completeness test guards against missing/extra types.
-var providerConstructors = func() map[config.ProviderType]func(string, config.ProviderType, *config.ProviderConfig) (Provider, error) {
-	constructors := make(map[config.ProviderType]func(string, config.ProviderType, *config.ProviderConfig) (Provider, error))
-	constructor := func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		return NewAnthropicProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials, AnthropicProviderOptions{BaseURL: cfg.BaseURL, Headers: cfg.Headers})
+// provider registry. Types served by the shared API-key and CLI-bin dispatch
+// layers are derived from those layers' tables, so each type is listed once.
+// The completeness tests guard against missing/extra types in every layer.
+var providerConstructors = func() map[config.ProviderType]providerConstructor {
+	constructors := map[config.ProviderType]providerConstructor{
+		config.ProviderTypeAnthropic:    newAnthropicFromConfig,
+		config.ProviderTypeOpenAI:       newOpenAIFromConfig,
+		config.ProviderTypeChatGPT:      newChatGPTFromConfig,
+		config.ProviderTypeGrok:         newGrokFromConfig,
+		config.ProviderTypeCopilot:      newCopilotFromConfig,
+		config.ProviderTypeBedrock:      newBedrockFromConfig,
+		config.ProviderTypeOllama:       newOllamaFromConfig,
+		config.ProviderTypeOpenAICompat: newOpenAICompatFromConfig,
+		config.ProviderTypeVLLM:         newOpenAICompatFromConfig,
 	}
-	constructors[config.ProviderTypeAnthropic] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{ProviderName: name, UsePreviousResponseID: cfg.UsePreviousResponseID, RequestEncryptedReasoning: cfg.RequestEncryptedReasoning, Endpoint: cfg.OpenAIEndpoint(), UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)}), nil
-	}
-	constructors[config.ProviderTypeOpenAI] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		// ChatGPT uses native OAuth with interactive authentication
-		return NewChatGPTProviderWithOptions(cfg.Model, ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)})
-	}
-	constructors[config.ProviderTypeChatGPT] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		return NewGrokProviderWithOptions(cfg.Model, GrokProviderOptions{FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg)})
-	}
-	constructors[config.ProviderTypeGrok] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		// Copilot uses GitHub device code OAuth with interactive authentication
-		provider, err := NewCopilotProvider(cfg.Model)
-		if err != nil {
-			return nil, err
+	for providerType := range apiKeyProviderConstructors {
+		constructors[providerType] = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+			return newAPIKeyProvider(name, providerType, cfg)
 		}
-		provider.fileUploadPolicy = cloneFileUploadPolicy(FileUploadPolicyOverrideForProviderConfig(name, *cfg))
-		return provider, nil
 	}
-	constructors[config.ProviderTypeCopilot] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		return newAPIKeyProvider(name, providerType, cfg)
+	for providerType := range binProviderConstructors {
+		constructors[providerType] = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+			return newBinProvider(providerType, cfg.Model, cfg.Env, cfg.EnableHooks)
+		}
 	}
-	constructors[config.ProviderTypeOpenRouter] = constructor
-	constructors[config.ProviderTypeGemini] = constructor
-	constructors[config.ProviderTypeXAI] = constructor
-	constructors[config.ProviderTypeZen] = constructor
-	constructors[config.ProviderTypeVenice] = constructor
-	constructors[config.ProviderTypeNearAI] = constructor
-	constructors[config.ProviderTypeSambaNova] = constructor
-	constructors[config.ProviderTypeOpenCodeGo] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap, cfg.Headers)
+	return constructors
+}()
+
+func newAnthropicFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	return NewAnthropicProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials, AnthropicProviderOptions{BaseURL: cfg.BaseURL, Headers: cfg.Headers})
+}
+
+func newOpenAIFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{ProviderName: name, UsePreviousResponseID: cfg.UsePreviousResponseID, RequestEncryptedReasoning: cfg.RequestEncryptedReasoning, Endpoint: cfg.OpenAIEndpoint(), UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)}), nil
+}
+
+// newChatGPTFromConfig uses native OAuth with interactive authentication.
+func newChatGPTFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	return NewChatGPTProviderWithOptions(cfg.Model, ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)})
+}
+
+func newGrokFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	return NewGrokProviderWithOptions(cfg.Model, GrokProviderOptions{FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg)})
+}
+
+// newCopilotFromConfig uses GitHub device code OAuth with interactive authentication.
+func newCopilotFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	provider, err := NewCopilotProvider(cfg.Model)
+	if err != nil {
+		return nil, err
 	}
-	constructors[config.ProviderTypeBedrock] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		return newBinProvider(providerType, cfg.Model, cfg.Env, cfg.EnableHooks)
+	provider.fileUploadPolicy = cloneFileUploadPolicy(FileUploadPolicyOverrideForProviderConfig(name, *cfg))
+	return provider, nil
+}
+
+func newBedrockFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap, cfg.Headers)
+}
+
+func newOllamaFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	thinkLevel, err := normalizeOllamaThinkLevel(cfg.ThinkLevel)
+	if err != nil {
+		return nil, fmt.Errorf("provider %q: %w", name, err)
 	}
-	constructors[config.ProviderTypeClaudeBin] = constructor
-	constructors[config.ProviderTypeGrokBin] = constructor
-	constructors[config.ProviderTypeCursorBin] = constructor
-	constructors[config.ProviderTypeAgyBin] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		thinkLevel, err := normalizeOllamaThinkLevel(cfg.ThinkLevel)
-		if err != nil {
-			return nil, fmt.Errorf("provider %q: %w", name, err)
-		}
-		opts := OllamaOptions{
-			Think:           cfg.Think,
-			ThinkLevel:      thinkLevel,
-			TopK:            cfg.TopK,
-			MinP:            cfg.MinP,
-			PresencePenalty: cfg.PresencePenalty,
-			NumCtx:          cfg.NumCtx,
-			NumPredict:      cfg.NumPredict,
-		}
-		return NewOllamaChatProvider(cfg.BaseURL, cfg.Model, opts), nil
+	opts := OllamaOptions{
+		Think:           cfg.Think,
+		ThinkLevel:      thinkLevel,
+		TopK:            cfg.TopK,
+		MinP:            cfg.MinP,
+		PresencePenalty: cfg.PresencePenalty,
+		NumCtx:          cfg.NumCtx,
+		NumPredict:      cfg.NumPredict,
 	}
-	constructors[config.ProviderTypeOllama] = constructor
-	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-		// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values
-		baseURL := cfg.BaseURL
-		chatURL := cfg.URL
-		if cfg.ResolvedURL != "" {
-			chatURL = cfg.ResolvedURL
-		}
-		if baseURL == "" && chatURL == "" {
-			return nil, fmt.Errorf("provider %q requires base_url or url", name)
-		}
-		if name == "" {
-			return nil, fmt.Errorf("openai-compatible provider requires a non-empty name")
-		}
-		// Use provider name as display name, with first letter capitalized
-		displayName := strings.ToUpper(name[:1]) + name[1:]
-		if providerType == config.ProviderTypeVLLM {
-			p := NewVLLMProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName)
-			p.noStreamOptions = cfg.NoStreamOptions
-			p.vllmThinkingParam = cfg.VLLMThinkingParam
-			p.SetModelConfigs(cfg.ModelConfigs)
-			return p, nil
-		}
-		p := NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil)
+	return NewOllamaChatProvider(cfg.BaseURL, cfg.Model, opts), nil
+}
+
+// newOpenAICompatFromConfig serves generic OpenAI-compatible endpoints and vLLM.
+func newOpenAICompatFromConfig(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values
+	baseURL := cfg.BaseURL
+	chatURL := cfg.URL
+	if cfg.ResolvedURL != "" {
+		chatURL = cfg.ResolvedURL
+	}
+	if baseURL == "" && chatURL == "" {
+		return nil, fmt.Errorf("provider %q requires base_url or url", name)
+	}
+	if name == "" {
+		return nil, fmt.Errorf("openai-compatible provider requires a non-empty name")
+	}
+	// Use provider name as display name, with first letter capitalized
+	displayName := strings.ToUpper(name[:1]) + name[1:]
+	if providerType == config.ProviderTypeVLLM {
+		p := NewVLLMProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName)
 		p.noStreamOptions = cfg.NoStreamOptions
-		parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(cfg)
-		p.SetReasoningParser(parseReasoning, includeReasoning, thinkingParam)
+		p.vllmThinkingParam = cfg.VLLMThinkingParam
 		p.SetModelConfigs(cfg.ModelConfigs)
 		return p, nil
 	}
-	constructors[config.ProviderTypeOpenAICompat] = constructor
-	constructors[config.ProviderTypeVLLM] = constructor
-	return constructors
-}()
+	p := NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil)
+	p.noStreamOptions = cfg.NoStreamOptions
+	parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(cfg)
+	p.SetReasoningParser(parseReasoning, includeReasoning, thinkingParam)
+	p.SetModelConfigs(cfg.ModelConfigs)
+	return p, nil
+}
 
 // createProviderFromConfig creates a provider from a ProviderConfig.
 func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider, error) {

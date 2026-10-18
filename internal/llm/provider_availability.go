@@ -33,28 +33,29 @@ func ProviderHasLocalCredentials(name string) bool {
 	if !ok {
 		return false
 	}
-	switch spec.Availability {
-	case "claude":
-		// Claude Code keeps its login in the macOS keychain or its own config;
-		// an installed CLI is the cheap, reliable signal.
+	probe := availabilityProbes[spec.Availability]
+	return probe != nil && probe()
+}
+
+// availabilityProbes is the single place each providerspec.Availability kind
+// is turned into a local login check.
+var availabilityProbes = map[providerspec.Availability]func() bool{
+	// Claude Code keeps its login in the macOS keychain or its own config;
+	// an installed CLI is the cheap, reliable signal.
+	providerspec.AvailabilityClaude: func() bool {
 		_, err := exec.LookPath("claude")
 		return err == nil
-	case "chatgpt":
-		return credentials.ChatGPTCredentialsExist()
-	case "grok":
-		return credentials.GrokCredentialsExist()
-	case "copilot":
-		return credentials.CopilotCredentialsExist()
-	case "grok-bin":
+	},
+	providerspec.AvailabilityChatGPT: credentials.ChatGPTCredentialsExist,
+	providerspec.AvailabilityGrok:    credentials.GrokCredentialsExist,
+	providerspec.AvailabilityCopilot: credentials.CopilotCredentialsExist,
+	providerspec.AvailabilityGrokBin: func() bool {
 		path := grokBinAuthPath(os.Getenv("GROK_AUTH_PATH"))
 		_, err := os.Stat(path)
 		return path != "" && err == nil
-	case "cursor-bin":
-		return CursorBinHasCredentials()
-	case "agy-bin":
-		return AgyBinHasCredentials()
-	}
-	return false
+	},
+	providerspec.AvailabilityCursorBin: CursorBinHasCredentials,
+	providerspec.AvailabilityAgyBin:    AgyBinHasCredentials,
 }
 
 // ProviderConfiguredVia reports why provider name is configured (one of the

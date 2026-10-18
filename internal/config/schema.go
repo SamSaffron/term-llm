@@ -1,9 +1,10 @@
 package config
 
 import (
-	"github.com/samsaffron/term-llm/internal/providerspec"
 	"sort"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/providerspec"
 )
 
 // KeySpec describes a user-visible configuration key. New user-visible

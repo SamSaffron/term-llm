@@ -390,7 +390,7 @@ func (a *Agent) HasDisabledList() bool {
 // Tool-aware callers pass the catalog legacy-name resolver so old deny lists
 // also disable replacement tools without importing tools into agents.
 // If neither is set, returns nil (use default).
-func (a *Agent) GetEnabledTools(allTools []string, legacyNames ...func(string) string) []string {
+func (a *Agent) GetEnabledTools(allTools []string, legacyName func(string) string) []string {
 	if a.HasEnabledList() {
 		return a.Tools.Enabled
 	}
@@ -404,7 +404,7 @@ func (a *Agent) GetEnabledTools(allTools []string, legacyNames ...func(string) s
 			if disabled[t] {
 				continue
 			}
-			if len(legacyNames) > 0 && legacyNames[0] != nil && disabled[legacyNames[0](t)] {
+			if legacyName != nil && disabled[legacyName(t)] {
 				continue
 			}
 			enabled = append(enabled, t)

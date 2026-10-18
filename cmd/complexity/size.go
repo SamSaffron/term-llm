@@ -11,8 +11,8 @@ import (
 )
 
 // sizeThreshold is the largest non-test file, in lines, that may exist without
-// being recorded in the size baseline. A file counts lines as the analyzer does
-// (newline count plus one).
+// being recorded in the size baseline. Lines are counted as `wc -l` does: the
+// number of newlines, so a final newline does not add a line.
 const sizeThreshold = 1000
 
 // fileGrowthSlack is how far a recorded oversize file may grow: enough for a
@@ -47,6 +47,15 @@ type sizePackage struct {
 	Lines int    `json:"lines"`
 }
 
+// wcLines converts the analyzer's line count (newlines plus one) to the
+// `wc -l` count for newline-terminated files, which gofmt guarantees.
+func wcLines(f complexity.File) int {
+	if f.Lines <= 0 {
+		return 0
+	}
+	return f.Lines - 1
+}
+
 // measureSizes returns oversize files and oversize package totals.
 func measureSizes(report complexity.Report) (map[string]int, map[string]int) {
 	totals := map[string]int{}
@@ -55,9 +64,10 @@ func measureSizes(report complexity.Report) (map[string]int, map[string]int) {
 		if f.Test {
 			continue
 		}
-		totals[path.Dir(f.Path)] += f.Lines
-		if f.Lines > sizeThreshold {
-			files[f.Path] = f.Lines
+		n := wcLines(f)
+		totals[path.Dir(f.Path)] += n
+		if n > sizeThreshold {
+			files[f.Path] = n
 		}
 	}
 	packages := map[string]int{}
@@ -143,7 +153,7 @@ func compareSizes(b sizeBaseline, report complexity.Report) (violations, notes [
 		want, ok := recordedFiles[p]
 		switch {
 		case !ok:
-			if from := claimRename(vanished, claimed, recordedFiles, n); from != "" {
+			if from := claimMove(vanished, claimed, recordedFiles, n, path.Base(p)); from != "" {
 				notes = append(notes, fmt.Sprintf("oversize file appears moved: %s -> %s (%d lines)", from, p, n))
 				continue
 			}
@@ -159,10 +169,28 @@ func compareSizes(b sizeBaseline, report complexity.Report) (violations, notes [
 			notes = append(notes, fmt.Sprintf("stale entry: %s is missing or at most %d lines", p, sizeThreshold))
 		}
 	}
-	for d, n := range packages {
+	var vanishedPkgs []string
+	for d := range recordedPkgs {
+		if _, ok := packages[d]; !ok {
+			vanishedPkgs = append(vanishedPkgs, d)
+		}
+	}
+	sort.Strings(vanishedPkgs)
+	claimedPkgs := map[string]bool{}
+	var newDirs []string
+	for d := range packages {
+		newDirs = append(newDirs, d)
+	}
+	sort.Strings(newDirs)
+	for _, d := range newDirs {
+		n := packages[d]
 		want, ok := recordedPkgs[d]
 		switch {
 		case !ok:
+			if from := claimPackageMove(vanishedPkgs, claimedPkgs, recordedPkgs, n); from != "" {
+				notes = append(notes, fmt.Sprintf("package appears moved: %s -> %s (%d lines)", from, d, n))
+				continue
+			}
 			violations = append(violations, fmt.Sprintf("new package over %d lines: %s (%d); split it, or regenerate the baseline if it was moved", packageThreshold, d, n))
 		case n > packageAllowance(want):
 			violations = append(violations, fmt.Sprintf("package grew too much: %s recorded %d, now %d, allowance %d; move code into a smaller package", d, want, n, packageAllowance(want)))
@@ -170,8 +198,8 @@ func compareSizes(b sizeBaseline, report complexity.Report) (violations, notes [
 			notes = append(notes, fmt.Sprintf("package shrank: %s %d -> %d", d, want, n))
 		}
 	}
-	for d := range recordedPkgs {
-		if _, ok := packages[d]; !ok {
+	for _, d := range vanishedPkgs {
+		if !claimedPkgs[d] {
 			notes = append(notes, fmt.Sprintf("stale entry: package %s is missing or at most %d lines", d, packageThreshold))
 		}
 	}
@@ -180,14 +208,51 @@ func compareSizes(b sizeBaseline, report complexity.Report) (violations, notes [
 	return violations, notes
 }
 
-// claimRename returns the first unclaimed vanished path whose recorded size is
-// at least n, marking it claimed.
-func claimRename(vanished []string, claimed map[string]bool, recorded map[string]int, n int) string {
+// claimPackageMove accepts package renames even when the final directory name
+// changes and the package shrinks: the recorded total still bounds the move.
+func claimPackageMove(vanished []string, claimed map[string]bool, recorded map[string]int, n int) string {
+	best := ""
 	for _, p := range vanished {
-		if !claimed[p] && recorded[p] >= n {
-			claimed[p] = true
-			return p
+		if claimed[p] || recorded[p] < n {
+			continue
+		}
+		if best == "" || recorded[p] < recorded[best] {
+			best = p
 		}
 	}
-	return ""
+	if best != "" {
+		claimed[best] = true
+	}
+	return best
+}
+
+// claimMove picks the vanished recorded entry a new oversize entry most
+// plausibly moved from, marks it claimed and returns it. Candidates must have
+// been at least n lines and either share the new entry's base name or have
+// exactly its size. An exact size wins; otherwise the smallest recorded size
+// that still fits, with ties broken by path order.
+func claimMove(vanished []string, claimed map[string]bool, recorded map[string]int, n int, base string) string {
+	best := ""
+	for _, p := range vanished {
+		size := recorded[p]
+		if claimed[p] || size < n || (size != n && path.Base(p) != base) {
+			continue
+		}
+		if best == "" || moveBetter(size, recorded[best], n) {
+			best = p
+		}
+	}
+	if best != "" {
+		claimed[best] = true
+	}
+	return best
+}
+
+// moveBetter reports whether size is a better move source than current for a
+// new entry of n lines.
+func moveBetter(size, current, n int) bool {
+	if (size == n) != (current == n) {
+		return size == n
+	}
+	return size < current
 }

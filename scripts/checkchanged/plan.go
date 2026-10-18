@@ -1,5 +1,5 @@
 // Command checkchanged runs the checks relevant to the files changed since the
-// merge-base with a base ref (default upstream/main).
+// merge-base with a base ref (default upstream/main, origin/main, then main).
 package main
 
 import (
@@ -30,8 +30,11 @@ type Input struct {
 	All        bool
 	Pkgs       []Pkg    // root-module packages
 	NestedMods []string // nested module directories (relative)
-	ExistsFile func(string) bool
-	ModulePath string
+	// NestedModPaths maps a nested module directory to its module path, so
+	// root packages importing it can be treated as changed.
+	NestedModPaths map[string]string
+	ExistsFile     func(string) bool
+	ModulePath     string
 }
 
 // Plan is the resulting set of steps plus the package sets used.
@@ -90,6 +93,169 @@ func ownerPkg(file string, byDir map[string]Pkg) (Pkg, bool) {
 	return p, ok
 }
 
+// importsModule reports whether p directly imports a package of module mod.
+func importsModule(p Pkg, mod string) bool {
+	for _, group := range [][]string{p.Imports, p.TestImports, p.XTestImports} {
+		for _, imp := range group {
+			if isUnder(imp, mod) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// state accumulates what the changed files touch.
+type state struct {
+	goFiles                                                                []string
+	goChanged, sourceChanged, nestedChanged, frontend, plans, ledger, docs bool
+	unknownGo                                                              bool
+	nested                                                                 map[string]bool
+	changedPkgs                                                            map[string]bool
+}
+
+func (st *state) addGoFile(f string, in Input) {
+	st.sourceChanged = true
+	if in.ExistsFile(f) {
+		st.goFiles = append(st.goFiles, f)
+	}
+}
+
+func nestedOwner(f string, mods []string) string {
+	owner := ""
+	for _, m := range mods {
+		if isUnder(f, m) {
+			owner = m
+		}
+	}
+	return owner
+}
+
+// classify records the effect of one changed file.
+func (st *state) classify(f string, in Input, byDir map[string]Pkg) {
+	if isUnder(f, "docs-site") {
+		st.docs = true
+	}
+	if m := nestedOwner(f, in.NestedMods); m != "" {
+		st.nested[m] = true
+		st.nestedChanged = true
+		if strings.HasSuffix(f, ".go") {
+			st.addGoFile(f, in)
+		}
+		return
+	}
+	switch {
+	case f == "Makefile" || f == ".github/workflows/ci.yml" || f == "scripts/check-changed.sh":
+		// Changes to the check orchestration itself must exercise every area.
+		st.goChanged, st.unknownGo, st.nestedChanged, st.frontend, st.plans, st.ledger = true, true, true, true, true, true
+	case f == "scripts/lint-plans.sh":
+		st.plans = true
+	case f == "scripts/verify_nested_modules.sh":
+		st.nestedChanged = true
+	case isUnder(f, "frontend"):
+		st.frontend = true
+	case isUnder(f, "plans"):
+		st.plans = true
+	case isUnder(f, "ledger"):
+		st.ledger = true
+	}
+	if f == "go.mod" || f == "go.sum" {
+		st.goChanged, st.unknownGo = true, true
+		return
+	}
+	if strings.HasSuffix(f, ".go") {
+		st.addGoFile(f, in)
+	}
+	if p, ok := ownerPkg(f, byDir); ok {
+		st.goChanged = true
+		st.changedPkgs[p.ImportPath] = true
+	} else if strings.HasSuffix(f, ".go") {
+		// Deleted or unlisted package (e.g. build-tagged): be conservative.
+		st.goChanged, st.unknownGo = true, true
+	}
+}
+
+// addEmbeddedAndNested marks root packages affected through the embedded
+// frontend assets and through nested modules they import.
+func (st *state) addEmbeddedAndNested(in Input, byDir map[string]Pkg) {
+	if st.frontend {
+		// The frontend is embedded by serveui. Rebuild the assets and exercise
+		// its reverse dependents, not just JavaScript checks.
+		if p, ok := byDir["internal/serveui"]; ok {
+			st.goChanged = true
+			st.changedPkgs[p.ImportPath] = true
+		}
+	}
+	for m := range st.nested {
+		mod := in.NestedModPaths[m]
+		if mod == "" {
+			continue
+		}
+		for _, p := range in.Pkgs {
+			if importsModule(p, mod) {
+				st.goChanged = true
+				st.changedPkgs[p.ImportPath] = true
+			}
+		}
+	}
+}
+
+func (st *state) applyAll(in Input) {
+	st.goChanged, st.unknownGo, st.nestedChanged, st.frontend, st.plans, st.ledger, st.sourceChanged, st.docs = true, true, true, true, true, true, true, true
+	for _, m := range in.NestedMods {
+		st.nested[m] = true
+	}
+	// Match CI's repository-wide formatting check, including nested modules.
+	st.goFiles = []string{"."}
+}
+
+// resolveTargets fills pl.Changed/pl.Affected and returns the go package arguments.
+func (st *state) resolveTargets(in Input, pl *Plan) []string {
+	if !st.goChanged {
+		return nil
+	}
+	if st.unknownGo {
+		for _, p := range in.Pkgs {
+			pl.Changed = append(pl.Changed, p.ImportPath)
+		}
+		sort.Strings(pl.Changed)
+		pl.Affected = append([]string(nil), pl.Changed...)
+		return []string{"./..."}
+	}
+	for k := range st.changedPkgs {
+		pl.Changed = append(pl.Changed, k)
+	}
+	sort.Strings(pl.Changed)
+	pl.Affected = ReverseDeps(in.Pkgs, pl.Changed)
+	return pl.Affected
+}
+
+func hasGendocs(targets []string) bool {
+	for _, t := range targets {
+		if t == "./..." || path.Base(t) == "gendocs" {
+			return true
+		}
+	}
+	return false
+}
+
+func goSteps(targets []string) []Step {
+	return []Step{
+		{Name: "make build", Args: []string{"make", "build"}},
+		{Name: "go build", Args: []string{"go", "build", "./..."}},
+		{Name: "go vet", Args: append([]string{"go", "vet"}, targets...)},
+		{Name: "go test", Args: append([]string{"go", "test"}, targets...)},
+	}
+}
+
+func frontendSteps() []Step {
+	var steps []Step
+	for _, s := range []string{"format:check", "lint", "typecheck", "test"} {
+		steps = append(steps, Step{Name: "frontend " + s, Args: []string{"npm", "--prefix", "frontend", "run", s}})
+	}
+	return steps
+}
+
 // BuildPlan maps changed files to a list of check steps.
 func BuildPlan(in Input) Plan {
 	var pl Plan
@@ -97,127 +263,43 @@ func BuildPlan(in Input) Plan {
 	for _, p := range in.Pkgs {
 		byDir[p.Dir] = p
 	}
-	var goFiles []string
-	var goChanged, sourceChanged, nestedChanged, frontend, plans, ledger, docs, unknownGo bool
-	nested := map[string]bool{}
-	changedPkgs := map[string]bool{}
+	st := &state{nested: map[string]bool{}, changedPkgs: map[string]bool{}}
 	for _, f := range in.Files {
-		if isUnder(f, "docs-site") || isUnder(f, "internal/providerspec") || isUnder(f, "internal/tools") || isUnder(f, "internal/config") || isUnder(f, "internal/docsgen") || isUnder(f, "cmd") || f == "Makefile" || isUnder(f, "scripts/checkchanged") {
-			docs = true
-		}
-		inNested := ""
-		for _, m := range in.NestedMods {
-			if isUnder(f, m) {
-				inNested = m
-			}
-		}
-		switch {
-		case f == "Makefile" || f == ".github/workflows/ci.yml" || f == "scripts/check-changed.sh":
-			// Changes to the check orchestration itself must exercise every area.
-			goChanged, unknownGo, nestedChanged, frontend, plans, ledger = true, true, true, true, true, true
-		case f == "scripts/lint-plans.sh":
-			plans = true
-		case f == "scripts/verify_nested_modules.sh":
-			nestedChanged = true
-		case inNested != "":
-			nested[inNested] = true
-			nestedChanged = true
-			if strings.HasSuffix(f, ".go") {
-				sourceChanged = true
-				if in.ExistsFile(f) {
-					goFiles = append(goFiles, f)
-				}
-			}
-			continue
-		case isUnder(f, "frontend"):
-			frontend = true
-		case isUnder(f, "plans"):
-			plans = true
-		case isUnder(f, "ledger"):
-			ledger = true
-		}
-		if f == "go.mod" || f == "go.sum" {
-			goChanged, unknownGo = true, true
-			continue
-		}
-		if strings.HasSuffix(f, ".go") {
-			sourceChanged = true
-			if in.ExistsFile(f) {
-				goFiles = append(goFiles, f)
-			}
-		}
-		if p, ok := ownerPkg(f, byDir); ok {
-			goChanged = true
-			changedPkgs[p.ImportPath] = true
-		} else if strings.HasSuffix(f, ".go") {
-			// Deleted or unlisted package (e.g. build-tagged): be conservative.
-			goChanged, unknownGo = true, true
-		}
+		st.classify(f, in, byDir)
 	}
-	if frontend {
-		// The frontend is embedded by serveui. Rebuild the assets and exercise
-		// its reverse dependents, not just JavaScript checks.
-		if p, ok := byDir["internal/serveui"]; ok {
-			goChanged = true
-			changedPkgs[p.ImportPath] = true
-		}
-	}
+	st.addEmbeddedAndNested(in, byDir)
 	if in.All {
-		goChanged, unknownGo, nestedChanged, frontend, plans, ledger, sourceChanged, docs = true, true, true, true, true, true, true, true
-		for _, m := range in.NestedMods {
-			nested[m] = true
-		}
+		st.applyAll(in)
 	}
+	targets := st.resolveTargets(in, &pl)
 
-	var targets []string
-	if goChanged {
-		if unknownGo {
-			targets = []string{"./..."}
-			for _, p := range in.Pkgs {
-				pl.Affected = append(pl.Affected, p.ImportPath)
-			}
-			sort.Strings(pl.Affected)
-		} else {
-			for k := range changedPkgs {
-				pl.Changed = append(pl.Changed, k)
-			}
-			sort.Strings(pl.Changed)
-			pl.Affected = ReverseDeps(in.Pkgs, pl.Changed)
-			targets = pl.Affected
-		}
+	if len(st.goFiles) > 0 {
+		sort.Strings(st.goFiles)
+		pl.Steps = append(pl.Steps, Step{Name: "gofmt", Args: append([]string{"gofmt", "-l"}, st.goFiles...)})
 	}
-	if in.All {
-		// Match CI's repository-wide formatting check, including nested modules.
-		goFiles = []string{"."}
+	if st.goChanged {
+		pl.Steps = append(pl.Steps, goSteps(targets)...)
 	}
-	if len(goFiles) > 0 {
-		sort.Strings(goFiles)
-		pl.Steps = append(pl.Steps, Step{Name: "gofmt", Args: append([]string{"gofmt", "-l"}, goFiles...)})
-	}
-	if goChanged {
-		pl.Steps = append(pl.Steps,
-			Step{Name: "make build", Args: []string{"make", "build"}},
-			Step{Name: "go build", Args: []string{"go", "build", "./..."}},
-			Step{Name: "go vet", Args: append([]string{"go", "vet"}, targets...)},
-			Step{Name: "go test", Args: append([]string{"go", "test"}, targets...)},
-		)
-	}
-	if docs {
-		pl.Steps = append(pl.Steps, Step{Name: "docs drift", Args: []string{"go", "test", "./cmd/gendocs", "-run", "^TestReferenceDocsUpToDate$"}})
-	}
-	if nestedChanged {
+	if st.nestedChanged {
 		pl.Steps = append(pl.Steps, Step{Name: "nested modules", Args: []string{"scripts/verify_nested_modules.sh"}})
 	}
-	if frontend {
-		for _, s := range []string{"format:check", "lint", "typecheck", "test"} {
-			pl.Steps = append(pl.Steps, Step{Name: "frontend " + s, Args: []string{"npm", "--prefix", "frontend", "run", s}})
-		}
-		// `npm test` is a script alias; `run test` works equally.
+	// Frontend checks precede the docs drift check, which compiles packages
+	// that embed the built frontend assets.
+	if st.frontend {
+		pl.Steps = append(pl.Steps, frontendSteps()...)
 	}
-	if sourceChanged || ledger || in.All {
+	// Docs drift is a gendocs test: go test already runs it when gendocs is a
+	// target, so only add it for docs-site changes that miss it.
+	if st.docs && !hasGendocs(targets) {
+		if !st.goChanged {
+			pl.Steps = append(pl.Steps, Step{Name: "make frontend", Args: []string{"make", "frontend"}})
+		}
+		pl.Steps = append(pl.Steps, Step{Name: "docs drift", Args: []string{"go", "test", "./cmd/gendocs", "-run", "^TestReferenceDocsUpToDate$"}})
+	}
+	if st.sourceChanged || st.ledger || in.All {
 		pl.Steps = append(pl.Steps, Step{Name: "complexity", Args: []string{"make", "complexity"}})
 	}
-	if plans {
+	if st.plans {
 		pl.Steps = append(pl.Steps, Step{Name: "plans-lint", Args: []string{"make", "plans-lint"}})
 	}
 	return pl

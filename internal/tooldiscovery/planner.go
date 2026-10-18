@@ -1333,7 +1333,7 @@ func isFixedBridgeProvider(provider llm.Provider) bool {
 		return false
 	}
 	if spec, ok := providerspec.Lookup(strings.ToLower(strings.TrimSpace(provider.Credential()))); ok {
-		return spec.Capabilities.FixedToolBridge
+		return spec.FixedToolBridge
 	}
 	return false
 }

@@ -188,67 +188,54 @@ func handleUnsupportedModelListProvider(providerName string, providerType config
 		"Model listing is supported for: %s", providerName, providerType, strings.Join(supportedModelListProviderTypes(), ", "))
 }
 
-// modelListerConstructors binds model listing behavior to provider types.
-var modelListerConstructors = func() map[providerspec.ModelListing]func(string, config.ProviderType, config.ProviderConfig, bool) (ModelLister, error) {
-	constructors := make(map[providerspec.ModelListing]func(string, config.ProviderType, config.ProviderConfig, bool) (ModelLister, error))
-	constructor := func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+type modelListerConstructor func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error)
+
+// modelListerConstructors binds model listing behavior to registry listing kinds.
+var modelListerConstructors = map[providerspec.ModelListing]modelListerConstructor{
+	providerspec.ModelListingAnthropic: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newAnthropicModelLister(providerCfg)
-	}
-	constructors["anthropic"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingAPIKey: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newAPIKeyModelLister(providerType, providerCfg)
-	}
-	constructors["api_key"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingChatGPT: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newChatGPTModelLister(providerCfg.Model)
-	}
-	constructors["chatgpt"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingCopilot: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newCopilotModelLister(providerCfg.Model, configured)
-	}
-	constructors["copilot"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingCursorBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return llm.NewCursorBinProvider(providerCfg.Model, providerCfg.Env), nil
-	}
-	constructors["cursor-bin"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingGrokBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return llm.NewGrokBinProvider(providerCfg.Model, providerCfg.Env), nil
-	}
-	constructors["grok-bin"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingAgyBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return llm.NewAgyBinProvider(providerCfg.Model, providerCfg.Env), nil
-	}
-	constructors["agy-bin"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingCompatible: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newOpenAICompatibleModelLister(providerName, providerCfg)
-	}
-	constructors["compatible"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingOllama: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return llm.NewOllamaChatProvider(providerCfg.BaseURL, providerCfg.Model, llm.OllamaOptions{}), nil
-	}
-	constructors["ollama"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingZen: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return llm.NewZenProvider(providerCfg.ResolvedAPIKey, ""), nil
-	}
-	constructors["zen"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingOpenCodeGo: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "OPENCODE_API_KEY")
 		// The Go model and metadata endpoints are public; a key is required only
 		// when the returned provider is used for inference.
 		return llm.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL), nil
-	}
-	constructors["opencode-go"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingGrok: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newGrokModelLister(providerCfg.Model)
-	}
-	constructors["grok"] = constructor
-	constructor = func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	},
+	providerspec.ModelListingNearAI: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "NEARAI_API_KEY")
 		return llm.NewNearAIProvider(apiKey, providerCfg.Model), nil
-	}
-	constructors["nearai"] = constructor
-	return constructors
-}()
+	},
+}
 
 func newModelLister(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 	spec, registered := providerspec.ByType(providerType)

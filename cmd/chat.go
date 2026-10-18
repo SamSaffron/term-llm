@@ -1640,12 +1640,8 @@ func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string
 		}
 	}
 
-	for _, spec := range providerspec.All() {
-		for _, alias := range spec.Aliases {
-			if lower == alias || strings.HasPrefix(lower, alias+" (") {
-				return spec.Name
-			}
-		}
+	if spec, ok := providerspec.LookupSessionAlias(lower); ok {
+		return spec.Name
 	}
 	if strings.HasPrefix(lower, "debug") {
 		return "debug"

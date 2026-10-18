@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/providerspec"
 	"os"
 	"os/exec"
 	"sort"
@@ -10,7 +9,8 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 )
 
@@ -33,28 +33,25 @@ func detectAvailableProviders() []providerOption {
 		if spec.Wizard.Order == 0 {
 			continue
 		}
-		available := spec.APIKeyEnv != "" && os.Getenv(spec.APIKeyEnv) != ""
-		if spec.Name == "openrouter" || spec.Name == "zen" {
-			available = strings.TrimSpace(os.Getenv(spec.APIKeyEnv)) != ""
-		}
-		switch spec.Availability {
-		case "chatgpt":
-			available = credentials.ChatGPTCredentialsExist()
-		case "grok":
-			available = credentials.GrokCredentialsExist()
-		case "claude":
-			available = isClaudeBinaryAvailable()
-		case "grok-bin":
-			available = isGrokBinaryAvailable()
-		case "cursor-bin":
-			available = isCursorBinaryAvailable()
-		case "agy-bin":
-			available = isAgyBinaryAvailable()
+		available := spec.APIKeyEnv != "" && strings.TrimSpace(os.Getenv(spec.APIKeyEnv)) != ""
+		if probe := wizardBinaryProbes[spec.Name]; probe != nil {
+			available = probe()
+		} else if spec.Availability != "" {
+			available = llm.ProviderHasLocalCredentials(spec.Name)
 		}
 		options = append(options, providerOption{name: spec.Wizard.Label, value: spec.Name, available: available, hint: spec.Wizard.Hint})
 	}
 
 	return options
+}
+
+// The setup wizard checks whether companion binaries exist, not whether they
+// are signed in. Login checks for Availability kinds live in llm.
+var wizardBinaryProbes = map[string]func() bool{
+	"claude-bin": isClaudeBinaryAvailable,
+	"grok-bin":   isGrokBinaryAvailable,
+	"cursor-bin": isCursorBinaryAvailable,
+	"agy-bin":    isAgyBinaryAvailable,
 }
 
 // isAnthropicAvailable checks if an Anthropic API key is available

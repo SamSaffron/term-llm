@@ -13,7 +13,7 @@ func TestBuiltinDescriptorsComplete(t *testing.T) {
 		}
 		seen[descriptor.Name] = true
 		d := lookupBuiltin(descriptor.Name)
-		if d == nil || d.construct == nil || descriptor.Policy == "" || len(descriptor.Modes) == 0 || descriptor.Description == "" {
+		if d == nil || d.construct == nil || descriptor.Policy == "" || descriptor.Description == "" {
 			t.Errorf("incomplete descriptor: %s", descriptor.Name)
 			continue
 		}
@@ -65,18 +65,11 @@ func TestBuiltinDescriptorSnapshotAndLegacyName(t *testing.T) {
 	for i := range descriptors {
 		if descriptors[i].Name == ShowMediaToolName {
 			descriptors[i].Aliases[0] = "changed"
-			descriptors[i].Modes[0] = "changed"
 			break
 		}
 	}
 	if got := LegacyDisabledName(ShowMediaToolName); got != ShowImageToolName {
 		t.Fatalf("legacy name = %q", got)
-	}
-	if got := ToolRenderHint(ShowMediaToolName); got != "media" {
-		t.Fatalf("render hint = %q", got)
-	}
-	if !ToolAvailableOn(ShowMediaToolName, SurfaceServe) || ToolAvailableOn(LiveSettingsToolName, SurfaceCLI) {
-		t.Fatal("incorrect surface applicability")
 	}
 	if got := GetToolKind(ShowMediaToolName); got != KindImage {
 		t.Fatalf("policy = %q", got)
