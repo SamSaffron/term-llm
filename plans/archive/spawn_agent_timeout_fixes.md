@@ -1,6 +1,8 @@
 # Plan: keep a spawned agent alive when its caller stops waiting
 
-Status: **design only**. No feature code has been changed. V1 preserves the *same live child execution* across waits; it does not replay or checkpoint a child that has already stopped.
+Status: implemented
+
+Audited against code 2026-10-18: `spawn_agent`, `wait_agent`, `cancel_agent` and `continue_agent` exist (`internal/tools/agent_control.go`, `spawn_agent.go`), and `wait` is a caller budget, not a child deadline. Deviations from the design below: no host wall-clock cap (`DefaultSubagentMaxTurns` is the only child budget); `timeout` remains a deprecated alias for `wait` rather than being rejected; no `spawn.initial_wait_seconds`/`spawn.max_runtime_seconds` settings.
 
 ## Product decision
 

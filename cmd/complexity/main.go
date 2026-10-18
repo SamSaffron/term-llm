@@ -40,6 +40,8 @@ func main() {
 	jsonOutput := flag.Bool("json", false, "write the complete report as JSON")
 	writeBaseline := flag.String("write-baseline", "", "write ratchet baseline to this path")
 	checkBaseline := flag.String("check", "", "check against a ratchet baseline")
+	writeSizeBaseline := flag.String("write-size-baseline", "", "write file-size ratchet baseline to this path")
+	checkSize := flag.String("check-size", "", "check file sizes against a size ratchet baseline; violations fail")
 	threshold := flag.Int("threshold", 20, "minimum complexity shown in text output")
 	flag.Parse()
 
@@ -52,6 +54,20 @@ func main() {
 			fatal(err)
 		}
 	}
+	if *writeSizeBaseline != "" {
+		if err := writeSizeBase(*writeSizeBaseline, report); err != nil {
+			fatal(err)
+		}
+	}
+	if *checkSize != "" {
+		violations, notes, err := checkSizes(*checkSize, report)
+		if err != nil {
+			fatal(err)
+		}
+		if !reportSizes(os.Stderr, violations, notes) {
+			os.Exit(1)
+		}
+	}
 	if *checkBaseline != "" {
 		warnings, err := check(*checkBaseline, report)
 		if err != nil {
@@ -62,29 +78,12 @@ func main() {
 		}
 	}
 	if *jsonOutput {
-		filtered := report
-		filtered.Functions = nil
-		for _, fn := range report.Functions {
-			if fn.Complexity > *threshold {
-				filtered.Functions = append(filtered.Functions, fn)
-			}
-		}
-		data, err := complexity.Encode(filtered)
-		if err != nil {
+		if err := writeJSONReport(os.Stdout, report, *threshold); err != nil {
 			fatal(err)
 		}
-		_, _ = os.Stdout.Write(data)
 		return
 	}
-	s := summarize(report)
-	fmt.Printf("production=%t files=%d functions=%d median=%d above20=%d above50=%d above100=%d\n", !*includeTests, s.Files, s.Functions, s.Median, s.Above20, s.Above50, s.Above100)
-	for _, fn := range worstFirst(report.Functions, *threshold) {
-		name := fn.Name
-		if fn.Receiver != "" {
-			name = "(" + fn.Receiver + ")." + name
-		}
-		fmt.Printf("%4d %5d lines %s %s:%s\n", fn.Complexity, fn.Lines, fn.Module, fn.Path, name)
-	}
+	writeTextReport(os.Stdout, report, *threshold, !*includeTests)
 }
 
 // worstFirst orders the human report by descending complexity, then by span, so
@@ -129,7 +128,7 @@ func summarize(report complexity.Report) summary {
 }
 
 func writeBase(path string, report complexity.Report) error {
-	initial, err := readBaseline("plans/go-complexity-baseline-initial.json")
+	initial, err := readBaseline("ledger/go-complexity-baseline-initial.json")
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read initial baseline: %w", err)
 	}

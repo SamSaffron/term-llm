@@ -38,6 +38,283 @@ A typical config has a few major parts:
 - `share` for the built-in GitHub or custom command transcript publisher
 - feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `classify`, `sessions`, `file_tracking`, `tools`, and `skills`
 
+### Configuration key index
+
+The index below follows the canonical config schema. A dash means no default or description is specified by that schema; per-surface effective defaults and behavior are explained below. Sensitive values are never printed. Provider fields are described in the provider reference.
+
+<!-- BEGIN GENERATED: configuration -->
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `default_provider` | string | `openrouter` | — |
+| `provider_discovery` | string | `auto` | — |
+| `auto_compact` | boolean | `true` | — |
+| `approval.default_mode` | string | — | — |
+| `guardian.backend` | string | `llm` | — |
+| `guardian.classify.provider` | string | — | — |
+| `guardian.classify.min_confidence` | number | `0.15` | — |
+| `guardian.fallback.provider` | string | — | — |
+| `guardian.fallback.model` | string | — | — |
+| `guardian.fallback.log_path` | string | — | — |
+| `guardian.provider` | string | — | — |
+| `guardian.model` | string | — | — |
+| `guardian.policy_path` | string | — | — |
+| `guardian.timeout_seconds` | integer | — | — |
+| `guardian.classify_all_shell` | boolean | `false` | — |
+| `exec.provider` | string | — | — |
+| `exec.model` | string | — | — |
+| `exec.approval_mode` | string | — | — |
+| `exec.suggestions` | integer | `3` | — |
+| `exec.instructions` | string | `""` | — |
+| `ask.provider` | string | — | — |
+| `ask.model` | string | — | — |
+| `ask.approval_mode` | string | — | — |
+| `ask.instructions` | string | `You are a helpful assistant.` | — |
+| `ask.max_turns` | integer | `50` | — |
+| `ask.stdin_inline_max_bytes` | integer | `10240` | — |
+| `ask.stdin_max_bytes` | integer | `20971520` | — |
+| `chat.provider` | string | — | — |
+| `chat.model` | string | — | — |
+| `chat.approval_mode` | string | — | — |
+| `chat.instructions` | string | `You are a helpful assistant.` | — |
+| `chat.max_turns` | integer | `200` | — |
+| `chat.terminal_title` | string | `smart` | — |
+| `chat.terminal_title_format` | string | `""` | — |
+| `chat.terminal_progress` | boolean | `false` | — |
+| `commit.message_agent` | string | `commit-message` | — |
+| `lifecycle.enabled` | boolean | `true` | — |
+| `lifecycle.adapters` | list of string | `[auto]` | — |
+| `lifecycle.osc` | string | `off` | — |
+| `lifecycle.commands` | list of map | `[]` | — |
+| `share.provider` | string | `github` | — |
+| `share.command` | list of string | `[]` | — |
+| `share.timeout` | string | `120s` | — |
+| `edit.provider` | string | — | — |
+| `edit.model` | string | — | — |
+| `edit.approval_mode` | string | — | — |
+| `edit.instructions` | string | `""` | — |
+| `edit.show_line_numbers` | boolean | `true` | — |
+| `edit.context_lines` | integer | `3` | — |
+| `edit.editor` | string | — | — |
+| `edit.diff_format` | string | `auto` | — |
+| `image.provider` | string | `gemini` | — |
+| `image.output_dir` | string | `~/Pictures/term-llm` | — |
+| `image.gemini.api_key` | string | — | — |
+| `image.gemini.model` | string | `gemini-2.5-flash-image` | — |
+| `image.gemini.image_size` | string | — | — |
+| `image.openai.api_key` | string | — | — |
+| `image.openai.model` | string | `gpt-image-2` | — |
+| `image.chatgpt.model` | string | `gpt-image-2.5-flare` | — |
+| `image.xai.api_key` | string | — | — |
+| `image.xai.model` | string | `grok-2-image-1212` | — |
+| `image.venice.api_key` | string | — | — |
+| `image.venice.model` | string | `nano-banana-pro` | — |
+| `image.venice.edit_model` | string | — | — |
+| `image.venice.resolution` | string | `2K` | — |
+| `image.flux.api_key` | string | — | — |
+| `image.flux.model` | string | `flux-2-pro` | — |
+| `image.openrouter.api_key` | string | — | — |
+| `image.openrouter.model` | string | `google/gemini-2.5-flash-image` | — |
+| `image.debug.delay` | number | `0` | — |
+| `audio.provider` | string | `venice` | — |
+| `audio.output_dir` | string | `~/Music/term-llm` | — |
+| `audio.venice.api_key` | string | — | — |
+| `audio.venice.model` | string | `tts-kokoro` | — |
+| `audio.venice.voice` | string | `af_sky` | — |
+| `audio.venice.format` | string | `mp3` | — |
+| `audio.gemini.api_key` | string | — | — |
+| `audio.gemini.model` | string | `gemini-3.1-flash-tts-preview` | — |
+| `audio.gemini.voice` | string | `Kore` | — |
+| `audio.gemini.format` | string | `wav` | — |
+| `audio.elevenlabs.api_key` | string | — | — |
+| `audio.elevenlabs.model` | string | `eleven_multilingual_v2` | — |
+| `audio.elevenlabs.voice` | string | `JBFqnCBsd6RMkjVDRZzb` | — |
+| `audio.elevenlabs.format` | string | `mp3_44100_128` | — |
+| `music.provider` | string | `venice` | — |
+| `music.output_dir` | string | `~/Music/term-llm` | — |
+| `music.venice.api_key` | string | — | — |
+| `music.venice.model` | string | `elevenlabs-sound-effects-v2` | — |
+| `music.venice.format` | string | `mp3` | — |
+| `music.elevenlabs.api_key` | string | — | — |
+| `music.elevenlabs.model` | string | `music_v1` | — |
+| `music.elevenlabs.format` | string | `mp3_44100_128` | — |
+| `transcription.provider` | string | `openai` | — |
+| `transcription.model` | string | — | — |
+| `transcription.save_dir` | string | `""` | — |
+| `transcription.timestamps` | boolean | `false` | — |
+| `transcription.venice.api_key` | string | — | — |
+| `transcription.venice.model` | string | `nvidia/parakeet-tdt-0.6b-v3` | — |
+| `transcription.elevenlabs.api_key` | string | — | — |
+| `transcription.elevenlabs.model` | string | `scribe_v2` | — |
+| `live.enabled` | boolean | `false` | — |
+| `live.provider` | string | `chatgpt` | — |
+| `live.instructions` | string | — | — |
+| `live.idle_timeout` | string | `10m` | — |
+| `live.control_plane` | string | `off` | — |
+| `live.classify.provider` | string | — | — |
+| `live.classify.log_decisions` | boolean | `true` | — |
+| `live.classify.log_state` | boolean | `true` | — |
+| `live.classify.min_confidence.status` | number | `0.6` | — |
+| `live.classify.min_confidence.new_session` | number | `0.7` | — |
+| `live.classify.min_confidence.switch_session` | number | `0.7` | — |
+| `live.classify.min_confidence.steer_now` | number | `0.8` | — |
+| `live.classify.min_confidence.side` | number | `0.85` | — |
+| `live.control_provider` | string | — | — |
+| `live.control_model` | string | — | — |
+| `live.openai.api_key` | string | — | — |
+| `live.openai.model` | string | `gpt-live-1` | — |
+| `live.openai.voice` | string | `marin` | — |
+| `live.openai.base_url` | string | `https://api.openai.com/v1` | — |
+| `live.openai.headers` | map | — | — |
+| `live.gemini.api_key` | string | — | — |
+| `live.gemini.model` | string | `gemini-3.8-live` | — |
+| `live.gemini.voice` | string | `Kore` | — |
+| `live.gemini.base_url` | string | `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` | — |
+| `live.chatgpt.model` | string | `gpt-live-1-codex` | — |
+| `live.chatgpt.voice` | string | `cove` | — |
+| `live.chatgpt.call_base_url` | string | `https://chatgpt.com/backend-api/codex` | — |
+| `live.chatgpt.sideband_base_url` | string | `https://api.openai.com/v1` | — |
+| `embed.provider` | string | — | — |
+| `embed.batch_size` | integer | `32` | — |
+| `embed.openai.api_key` | string | — | — |
+| `embed.openai.model` | string | `text-embedding-3-small` | — |
+| `embed.gemini.api_key` | string | — | — |
+| `embed.gemini.model` | string | `gemini-embedding-001` | — |
+| `embed.jina.api_key` | string | — | — |
+| `embed.jina.model` | string | `jina-embeddings-v3` | — |
+| `embed.voyage.api_key` | string | — | — |
+| `embed.voyage.model` | string | `voyage-3.5` | — |
+| `embed.ollama.base_url` | string | `http://127.0.0.1:11434` | — |
+| `embed.ollama.model` | string | `nomic-embed-text` | — |
+| `search.provider` | string | `exa_mcp` | — |
+| `search.fetch_provider` | string | `jina` | — |
+| `search.force_external` | boolean | `false` | — |
+| `search.exa.api_key` | string | — | — |
+| `search.exa_mcp.url` | string | `https://mcp.exa.ai/mcp` | — |
+| `search.exa_mcp.api_key` | string | — | — |
+| `search.perplexity.api_key` | string | — | — |
+| `search.parallel.api_key` | string | — | — |
+| `search.tavily.api_key` | string | — | — |
+| `search.brave.api_key` | string | — | — |
+| `search.google.api_key` | string | — | — |
+| `search.google.cx` | string | — | — |
+| `classify.default_provider` | string | `typesafe` | — |
+| `classify.providers.typesafe.type` | string | — | — |
+| `classify.providers.typesafe.api_key` | string | — | — |
+| `classify.providers.typesafe.model` | string | `jev-latest` | — |
+| `classify.providers.typesafe.base_url` | string | `https://api.typesafe.ai` | — |
+| `classify.providers.typesafe.timeout_seconds` | integer | `10` | — |
+| `classify.providers.typesafe.images` | string | `assets` | — |
+| `classify.providers.typesafe.headers` | map | — | — |
+| `reasoning.display` | string | `auto` | — |
+| `reasoning.source` | string | `summary_or_provider_safe` | — |
+| `reasoning.status` | string | `title` | — |
+| `reasoning.history` | string | `collapsed` | — |
+| `reasoning.export` | string | `ask` | — |
+| `reasoning.raw` | boolean | `false` | — |
+| `reasoning.max_summary_chars` | integer | `12000` | — |
+| `reasoning.max_raw_chars` | integer | `20000` | — |
+| `reasoning.extract_titles` | boolean | `true` | — |
+| `reasoning.hidden_label` | string | `Thinking...` | — |
+| `reasoning.persist_summaries` | boolean | `true` | — |
+| `reasoning.chat.display` | string | `inherit` | — |
+| `reasoning.chat.status` | string | `inherit` | — |
+| `reasoning.chat.history` | string | `inherit` | — |
+| `reasoning.chat.export` | string | `inherit` | — |
+| `reasoning.chat.raw` | boolean | — | — |
+| `reasoning.ask.display` | string | `inherit` | — |
+| `reasoning.ask.status` | string | `inherit` | — |
+| `reasoning.ask.history` | string | `inherit` | — |
+| `reasoning.ask.export` | string | `inherit` | — |
+| `reasoning.ask.raw` | boolean | — | — |
+| `reasoning.serve.display` | string | `inherit` | — |
+| `reasoning.serve.status` | string | `inherit` | — |
+| `reasoning.serve.history` | string | `inherit` | — |
+| `reasoning.serve.export` | string | `inherit` | — |
+| `reasoning.serve.raw` | boolean | — | — |
+| `reasoning.jobs.display` | string | `inherit` | — |
+| `reasoning.jobs.status` | string | `inherit` | — |
+| `reasoning.jobs.history` | string | `inherit` | — |
+| `reasoning.jobs.export` | string | `inherit` | — |
+| `reasoning.jobs.raw` | boolean | — | — |
+| `theme.primary` | string | — | — |
+| `theme.secondary` | string | — | — |
+| `theme.success` | string | — | — |
+| `theme.error` | string | — | — |
+| `theme.warning` | string | — | — |
+| `theme.muted` | string | — | — |
+| `theme.text` | string | — | — |
+| `theme.spinner` | string | — | — |
+| `theme.reasoning_summary` | string | — | — |
+| `theme.reasoning_header` | string | — | — |
+| `theme.reasoning_raw` | string | — | — |
+| `tools.enabled` | list of string | `[]` | — |
+| `tools.read_dirs` | list of string | `[]` | — |
+| `tools.write_dirs` | list of string | `[]` | — |
+| `tools.shell_allow` | list of string | `[]` | — |
+| `tools.shell_auto_run` | boolean | `false` | — |
+| `tools.shell_auto_run_env` | string | `TERM_LLM_ALLOW_AUTORUN` | — |
+| `tools.shell_non_tty_env` | string | `TERM_LLM_ALLOW_NON_TTY` | — |
+| `tools.image_provider` | string | — | — |
+| `tools.max_tool_output_chars` | integer | `20000` | — |
+| `tool_discovery.mode` | string | `auto` | — |
+| `tool_discovery.strategy` | string | `auto` | — |
+| `tool_discovery.threshold` | integer | `24` | — |
+| `tool_discovery.max_active_tools` | integer | `300` | — |
+| `agents.use_builtin` | boolean | `true` | — |
+| `agents.search_paths` | list of string | `[]` | — |
+| `agents.preferences` | map | — | — |
+| `skills.enabled` | boolean | `true` | — |
+| `skills.auto_invoke` | boolean | `true` | — |
+| `skills.metadata_budget_tokens` | integer | `8000` | — |
+| `skills.max_visible_skills` | integer | `50` | — |
+| `skills.include_project_skills` | boolean | `true` | — |
+| `skills.include_ecosystem_paths` | boolean | `true` | — |
+| `skills.always_enabled` | list of string | `[]` | — |
+| `skills.never_auto` | list of string | `[]` | — |
+| `agents_md.enabled` | boolean | `true` | — |
+| `sessions.enabled` | boolean | `true` | — |
+| `sessions.max_age_days` | integer | `0` | — |
+| `sessions.max_count` | integer | `0` | — |
+| `sessions.path` | string | `""` | — |
+| `sessions.strip_image_base64` | boolean | `false` | — |
+| `diagnostics.enabled` | boolean | `false` | — |
+| `diagnostics.dir` | string | `""` | — |
+| `debug_logs.enabled` | boolean | `false` | — |
+| `debug_logs.dir` | string | `""` | — |
+| `loop.approval_mode` | string | — | — |
+| `serve.base_path` | string | `/ui` | — |
+| `serve.auto_title` | boolean | `true` | — |
+| `serve.platforms` | list of string | — | — |
+| `serve.approval_mode` | string | — | — |
+| `serve.title` | string | — | — |
+| `serve.disable_location_sharing` | boolean | `false` | — |
+| `serve.files_dir` | string | — | — |
+| `serve.widgets_dir` | string | — | — |
+| `serve.extensions_dir` | string | — | — |
+| `serve.extensions` | string | — | — |
+| `serve.response_timeout` | string | `30m` | — |
+| `serve.telegram.token` | string | — | — |
+| `serve.telegram.allowed_user_ids` | list of integer | — | — |
+| `serve.telegram.allowed_usernames` | list of string | — | — |
+| `serve.telegram.idle_timeout` | integer | — | — |
+| `serve.telegram.interrupt_timeout` | integer | — | — |
+| `serve.web_push.vapid_public_key` | string | — | — |
+| `serve.web_push.vapid_private_key` | string | — | — |
+| `serve.web_push.subject` | string | — | — |
+| `serve.mcp.approval_mode` | string | — | — |
+| `serve.projects.enabled` | boolean | `true` | — |
+| `file_tracking.enabled` | boolean | `true` | — |
+| `file_tracking.max_file_bytes` | integer | `2097152` | — |
+| `file_tracking.max_session_bytes` | integer | `104857600` | — |
+| `file_tracking.max_total_bytes` | integer | `1073741824` | — |
+| `file_tracking.max_observation_rows` | integer | `10000` | — |
+| `file_tracking.max_observation_session_rows` | integer | `1000` | — |
+| `file_tracking.max_observation_bytes` | integer | `16777216` | — |
+| `file_tracking.max_observation_session_bytes` | integer | `2097152` | — |
+| `file_tracking.max_observation_age_days` | integer | `30` | — |
+| `file_tracking.path` | string | `""` | — |
+<!-- END GENERATED: configuration -->
+
 ### Classification
 
 The [`classify` command](/guides/classify/) uses `classify.providers`, separate from chat `providers`. Three providers are built in and work from environment variables alone (Cloudflare also needs `CLOUDFLARE_ACCOUNT_ID`):

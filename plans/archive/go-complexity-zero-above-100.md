@@ -1,5 +1,9 @@
 # Zero functions above 100 — acceptance record
 
+Status: implemented
+
+Acceptance record; the ratchet now lives in `ledger/` and is enforced by `make complexity`.
+
 Base revision: `e99fb80c`
 
 ## Objective

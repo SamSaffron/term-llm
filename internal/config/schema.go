@@ -1,9 +1,10 @@
 package config
 
 import (
-	"os"
 	"sort"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/providerspec"
 )
 
 // KeySpec describes a user-visible configuration key. New user-visible
@@ -20,123 +21,26 @@ type KeySpec struct {
 	Placeholder   any
 }
 
-// ProviderFieldSpec describes a field valid under providers.<name>.
-type ProviderFieldSpec struct {
-	Path        string
-	Description string
-	Sensitive   bool
-	Placeholder any
-}
+// ProviderFieldSpec describes a shared providers.<name> schema field.
+type ProviderFieldSpec = providerspec.FieldSpec
 
-// DefaultField stores an ordered provider default.
-type DefaultField struct {
-	Path  string
-	Value any
-}
-
-// ProviderSpec is the registry entry for a built-in provider: everything
-// term-llm knows about it before reading any config. Name lists, provider
-// types, API-key environment variables, `term-llm providers` output, setup
-// hints, and the setup wizard all derive from providerSpecs.
-//
-// ConfigDefault controls whether Defaults are applied by Load and
-// written to generated config templates; runtime-only defaults are still used
-// by direct constructors and fast-model helpers.
-type ProviderSpec struct {
-	Name          string
-	Type          ProviderType
-	ConfigDefault bool
-	ShowInConfig  bool
-	ResetTemplate bool
-	Defaults      []DefaultField
-
-	Description string
-	Credential  ProviderCredential
-	// APIKeyEnv holds the provider's API key when config does not set one.
-	// Setting it also enables the provider without a providers.<name> block.
-	APIKeyEnv string
-	// HostEnv names the provider's server; setting it enables the provider.
-	HostEnv string
-	// Setup is the step that sets the provider up, when it is not simply
-	// "set APIKeyEnv".
-	Setup string
-	// ListModels reports whether the provider can list models upstream.
-	ListModels bool
-}
-
-// ProviderCredential describes how a built-in provider authenticates.
-type ProviderCredential string
+// Provider metadata lives in the leaf registry. These aliases preserve the config API.
+type DefaultField = providerspec.DefaultField
+type ProviderSpec = providerspec.Spec
+type ProviderCredential = providerspec.Credential
 
 const (
-	CredentialAPIKey ProviderCredential = "api_key" // API key from config or APIKeyEnv
-	CredentialOAuth  ProviderCredential = "oauth"   // term-llm sign-in or a signed-in companion CLI
-	CredentialAWS    ProviderCredential = "aws"     // AWS credential chain
-	CredentialNone   ProviderCredential = "none"    // local server or an installed CLI
+	CredentialAPIKey = providerspec.CredentialAPIKey
+	CredentialOAuth  = providerspec.CredentialOAuth
+	CredentialAWS    = providerspec.CredentialAWS
+	CredentialNone   = providerspec.CredentialNone
 )
 
-// EnablingEnv returns the environment variables whose presence enables the
-// provider without a providers.<name> block.
-func (s ProviderSpec) EnablingEnv() []string {
-	var vars []string
-	for _, v := range []string{s.APIKeyEnv, s.HostEnv} {
-		if v != "" {
-			vars = append(vars, v)
-		}
-	}
-	return vars
-}
-
-// EnabledByEnv returns the environment variable currently enabling the
-// provider, or "" when none is set.
-func (s ProviderSpec) EnabledByEnv() string {
-	for _, v := range s.EnablingEnv() {
-		if strings.TrimSpace(os.Getenv(v)) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// SetupHint returns the step that would set the provider up.
-func (s ProviderSpec) SetupHint() string {
-	switch {
-	case s.Setup != "":
-		return s.Setup
-	case s.APIKeyEnv != "":
-		return "set " + s.APIKeyEnv
-	default:
-		return "add providers." + s.Name + " to config.yaml"
-	}
-}
-
-// RequiresAPIKey reports whether the provider cannot run without an API key.
-func (s ProviderSpec) RequiresAPIKey() bool {
-	return s.Credential == CredentialAPIKey
-}
-
-// BuiltinProviders returns the built-in provider registry in display order.
-func BuiltinProviders() []ProviderSpec {
-	return DefaultProviderSpecs()
-}
-
-// BuiltinProvider returns the registry entry for the built-in provider name.
-func BuiltinProvider(name string) (ProviderSpec, bool) {
-	for _, spec := range providerSpecs {
-		if spec.Name == name {
-			return spec, true
-		}
-	}
-	return ProviderSpec{}, false
-}
-
-// BuiltinProviderOfType returns the registry entry for a built-in provider type.
+func BuiltinProviders() []ProviderSpec                 { return providerspec.All() }
+func BuiltinProvider(name string) (ProviderSpec, bool) { return providerspec.Lookup(name) }
 func BuiltinProviderOfType(t ProviderType) (ProviderSpec, bool) {
-	for _, spec := range providerSpecs {
-		if spec.Type == t {
-			return spec, true
-		}
-	}
-	return ProviderSpec{}, false
+	s, ok := providerspec.ByType(t)
+	return s, ok && t != ProviderTypeOpenAICompat
 }
 
 const (
@@ -591,191 +495,6 @@ var keySpecs = []KeySpec{
 	def("file_tracking.path", ""),
 }
 
-var providerFieldSpecs = []ProviderFieldSpec{
-	{Path: "type"},
-	{Path: "enabled", Placeholder: true},
-	{Path: "api_key", Sensitive: true},
-	{Path: "management_key", Sensitive: true, Description: "OpenRouter account analytics credential; used only by usage"},
-	{Path: "model"},
-	{Path: "fast_model"},
-	{Path: "fast_provider"},
-	{Path: "service_tier"},
-	{Path: "models", Placeholder: []string{}},
-	{Path: "reasoning"},
-	{Path: "credentials"},
-	{Path: "env", Placeholder: map[string]any{}},
-	{Path: "headers", Placeholder: map[string]any{}},
-	{Path: "enable_hooks", Placeholder: false},
-	{Path: "use_websocket", Placeholder: false},
-	{Path: "use_previous_response_id", Placeholder: true, Description: "OpenAI Responses: use server-state continuation (default true)"},
-	{Path: "request_encrypted_reasoning", Placeholder: true, Description: "OpenAI Responses: request encrypted reasoning for full-history replay (default true)"},
-	{Path: "responses.reasoning_mode"},
-	{Path: "responses.reasoning_context"},
-	{Path: "responses.multi_agent.enabled", Placeholder: false},
-	{Path: "responses.multi_agent.max_concurrent_subagents", Placeholder: 0},
-	{Path: "responses.programmatic_tool_calling.enabled", Placeholder: false},
-	{Path: "responses.programmatic_tool_calling.tools", Placeholder: []string{}},
-	{Path: "responses.prompt_cache.mode"},
-	{Path: "responses.prompt_cache.ttl"},
-	{Path: "file_upload.native_mime_types", Placeholder: []string{}},
-	{Path: "file_upload.max_native_bytes", Placeholder: 0},
-	{Path: "file_upload.text_embed_mime_types", Placeholder: []string{}},
-	{Path: "file_upload.max_text_embed_bytes", Placeholder: 0},
-	{Path: "vision_via"},
-	{Path: "use_native_search", Placeholder: false},
-	{Path: "context_window", Placeholder: 0},
-	{Path: "max_output_tokens", Placeholder: 0},
-	{Path: "base_url"},
-	{Path: "url"},
-	{Path: "no_stream_options", Placeholder: false},
-	{Path: "vllm_thinking_param"},
-	{Path: "parse_reasoning", Placeholder: false},
-	{Path: "include_reasoning", Placeholder: false},
-	{Path: "thinking_param"},
-	{Path: "app_url"},
-	{Path: "app_title"},
-	{Path: "region"},
-	{Path: "profile"},
-	{Path: "access_key_id", Sensitive: true},
-	{Path: "secret_access_key", Sensitive: true},
-	{Path: "session_token", Sensitive: true},
-	{Path: "model_map", Placeholder: map[string]any{}},
-	{Path: "think", Placeholder: false},
-	{Path: "think_level", Placeholder: "low"},
-	{Path: "top_k", Placeholder: 0},
-	{Path: "min_p", Placeholder: 0.0},
-	{Path: "presence_penalty", Placeholder: 0.0},
-	{Path: "num_ctx", Placeholder: 0},
-	{Path: "num_predict", Placeholder: 0},
-}
-
-var providerSpecs = []ProviderSpec{
-	{
-		Name: "anthropic", Type: ProviderTypeAnthropic, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "claude-sonnet-4-6"}, {"fast_model", "claude-haiku-4-5"}},
-		Description: "Anthropic API (Claude models)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "ANTHROPIC_API_KEY", ListModels: true,
-	},
-	{
-		Name: "openai", Type: ProviderTypeOpenAI, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "gpt-5.6-sol"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", false}},
-		Description: "OpenAI Responses API",
-		Credential:  CredentialAPIKey, APIKeyEnv: "OPENAI_API_KEY", ListModels: true,
-	},
-	{
-		Name: "chatgpt", Type: ProviderTypeChatGPT, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "gpt-5.6-sol-medium"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", true}},
-		Description: "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
-		Credential:  CredentialOAuth, Setup: "run term-llm auth login chatgpt", ListModels: true,
-	},
-	{
-		Name: "grok", Type: ProviderTypeGrok, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "grok-4.6"}, {"fast_model", "grok-4.6"}},
-		Description: "Grok subscription via native xAI device OAuth and Responses API",
-		Credential:  CredentialOAuth, Setup: "run term-llm auth login grok", ListModels: true,
-	},
-	{
-		Name: "gemini", Type: ProviderTypeGemini, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "gemini-3-flash-preview"}, {"fast_model", "gemini-2.5-flash-lite"}},
-		Description: "Google Gemini API (consumer API key)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "GEMINI_API_KEY",
-	},
-	{
-		Name: "openrouter", Type: ProviderTypeOpenRouter, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "openrouter/free"}, {"fast_model", "openrouter/free"}, {"app_url", "https://github.com/samsaffron/term-llm"}, {"app_title", "term-llm"}},
-		Description: "OpenRouter API (access to many providers)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "OPENROUTER_API_KEY", ListModels: true,
-	},
-	{
-		Name: "xai", Type: ProviderTypeXAI, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "grok-4-1-fast"}, {"fast_model", "grok-3-mini-fast"}},
-		Description: "xAI API (Grok models)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "XAI_API_KEY", ListModels: true,
-	},
-	{
-		Name: "venice", Type: ProviderTypeVenice, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "venice-uncensored"}, {"fast_model", "llama-3.2-3b"}},
-		Description: "Venice AI (private, uncensored inference — OpenAI-compatible)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "VENICE_API_KEY", ListModels: true,
-	},
-	{
-		Name: "nearai", Type: ProviderTypeNearAI, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "zai-org/GLM-5.1-FP8"}, {"fast_model", "Qwen/Qwen3.6-35B-A3B-FP8"}},
-		Description: "NEAR AI Cloud (TEE-backed private inference — OpenAI-compatible)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "NEARAI_API_KEY", ListModels: true,
-	},
-	{
-		Name: "sambanova", Type: ProviderTypeSambaNova, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "gpt-oss-120b"}, {"fast_model", "Meta-Llama-3.3-70B-Instruct"}},
-		Description: "SambaNova Cloud (RDU-hosted inference — OpenAI-compatible)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "SAMBANOVA_API_KEY", ListModels: true,
-	},
-	{
-		Name: "zen", Type: ProviderTypeZen, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "deepseek-v4-flash"}, {"fast_model", "deepseek-v4-flash"}},
-		Description: "OpenCode Zen API (paid models)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "ZEN_API_KEY", ListModels: true,
-	},
-	{
-		Name: "opencode-go", Type: ProviderTypeOpenCodeGo, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "glm-5.2"}, {"fast_model", "deepseek-v4-flash"}},
-		Description: "OpenCode Go subscription (dynamic Chat Completions, Responses, Messages, and Gemini routing)",
-		Credential:  CredentialAPIKey, APIKeyEnv: "OPENCODE_API_KEY", ListModels: true,
-	},
-	{
-		Name: "copilot", Type: ProviderTypeCopilot,
-		Defaults:    []DefaultField{{"model", "gpt-4.1"}, {"fast_model", "gpt-4.1"}},
-		Description: "GitHub Copilot API (chat via OAuth; usage via GITHUB_TOKEN/GH_TOKEN)",
-		Credential:  CredentialOAuth, Setup: "run term-llm auth login copilot", ListModels: true,
-	},
-	{
-		Name: "claude-bin", Type: ProviderTypeClaudeBin,
-		Defaults:    []DefaultField{{"model", "sonnet"}, {"fast_model", "haiku"}},
-		Description: "Local Claude Code credentials (claude-bin CLI)",
-		Credential:  CredentialNone, Setup: "install Claude Code (claude on PATH)",
-	},
-	{
-		Name: "grok-bin", Type: ProviderTypeGrokBin,
-		Defaults:    []DefaultField{{"model", "grok-4.6"}, {"fast_model", "grok-composer-2.5-fast"}},
-		Description: "Grok Build CLI via local grok.com OAuth login",
-		Credential:  CredentialOAuth, Setup: "install the Grok Build CLI and log in", ListModels: true,
-	},
-	{
-		Name: "cursor-bin", Type: ProviderTypeCursorBin,
-		Defaults:    []DefaultField{{"model", "auto-smart"}, {"fast_model", "composer-2.5"}},
-		Description: "Cursor Agent via local Cursor login or CURSOR_API_KEY",
-		Credential:  CredentialOAuth, APIKeyEnv: "CURSOR_API_KEY", Setup: "run cursor-agent login or set CURSOR_API_KEY", ListModels: true,
-	},
-	{
-		Name: "agy-bin", Type: ProviderTypeAgyBin,
-		Defaults:    []DefaultField{{"model", "gemini-3.6-flash-high"}, {"fast_model", "gemini-3.6-flash-low"}},
-		Description: "Antigravity subscription through the local agy CLI",
-		Credential:  CredentialOAuth, Setup: "install agy and complete its login", ListModels: true,
-	},
-	{
-		Name: "ollama", Type: ProviderTypeOllama,
-		Defaults:    []DefaultField{{"model", "qwen2.5-coder:7b"}, {"fast_model", "qwen2.5-coder:7b"}, {"base_url", DefaultOllamaBaseURL}},
-		Description: "Ollama local inference (native /api/chat, supports think/options.*)",
-		Credential:  CredentialNone, HostEnv: "OLLAMA_HOST", Setup: "set OLLAMA_HOST or add providers.ollama to config.yaml", ListModels: true,
-	},
-	{
-		// vLLM has no default endpoint, so it needs a providers.vllm block; its
-		// optional VLLM_API_KEY resolves like any openai_compatible provider.
-		Name: "vllm", Type: ProviderTypeVLLM,
-		Defaults:    []DefaultField{{"fast_model", "Qwen/Qwen3.5-122B-A10B"}},
-		Description: "vLLM OpenAI-compatible server with Qwen thinking controls",
-		Credential:  CredentialNone, Setup: "add providers.vllm (base_url) to config.yaml", ListModels: true,
-	},
-	{
-		// Generic AWS variables (AWS_PROFILE, AWS_ACCESS_KEY_ID) are too common
-		// to prove Bedrock is set up, so it needs a providers.bedrock block.
-		Name: "bedrock", Type: ProviderTypeBedrock,
-		Defaults:    []DefaultField{{"fast_model", "claude-haiku-4-5"}},
-		Description: "AWS Bedrock (Anthropic Claude models via AWS credentials)",
-		Credential:  CredentialAWS,
-	},
-}
-
 type specOpt func(*KeySpec)
 
 func def(path string, value any, opts ...specOpt) KeySpec {
@@ -814,27 +533,16 @@ func ConfigKeySpecs() []KeySpec {
 }
 
 // ProviderKeySpecs returns valid provider field specs in display order.
-func ProviderKeySpecs() []ProviderFieldSpec {
-	out := make([]ProviderFieldSpec, len(providerFieldSpecs))
-	copy(out, providerFieldSpecs)
-	return out
-}
+func ProviderKeySpecs() []ProviderFieldSpec { return providerspec.Fields() }
 
 // DefaultProviderSpecs returns canonical built-in provider defaults.
-func DefaultProviderSpecs() []ProviderSpec {
-	out := make([]ProviderSpec, len(providerSpecs))
-	copy(out, providerSpecs)
-	for i := range out {
-		out[i].Defaults = append([]DefaultField(nil), providerSpecs[i].Defaults...)
-	}
-	return out
-}
+func DefaultProviderSpecs() []ProviderSpec { return providerspec.All() }
 
 // DefaultProviderNames returns provider names whose defaults should be shown in
 // generated config output.
 func DefaultProviderNames() []string {
 	var names []string
-	for _, spec := range providerSpecs {
+	for _, spec := range providerspec.All() {
 		if spec.ShowInConfig || spec.ConfigDefault || spec.ResetTemplate {
 			names = append(names, spec.Name)
 		}
@@ -850,7 +558,7 @@ func GetDefaults() map[string]any {
 			defaults[spec.Path] = spec.Default
 		}
 	}
-	for _, provider := range providerSpecs {
+	for _, provider := range providerspec.All() {
 		if !provider.ConfigDefault {
 			continue
 		}
@@ -906,7 +614,7 @@ func DefaultProviderValue(name, field string) (any, bool) {
 	if name == "" || field == "" {
 		return nil, false
 	}
-	for _, spec := range providerSpecs {
+	for _, spec := range providerspec.All() {
 		if spec.Name != name && string(spec.Type) != name {
 			continue
 		}
@@ -940,7 +648,7 @@ func DefaultProviderFastModel(name string) string {
 // DefaultProviderFastModels returns the default fast-model map keyed by provider type/name.
 func DefaultProviderFastModels() map[string]string {
 	out := make(map[string]string)
-	for _, spec := range providerSpecs {
+	for _, spec := range providerspec.All() {
 		fast := ""
 		for _, def := range spec.Defaults {
 			if def.Path == "fast_model" {
@@ -970,7 +678,7 @@ func buildKnownKeys() map[string]bool {
 
 func buildKnownProviderKeys() map[string]bool {
 	known := make(map[string]bool)
-	for _, spec := range providerFieldSpecs {
+	for _, spec := range providerspec.Fields() {
 		addPathAndParents(known, spec.Path)
 	}
 	return known

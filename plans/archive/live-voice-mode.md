@@ -1,9 +1,8 @@
 # Live voice mode (gpt-live-1-codex) for the web UI
 
-Status: implemented, with prompt/context and tool-plumbing follow-up complete.
-See the [Live voice guide](https://term-llm.com/guides/live-voice/) for current behavior and configuration. The original
-design below includes historical implementation sketches; Codex citations refer
-to the `../codex` Rust checkout (`codex-rs/...` paths).
+Status: implemented
+
+Note: implemented, with prompt/context and tool-plumbing follow-up complete. See the [Live voice guide](https://term-llm.com/guides/live-voice/) for current behavior and configuration. The original design below includes historical implementation sketches; Codex citations refer to the `../codex` Rust checkout (`codex-rs/...` paths).
 
 ## Goal
 
@@ -371,7 +370,7 @@ emits a speakable failure).
      idempotency handling.
   3. `run, err := s.startResponseRun(rt, true, false, inputMessages, llmReq, sessionID, startResponseRunOptions{uiSession: true})`
      (`cmd/serve_response_run_stream.go:641`). `errServeSessionBusy` (a web or
-     TUI turn already owns the session — see `plans/session-turn-owner.md`)
+     TUI turn already owns the session — see `plans/archive/session-turn-owner.md`)
      → steer an active web response through run/epoch-fenced `InterruptMessage`;
      publish `response.steering.queued` for immediate pending UI. No second output
      subscriber is created. If no steerable web run exists, use bounded busy retries.
@@ -496,7 +495,7 @@ Tests (~700 LOC Go + TS) not counted. No new Go dependencies
 - **Model availability** on the account: `gpt-live-1-codex` may be entitlement-
   gated; surface the HTTP error text verbatim in `live.error`.
 - **Delegation vs. session ownership.** The delegator uses the same lease as web
-  turns, so a TUI-owned session returns busy (`plans/session-turn-owner.md`);
+  turns, so a TUI-owned session returns busy (`plans/archive/session-turn-owner.md`);
   it reports that case by voice and waits. Active web responses accept voice
   execution follow-ups through canonical steering. Typed Live corrections also
   use `store.steer`, bypassing voice re-delegation.
@@ -534,7 +533,7 @@ Tests (~700 LOC Go + TS) not counted. No new Go dependencies
   build tag when we do it.
 - TUI delegation would submit through `sendMessage` (`streaming.go:572`) →
   `startStream` (`:900`) so it takes the TUI turn lease; the one-owner rule in
-  `plans/session-turn-owner.md` already arbitrates against web runs.
+  `plans/archive/session-turn-owner.md` already arbitrates against web runs.
 - Open items for that spike: ffmpeg device names per OS (`pulse`/`alsa`,
   `avfoundation` + macOS mic permission for the terminal app, `dshow`), and
   subprocess codec latency (~100–300 ms).

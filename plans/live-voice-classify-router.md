@@ -1,9 +1,8 @@
 # Live voice: classifier-backed control plane router
 
-Status: **Phase 1 shipped on `feat/live-classify-router` (2026-09-19); Phase 2 remains open.** Builds on
-`plans/live-voice-control-plane-isolation.md` Revision 3 (shipped). Nothing in that
-design is superseded; this adds a second `live.Router` implementation and a config
-selector for choosing between them.
+Status: in-progress
+
+Note: Phase 1 shipped on `feat/live-classify-router` (2026-09-19); Phase 2 remains open. Builds on `plans/archive/live-voice-control-plane-isolation.md` Revision 3 (shipped). Nothing in that design is superseded; this adds a second `live.Router` implementation and a config selector for choosing between them.
 
 Phase 1 (this PR) ships the classifier, the selector, the decision log, and the three
 navigation/read labels. Phase 2 (separate PR, contracts below are open) adds

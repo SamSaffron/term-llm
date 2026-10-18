@@ -1,6 +1,8 @@
 # Built-in `sysadmin` agent
 
-Status: implemented in PR #1168. This document describes the shipped design.
+Status: implemented
+
+Note: implemented in PR #1168. This document describes the shipped design.
 
 ## Goal
 

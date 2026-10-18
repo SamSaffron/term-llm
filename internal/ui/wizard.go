@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"charm.land/huh/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 )
 
@@ -24,106 +26,32 @@ type providerOption struct {
 
 // detectAvailableProviders checks which providers have credentials configured
 func detectAvailableProviders() []providerOption {
-	options := []providerOption{
-		{
-			name:      "OpenRouter - free models (API key required)",
-			value:     "openrouter",
-			available: strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "",
-			hint:      "set OPENROUTER_API_KEY",
-		},
-		{
-			name:      "ChatGPT (Codex) - ChatGPT OAuth",
-			value:     "chatgpt",
-			available: credentials.ChatGPTCredentialsExist(),
-			hint:      "run 'term-llm auth login chatgpt' to sign in",
-		},
-		{
-			name:      "Grok Subscription - xAI OAuth",
-			value:     "grok",
-			available: credentials.GrokCredentialsExist(),
-			hint:      "run 'term-llm auth login grok' to sign in",
-		},
-		{
-			name:      "Anthropic - API key",
-			value:     "anthropic",
-			available: isAnthropicAvailable(),
-			hint:      "set ANTHROPIC_API_KEY",
-		},
-		{
-			name:      "Claude Code CLI - local credentials",
-			value:     "claude-bin",
-			available: isClaudeBinaryAvailable(),
-			hint:      "install Claude Code CLI",
-		},
-		{
-			name:      "Grok Build CLI - grok.com OAuth",
-			value:     "grok-bin",
-			available: isGrokBinaryAvailable(),
-			hint:      "install and log in with the Grok Build CLI",
-		},
-		{
-			name:      "Cursor Agent CLI - Cursor login",
-			value:     "cursor-bin",
-			available: isCursorBinaryAvailable(),
-			hint:      "install Cursor Agent and run 'cursor-agent login'",
-		},
-		{
-			name:      "Antigravity agy CLI - Google subscription",
-			value:     "agy-bin",
-			available: isAgyBinaryAvailable(),
-			hint:      "install agy and complete its Antigravity login",
-		},
-		{
-			name:      "OpenAI - OPENAI_API_KEY",
-			value:     "openai",
-			available: os.Getenv("OPENAI_API_KEY") != "",
-			hint:      "set OPENAI_API_KEY",
-		},
-		{
-			name:      "Gemini - GEMINI_API_KEY",
-			value:     "gemini",
-			available: os.Getenv("GEMINI_API_KEY") != "",
-			hint:      "set GEMINI_API_KEY",
-		},
-		{
-			name:      "xAI - XAI_API_KEY",
-			value:     "xai",
-			available: os.Getenv("XAI_API_KEY") != "",
-			hint:      "set XAI_API_KEY",
-		},
-		{
-			name:      "Venice - VENICE_API_KEY",
-			value:     "venice",
-			available: os.Getenv("VENICE_API_KEY") != "",
-			hint:      "set VENICE_API_KEY",
-		},
-		{
-			name:      "NEAR AI Cloud - NEARAI_API_KEY",
-			value:     "nearai",
-			available: os.Getenv("NEARAI_API_KEY") != "",
-			hint:      "set NEARAI_API_KEY",
-		},
-		{
-			name:      "SambaNova - SAMBANOVA_API_KEY",
-			value:     "sambanova",
-			available: os.Getenv("SAMBANOVA_API_KEY") != "",
-			hint:      "set SAMBANOVA_API_KEY",
-		},
-		{
-			name:      "Zen - ZEN_API_KEY",
-			value:     "zen",
-			available: strings.TrimSpace(os.Getenv("ZEN_API_KEY")) != "",
-			hint:      "set ZEN_API_KEY",
-		},
-		{
-			name:      "OpenCode Go - OPENCODE_API_KEY",
-			value:     "opencode-go",
-			available: os.Getenv("OPENCODE_API_KEY") != "",
-			hint:      "set OPENCODE_API_KEY",
-		},
+	options := make([]providerOption, 0, len(providerspec.All()))
+	specs := providerspec.All()
+	sort.SliceStable(specs, func(i, j int) bool { return specs[i].Wizard.Order < specs[j].Wizard.Order })
+	for _, spec := range specs {
+		if spec.Wizard.Order == 0 {
+			continue
+		}
+		available := spec.APIKeyEnv != "" && strings.TrimSpace(os.Getenv(spec.APIKeyEnv)) != ""
+		if probe := wizardBinaryProbes[spec.Name]; probe != nil {
+			available = probe()
+		} else if spec.Availability != "" {
+			available = llm.ProviderHasLocalCredentials(spec.Name)
+		}
+		options = append(options, providerOption{name: spec.Wizard.Label, value: spec.Name, available: available, hint: spec.Wizard.Hint})
 	}
 
 	return options
+}
+
+// The setup wizard checks whether companion binaries exist, not whether they
+// are signed in. Login checks for Availability kinds live in llm.
+var wizardBinaryProbes = map[string]func() bool{
+	"claude-bin": isClaudeBinaryAvailable,
+	"grok-bin":   isGrokBinaryAvailable,
+	"cursor-bin": isCursorBinaryAvailable,
+	"agy-bin":    isAgyBinaryAvailable,
 }
 
 // isAnthropicAvailable checks if an Anthropic API key is available
@@ -167,7 +95,8 @@ func validateProviderSelection(providers []providerOption, provider string) (*pr
 }
 
 func canBootstrapProviderInteractively(provider string) bool {
-	return provider == "chatgpt" || provider == "grok"
+	spec, ok := providerspec.Lookup(provider)
+	return ok && spec.Wizard.Bootstrap
 }
 
 // imageProviderOption represents an image provider choice in the setup wizard
@@ -242,12 +171,15 @@ func HasTTY() bool {
 
 func defaultWizardProviderConfigs() map[string]config.ProviderConfig {
 	providers := make(map[string]config.ProviderConfig)
-	for _, name := range []string{"chatgpt", "grok", "anthropic", "openai", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "gemini", "xai", "venice", "nearai", "sambanova", "zen", "opencode-go"} {
-		providers[name] = config.ProviderConfig{
-			Model:     config.DefaultProviderModel(name),
-			FastModel: config.DefaultProviderFastModel(name),
+	for _, spec := range providerspec.All() {
+		if spec.Wizard.Order == 0 || spec.Name == "openrouter" {
+			continue
 		}
+		name := spec.Name
+		providers[name] = config.ProviderConfig{Model: config.DefaultProviderModel(name), FastModel: config.DefaultProviderFastModel(name)}
 	}
+	// OpenRouter retains its historical application identification defaults.
+
 	providers["openrouter"] = config.ProviderConfig{
 		Model:     config.DefaultProviderModel("openrouter"),
 		FastModel: config.DefaultProviderFastModel("openrouter"),

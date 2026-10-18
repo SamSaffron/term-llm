@@ -1,10 +1,8 @@
 # SIGUSR2 reload: group review and simplification proposal
 
-Status: historical review/proposal; its whole-turn, no-cancellation recommendation
-has been superseded by safe-point continuation and grace-period cancellation. See
-https://term-llm.com/guides/process-reload/ for implemented operator behavior, and
-`internal/restart/README.md` for the contributor contract and acceptance proofs. This review
-examined PR #1113 at `43895d049af7ce0b797ce63a23682d9f240cbcf3`.
+Status: historical
+
+Note: historical review/proposal; its whole-turn, no-cancellation recommendation has been superseded by safe-point continuation and grace-period cancellation. See https://term-llm.com/guides/process-reload/ for implemented operator behavior, and `internal/restart/README.md` for the contributor contract and acceptance proofs. This review examined PR #1113 at `43895d049af7ce0b797ce63a23682d9f240cbcf3`.
 
 The PR is closed. Its complete implementation and history are preserved on local
 branch `archive/pr-1113-sigusr2`. The rewrite uses `rework/sigusr2-reload`, starting

@@ -103,6 +103,33 @@ These are **text/agent providers**. [Image](/guides/image-generation/), [audio](
 
 Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.config/term-llm/`. Use `term-llm config path` to locate your file. Provider-specific API keys can also be supplied in `providers.<name>.api_key` with the normal [deferred credential resolution](/guides/secret-management/).
 
+<!-- BEGIN GENERATED: providers -->
+| Provider | Type | Credentials / environment | Model listing |
+|---|---|---|---|
+| `anthropic` | `anthropic` | api_key; `ANTHROPIC_API_KEY` | anthropic (upstream listing) |
+| `openai` | `openai` | api_key; `OPENAI_API_KEY` | api_key (upstream listing) |
+| `chatgpt` | `chatgpt` | oauth; run term-llm auth login chatgpt | chatgpt (upstream listing) |
+| `grok` | `grok` | oauth; run term-llm auth login grok | grok (upstream listing) |
+| `gemini` | `gemini` | api_key; `GEMINI_API_KEY` | curated (local catalog) |
+| `openrouter` | `openrouter` | api_key; `OPENROUTER_API_KEY` | api_key (upstream listing) |
+| `xai` | `xai` | api_key; `XAI_API_KEY` | api_key (upstream listing) |
+| `venice` | `venice` | api_key; `VENICE_API_KEY` | api_key (upstream listing) |
+| `nearai` | `nearai` | api_key; `NEARAI_API_KEY` | nearai (upstream listing) |
+| `sambanova` | `sambanova` | api_key; `SAMBANOVA_API_KEY` | api_key (upstream listing) |
+| `zen` | `zen` | api_key; `ZEN_API_KEY` | zen (upstream listing) |
+| `opencode-go` | `opencode-go` | api_key; `OPENCODE_API_KEY` | opencode-go (upstream listing) |
+| `copilot` | `copilot` | oauth; run term-llm auth login copilot | copilot (upstream listing) |
+| `claude-bin` | `claude-bin` | none; install Claude Code (claude on PATH) | curated (local catalog) |
+| `grok-bin` | `grok-bin` | oauth; install the Grok Build CLI and log in | grok-bin (upstream listing) |
+| `cursor-bin` | `cursor-bin` | oauth; `CURSOR_API_KEY`; run cursor-agent login or set CURSOR_API_KEY | cursor-bin (upstream listing) |
+| `agy-bin` | `agy-bin` | oauth; install agy and complete its login | agy-bin (upstream listing) |
+| `ollama` | `ollama` | none; `OLLAMA_HOST`; set OLLAMA_HOST or add providers.ollama to config.yaml | ollama (upstream listing) |
+| `vllm` | `vllm` | none; add providers.vllm (base_url) to config.yaml | compatible (upstream listing) |
+| `bedrock` | `bedrock` | aws | curated (local catalog) |
+<!-- END GENERATED: providers -->
+
+### Provider-specific setup notes
+
 | Provider | Authentication / setup | Notes |
 |---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` | Native Anthropic Messages API; also supports compatible gateways. |
@@ -127,6 +154,8 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `grok-bin` | Installed `grok` CLI; `GROK_AUTH_PATH` or `~/.grok/auth.json` | Grok Build CLI integration, separate from `grok` OAuth. |
 | `lmstudio` | Configured `openai_compatible` endpoint and loaded model | A custom provider name, not a separate built-in adapter. |
 | Other custom names | Explicit `type` and endpoint; `api_key` or `<PROVIDER_NAME>_API_KEY` when required | Unknown provider names default to `openai_compatible`; configure them before use. |
+
+Custom names such as `lmstudio` use `openai_compatible` endpoints; unknown names require explicit configuration and may use `<PROVIDER_NAME>_API_KEY`. The table lists built-in adapters only.
 
 `debug` is a local test provider, not a hosted service. See the [compaction debugging example](/guides/debugging/#exercise-automatic-compaction-locally).
 

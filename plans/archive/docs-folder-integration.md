@@ -1,11 +1,8 @@
 # Retire `docs/` into the documentation site
 
-Status: **implemented**. Every file in `docs/` was routed to a real home and the
-folder deleted, without dropping content that users or contributors need. The
-design and constraints below are retained as the record of why each destination
-was chosen. Outcome: two new guides, three merges into existing pages, four new
-package READMEs plus an append, one archived proposal, and one deleted dead
-script. `npm --prefix docs-site test` passes with 47 articles.
+Status: implemented
+
+Note: implemented. Every file in `docs/` was routed to a real home and the folder deleted, without dropping content that users or contributors need. The design and constraints below are retained as the record of why each destination was chosen. Outcome: two new guides, three merges into existing pages, four new package READMEs plus an append, one archived proposal, and one deleted dead script. `npm --prefix docs-site test` passes with 47 articles.
 
 ## What `docs/` actually is
 
@@ -159,9 +156,9 @@ package READMEs, so they are discoverable the way `internal/terminal/README.md` 
 
 ### D. Archive
 
-`sigusr2-redesign.md` → **`plans/sigusr2-redesign.md`**. It is a closed-PR review
+`sigusr2-redesign.md` → **`plans/archive/sigusr2-redesign.md`**. It is a closed-PR review
 whose recommendation was explicitly superseded; `plans/` already holds exactly
-this kind of document (`plans/live-voice-mode.md` opens the same way). Rewrite its
+this kind of document (`plans/archive/live-voice-mode.md` opens the same way). Rewrite its
 `signals.md` pointer to the published guide URL. Do not publish it.
 
 ## Inbound references to fix before deleting `docs/`
@@ -172,8 +169,8 @@ Verified with `rg 'docs/[a-z-]*\.md'`, excluding `tmp/`:
 | --- | --- | --- |
 | `internal/tools/live_switch_session_test.go:108` | comment cites `docs/live-voice.md` | Update comment text — the only reference in shipped code |
 | `docs/doctor.md:29`, `docs/sqlite-migrations.md:54` | mutual `docs/…` links | Resolved by the moves above |
-| `plans/live-voice-mode.md:4` | `See docs/live-voice.md` | Optional: point at `/guides/live-voice/` |
-| `plans/live-voice-session-control-plane.md:526,563,583` | `docs/live-voice.md` | Optional: same |
+| `plans/archive/live-voice-mode.md:4` | `See docs/live-voice.md` | Optional: point at `/guides/live-voice/` |
+| `plans/archive/live-voice-session-control-plane.md:526,563,583` | `docs/live-voice.md` | Optional: same |
 
 The `plans/` entries are historical records rather than live documentation, so
 correcting them is a courtesy, not a blocker. `tmp/` also references these paths
@@ -249,7 +246,7 @@ implementation records, so porting is not copy-paste:
 | `internal/doctor/README.md` | new: adding a check |
 | `internal/session/README.md` | new: steering persistence and ownership |
 | `frontend/README.md` | +27: storage rollback, accessibility checklist, payload baseline |
-| `plans/sigusr2-redesign.md` | archived proposal, cross-link repointed |
+| `plans/archive/sigusr2-redesign.md` | archived proposal, cross-link repointed |
 | deleted | `docs/` (7 files) and `scripts/check_steering_naming.sh` |
 
 Dropped deliberately: the "Verification"/"Review and verification notes" sections

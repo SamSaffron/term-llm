@@ -13,6 +13,35 @@ Start with [Providers and setup](/getting-started/providers-and-setup/) if you j
 
 On an interactive first run, term-llm helps you choose a provider. See the [provider inventory](/reference/providers-and-models/#credentials) for the complete set of built-in adapters, companion CLIs, and custom endpoint types.
 
+## Built-in setup at a glance
+
+Defaults and setup hints below come from the provider registry; credentials, provider-specific options, and examples follow.
+
+<!-- BEGIN GENERATED: provider-setup -->
+| Provider | Setup | Default model | Fast model |
+|---|---|---|---|
+| `anthropic` | set `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` | `claude-haiku-4-5` |
+| `openai` | set `OPENAI_API_KEY` | `gpt-5.6-sol` | `gpt-5.6-luna` |
+| `chatgpt` | run term-llm auth login chatgpt | `gpt-5.6-sol-medium` | `gpt-5.6-luna` |
+| `grok` | run term-llm auth login grok | `grok-4.6` | `grok-4.6` |
+| `gemini` | set `GEMINI_API_KEY` | `gemini-3-flash-preview` | `gemini-2.5-flash-lite` |
+| `openrouter` | set `OPENROUTER_API_KEY` | `openrouter/free` | `openrouter/free` |
+| `xai` | set `XAI_API_KEY` | `grok-4-1-fast` | `grok-3-mini-fast` |
+| `venice` | set `VENICE_API_KEY` | `venice-uncensored` | `llama-3.2-3b` |
+| `nearai` | set `NEARAI_API_KEY` | `zai-org/GLM-5.1-FP8` | `Qwen/Qwen3.6-35B-A3B-FP8` |
+| `sambanova` | set `SAMBANOVA_API_KEY` | `gpt-oss-120b` | `Meta-Llama-3.3-70B-Instruct` |
+| `zen` | set `ZEN_API_KEY` | `deepseek-v4-flash` | `deepseek-v4-flash` |
+| `opencode-go` | set `OPENCODE_API_KEY` | `glm-5.2` | `deepseek-v4-flash` |
+| `copilot` | run term-llm auth login copilot | `gpt-4.1` | `gpt-4.1` |
+| `claude-bin` | install Claude Code (claude on PATH) | `sonnet` | `haiku` |
+| `grok-bin` | install the Grok Build CLI and log in | `grok-4.6` | `grok-composer-2.5-fast` |
+| `cursor-bin` | run cursor-agent login or set CURSOR_API_KEY | `auto-smart` | `composer-2.5` |
+| `agy-bin` | install agy and complete its login | `gemini-3.6-flash-high` | `gemini-3.6-flash-low` |
+| `ollama` | set OLLAMA_HOST or add providers.ollama to config.yaml | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` |
+| `vllm` | add providers.vllm (base_url) to config.yaml | — | `Qwen/Qwen3.5-122B-A10B` |
+| `bedrock` | aws | — | `claude-haiku-4-5` |
+<!-- END GENERATED: provider-setup -->
+
 <span id="option-1-try-it-free-with-zen"></span>
 
 ### Option 1: Try it free with OpenRouter

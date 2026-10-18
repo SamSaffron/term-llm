@@ -10,8 +10,8 @@ import { checkTour } from "./check-tour.mjs";
 
 // Keep the credentials inventory complete when a built-in provider is added.
 // Read the registry rather than maintaining another independent provider list.
-const configSource = await readFile(new URL("../../internal/config/schema.go", import.meta.url), "utf8");
-const registry = configSource.match(/var providerSpecs = \[\]ProviderSpec\{([\s\S]*?)\n\}/);
+const configSource = await readFile(new URL("../../internal/providerspec/spec.go", import.meta.url), "utf8");
+const registry = configSource.match(/var specs = \[\]Spec\{([\s\S]*?)\n\}/);
 assert.ok(registry, "Could not locate the built-in provider registry");
 const providerNames = [...registry[1].matchAll(/\bName:\s*"([\w-]+)"/g)].map((match) => match[1]);
 assert.ok(providerNames.length > 0, "Provider registry must not be empty");

@@ -1,5 +1,9 @@
 # Keeping the control plane out of chat sessions
 
+Status: implemented
+
+Revision 3 shipped; the Revision 1/2 designs below are superseded and kept as history.
+
 ## Revision 3 — SHIPPED. Read this first; both designs below are superseded.
 
 The `control:` sentinel of Revision 2 lasted about an hour in production before it

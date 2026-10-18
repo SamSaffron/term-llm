@@ -10,34 +10,35 @@ import (
 	"time"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 	"gopkg.in/yaml.v3"
 )
 
 // ProviderType defines the supported provider implementations
-type ProviderType string
+type ProviderType = providerspec.Type
 
 const (
-	ProviderTypeAnthropic    ProviderType = "anthropic"
-	ProviderTypeOpenAI       ProviderType = "openai"
-	ProviderTypeChatGPT      ProviderType = "chatgpt"
-	ProviderTypeGrok         ProviderType = "grok"
-	ProviderTypeCopilot      ProviderType = "copilot"
-	ProviderTypeGemini       ProviderType = "gemini"
-	ProviderTypeOpenRouter   ProviderType = "openrouter"
-	ProviderTypeZen          ProviderType = "zen"
-	ProviderTypeOpenCodeGo   ProviderType = "opencode-go"
-	ProviderTypeClaudeBin    ProviderType = "claude-bin"
-	ProviderTypeGrokBin      ProviderType = "grok-bin"
-	ProviderTypeCursorBin    ProviderType = "cursor-bin"
-	ProviderTypeAgyBin       ProviderType = "agy-bin"
-	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
-	ProviderTypeVLLM         ProviderType = "vllm"
-	ProviderTypeXAI          ProviderType = "xai"
-	ProviderTypeVenice       ProviderType = "venice"
-	ProviderTypeNearAI       ProviderType = "nearai"
-	ProviderTypeSambaNova    ProviderType = "sambanova"
-	ProviderTypeBedrock      ProviderType = "bedrock"
-	ProviderTypeOllama       ProviderType = "ollama"
+	ProviderTypeAnthropic    = providerspec.TypeAnthropic
+	ProviderTypeOpenAI       = providerspec.TypeOpenAI
+	ProviderTypeChatGPT      = providerspec.TypeChatGPT
+	ProviderTypeGrok         = providerspec.TypeGrok
+	ProviderTypeCopilot      = providerspec.TypeCopilot
+	ProviderTypeGemini       = providerspec.TypeGemini
+	ProviderTypeOpenRouter   = providerspec.TypeOpenRouter
+	ProviderTypeZen          = providerspec.TypeZen
+	ProviderTypeOpenCodeGo   = providerspec.TypeOpenCodeGo
+	ProviderTypeClaudeBin    = providerspec.TypeClaudeBin
+	ProviderTypeGrokBin      = providerspec.TypeGrokBin
+	ProviderTypeCursorBin    = providerspec.TypeCursorBin
+	ProviderTypeAgyBin       = providerspec.TypeAgyBin
+	ProviderTypeOpenAICompat = providerspec.TypeOpenAICompat
+	ProviderTypeVLLM         = providerspec.TypeVLLM
+	ProviderTypeXAI          = providerspec.TypeXAI
+	ProviderTypeVenice       = providerspec.TypeVenice
+	ProviderTypeNearAI       = providerspec.TypeNearAI
+	ProviderTypeSambaNova    = providerspec.TypeSambaNova
+	ProviderTypeBedrock      = providerspec.TypeBedrock
+	ProviderTypeOllama       = providerspec.TypeOllama
 )
 
 // InferProviderType returns the provider type for a given provider name.
@@ -2164,8 +2165,9 @@ func syncDirectory(dir string) error {
 
 // GetBuiltInProviderNames returns the built-in provider names in display order.
 func GetBuiltInProviderNames() []string {
-	names := make([]string, 0, len(providerSpecs))
-	for _, spec := range providerSpecs {
+	specs := providerspec.All()
+	names := make([]string, 0, len(specs))
+	for _, spec := range specs {
 		names = append(names, spec.Name)
 	}
 	return names
@@ -2456,44 +2458,19 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return fmt.Sprintf("api_key (deferred: %s)", truncateValue(cfg.APIKey, 30)), true
 	}
 
-	switch providerType {
-	case ProviderTypeAnthropic:
+	if providerType == ProviderTypeAnthropic {
 		return describeAnthropicCredential(cfg)
-	case ProviderTypeOpenAI:
-		return describeEnvKeyCredential(cfg, "OPENAI_API_KEY")
-	case ProviderTypeGemini:
-		return describeEnvKeyCredential(cfg, "GEMINI_API_KEY")
-	case ProviderTypeOpenRouter:
-		return describeEnvKeyCredential(cfg, "OPENROUTER_API_KEY")
-	case ProviderTypeZen:
-		return describeEnvKeyCredential(cfg, "ZEN_API_KEY")
-	case ProviderTypeOpenCodeGo:
-		return describeEnvKeyCredential(cfg, "OPENCODE_API_KEY")
-	case ProviderTypeXAI:
-		return describeEnvKeyCredential(cfg, "XAI_API_KEY")
-	case ProviderTypeVenice:
-		return describeEnvKeyCredential(cfg, "VENICE_API_KEY")
-	case ProviderTypeNearAI:
-		return describeEnvKeyCredential(cfg, "NEARAI_API_KEY")
-	case ProviderTypeSambaNova:
-		return describeEnvKeyCredential(cfg, "SAMBANOVA_API_KEY")
-	case ProviderTypeClaudeBin:
-		return "claude-bin CLI (no key needed)", true
-	case ProviderTypeGrokBin:
-		return "grok CLI login (no key needed)", true
-	case ProviderTypeCursorBin:
-		return "Cursor Agent login or CURSOR_API_KEY", true
-	case ProviderTypeAgyBin:
-		return "agy Antigravity login (no key needed)", true
-	case ProviderTypeChatGPT:
-		return "ChatGPT OAuth (interactive)", true
-	case ProviderTypeGrok:
-		return "Grok subscription OAuth (interactive)", true
-	case ProviderTypeCopilot:
-		return "GitHub Copilot OAuth (interactive)", true
-	case ProviderTypeOpenAICompat, ProviderTypeVLLM:
-		envName := strings.ToUpper(name) + "_API_KEY"
-		return describeEnvKeyCredential(cfg, envName)
+	}
+	if providerType == ProviderTypeOpenAICompat || providerType == ProviderTypeVLLM {
+		return describeEnvKeyCredential(cfg, strings.ToUpper(name)+"_API_KEY")
+	}
+	if spec, ok := providerspec.ByType(providerType); ok {
+		if spec.CredentialLabel != "" {
+			return spec.CredentialLabel, true
+		}
+		if spec.APIKeyEnv != "" && spec.Credential == providerspec.CredentialAPIKey {
+			return describeEnvKeyCredential(cfg, spec.APIKeyEnv)
+		}
 	}
 
 	return "unknown", false

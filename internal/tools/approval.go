@@ -1423,12 +1423,10 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 }
 
 func guardianPathSelector(toolName, toolInfo string) string {
-	switch toolName {
-	case GrepToolName, GlobToolName:
+	if d := lookupBuiltin(toolName); d != nil && d.guardianSelector {
 		return toolInfo
-	default:
-		return ""
 	}
+	return ""
 }
 
 func isDirectoryPath(path string) bool {

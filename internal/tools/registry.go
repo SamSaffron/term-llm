@@ -240,91 +240,30 @@ func (r *LocalToolRegistry) registerEnabledTools() error {
 // IsPathCapableTool reports whether name is a local file/path operation that
 // requires access to manage_workspace so explicit tool lists cannot strand it.
 func IsPathCapableTool(name string) bool {
-	switch name {
-	case ReadFileToolName, WriteFileToolName, EditFileToolName, UnifiedDiffToolName,
-		GrepToolName, GlobToolName, ViewImageToolName, ShowImageToolName, ShowMediaToolName, ImageGenerateToolName:
-		return true
-	default:
-		return false
-	}
+	d := lookupBuiltin(name)
+	return d != nil && d.pathCapable
 }
 
 // registerTool registers a single tool by spec name.
 func (r *LocalToolRegistry) registerTool(specName string) error {
-	if !ValidToolName(specName) {
+	d := lookupBuiltin(specName)
+	if d == nil || d.nonLocal {
 		return NewToolErrorf(ErrInvalidParams, "unknown tool: %s", specName)
 	}
-
-	var tool llm.Tool
-
-	switch specName {
-	case UIGetSourceToolName:
-		tool = &UIGetSourceTool{approval: r.approval, config: r.config}
-	case UIActivateToolName:
-		tool = &UIExtensionsTool{activate: true}
-	case UIExtensionsToolName:
-		tool = &UIExtensionsTool{}
-	case ReadFileToolName:
-		tool = NewReadFileTool(r.approval, r.limits, r.config)
-	case WriteFileToolName:
-		tool = NewWriteFileTool(r.approval, r.config)
-	case EditFileToolName:
-		tool = NewEditFileTool(r.approval, r.config)
-	case UnifiedDiffToolName:
-		tool = NewUnifiedDiffTool(r.approval, r.config)
-	case ShellToolName:
-		tool = NewShellTool(r.approval, r.config, r.limits)
-	case GrepToolName:
-		tool = NewGrepTool(r.approval, r.limits, r.config)
-	case GlobToolName:
-		tool = NewGlobTool(r.approval, r.config)
-	case ViewImageToolName:
-		tool = NewViewImageTool(r.approval, r.config)
-	case ShowImageToolName:
-		tool = NewShowImageTool(r.approval, r.config)
-	case ShowMediaToolName:
-		mediaTool := NewShowMediaTool(r.approval, r.config)
-		mediaTool.SetPublisher(r.mediaPublisher)
-		tool = mediaTool
-	case ImageGenerateToolName:
-		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider, r.memoryStore, r.agent, r.sessionID, r.config)
-	case AskUserToolName:
-		tool = NewAskUserTool()
-	case SpawnAgentToolName:
-		// Register the lifecycle bundle together even for explicit spawn-only lists.
-		spawn := NewSpawnAgentTool(r.config.Spawn, 0)
-		for _, name := range []string{WaitAgentToolName, ContinueAgentToolName, CancelAgentToolName, ListAgentsToolName} {
-			r.tools[name] = &agentControlTool{name: name, spawn: spawn}
+	if specName == SpawnAgentToolName {
+		spawn := d.construct(r)
+		r.tools[specName] = spawn
+		for _, control := range builtinTools {
+			if control.requiresSpawn {
+				r.tools[control.Name] = control.construct(r)
+			}
 		}
-		tool = spawn
-	case WaitAgentToolName, ContinueAgentToolName, CancelAgentToolName, ListAgentsToolName:
-		// Controls cannot be installed without their spawn manager.
-		if spawn, ok := r.tools[SpawnAgentToolName].(*SpawnAgentTool); ok {
-			tool = &agentControlTool{name: specName, spawn: spawn}
-		} else {
+	} else {
+		if d.requiresSpawn && r.tools[SpawnAgentToolName] == nil {
 			return NewToolErrorf(ErrInvalidParams, "%s requires spawn_agent", specName)
 		}
-	case QueueAgentToolName:
-		tool = NewQueueAgentTool(r.config)
-	case WaitForJobsToolName:
-		tool = NewWaitForJobsTool()
-	case HubDelegateToolName:
-		tool = NewHubDelegateTool()
-	case HubCheckDelegationToolName:
-		tool = NewHubCheckDelegationTool()
-	case RunAgentScriptToolName:
-		tool = NewRunAgentScriptTool(r.config, r.limits)
-	case InitiateHandoverToolName:
-		tool = NewInitiateHandoverTool()
-	case ManageWorkspaceToolName:
-		tool = NewManageWorkspaceTool(r.approval, r.config)
-	case LiveSettingsToolName, UpdatePlanToolName:
-		tool = r.newSessionStateTool(specName)
-	default:
-		return NewToolErrorf(ErrInvalidParams, "unimplemented tool: %s", specName)
+		r.tools[specName] = d.construct(r)
 	}
-
-	r.tools[specName] = tool
 	if specName == ShellToolName {
 		r.applyCollaborativeShellLocked()
 	}

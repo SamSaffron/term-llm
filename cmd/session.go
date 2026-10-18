@@ -359,7 +359,7 @@ func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIF
 			s.Tools = strings.Join(agent.Tools.Enabled, ",")
 		} else if agent.HasDisabledList() {
 			allTools := tools.StandardToolNames()
-			enabledTools := agent.GetEnabledTools(allTools)
+			enabledTools := agent.GetEnabledTools(allTools, tools.LegacyDisabledName)
 			s.Tools = strings.Join(enabledTools, ",")
 		}
 	}

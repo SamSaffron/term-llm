@@ -387,8 +387,10 @@ func (a *Agent) HasDisabledList() bool {
 // GetEnabledTools returns the list of enabled tools.
 // If Enabled is set, returns that list.
 // If Disabled is set, returns all tools except disabled ones.
+// Tool-aware callers pass the catalog legacy-name resolver so old deny lists
+// also disable replacement tools without importing tools into agents.
 // If neither is set, returns nil (use default).
-func (a *Agent) GetEnabledTools(allTools []string) []string {
+func (a *Agent) GetEnabledTools(allTools []string, legacyName func(string) string) []string {
 	if a.HasEnabledList() {
 		return a.Tools.Enabled
 	}
@@ -399,9 +401,10 @@ func (a *Agent) GetEnabledTools(allTools []string) []string {
 		}
 		var enabled []string
 		for _, t := range allTools {
-			// show_media replaces show_image in implicit tool sets. Preserve the
-			// intent of existing deny lists that disabled the legacy presenter.
-			if disabled[t] || (t == "show_media" && disabled["show_image"]) {
+			if disabled[t] {
+				continue
+			}
+			if legacyName != nil && disabled[legacyName(t)] {
 				continue
 			}
 			enabled = append(enabled, t)

@@ -178,7 +178,12 @@ func TestLoadFromDir_MinimalConfig(t *testing.T) {
 
 func TestLegacyShowImageDisableAlsoDisablesShowMedia(t *testing.T) {
 	agent := Agent{Tools: ToolsConfig{Disabled: []string{"show_image"}}}
-	got := agent.GetEnabledTools([]string{"read_file", "show_media", "shell"})
+	got := agent.GetEnabledTools([]string{"read_file", "show_media", "shell"}, func(name string) string {
+		if name == "show_media" {
+			return "show_image"
+		}
+		return ""
+	})
 	if slices.Contains(got, "show_media") {
 		t.Fatalf("enabled tools = %v; show_media should inherit legacy disable", got)
 	}
@@ -219,7 +224,7 @@ func TestAgent_GetEnabledTools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.agent.GetEnabledTools(allTools)
+			got := tt.agent.GetEnabledTools(allTools, nil)
 			if len(got) != len(tt.expected) {
 				t.Errorf("len(GetEnabledTools()) = %d, want %d", len(got), len(tt.expected))
 				return

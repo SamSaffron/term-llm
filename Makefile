@@ -1,4 +1,4 @@
-.PHONY: build frontend frontend-deps complexity complexity-report
+.PHONY: build frontend frontend-deps complexity complexity-baseline complexity-report plans-lint check-changed docs
 
 FRONTEND_STAMP := frontend/node_modules/.term-llm-install-stamp
 VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
@@ -22,10 +22,22 @@ frontend: frontend-deps
 frontend-deps: $(FRONTEND_STAMP)
 
 complexity:
-	go run ./cmd/complexity --check plans/go-complexity-baseline.json --threshold 30
+	go run ./cmd/complexity --check ledger/go-complexity-baseline.json --threshold 30 --check-size ledger/go-size-baseline.json
+
+complexity-baseline:
+	go run ./cmd/complexity --write-baseline ledger/go-complexity-baseline.json --write-size-baseline ledger/go-size-baseline.json --threshold 30
 
 complexity-report:
 	go run ./cmd/complexity --threshold 20
+
+plans-lint:
+	scripts/lint-plans.sh
+
+docs: frontend
+	go run ./cmd/gendocs
+
+check-changed:
+	scripts/check-changed.sh $(ARGS)
 
 $(FRONTEND_STAMP): frontend/package.json frontend/package-lock.json
 	npm --prefix frontend ci

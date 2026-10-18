@@ -17,28 +17,52 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 
 ### Available Tools
 
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents (with line ranges) |
-| `write_file` | Create/overwrite files |
-| `edit_file` | Edit existing files |
-| `shell` | Execute shell commands; when file tracking is enabled, `affected_paths` bounds inspection and `output_claims` declares transform, generated deliverable, or materialization intent |
-| `grep` | Search file contents (uses ripgrep) |
-| `glob` | Find files by glob pattern |
-| `view_image` | Inspect an image file. Normally returns structured image content to a vision-capable primary model; with `vision_via`, a routed vision model returns text instead |
-| `show_media` | Register an existing local image, video, or audio and return an opaque `term-llm-media://…` URL for placement in assistant Markdown; web serves import an approved durable copy and terminals resolve it to rich media or a clickable local link |
-| `show_image` | Legacy image-only presentation tool retained for explicit configurations |
-| `image_generate` | Generate images via configured provider |
-| `manage_workspace` | Grant, list, or revoke session-scoped local workspaces. Added automatically whenever a local path-capable file/search/image tool is enabled. |
-| `ask_user` | Prompt user for input |
-| `create_goal` / `get_goal` / `update_goal` | Create/read or complete/block a persistent `/goal` (goal tools are injected automatically while a goal is active) |
-| `spawn_agent` | Start a child agent; optional `cwd` selects an existing child working directory. `wait`/deprecated `timeout` is a collection wait budget, **not** a child execution deadline. Optional `notify_when_done` wakes the original web parent agent loop. |
-| `wait_agent` | Wait for or inspect child agents without cancelling them. |
-| `continue_agent` | Steer a running child or resume a stopped child with a fresh turn budget. |
-| `cancel_agent` | Cancel an agent (which can be resumed later). |
-| `list_agents` | Recover child agent IDs and statuses for the current parent session. |
-| `run_agent_script` | Run a script bundled in the agent directory |
-| `activate_skill` | Activate a skill by name |
+<!-- BEGIN GENERATED: tools -->
+| Tool | Description | Permission policy | Default enabled | Aliases |
+|---|---|---|---|---|
+| `read_file` | Read file contents. | `read` | true | — |
+| `write_file` | Create or overwrite a file with the specified content. | `edit` | true | — |
+| `edit_file` | Edit a file. | `edit` | true | — |
+| `unified_diff` | Apply file edits using unified diff format. | `edit` | true | — |
+| `shell` | Execute a shell command. | `execute` | true | — |
+| `grep` | Search file contents using regex patterns (RE2 syntax). | `search` | true | — |
+| `glob` | Find files by glob pattern (supports ** for recursive matching). | `search` | true | — |
+| `view_image` | View and analyze an image file. | `read` | true | — |
+| `show_media` | Register an existing image, video, or audio so it can be placed in your response. | `image` | true | `show_image` |
+| `image_generate` | Generate an image from a text prompt. | `image` | true | — |
+| `ask_user` | Present questions to the user and gather their responses. | `interactive` | true | — |
+| `spawn_agent` | Spawn a sub-agent to handle a specific task autonomously. | `agent` | true | — |
+| `wait_agent` | Wait for agents without cancelling them; returns their current status. | `agent` | true | — |
+| `continue_agent` | Steer a running agent or resume a stopped agent with a fresh turn budget. | `agent` | true | — |
+| `cancel_agent` | Cancel an agent and its active descendants; it may be resumed later. | `agent` | true | — |
+| `list_agents` | List agents belonging to this parent session, including interrupted agents from earlier processes. | `agent` | true | — |
+| `queue_agent` | Spawn a sub-agent as a background jobs-v2 LLM job and return immediately. | `agent` | true | — |
+| `wait_for_jobs` | Wait for one or more queued jobs-v2 agent jobs to finish and return their results. | `agent` | true | — |
+| `run_agent_script` | Execute a script bundled with the current agent. | `execute` | true | — |
+| `initiate_handover` | Initiate a handover to another agent. | `agent` | true | — |
+| `hub_delegate` | Delegate a task to another term-llm node via the Hub. | `agent` | true | — |
+| `hub_check_delegation` | Check (and by default wait for) hub delegations started with hub_delegate, returning their status and final responses. | `agent` | true | — |
+| `manage_workspace` | Manage session-scoped local workspaces. | `session_state` | false | — |
+| `update_plan` | Publish the complete current execution plan. | `session_state` | false | — |
+| `live_settings` | Inspect this term-llm live call's model, current voice and supported voices. | `session_state` | false | — |
+| `ui_get_source` | Inspect stock web UI source on demand. | `read` | false | — |
+| `ui_extensions` | Inspect or reload the running web process's extension directory, enabled order and config/CLI provenance. | `session_state` | false | — |
+| `ui_activate_extensions` | Activate completed web extension edits: rescan the configured enabled list and request automatic browser reload when responses finish and drafts are clear. | `session_state` | false | — |
+| `show_image` | Display an image to the user via terminal (icat). | `image` | false | — |
+| `activate_skill` | Activate a skill to load its specialized instructions and capabilities. | `skill` | false | — |
+| `search_skills` | Search for skills by keyword. | `skill` | false | — |
+| `live_new_session` | Start a brand-new, empty conversation and bind this live voice call to it. | `session_state` | false | — |
+| `live_switch_session` | Bind the current live voice call to a different existing chat session. | `session_state` | false | — |
+| `session_directory` | List or search this term-llm instance's chat sessions. | `read` | false | — |
+| `create_goal` | Create or replace the persistent objective for this session. | `session_state` | false | — |
+| `update_goal` | Mark the persistent session goal complete or blocked after satisfying the required audit. | `session_state` | false | — |
+| `get_goal` | Get the persistent objective and budget state for this session. | `read` | false | — |
+| `update_progress` | Persist the current best-so-far state as a JSON object without ending the run. | `session_state` | false | — |
+| `finalize_progress` | Persist the final best-so-far state as a JSON object and finish the run. | `session_state` | false | — |
+<!-- END GENERATED: tools -->
+
+The `shell` tool's `affected_paths` only bounds file-change inspection; pre-execution `output_claims` declares intended transforms, generated deliverables, or materializations. `view_image` returns image content to a vision-capable model, or text from the routed model configured by `vision_via`. `manage_workspace` is automatically added whenever a local path-capable file, search, or image tool is enabled. See the detailed sections below for permission and routing behavior.
+
 
 Lifecycle tools are enabled together whenever `spawn_agent` is enabled. `spawn.max_depth` is how many levels below this agent it may spawn (`0` or unset uses the default 2), capped by its caller's remaining budget minus one level. Isolated skill children are not agent spawns and remain available at zero budget; their inherited remaining budget is `max(parent_remaining - 1, 0)`, so they cannot spawn agents at zero. A top-level developer with `max_depth: 1` may spawn one child; if called by a parent with two levels remaining, it may still spawn one child, but that child cannot spawn again. Resuming or relaunching a child recalculates the cap from the resuming parent. `spawn_agent` returns `queued` when waiting for a parallel slot, `running` when its wait budget expires, or `completed` when it finishes in time; in every case `agent_id` is the child session ID. There is **no execution deadline** for a spawned child, including in the queue, during a detached run, during delivery, or in a sessionless host (which waits synchronously instead of orphaning a child). The turn limit is a child's only execution budget: the agent's `max_turns` if set, otherwise 500; `continue_agent` grants the same allotment again. `cwd` defaults to the parent's current directory, accepts absolute paths, and resolves relative paths against the parent's current directory; an explicit path must already be a directory. It does not bypass workspace confirmation, permissions, or the parent's approval scope, and the resolved directory persists across `continue_agent`. `wait_agent` and `list_agents` are scoped to the parent session, including after reloading it. `turn_limit`, `cancelled`, and `interrupted` agents can be resumed with `continue_agent`; steering a running child may be reported as `undelivered` when it finishes before consuming the instruction. A turn that ends normally leaves its detached children running so a later turn can collect them. Stopping a turn (the stop button, a steering interrupt, Esc in chat, or a cancelled job) interrupts every running child of that session; they end `interrupted` and stay resumable. On exit, one-shot `ask` waits for outstanding children (Ctrl-C interrupts them); chat and serve interrupt them and leave them resumable. Media produced by a detached child is retained for the `wait_agent` or `continue_agent` result that collects it, including after a process restart. Detached approvals continue through the host's approval UI when available; headless hosts without a prompt transport deny operations rather than waiting silently.
 

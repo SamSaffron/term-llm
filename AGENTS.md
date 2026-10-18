@@ -18,32 +18,17 @@
 - `internal/terminal/`, `internal/reflow/` – application-owned nested modules
 
 ## Build and Test
-Use the Go version in `go.mod`. Run the narrowest relevant test during development:
+Use the Go version in `go.mod`. Run a focused test while developing, then use the changed-area checker (which includes reverse-dependent Go packages and an isolated temporary HOME):
 
 ```sh
 go test ./internal/llm -run '^TestName$'
+make check-changed
+make check-changed ARGS=--all # full suite before finishing
 ```
 
-Before completion, run root-module checks unless only documentation changed:
+`make check-changed ARGS='--base <ref> --dry-run'` previews a custom diff; without `--base` it uses the first existing of `upstream/main`, `origin/main`, `main`. The checker includes staged, unstaged, and untracked files; `--all` runs the full root-module, nested-module, frontend, complexity/size, and plan checks. Format changed Go files with `gofmt -w <changed-go-files>` before running it. When running Go tests manually, preserve `GOMODCACHE="$(go env GOMODCACHE)"` and set `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` under a temporary directory: tests may otherwise read global config and skills. `make build` builds the frontend and CLI; JavaScript tests run through Go tests only when `node` is on `PATH`. Match extra checks in `.github/workflows/ci.yml` for browser lifecycle, release, or cross-platform code.
 
-```sh
-gofmt -w <changed-go-files>
-make build
-go test ./...
-go vet ./...
-```
-
-`go test ./...` may read global config and skills. For isolation, preserve the module cache but use a temporary home:
-
-```sh
-GOMODCACHE="$(go env GOMODCACHE)"
-TEST_HOME="$(mktemp -d)"; trap 'rm -rf "$TEST_HOME"' EXIT
-HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" \
-  XDG_DATA_HOME="$TEST_HOME/data" XDG_CACHE_HOME="$TEST_HOME/cache" \
-  GOMODCACHE="$GOMODCACHE" go test ./...
-```
-
-JavaScript tests run through Go tests only when `node` is on `PATH`. Match extra checks in `.github/workflows/ci.yml` for browser lifecycle, release, or cross-platform code.
+Size and function ratchets live in `ledger/`. Run `make complexity` after Go edits. New non-test Go files must stay at or under 1,000 lines; recorded oversize files may grow by at most 25 lines and packages over 15,000 lines by at most 2%. Shrinks, moves and renames only print notes; run `make complexity-baseline` to lock them in and review the ledger diff. Plan statuses are checked by `make plans-lint`.
 
 ### Frontend formatting and linting
 
@@ -73,7 +58,7 @@ CI runs `format:check` and `lint`; do not rely on CI to rewrite files. Keep lint
 - Test observable behavior and failure paths, not implementation trivia. Avoid network access, real API keys, timing sleeps, and dependence on the user's home directory.
 
 ## Package Documentation
-User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Contributor rules live beside the code they govern:
+User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Run `make docs` after changing reference sources to regenerate marked tables and CLI flags. Contributor rules live beside the code they govern:
 
 - `internal/sqliteutil/README.md` – adding and testing SQLite migrations
 - `internal/doctor/README.md` – adding a `term-llm doctor` check
@@ -84,12 +69,11 @@ User-facing documentation lives in `docs-site/content/`; there is no separate `d
 
 ## Common Change Paths
 ### Providers and configuration
-- Trace provider changes through the implementation, `internal/llm/factory.go`, config schema/defaults, model listing, and tests; do not update only the transport.
+- For provider changes, follow [`internal/providerspec/README.md`](internal/providerspec/README.md).
 - Config lives under `$XDG_CONFIG_HOME/term-llm/config.yaml` (falling back to `~/.config/term-llm/config.yaml`). Credential names and supported providers are defined in code; do not maintain a second static list here.
 
 ### Tools
-- Wire tools through the registry in `internal/tools/` and update `internal/tools/permissions.go` when access policy changes.
-- Cover permission denial as well as successful execution.
+See `internal/tools/README.md` for adding a built-in tool and permission-denial coverage.
 
 ### Web UI (`frontend/` and `internal/serveui/`)
 - Markdown configuration and sanitization live in `frontend/src/domain/markdown.ts`, with shared renderer hooks in `markdown-hooks.ts`. Add rendering cases to `frontend/src/domain/rendering.test.ts`.

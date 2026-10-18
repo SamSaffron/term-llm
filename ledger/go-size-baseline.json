@@ -1,0 +1,292 @@
+{
+  "rules": "new non-test .go files may not exceed 1000 lines; recorded oversize files may grow by at most 25 lines; new packages may not exceed 15000 lines; recorded packages may grow by at most 2%; shrinking never fails",
+  "threshold": 1000,
+  "files": [
+    {
+      "path": "cmd/agents.go",
+      "lines": 1057
+    },
+    {
+      "path": "cmd/ask.go",
+      "lines": 2701
+    },
+    {
+      "path": "cmd/chat.go",
+      "lines": 1682
+    },
+    {
+      "path": "cmd/config.go",
+      "lines": 1484
+    },
+    {
+      "path": "cmd/jobs.go",
+      "lines": 1006
+    },
+    {
+      "path": "cmd/memory_mine.go",
+      "lines": 1563
+    },
+    {
+      "path": "cmd/runner.go",
+      "lines": 1074
+    },
+    {
+      "path": "cmd/serve.go",
+      "lines": 1886
+    },
+    {
+      "path": "cmd/serve_handlers.go",
+      "lines": 4340
+    },
+    {
+      "path": "cmd/serve_handlers_responses.go",
+      "lines": 1106
+    },
+    {
+      "path": "cmd/serve_jobs_v2.go",
+      "lines": 3204
+    },
+    {
+      "path": "cmd/serve_live.go",
+      "lines": 2068
+    },
+    {
+      "path": "cmd/serve_projects.go",
+      "lines": 1157
+    },
+    {
+      "path": "cmd/serve_response_run_manager.go",
+      "lines": 1169
+    },
+    {
+      "path": "cmd/serve_runtime.go",
+      "lines": 2515
+    },
+    {
+      "path": "cmd/serve_shell.go",
+      "lines": 1115
+    },
+    {
+      "path": "cmd/serve_skills.go",
+      "lines": 1201
+    },
+    {
+      "path": "cmd/session.go",
+      "lines": 1075
+    },
+    {
+      "path": "cmd/sessions.go",
+      "lines": 1017
+    },
+    {
+      "path": "cmd/skills.go",
+      "lines": 1117
+    },
+    {
+      "path": "internal/config/config.go",
+      "lines": 2934
+    },
+    {
+      "path": "internal/filetrack/store.go",
+      "lines": 2089
+    },
+    {
+      "path": "internal/live/controller.go",
+      "lines": 1073
+    },
+    {
+      "path": "internal/llm/anthropic.go",
+      "lines": 1009
+    },
+    {
+      "path": "internal/llm/claude_bin.go",
+      "lines": 2197
+    },
+    {
+      "path": "internal/llm/compaction.go",
+      "lines": 1929
+    },
+    {
+      "path": "internal/llm/cursor_bin.go",
+      "lines": 1015
+    },
+    {
+      "path": "internal/llm/engine.go",
+      "lines": 3642
+    },
+    {
+      "path": "internal/llm/grok_acp.go",
+      "lines": 1212
+    },
+    {
+      "path": "internal/llm/grok_bin.go",
+      "lines": 1579
+    },
+    {
+      "path": "internal/llm/models.go",
+      "lines": 1137
+    },
+    {
+      "path": "internal/llm/openai_compat.go",
+      "lines": 1135
+    },
+    {
+      "path": "internal/llm/responses_api.go",
+      "lines": 2139
+    },
+    {
+      "path": "internal/llm/responses_websocket.go",
+      "lines": 1544
+    },
+    {
+      "path": "internal/llm/types.go",
+      "lines": 1211
+    },
+    {
+      "path": "internal/mcp/oauth/coordinator.go",
+      "lines": 1056
+    },
+    {
+      "path": "internal/render/markdown/ansi.go",
+      "lines": 1305
+    },
+    {
+      "path": "internal/serve/telegram.go",
+      "lines": 2569
+    },
+    {
+      "path": "internal/session/sqlite_messages.go",
+      "lines": 2186
+    },
+    {
+      "path": "internal/session/sqlite_schema.go",
+      "lines": 1905
+    },
+    {
+      "path": "internal/session/sqlite_sessions.go",
+      "lines": 1269
+    },
+    {
+      "path": "internal/session/store.go",
+      "lines": 1432
+    },
+    {
+      "path": "internal/skills/registry.go",
+      "lines": 1036
+    },
+    {
+      "path": "internal/terminal/renderer/decoder.go",
+      "lines": 2173
+    },
+    {
+      "path": "internal/terminal/renderer/terminal_renderer.go",
+      "lines": 1714
+    },
+    {
+      "path": "internal/terminal/runtime/cursed_renderer.go",
+      "lines": 1106
+    },
+    {
+      "path": "internal/terminal/runtime/tea.go",
+      "lines": 1428
+    },
+    {
+      "path": "internal/tooldiscovery/planner.go",
+      "lines": 1409
+    },
+    {
+      "path": "internal/tools/approval.go",
+      "lines": 2540
+    },
+    {
+      "path": "internal/tools/grep.go",
+      "lines": 1447
+    },
+    {
+      "path": "internal/tools/queue_agent.go",
+      "lines": 1026
+    },
+    {
+      "path": "internal/tools/shell_track.go",
+      "lines": 1373
+    },
+    {
+      "path": "internal/tools/workspace_capability.go",
+      "lines": 1050
+    },
+    {
+      "path": "internal/tui/chat/chat.go",
+      "lines": 2635
+    },
+    {
+      "path": "internal/tui/chat/dialog.go",
+      "lines": 1313
+    },
+    {
+      "path": "internal/tui/chat/handlers.go",
+      "lines": 1279
+    },
+    {
+      "path": "internal/tui/chat/render.go",
+      "lines": 2440
+    },
+    {
+      "path": "internal/tui/chat/streaming.go",
+      "lines": 1834
+    },
+    {
+      "path": "internal/tui/chat/worktree.go",
+      "lines": 1190
+    },
+    {
+      "path": "internal/tui/inspector/content.go",
+      "lines": 1629
+    },
+    {
+      "path": "internal/tui/skills/browse.go",
+      "lines": 1613
+    },
+    {
+      "path": "internal/ui/segment.go",
+      "lines": 1077
+    },
+    {
+      "path": "internal/ui/streaming/streaming.go",
+      "lines": 1348
+    },
+    {
+      "path": "internal/ui/tool_tracker.go",
+      "lines": 1437
+    },
+    {
+      "path": "internal/ui/unified_diff.go",
+      "lines": 1001
+    },
+    {
+      "path": "internal/worktree/worktree.go",
+      "lines": 2293
+    }
+  ],
+  "packages": [
+    {
+      "dir": "cmd",
+      "lines": 105211
+    },
+    {
+      "dir": "internal/llm",
+      "lines": 48129
+    },
+    {
+      "dir": "internal/session",
+      "lines": 17625
+    },
+    {
+      "dir": "internal/tools",
+      "lines": 22706
+    },
+    {
+      "dir": "internal/tui/chat",
+      "lines": 33189
+    }
+  ]
+}

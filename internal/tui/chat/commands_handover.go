@@ -220,7 +220,7 @@ func resolveAgentTools(agent *agents.Agent) string {
 	}
 	if agent.HasDisabledList() {
 		allTools := tools.StandardToolNames()
-		enabled := agent.GetEnabledTools(allTools)
+		enabled := agent.GetEnabledTools(allTools, tools.LegacyDisabledName)
 		return strings.Join(enabled, ",")
 	}
 	return "" // No tool restrictions — use defaults
