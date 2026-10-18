@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/formatutil"
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
@@ -356,21 +357,8 @@ func formatTokens(input, output int) string {
 	return fmt.Sprintf("%s in / %s out", formatCount(input), formatCount(output))
 }
 
-// formatCount formats a number in compact form (e.g., 1K, 1.2K, 3.4M).
+// formatCount keeps exported transcripts' uppercase K style while using the
+// same compact token formatter as terminal surfaces.
 func formatCount(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 1000000 {
-		val := float64(n) / 1000
-		if val == float64(int(val)) {
-			return fmt.Sprintf("%dK", int(val))
-		}
-		return fmt.Sprintf("%.1fK", val)
-	}
-	val := float64(n) / 1000000
-	if val == float64(int(val)) {
-		return fmt.Sprintf("%dM", int(val))
-	}
-	return fmt.Sprintf("%.1fM", val)
+	return strings.Replace(formatutil.FormatTokens(int64(n)), "k", "K", 1)
 }

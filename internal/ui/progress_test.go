@@ -115,3 +115,27 @@ func TestStreamingIndicator_NoLeadingNewlineAfterFlush_WhenRenderingSpinner(t *t
 		t.Fatalf("expected phase text in indicator, got %q", plain)
 	}
 }
+
+func TestTokenCountFormattingAcrossUI(t *testing.T) {
+	for _, tt := range []struct {
+		n    int
+		want string
+	}{
+		{999, "999"},
+		{2000, "2k"},
+		{12780, "12.78k"},
+		{999999, "1M"},
+		{12780000, "12.78M"},
+	} {
+		if got := FormatTokenCount(tt.n); got != tt.want {
+			t.Errorf("FormatTokenCount(%d) = %q, want %q", tt.n, got, tt.want)
+		}
+		p := SubagentProgress{AgentName: "worker", ToolCalls: 1, InputTokens: tt.n}
+		if got, want := p.RenderHeader(false), "@worker  1 calls · "+tt.want+" tokens"; got != want {
+			t.Errorf("RenderHeader() = %q, want %q", got, want)
+		}
+		if got, want := formatSpawnAgentStats(1, tt.n, time.Time{}, time.Time{}), "1 call · "+tt.want+" tokens"; got != want {
+			t.Errorf("formatSpawnAgentStats() = %q, want %q", got, want)
+		}
+	}
+}

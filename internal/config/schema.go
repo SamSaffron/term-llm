@@ -595,6 +595,7 @@ var providerFieldSpecs = []ProviderFieldSpec{
 	{Path: "type"},
 	{Path: "enabled", Placeholder: true},
 	{Path: "api_key", Sensitive: true},
+	{Path: "management_key", Sensitive: true, Description: "OpenRouter account analytics credential; used only by usage"},
 	{Path: "model"},
 	{Path: "fast_model"},
 	{Path: "fast_provider"},

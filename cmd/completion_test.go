@@ -500,3 +500,13 @@ func TestRefreshAnthropicCompletionCache(t *testing.T) {
 		t.Fatalf("refreshed through ANTHROPIC_BASE_URL gateway: %d", calls)
 	}
 }
+
+func TestUsageProviderFlagCompletionIncludesOpenRouter(t *testing.T) {
+	completions, directive := UsageProviderFlagCompletion(nil, nil, "openr")
+	if len(completions) != 1 || completions[0] != "openrouter" {
+		t.Fatalf("completions = %v", completions)
+	}
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v", directive)
+	}
+}

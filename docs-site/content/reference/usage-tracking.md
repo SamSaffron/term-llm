@@ -1,7 +1,7 @@
 ---
 title: "Usage tracking"
 weight: 4
-description: "Inspect local token costs and live provider subscription limits across supported providers."
+description: "Inspect local token costs, OpenRouter account analytics, and live provider subscription limits."
 featured: true
 kicker: "Accounting"
 source_readme_heading: "Usage Tracking"
@@ -34,6 +34,117 @@ Local history and estimated cost reporting are available for:
 - Claude Code
 
 Date, breakdown, and external-usage filters apply to these local records.
+
+## OpenRouter account usage
+
+```bash
+term-llm usage -p openrouter                   # Model breakdown, last 30 UTC days including today
+term-llm usage -p openrouter --days 7
+term-llm usage -p openrouter --daily            # Daily totals instead of model rows
+term-llm usage -p openrouter --since 20261001 --until 20261015
+term-llm usage -p openrouter --json
+```
+
+OpenRouter reporting uses the read-only analytics query API, without invoking a
+model. It reports **account-wide** activity, including calls outside term-llm,
+not just local history. Models are sorted by reported cost, highest first. The
+current account balance is a separate snapshot, not the balance at the end of a
+historical report. `usage` without `-p openrouter` (including `-p all`) continues
+to read local records only.
+
+### Credentials
+
+For per-model and daily analytics, configure an OpenRouter **management key**:
+
+```yaml
+providers:
+  openrouter:
+    api_key: ${OPENROUTER_API_KEY}              # Regular inference key; optional for analytics
+    management_key: ${OPENROUTER_MANAGEMENT_KEY}
+```
+
+Alternatively, export `OPENROUTER_MANAGEMENT_KEY` without adding the setting.
+An explicit configuration value takes precedence over the environment fallback.
+Like `api_key`, `management_key` supports environment references, `file://`,
+`op://`, and command references. It is resolved only when requesting OpenRouter
+usage, never during model inference. A management key alone is sufficient for
+account analytics and balance. Keep using a regular, least-privilege API key for
+model requests.
+
+**Management keys are privileged credentials**, even though this command only
+makes read-only reporting requests. Keep them private; do not commit literal
+keys to a repository. See OpenRouter's
+[management key documentation](https://openrouter.ai/docs/guides/overview/auth/management-api-keys).
+
+### Dates and accounting
+
+- The default is **30 UTC calendar days**, from midnight 29 days ago through now.
+  Today is included and is partial. `--days N` changes this window (1–3660;
+  this is a client safety bound, not a promise about API data retention).
+- `--since` and `--until` accept `YYYYMMDD`. Both dates are inclusive in the CLI;
+  JSON represents the range as an inclusive `since` and **exclusive** `until`.
+  An end date of today is capped at the report's captured current time.
+- `--since` alone ends now. `--until` alone selects 30 calendar days ending on
+  that date. Future dates, reversed ranges, and combining an explicit `--days`
+  with either date flag are rejected.
+- Costs are OpenRouter's reported `total_usage`, in USD—not estimates from a
+  pricing catalogue. BYOK usage, credit usage, and BYOK fees are exposed
+  separately in JSON; term-llm does not invent an additive relationship between
+  those values.
+- Terminal request and token counts use compact notation such as `120k`,
+  `12.78M`, and `1.2B`. JSON retains exact integer counts.
+- **Cache %** is cached input tokens divided by input tokens, shown for each
+  model, day, and total. Totals are token-weighted, not averages of percentages.
+  A zero-input row shows `—`; JSON uses `cache_hit_percent: null`. The ratio is
+  derived from the reported counters without clamping; inconsistent upstream
+  counters can therefore produce a value above 100%, rather than hiding the
+  anomaly. Cached and reasoning tokens are detail counters, not additional
+  tokens to add on top of input and output. Reporting can lag, and a successful
+  query does not guarantee historical retention for every requested date.
+
+The analytics query API includes today. OpenRouter's separate `/activity`
+endpoint only covers completed UTC days, so term-llm does **not** use that as a
+fallback for this report.
+
+`--days` and `--daily` are OpenRouter-only. `--breakdown` is accepted but redundant
+because the default already shows models. `--include-external` and Copilot
+billing flags do not apply.
+
+### Fallback and JSON
+
+Without a management key, or if analytics fails, the command tries to show the
+current account balance and the regular API key's summary counters. Such a
+report prominently states that the **requested-period breakdown is unavailable**.
+The key's daily, weekly, monthly, and all-time counters are scoped to **that key**,
+not the account, and are not substitutes for the requested N-day totals.
+Management-key counters are not shown as inference-key usage. There is no silent
+fallback to local history.
+
+`--json` always emits the same versioned report shape, regardless of `--daily`:
+
+- `schema_version`, `provider`, `source`, `scope`, `generated_at`, `period`, and
+  `currency` identify the report and UTC boundaries.
+- `status: "complete"` means analytics was validated and not truncated. It is
+  not a guarantee of real-time freshness or historical retention.
+- `status: "summary_only"` means the requested analytics is unavailable. `totals`
+  is `null`, and `models` and `daily` are empty arrays—not zero-spend claims.
+- `models` and `daily` are both included for a complete report, even when the
+  terminal view shows only one. `totals` contains reported request, token, and
+  cost aggregates. A valid empty response has zero totals and empty arrays,
+  described as “No activity returned for this period.”
+- `balance` and `key_usage` are nullable independent components. `key_usage.scope`
+  is `"key"`; account analytics and balance are account-scoped. `cached_at`, when
+  available, identifies the API's cached snapshot time.
+- `warnings` explains missing credentials, unavailable components, or degraded
+  results. Missing/unknown components are not represented as zero.
+
+A useful summary fallback exits successfully. Scripts requiring model history
+should check `status == "complete"`, not only the exit code. If no useful
+reporting component can be fetched, or the command is canceled, it returns an
+error. Invalid, malformed, or truncated analytics is not presented as a complete
+report. If a high-volume query is truncated, try a narrower range with `--days`;
+term-llm does not silently display partial totals. Optional balance/key-summary
+failures do not discard good analytics.
 
 ## Live subscription usage
 

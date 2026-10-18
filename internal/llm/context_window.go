@@ -473,8 +473,10 @@ func providerManagesOwnContext(providerType string) bool {
 	return false
 }
 
-// FormatTokenCount returns a human-readable string for a token count
-// (e.g., "128K", "1M", "200K"). Returns "" for zero or negative values.
+// FormatTokenCount formats coarse context-budget labels (e.g., "128K", "1M").
+// It deliberately rounds to whole thousands or tenths of millions and returns
+// "" for unknown limits. Usage counters should use formatutil.FormatTokens (or
+// ui.FormatTokenCount) instead, retaining finer precision and a visible zero.
 func FormatTokenCount(tokens int) string {
 	if tokens <= 0 {
 		return ""

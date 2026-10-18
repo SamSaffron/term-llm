@@ -143,6 +143,8 @@ func TestRunDirectProviderUsageOpenCodeGoUsesConfiguredKey(t *testing.T) {
 
 func resetUsageTestFlags() {
 	usageProvider = ""
+	usageDays = 30
+	usageDaily = false
 	usageSince = ""
 	usageUntil = ""
 	usageJSON = false

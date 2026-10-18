@@ -4,25 +4,13 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/formatutil"
 )
 
-// FormatTokenCount formats a token count in compact form: 1, 999, 1.5k, 12.3k, 1.1M
+// FormatTokenCount formats a token count using shared compact units and precision.
 func FormatTokenCount(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 1000000 {
-		k := float64(n) / 1000
-		if k < 10 {
-			return fmt.Sprintf("%.1fk", k)
-		}
-		return fmt.Sprintf("%.0fk", k)
-	}
-	m := float64(n) / 1000000
-	if m < 10 {
-		return fmt.Sprintf("%.1fM", m)
-	}
-	return fmt.Sprintf("%.0fM", m)
+	return formatutil.FormatTokens(int64(n))
 }
 
 // ProgressUpdate represents a progress update during long-running operations.

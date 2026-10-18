@@ -461,7 +461,7 @@ func (p *SubagentProgress) RenderHeader(expanded bool) string {
 	b.WriteString("  ")
 	b.WriteString(fmt.Sprintf("%d calls", p.ToolCalls))
 	b.WriteString(" · ")
-	b.WriteString(formatTokens(p.InputTokens + p.OutputTokens + p.CachedInputTokens + p.CacheWriteTokens))
+	b.WriteString(FormatTokenCount(p.InputTokens + p.OutputTokens + p.CachedInputTokens + p.CacheWriteTokens))
 	b.WriteString(" tokens")
 	if expanded {
 		b.WriteString("  [expanded]")
@@ -542,18 +542,6 @@ func RenderSubagentProgress(p *SubagentProgress, expanded bool) string {
 		return ""
 	}
 	return p.Render(expanded, defaultSubagentTextPreviewLines)
-}
-
-// formatTokens formats a token count in compact form: 1, 999, 1.5k, 12.3k
-func formatTokens(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	k := float64(n) / 1000
-	if k < 10 {
-		return fmt.Sprintf("%.1fk", k)
-	}
-	return fmt.Sprintf("%.0fk", k)
 }
 
 // HandleUsageEvent retains full per-request usage, including cache counters.

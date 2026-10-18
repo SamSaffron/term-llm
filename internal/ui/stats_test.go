@@ -305,7 +305,7 @@ func TestRenderBalancedStatsWithTimingCostAndCacheWrite(t *testing.T) {
 
 	out := stats.Render()
 	for _, want := range []string{
-		"Stats: active 1.3s | 24K in + 18K cached + 2.0K cache write → 1.2K out",
+		"Stats: active 1.3s | 24K in + 18K cached + 2K cache write → 1.2K out",
 		"TTFT 0.8s, 2400 tok/s",
 		"$0.0840",
 		"3 tools, 4 calls",

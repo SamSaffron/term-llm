@@ -148,18 +148,10 @@ func formatTokens(in, out, cached int) string {
 	return strings.Join(parts, " ")
 }
 
-// compactNum formats a number in a compact way (1.2K, 1.5M, etc.)
+// compactNum preserves debug logs' uppercase K convention using the shared
+// token formatter rather than a separate rounding implementation.
 func compactNum(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 10000 {
-		return fmt.Sprintf("%.1fK", float64(n)/1000)
-	}
-	if n < 1000000 {
-		return fmt.Sprintf("%dK", n/1000)
-	}
-	return fmt.Sprintf("%.1fM", float64(n)/1000000)
+	return strings.Replace(ui.FormatTokenCount(n), "k", "K", 1)
 }
 
 // FormatSession formats a full session for display

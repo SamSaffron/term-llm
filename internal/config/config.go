@@ -177,8 +177,10 @@ type ProviderConfig struct {
 	ThinkingParam     string `mapstructure:"thinking_param"`      // chat_template_kwargs key to set true when reasoning effort is requested
 
 	// OpenRouter specific
-	AppURL   string `mapstructure:"app_url"`
-	AppTitle string `mapstructure:"app_title"`
+	// ManagementKey is resolved only by the usage command, never for inference.
+	ManagementKey string `mapstructure:"management_key"`
+	AppURL        string `mapstructure:"app_url"`
+	AppTitle      string `mapstructure:"app_title"`
 
 	// AWS Bedrock specific
 	Region       string            `mapstructure:"region"`            // AWS region (defaults to AWS_REGION env var)

@@ -357,6 +357,8 @@ func TestConfigShowRedactsSensitiveRawValues(t *testing.T) {
   openai:
     api_key: sk-secret-test
     model: gpt-5.2
+  openrouter:
+    management_key: sk-management-secret-test
   claude-bin:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: sk-ant-oat01-original
@@ -375,7 +377,7 @@ func TestConfigShowRedactsSensitiveRawValues(t *testing.T) {
 	var buf strings.Builder
 	printAnnotatedConfig(&buf, config.GetDefaults(), rawKeys, unknownKeys, &root, true, nil)
 	out := buf.String()
-	for _, secret := range []string{"sk-secret-test", "sk-ant-oat01-original", "aws-secret-test", "aws-session-test"} {
+	for _, secret := range []string{"sk-secret-test", "sk-management-secret-test", "sk-ant-oat01-original", "aws-secret-test", "aws-session-test"} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("config output leaked sensitive value %q:\n%s", secret, out)
 		}

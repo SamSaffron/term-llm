@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -24,6 +25,8 @@ var (
 	usageProvider          string
 	usageSince             string
 	usageUntil             string
+	usageDays              int
+	usageDaily             bool
 	usageJSON              bool
 	usageBreakdown         bool
 	usageIncludeExternal   bool
@@ -65,6 +68,8 @@ Examples:
   term-llm usage --provider chatgpt           # show live ChatGPT Codex plan usage
   term-llm usage --provider grok              # show live Grok coding-credit usage
   term-llm usage --provider opencode-go       # show live OpenCode Go plan usage
+  term-llm usage --provider openrouter        # account usage, last 30 UTC days
+  term-llm usage -p openrouter --days 7 --daily # daily account usage
   term-llm usage --provider copilot           # show personal GitHub Copilot AI Credit usage
   term-llm usage --provider copilot --copilot-scope org --copilot-entity my-org
   term-llm usage --provider term-llm          # show term-llm direct API usage
@@ -76,9 +81,11 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(usageCmd)
-	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (agy-bin, chatgpt, grok, claude-bin, cursor-bin, opencode-go, claude-code, copilot, term-llm, or all)")
+	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (agy-bin, chatgpt, grok, claude-bin, cursor-bin, opencode-go, openrouter, claude-code, copilot, term-llm, or all)")
 	usageCmd.Flags().StringVar(&usageSince, "since", "", "Start date (YYYYMMDD)")
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
+	usageCmd.Flags().IntVar(&usageDays, "days", 30, "OpenRouter calendar UTC days including today (1-3660)")
+	usageCmd.Flags().BoolVar(&usageDaily, "daily", false, "Show OpenRouter usage by UTC day instead of model")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
 	usageCmd.Flags().BoolVar(&usageBreakdown, "breakdown", false, "Show per-model breakdown")
 	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (claude-bin and codex calls)")
@@ -102,6 +109,15 @@ func init() {
 }
 
 func runUsage(cmd *cobra.Command, args []string) error {
+	if err := validateUsageProvider(); err != nil {
+		return err
+	}
+	if usageProvider != "openrouter" && (usageFlagChanged(cmd, "days") || usageFlagChanged(cmd, "daily") || usageDaily || usageDays != 30) {
+		return fmt.Errorf("--days and --daily require --provider openrouter")
+	}
+	if usageProvider == "openrouter" {
+		return runOpenRouterUsage(cmd)
+	}
 	// Subscription providers report live limits without consuming model tokens.
 	if usageProvider == "agy-bin" {
 		if err := validateAgyBinUsageFlags(cmd); err != nil {
@@ -173,8 +189,6 @@ func runUsage(cmd *cobra.Command, args []string) error {
 		providerFilter = usage.ProviderTermLLM
 	case "", "all":
 		providerFilter = ""
-	default:
-		return fmt.Errorf("unknown provider: %s (use agy-bin, chatgpt, grok, claude-bin, cursor-bin, opencode-go, claude-code, copilot, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
@@ -212,6 +226,15 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	}
 
 	return outputTable(daily, totals, since, until)
+}
+
+func validateUsageProvider() error {
+	switch usageProvider {
+	case "", "all", "claude", "claude-code", "term-llm", "agy-bin", "claude-bin", "cursor-bin", "chatgpt", "grok", "opencode-go", "copilot", "openrouter":
+		return nil
+	default:
+		return fmt.Errorf("unknown usage provider (use agy-bin, chatgpt, grok, claude-bin, cursor-bin, opencode-go, openrouter, claude-code, copilot, term-llm, or all)")
+	}
 }
 
 func copilotUsageFlagsChanged(cmd *cobra.Command) bool {
@@ -423,19 +446,19 @@ func outputTable(daily []usage.DailyUsage, totals usage.DailyUsage, since, until
 			// Model breakdown mode: show date row, then models
 			fmt.Fprintf(w, "%s\t %s\t %s\t %s\t %s\t %s\t\n",
 				d.Date,
-				formatTokens(d.InputTokens),
-				formatTokens(d.OutputTokens),
-				formatTokens(d.CacheWriteTokens),
-				formatTokens(d.CacheReadTokens),
+				ui.FormatTokenCount(d.InputTokens),
+				ui.FormatTokenCount(d.OutputTokens),
+				ui.FormatTokenCount(d.CacheWriteTokens),
+				ui.FormatTokenCount(d.CacheReadTokens),
 				formatCost(d.TotalCost))
 			breakdown := usage.GetModelBreakdown(d.Entries)
 			for _, mb := range breakdown {
 				fmt.Fprintf(w, "  %s\t %s\t %s\t %s\t %s\t %s\t\n",
 					shortenModelName(mb.Model),
-					formatTokens(mb.InputTokens),
-					formatTokens(mb.OutputTokens),
-					formatTokens(mb.CacheWriteTokens),
-					formatTokens(mb.CacheReadTokens),
+					ui.FormatTokenCount(mb.InputTokens),
+					ui.FormatTokenCount(mb.OutputTokens),
+					ui.FormatTokenCount(mb.CacheWriteTokens),
+					ui.FormatTokenCount(mb.CacheReadTokens),
 					formatCost(mb.Cost))
 			}
 		} else if len(providerBreakdown) == 1 {
@@ -444,27 +467,27 @@ func outputTable(daily []usage.DailyUsage, totals usage.DailyUsage, since, until
 			fmt.Fprintf(w, "%s\t\t\t\t\t\t\n", d.Date)
 			fmt.Fprintf(w, "  %s\t %s\t %s\t %s\t %s\t %s\t\n",
 				formatProviderName(pb.Provider),
-				formatTokens(pb.InputTokens),
-				formatTokens(pb.OutputTokens),
-				formatTokens(pb.CacheWriteTokens),
-				formatTokens(pb.CacheReadTokens),
+				ui.FormatTokenCount(pb.InputTokens),
+				ui.FormatTokenCount(pb.OutputTokens),
+				ui.FormatTokenCount(pb.CacheWriteTokens),
+				ui.FormatTokenCount(pb.CacheReadTokens),
 				formatCost(pb.Cost))
 		} else {
 			// Multiple providers: show date totals, then provider breakdown
 			fmt.Fprintf(w, "%s\t %s\t %s\t %s\t %s\t %s\t\n",
 				d.Date,
-				formatTokens(d.InputTokens),
-				formatTokens(d.OutputTokens),
-				formatTokens(d.CacheWriteTokens),
-				formatTokens(d.CacheReadTokens),
+				ui.FormatTokenCount(d.InputTokens),
+				ui.FormatTokenCount(d.OutputTokens),
+				ui.FormatTokenCount(d.CacheWriteTokens),
+				ui.FormatTokenCount(d.CacheReadTokens),
 				formatCost(d.TotalCost))
 			for _, pb := range providerBreakdown {
 				fmt.Fprintf(w, "  %s\t %s\t %s\t %s\t %s\t %s\t\n",
 					formatProviderName(pb.Provider),
-					formatTokens(pb.InputTokens),
-					formatTokens(pb.OutputTokens),
-					formatTokens(pb.CacheWriteTokens),
-					formatTokens(pb.CacheReadTokens),
+					ui.FormatTokenCount(pb.InputTokens),
+					ui.FormatTokenCount(pb.OutputTokens),
+					ui.FormatTokenCount(pb.CacheWriteTokens),
+					ui.FormatTokenCount(pb.CacheReadTokens),
 					formatCost(pb.Cost))
 			}
 		}
@@ -478,48 +501,22 @@ func outputTable(daily []usage.DailyUsage, totals usage.DailyUsage, since, until
 	for _, pb := range providerTotals {
 		fmt.Fprintf(w, "%s\t %s\t %s\t %s\t %s\t %s\t\n",
 			formatProviderName(pb.Provider),
-			formatTokens(pb.InputTokens),
-			formatTokens(pb.OutputTokens),
-			formatTokens(pb.CacheWriteTokens),
-			formatTokens(pb.CacheReadTokens),
+			ui.FormatTokenCount(pb.InputTokens),
+			ui.FormatTokenCount(pb.OutputTokens),
+			ui.FormatTokenCount(pb.CacheWriteTokens),
+			ui.FormatTokenCount(pb.CacheReadTokens),
 			formatCost(pb.Cost))
 	}
 
 	// Grand total last
 	fmt.Fprintf(w, "Total\t %s\t %s\t %s\t %s\t %s\t\n",
-		formatTokens(totals.InputTokens),
-		formatTokens(totals.OutputTokens),
-		formatTokens(totals.CacheWriteTokens),
-		formatTokens(totals.CacheReadTokens),
+		ui.FormatTokenCount(totals.InputTokens),
+		ui.FormatTokenCount(totals.OutputTokens),
+		ui.FormatTokenCount(totals.CacheWriteTokens),
+		ui.FormatTokenCount(totals.CacheReadTokens),
 		formatCost(totals.TotalCost))
 
 	return w.Flush()
-}
-
-// formatTokens formats a token count in human-readable form (e.g., 1.5M, 384k)
-func formatTokens(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	if n >= 1_000_000 {
-		val := float64(n) / 1_000_000
-		if val >= 100 {
-			return fmt.Sprintf("%.0fM", val)
-		} else if val >= 10 {
-			return fmt.Sprintf("%.1fM", val)
-		}
-		return fmt.Sprintf("%.2fM", val)
-	}
-	if n >= 1_000 {
-		val := float64(n) / 1_000
-		if val >= 100 {
-			return fmt.Sprintf("%.0fk", val)
-		} else if val >= 10 {
-			return fmt.Sprintf("%.1fk", val)
-		}
-		return fmt.Sprintf("%.2fk", val)
-	}
-	return fmt.Sprintf("%d", n)
 }
 
 // formatCost formats a cost in USD

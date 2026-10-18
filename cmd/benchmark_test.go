@@ -367,7 +367,7 @@ func TestBenchmarkProgressUpdateIsCompact(t *testing.T) {
 	if update.Phase != "Benchmarking" {
 		t.Fatalf("progress phase = %q", update.Phase)
 	}
-	for _, want := range []string{"run 2 retry 1", "decode", "2.0k in / 128 out"} {
+	for _, want := range []string{"run 2 retry 1", "decode", "2k in / 128 out"} {
 		if !strings.Contains(update.Status, want) {
 			t.Fatalf("progress status %q missing %q", update.Status, want)
 		}

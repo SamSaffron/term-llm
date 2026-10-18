@@ -585,7 +585,7 @@ func formatSpawnAgentStats(toolCalls, totalTokens int, startTime, endTime time.T
 	if toolCalls == 1 {
 		calls = "call"
 	}
-	result := formatToolCount(toolCalls) + " " + calls + " · " + formatTokensCompact(totalTokens) + " tokens"
+	result := formatToolCount(toolCalls) + " " + calls + " · " + FormatTokenCount(totalTokens) + " tokens"
 	if !startTime.IsZero() {
 		elapsed := calcElapsed(startTime, endTime)
 		result += " · " + formatElapsed(elapsed)
@@ -625,18 +625,6 @@ func formatToolCount(n int) string {
 		return strings.TrimLeft(strings.Repeat(" ", 3)+strconv.Itoa(n), " ")
 	}
 	return strconv.Itoa(n)
-}
-
-// formatTokensCompact formats tokens in compact form (1.2k, 12k, etc.)
-func formatTokensCompact(n int) string {
-	if n < 1000 {
-		return strconv.Itoa(n)
-	}
-	k := float64(n) / 1000
-	if k < 10 {
-		return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(k, 'f', 1, 64), "0"), ".") + "k"
-	}
-	return strconv.FormatFloat(k, 'f', 0, 64) + "k"
 }
 
 // renderAskUserResult renders an ask_user result with styling applied at render time.

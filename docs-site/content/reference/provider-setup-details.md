@@ -253,6 +253,14 @@ For the default free router, follow [Option 1](#option-1-try-it-free-with-openro
 
 term-llm sends attribution headers by default. Configure `providers.openrouter.app_url` and `app_title` to change them.
 
+For account-wide usage by model, including today, run `term-llm usage -p openrouter`.
+Set `providers.openrouter.management_key` or `OPENROUTER_MANAGEMENT_KEY` to enable
+analytics; keep the regular API key for inference. Management keys are privileged
+and are resolved only for usage reporting. Without one, the command can still
+show account balance and regular-key summary counters. See
+[OpenRouter account usage](/reference/usage-tracking/#openrouter-account-usage)
+for date filters, fallback behavior, and JSON.
+
 ### Model Discovery
 
 List available models from any supported provider:

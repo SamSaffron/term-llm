@@ -830,24 +830,5 @@ func formatTokens(input, output int) string {
 	if input == 0 && output == 0 {
 		return "-"
 	}
-	return fmt.Sprintf("%s/%s", formatCount(input), formatCount(output))
-}
-
-// formatCount formats a number in compact form (e.g., 1k, 1.2k, 3.4M)
-func formatCount(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 1000000 {
-		val := float64(n) / 1000
-		if val == float64(int(val)) {
-			return fmt.Sprintf("%dk", int(val))
-		}
-		return fmt.Sprintf("%.1fk", val)
-	}
-	val := float64(n) / 1000000
-	if val == float64(int(val)) {
-		return fmt.Sprintf("%dM", int(val))
-	}
-	return fmt.Sprintf("%.1fM", val)
+	return fmt.Sprintf("%s/%s", ui.FormatTokenCount(input), ui.FormatTokenCount(output))
 }

@@ -25,6 +25,21 @@ Use `term-llm chat` for a persistent session.
 term-llm chat
 ```
 
+### Usage and costs
+
+```bash
+term-llm usage                              # Local usage, last seven days
+term-llm usage -p openrouter                # Account usage by model, last 30 UTC days
+term-llm usage -p openrouter --days 7 --json
+```
+
+OpenRouter model history includes partial today and requires a privileged
+management key (`providers.openrouter.management_key` or
+`OPENROUTER_MANAGEMENT_KEY`). Without it, reporting falls back to available
+account balance and regular-key summary counters, clearly marked as summary
+only. See [Usage tracking](/reference/usage-tracking/#openrouter-account-usage)
+for setup, dates, accounting scope, and the JSON contract.
+
 ### Using Agents
 
 Use the `@agent` prefix or `--agent` flag to select an agent:
