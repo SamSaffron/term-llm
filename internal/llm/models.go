@@ -1,11 +1,13 @@
 package llm
 
 import (
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
 )
 
 // ModelEntry describes a model available through a specific provider.
@@ -393,7 +395,7 @@ func resolveProviderModelEntries(provider string) []ModelEntry {
 
 func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "anthropic" {
-		return anthropicReasoningEfforts(baseModel) // live catalog before curated rows
+		return anthropic.ReasoningEfforts(baseModel) // live catalog before curated rows
 	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
 		if efforts, found := grokCachedReasoningEfforts(baseModel); found {
@@ -446,7 +448,7 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 	case "opencode-go":
 		return opencodeGoCachedReasoningEfforts(model)
 	case "anthropic":
-		return anthropicReasoningEfforts(model)
+		return anthropic.ReasoningEfforts(model)
 	case "bedrock":
 		if isClaudeOpusModelName(nameLower) || isClaudeFableModelName(nameLower) {
 			return cloneEfforts(claudeBinOpusEffortVariants)
@@ -564,7 +566,7 @@ func BaseModelAndEffortForProvider(provider, model string) (base string, effort 
 
 func reasoningEffortsForEntry(provider string, entry ModelEntry) []string {
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "anthropic" {
-		return anthropicReasoningEfforts(entry.ID) // live catalog before curated rows
+		return anthropic.ReasoningEfforts(entry.ID) // live catalog before curated rows
 	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
 		if efforts, found := grokCachedReasoningEfforts(entry.ID); found {
@@ -853,7 +855,7 @@ func ConfiguredProviderReasoningEfforts(cfg *config.Config, provider string) []s
 		return normalizeReasoningEfforts(entry.ReasoningEfforts)
 	}
 	if config.InferProviderType(provider, pc.Type) == config.ProviderTypeOllama {
-		return normalizeReasoningEfforts(CachedOllamaReasoningEfforts(pc.BaseURL, pc.Model))
+		return normalizeReasoningEfforts(ollama.CachedOllamaReasoningEfforts(pc.BaseURL, pc.Model))
 	}
 	switch strings.ToLower(strings.TrimSpace(pc.Reasoning)) {
 	case "enabled", "enable", "on", "true", "yes":
@@ -1079,8 +1081,8 @@ func completionModelCandidates(provider string, isImage bool, providerCfg config
 			}
 			return models, true
 		case providerType == "ollama":
-			models := GetCachedOllamaModels(providerCfg.BaseURL)
-			models = ExpandCachedOllamaReasoningVariants(providerCfg.BaseURL, models)
+			models := ollama.GetCachedOllamaModels(providerCfg.BaseURL)
+			models = ollama.ExpandCachedOllamaReasoningVariants(providerCfg.BaseURL, models)
 			if len(models) == 0 && providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}
@@ -1134,4 +1136,25 @@ func completeProviderNames(toComplete string, isImage bool, cfg *config.Config, 
 		sort.Strings(completions)
 	}
 	return completions
+}
+
+// The anthropic leaf cannot import this package; it reads the shared model
+// registry and limit tables through these hooks. Every hook is evaluated
+// lazily, so initialization order does not matter.
+func init() {
+	anthropic.ParentHooks = anthropic.Hooks{
+		BaseModelAndEffort: func(model string) (string, string) {
+			return BaseModelAndEffortForProvider("anthropic", model)
+		},
+		InputLimit:  InputLimitForModel,
+		OutputLimit: OutputLimitForModel,
+		Curated: func() []anthropic.CuratedModel {
+			entries := ProviderModels["anthropic"]
+			rows := make([]anthropic.CuratedModel, len(entries))
+			for i, e := range entries {
+				rows[i] = anthropic.CuratedModel{ID: e.ID, ReasoningEfforts: e.ReasoningEfforts}
+			}
+			return rows
+		},
+	}
 }

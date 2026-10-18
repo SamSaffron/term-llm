@@ -9,6 +9,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
@@ -28,11 +30,11 @@ const (
 var (
 	refreshAgyBinModelsForCompletion    = llm.RefreshAgyBinModelsIfStale
 	refreshGrokBinModelsForCompletion   = llm.RefreshGrokBinModelsIfStale
-	refreshOllamaModelsForCompletion    = llm.RefreshOllamaModelsIfStale
+	refreshOllamaModelsForCompletion    = ollama.RefreshOllamaModelsIfStale
 	refreshZenModelsForCompletion       = llm.RefreshZenModelsIfStale
 	refreshEndpointModelsForCompletion  = llm.RefreshEndpointModelsIfStale
-	refreshAnthropicModelsForCompletion = llm.RefreshAnthropicModelsIfStale
-	claimAnthropicCatalogRefresh        = llm.ClaimAnthropicCatalogRefresh
+	refreshAnthropicModelsForCompletion = anthropic.RefreshAnthropicModelsIfStale
+	claimAnthropicCatalogRefresh        = anthropic.ClaimAnthropicCatalogRefresh
 )
 
 // ProviderFlagCompletion handles --provider flag completion for LLM commands
@@ -76,14 +78,14 @@ func refreshProviderCompletionCaches(toComplete string, cfg *config.Config) {
 // (base_url or ANTHROPIC_BASE_URL) keep their configured/curated lists.
 func refreshAnthropicCompletionCache(toComplete string, cfg *config.Config) {
 	provider, _, completingModel := strings.Cut(toComplete, ":")
-	if !completingModel || llm.AnthropicModelCacheFresh() {
+	if !completingModel || anthropic.AnthropicModelCacheFresh() {
 		return
 	}
 	var providerCfg config.ProviderConfig
 	if cfg != nil {
 		providerCfg = cfg.Providers[provider]
 	}
-	if len(providerCfg.Models) > 0 || !llm.AnthropicUsesPublicCatalog(providerCfg) {
+	if len(providerCfg.Models) > 0 || !anthropic.AnthropicUsesPublicCatalog(providerCfg) {
 		return
 	}
 	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeAnthropic {

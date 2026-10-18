@@ -1,39 +1,11 @@
 package llm
 
-import "strings"
+import "github.com/samsaffron/term-llm/internal/llm/core"
 
-func collectTextParts(parts []Part) string {
-	var b strings.Builder
-	for _, part := range parts {
-		if (part.Type == PartText || part.Type == PartFile) && part.Text != "" {
-			b.WriteString(part.Text)
-		}
-	}
-	return b.String()
-}
+func collectTextParts(parts []Part) string { return core.CollectTextParts(parts) }
 
-func collectToolResultText(parts []Part) string {
-	var b strings.Builder
-	for _, part := range parts {
-		if part.Type == PartToolResult && part.ToolResult != nil {
-			b.WriteString(toolResultTextContent(part.ToolResult))
-		}
-	}
-	return b.String()
-}
+func collectToolResultText(parts []Part) string { return core.CollectToolResultText(parts) }
 
 func flattenSystemUser(messages []Message) (string, string) {
-	var systemParts []string
-	var userParts []string
-	for _, msg := range messages {
-		switch msg.Role {
-		case RoleSystem:
-			systemParts = append(systemParts, collectTextParts(msg.Parts))
-		case RoleUser:
-			userParts = append(userParts, collectTextParts(msg.Parts))
-		case RoleTool:
-			userParts = append(userParts, collectToolResultText(msg.Parts))
-		}
-	}
-	return strings.Join(systemParts, "\n\n"), strings.Join(userParts, "\n\n")
+	return core.FlattenSystemUser(messages)
 }

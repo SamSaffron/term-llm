@@ -9,13 +9,6 @@ const (
 	ServiceTierFastAlias = "fast"
 )
 
-// ModelServiceTier describes an optional service tier advertised by a model catalog.
-type ModelServiceTier struct {
-	ID          string `json:"id"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
 // NormalizeServiceTier maps user-facing aliases to API values. Unknown values are
 // returned trimmed so future service tiers can pass through when supported.
 func NormalizeServiceTier(value string) string {

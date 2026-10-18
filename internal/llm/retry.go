@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
@@ -71,31 +73,8 @@ func normalizeRetryConfig(config RetryConfig) RetryConfig {
 	return config
 }
 
-// RateLimitError represents a rate limit error with retry information.
-type RateLimitError struct {
-	Message        string
-	RetryAfter     time.Duration
-	PlanType       string
-	PrimaryUsed    int
-	PrimaryLimit   int
-	SecondaryUsed  int
-	SecondaryLimit int
-}
-
-func (e *RateLimitError) Error() string {
-	if e == nil {
-		return "rate limit"
-	}
-	return e.Message
-}
-
-// RetryAfterDelay exposes structured Retry-After metadata to the retry loop.
-func (e *RateLimitError) RetryAfterDelay() (time.Duration, bool) {
-	if e == nil || e.RetryAfter <= 0 {
-		return 0, false
-	}
-	return e.RetryAfter, true
-}
+// Deprecated: use core.RateLimitError across provider package boundaries.
+type RateLimitError = core.RateLimitError
 
 func (r *RetryProvider) Name() string {
 	return r.inner.Name()
@@ -202,11 +181,11 @@ func (r *RetryProvider) SupportsImmediateInterruption() bool {
 	return ok && interrupter.SupportsImmediateInterruption()
 }
 
-// clearInlineFlush forwards logical provider-turn resets without clearing a
+// ClearInlineFlush forwards logical provider-turn resets without clearing a
 // request between RetryProvider attempts of that same turn.
-func (r *RetryProvider) clearInlineFlush() {
-	if resetter, ok := r.inner.(inlineFlushResetter); ok {
-		resetter.clearInlineFlush()
+func (r *RetryProvider) ClearInlineFlush() {
+	if resetter, ok := r.inner.(engine.InlineFlushResetter); ok {
+		resetter.ClearInlineFlush()
 	}
 }
 

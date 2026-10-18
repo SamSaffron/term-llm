@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -129,7 +131,7 @@ func TestCreateProviderFromConfigClaudeBinPreservesHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude, ok := provider.(*ClaudeBinProvider)
-	if !ok || !claude.enableHooks {
+	if !ok || !claude.HooksEnabled() {
 		t.Fatalf("provider = %T, want ClaudeBinProvider with hooks enabled", provider)
 	}
 }
@@ -158,8 +160,9 @@ func TestCreateProviderFromConfigGrokBin(t *testing.T) {
 	if !ok {
 		t.Fatalf("provider type = %T, want *GrokBinProvider", provider)
 	}
-	if grok.model != "grok-4.5" || grok.effort != "high" {
-		t.Fatalf("provider model/effort = %q/%q", grok.model, grok.effort)
+	model, effort := grok.ConfiguredModel()
+	if model != "grok-4.5" || effort != "high" {
+		t.Fatalf("provider model/effort = %q/%q", model, effort)
 	}
 }
 
@@ -176,8 +179,9 @@ func TestCreateProviderFromConfigCursorBin(t *testing.T) {
 	if !ok {
 		t.Fatalf("provider type = %T, want *CursorBinProvider", provider)
 	}
-	if cursor.model != "grok-4.5" || cursor.effort != "high" || !cursor.fast {
-		t.Fatalf("provider model/effort/fast = %q/%q/%v", cursor.model, cursor.effort, cursor.fast)
+	model, effort, fast := cursor.ConfiguredModel()
+	if model != "grok-4.5" || effort != "high" || !fast {
+		t.Fatalf("provider model/effort/fast = %q/%q/%v", model, effort, fast)
 	}
 }
 
@@ -223,9 +227,9 @@ func TestCreateProviderFromConfigAnthropicCustomBaseURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createProviderFromConfig: %v", err)
 	}
-	anthropicProvider, ok := provider.(*AnthropicProvider)
+	anthropicProvider, ok := provider.(*anthropic.AnthropicProvider)
 	if !ok {
-		t.Fatalf("provider type = %T, want *AnthropicProvider", provider)
+		t.Fatalf("provider type = %T, want *anthropic.AnthropicProvider", provider)
 	}
 	if _, err := anthropicProvider.ListModels(context.Background()); err != nil {
 		t.Fatalf("ListModels: %v", err)
@@ -275,7 +279,7 @@ func TestCreateProviderFromConfigRoutesLazyBaseURLs(t *testing.T) {
 		if !ok {
 			t.Fatalf("provider type = %T, want *OpenAICompatProvider", provider)
 		}
-		resp, err := compat.makeChatRequest(context.Background(), oaiChatRequest{Model: "custom-model"})
+		resp, err := compat.MakeChatRequest(context.Background(), oaiChatRequest{Model: "custom-model"})
 		if err != nil {
 			t.Fatalf("makeChatRequest: %v", err)
 		}
@@ -300,12 +304,12 @@ func TestCreateProviderFromConfigRoutesLazyBaseURLs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("createProviderFromConfig: %v", err)
 		}
-		ollama, ok := provider.(*OllamaProvider)
+		ollamaProvider, ok := provider.(*ollama.Provider)
 		if !ok {
-			t.Fatalf("provider type = %T, want *OllamaProvider", provider)
+			t.Fatalf("provider type = %T, want *ollama.Provider", provider)
 		}
-		if ollama.baseURL != "https://ollama.example.test" {
-			t.Fatalf("baseURL = %q, want resolved URL", ollama.baseURL)
+		if ollamaProvider.BaseURL() != "https://ollama.example.test" {
+			t.Fatalf("baseURL = %q, want resolved URL", ollamaProvider.BaseURL())
 		}
 	})
 }
@@ -338,8 +342,8 @@ func TestCreateProviderFromConfigOpenCodeGoUsesBaseURLOverride(t *testing.T) {
 	if !ok {
 		t.Fatalf("provider type = %T, want *OpenCodeGoProvider", provider)
 	}
-	if openCodeGo.baseURL != "https://example.test/muse/v1" {
-		t.Fatalf("baseURL = %q", openCodeGo.baseURL)
+	if openCodeGo.BaseURL() != "https://example.test/muse/v1" {
+		t.Fatalf("baseURL = %q", openCodeGo.BaseURL())
 	}
 }
 
@@ -423,8 +427,8 @@ func TestNewProviderByNameNoRetryReturnsUnderlyingAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProviderByNameNoRetry: %v", err)
 	}
-	if _, ok := provider.(*OllamaProvider); !ok {
-		t.Fatalf("provider type = %T, want *OllamaProvider", provider)
+	if _, ok := provider.(*ollama.Provider); !ok {
+		t.Fatalf("provider type = %T, want *ollama.Provider", provider)
 	}
 	wrapped, err := NewProviderByName(cfg, "ollama", "qwen:7b")
 	if err != nil {
@@ -455,7 +459,7 @@ func TestZenRequiresKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	zen := providerFromEnv.(*ZenProvider)
-	if zen.apiKey != "env-key" || zen.model != "deepseek-v4-flash" {
+	if zen.APIKey() != "env-key" || zen.Model() != "deepseek-v4-flash" {
 		t.Fatal("Zen did not use environment credentials and paid default")
 	}
 

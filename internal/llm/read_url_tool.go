@@ -11,10 +11,12 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 const (
-	ReadURLToolName         = "read_url"
+	ReadURLToolName         = core.ReadURLToolName
 	maxReadURLChars         = 50000
 	maxReadURLRedirects     = 10
 	readURLTruncationSuffix = "\n\n[Content truncated at 50,000 characters]"

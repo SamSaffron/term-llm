@@ -1,0 +1,1673 @@
+package clibin
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/acp"
+)
+
+type observedWriteCloser struct {
+	io.WriteCloser
+	started chan struct{}
+	once    sync.Once
+}
+
+type funcWriteCloser struct {
+	write func([]byte) (int, error)
+}
+
+func (w *funcWriteCloser) Write(data []byte) (int, error) { return w.write(data) }
+func (w *funcWriteCloser) Close() error                   { return nil }
+
+func (w *observedWriteCloser) Write(data []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	return w.WriteCloser.Write(data)
+}
+
+func TestStopGrokACPProcessUnblocksBlockedWrite(t *testing.T) {
+	oldCloseTimeout := grokACPCloseTimeout
+	grokACPCloseTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { grokACPCloseTimeout = oldCloseTimeout })
+
+	clientSide, agentSide := net.Pipe()
+	defer clientSide.Close()
+	defer agentSide.Close()
+
+	stdin := &observedWriteCloser{WriteCloser: clientSide, started: make(chan struct{})}
+	conn := acp.NewConnection(clientSide, stdin, nil, acp.Options{})
+	waitDone := make(chan struct{})
+	process := &grokACPProcess{
+		cancel:   func() { close(waitDone) },
+		stdin:    stdin,
+		client:   acp.NewClient(conn),
+		conn:     conn,
+		waitDone: waitDone,
+		capabilities: acp.AgentCapabilities{SessionCapabilities: acp.SessionCapabilities{
+			Close: json.RawMessage(`true`),
+		}},
+		sessionID: "blocked-session",
+	}
+
+	callDone := make(chan error, 1)
+	go func() {
+		callDone <- conn.Call(context.Background(), "session/prompt", map[string]string{
+			"prompt": strings.Repeat("x", 1<<20),
+		}, nil)
+	}()
+	select {
+	case <-stdin.started:
+	case <-time.After(time.Second):
+		t.Fatal("ACP call did not start its blocked write")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		var provider GrokBinProvider
+		provider.stopGrokACPProcess(process)
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Grok ACP process stop remained blocked behind the stdin write")
+	}
+	select {
+	case err := <-callDone:
+		if err == nil {
+			t.Fatal("blocked ACP call unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked ACP call did not exit after stdin was closed")
+	}
+}
+
+func TestParseGrokACPUsage(t *testing.T) {
+	usage, err := parseGrokACPUsage(json.RawMessage(`{
+		"inputTokens":7333,
+		"outputTokens":38,
+		"cachedReadTokens":7296,
+		"reasoningTokens":30,
+		"totalTokens":7372
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil {
+		t.Fatal("usage is nil")
+	}
+	if usage.InputTokens != 37 || usage.CachedInputTokens != 7296 || usage.OutputTokens != 38 || usage.ReasoningTokens != 30 || usage.ProviderRawInputTokens != 7333 || usage.ProviderTotalTokens != 7372 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestParseGrokACPUsageRejectsMissingOrInvalidCounts(t *testing.T) {
+	for _, raw := range []string{
+		`{}`,
+		`{"inputTokens":-1,"outputTokens":2}`,
+		`{"inputTokens":1,"outputTokens":2,"cachedReadTokens":3}`,
+		`{"inputTokens":"many","outputTokens":2}`,
+	} {
+		usage, err := parseGrokACPUsage(json.RawMessage(raw))
+		if err == nil && usage != nil {
+			t.Fatalf("parseGrokACPUsage(%s) = %+v, want absent/error", raw, usage)
+		}
+	}
+}
+
+func TestGrokACPHandlerMapsTextAndReasoningButNotToolExecution(t *testing.T) {
+	events := make(chan core.Event, 4)
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: context.Background(), ch: events}, false, false)
+	defer handler.endTurn()
+
+	for _, params := range []string{
+		`{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking"}}}`,
+		`{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"answer"}}}`,
+	} {
+		handler.HandleNotification(context.Background(), "session/update", json.RawMessage(params))
+	}
+
+	if err := handler.turnError(); err != nil {
+		t.Fatal(err)
+	}
+	close(events)
+	var got []core.Event
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 || got[0].Type != core.EventReasoningDelta || got[0].Text != "thinking" || got[1].Type != core.EventTextDelta || got[1].Text != "answer" {
+		t.Fatalf("events = %+v", got)
+	}
+}
+
+func TestGrokACPHandlerSeparatesThoughtsAcrossHiddenToolCall(t *testing.T) {
+	events := make(chan core.Event, 2)
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: context.Background(), ch: events}, false, false)
+	defer handler.endTurn()
+
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"first."}}}`))
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"search-1","_meta":{"x.ai/tool":{"name":"search_tool"}}}}`))
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Good"}}}`))
+
+	first, second := <-events, <-events
+	if first.ReasoningItemID == "" || second.ReasoningItemID == "" || first.ReasoningItemID == second.ReasoningItemID {
+		t.Fatalf("reasoning item IDs across hidden tool call = %q, %q; want distinct non-empty IDs", first.ReasoningItemID, second.ReasoningItemID)
+	}
+}
+
+func TestGrokACPHandlerKeepsPolicyViolationAfterCancelledDelivery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: ctx, ch: make(chan core.Event)}, false, false)
+	defer handler.endTurn()
+
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late"}}}`))
+	if err := handler.turnError(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("delivery error = %v, want cancellation", err)
+	}
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"bad","_meta":{"x.ai/tool":{"name":"read_file"}}}}`))
+	if err := handler.policyError(); err == nil || !strings.Contains(err.Error(), "restricted profile attempted native tool") {
+		t.Fatalf("policy error = %v", err)
+	}
+}
+
+func TestGrokACPHandlerRejectsNativeToolLeak(t *testing.T) {
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{}, false, false)
+	defer handler.endTurn()
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"native-1","title":"Read file","_meta":{"x.ai/tool":{"name":"read_file"}}}}`))
+	if err := handler.turnError(); err == nil || !strings.Contains(err.Error(), "native tool") {
+		t.Fatalf("native tool error = %v", err)
+	}
+}
+
+func TestGrokACPHandlerRejectsNativeToolLeakWithRichContent(t *testing.T) {
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{}, false, false)
+	defer handler.endTurn()
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"native-1","content":[{"type":"content","content":{"type":"text","text":"details"}}],"_meta":{"x.ai/tool":{"name":"read_file"}}}}`))
+	if err := handler.turnError(); err == nil || !strings.Contains(err.Error(), "native tool") {
+		t.Fatalf("native tool error = %v", err)
+	}
+}
+
+func TestGrokACPHandlerCancelsPermissionRequests(t *testing.T) {
+	handler := &grokACPHandler{}
+	result, rpcErr := handler.HandleRequest(context.Background(), "session/request_permission", json.RawMessage(`{"sessionId":"s","options":[]}`))
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"outcome":{"outcome":"cancelled"}}` {
+		t.Fatalf("permission response = %s", encoded)
+	}
+}
+
+func TestGrokACPToolBarrierPreservesTextOrder(t *testing.T) {
+	events := make(chan core.Event, 4)
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: context.Background(), ch: events}, false, false)
+	defer handler.endTurn()
+
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"before tool"}}}`))
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"use-1","title":"Calling echo_once","_meta":{"x.ai/tool":{"name":"use_tool"}}}}`))
+	if err := handler.waitToolBarrier(context.Background(), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	toolRequest := cliToolRequest{
+		callID:   "mcp-test-1",
+		name:     "test_tool",
+		args:     json.RawMessage(`{}`),
+		response: make(chan core.ToolExecutionResponse, 1),
+		ack:      make(chan error, 1),
+	}
+	handleCLIToolRequest(toolRequest, eventSender{ctx: context.Background(), ch: events})
+	if err := <-toolRequest.ack; err != nil {
+		t.Fatal(err)
+	}
+	first, second := <-events, <-events
+	if first.Type != core.EventTextDelta || first.Text != "before tool" || second.Type != core.EventToolCall {
+		t.Fatalf("ordered events = %+v then %+v", first, second)
+	}
+}
+
+func TestGrokACPHandlerSuppressesLoadReplay(t *testing.T) {
+	events := make(chan core.Event, 1)
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: context.Background(), ch: events}, true, false)
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"old"}}}`))
+	handler.endTurn()
+	select {
+	case event := <-events:
+		t.Fatalf("replayed event leaked: %+v", event)
+	default:
+	}
+}
+
+func TestGrokBinProviderBuildACPArgsUsesRestrictedProfile(t *testing.T) {
+	p := NewGrokBinProvider("grok-4.5-high", nil)
+	p.grokHome = t.TempDir()
+	profilePath, err := p.writeACPAgentProfile(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, effort, err := p.buildACPArgs(core.Request{}, profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--no-auto-update",
+		"--max-turns 30",
+		"agent",
+		"--agent-profile " + profilePath,
+		"--no-leader",
+		"-m grok-4.5",
+		"--reasoning-effort high",
+		"--always-approve",
+		"stdio",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args %q missing %q", joined, want)
+		}
+	}
+	if effort != "high" {
+		t.Fatalf("effort = %q", effort)
+	}
+	disableWebSearch := slices.Index(args, "--disable-web-search")
+	agentCommand := slices.Index(args, "agent")
+	if disableWebSearch < 0 || agentCommand < 0 || disableWebSearch > agentCommand {
+		t.Fatalf("root --disable-web-search flag must precede agent subcommand: %q", args)
+	}
+	disallowed := "," + argValue(args, "--disallowed-tools") + ","
+	for _, tool := range []string{"web_search", "web_fetch", "x_search"} {
+		if !strings.Contains(disallowed, ","+tool+",") {
+			t.Fatalf("restricted ACP args did not disallow %q: %s", tool, disallowed)
+		}
+	}
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(profile)
+	for _, want := range []string{
+		"promptMode: full",
+		"permissionMode: default",
+		"agentsMd: false",
+		"discoverSkills: false",
+		"inheritSkills: false",
+		"skills: []",
+		"tools:\n  - search_tool\n  - use_tool",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("restricted ACP profile missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"prompt_mode:", "permission_mode:", "agents_md:", "  - web_search", "  - web_fetch", "  - x_search", "list_dir"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("unsafe agent profile contains %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func TestApplyGrokSteeringEnvelope(t *testing.T) {
+	blocks := []acp.ContentBlock{
+		{Type: "text", Text: "<conversation_history>\nold\n</conversation_history>"},
+		{Type: "text", Text: "<developer>\nnote\n</developer>\n\n"},
+		{Type: "text", Text: "also add tests"},
+		{Type: "image", Data: "abc", MimeType: "image/png"},
+	}
+	got := applyGrokSteeringEnvelope(blocks)
+	if !strings.Contains(got[2].Text, grokSteeringNote) || !strings.Contains(got[2].Text, "also add tests") || !strings.Contains(got[2].Text, grokUnfinishedTasksReminder) {
+		t.Fatalf("user block = %q", got[2].Text)
+	}
+	if strings.Contains(got[0].Text, grokSteeringNote) || strings.Contains(got[1].Text, grokSteeringNote) {
+		t.Fatalf("wrapped non-user blocks: %#v", got)
+	}
+	if got[3].Type != "image" || got[3].Data != "abc" {
+		t.Fatalf("image block = %+v", got[3])
+	}
+}
+
+func TestGrokCancellationWarningClassification(t *testing.T) {
+	provider := NewGrokBinProvider("grok-4.5-low", nil)
+	if !provider.shouldWarnGrokCancellation(context.Background()) {
+		t.Fatal("ordinary agent-side cancellation should emit a warning")
+	}
+
+	provider.nativeInterruptPending.Store(true)
+	if provider.shouldWarnGrokCancellation(context.Background()) {
+		t.Fatal("cancellation observed while the native interrupt is being written should stay quiet")
+	}
+	provider.nativeInterruptPending.Store(false)
+
+	provider.interruptFollowUp.Store(true)
+	if provider.shouldWarnGrokCancellation(context.Background()) {
+		t.Fatal("completed native interrupt cancellation should stay quiet")
+	}
+	provider.interruptFollowUp.Store(false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if provider.shouldWarnGrokCancellation(ctx) {
+		t.Fatal("context cancellation should stay quiet")
+	}
+}
+
+func TestSendNativeInterruptMarksCancellationBeforeWrite(t *testing.T) {
+	writeErr := errors.New("write completed with error")
+	for _, tc := range []struct {
+		name          string
+		writeResult   func(int) (int, error)
+		wantSuccess   bool
+		wantFollowUp  bool
+		wantFlushLeft bool
+	}{
+		{
+			name:         "successful write",
+			writeResult:  func(size int) (int, error) { return size, nil },
+			wantSuccess:  true,
+			wantFollowUp: true,
+		},
+		{
+			name:         "complete write with error",
+			writeResult:  func(size int) (int, error) { return size, writeErr },
+			wantSuccess:  true,
+			wantFollowUp: true,
+		},
+		{
+			name:          "partial write with error",
+			writeResult:   func(size int) (int, error) { return size - 1, writeErr },
+			wantFlushLeft: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := NewGrokBinProvider("grok-4.5-low", nil)
+			var sawExpectedCancellation bool
+			writer := &funcWriteCloser{write: func(data []byte) (int, error) {
+				if !strings.Contains(string(data), `"method":"session/cancel"`) {
+					t.Fatalf("notification = %q, want session/cancel", data)
+				}
+				sawExpectedCancellation = !provider.shouldWarnGrokCancellation(context.Background())
+				return tc.writeResult(len(data))
+			}}
+			clientSide, agentSide := net.Pipe()
+			defer clientSide.Close()
+			defer agentSide.Close()
+			conn := acp.NewConnection(clientSide, writer, nil, acp.Options{})
+
+			provider.acpProcess = &grokACPProcess{
+				client:    acp.NewClient(conn),
+				sessionID: "interrupt-session",
+			}
+			provider.acpPromptActive.Store(true)
+			provider.requestInlineFlush()
+
+			if got := provider.sendNativeInterrupt(); got != tc.wantSuccess {
+				t.Fatalf("sendNativeInterrupt() = %t, want %t", got, tc.wantSuccess)
+			}
+			if !sawExpectedCancellation {
+				t.Fatal("cancellation was not classified as expected while session/cancel was being written")
+			}
+			if got := provider.interruptFollowUp.Load(); got != tc.wantFollowUp {
+				t.Fatalf("interruptFollowUp = %t, want %t", got, tc.wantFollowUp)
+			}
+			if got := provider.inlineFlushRequested(); got != tc.wantFlushLeft {
+				t.Fatalf("inline flush pending = %t, want %t", got, tc.wantFlushLeft)
+			}
+			if provider.nativeInterruptPending.Load() {
+				t.Fatal("native interrupt remained pending after write returned")
+			}
+		})
+	}
+}
+
+func TestGrokACPPromptMetaUsesVerbatimModeAndPromptID(t *testing.T) {
+	meta, promptID, err := grokACPPromptMeta()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Verbatim bool   `json:"verbatim"`
+		PromptID string `json:"promptId"`
+	}
+	if err := json.Unmarshal(meta, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Verbatim || decoded.PromptID == "" || decoded.PromptID != promptID || !isGrokHomeID(promptID) {
+		t.Fatalf("prompt metadata = %s, promptID=%q", meta, promptID)
+	}
+}
+
+func TestGrokACPWirePromptUsesVerbatimMetadata(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	promptLog := filepath.Join(t.TempDir(), "prompt.json")
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"wire-session\"}}" ;;
+    *'"method":"session/prompt"'*)
+      printf '%s' "$line" > "$GROK_PROMPT_LOG"
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.6-low", map[string]string{"GROK_PROMPT_LOG": promptLog})
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{core.SystemText("system"), core.UserText(strings.Repeat("x", 30_000))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+	}
+	raw, err := os.ReadFile(promptLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Params struct {
+			Meta struct {
+				Verbatim bool   `json:"verbatim"`
+				PromptID string `json:"promptId"`
+			} `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &request); err != nil {
+		t.Fatalf("decode prompt request: %v: %s", err, raw)
+	}
+	if !request.Params.Meta.Verbatim || !isGrokHomeID(request.Params.Meta.PromptID) {
+		t.Fatalf("wire prompt metadata = %+v", request.Params.Meta)
+	}
+}
+
+func TestGrokBinProviderFramesInterruptedFollowUpPrompt(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	promptLog := filepath.Join(t.TempDir(), "prompt.json")
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"follow-session\"}}" ;;
+    *'"method":"session/load"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/resume"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/prompt"'*)
+      printf '%s' "$line" > "$GROK_PROMPT_LOG"
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.5-low", map[string]string{"GROK_PROMPT_LOG": promptLog})
+	defer p.CleanupMCP()
+	first, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("start")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectGrokACPTestText(t, first)
+	p.interruptFollowUp.Store(true)
+	second, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("start"), core.AssistantText("partial"), core.UserText("also add tests")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectGrokACPTestText(t, second)
+	raw, err := os.ReadFile(promptLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), grokSteeringNote) || !strings.Contains(string(raw), "also add tests") || !strings.Contains(string(raw), grokUnfinishedTasksReminder) {
+		t.Fatalf("follow-up prompt missing steering envelope: %s", raw)
+	}
+}
+
+func TestGrokACPAgentCancelledTurnEmitsWarningAndCommits(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"agent-cancel-session\"}}" ;;
+    *'"method":"session/prompt"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"cancelled\"}}" ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	p := NewGrokBinProvider("grok-4.6-low", nil)
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("cancel this")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warning string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == core.EventPhase {
+			warning += event.Text
+		}
+	}
+	if !strings.Contains(warning, "cancelled the turn") || p.sessionID != "agent-cancel-session" || p.messagesSent != 1 {
+		t.Fatalf("warning/state = %q %q/%d", warning, p.sessionID, p.messagesSent)
+	}
+}
+
+func TestGrokBinProviderBuildACPArgsEnablesNativeWebAndXSearch(t *testing.T) {
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	p.grokHome = t.TempDir()
+	profilePath, err := p.writeACPAgentProfile(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _, err := p.buildACPArgs(core.Request{Search: true}, profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := argValue(args, "--tools"); got != grokNativeSearchToolAllowlist {
+		t.Fatalf("--tools = %q", got)
+	}
+	if slices.Contains(args, "--disable-web-search") {
+		t.Fatalf("native search args unexpectedly disable web search: %q", args)
+	}
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"  - web_search", "  - web_fetch", "  - x_search", "read-only web and X research"} {
+		if !strings.Contains(string(profile), want) {
+			t.Fatalf("native search profile missing %q:\n%s", want, profile)
+		}
+	}
+}
+
+func TestGrokACPHandlerReportsNativeSearchCallDetails(t *testing.T) {
+	// The real formatter lives with the engine; install a stand-in with the
+	// same "(key:value, ...)" output shape.
+	prev := ToolInfoFormatter
+	ToolInfoFormatter = func(call core.ToolCall) string {
+		var args map[string]string
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return ""
+		}
+		keys := make([]string, 0, len(args))
+		for k := range args {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, k+":"+args[k])
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	}
+	t.Cleanup(func() { ToolInfoFormatter = prev })
+	events := make(chan core.Event, 2)
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: context.Background(), ch: events}, false, true)
+	defer handler.endTurn()
+
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"x-1","title":"X search:","kind":"search","status":"in_progress","rawInput":{"variant":"XSearch","backend":true},"_meta":{"backend":true}}}`))
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"x-1","title":"X search:","status":"completed","rawOutput":{"input":"{\"query\":\"from:SpaceXAI Grok\",\"limit\":\"10\",\"mode\":\"Latest\"}","name":"x_keyword_search"}}}`))
+
+	if err := handler.turnError(); err != nil {
+		t.Fatal(err)
+	}
+	start, end := <-events, <-events
+	wantInfo := "(limit:10, mode:Latest, query:from:SpaceXAI Grok)"
+	if start.Type != core.EventToolExecStart || start.ToolCallID != "x-1" || start.ToolName != "x_keyword_search" || start.ToolInfo != wantInfo {
+		t.Fatalf("start event = %+v", start)
+	}
+	if string(start.ToolArgs) != `{"query":"from:SpaceXAI Grok","limit":"10","mode":"Latest"}` {
+		t.Fatalf("start args = %s", start.ToolArgs)
+	}
+	if end.Type != core.EventToolExecEnd || end.ToolCallID != "x-1" || end.ToolName != "x_keyword_search" || end.ToolInfo != wantInfo || !end.ToolSuccess {
+		t.Fatalf("end event = %+v", end)
+	}
+}
+
+func TestGrokACPHandlerReportsNativeSearchWithoutBackendArguments(t *testing.T) {
+	events := make(chan core.Event, 2)
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: context.Background(), ch: events}, false, true)
+	defer handler.endTurn()
+
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"web-1","title":"Web search:","kind":"search","status":"in_progress","rawInput":{"variant":"WebSearch","backend":true},"_meta":{"backend":true}}}`))
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"web-1","title":"Web search:","status":"failed","rawOutput":{"action":"search","status":"failed"}}}`))
+
+	start, end := <-events, <-events
+	if start.Type != core.EventToolExecStart || start.ToolName != "web_search" || len(start.ToolArgs) != 0 {
+		t.Fatalf("start event = %+v", start)
+	}
+	if end.Type != core.EventToolExecEnd || end.ToolName != "web_search" || end.ToolSuccess {
+		t.Fatalf("end event = %+v", end)
+	}
+}
+
+func TestGrokACPHandlerAllowsNativeSearchOnlyWhenEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		nativeSearch  bool
+		update        string
+		wantTurnError bool
+	}{
+		{name: "named disabled", update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"web-1","_meta":{"x.ai/tool":{"name":"web_search"}}}}`, wantTurnError: true},
+		{name: "named enabled", nativeSearch: true, update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"web-1","_meta":{"x.ai/tool":{"name":"web_search"}}}}`},
+		{name: "backend disabled", update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"x-1","kind":"search","_meta":{"backend":true}}}`, wantTurnError: true},
+		{name: "backend enabled", nativeSearch: true, update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"x-1","kind":"search","_meta":{"backend":true}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &grokACPHandler{}
+			handler.beginTurn(eventSender{}, false, tc.nativeSearch)
+			defer handler.endTurn()
+			handler.HandleNotification(context.Background(), "session/update", json.RawMessage(tc.update))
+			if got := handler.turnError() != nil; got != tc.wantTurnError {
+				t.Fatalf("turn error = %v, want error=%t", handler.turnError(), tc.wantTurnError)
+			}
+		})
+	}
+}
+
+func TestGrokBinProviderACPStreamEmitsUsage(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	p.acpRunner = func(_ context.Context, _ core.Request, _ []core.Message, _ bool, send eventSender, _ bool) (grokCommandResult, error) {
+		if err := os.WriteFile(filepath.Join(p.grokHome, "fake-args"), []byte("agent stdio"), 0o644); err != nil {
+			return grokCommandResult{}, err
+		}
+		for _, event := range []core.Event{
+			{Type: core.EventReasoningDelta, Text: "thinking"},
+			{Type: core.EventTextDelta, Text: "answer"},
+			{Type: core.EventUsage, Use: &core.Usage{InputTokens: 8, CachedInputTokens: 92, OutputTokens: 20, ReasoningTokens: 7, ProviderRawInputTokens: 100, ProviderTotalTokens: 121}},
+		} {
+			if err := send.Send(event); err != nil {
+				return grokCommandResult{}, err
+			}
+		}
+		return grokCommandResult{sawEnd: true, sessionID: "fake-session"}, nil
+	}
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.SystemText("private system"), core.UserText("hello")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []core.Event
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+		got = append(got, event)
+	}
+	if len(got) != 4 || got[0].Type != core.EventReasoningDelta || got[1].Type != core.EventTextDelta || got[2].Type != core.EventUsage || got[3].Type != core.EventDone {
+		t.Fatalf("events = %+v", got)
+	}
+	if got[2].Use == nil || got[2].Use.InputTokens != 8 || got[2].Use.CachedInputTokens != 92 || got[2].Use.OutputTokens != 20 || got[2].Use.ReasoningTokens != 7 || got[2].Use.ProviderTotalTokens != 121 {
+		t.Fatalf("usage event = %+v", got[2])
+	}
+	if p.sessionID != "fake-session" || p.messagesSent != 2 {
+		t.Fatalf("provider state = %q/%d", p.sessionID, p.messagesSent)
+	}
+
+	args, err := os.ReadFile(filepath.Join(p.grokHome, "fake-args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "agent") || !strings.Contains(string(args), "stdio") {
+		t.Fatalf("fake grok args = %s", args)
+	}
+}
+
+func TestGrokACPProcessConfigurationChangesRequireRestart(t *testing.T) {
+	process := &grokACPProcess{
+		mcpURL:       "http://127.0.0.1/mcp",
+		model:        "grok-4.5",
+		effort:       "low",
+		systemPrompt: "system",
+		nativeSearch: false,
+	}
+	tests := []struct {
+		name         string
+		mcpURL       string
+		model        string
+		effort       string
+		systemPrompt string
+		nativeSearch bool
+		wantMatch    bool
+	}{
+		{name: "unchanged", mcpURL: process.mcpURL, model: process.model, effort: process.effort, systemPrompt: process.systemPrompt, wantMatch: true},
+		{name: "effort changed", mcpURL: process.mcpURL, model: process.model, effort: "high", systemPrompt: process.systemPrompt},
+		{name: "native search changed", mcpURL: process.mcpURL, model: process.model, effort: process.effort, systemPrompt: process.systemPrompt, nativeSearch: true},
+		{name: "model changed", mcpURL: process.mcpURL, model: "grok-5", effort: process.effort, systemPrompt: process.systemPrompt},
+		{name: "system prompt changed", mcpURL: process.mcpURL, model: process.model, effort: process.effort, systemPrompt: "different"},
+		{name: "MCP changed", mcpURL: "http://127.0.0.1/other", model: process.model, effort: process.effort, systemPrompt: process.systemPrompt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := process.matchesConfiguration(tt.mcpURL, tt.model, tt.effort, tt.systemPrompt, tt.nativeSearch); got != tt.wantMatch {
+				t.Fatalf("matchesConfiguration() = %t, want %t", got, tt.wantMatch)
+			}
+		})
+	}
+}
+
+func TestGrokBinProviderACPEphemeralDoesNotMutateState(t *testing.T) {
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	p.sessionID = "persistent-session"
+	p.messagesSent = 2
+	p.commitGrokResult(
+		core.Request{Ephemeral: true, Messages: []core.Message{core.UserText("temporary")}},
+		grokCommandResult{sawEnd: true, sessionID: "temporary-session"},
+	)
+	if p.sessionID != "persistent-session" || p.messagesSent != 2 {
+		t.Fatalf("ephemeral state = %q/%d, want persistent-session/2", p.sessionID, p.messagesSent)
+	}
+}
+
+func TestGrokBinProviderACPErrorRedactsDiagnostics(t *testing.T) {
+	const systemPrompt = "PRIVATE SYSTEM INSTRUCTION"
+	const userPrompt = "PRIVATE USER QUESTION"
+	const secret = "super-secret-value"
+	p := NewGrokBinProvider("grok-4.5-low", map[string]string{"GROK_TEST_SECRET": secret})
+	redact := p.grokACPDiagnosticRedactor(
+		[]core.Message{core.SystemText(systemPrompt), core.UserText(userPrompt)},
+		p.buildCommandEnv(),
+	)
+	diagnostic := redact("stderr " + systemPrompt + " " + userPrompt + " " + secret)
+	if strings.Contains(diagnostic, systemPrompt) || strings.Contains(diagnostic, userPrompt) || strings.Contains(diagnostic, secret) {
+		t.Fatalf("ACP diagnostics leaked private data: %s", diagnostic)
+	}
+	if got := strings.Count(diagnostic, "[redacted]"); got != 3 {
+		t.Fatalf("ACP diagnostic redactions = %d, want 3: %s", got, diagnostic)
+	}
+}
+
+func TestGrokBinProviderACPCancellationDuringInitialize(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) sleep 30 ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("wait")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- stream.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream cancellation did not interrupt Grok ACP initialize")
+	}
+}
+
+func TestGrokBinProviderACPCancellationUnblocksSessionWrite(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	firstPIDPath := filepath.Join(t.TempDir(), "first-pid")
+	blockedPath := filepath.Join(t.TempDir(), "blocked")
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+if [ ! -f "$GROK_TEST_FIRST_PID" ]; then
+  echo $$ > "$GROK_TEST_FIRST_PID"
+  first=1
+else
+  first_pid=$(cat "$GROK_TEST_FIRST_PID")
+  if kill -0 "$first_pid" 2>/dev/null; then
+    exit 42
+  fi
+  first=0
+fi
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+      if [ "$first" = 1 ]; then
+        : > "$GROK_TEST_BLOCKED"
+        sleep 30
+      fi
+      ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"recovered-session\"}}" ;;
+    *'"method":"session/prompt"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\"}}" ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.5-low", map[string]string{
+		"GROK_TEST_FIRST_PID": firstPIDPath,
+		"GROK_TEST_BLOCKED":   blockedPath,
+	})
+	defer p.CleanupMCP()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := p.Stream(ctx, core.Request{Messages: []core.Message{
+		core.SystemText(strings.Repeat("large system prompt ", 1<<18)),
+		core.UserText("wait"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyTimeout := time.After(10 * time.Second)
+	for {
+		if _, err := os.Stat(blockedPath); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		select {
+		case <-readyTimeout:
+			t.Fatal("fake Grok process did not reach its blocked session write")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	cleanupDone := make(chan struct{})
+	go func() {
+		p.CleanupMCP()
+		close(cleanupDone)
+	}()
+	cancel()
+	<-ctx.Done()
+
+	streamDone := make(chan error, 1)
+	go func() { streamDone <- stream.Close() }()
+	select {
+	case err := <-streamDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream close remained blocked behind the Grok ACP session write")
+	}
+	select {
+	case <-cleanupDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Grok cleanup remained blocked behind the startup mutex")
+	}
+
+	next, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("continue")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawDone := false
+	for {
+		event, err := next.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == core.EventDone {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		t.Fatal("subsequent Grok turn did not complete")
+	}
+}
+
+func TestGrokBinProviderACPCancellationPreservesResidentSession(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+prompt_id=""
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"cancel-session\"}}" ;;
+    *'"method":"session/prompt"'*) prompt_id=$id ;;
+    *'"method":"session/cancel"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"cancel-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"late\"}}}}"
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$prompt_id,\"result\":{\"stopReason\":\"cancelled\",\"_meta\":{\"inputTokens\":10,\"outputTokens\":1,\"cachedReadTokens\":0,\"reasoningTokens\":0,\"totalTokens\":11}}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("wait")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		p.acpMu.Lock()
+		ready := p.acpProcess != nil && p.acpProcess.sessionID == "cancel-session"
+		p.acpMu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Grok ACP session did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	done := make(chan error, 1)
+	go func() { done <- stream.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream cancellation did not settle Grok ACP prompt")
+	}
+	p.acpMu.Lock()
+	process := p.acpProcess
+	p.acpMu.Unlock()
+	if process == nil || process.sessionID != "cancel-session" {
+		t.Fatalf("cancelled ACP process = %+v, want resident cancel-session", process)
+	}
+	if p.sessionID != "cancel-session" || p.messagesSent != 1 {
+		t.Fatalf("cancelled ACP provider state = %q/%d, want cancel-session/1", p.sessionID, p.messagesSent)
+	}
+	p.CleanupMCP()
+}
+
+func TestGrokBinProviderNativeInterruptEndsActiveProseTurn(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+prompt_id=""
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"interrupt-session\"}}" ;;
+    *'"method":"session/prompt"'*)
+      prompt_id=$id
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"interrupt-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial\"}}}}"
+      ;;
+    *'"method":"session/cancel"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$prompt_id,\"result\":{\"stopReason\":\"cancelled\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	provider := NewGrokBinProvider("grok-4.5-low", nil)
+	defer provider.CleanupMCP()
+	stream, err := provider.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("long answer")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	deadline := time.Now().Add(3 * time.Second)
+	for text.String() != "partial" {
+		if time.Now().After(deadline) {
+			t.Fatal("Grok ACP prompt did not emit partial prose")
+		}
+		event, recvErr := stream.Recv()
+		if recvErr != nil {
+			t.Fatalf("recv before interrupt: %v", recvErr)
+		}
+		if event.Type == core.EventError && event.Err != nil {
+			t.Fatal(event.Err)
+		}
+		if event.Type == core.EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	provider.RequestInlineFlush()
+
+	done := make(chan error, 1)
+	phases := make(chan string, 8)
+	go func() {
+		defer close(phases)
+		for {
+			event, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				done <- nil
+				return
+			}
+			if recvErr != nil {
+				done <- recvErr
+				return
+			}
+			if event.Type == core.EventPhase {
+				phases <- event.Text
+			}
+			if event.Type == core.EventError && event.Err != nil {
+				done <- event.Err
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("interrupted stream failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("native interrupt did not end Grok ACP stream")
+	}
+	if provider.inlineFlushRequested() {
+		t.Fatal("successful native interrupt retained tool-boundary fallback")
+	}
+	// The interrupt is the expected boundary for a steer, so it must stay quiet.
+	for phase := range phases {
+		if strings.Contains(phase, "cancelled the turn") {
+			t.Fatalf("native interrupt surfaced a cancellation warning: %q", phase)
+		}
+	}
+	if provider.sessionID != "interrupt-session" || provider.messagesSent != 1 {
+		t.Fatalf("interrupted ACP provider state = %q/%d, want interrupt-session/1", provider.sessionID, provider.messagesSent)
+	}
+}
+
+func TestGrokBinProviderNativeInterruptRacesACPStartup(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+prompt_id=""
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"race-session\"}}" ;;
+    *'"method":"session/prompt"'*) prompt_id=$id ;;
+    *'"method":"session/cancel"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$prompt_id,\"result\":{\"stopReason\":\"cancelled\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	provider := NewGrokBinProvider("grok-4.5-low", nil)
+	defer provider.CleanupMCP()
+	provider.RequestInlineFlush()
+	stream, err := provider.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("long answer")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		for {
+			event, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				done <- nil
+				return
+			}
+			if recvErr != nil {
+				done <- recvErr
+				return
+			}
+			if event.Type == core.EventError && event.Err != nil {
+				done <- event.Err
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("startup-raced interrupt failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup-raced interrupt did not end Grok ACP stream")
+	}
+	if provider.inlineFlushRequested() {
+		t.Fatal("startup-raced interrupt retained tool-boundary fallback")
+	}
+	if provider.sessionID != "race-session" || provider.messagesSent != 1 {
+		t.Fatalf("raced ACP provider state = %q/%d, want race-session/1", provider.sessionID, provider.messagesSent)
+	}
+}
+
+func collectGrokACPTestText(t *testing.T, stream core.Stream) string {
+	t.Helper()
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			return text.String()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == core.EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+}
+
+func TestGrokBinProviderACPRealMultiTurnIsolationSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.6-low", nil)
+	defer p.CleanupMCP()
+	system := core.SystemText("Reply exactly as requested. Do not use tools.")
+	firstUser := core.UserText("Reply with exactly: GROK TURN ONE OK")
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{system, firstUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := collectGrokACPTestText(t, stream)
+	if !strings.Contains(first, "GROK TURN ONE OK") {
+		t.Fatalf("first response = %q", first)
+	}
+	firstSessionID := p.sessionID
+	secondUser := core.UserText("Reply with exactly: GROK TURN TWO OK")
+	stream, err = p.Stream(context.Background(), core.Request{Messages: []core.Message{system, firstUser, core.AssistantText(first), secondUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := collectGrokACPTestText(t, stream)
+	if !strings.Contains(second, "GROK TURN TWO OK") {
+		t.Fatalf("second response = %q", second)
+	}
+	if p.sessionID == "" || p.sessionID != firstSessionID {
+		t.Fatalf("Grok session changed across turns: %q -> %q", firstSessionID, p.sessionID)
+	}
+
+	var summaries, promptFiles []string
+	err = filepath.WalkDir(filepath.Join(p.grokHome, "sessions"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		switch entry.Name() {
+		case "summary.json":
+			summaries = append(summaries, path)
+		case "prompt_0.txt", "prompt_1.txt":
+			promptFiles = append(promptFiles, path)
+		case "chat_history.jsonl":
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"The following skills are available for use", "bundled/skills/review/SKILL.md", "Read this file with read_file before responding"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Errorf("Grok history contains ambient prompt contamination %q", forbidden)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || len(promptFiles) != 0 {
+		t.Fatalf("Grok artifacts: summaries=%v promptFiles=%v", summaries, promptFiles)
+	}
+}
+
+func TestGrokBinProviderACPRealOversizedVerbatimSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.6-low", nil)
+	defer p.CleanupMCP()
+	prompt := strings.Repeat("context filler ", 1900) + "\nReply with exactly: OVERSIZED VERBATIM OK"
+	if len(prompt) <= 25_000 {
+		t.Fatalf("test prompt is only %d bytes", len(prompt))
+	}
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{
+		core.SystemText("Ignore repetitive filler and follow the final response instruction exactly. Do not use tools."),
+		core.UserText(prompt),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := collectGrokACPTestText(t, stream)
+	if !strings.Contains(answer, "OVERSIZED VERBATIM OK") {
+		t.Fatalf("oversized response = %q", answer)
+	}
+	var promptFiles []string
+	err = filepath.WalkDir(filepath.Join(p.grokHome, "sessions"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if strings.HasPrefix(entry.Name(), "prompt_") && strings.HasSuffix(entry.Name(), ".txt") {
+			promptFiles = append(promptFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(promptFiles) != 0 {
+		t.Fatalf("verbatim prompt unexpectedly offloaded: %v", promptFiles)
+	}
+}
+
+func grokUpdateOccurrenceCount(home, needle string) int {
+	count := 0
+	_ = filepath.WalkDir(filepath.Join(home, "sessions"), func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || entry.Name() != "updates.jsonl" {
+			return nil
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr == nil {
+			count += strings.Count(string(raw), needle)
+		}
+		return nil
+	})
+	return count
+}
+
+func waitForGrokUpdateAfter(t *testing.T, home, needle string, before int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if grokUpdateOccurrenceCount(home, needle) > before {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Grok updates did not add %q within %s", needle, timeout)
+}
+
+func TestGrokBinProviderACPRealCancellationRecoverySmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.6-high", nil)
+	defer p.CleanupMCP()
+	system := core.SystemText("Follow the user's response format exactly. Do not use tools.")
+	firstUser := core.UserText("Reply with exactly: CANCELLATION BASELINE OK")
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{system, firstUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := collectGrokACPTestText(t, stream)
+	if !strings.Contains(first, "CANCELLATION BASELINE OK") {
+		t.Fatalf("baseline response = %q", first)
+	}
+	stableSessionID := p.sessionID
+
+	cancelText := "Remember this cancellation marker: WIDGET-8823. Then analyze every possible ordering of the first 20 prime numbers in exhaustive detail."
+	cancelUser := core.UserText(cancelText)
+	thoughtsBefore := grokUpdateOccurrenceCount(p.grokHome, `"sessionUpdate":"agent_thought_chunk"`)
+	stream, err = p.Stream(context.Background(), core.Request{Messages: []core.Message{system, firstUser, core.AssistantText(first), cancelUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForGrokUpdateAfter(t, p.grokHome, `"sessionUpdate":"agent_thought_chunk"`, thoughtsBefore, 15*time.Second)
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// channelStream.Close waits for the provider producer to finish, so state
+	// committed by the cancelled prompt is synchronized before these reads.
+	if p.sessionID != stableSessionID || p.messagesSent != 4 {
+		t.Fatalf("cancelled state = %q/%d, want %q/4", p.sessionID, p.messagesSent, stableSessionID)
+	}
+	p.acpMu.Lock()
+	resident := p.acpProcess
+	p.acpMu.Unlock()
+	if resident == nil || resident.sessionID != stableSessionID {
+		t.Fatalf("cancelled resident process = %+v", resident)
+	}
+
+	followUp := core.UserText("What cancellation marker did I give you? Reply with exactly: WIDGET-8823")
+	stream, err = p.Stream(context.Background(), core.Request{Messages: []core.Message{system, firstUser, core.AssistantText(first), cancelUser, followUp}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := collectGrokACPTestText(t, stream)
+	if !strings.Contains(answer, "WIDGET-8823") || p.sessionID != stableSessionID {
+		t.Fatalf("recovery response/session = %q / %q, want %q", answer, p.sessionID, stableSessionID)
+	}
+}
+
+func TestGrokBinProviderACPRealSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), core.Request{Messages: []core.Message{
+		core.SystemText("Reply concisely and do not use tools."),
+		core.UserText("Reply with exactly: REAL ACP OK"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var usage *core.Usage
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == core.EventTextDelta {
+			text += event.Text
+		}
+		if event.Type == core.EventUsage {
+			usage = event.Use
+		}
+	}
+	if !strings.Contains(text, "REAL ACP OK") {
+		t.Fatalf("text = %q", text)
+	}
+	if usage == nil || usage.ProviderRawInputTokens <= 0 || usage.OutputTokens <= 0 || usage.ProviderTotalTokens <= 0 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestGrokBinProviderACPRealToolSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP tool smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	p.SetToolExecutor(func(context.Context, string, json.RawMessage) (core.ToolOutput, error) {
+		return core.TextOutput("ECHO_TOOL_OK"), nil
+	})
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), core.Request{
+		Messages: []core.Message{
+			core.SystemText("Use only the supplied term-llm tool when asked."),
+			core.UserText("Call the echo_once tool exactly once, then reply with its result."),
+		},
+		Tools: []core.ToolSpec{{
+			Name:        "echo_once",
+			Description: "Returns the exact text ECHO_TOOL_OK. Use when explicitly asked.",
+			Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	toolCalls := 0
+	var usage *core.Usage
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+		switch event.Type {
+		case core.EventToolCall:
+			toolCalls++
+			if event.ToolName != "echo_once" || event.ToolResponse == nil {
+				t.Fatalf("tool event = %+v", event)
+			}
+			event.ToolResponse <- core.ToolExecutionResponse{Result: core.TextOutput("ECHO_TOOL_OK")}
+		case core.EventTextDelta:
+			text += event.Text
+		case core.EventUsage:
+			usage = event.Use
+		}
+	}
+	if toolCalls != 1 || !strings.Contains(text, "ECHO_TOOL_OK") || usage == nil {
+		t.Fatalf("tool calls=%d text=%q usage=%+v", toolCalls, text, usage)
+	}
+}
+
+func TestGrokBinProviderACPRealNativeSearchSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP native search smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), core.Request{
+		Search: true,
+		Messages: []core.Message{
+			core.SystemText("Use native X Search and answer concisely. Do not guess."),
+			core.UserText("Find the official @SpaceXAI post announcing Grok 4.5 and return its direct x.com URL."),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var usage *core.Usage
+	nativeSearchStarts := 0
+	nativeSearchEnds := 0
+	var nativeSearchArgs json.RawMessage
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == core.EventError {
+			t.Fatal(event.Err)
+		}
+		switch event.Type {
+		case core.EventTextDelta:
+			text += event.Text
+		case core.EventUsage:
+			usage = event.Use
+		case core.EventToolExecStart:
+			if strings.HasPrefix(event.ToolName, "x_") {
+				nativeSearchStarts++
+				nativeSearchArgs = event.ToolArgs
+			}
+		case core.EventToolExecEnd:
+			if strings.HasPrefix(event.ToolName, "x_") && event.ToolSuccess {
+				nativeSearchEnds++
+			}
+		}
+	}
+	if !strings.Contains(text, "https://x.com/SpaceXAI/status/2074915721684086811") {
+		t.Fatalf("native X Search response = %q", text)
+	}
+	if nativeSearchStarts == 0 || nativeSearchStarts != nativeSearchEnds || !strings.Contains(string(nativeSearchArgs), `"query"`) {
+		t.Fatalf("native X Search events starts=%d ends=%d args=%s", nativeSearchStarts, nativeSearchEnds, nativeSearchArgs)
+	}
+	if usage == nil || usage.ProviderRawInputTokens <= 0 || usage.OutputTokens <= 0 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestGrokACPSessionMetaUsesDocumentedSystemPromptExtension(t *testing.T) {
+	meta, err := grokACPSessionMeta("private system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(meta, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["systemPromptOverride"] != "private system" {
+		t.Fatalf("session metadata = %s", meta)
+	}
+}
+
+func TestGrokBinProviderACPRealMixedTransportSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed mixed-transport smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.5-low", nil)
+	defer p.CleanupMCP()
+	drainText := func(messages []core.Message) string {
+		t.Helper()
+		stream, err := p.Stream(context.Background(), core.Request{Messages: messages})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var text string
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				return text
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if event.Type == core.EventError {
+				t.Fatal(event.Err)
+			}
+			if event.Type == core.EventTextDelta {
+				text += event.Text
+			}
+		}
+	}
+
+	messages := []core.Message{core.SystemText("Reply briefly."), core.UserText("Reply with FIRST.")}
+	first := drainText(messages)
+	if !strings.Contains(first, "FIRST") {
+		t.Fatalf("first ACP response = %q", first)
+	}
+	messages = append(messages, core.AssistantText(first), core.Message{Role: core.RoleUser, Parts: []core.Part{
+		{Type: core.PartText, Text: "Briefly acknowledge this image."},
+		{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}},
+	}})
+	imageReply := drainText(messages)
+	if strings.TrimSpace(imageReply) == "" {
+		t.Fatal("legacy image fallback returned no text")
+	}
+	messages = append(messages, core.AssistantText(imageReply), core.UserText("Reply with THIRD."))
+	third := drainText(messages)
+	if !strings.Contains(third, "THIRD") {
+		t.Fatalf("ACP response after legacy image turn = %q", third)
+	}
+	if p.sessionID == "" || p.messagesSent != len(messages) {
+		t.Fatalf("mixed transport state = %q/%d", p.sessionID, p.messagesSent)
+	}
+}
+
+func TestGrokACPHTTPServerPayload(t *testing.T) {
+	server := grokACPMCPServer("http://127.0.0.1:1234/mcp", "secret")
+	if server.Type != "http" || server.Name != "term-llm" || server.URL == "" || len(server.Headers) != 1 || server.Headers[0].Value != "Bearer secret" {
+		t.Fatalf("MCP server = %+v", server)
+	}
+	_ = acp.ProtocolVersion1 // Keep this test tied to the generic ACP package.
+}

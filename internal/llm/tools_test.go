@@ -12,19 +12,6 @@ type namedTestTool struct{ name string }
 
 type finishingNamedTestTool struct{ namedTestTool }
 
-type dynamicPublishingProvider struct {
-	*MockProvider
-	mu        sync.Mutex
-	published []ToolSpec
-}
-
-func (p *dynamicPublishingProvider) PublishDynamicTools(tools []ToolSpec) error {
-	p.mu.Lock()
-	p.published = append(p.published, tools...)
-	p.mu.Unlock()
-	return nil
-}
-
 func (t *namedTestTool) Spec() ToolSpec {
 	return ToolSpec{Name: t.name, Description: t.name, Schema: map[string]any{"type": "object"}}
 }
@@ -61,57 +48,6 @@ func TestToolRegistryDeferredVisibility(t *testing.T) {
 	}
 	if _, ok := registry.Get("deferred"); !ok {
 		t.Fatal("deferred tool stopped being executable")
-	}
-}
-
-func TestDynamicToolPublishesImmediatelyForActiveRun(t *testing.T) {
-	provider := &dynamicPublishingProvider{MockProvider: NewMockProvider("dynamic")}
-	engine := NewEngine(provider, nil)
-	runID := engine.beginToolRun()
-	defer engine.endToolRun(runID)
-
-	tool := &namedTestTool{name: "late_tool"}
-	if !engine.AddDynamicToolForRun(runID, tool) {
-		t.Fatal("active run rejected dynamic tool")
-	}
-	provider.mu.Lock()
-	published := append([]ToolSpec(nil), provider.published...)
-	provider.mu.Unlock()
-	if len(published) != 1 || published[0].Name != "late_tool" {
-		t.Fatalf("published tools = %#v, want late_tool immediately", published)
-	}
-	pending := engine.drainPendingToolSpecs(runID)
-	if len(pending) != 1 || pending[0].Name != "late_tool" {
-		t.Fatalf("fallback pending tools = %#v, want late_tool", pending)
-	}
-}
-
-func TestDynamicToolQueueIsRunScopedAndDeduplicated(t *testing.T) {
-	engine := NewEngine(NewMockProvider("dynamic"), nil)
-	tool := &namedTestTool{name: "late_tool"}
-	runOne := engine.beginToolRun()
-	if !engine.AddDynamicToolForRun(runOne, tool) || !engine.AddDynamicToolForRun(runOne, tool) {
-		t.Fatal("active run rejected dynamic tool")
-	}
-	pending := engine.drainPendingToolSpecs(runOne)
-	if len(pending) != 1 || pending[0].Name != "late_tool" {
-		t.Fatalf("deduplicated pending specs = %#v", pending)
-	}
-	if pending := engine.drainPendingToolSpecs(runOne); len(pending) != 0 {
-		t.Fatalf("drained queue retained specs: %#v", pending)
-	}
-	if !engine.AddDynamicToolForRun(runOne, tool) {
-		t.Fatal("active run rejected requeued tool")
-	}
-	engine.endToolRun(runOne)
-
-	runTwo := engine.beginToolRun()
-	defer engine.endToolRun(runTwo)
-	if pending := engine.drainPendingToolSpecs(runTwo); len(pending) != 0 {
-		t.Fatalf("cancelled/ended run leaked into later run: %#v", pending)
-	}
-	if engine.AddDynamicToolForRun(runOne, tool) {
-		t.Fatal("ended run accepted a late activation")
 	}
 }
 

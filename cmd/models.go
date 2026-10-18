@@ -11,6 +11,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"github.com/samsaffron/term-llm/internal/providerspec"
 	"github.com/spf13/cobra"
 )
@@ -217,7 +219,7 @@ var modelListerConstructors = map[providerspec.ModelListing]modelListerConstruct
 		return newOpenAICompatibleModelLister(providerName, providerCfg)
 	},
 	providerspec.ModelListingOllama: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return llm.NewOllamaChatProvider(providerCfg.BaseURL, providerCfg.Model, llm.OllamaOptions{}), nil
+		return ollama.New(providerCfg.BaseURL, providerCfg.Model, ollama.Options{}), nil
 	},
 	providerspec.ModelListingZen: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return llm.NewZenProvider(providerCfg.ResolvedAPIKey, ""), nil
@@ -250,7 +252,7 @@ func newModelLister(providerName string, providerType config.ProviderType, provi
 }
 
 func newAnthropicModelLister(providerCfg config.ProviderConfig) (ModelLister, error) {
-	provider, err := llm.NewAnthropicProviderWithOptions(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials, llm.AnthropicProviderOptions{BaseURL: providerCfg.BaseURL, Headers: providerCfg.Headers})
+	provider, err := anthropic.NewAnthropicProviderWithOptions(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials, anthropic.AnthropicProviderOptions{BaseURL: providerCfg.BaseURL, Headers: providerCfg.Headers})
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: %w", err)
 	}

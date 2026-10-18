@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1308,7 +1309,7 @@ func TestCycleEffortShortcutUsesCachedOllamaCapabilities(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := llm.NewOllamaChatProvider(server.URL, "qwen3.8:27b-thinking", llm.OllamaOptions{})
+	provider := ollama.New(server.URL, "qwen3.8:27b-thinking", ollama.Options{})
 	if _, err := provider.ListModels(context.Background()); err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}

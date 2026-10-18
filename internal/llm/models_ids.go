@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
 )
 
 // cachedProviderModels contains provider-specific offline/live catalog probes.
@@ -32,7 +33,7 @@ var cachedProviderModels = map[string]func(string) []string{
 		// The cached catalog is the public API's; custom-named Anthropic
 		// gateways keep the curated list (or their configured models).
 		if provider == "anthropic" && strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")) == "" {
-			if ids := GetCachedAnthropicModels(); len(ids) > 0 {
+			if ids := anthropic.GetCachedAnthropicModels(); len(ids) > 0 {
 				return ids
 			}
 		}

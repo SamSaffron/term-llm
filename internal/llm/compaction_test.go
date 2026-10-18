@@ -4,15 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestEstimateTokens(t *testing.T) {
@@ -114,74 +113,6 @@ func TestEstimateMessageTokensCountsReasoningReplay(t *testing.T) {
 	}
 }
 
-func TestReconstructHistory(t *testing.T) {
-	recentUser := []Message{UserText("recent question")}
-
-	result := reconstructHistory("system prompt", "summary of conversation", recentUser)
-
-	// Should be: system + summary + assistant ack + recent user
-	if len(result) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(result))
-	}
-
-	if result[0].Role != RoleSystem {
-		t.Errorf("first message should be system, got %s", result[0].Role)
-	}
-	if result[0].Parts[0].Text != "system prompt" {
-		t.Errorf("system prompt mismatch")
-	}
-
-	if result[1].Role != RoleUser {
-		t.Errorf("second message should be user (summary), got %s", result[1].Role)
-	}
-	if !strings.Contains(result[1].Parts[0].Text, "summary of conversation") {
-		t.Errorf("summary message should contain summary text")
-	}
-	if !strings.Contains(result[1].Parts[0].Text, summaryPrefix) {
-		t.Errorf("summary message should contain prefix")
-	}
-	if !result[1].CacheAnchor {
-		t.Errorf("summary message should have CacheAnchor=true for stable cache breakpoint")
-	}
-
-	if result[2].Role != RoleAssistant {
-		t.Errorf("third message should be assistant ack, got %s", result[2].Role)
-	}
-
-	if result[3].Role != RoleUser {
-		t.Errorf("fourth message should be user, got %s", result[3].Role)
-	}
-	if result[3].Parts[0].Text != "recent question" {
-		t.Errorf("recent user message mismatch")
-	}
-}
-
-func TestReconstructHistoryNoSystem(t *testing.T) {
-	result := reconstructHistory("", "summary", []Message{UserText("q")})
-
-	// Without system prompt: summary + ack + user = 3
-	if len(result) != 3 {
-		t.Fatalf("expected 3 messages without system prompt, got %d", len(result))
-	}
-	if result[0].Role != RoleUser {
-		t.Errorf("first message should be user (summary), got %s", result[0].Role)
-	}
-}
-
-func TestReconstructHistoryOmitsAckBeforeAssistantRawSuffix(t *testing.T) {
-	result := reconstructHistory("", "summary", []Message{AssistantText("continuing from retained state")})
-
-	if len(result) != 2 {
-		t.Fatalf("expected summary + retained assistant, got %d messages", len(result))
-	}
-	if result[0].Role != RoleUser || !strings.Contains(MessageText(result[0]), summaryPrefix) {
-		t.Fatalf("first message should be cache-anchored summary user, got role=%s text=%q", result[0].Role, MessageText(result[0]))
-	}
-	if result[1].Role != RoleAssistant || MessageText(result[1]) != "continuing from retained state" {
-		t.Fatalf("second message should be retained assistant, got role=%s text=%q", result[1].Role, MessageText(result[1]))
-	}
-}
-
 func TestCompactionPromptGuardsAgainstInventedStopRequest(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.AddTextResponse("Summary.")
@@ -214,58 +145,6 @@ func TestCompactionPromptGuardsAgainstInventedStopRequest(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("compaction prompt missing %q:\n%s", want, prompt)
 		}
-	}
-}
-
-func TestSummaryPrefixMarksCompactionAsInternalNotStop(t *testing.T) {
-	result := reconstructHistory("", "summary", nil)
-	if len(result) < 1 {
-		t.Fatal("reconstructHistory returned no messages")
-	}
-	text := result[0].Parts[0].Text
-	for _, want := range []string{
-		"Internal context only; not a user command, stop/cancel/wait request",
-		"Continue from the latest real user instruction",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("summary prefix missing %q:\n%s", want, text)
-		}
-	}
-}
-
-func TestBuildCompactionStaticInfoRespectsBudget(t *testing.T) {
-	messages := []Message{
-		UserText("latest request " + strings.Repeat("x", 2000)),
-		AssistantText("older assistant prose " + strings.Repeat("y", 2000)),
-	}
-
-	got := BuildCompactionStaticInfo(messages, 1000) // 5% * 4 chars = 200 chars
-	if gotLen := len([]rune(got)); gotLen > 200 {
-		t.Fatalf("previous turns length = %d, want <= 200:\n%s", gotLen, got)
-	}
-	for _, want := range []string{"<PREVIOUS_TURNS>", "user:", "</PREVIOUS_TURNS>"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("previous turns block missing %q: %q", want, got)
-		}
-	}
-	if !strings.Contains(got, "truncated") {
-		t.Fatalf("previous turns should visibly truncate oversized content: %q", got)
-	}
-
-	got = BuildCompactionStaticInfo([]Message{UserText(strings.Repeat("z", 40_000))}, 0)
-	if gotLen := len([]rune(got)); gotLen > maxPreviousTurnsChars {
-		t.Fatalf("fallback previous turns length = %d, want <= %d", gotLen, maxPreviousTurnsChars)
-	}
-
-	got = buildPreviousTurnsBlock([]Message{UserText(strings.Repeat("q", 100_000))}, 100_000)
-	if gotLen := len([]rune(got)); gotLen > maxPreviousTurnsChars {
-		t.Fatalf("direct previous turns length = %d, want <= %d", gotLen, maxPreviousTurnsChars)
-	}
-
-	maxInt := int(^uint(0) >> 1)
-	got = BuildCompactionStaticInfo([]Message{UserText(strings.Repeat("w", 100_000))}, maxInt)
-	if gotLen := len([]rune(got)); gotLen > maxPreviousTurnsChars {
-		t.Fatalf("large-limit previous turns length = %d, want <= %d", gotLen, maxPreviousTurnsChars)
 	}
 }
 
@@ -1026,151 +905,6 @@ func TestClampOutputTokens(t *testing.T) {
 	}
 }
 
-func TestTrimMessagesToFit(t *testing.T) {
-	sys := SystemText("system prompt")
-	// Each message is ~5 tokens (20 bytes / 4)
-	u1 := UserText("first user message!")
-	a1 := AssistantText("first assistant msg")
-	u2 := UserText("second user message")
-	a2 := AssistantText("second asst message")
-	u3 := UserText("third user message!!")
-
-	t.Run("fits within budget", func(t *testing.T) {
-		msgs := []Message{sys, u1, a1, u2, a2, u3}
-		result := trimMessagesToFit(msgs, 10000)
-		if len(result) != 6 {
-			t.Errorf("expected 6 messages (no trimming), got %d", len(result))
-		}
-	})
-
-	t.Run("trims oldest first", func(t *testing.T) {
-		msgs := []Message{sys, u1, a1, u2, a2, u3}
-		// Budget for system + ~2 messages
-		budget := EstimateMessageTokens([]Message{sys}) + EstimateMessageTokens([]Message{u3}) + 1
-		result := trimMessagesToFit(msgs, budget)
-		if result[0].Role != RoleSystem {
-			t.Error("should preserve system message")
-		}
-		// Last message should be u3
-		last := result[len(result)-1]
-		if last.Parts[0].Text != u3.Parts[0].Text {
-			t.Errorf("last message should be u3, got %q", last.Parts[0].Text)
-		}
-	})
-
-	t.Run("skips leading assistant after trim", func(t *testing.T) {
-		msgs := []Message{sys, u1, a1, u2}
-		// Budget fits system + a1 + u2, but a1 is assistant — should be skipped
-		budget := EstimateMessageTokens([]Message{sys, a1, u2}) + 1
-		result := trimMessagesToFit(msgs, budget)
-		// After trimming u1 and skipping leading a1, should have sys + u2
-		if len(result) < 2 {
-			t.Fatalf("expected at least 2 messages, got %d", len(result))
-		}
-		if result[0].Role != RoleSystem {
-			t.Error("first should be system")
-		}
-		if result[1].Role != RoleUser {
-			t.Errorf("should start with user after system, got %s", result[1].Role)
-		}
-	})
-
-	t.Run("no system message", func(t *testing.T) {
-		msgs := []Message{u1, a1, u2}
-		budget := EstimateMessageTokens([]Message{u2}) + 1
-		result := trimMessagesToFit(msgs, budget)
-		if len(result) != 1 || result[0].Parts[0].Text != u2.Parts[0].Text {
-			t.Errorf("should trim to just u2, got %d messages", len(result))
-		}
-	})
-}
-
-func TestTrimMessagesToFitPreservesAnchor(t *testing.T) {
-	sys := SystemText("system")
-	summary := Message{
-		Role:        RoleUser,
-		Parts:       []Part{{Type: PartText, Text: summaryPrefix + "previous summary"}},
-		CacheAnchor: true,
-	}
-	ack := AssistantText("I've reviewed the context summary.")
-	u1 := UserText("first user message!")
-	a1 := AssistantText("first assistant msg")
-	u2 := UserText("second user message")
-
-	t.Run("preserves anchor block", func(t *testing.T) {
-		msgs := []Message{sys, summary, ack, u1, a1, u2}
-		// Budget fits system + summary + ack + u2 but not u1+a1
-		budget := EstimateMessageTokens([]Message{sys, summary, ack, u2}) + 1
-		result := trimMessagesToFit(msgs, budget)
-		// Should have: sys, summary, ack, u2
-		if len(result) < 4 {
-			t.Fatalf("expected at least 4 messages, got %d", len(result))
-		}
-		if result[0].Role != RoleSystem {
-			t.Error("first should be system")
-		}
-		if !result[1].CacheAnchor {
-			t.Error("second should be cache-anchored summary")
-		}
-		if result[2].Role != RoleAssistant {
-			t.Error("third should be assistant ack")
-		}
-		if result[len(result)-1].Parts[0].Text != u2.Parts[0].Text {
-			t.Errorf("last should be u2, got %q", result[len(result)-1].Parts[0].Text)
-		}
-	})
-
-	t.Run("drops anchor when too large", func(t *testing.T) {
-		bigSummary := Message{
-			Role:        RoleUser,
-			Parts:       []Part{{Type: PartText, Text: strings.Repeat("x", 10000)}},
-			CacheAnchor: true,
-		}
-		msgs := []Message{sys, bigSummary, ack, u1, u2}
-		// Budget only fits system + u2
-		budget := EstimateMessageTokens([]Message{sys, u2}) + 1
-		result := trimMessagesToFit(msgs, budget)
-		if result[0].Role != RoleSystem {
-			t.Error("first should be system")
-		}
-		// Should have dropped the anchor since it doesn't fit
-		if len(result) == 2 && result[1].Parts[0].Text == u2.Parts[0].Text {
-			// OK: sys + u2
-		} else {
-			for _, m := range result {
-				if m.CacheAnchor {
-					t.Error("anchor should have been dropped when too large")
-				}
-			}
-		}
-	})
-}
-
-func TestTrimOversizedSingleMessage(t *testing.T) {
-	sys := SystemText("system")
-	// A single user message that's way too large
-	bigMsg := UserText(strings.Repeat("x", 40000))
-	msgs := []Message{sys, bigMsg}
-
-	// Budget that fits system + some content but not all of bigMsg
-	budget := EstimateMessageTokens([]Message{sys}) + 500
-	result := trimMessagesToFit(msgs, budget)
-
-	if len(result) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(result))
-	}
-	if result[0].Role != RoleSystem {
-		t.Error("first should be system")
-	}
-	// The big message should have been truncated
-	if len(result[1].Parts[0].Text) >= 40000 {
-		t.Error("oversized message should have been truncated")
-	}
-	if !strings.Contains(result[1].Parts[0].Text, "chars truncated") {
-		t.Error("truncated message should contain truncation marker")
-	}
-}
-
 func TestCompactReportsUsage(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.AddTurn(MockTurn{
@@ -1282,225 +1016,6 @@ func TestCompactRecompactsAlreadyCompacted(t *testing.T) {
 	}
 	if !strings.Contains(result.NewMessages[1].Parts[0].Text, "New combined summary") {
 		t.Error("new summary should contain the LLM's response")
-	}
-}
-
-type capturedResponsesRequest struct {
-	PreviousResponseID string                       `json:"previous_response_id"`
-	Input              []ResponsesInputItem         `json:"input"`
-	Reasoning          *ResponsesReasoning          `json:"reasoning"`
-	MultiAgent         *ResponsesMultiAgent         `json:"multi_agent"`
-	PromptCacheOptions *ResponsesPromptCacheOptions `json:"prompt_cache_options"`
-}
-
-func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string) (Provider, *OpenAIProvider, <-chan capturedResponsesRequest) {
-	t.Helper()
-
-	captured := make(chan capturedResponsesRequest, 1)
-
-	sse := strings.Join([]string{
-		"event: response.output_text.delta",
-		fmt.Sprintf(`data: {"delta":%q}`, responseText),
-		"",
-		"event: response.completed",
-		fmt.Sprintf(`data: {"response":{"id":%q}}`, responseID),
-		"",
-		"data: [DONE]",
-		"",
-	}, "\n")
-
-	httpClient := &http.Client{
-		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			defer r.Body.Close()
-
-			var payload capturedResponsesRequest
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				return nil, err
-			}
-			if err := json.Unmarshal(body, &payload); err != nil {
-				return nil, err
-			}
-			captured <- payload
-
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-				},
-				Body: io.NopCloser(strings.NewReader(sse)),
-			}, nil
-		}),
-	}
-
-	provider := &OpenAIProvider{
-		apiKey: "test-key",
-		model:  "gpt-5.2",
-		responsesClient: &ResponsesClient{
-			BaseURL:        "https://example.test/v1/responses",
-			GetAuthHeader:  func() string { return "Bearer test-key" },
-			HTTPClient:     httpClient,
-			LastResponseID: "resp_live",
-		},
-	}
-
-	return WrapWithRetry(provider, DefaultRetryConfig()), provider, captured
-}
-
-func TestCompactUsesIsolatedProviderConversationState(t *testing.T) {
-	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "summary", "resp_compact")
-
-	result, err := Compact(context.Background(), provider, "gpt-5.2", "sys", []Message{
-		UserText("hello"),
-		AssistantText("hi"),
-		UserText("please summarize"),
-	}, DefaultCompactionConfig())
-	if err != nil {
-		t.Fatalf("Compact failed: %v", err)
-	}
-	if !strings.Contains(result.Summary, "<PREVIOUS_TURNS>") || !strings.Contains(result.Summary, "<SUMMARY_AND_NEXT_ACTIONS>") || !strings.Contains(result.Summary, "summary") {
-		t.Fatalf("summary missing structured compaction content:\n%s", result.Summary)
-	}
-
-	if liveProvider.responsesClient.LastResponseID != "resp_live" {
-		t.Fatalf("live LastResponseID = %q, want %q", liveProvider.responsesClient.LastResponseID, "resp_live")
-	}
-
-	select {
-	case req := <-captured:
-		if req.PreviousResponseID != "" {
-			t.Fatalf("compaction previous_response_id = %q, want empty", req.PreviousResponseID)
-		}
-		if len(req.Input) < 4 {
-			t.Fatalf("compaction input length = %d, want full history plus prompt", len(req.Input))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for compaction request capture")
-	}
-}
-
-func TestHandoverUsesForkedProviderConversationState(t *testing.T) {
-	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
-
-	result, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []Message{
-		UserText("hello"),
-		AssistantText("hi"),
-		UserText("prepare handover"),
-		AssistantText("ready to hand over"),
-	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
-	if err != nil {
-		t.Fatalf("Handover failed: %v", err)
-	}
-	if result.Document != "handover doc" {
-		t.Fatalf("document = %q, want %q", result.Document, "handover doc")
-	}
-
-	if liveProvider.responsesClient.LastResponseID != "resp_live" {
-		t.Fatalf("live LastResponseID = %q, want %q", liveProvider.responsesClient.LastResponseID, "resp_live")
-	}
-
-	select {
-	case req := <-captured:
-		if req.PreviousResponseID != "resp_live" {
-			t.Fatalf("handover previous_response_id = %q, want resp_live", req.PreviousResponseID)
-		}
-		if len(req.Input) != 2 {
-			t.Fatalf("handover input length = %d, want developer policy plus user trigger: %#v", len(req.Input), req.Input)
-		}
-		if req.Input[0].Role != "developer" || !strings.Contains(fmt.Sprint(req.Input[0].Content), "handing over") {
-			t.Fatalf("handover fork policy = %#v, want developer instruction", req.Input[0])
-		}
-		if req.Input[1].Role != "user" {
-			t.Fatalf("handover fork trigger = %#v, want user message", req.Input[1])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for handover request capture")
-	}
-}
-
-func TestHandoverForkDoesNotInheritOpenAIAdvancedOptions(t *testing.T) {
-	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
-	liveProvider.model = "gpt-5.6-sol"
-	liveProvider.responsesOptions = ResponsesOptions{
-		ReasoningMode: "pro",
-		MultiAgent: MultiAgentOptions{
-			Enabled:                true,
-			EnabledSet:             true,
-			MaxConcurrentSubagents: 4,
-		},
-		PromptCache: PromptCacheOptions{Mode: "explicit", TTL: "30m"},
-	}
-
-	_, err := Handover(context.Background(), provider, "gpt-5.6-sol", "current sys", "new sys", []Message{
-		UserText("hello"),
-		AssistantText("ready to hand over"),
-	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
-	if err != nil {
-		t.Fatalf("Handover failed: %v", err)
-	}
-
-	select {
-	case req := <-captured:
-		if req.PreviousResponseID != "resp_live" {
-			t.Fatalf("handover previous_response_id = %q, want resp_live", req.PreviousResponseID)
-		}
-		if req.MultiAgent != nil || req.PromptCacheOptions != nil || (req.Reasoning != nil && (req.Reasoning.Mode != "" || req.Reasoning.Context != "")) {
-			t.Fatalf("forked helper inherited advanced Responses options: reasoning=%+v multi_agent=%+v prompt_cache=%+v", req.Reasoning, req.MultiAgent, req.PromptCacheOptions)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for handover request capture")
-	}
-}
-
-func TestConversationEndsAtSettledAssistantIgnoresHistoricalOrphanedToolCall(t *testing.T) {
-	messages := []Message{
-		UserText("old turn"),
-		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{ID: "orphan", Name: "shell"}}}},
-		UserText("new turn"),
-		AssistantText("settled answer"),
-	}
-	if !conversationEndsAtSettledAssistant(messages) {
-		t.Fatal("an orphaned call before the latest user turn should not hide the current settled boundary")
-	}
-}
-
-func TestConversationEndsAtSettledAssistantIgnoresTrailingEvents(t *testing.T) {
-	messages := []Message{
-		UserText("question"),
-		AssistantText("answer"),
-		{Role: RoleEvent, Parts: []Part{{Type: PartText, Text: "timeline marker"}}},
-	}
-	if !conversationEndsAtSettledAssistant(messages) {
-		t.Fatal("trailing event should not hide a settled assistant boundary")
-	}
-}
-
-func TestHandoverFallsBackWhenTranscriptIsPastProviderBoundary(t *testing.T) {
-	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
-
-	_, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []Message{
-		UserText("hello"),
-		AssistantText("hi"),
-		UserText("this turn has no provider response"),
-	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
-	if err != nil {
-		t.Fatalf("Handover failed: %v", err)
-	}
-	if liveProvider.responsesClient.LastResponseID != "resp_live" {
-		t.Fatalf("live LastResponseID = %q, want resp_live", liveProvider.responsesClient.LastResponseID)
-	}
-
-	select {
-	case req := <-captured:
-		if req.PreviousResponseID != "" {
-			t.Fatalf("fallback previous_response_id = %q, want empty", req.PreviousResponseID)
-		}
-		if len(req.Input) < 5 {
-			t.Fatalf("fallback input length = %d, want full history and handover framing: %#v", len(req.Input), req.Input)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for fallback handover request capture")
 	}
 }
 
@@ -1705,51 +1220,6 @@ func TestCompactNoSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestDefaultCompactionConfig(t *testing.T) {
-	config := DefaultCompactionConfig()
-	if config.ThresholdRatio != 0.90 {
-		t.Errorf("ThresholdRatio = %f, want 0.90", config.ThresholdRatio)
-	}
-	if config.MaxToolResultChars != 80_000 {
-		t.Errorf("MaxToolResultChars = %d, want 80000", config.MaxToolResultChars)
-	}
-	if config.SummaryTokenBudget != 10_000 {
-		t.Errorf("SummaryTokenBudget = %d, want 10000", config.SummaryTokenBudget)
-	}
-	if config.RecentRawTurns != defaultRecentRawTurns {
-		t.Errorf("RecentRawTurns = %d, want %d", config.RecentRawTurns, defaultRecentRawTurns)
-	}
-	if config.RecentRawTokenBudget != 0 {
-		t.Errorf("RecentRawTokenBudget = %d, want 0 for auto", config.RecentRawTokenBudget)
-	}
-}
-
-func TestEffectiveRecentRawTokenBudgetAutoIsModest(t *testing.T) {
-	tests := []struct {
-		name      string
-		config    CompactionConfig
-		wantToken int
-	}{
-		{name: "disabled", config: CompactionConfig{RecentRawTokenBudget: -1, InputLimit: 128_000}, wantToken: 0},
-		{name: "explicit", config: CompactionConfig{RecentRawTokenBudget: 12_345, InputLimit: 128_000}, wantToken: 12_345},
-		{name: "unknown limit uses cap", config: CompactionConfig{}, wantToken: 8_000},
-		{name: "small limit uses floor", config: CompactionConfig{InputLimit: 16_000}, wantToken: 1_000},
-		{name: "32k uses five percent", config: CompactionConfig{InputLimit: 32_000}, wantToken: 1_600},
-		{name: "64k uses five percent", config: CompactionConfig{InputLimit: 64_000}, wantToken: 3_200},
-		{name: "128k uses five percent", config: CompactionConfig{InputLimit: 128_000}, wantToken: 6_400},
-		{name: "large limit caps", config: CompactionConfig{InputLimit: 200_000}, wantToken: 8_000},
-		{name: "huge limit caps", config: CompactionConfig{InputLimit: 922_000}, wantToken: 8_000},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := effectiveRecentRawTokenBudget(tt.config); got != tt.wantToken {
-				t.Fatalf("effectiveRecentRawTokenBudget(%+v) = %d, want %d", tt.config, got, tt.wantToken)
-			}
-		})
-	}
-}
-
 func TestCompactMaxOutputTokens(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.AddTextResponse("Summary.")
@@ -1899,93 +1369,6 @@ func TestCompactAppendsSafeUserMessage(t *testing.T) {
 			t.Errorf("separator should be assistant before compaction prompt, got %s", prevMsg.Role)
 		}
 	})
-}
-
-func TestEstimatedTokensUsesStructuralDeltaAfterLastAssistant(t *testing.T) {
-	e := NewEngine(NewMockProvider("test"), nil)
-
-	checkpoint := []Message{
-		SystemText("system prompt"),
-		UserText("hello world"),
-		AssistantText(strings.Repeat("response from model ", 100)),
-	}
-	e.lastTotalTokens = 150
-	e.lastMessageCount = len(checkpoint)
-
-	msgs := append([]Message(nil), checkpoint...)
-	msgs = append(msgs, UserText("follow-up question"))
-
-	got := e.estimatedTokens(msgs)
-	want := 150 + EstimateMessageTokens([]Message{UserText("follow-up question")})
-	if got != want {
-		t.Errorf("estimatedTokens (structural delta) = %d, want %d", got, want)
-	}
-}
-
-func TestEstimatedTokens(t *testing.T) {
-	e := NewEngine(NewMockProvider("test"), nil)
-
-	msgs := []Message{
-		SystemText("system prompt"),
-		UserText("hello world"),
-	}
-
-	// With no API data yet, should fall back to pure heuristic
-	got := e.estimatedTokens(msgs)
-	want := EstimateMessageTokens(msgs)
-	if got != want {
-		t.Errorf("estimatedTokens (no API data) = %d, want %d", got, want)
-	}
-
-	// Simulate API response: 100 input + 50 output. The provider baseline already
-	// includes the assistant response, so only structurally trailing messages after
-	// the last assistant turn should be estimated heuristically.
-	e.lastTotalTokens = 150
-	e.lastMessageCount = 2
-
-	// Now add an assistant response and a new user message after the API call.
-	msgs = append(msgs, AssistantText("response from model"))
-	msgs = append(msgs, UserText("follow-up question"))
-
-	got = e.estimatedTokens(msgs)
-	newMsgsEstimate := EstimateMessageTokens([]Message{msgs[len(msgs)-1]})
-	want = 150 + newMsgsEstimate
-	if got != want {
-		t.Errorf("estimatedTokens (with API data) = %d, want %d (150 + %d)", got, want, newMsgsEstimate)
-	}
-}
-
-func TestEstimatedTokensIgnoresStaleBaselineWithoutAssistantAnchor(t *testing.T) {
-	e := NewEngine(NewMockProvider("test"), nil)
-
-	// A provider baseline is only valid if it can be anchored to an assistant turn
-	// in the current transcript. Summary-only or cleared histories should not reuse
-	// a stale pre-compaction baseline.
-	e.lastTotalTokens = 100
-	e.lastMessageCount = 5
-
-	msgs := []Message{UserText("short")}
-	want := EstimateMessageTokens(msgs)
-	got := e.estimatedTokens(msgs)
-	if got != want {
-		t.Errorf("estimatedTokens (stale unanchored baseline) = %d, want heuristic %d", got, want)
-	}
-}
-
-func TestEstimatedTokensUsesBaselineWhenMessageCountMatches(t *testing.T) {
-	e := NewEngine(NewMockProvider("test"), nil)
-	e.lastTotalTokens = 336_000
-	e.lastMessageCount = 3
-
-	msgs := []Message{
-		SystemText("system"),
-		UserText("hello"),
-		AssistantText("world"),
-	}
-	got := e.estimatedTokens(msgs)
-	if got != 336_000 {
-		t.Fatalf("estimatedTokens (matching baseline) = %d, want %d", got, 336_000)
-	}
 }
 
 func TestConfigFallbackInputLimit(t *testing.T) {
@@ -2267,33 +1650,12 @@ func TestHandoverDoesNotForkWithPendingToolCall(t *testing.T) {
 	}
 }
 
-func TestForkConversationProvider_ClaudeBinUsesForkSession(t *testing.T) {
+func TestForkConversationProvider_ClaudeBinWithoutSessionCannotFork(t *testing.T) {
+	// A session-bearing fork is covered in the clibin package; here the root
+	// bridge must see through the retry wrapper and refuse a fresh provider.
 	live := NewClaudeBinProvider("opus-max", nil)
-	live.sessionID = "session-live"
-	live.messagesSent = 4
-
-	forked, ok := forkConversationProvider(WrapWithRetry(live, DefaultRetryConfig()))
-	if !ok {
-		t.Fatal("expected claude-bin conversation fork")
-	}
-	retry, ok := forked.(*RetryProvider)
-	if !ok {
-		t.Fatalf("fork provider = %T, want RetryProvider", forked)
-	}
-	clone, ok := retry.inner.(*ClaudeBinProvider)
-	if !ok {
-		t.Fatalf("fork inner provider = %T, want ClaudeBinProvider", retry.inner)
-	}
-	args, _ := clone.buildArgs(context.Background(), Request{}, eventSender{})
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--resume session-live") || !strings.Contains(joined, "--fork-session") {
-		t.Fatalf("fork args = %q, want resume plus fork-session", joined)
-	}
-	if clone.messagesSent != 0 {
-		t.Fatalf("fork messagesSent = %d, want helper-local boundary 0", clone.messagesSent)
-	}
-	if live.sessionID != "session-live" || live.messagesSent != 4 {
-		t.Fatalf("live provider mutated: session=%q messages=%d", live.sessionID, live.messagesSent)
+	if forked, ok := forkConversationProvider(WrapWithRetry(live, DefaultRetryConfig())); ok {
+		t.Fatalf("fresh claude-bin provider forked to %T", forked)
 	}
 }
 
@@ -2440,14 +1802,9 @@ func TestCompactionAckTextMatchesWebTranscript(t *testing.T) {
 		t.Fatalf("%s does not bind COMPACTION_ACK_TEXT to %q", path, CompactionAckText)
 	}
 }
-
 func TestCompactRetainsAudioMediaAndSummarizesKinds(t *testing.T) {
 	audio := MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3"}
 	toolResult := &ToolResult{ID: "audio-call", Name: "show_media", Content: "ready", Media: []MediaArtifact{audio}}
-	summary := compactToolResultSummary(toolResult)
-	if !strings.Contains(summary, "1 audio(s)") || strings.Contains(summary, "image(s)") {
-		t.Fatalf("summary=%q", summary)
-	}
 	provider := NewMockProvider("test")
 	provider.AddTextResponse("summary")
 	messages := []Message{UserText("older"), AssistantText("older answer"), UserText("latest request " + strings.Repeat("x", 2000)),
@@ -2475,54 +1832,10 @@ func TestCompactRetainsAudioMediaAndSummarizesKinds(t *testing.T) {
 	if !found {
 		t.Fatalf("audio result removed from retained tail: %+v", result.NewMessages)
 	}
-	mixed := compactMediaSummary([]MediaArtifact{audio, {MediaType: "image/png"}, {MediaType: "video/mp4"}})
-	if strings.Join(mixed, ",") != "1 image(s),1 video(s),1 audio(s)" {
-		t.Fatalf("mixed=%v", mixed)
-	}
 }
 
-func TestParseHandoverDocument(t *testing.T) {
-	for _, tt := range []struct {
-		name, text, source, target, body string
-		ok                               bool
-	}{
-		{"agents", handoverPrefix("dev", "reviewer") + "briefing\n\nverbatim\n", "dev", "reviewer", "briefing\n\nverbatim\n", true},
-		{"models", handoverPrefix("openai:gpt-5-high", "anthropic:claude-max") + "doc", "openai:gpt-5-high", "anthropic:claude-max", "doc", true},
-		{"empty body", handoverPrefix("a", "b"), "a", "b", "", true},
-		{name: "ordinary", text: "briefing"},
-		{name: "not prefix", text: "intro\n" + handoverPrefix("a", "b")},
-		{name: "missing separator", text: "[Agent Handover: @a -> @b]\ndoc"},
-		{name: "missing source", text: handoverPrefix("", "b")},
-		{name: "missing target", text: handoverPrefix("a", "")},
-		{name: "multiline name", text: handoverPrefix("a\nb", "c")},
-		{name: "ambiguous names", text: handoverPrefix("a", "b -> @c")},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			source, target, body, ok := ParseHandoverDocument(tt.text)
-			if source != tt.source || target != tt.target || body != tt.body || ok != tt.ok {
-				t.Fatalf("parse = %q, %q, %q, %v", source, target, body, ok)
-			}
-		})
-	}
-}
-
-func TestIsHandoverAcknowledgement(t *testing.T) {
-	for _, tt := range []struct {
-		text string
-		want bool
-	}{
-		{MessageText(ReconstructHandoverHistory("", "doc", "dev", "reviewer")[1]), true},
-		{handoverAcknowledgement("openai:gpt-5-high"), true},
-		{handoverAcknowledgement(""), false},
-		{handoverAcknowledgement("a\nb"), false},
-		{"ordinary response", false},
-		{handoverAcknowledgement("dev") + "\nextra", false},
-		{"prefix " + handoverAcknowledgement("dev"), false},
-	} {
-		t.Run(tt.text, func(t *testing.T) {
-			if got := IsHandoverAcknowledgement(tt.text); got != tt.want {
-				t.Fatalf("got %v, want %v", got, tt.want)
-			}
-		})
+func TestEngineContinuationPromptMatchesCompactionFilter(t *testing.T) {
+	if engine.ContextContinuationPrompt != contextContinuationPrompt {
+		t.Fatalf("engine.ContextContinuationPrompt = %q, want %q", engine.ContextContinuationPrompt, contextContinuationPrompt)
 	}
 }

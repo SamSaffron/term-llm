@@ -12,7 +12,20 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
+
+func TestRateLimitErrorPreservesTypeAcrossProviderBoundary(t *testing.T) {
+	err := fmt.Errorf("chatgpt stream: %w", &rp.RateLimitError{Message: "limit reached", RetryAfter: 2 * time.Second})
+	var rateLimit *RateLimitError
+	if !errors.As(err, &rateLimit) || rateLimit.RetryAfter != 2*time.Second {
+		t.Fatalf("provider rate limit not recognized by retry: %v", err)
+	}
+	if !isRetryable(err) {
+		t.Fatalf("structured provider rate limit not retryable: %v", err)
+	}
+}
 
 type retryStreamingProvider struct {
 	attempt int

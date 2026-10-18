@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
 )
 
 // ConfigModelLimit holds per-model token limits from user config.
@@ -412,9 +413,9 @@ func anthropicInputLimit(model string) int {
 		model = base // claude-sonnet-4-5-1m-high keeps the 1M budget
 	}
 	if strings.HasSuffix(model, "-1m") {
-		return lookupPrefix(anthropicModelAlias(model)+"-1m", inputLimitTable)
+		return lookupPrefix(anthropic.ModelAlias(model)+"-1m", inputLimitTable)
 	}
-	if info, ok := anthropicCachedModelInfoForRequest(model); ok {
+	if info, ok := anthropic.CachedModelInfoForRequest(model); ok {
 		return info.InputLimit
 	}
 	return 0

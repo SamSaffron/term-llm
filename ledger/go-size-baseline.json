@@ -95,52 +95,32 @@
       "lines": 1073
     },
     {
-      "path": "internal/llm/anthropic.go",
-      "lines": 1009
-    },
-    {
-      "path": "internal/llm/claude_bin.go",
-      "lines": 2197
-    },
-    {
-      "path": "internal/llm/compaction.go",
-      "lines": 1929
-    },
-    {
-      "path": "internal/llm/cursor_bin.go",
-      "lines": 1015
-    },
-    {
-      "path": "internal/llm/engine.go",
-      "lines": 3642
-    },
-    {
-      "path": "internal/llm/grok_acp.go",
-      "lines": 1212
-    },
-    {
-      "path": "internal/llm/grok_bin.go",
-      "lines": 1579
-    },
-    {
       "path": "internal/llm/models.go",
-      "lines": 1137
+      "lines": 1160
     },
     {
-      "path": "internal/llm/openai_compat.go",
-      "lines": 1135
+      "path": "internal/llm/providers/clibin/claude_bin.go",
+      "lines": 2211
     },
     {
-      "path": "internal/llm/responses_api.go",
-      "lines": 2139
+      "path": "internal/llm/providers/clibin/cursor_bin.go",
+      "lines": 1016
     },
     {
-      "path": "internal/llm/responses_websocket.go",
+      "path": "internal/llm/providers/clibin/grok_acp.go",
+      "lines": 1213
+    },
+    {
+      "path": "internal/llm/providers/clibin/grok_bin.go",
+      "lines": 1580
+    },
+    {
+      "path": "internal/llm/providers/opencompat/openai_compat.go",
+      "lines": 1144
+    },
+    {
+      "path": "internal/llm/providers/responses/responses_websocket.go",
       "lines": 1544
-    },
-    {
-      "path": "internal/llm/types.go",
-      "lines": 1211
     },
     {
       "path": "internal/mcp/oauth/coordinator.go",
@@ -270,11 +250,7 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 105211
-    },
-    {
-      "dir": "internal/llm",
-      "lines": 48129
+      "lines": 105242
     },
     {
       "dir": "internal/session",
@@ -286,7 +262,7 @@
     },
     {
       "dir": "internal/tui/chat",
-      "lines": 33189
+      "lines": 33190
     }
   ]
 }

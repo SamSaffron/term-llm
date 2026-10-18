@@ -30,7 +30,7 @@ func endpointModelCacheKey(providerCfg config.ProviderConfig) string {
 // (OPENAI_BASE_URL or the public API root).
 func endpointModelBaseURL(providerCfg config.ProviderConfig) string {
 	if baseURL := strings.TrimSpace(providerCfg.BaseURL); baseURL != "" {
-		return NewOpenAICompatProvider(baseURL, "", "", "").baseURL
+		return NewOpenAICompatProvider(baseURL, "", "", "").BaseURL()
 	}
 	return providerCfg.OpenAIEndpoint().BaseURL
 }

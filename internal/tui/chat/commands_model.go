@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"slices"
 	"strings"
 
@@ -104,7 +105,7 @@ func (m *Model) cachedOllamaModelEffort(provider, model string) (base, effort st
 	if err := pc.ResolveForInference(); err != nil {
 		return "", "", nil, false
 	}
-	return llm.CachedOllamaModelEffort(pc.BaseURL, model)
+	return ollama.CachedOllamaModelEffort(pc.BaseURL, model)
 }
 
 func (m *Model) baseModelAndEffort(provider, model string) (string, string) {

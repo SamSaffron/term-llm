@@ -34,6 +34,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	llmstream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
 	"hash/crc32"
 	"io"
 	"net/http"
@@ -48,6 +51,8 @@ import (
 	"time"
 )
 
+// The fixtures are shared with the anthropic leaf package, whose golden test
+// replays the direct-API half; this file adds the Bedrock replay.
 const anthropicGoldenDir = "testdata/anthropic_golden"
 
 var anthropicGoldenUpdateFlag = flag.Bool("update-anthropic-golden", false, "rewrite Anthropic golden files")
@@ -60,7 +65,7 @@ func anthropicGoldenLive() bool { return os.Getenv("ANTHROPIC_GOLDEN_LIVE") == "
 
 // goldenTurn builds the request for one turn from the conversation so far and
 // the events emitted by the previous turn.
-type goldenTurn func(history []Message, prev []Event) Request
+type goldenTurn func(history []core.Message, prev []core.Event) core.Request
 
 type anthropicGoldenScenario struct {
 	name        string
@@ -109,30 +114,30 @@ type goldenEvent struct {
 	Tool          *goldenToolCall `json:"tool,omitempty"`
 	ToolName      string          `json:"tool_name,omitempty"`
 	ToolSuccess   *bool           `json:"tool_success,omitempty"`
-	Usage         *Usage          `json:"usage,omitempty"`
+	Usage         *core.Usage     `json:"usage,omitempty"`
 	Error         *goldenError    `json:"error,omitempty"`
 }
 
-func normalizeGoldenEvent(ev Event) goldenEvent {
+func normalizeGoldenEvent(ev core.Event) goldenEvent {
 	out := goldenEvent{Type: string(ev.Type), Text: ev.Text}
 	switch ev.Type {
-	case EventReasoningDelta:
+	case core.EventReasoningDelta:
 		out.ReasoningKind = string(ev.ReasoningKind)
 		out.Encrypted = ev.ReasoningEncryptedContent
-	case EventToolCall:
+	case core.EventToolCall:
 		if ev.Tool != nil {
 			out.Tool = &goldenToolCall{ID: ev.Tool.ID, Name: ev.Tool.Name, Args: canonicalRawJSON(ev.Tool.Arguments)}
 		}
-	case EventToolExecStart:
+	case core.EventToolExecStart:
 		out.ToolName = ev.ToolName
-	case EventToolExecEnd:
+	case core.EventToolExecEnd:
 		out.ToolName = ev.ToolName
 		success := ev.ToolSuccess
 		out.ToolSuccess = &success
-	case EventUsage:
+	case core.EventUsage:
 		out.Usage = ev.Use
-	case EventError:
-		var incomplete *StreamIncompleteError
+	case core.EventError:
+		var incomplete *llmstream.StreamIncompleteError
 		out.Error = &goldenError{Incomplete: errors.As(ev.Err, &incomplete), Retryable: isRetryable(ev.Err)}
 	}
 	return out
@@ -270,26 +275,26 @@ func goldenDiff(want, got string) string {
 
 // goldenAssistantFromEvents rebuilds the assistant turn the engine would
 // replay: reasoning (with signature), text, and tool calls.
-func goldenAssistantFromEvents(events []Event) (Message, []ToolCall) {
+func goldenAssistantFromEvents(events []core.Event) (core.Message, []core.ToolCall) {
 	var reasoning, signature, text strings.Builder
-	var calls []ToolCall
+	var calls []core.ToolCall
 	for _, ev := range events {
 		switch ev.Type {
-		case EventReasoningDelta:
+		case core.EventReasoningDelta:
 			reasoning.WriteString(ev.Text)
 			signature.WriteString(ev.ReasoningEncryptedContent)
-		case EventTextDelta:
+		case core.EventTextDelta:
 			text.WriteString(ev.Text)
-		case EventToolCall:
+		case core.EventToolCall:
 			if ev.Tool != nil {
 				calls = append(calls, *ev.Tool)
 			}
 		}
 	}
-	msg := Message{Role: RoleAssistant}
+	msg := core.Message{Role: core.RoleAssistant}
 	if signature.Len() > 0 || reasoning.Len() > 0 || text.Len() > 0 {
-		msg.Parts = append(msg.Parts, Part{
-			Type:                      PartText,
+		msg.Parts = append(msg.Parts, core.Part{
+			Type:                      core.PartText,
 			Text:                      text.String(),
 			ReasoningContent:          reasoning.String(),
 			ReasoningEncryptedContent: signature.String(),
@@ -297,12 +302,12 @@ func goldenAssistantFromEvents(events []Event) (Message, []ToolCall) {
 	}
 	for i := range calls {
 		call := calls[i]
-		msg.Parts = append(msg.Parts, Part{Type: PartToolCall, ToolCall: &call})
+		msg.Parts = append(msg.Parts, core.Part{Type: core.PartToolCall, ToolCall: &call})
 	}
 	return msg, calls
 }
 
-var goldenReadFileTool = ToolSpec{
+var goldenReadFileTool = core.ToolSpec{
 	Name:        "read_file",
 	Description: "Read a text file from the working directory.",
 	Schema: map[string]interface{}{
@@ -314,7 +319,7 @@ var goldenReadFileTool = ToolSpec{
 	},
 }
 
-var goldenViewImageTool = ToolSpec{
+var goldenViewImageTool = core.ToolSpec{
 	Name:        "view_image",
 	Description: "View an image file.",
 	Schema: map[string]interface{}{
@@ -327,7 +332,7 @@ var goldenViewImageTool = ToolSpec{
 }
 
 // goldenNoDescriptionTool has no description and no properties.
-var goldenNoDescriptionTool = ToolSpec{
+var goldenNoDescriptionTool = core.ToolSpec{
 	Name:   "ping_tool",
 	Schema: map[string]interface{}{"type": "object"},
 }
@@ -341,8 +346,8 @@ var goldenFiles = map[string]string{
 // goldenRedPNG is a 16x16 solid red PNG.
 const goldenRedPNG = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGO4I2JDEmIY1TCqYfhqAAAeBCwQ8YdREQAAAABJRU5ErkJggg=="
 
-func goldenToolResultsFor(calls []ToolCall, isError bool) []Message {
-	var out []Message
+func goldenToolResultsFor(calls []core.ToolCall, isError bool) []core.Message {
+	var out []core.Message
 	for _, call := range calls {
 		var args struct {
 			Path string `json:"path"`
@@ -351,95 +356,95 @@ func goldenToolResultsFor(calls []ToolCall, isError bool) []Message {
 		name := filepath.Base(args.Path)
 		switch call.Name {
 		case "view_image":
-			out = append(out, ToolResultMessageFromOutput(call.ID, call.Name, ToolOutput{
+			out = append(out, core.ToolResultMessageFromOutput(call.ID, call.Name, core.ToolOutput{
 				Content: "Image " + name,
-				ContentParts: []ToolContentPart{
-					{Type: ToolContentPartText, Text: "Image " + name + " (16x16)"},
-					{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: goldenRedPNG}},
+				ContentParts: []core.ToolContentPart{
+					{Type: core.ToolContentPartText, Text: "Image " + name + " (16x16)"},
+					{Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: goldenRedPNG}},
 				},
 			}, nil))
 		default:
 			content, ok := goldenFiles[name]
 			if !ok || isError {
-				out = append(out, ToolErrorMessage(call.ID, call.Name, "file not found: "+args.Path, nil))
+				out = append(out, core.ToolErrorMessage(call.ID, call.Name, "file not found: "+args.Path, nil))
 				continue
 			}
-			out = append(out, ToolResultMessage(call.ID, call.Name, content, nil))
+			out = append(out, core.ToolResultMessage(call.ID, call.Name, content, nil))
 		}
 	}
 	return out
 }
 
-func goldenSingleTurn(req Request) []goldenTurn {
-	return []goldenTurn{func([]Message, []Event) Request { return req }}
+func goldenSingleTurn(req core.Request) []goldenTurn {
+	return []goldenTurn{func([]core.Message, []core.Event) core.Request { return req }}
 }
 
 // goldenToolLoop returns a two-turn conversation: the user prompt, then the
 // replayed assistant turn with tool results.
-func goldenToolLoop(base Request, isError bool) []goldenTurn {
+func goldenToolLoop(base core.Request, isError bool) []goldenTurn {
 	return []goldenTurn{
-		func([]Message, []Event) Request { return base },
-		func(history []Message, prev []Event) Request {
+		func([]core.Message, []core.Event) core.Request { return base },
+		func(history []core.Message, prev []core.Event) core.Request {
 			assistant, calls := goldenAssistantFromEvents(prev)
 			next := base
-			next.Messages = append(append([]Message(nil), history...), assistant)
+			next.Messages = append(append([]core.Message(nil), history...), assistant)
 			next.Messages = append(next.Messages, goldenToolResultsFor(calls, isError)...)
 			return next
 		},
 	}
 }
 
-func goldenUser(text string) []Message { return []Message{UserText(text)} }
+func goldenUser(text string) []core.Message { return []core.Message{core.UserText(text)} }
 
 func anthropicGoldenScenarios() []anthropicGoldenScenario {
-	sys := SystemText("You are a terse assistant used for wire-format golden tests.")
-	toolsReq := func(prompt string, tools ...ToolSpec) Request {
-		return Request{Messages: []Message{sys, UserText(prompt)}, Tools: tools, ToolChoice: ToolChoice{Mode: ToolChoiceAuto}}
+	sys := core.SystemText("You are a terse assistant used for wire-format golden tests.")
+	toolsReq := func(prompt string, tools ...core.ToolSpec) core.Request {
+		return core.Request{Messages: []core.Message{sys, core.UserText(prompt)}, Tools: tools, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto}}
 	}
 	parallel := toolsReq("Read a.txt and b.txt using two read_file calls in the same turn, then report both values.", goldenReadFileTool)
 	parallel.ParallelToolCalls = true
 
 	scenarios := []anthropicGoldenScenario{
-		{name: "text", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: []Message{sys, UserText("Reply with exactly: golden hello")}})},
-		{name: "thinking_budget_haiku", model: "claude-haiku-4-5-thinking", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("What is 17*23? Answer briefly.")})},
-		{name: "thinking_budget", model: "claude-opus-4-5-thinking", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("What is 17*23? Answer briefly.")})},
-		{name: "thinking_budget_small_max", model: "claude-opus-4-5-thinking", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Say hi."), MaxOutputTokens: 2048})},
-		{name: "adaptive", model: "claude-sonnet-4-6-thinking", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Is 221 prime? One line.")})},
-		{name: "effort_request", model: "claude-opus-4-7", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Name one primary colour. One word."), ReasoningEffort: "LOW"})},
-		{name: "max_tokens", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Count from 1 to 50 separated by spaces."), MaxOutputTokens: 5})},
+		{name: "text", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: []core.Message{sys, core.UserText("Reply with exactly: golden hello")}})},
+		{name: "thinking_budget_haiku", model: "claude-haiku-4-5-thinking", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("What is 17*23? Answer briefly.")})},
+		{name: "thinking_budget", model: "claude-opus-4-5-thinking", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("What is 17*23? Answer briefly.")})},
+		{name: "thinking_budget_small_max", model: "claude-opus-4-5-thinking", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Say hi."), MaxOutputTokens: 2048})},
+		{name: "adaptive", model: "claude-sonnet-4-6-thinking", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Is 221 prime? One line.")})},
+		{name: "effort_request", model: "claude-opus-4-7", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Name one primary colour. One word."), ReasoningEffort: "LOW"})},
+		{name: "max_tokens", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Count from 1 to 50 separated by spaces."), MaxOutputTokens: 5})},
 		{name: "tool_single", model: "claude-haiku-4-5", live: true, turns: goldenToolLoop(toolsReq("Use read_file on notes.txt, then tell me the secret word.", goldenReadFileTool), false)},
 		{name: "tool_parallel", model: "claude-haiku-4-5", live: true, turns: goldenToolLoop(parallel, false)},
 		{name: "tool_error_result", model: "claude-haiku-4-5", live: true, turns: goldenToolLoop(toolsReq("Use read_file on missing.txt and report what happened in one sentence.", goldenReadFileTool), true)},
 		{name: "tool_adaptive", model: "claude-sonnet-4-6-thinking", live: true, turns: goldenToolLoop(toolsReq("Use read_file on notes.txt and tell me the secret word.", goldenReadFileTool), false)},
 		{name: "tool_thinking_budget", model: "claude-opus-4-5-thinking", live: true, turns: goldenToolLoop(toolsReq("Use read_file on notes.txt and tell me the secret word.", goldenReadFileTool), false)},
-		{name: "tool_choice_required", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Hello."), Tools: []ToolSpec{goldenReadFileTool, goldenNoDescriptionTool}, ToolChoice: ToolChoice{Mode: ToolChoiceRequired}})},
-		{name: "tool_choice_name", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Call the ping tool."), Tools: []ToolSpec{goldenReadFileTool, goldenNoDescriptionTool}, ToolChoice: ToolChoice{Mode: ToolChoiceName, Name: "ping_tool"}})},
-		{name: "tool_choice_none", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Reply with exactly: none"), Tools: []ToolSpec{goldenReadFileTool}, ToolChoice: ToolChoice{Mode: ToolChoiceNone}})},
-		{name: "image_user", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: []Message{UserImageMessageWithPath("image/png", goldenRedPNG, "/tmp/red.png", "What colour is this image? One word.")}})},
+		{name: "tool_choice_required", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Hello."), Tools: []core.ToolSpec{goldenReadFileTool, goldenNoDescriptionTool}, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceRequired}})},
+		{name: "tool_choice_name", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Call the ping tool."), Tools: []core.ToolSpec{goldenReadFileTool, goldenNoDescriptionTool}, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceName, Name: "ping_tool"}})},
+		{name: "tool_choice_none", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Reply with exactly: none"), Tools: []core.ToolSpec{goldenReadFileTool}, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceNone}})},
+		{name: "image_user", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: []core.Message{core.UserImageMessageWithPath("image/png", goldenRedPNG, "/tmp/red.png", "What colour is this image? One word.")}})},
 		{name: "tool_image_result", model: "claude-haiku-4-5", live: true, turns: goldenToolLoop(toolsReq("Use view_image on red.png and tell me its colour in one word.", goldenViewImageTool), false)},
-		{name: "developer_and_cache", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: []Message{
+		{name: "developer_and_cache", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: []core.Message{
 			sys,
-			{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Always answer in lowercase."}}},
-			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Summary anchor: we are testing."}}, CacheAnchor: true},
-			AssistantText("ok"),
-			{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Keep it to two words."}}},
-			{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: ""}}},
-			UserText("Reply with: dev ok"),
-			{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Trailing developer note."}}},
+			{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "Always answer in lowercase."}}},
+			{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "Summary anchor: we are testing."}}, CacheAnchor: true},
+			core.AssistantText("ok"),
+			{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "Keep it to two words."}}},
+			{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: ""}}},
+			core.UserText("Reply with: dev ok"),
+			{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "Trailing developer note."}}},
 		}})},
-		{name: "trailing_assistant", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Messages: []Message{UserText("Say the word blue."), AssistantText("blue")}})},
-		{name: "search", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(Request{Search: true, Messages: goldenUser("Using web search, what is the title of the go.dev homepage? Short answer.")})},
+		{name: "trailing_assistant", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Messages: []core.Message{core.UserText("Say the word blue."), core.AssistantText("blue")}})},
+		{name: "search", model: "claude-haiku-4-5", live: true, turns: goldenSingleTurn(core.Request{Search: true, Messages: goldenUser("Using web search, what is the title of the go.dev homepage? Short answer.")})},
 		{name: "search_tools_adaptive", model: "claude-sonnet-4-6-thinking", live: true, turns: func() []goldenTurn {
 			req := toolsReq("Read notes.txt with read_file and reply with the secret word. Do not search.", goldenReadFileTool, goldenNoDescriptionTool)
 			req.Search = true
 			return goldenToolLoop(req, false)
 		}()},
-		{name: "search_effort", model: "claude-opus-4-7", live: true, turns: goldenSingleTurn(Request{Search: true, ReasoningEffort: "low", Messages: goldenUser("Reply with exactly: ok. Do not search.")})},
-		{name: "search_thinking_budget", model: "claude-opus-4-5-thinking", live: true, turns: goldenSingleTurn(Request{Search: true, Messages: goldenUser("Reply with exactly: ok. Do not search."), Tools: []ToolSpec{goldenReadFileTool}})},
-		{name: "one_m", model: "claude-sonnet-4-6-1m", live: true, turns: goldenSingleTurn(Request{Messages: goldenUser("Reply with exactly: ok")})},
-		{name: "one_m_search", model: "claude-sonnet-4-6-1m", live: true, turns: goldenSingleTurn(Request{Search: true, Messages: goldenUser("Reply with exactly: ok")})},
-		{name: "bad_model", model: "claude-nonexistent-9", live: true, noBedrock: true, turns: goldenSingleTurn(Request{Messages: goldenUser("hi")})},
-		{name: "bad_key", model: "claude-haiku-4-5", live: true, liveAPIKey: "sk-ant-invalid-golden", noBedrock: true, turns: goldenSingleTurn(Request{Messages: goldenUser("hi")})},
+		{name: "search_effort", model: "claude-opus-4-7", live: true, turns: goldenSingleTurn(core.Request{Search: true, ReasoningEffort: "low", Messages: goldenUser("Reply with exactly: ok. Do not search.")})},
+		{name: "search_thinking_budget", model: "claude-opus-4-5-thinking", live: true, turns: goldenSingleTurn(core.Request{Search: true, Messages: goldenUser("Reply with exactly: ok. Do not search."), Tools: []core.ToolSpec{goldenReadFileTool}})},
+		{name: "one_m", model: "claude-sonnet-4-6-1m", live: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("Reply with exactly: ok")})},
+		{name: "one_m_search", model: "claude-sonnet-4-6-1m", live: true, turns: goldenSingleTurn(core.Request{Search: true, Messages: goldenUser("Reply with exactly: ok")})},
+		{name: "bad_model", model: "claude-nonexistent-9", live: true, noBedrock: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("hi")})},
+		{name: "bad_key", model: "claude-haiku-4-5", live: true, liveAPIKey: "sk-ant-invalid-golden", noBedrock: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("hi")})},
 	}
 	// Handwritten stream fixtures for protocol edge cases.
 	for _, name := range []string{
@@ -449,10 +454,10 @@ func anthropicGoldenScenarios() []anthropicGoldenScenario {
 		"edge_ping_only", "edge_empty_body",
 	} {
 		search := strings.Contains(name, "server_tool")
-		scenarios = append(scenarios, anthropicGoldenScenario{name: name, model: "claude-sonnet-4-6", turns: goldenSingleTurn(Request{Search: search, Messages: goldenUser("edge")})})
+		scenarios = append(scenarios, anthropicGoldenScenario{name: name, model: "claude-sonnet-4-6", turns: goldenSingleTurn(core.Request{Search: search, Messages: goldenUser("edge")})})
 	}
 	for _, name := range []string{"edge_http_429", "edge_http_529", "edge_http_500_html", "edge_http_400"} {
-		scenarios = append(scenarios, anthropicGoldenScenario{name: name, model: "claude-sonnet-4-6", noBedrock: true, turns: goldenSingleTurn(Request{Messages: goldenUser("edge")})})
+		scenarios = append(scenarios, anthropicGoldenScenario{name: name, model: "claude-sonnet-4-6", noBedrock: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("edge")})})
 	}
 	return scenarios
 }
@@ -698,27 +703,27 @@ func goldenIsolateEnv(t *testing.T) {
 	}
 }
 
-func drainGoldenStream(t *testing.T, stream Stream) []Event {
+func drainGoldenStream(t *testing.T, stream core.Stream) []core.Event {
 	t.Helper()
 	defer stream.Close()
-	var events []Event
+	var events []core.Event
 	for {
 		ev, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			return events
 		}
 		if err != nil {
-			events = append(events, Event{Type: EventError, Err: err})
+			events = append(events, core.Event{Type: core.EventError, Err: err})
 			return events
 		}
 		events = append(events, ev)
-		if ev.Type == EventDone {
+		if ev.Type == core.EventDone {
 			return events
 		}
 	}
 }
 
-type goldenProviderFactory func(t *testing.T, baseURL string, sc anthropicGoldenScenario) Provider
+type goldenProviderFactory func(t *testing.T, baseURL string, sc anthropicGoldenScenario) core.Provider
 
 func runAnthropicGoldenScenario(t *testing.T, sc anthropicGoldenScenario, bedrock bool, newProvider goldenProviderFactory) [][]goldenEvent {
 	t.Helper()
@@ -728,8 +733,8 @@ func runAnthropicGoldenScenario(t *testing.T, sc anthropicGoldenScenario, bedroc
 	defer ts.Close()
 
 	provider := newProvider(t, ts.URL, sc)
-	var history []Message
-	var prev []Event
+	var history []core.Message
+	var prev []core.Event
 	var all [][]goldenEvent
 	for i, turn := range sc.turns {
 		srv.mu.Lock()
@@ -741,9 +746,9 @@ func runAnthropicGoldenScenario(t *testing.T, sc anthropicGoldenScenario, bedroc
 		history = req.Messages
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		stream, err := provider.Stream(ctx, req)
-		var events []Event
+		var events []core.Event
 		if err != nil {
-			events = []Event{{Type: EventError, Err: err}}
+			events = []core.Event{{Type: core.EventError, Err: err}}
 		} else {
 			events = drainGoldenStream(t, stream)
 		}
@@ -772,9 +777,9 @@ func runAnthropicGoldenScenario(t *testing.T, sc anthropicGoldenScenario, bedroc
 	return all
 }
 
-func newGoldenDirectProvider(t *testing.T, baseURL string, sc anthropicGoldenScenario) Provider {
+func newGoldenDirectProvider(t *testing.T, baseURL string, sc anthropicGoldenScenario) core.Provider {
 	t.Helper()
-	p, err := NewAnthropicProviderWithBaseURL("test-key", sc.model, AnthropicCredAPIKey, baseURL)
+	p, err := anthropic.NewAnthropicProviderWithBaseURL("test-key", sc.model, anthropic.AnthropicCredAPIKey, baseURL)
 	if err != nil {
 		t.Fatalf("NewAnthropicProviderWithBaseURL: %v", err)
 	}
@@ -880,7 +885,7 @@ func TestAnthropicGoldenListModels(t *testing.T) {
 	srv := &goldenServer{t: t, dir: dir, scenario: sc, live: anthropicGoldenLive(), turn: 1}
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
-	p, err := NewAnthropicProviderWithBaseURL("test-key", sc.model, AnthropicCredAPIKey, ts.URL)
+	p, err := anthropic.NewAnthropicProviderWithBaseURL("test-key", sc.model, anthropic.AnthropicCredAPIKey, ts.URL)
 	if err != nil {
 		t.Fatal(err)
 	}

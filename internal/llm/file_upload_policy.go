@@ -2,11 +2,12 @@ package llm
 
 import (
 	"encoding/base64"
-	"mime"
 	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/filemime"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
 )
 
 const defaultFileUploadMaxBytes int64 = 20 << 20
@@ -38,29 +39,11 @@ func portableTextEmbedMIMETypeList() []string {
 // text-like upload whose body is already embedded is inlined in preference to a
 // native file, because inlining cannot be rejected by a provider MIME allowlist.
 // See responsesFilePrefersTextEmbed for the exact precedence.
-type FileUploadPolicy struct {
-	NativeMimeTypes    []string
-	MaxNativeBytes     int64
-	TextEmbedMimeTypes []string
-	MaxTextEmbedBytes  int64
-}
+type FileUploadPolicy = responses.FileUploadPolicy
 
 // NormalizeMediaType lowercases a MIME type and strips optional parameters.
-func NormalizeMediaType(mediaType string) string {
-	mediaType = strings.TrimSpace(strings.ToLower(mediaType))
-	if mediaType == "" {
-		return ""
-	}
-	if parsed, _, err := mime.ParseMediaType(mediaType); err == nil {
-		mediaType = parsed
-	} else if idx := strings.IndexByte(mediaType, ';'); idx >= 0 {
-		mediaType = strings.TrimSpace(mediaType[:idx])
-	}
-	if mediaType == "image/jpg" {
-		return "image/jpeg"
-	}
-	return mediaType
-}
+// Deprecated: use filemime.NormalizeMediaType.
+func NormalizeMediaType(mediaType string) string { return filemime.NormalizeMediaType(mediaType) }
 
 // DefaultOpenAIResponsesFileUploadPolicy returns the native file types accepted
 // by the OpenAI Responses file input API. The same policy is used for
@@ -129,26 +112,6 @@ func FileUploadPolicyOverrideForProviderConfig(providerName string, providerCfg 
 	}
 	policy := EffectiveFileUploadPolicyForProviderConfig(providerName, providerCfg)
 	return &policy
-}
-
-func (p FileUploadPolicy) AllowsNative(mediaType string, sizeBytes int64) bool {
-	if len(p.NativeMimeTypes) == 0 {
-		return false
-	}
-	if p.MaxNativeBytes > 0 && sizeBytes > p.MaxNativeBytes {
-		return false
-	}
-	return mimeAllowed(mediaType, p.NativeMimeTypes)
-}
-
-func (p FileUploadPolicy) AllowsTextEmbed(mediaType string, sizeBytes int64) bool {
-	if len(p.TextEmbedMimeTypes) == 0 {
-		return false
-	}
-	if p.MaxTextEmbedBytes > 0 && sizeBytes > p.MaxTextEmbedBytes {
-		return false
-	}
-	return mimeAllowed(mediaType, p.TextEmbedMimeTypes)
 }
 
 func decodedBase64Size(base64Data string) int64 {
@@ -239,40 +202,4 @@ func cloneStrings(values []string) []string {
 	out := make([]string, len(values))
 	copy(out, values)
 	return out
-}
-
-func cloneFileUploadPolicy(policy *FileUploadPolicy) *FileUploadPolicy {
-	if policy == nil {
-		return nil
-	}
-	clone := *policy
-	clone.NativeMimeTypes = cloneStrings(policy.NativeMimeTypes)
-	clone.TextEmbedMimeTypes = cloneStrings(policy.TextEmbedMimeTypes)
-	return &clone
-}
-
-func defaultOpenAIResponsesFileUploadPolicyPtr() *FileUploadPolicy {
-	policy := DefaultOpenAIResponsesFileUploadPolicy()
-	return &policy
-}
-
-func (p *OpenAIProvider) effectiveFileUploadPolicy() *FileUploadPolicy {
-	if p != nil && p.fileUploadPolicy != nil {
-		return p.fileUploadPolicy
-	}
-	return defaultOpenAIResponsesFileUploadPolicyPtr()
-}
-
-func (p *ChatGPTProvider) effectiveFileUploadPolicy() *FileUploadPolicy {
-	if p != nil && p.fileUploadPolicy != nil {
-		return p.fileUploadPolicy
-	}
-	return defaultOpenAIResponsesFileUploadPolicyPtr()
-}
-
-func (p *CopilotProvider) effectiveFileUploadPolicy() *FileUploadPolicy {
-	if p != nil && p.fileUploadPolicy != nil {
-		return p.fileUploadPolicy
-	}
-	return defaultOpenAIResponsesFileUploadPolicyPtr()
 }

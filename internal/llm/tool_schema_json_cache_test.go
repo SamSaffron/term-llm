@@ -36,14 +36,6 @@ func TestToolSchemaJSONCacheReusesImmutableSchema(t *testing.T) {
 		t.Fatalf("buildCompatTools returned empty cached parameters: %#v", compatTools)
 	}
 
-	ollamaTools, err := buildOllamaTools(specs)
-	if err != nil {
-		t.Fatalf("buildOllamaTools: %v", err)
-	}
-	if len(ollamaTools) != 1 || len(ollamaTools[0].Function.Parameters) == 0 {
-		t.Fatalf("buildOllamaTools returned empty cached parameters: %#v", ollamaTools)
-	}
-
 	if marshalCount != 1 {
 		t.Fatalf("schema marshaled %d times, want 1", marshalCount)
 	}

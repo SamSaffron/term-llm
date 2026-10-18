@@ -1994,7 +1994,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/agy_bin.go|llm|*AgyBinProvider|Stream.func1",
+      "key": ".|internal/llm/providers/clibin/agy_bin.go|clibin|*AgyBinProvider|Stream.func1",
       "complexity": 27,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2002,7 +2002,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/agy_bin.go|llm|*AgyBinProvider|runCommand",
+      "key": ".|internal/llm/providers/clibin/agy_bin.go|clibin|*AgyBinProvider|runCommand",
       "complexity": 22,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2010,47 +2010,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/anthropic.go|llm||buildAnthropicBetaMessages",
-      "complexity": 23,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/anthropic.go|llm||buildAnthropicMessages",
-      "complexity": 23,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/anthropic.go|llm||buildAnthropicParts",
-      "complexity": 26,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/anthropic.go|llm|*AnthropicProvider|streamStandardForModel.func1",
-      "complexity": 61,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/anthropic.go|llm|*AnthropicProvider|streamWithSearch.func1",
-      "complexity": 73,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/chatgpt.go|llm||parseChatGPTRateLimitError",
+      "key": ".|internal/llm/providers/responsesproviders/chatgpt.go|responsesproviders||parseChatGPTRateLimitError",
       "complexity": 21,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2058,7 +2018,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/chatgpt.go|llm|*ChatGPTProvider|Stream",
+      "key": ".|internal/llm/providers/responsesproviders/chatgpt.go|responsesproviders|*ChatGPTProvider|Stream",
       "complexity": 25,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2066,7 +2026,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/chatgpt_context.go|llm||resolveChatGPTContext",
+      "key": ".|internal/llm/providers/responsesproviders/chatgpt_context.go|responsesproviders||resolveChatGPTContext",
       "complexity": 26,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2074,7 +2034,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|Stream.func1",
+      "key": ".|internal/llm/providers/clibin/claude_bin.go|clibin|*ClaudeBinProvider|Stream.func1",
       "complexity": 24,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2082,7 +2042,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|buildCommandEnv",
+      "key": ".|internal/llm/providers/clibin/claude_bin.go|clibin|*ClaudeBinProvider|buildCommandEnv",
       "complexity": 26,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2090,7 +2050,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|buildStreamJsonInput",
+      "key": ".|internal/llm/providers/clibin/claude_bin.go|clibin|*ClaudeBinProvider|buildStreamJsonInput",
       "complexity": 34,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2098,7 +2058,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|handleClaudeLine",
+      "key": ".|internal/llm/providers/clibin/claude_bin.go|clibin|*ClaudeBinProvider|handleClaudeLine",
       "complexity": 70,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2106,7 +2066,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|renderConversationParts",
+      "key": ".|internal/llm/providers/clibin/claude_bin.go|clibin|*ClaudeBinProvider|renderConversationParts",
       "complexity": 59,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2114,7 +2074,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|runClaudeCommand",
+      "key": ".|internal/llm/providers/clibin/claude_bin.go|clibin|*ClaudeBinProvider|runClaudeCommand",
       "complexity": 31,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2122,24 +2082,8 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/cli_bin_shared.go|llm||drainCLIDiagnosticLines",
+      "key": ".|internal/llm/providers/clibin/cli_bin_shared.go|clibin||drainCLIDiagnosticLines",
       "complexity": 23,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/compaction.go|llm||compactToolResultSummary",
-      "complexity": 34,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/compaction.go|llm||previousTurnEntries",
-      "complexity": 31,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
       "removal_milestone": "M7",
@@ -2162,7 +2106,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/copilot.go|llm|*CopilotProvider|streamChatCompletions.func1",
+      "key": ".|internal/llm/providers/responsesproviders/copilot.go|responsesproviders|*CopilotProvider|streamChatCompletions.func1",
       "complexity": 61,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2170,7 +2114,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/cursor_bin.go|llm|*CursorBinProvider|cursorImagePaths",
+      "key": ".|internal/llm/providers/clibin/cursor_bin.go|clibin|*CursorBinProvider|cursorImagePaths",
       "complexity": 35,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2178,7 +2122,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/cursor_bin.go|llm|*CursorBinProvider|runCursorCommand",
+      "key": ".|internal/llm/providers/clibin/cursor_bin.go|clibin|*CursorBinProvider|runCursorCommand",
       "complexity": 22,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2202,7 +2146,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/debug_logger.go|llm||convertParts",
+      "key": ".|internal/llm/debug/debug_logger.go|debug||convertParts",
       "complexity": 21,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2210,7 +2154,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/debug_logger.go|llm|*DebugLogger|LogEvent",
+      "key": ".|internal/llm/debug/debug_logger.go|debug|*Logger|LogEvent",
       "complexity": 51,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2218,7 +2162,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/debug_provider.go|llm||parseCommand",
+      "key": ".|internal/llm/debug/debug_provider.go|debug||parseCommand",
       "complexity": 49,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2226,7 +2170,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/debug_provider.go|llm||parseSequenceDSL",
+      "key": ".|internal/llm/debug/debug_provider.go|debug||parseSequenceDSL",
       "complexity": 22,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2234,7 +2178,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/debug_provider.go|llm|*DebugProvider|streamActionSequence",
+      "key": ".|internal/llm/debug/debug_provider.go|debug|*DebugProvider|streamActionSequence",
       "complexity": 23,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2242,7 +2186,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/engine.go|llm||hydrateImageDataFromPaths",
+      "key": ".|internal/llm/engine/request.go|engine||hydrateImageDataFromPaths",
       "complexity": 23,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M2",
@@ -2250,7 +2194,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/engine.go|llm|*Engine|ConfigureContextManagement",
+      "key": ".|internal/llm/engine/context.go|engine|*Engine|ConfigureContextManagement",
       "complexity": 25,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M2",
@@ -2258,7 +2202,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/engine.go|llm|*Engine|Stream",
+      "key": ".|internal/llm/engine/stream.go|engine|*Engine|Stream",
       "complexity": 48,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2266,7 +2210,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/engine.go|llm|*Engine|executeToolCallOutcomes",
+      "key": ".|internal/llm/engine/tool_exec.go|engine|*Engine|executeToolCallOutcomes",
       "complexity": 29,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2274,7 +2218,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/engine.go|llm|*Engine|runLoop",
+      "key": ".|internal/llm/engine/run_loop.go|engine|*Engine|runLoop",
       "complexity": 32,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2282,7 +2226,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/engine.go|llm|*Engine|runSimpleScratchpad",
+      "key": ".|internal/llm/engine/scratchpad.go|engine|*Engine|runSimpleScratchpad",
       "complexity": 79,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2290,7 +2234,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/engine_run_turn.go|llm|*Engine|runProviderTurn",
+      "key": ".|internal/llm/engine/run_turn.go|engine|*Engine|runProviderTurn",
       "complexity": 72,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2298,7 +2242,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/engine_turn_completion.go|llm|*Engine|completeAsyncTurn",
+      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeAsyncTurn",
       "complexity": 76,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2306,7 +2250,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/engine_turn_completion.go|llm|*Engine|completeSyncTurn",
+      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeSyncTurn",
       "complexity": 37,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2314,7 +2258,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/engine_turn_completion.go|llm|*Engine|completeTextTurn",
+      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeTextTurn",
       "complexity": 34,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2322,7 +2266,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/engine_turn_failure.go|llm|*Engine|handleEventStreamFailure",
+      "key": ".|internal/llm/engine/turn_failure.go|engine|*Engine|handleEventStreamFailure",
       "complexity": 23,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2330,7 +2274,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/engine_turn_failure.go|llm|*Engine|handleReceiveStreamFailure",
+      "key": ".|internal/llm/engine/turn_failure.go|engine|*Engine|handleReceiveStreamFailure",
       "complexity": 23,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2338,7 +2282,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/engine_turn_open.go|llm|*Engine|openProviderTurnStream",
+      "key": ".|internal/llm/engine/turn_open.go|engine|*Engine|openProviderTurnStream",
       "complexity": 53,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2346,7 +2290,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/engine_turn_recovery.go|llm|*Engine|recoverCommittedTurn",
+      "key": ".|internal/llm/engine/turn_recovery.go|engine|*Engine|recoverCommittedTurn",
       "complexity": 74,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
@@ -2378,47 +2322,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/gemini.go|llm||buildGeminiContent",
-      "complexity": 22,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/gemini.go|llm||buildGeminiContents",
-      "complexity": 22,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/gemini.go|llm|*GeminiProvider|Stream.func1",
-      "complexity": 26,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/gemini.go|llm|*GeminiProvider|Stream.func1.func1",
-      "complexity": 36,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/gemini_schema.go|llm||normalizeGeminiSchemaRecursive",
-      "complexity": 22,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/grok_acp.go|llm|*GrokBinProvider|grokACPDiagnosticRedactor",
+      "key": ".|internal/llm/providers/clibin/grok_acp.go|clibin|*GrokBinProvider|grokACPDiagnosticRedactor",
       "complexity": 28,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2426,7 +2330,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/grok_acp.go|llm|*GrokBinProvider|runGrokACP",
+      "key": ".|internal/llm/providers/clibin/grok_acp.go|clibin|*GrokBinProvider|runGrokACP",
       "complexity": 66,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2434,7 +2338,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/grok_acp.go|llm|*GrokBinProvider|startGrokACPProcess",
+      "key": ".|internal/llm/providers/clibin/grok_acp.go|clibin|*GrokBinProvider|startGrokACPProcess",
       "complexity": 32,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2442,7 +2346,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/grok_acp.go|llm|*grokACPHandler|HandleNotification",
+      "key": ".|internal/llm/providers/clibin/grok_acp.go|clibin|*grokACPHandler|HandleNotification",
       "complexity": 35,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2450,7 +2354,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/grok_bin.go|llm||buildGrokACPPrompt",
+      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin||buildGrokACPPrompt",
       "complexity": 49,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2458,7 +2362,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/grok_bin.go|llm||renderGrokConversationParts",
+      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin||renderGrokConversationParts",
       "complexity": 48,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2466,7 +2370,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/grok_bin.go|llm|*GrokBinProvider|Stream.func1",
+      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin|*GrokBinProvider|Stream.func1",
       "complexity": 25,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2474,7 +2378,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/grok_bin.go|llm|*GrokBinProvider|runGrokCommand",
+      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin|*GrokBinProvider|runGrokCommand",
       "complexity": 21,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2482,7 +2386,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/grok_models.go|llm||loadGrokModelsCache",
+      "key": ".|internal/llm/providers/responsesproviders/grok_models.go|responsesproviders||loadGrokModelsCache",
       "complexity": 24,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2498,7 +2402,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/json_schema_model.go|llm||parseSanitizedToolJSONSchemaMap",
+      "key": ".|internal/llm/schema/model.go|schema||parseSanitizedToolJSONSchemaMap",
       "complexity": 34,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2506,7 +2410,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/json_schema_model.go|llm|*JSONSchema|ToMap",
+      "key": ".|internal/llm/schema/model.go|schema|*JSONSchema|ToMap",
       "complexity": 25,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2538,31 +2442,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/ollama.go|llm||buildOllamaMessages",
-      "complexity": 85,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/ollama.go|llm|*OllamaProvider|Stream",
-      "complexity": 34,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/ollama.go|llm|*OllamaProvider|Stream.func2",
-      "complexity": 29,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/openai.go|llm||normalizeSchemaRecursive",
+      "key": ".|internal/llm/schema/openai.go|schema||normalizeSchemaRecursive",
       "complexity": 38,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2570,7 +2450,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/openai.go|llm|*OpenAIProvider|Stream",
+      "key": ".|internal/llm/providers/responsesproviders/openai.go|responsesproviders|*OpenAIProvider|Stream",
       "complexity": 26,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2578,7 +2458,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/openai_compat.go|llm||buildCompatMessages",
+      "key": ".|internal/llm/providers/opencompat/openai_compat.go|opencompat||buildCompatMessages",
       "complexity": 61,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2586,7 +2466,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/openai_compat.go|llm|*OpenAICompatProvider|Stream",
+      "key": ".|internal/llm/providers/opencompat/openai_compat.go|opencompat|*OpenAICompatProvider|Stream",
       "complexity": 31,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2594,7 +2474,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/openai_compat.go|llm|*OpenAICompatProvider|Stream.func2",
+      "key": ".|internal/llm/providers/opencompat/openai_compat.go|opencompat|*OpenAICompatProvider|Stream.func2",
       "complexity": 59,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2602,7 +2482,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/openai_compat.go|llm|*OpenAICompatProvider|resolveConfiguredModel",
+      "key": ".|internal/llm/providers/opencompat/openai_compat.go|opencompat|*OpenAICompatProvider|resolveConfiguredModel",
       "complexity": 22,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2610,7 +2490,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/path_notes.go|llm||GeneratePathNotes",
+      "key": ".|internal/llm/engine/path_notes.go|engine||GeneratePathNotes",
       "complexity": 26,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2618,7 +2498,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/path_notes.go|llm||pathNoteFileOperations",
+      "key": ".|internal/llm/engine/path_notes.go|engine||pathNoteFileOperations",
       "complexity": 49,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2626,7 +2506,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/provider_usage.go|llm||normalizeGrokProviderUsage",
+      "key": ".|internal/llm/providerusage/usage.go|providerusage||normalizeGrokProviderUsage",
       "complexity": 21,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2634,7 +2514,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/responses_api.go|llm||buildResponsesAssistantItems",
+      "key": ".|internal/llm/providers/responses/responses_input.go|responses||buildResponsesAssistantItems",
       "complexity": 27,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2642,7 +2522,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/responses_api.go|llm||buildResponsesMessageItems",
+      "key": ".|internal/llm/providers/responses/responses_input.go|responses||buildResponsesMessageItems",
       "complexity": 34,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2650,7 +2530,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/responses_api.go|llm|*ResponsesClient|Stream",
+      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|Stream",
       "complexity": 29,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2658,7 +2538,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/responses_api.go|llm|*ResponsesClient|streamHTTPPrepared",
+      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|streamHTTPPrepared",
       "complexity": 45,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2666,7 +2546,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/responses_api.go|llm|*ResponsesClient|streamHTTPPrepared.func2",
+      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|streamHTTPPrepared.func2",
       "complexity": 42,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2674,7 +2554,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/responses_options.go|llm||validateResponsesOptions",
+      "key": ".|internal/llm/providers/responses/responses_options.go|responses||validateResponsesOptions",
       "complexity": 24,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2682,7 +2562,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/responses_websocket.go|llm|*ResponsesClient|ensureWebSocket",
+      "key": ".|internal/llm/providers/responses/responses_websocket.go|responses|*ResponsesClient|ensureWebSocket",
       "complexity": 21,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2690,7 +2570,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/responses_websocket.go|llm|*ResponsesClient|streamWebSocketPrepared.func2",
+      "key": ".|internal/llm/providers/responses/responses_websocket.go|responses|*ResponsesClient|streamWebSocketPrepared.func2",
       "complexity": 38,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2698,7 +2578,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/sse.go|llm|*sseDecoder|Next",
+      "key": ".|internal/llm/core/stream/sse.go|stream|*Decoder|Next",
       "complexity": 21,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2714,7 +2594,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/tool_history_sanitize.go|llm||sanitizeToolHistorySlow",
+      "key": ".|internal/llm/core/tool_history_sanitize.go|core||sanitizeToolHistorySlow",
       "complexity": 55,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2722,7 +2602,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/tool_history_sanitize.go|llm||toolHistoryAlreadyValid",
+      "key": ".|internal/llm/core/tool_history_sanitize.go|core||toolHistoryAlreadyValid",
       "complexity": 29,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2738,7 +2618,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/venice.go|llm|*VeniceProvider|Stream.func2",
+      "key": ".|internal/llm/providers/opencompat/venice.go|opencompat|*VeniceProvider|Stream.func2",
       "complexity": 95,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2746,7 +2626,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/venice_image_models.go|llm||GetVeniceImageModelIDs",
+      "key": ".|internal/llm/providers/opencompat/venice_image_models.go|opencompat||GetVeniceImageModelIDs",
       "complexity": 34,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -2754,7 +2634,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/xai.go|llm|*XAIProvider|streamStandard.func2",
+      "key": ".|internal/llm/providers/opencompat/xai.go|opencompat|*XAIProvider|streamStandard.func2",
       "complexity": 73,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -2762,7 +2642,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/xai.go|llm|*XAIProvider|streamWithSearch.func2",
+      "key": ".|internal/llm/providers/opencompat/xai.go|opencompat|*XAIProvider|streamWithSearch.func2",
       "complexity": 37,
       "owner": "llm",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
@@ -4800,6 +4680,94 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine/compaction.go|engine||previousTurnEntries",
+      "complexity": 31,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/compaction_helpers.go|engine||compactToolResultSummary",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/anthropic/anthropic_messages.go|anthropic||buildAnthropicBlocks",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini|*Provider|Stream.func1",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini|*Provider|Stream.func1.func1",
+      "complexity": 36,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini||buildGeminiContent",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini||buildGeminiContents",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/gemini/schema.go|gemini||normalizeGeminiSchemaRecursive",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/ollama/ollama.go|ollama|*Provider|Stream",
+      "complexity": 34,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/ollama/ollama.go|ollama|*Provider|Stream.func2",
+      "complexity": 29,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/ollama/ollama.go|ollama||buildOllamaMessages",
+      "complexity": 85,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
     }
   ]
 }

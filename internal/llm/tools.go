@@ -1,200 +1,36 @@
 package llm
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"sync"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/prompt"
 )
 
 const (
-	SuggestCommandsToolName = "suggest_commands"
+	SuggestCommandsToolName = core.SuggestCommandsToolName
 	EditToolName            = "edit"
 	UnifiedDiffToolName     = "unified_diff"
-	WebSearchToolName       = "web_search"
+	WebSearchToolName       = core.WebSearchToolName
 )
 
 const (
 	suggestCommandsDescription = "Suggest shell commands based on user input. Call this after gathering any needed information from web search."
 )
 
-// Tool describes a callable external tool.
-type Tool interface {
-	Spec() ToolSpec
-	Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error)
-	// Preview returns a human-readable description of what the tool will do,
-	// shown to the user before execution starts (e.g., "Generating image: a cat").
-	// Returns empty string if no preview is available.
-	Preview(args json.RawMessage) string
-}
+// Deprecated: use core.Tool when defining new provider or engine packages.
+type Tool = core.Tool
 
-// RequestContextTool is an optional interface for explicitly configured tools
-// that own restorable, session-scoped model context. Engine invokes it only when
-// that exact tool survives final request filtering and the provider supports
-// tool calls.
-type RequestContextTool interface {
-	Tool
-	PrepareRequestContext(ctx context.Context, sessionID string, messages []Message) ([]Message, error)
-	PrepareCompactionContext(ctx context.Context, sessionID string, result *CompactionResult) error
-}
+// Deprecated: use core.FinishingTool in new packages.
+type FinishingTool = core.FinishingTool
 
-// SessionStateResetter clears a tool's cached projection for one durable
-// session after an out-of-band transcript mutation such as undo/redo.
-type SessionStateResetter interface {
-	ResetSessionState(sessionID string)
-}
+// Deprecated: use engine.ToolRegistry for execution plumbing in new packages.
+type ToolRegistry = engine.ToolRegistry
 
-// FinishingTool is an optional interface for tools that signal agent completion.
-// When a finishing tool is executed, the agentic loop should stop after this turn.
-// Example: output capture tools like set_commit_message.
-type FinishingTool interface {
-	IsFinishingTool() bool
-}
-
-// ToolRegistry stores tools by name for execution.
-type ToolRegistry struct {
-	mu         sync.RWMutex
-	tools      map[string]Tool
-	visible    map[string]bool
-	specsCache []ToolSpec
-	specsDirty bool
-}
-
-func NewToolRegistry() *ToolRegistry {
-	return &ToolRegistry{tools: make(map[string]Tool), visible: make(map[string]bool), specsDirty: true}
-}
-
-// Register makes a tool executable and provider-visible.
-func (r *ToolRegistry) Register(tool Tool) {
-	r.register(tool, true)
-}
-
-// RegisterDeferred makes a tool executable without exposing its schema through AllSpecs.
-func (r *ToolRegistry) RegisterDeferred(tool Tool) {
-	r.register(tool, false)
-}
-
-func (r *ToolRegistry) register(tool Tool, visible bool) {
-	spec := tool.Spec()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.tools[spec.Name] = tool
-	r.visible[spec.Name] = visible
-	r.specsDirty = true
-}
-
-// SetVisibility changes provider visibility without affecting execution lookup.
-func (r *ToolRegistry) SetVisibility(name string, visible bool) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.tools[name]; !ok {
-		return false
-	}
-	if r.visible[name] != visible {
-		r.visible[name] = visible
-		r.specsDirty = true
-	}
-	return true
-}
-
-func (r *ToolRegistry) Get(name string) (Tool, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tool, ok := r.tools[name]
-	return tool, ok
-}
-
-// IsFinishingTool returns true if the named tool is a finishing tool.
-func (r *ToolRegistry) IsFinishingTool(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tool, ok := r.tools[name]
-	if !ok {
-		return false
-	}
-	if ft, ok := tool.(FinishingTool); ok {
-		return ft.IsFinishingTool()
-	}
-	return false
-}
-
-func (r *ToolRegistry) Unregister(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.tools[name]; ok {
-		delete(r.tools, name)
-		delete(r.visible, name)
-		r.specsDirty = true
-	}
-}
-
-// AllSpecs returns the specs for all registered tools in deterministic name order.
-func (r *ToolRegistry) AllSpecs() []ToolSpec {
-	r.mu.RLock()
-	if !r.specsDirty {
-		specs := copyToolSpecs(r.specsCache)
-		r.mu.RUnlock()
-		return specs
-	}
-	r.mu.RUnlock()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.specsDirty {
-		names := make([]string, 0, len(r.tools))
-		for name := range r.tools {
-			if r.visible[name] {
-				names = append(names, name)
-			}
-		}
-		sort.Strings(names)
-
-		specs := make([]ToolSpec, 0, len(names))
-		for _, name := range names {
-			specs = append(specs, r.tools[name].Spec())
-		}
-		r.specsCache = specs
-		r.specsDirty = false
-	}
-	return copyToolSpecs(r.specsCache)
-}
-
-// AllSpecsIncludingDeferred returns every executable tool spec for diagnostics
-// and discovery planning, regardless of provider visibility.
-func (r *ToolRegistry) AllSpecsIncludingDeferred() []ToolSpec {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.tools))
-	for name := range r.tools {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	specs := make([]ToolSpec, 0, len(names))
-	for _, name := range names {
-		specs = append(specs, r.tools[name].Spec())
-	}
-	return specs
-}
-
-// IsVisible reports whether a registered tool is included by AllSpecs.
-func (r *ToolRegistry) IsVisible(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.visible[name]
-}
-
-// copyToolSpecs protects callers from mutating the cached slice or top-level
-// ToolSpec values. ToolSpec.Schema maps are intentionally shared by the
-// immutability contract on ToolSpec.
-func copyToolSpecs(specs []ToolSpec) []ToolSpec {
-	out := make([]ToolSpec, len(specs))
-	copy(out, specs)
-	return out
-}
+// Deprecated: use engine.NewToolRegistry in new packages.
+func NewToolRegistry() *ToolRegistry { return engine.NewToolRegistry() }
 
 // ToolSpecsForRequest returns the registered tool specs for a request, filtering
 // out search tools when searchEnabled is false. When search is enabled, Engine

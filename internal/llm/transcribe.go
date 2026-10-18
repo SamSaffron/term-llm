@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/transcription"
 	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
@@ -19,8 +20,9 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func transcribeAndTruncate(ctx context.Context, filePath string, opts TranscribeOptions) (string, error) {
-	transcript, err := TranscribeFile(ctx, filePath, opts)
+func transcribeAndTruncate(ctx context.Context, filePath string, opts transcription.Options) (string, error) {
+	opts.Client = defaultHTTPClient
+	transcript, err := transcription.TranscribeFile(ctx, filePath, opts)
 	if err != nil {
 		return "", err
 	}
@@ -80,7 +82,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 				endpoint = strings.TrimRight(baseURL, "/") + "/inference"
 			}
 		}
-		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, transcription.Options{
 			Endpoint: endpoint,
 			Model:    modelOverride,
 			Language: language,
@@ -113,7 +115,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if model == "" {
 			model = config.DefaultTranscriptionMistralModel
 		}
-		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, transcription.Options{
 			APIKey:   apiKey,
 			Endpoint: endpoint,
 			Model:    model,
@@ -150,7 +152,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			}
 		}
 		model := firstNonEmptyString(modelOverride, cfg.Transcription.Venice.Model, config.DefaultTranscriptionVeniceModel)
-		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, transcription.Options{
 			APIKey:     apiKey,
 			Endpoint:   endpoint,
 			Model:      model,
@@ -188,7 +190,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			}
 		}
 		model := firstNonEmptyString(modelOverride, cfg.Transcription.ElevenLabs.Model, config.DefaultTranscriptionElevenLabsModel)
-		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, transcription.Options{
 			APIKey:     apiKey,
 			Endpoint:   endpoint,
 			Model:      model,
@@ -215,7 +217,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription is not configured — set providers.openai.api_key or configure a transcription provider in config")
 		}
-		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+		return transcribeAndTruncate(ctx, filePath, transcription.Options{
 			APIKey:   apiKey,
 			Endpoint: endpoint.URL("audio/transcriptions"),
 			Headers:  endpoint.HeaderMap(),
@@ -241,7 +243,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			} else if providerCfg.BaseURL != "" {
 				endpoint = strings.TrimRight(providerCfg.BaseURL, "/") + "/audio/transcriptions"
 			}
-			return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+			return transcribeAndTruncate(ctx, filePath, transcription.Options{
 				APIKey:   apiKey,
 				Endpoint: endpoint,
 				Model:    modelOverride,

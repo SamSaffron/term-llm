@@ -13,7 +13,7 @@ func TestPlatformContextUsesLatestSourceAndSurvivesReconstruction(t *testing.T) 
 
 func TestProviderProjectionStripsPlatformMarkerButKeepsText(t *testing.T) {
 	message := PlatformContextMessage("web context")
-	got := providerSafeRequestMessages([]Message{message})
+	got := providerProjection(t, []Message{message})
 	if len(got) != 1 || len(got[0].Parts) != 1 || got[0].Parts[0].Type != PartText || got[0].Parts[0].Text != "web context" {
 		t.Fatalf("provider messages = %#v", got)
 	}

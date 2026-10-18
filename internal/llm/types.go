@@ -1,1211 +1,484 @@
+// Package llm preserves the original public contracts while implementations
+// move into their owning packages. New packages should import llm/core directly.
 package llm
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"strings"
-	"sync"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
-// contextKey is a private type for context keys to prevent collisions.
-type contextKey string
+// Deprecated: use core.Capabilities for new package boundaries.
+type Capabilities = core.Capabilities
 
-// toolCallIDKey is the context key for the current tool call ID.
-const toolCallIDKey contextKey = "tool_call_id"
-const guardianReviewCollectorKey contextKey = "guardian_review_collector"
+// Deprecated: use core.CommandSuggestion for new package boundaries.
+type CommandSuggestion = core.CommandSuggestion
 
-// GuardianReview is display-only audit metadata for a Guardian-reviewed tool
-// invocation. Providers must continue to receive only the ordinary tool result.
-type GuardianReview struct {
-	DurationMS float64 `json:"duration_ms"`
-	StateBytes int     `json:"state_bytes,omitempty"`
-	Outcome    string  `json:"outcome"`
-	Message    string  `json:"message"`
-	Model      string  `json:"model,omitempty"`
-	Tool       string  `json:"tool,omitempty"`
-	Command    string  `json:"command,omitempty"`
-	Path       string  `json:"path,omitempty"`
-	IsWrite    bool    `json:"is_write,omitempty"`
-	WorkDir    string  `json:"workdir,omitempty"`
-}
+// Deprecated: use core.DiffComment for new package boundaries.
+type DiffComment = core.DiffComment
 
-type guardianReviewCollector struct {
-	mu      sync.Mutex
-	reviews []GuardianReview
-}
+// Deprecated: use core.DiffCommentContextLine for new package boundaries.
+type DiffCommentContextLine = core.DiffCommentContextLine
 
-// ContextWithGuardianReviewCapture installs a per-tool review collector and
-// returns a snapshot function for the execution owner.
-func ContextWithGuardianReviewCapture(ctx context.Context) (context.Context, func() []GuardianReview) {
-	collector := &guardianReviewCollector{}
-	return context.WithValue(ctx, guardianReviewCollectorKey, collector), collector.snapshot
-}
+// Deprecated: use core.DiffData for new package boundaries.
+type DiffData = core.DiffData
 
-// RecordGuardianReview attaches a correlated review to the active tool call.
-func RecordGuardianReview(ctx context.Context, review GuardianReview) {
-	collector, _ := ctx.Value(guardianReviewCollectorKey).(*guardianReviewCollector)
-	if collector == nil {
-		return
-	}
-	collector.mu.Lock()
-	collector.reviews = append(collector.reviews, review)
-	collector.mu.Unlock()
-}
+// Deprecated: use core.DiscoveredTool for new package boundaries.
+type DiscoveredTool = core.DiscoveredTool
 
-func (c *guardianReviewCollector) snapshot() []GuardianReview {
-	if c == nil {
-		return nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]GuardianReview(nil), c.reviews...)
-}
+// Deprecated: use core.EditToolCall for new package boundaries.
+type EditToolCall = core.EditToolCall
 
-// ContextWithCallID returns a new context with the tool call ID set.
-// Used by the engine to pass the call ID to spawn_agent for event bubbling.
-func ContextWithCallID(ctx context.Context, callID string) context.Context {
-	return context.WithValue(ctx, toolCallIDKey, callID)
-}
+// Deprecated: use core.Event for new package boundaries.
+type Event = core.Event
 
-// CallIDFromContext extracts the tool call ID from context, or returns empty string.
-// Used by spawn_agent to get the call ID for event bubbling.
-func CallIDFromContext(ctx context.Context) string {
-	if v := ctx.Value(toolCallIDKey); v != nil {
-		if id, ok := v.(string); ok {
-			return id
-		}
-	}
-	return ""
-}
+// Deprecated: use core.EventType for new package boundaries.
+type EventType = core.EventType
 
-// sessionIDKey is the context key for the current session ID.
-const sessionIDKey contextKey = "session_id"
+// Deprecated: use core.FileChange for new package boundaries.
+type FileChange = core.FileChange
 
-const toolRunIDKey contextKey = "tool_run_id"
+// Deprecated: use core.FilesystemObservationSummary for new package boundaries.
+type FilesystemObservationSummary = core.FilesystemObservationSummary
 
-// ContextWithToolRunID binds dynamic schema activation to one engine run.
-func ContextWithToolRunID(ctx context.Context, runID string) context.Context {
-	return context.WithValue(ctx, toolRunIDKey, runID)
-}
+// Deprecated: use core.GuardianReview for new package boundaries.
+type GuardianReview = core.GuardianReview
 
-// ToolRunIDFromContext returns the active engine run identity.
-func ToolRunIDFromContext(ctx context.Context) string {
-	if v := ctx.Value(toolRunIDKey); v != nil {
-		if id, ok := v.(string); ok {
-			return id
-		}
-	}
-	return ""
-}
+// Deprecated: use core.MediaArtifact for new package boundaries.
+type MediaArtifact = core.MediaArtifact
 
-const approvalTranscriptKey contextKey = "approval_transcript"
+// Deprecated: use core.Message for new package boundaries.
+type Message = core.Message
 
-// TrustedUserInputToolName is the only tool whose output may be promoted to a
-// trusted user turn in an approval transcript. Guardian backends treat the user
-// role as authorization, so a tool that could set it would be able to author its
-// own approval. internal/tools pins this against the ask_user tool name.
-const TrustedUserInputToolName = "ask_user"
+// Deprecated: use core.ModelInfo for new package boundaries.
+type ModelInfo = core.ModelInfo
 
-// ApprovalTurnForTool reports the trusted approval turn a tool result should
-// contribute to a policy-review transcript. Only first-party ask_user output,
-// which is produced by a human answering a prompt, may speak as the user.
-func ApprovalTurnForTool(callName string, output ToolOutput) (role, text string, ok bool) {
-	if strings.TrimSpace(callName) != TrustedUserInputToolName {
-		return "", "", false
-	}
-	text = strings.TrimSpace(output.TrustedUserInput)
-	if text == "" {
-		return "", "", false
-	}
-	return string(RoleUser), text, true
-}
+// Deprecated: use core.MultiAgentOptions for new package boundaries.
+type MultiAgentOptions = core.MultiAgentOptions
 
-// ContextWithApprovalTranscript returns a new context carrying the conversation
-// messages that should be used by policy reviewers for tool approval decisions.
-func ContextWithApprovalTranscript(ctx context.Context, messages []Message) context.Context {
-	copied := make([]Message, len(messages))
-	copy(copied, messages)
-	return context.WithValue(ctx, approvalTranscriptKey, copied)
-}
+// Deprecated: use core.NativeToolDiscoveryProvider for new package boundaries.
+type NativeToolDiscoveryProvider = core.NativeToolDiscoveryProvider
 
-// ApprovalTranscriptFromContext extracts the policy-review transcript messages.
+// Deprecated: use core.NativeToolDiscoveryRequest for new package boundaries.
+type NativeToolDiscoveryRequest = core.NativeToolDiscoveryRequest
+
+// Deprecated: use core.NativeToolDiscoverySupport for new package boundaries.
+type NativeToolDiscoverySupport = core.NativeToolDiscoverySupport
+
+// Deprecated: use core.OutputClaimDiagnostic for new package boundaries.
+type OutputClaimDiagnostic = core.OutputClaimDiagnostic
+
+// Deprecated: use core.Part for new package boundaries.
+type Part = core.Part
+
+// Deprecated: use core.PartType for new package boundaries.
+type PartType = core.PartType
+
+// Deprecated: use core.PathNoteProvenance for new package boundaries.
+type PathNoteProvenance = core.PathNoteProvenance
+
+// Deprecated: use core.ProgrammaticToolCallingOptions for new package boundaries.
+type ProgrammaticToolCallingOptions = core.ProgrammaticToolCallingOptions
+
+// Deprecated: use core.PromptCacheOptions for new package boundaries.
+type PromptCacheOptions = core.PromptCacheOptions
+
+// Deprecated: use core.Provider for new package boundaries.
+type Provider = core.Provider
+
+// Deprecated: use core.ProviderReplayItem for new package boundaries.
+type ProviderReplayItem = core.ProviderReplayItem
+
+// Deprecated: use core.ProviderStateExporter for new package boundaries.
+type ProviderStateExporter = core.ProviderStateExporter
+
+// Deprecated: use core.ProviderStateImporter for new package boundaries.
+type ProviderStateImporter = core.ProviderStateImporter
+
+// Deprecated: use core.ReasoningKind for new package boundaries.
+type ReasoningKind = core.ReasoningKind
+
+// Deprecated: use core.Request for new package boundaries.
+type Request = core.Request
+
+// Deprecated: use core.ResponsesOptions for new package boundaries.
+type ResponsesOptions = core.ResponsesOptions
+
+// Deprecated: use core.Role for new package boundaries.
+type Role = core.Role
+
+// Deprecated: use core.SkillActivationProvenance for new package boundaries.
+type SkillActivationProvenance = core.SkillActivationProvenance
+
+// Deprecated: use core.Stream for new package boundaries.
+type Stream = core.Stream
+
+// Deprecated: use core.ToolActivity for new package boundaries.
+type ToolActivity = core.ToolActivity
+
+// Deprecated: use core.ToolCall for new package boundaries.
+type ToolCall = core.ToolCall
+
+// Deprecated: use core.ToolChoice for new package boundaries.
+type ToolChoice = core.ToolChoice
+
+// Deprecated: use core.ToolChoiceMode for new package boundaries.
+type ToolChoiceMode = core.ToolChoiceMode
+
+// Deprecated: use core.ToolContentPart for new package boundaries.
+type ToolContentPart = core.ToolContentPart
+
+// Deprecated: use core.ToolContentPartType for new package boundaries.
+type ToolContentPartType = core.ToolContentPartType
+
+// Deprecated: use core.ToolDiscoveryCall for new package boundaries.
+type ToolDiscoveryCall = core.ToolDiscoveryCall
+
+// Deprecated: use core.ToolDiscoveryOutput for new package boundaries.
+type ToolDiscoveryOutput = core.ToolDiscoveryOutput
+
+// Deprecated: use core.ToolExecutionResponse for new package boundaries.
+type ToolExecutionResponse = core.ToolExecutionResponse
+
+// Deprecated: use core.ToolFileData for new package boundaries.
+type ToolFileData = core.ToolFileData
+
+// Deprecated: use core.ToolImageData for new package boundaries.
+type ToolImageData = core.ToolImageData
+
+// Deprecated: use core.ToolNamespaceIdentity for new package boundaries.
+type ToolNamespaceIdentity = core.ToolNamespaceIdentity
+
+// Deprecated: use core.ToolOutput for new package boundaries.
+type ToolOutput = core.ToolOutput
+
+// Deprecated: use core.ToolResult for new package boundaries.
+type ToolResult = core.ToolResult
+
+// Deprecated: use core.ToolSpec for new package boundaries.
+type ToolSpec = core.ToolSpec
+
+// Deprecated: use core.Usage for new package boundaries.
+type Usage = core.Usage
+
+// Deprecated: use core.ApprovalTranscriptFromContext for new package boundaries.
 func ApprovalTranscriptFromContext(ctx context.Context) []Message {
-	if v := ctx.Value(approvalTranscriptKey); v != nil {
-		if msgs, ok := v.([]Message); ok {
-			copied := make([]Message, len(msgs))
-			copy(copied, msgs)
-			return copied
-		}
-	}
-	return nil
+	return core.ApprovalTranscriptFromContext(ctx)
 }
 
-// ContextWithSessionID returns a new context with the session ID set.
-// Used by the engine so tools (e.g. file-change recording) know which
-// session a tool execution belongs to.
+// Deprecated: use core.ApprovalTurnForTool for new package boundaries.
+func ApprovalTurnForTool(callName string, output ToolOutput) (role, text string, ok bool) {
+	return core.ApprovalTurnForTool(callName, output)
+}
+
+// Deprecated: use core.AssistantText for new package boundaries.
+func AssistantText(text string) Message { return core.AssistantText(text) }
+
+// Deprecated: use core.CallIDFromContext for new package boundaries.
+func CallIDFromContext(ctx context.Context) string { return core.CallIDFromContext(ctx) }
+
+// Deprecated: use core.ContextWithApprovalTranscript for new package boundaries.
+func ContextWithApprovalTranscript(ctx context.Context, messages []Message) context.Context {
+	return core.ContextWithApprovalTranscript(ctx, messages)
+}
+
+// Deprecated: use core.ContextWithCallID for new package boundaries.
+func ContextWithCallID(ctx context.Context, callID string) context.Context {
+	return core.ContextWithCallID(ctx, callID)
+}
+
+// Deprecated: use core.ContextWithGuardianReviewCapture for new package boundaries.
+func ContextWithGuardianReviewCapture(ctx context.Context) (context.Context, func() []GuardianReview) {
+	return core.ContextWithGuardianReviewCapture(ctx)
+}
+
+// Deprecated: use core.ContextWithSessionID for new package boundaries.
 func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
-	return context.WithValue(ctx, sessionIDKey, sessionID)
+	return core.ContextWithSessionID(ctx, sessionID)
 }
 
-// SessionIDFromContext extracts the session ID from context, or returns empty string.
-func SessionIDFromContext(ctx context.Context) string {
-	if v := ctx.Value(sessionIDKey); v != nil {
-		if id, ok := v.(string); ok {
-			return id
-		}
-	}
-	return ""
+// Deprecated: use core.ContextWithToolRunID for new package boundaries.
+func ContextWithToolRunID(ctx context.Context, runID string) context.Context {
+	return core.ContextWithToolRunID(ctx, runID)
 }
 
-// Provider streams model output events for a request.
-type Provider interface {
-	Name() string
-	Credential() string // Returns credential type for debugging (e.g., "api_key", "codex", "claude-code")
-	Capabilities() Capabilities
-	Stream(ctx context.Context, req Request) (Stream, error)
-}
+// Deprecated: use core.GoalSteeringText for new package boundaries.
+func GoalSteeringText(text string) Message { return core.GoalSteeringText(text) }
 
-// ProviderStateExporter is implemented by stateful providers that can persist
-// opaque conversation transport state outside the user-visible transcript.
-// The returned bytes must be safe to store in the session database.
-type ProviderStateExporter interface {
-	ExportProviderState() ([]byte, bool)
-}
+// Deprecated: use core.HasGoalSteeringPart for new package boundaries.
+func HasGoalSteeringPart(parts []Part) bool { return core.HasGoalSteeringPart(parts) }
 
-// ProviderStateImporter restores state previously returned by
-// ProviderStateExporter. Providers should validate and ignore unusable state by
-// returning an error rather than partially applying it.
-type ProviderStateImporter interface {
-	ImportProviderState([]byte) error
-}
+// Deprecated: use core.IsEncryptedReasoningDelta for new package boundaries.
+func IsEncryptedReasoningDelta(event Event) bool { return core.IsEncryptedReasoningDelta(event) }
 
-// Capabilities describe optional provider features.
-type Capabilities struct {
-	NativeWebSearch         bool // Provider has native web search capability
-	NativeWebFetch          bool // Provider has native URL fetch capability
-	ToolCalls               bool
-	SupportsToolChoice      bool // Provider supports tool_choice to force specific tool use
-	ManagesOwnContext       bool // Provider manages its own context window (skip compaction)
-	InlineToolLoop          bool // Provider completes its MCP/tool loop inside one Stream invocation
-	OrderedInlineToolEvents bool // Provider requires streamed text/tool/text order preserved in persisted assistant parts
-}
+// Deprecated: use core.IsGoalSteeringMessage for new package boundaries.
+func IsGoalSteeringMessage(msg Message) bool { return core.IsGoalSteeringMessage(msg) }
 
-// NativeToolDiscoverySupport describes a provider/model/transport combination
-// whose client-executed discovery protocol has been explicitly verified.
-type NativeToolDiscoverySupport struct {
-	Supported bool
-	Name      string
-	Reason    string
-}
+// Deprecated: use core.IsLegacyGoalSteeringText for new package boundaries.
+func IsLegacyGoalSteeringText(text string) bool { return core.IsLegacyGoalSteeringText(text) }
 
-// NativeToolDiscoveryProvider is implemented only by providers that can
-// translate the provider-neutral discovery request and replay parts to their wire
-// protocol. Support must be exact rather than inferred from general tool calling.
-type NativeToolDiscoveryProvider interface {
-	NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport
-}
-
-// Stream yields events until io.EOF.
-type Stream interface {
-	Recv() (Event, error)
-	Close() error
-}
-
-// ResponsesOptions controls advanced OpenAI Responses API execution features.
-// A nil Request.Responses uses provider configuration; a non-nil value overlays
-// its explicitly populated fields on those defaults.
-type ResponsesOptions struct {
-	ReasoningMode           string
-	ReasoningContext        string
-	MultiAgent              MultiAgentOptions
-	ProgrammaticToolCalling ProgrammaticToolCallingOptions
-	PromptCache             PromptCacheOptions
-}
-
-type MultiAgentOptions struct {
-	Enabled                bool
-	EnabledSet             bool
-	MaxConcurrentSubagents int
-}
-
-type ProgrammaticToolCallingOptions struct {
-	Enabled    bool
-	EnabledSet bool
-	Tools      []string
-}
-
-type PromptCacheOptions struct {
-	Mode string
-	TTL  string
-}
-
-func (o ResponsesOptions) IsZero() bool {
-	return o.ReasoningMode == "" && o.ReasoningContext == "" &&
-		!o.MultiAgent.Enabled && !o.MultiAgent.EnabledSet && o.MultiAgent.MaxConcurrentSubagents == 0 &&
-		!o.ProgrammaticToolCalling.Enabled && !o.ProgrammaticToolCalling.EnabledSet && len(o.ProgrammaticToolCalling.Tools) == 0 &&
-		o.PromptCache.Mode == "" && o.PromptCache.TTL == ""
-}
-
-// Request represents a single model turn.
-type Request struct {
-	Resume     *Continuation `json:"-"` // Internal same-invocation execution checkpoint.
-	Model      string
-	SessionID  string // Optional session ID for provider-side continuity/caching hints
-	WorkingDir string // Optional working directory for local subprocess providers
-	// Ephemeral marks one-shot internal requests (title generation, summaries,
-	// vision helpers) that must not participate in provider-side conversation/session
-	// state. Stateful providers should avoid resuming an existing session and must
-	// not update their stored session boundary.
-	Ephemeral bool
-	// IncludeDeveloperInContinuation keeps a developer policy immediately before
-	// the latest user turn when building a server-state continuation suffix.
-	IncludeDeveloperInContinuation bool
-	Messages                       []Message
-	ApprovalTranscriptPrefix       []Message // Optional policy-review-only evidence prepended to tool approval transcripts; never sent to providers.
-	Tools                          []ToolSpec
-	ToolChoice                     ToolChoice
-	LastTurnToolChoice             *ToolChoice // If set, force this tool choice on the last agentic turn
-	// EnableToolDiscovery opts this request into an attached dynamic tool planner.
-	// It is internal orchestration state and is not provider metadata.
-	EnableToolDiscovery bool
-	// NativeToolDiscovery asks a capable provider adapter to expose its native
-	// client-executed discovery control tool. Deferred schemas remain in neutral
-	// discovery output parts, never in the ordinary top-level Tools slice.
-	NativeToolDiscovery *NativeToolDiscoveryRequest
-	ParallelToolCalls   bool
-	// AllowedToolsPresent applies an internal, request-scoped execution filter.
-	// It is consumed by runtimes before calling Engine.Stream and is not provider metadata.
-	// A present empty AllowedTools slice intentionally blocks every callable tool.
-	AllowedTools            []string
-	AllowedToolsPresent     bool
-	Search                  bool
-	ForceExternalSearch     bool // If true, use external search even if provider supports native
-	DisableExternalWebFetch bool // If true, do not inject external read_url even when provider lacks native fetch
-	ReasoningEffort         string
-	Responses               *ResponsesOptions // Advanced Responses API controls; nil uses provider defaults.
-	MaxOutputTokens         int
-	Temperature             float32
-	TemperatureSet          bool // If true, Temperature was explicitly provided, including zero
-	TopP                    float32
-	TopPSet                 bool              // If true, TopP was explicitly provided, including zero
-	ServiceTier             string            // Optional Responses API service tier; "priority" enables ChatGPT fast mode
-	ServiceTierSet          bool              // If true, ServiceTier overrides any provider-level default; empty clears it
-	MaxTurns                int               // Max agentic turns for tool execution (0 = use default)
-	ToolMap                 map[string]string // Maps client tool names to server tool names (e.g. "WebSearch" → "search")
-	Debug                   bool
-	DebugRaw                bool
-}
-
-// Role identifies a message role.
-type Role string
-
-const (
-	RoleSystem    Role = "system"
-	RoleUser      Role = "user"
-	RoleAssistant Role = "assistant"
-	RoleTool      Role = "tool"
-	// RoleEvent is a durable UI/session timeline marker. It is never sent to
-	// providers as conversation context.
-	RoleEvent Role = "event"
-	// RoleDeveloper is a privileged instruction role injected by the platform layer.
-	// OpenAI/Responses API providers send it as a "developer" role message; Anthropic
-	// providers have no native equivalent, so the text is prepended into the next user turn
-	// wrapped in <developer>…</developer> tags.
-	RoleDeveloper Role = "developer"
-)
-
-// PartType identifies a message content part.
-type PartType string
-
-const (
-	PartText              PartType = "text"
-	PartImage             PartType = "image"
-	PartFile              PartType = "file"
-	PartToolCall          PartType = "tool_call"
-	PartToolResult        PartType = "tool_result"
-	PartToolActivity      PartType = "tool_activity"      // Persisted display-only provider-managed tool activity; never sent to providers.
-	PartProviderReplay    PartType = "provider_replay"    // Hidden provider protocol state; never rendered/exported.
-	PartDiscoveryCall     PartType = "discovery_call"     // Provider-neutral native discovery call, translated only by capable adapters.
-	PartDiscoveryOutput   PartType = "discovery_output"   // Trusted schemas selected by the local planner for a discovery call.
-	PartSkillActivation   PartType = "skill_activation"   // Persisted direct-activation provenance; never sent to providers.
-	PartAgentMention      PartType = "agent_mention"      // Provider-visible delegation instruction; excluded from human-visible text surfaces.
-	PartPathNote          PartType = "path_note"          // Persisted branch-context provenance; adjacent text is sent as developer context.
-	PartDiffComment       PartType = "diff_comment"       // Persisted inline-diff anchor metadata; never sent to providers.
-	PartGoalSteering      PartType = "goal_steering"      // Persisted marker for synthetic active-goal user prompts; adjacent text is sent to providers but hidden from human transcripts.
-	PartConversationStart PartType = "conversation_start" // Persisted immutable time anchor for the conversation; marker is never sent to providers.
-	PartDisplayText       PartType = "display_text"       // Persistence-only visible text; never sent to providers.
-	PartPlatformContext   PartType = "platform_context"   // Persisted active interaction-mode context; marker is never sent to providers.
-)
-
-// Message holds a role with structured parts.
-type Message struct {
-	Role                    Role
-	Parts                   []Part
-	CacheAnchor             bool   // provider should apply cache_control to this message (Anthropic-specific)
-	ApprovalRole            string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
-	ApprovalText            string `json:",omitempty"` // Optional canonical Guardian evidence text; providers ignore it.
-	ClientMessageID         string `json:",omitempty"` // Stable identity for first-party user intent; providers ignore it.
-	DisplayText             string `json:",omitempty"` // Optional persistence/UI text when provider-only context is present.
-	ResponseID              string `json:",omitempty"` // Stable response owner for persisted/UI projection identity; providers ignore it.
-	AssistantSegmentOrdinal int    `json:",omitempty"` // Response-scoped assistant segment identity; -1 when not applicable.
-	SegmentStartSequence    int64  `json:",omitempty"` // First response event sequence for this assistant segment, when known.
-	SegmentEndSequence      int64  `json:",omitempty"` // Last response event sequence covered by this persisted segment, when known.
-}
-
-// ReasoningKind classifies provider reasoning/thinking payloads for safe display.
-type ReasoningKind string
-
-const (
-	ReasoningKindUnknown   ReasoningKind = "unknown"
-	ReasoningKindSummary   ReasoningKind = "summary"
-	ReasoningKindRaw       ReasoningKind = "raw"
-	ReasoningKindEncrypted ReasoningKind = "encrypted"
-)
-
-// NormalizeReasoningKind returns a conservative non-empty reasoning kind.
-func NormalizeReasoningKind(kind ReasoningKind) ReasoningKind {
-	switch ReasoningKind(strings.ToLower(strings.TrimSpace(string(kind)))) {
-	case ReasoningKindSummary:
-		return ReasoningKindSummary
-	case ReasoningKindRaw:
-		return ReasoningKindRaw
-	case ReasoningKindEncrypted:
-		return ReasoningKindEncrypted
-	default:
-		return ReasoningKindUnknown
-	}
-}
-
-// NormalizeStoredReasoningKind preserves the historical meaning of persisted
-// assistant parts from before ReasoningKind existed. Those parts stored only
-// display-safe summaries in ReasoningContent, so an empty kind with content is
-// treated as a summary when rendering/exporting stored sessions. Live provider
-// events should continue using NormalizeReasoningKind.
-func NormalizeStoredReasoningKind(kind ReasoningKind, hasReasoningContent bool) ReasoningKind {
-	if strings.TrimSpace(string(kind)) == "" && hasReasoningContent {
-		return ReasoningKindSummary
-	}
-	return NormalizeReasoningKind(kind)
-}
-
-// MergeReasoningKind combines accumulated and incoming reasoning classifications.
-// Empty incoming kinds mean "no provider signal". Unknown is not a positive
-// classification signal, encrypted is replay-only until displayable summary/raw
-// text arrives, and raw wins over summary when both appear in the same block.
+// Deprecated: use core.MergeReasoningKind for new package boundaries.
 func MergeReasoningKind(current, incoming ReasoningKind) ReasoningKind {
-	if strings.TrimSpace(string(incoming)) == "" {
-		return current
-	}
-
-	incoming = NormalizeReasoningKind(incoming)
-	if incoming == ReasoningKindUnknown {
-		return current
-	}
-	if current == "" {
-		return incoming
-	}
-
-	current = NormalizeReasoningKind(current)
-	if current == ReasoningKindEncrypted {
-		return incoming
-	}
-	if incoming == ReasoningKindEncrypted {
-		return current
-	}
-	if current == incoming {
-		return current
-	}
-	if current == ReasoningKindUnknown {
-		return incoming
-	}
-	if current == ReasoningKindRaw || incoming == ReasoningKindRaw {
-		return ReasoningKindRaw
-	}
-	return ReasoningKindSummary
+	return core.MergeReasoningKind(current, incoming)
 }
 
-// IsEncryptedReasoningDelta reports whether a reasoning delta only carries
-// encrypted replay metadata and should be withheld from interactive UI streams.
-func IsEncryptedReasoningDelta(event Event) bool {
-	kind := NormalizeReasoningKind(event.ReasoningKind)
-	return kind == ReasoningKindEncrypted || (event.ReasoningEncryptedContent != "" && event.Text == "")
-}
+// Deprecated: use core.MessageAttachmentSummary for new package boundaries.
+func MessageAttachmentSummary(msg Message) string { return core.MessageAttachmentSummary(msg) }
 
-// Part represents a single content part.
-type Part struct {
-	Type                      PartType
-	Text                      string
-	CreatedAt                 int64          `json:",omitempty"` // Display-only first-observed Unix milliseconds for an ordered inline part.
-	ReasoningContent          string         // Reasoning summary text or provider thinking content (classified by ReasoningKind)
-	ReasoningSummaryParts     []string       // Display-safe Responses reasoning summary array elements, when provider supplies structure
-	ReasoningItemID           string         // Responses API reasoning item ID for replay
-	ReasoningEncryptedContent string         // Provider encrypted reasoning/signature content for replay; never displayed
-	ReasoningKind             ReasoningKind  // Classification for ReasoningContent/replay metadata
-	ReasoningSummaryTitle     string         // Optional parsed display title for summary reasoning
-	ImageData                 *ToolImageData // User-supplied image (base64-encoded)
-	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
-	FileData                  *ToolFileData  // User-supplied file (base64-encoded)
-	FilePath                  string         // Local filesystem path to the file (when available)
-	ToolCall                  *ToolCall
-	ToolResult                *ToolResult
-	ToolActivity              *ToolActivity
-	ProviderReplay            *ProviderReplayItem        // Opaque Responses output item used only for stateless continuation.
-	DiscoveryCall             *ToolDiscoveryCall         // Native discovery request emitted by a capable provider.
-	DiscoveryOutput           *ToolDiscoveryOutput       // Planner-selected trusted schemas paired to a discovery call.
-	SkillActivation           *SkillActivationProvenance // Direct user activation metadata; persisted but not provider content.
-	PathNote                  *PathNoteProvenance        // Branch-context metadata; persisted but not sent to providers.
-	DiffComment               *DiffComment               // Inline-diff comment anchor; persisted but not sent to providers.
-}
+// Deprecated: use core.MessageText for new package boundaries.
+func MessageText(msg Message) string { return core.MessageText(msg) }
 
-// DiffCommentContextLine preserves one exact nearby line from the diff that the
-// user saw when submitting an inline instruction.
-type DiffCommentContextLine struct {
-	Side string `json:"side"`
-	Line int    `json:"line"`
-	Text string `json:"text"`
-}
-
-// DiffComment is durable, display-only metadata for an instruction anchored to
-// a particular diff snapshot. The adjacent text part carries the actual
-// provider-facing instruction.
-type DiffComment struct {
-	ID       string `json:"id"`
-	ParentID string `json:"parent_id,omitempty"`
-	Path     string `json:"path"`
-	// Scope is the diff view captured by the anchor. Empty means last_turn for
-	// comments persisted before scoped Git diffs supported inline comments.
-	Scope string `json:"scope,omitempty"`
-	Side  string `json:"side"`
-	Line  int    `json:"line"`
-	// FileChangeSeq is the retained snapshot sequence for last_turn and zero
-	// for Git scopes, which do not have a session file-tracker snapshot.
-	FileChangeSeq int64                    `json:"file_change_seq"`
-	LineText      string                   `json:"line_text"`
-	ContextBefore []DiffCommentContextLine `json:"context_before,omitempty"`
-	ContextAfter  []DiffCommentContextLine `json:"context_after,omitempty"`
-	Instruction   string                   `json:"instruction"`
-}
-
-// PathNoteProvenance identifies generated context carried from the suffix that
-// was left behind when a conversation branch was created.
-type PathNoteProvenance struct {
-	SourceSessionID string   `json:"source_session_id"`
-	AnchorMessageID int64    `json:"anchor_message_id,omitempty"`
-	SourceMessages  int      `json:"source_messages,omitempty"`
-	OmittedMessages int      `json:"omitted_messages,omitempty"`
-	ReadFiles       []string `json:"read_files,omitempty"`
-	ModifiedFiles   []string `json:"modified_files,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	Focus           string   `json:"focus,omitempty"`
-}
-
-// SkillActivationProvenance records the exact direct invocation and resolved
-// skill source used for a historical turn. The expanded instructions are stored
-// in the containing developer message's text part, so later on-disk edits cannot
-// rewrite session history.
-type SkillActivationProvenance struct {
-	Name                string   `json:"name"`
-	Source              string   `json:"source"`
-	SourcePath          string   `json:"source_path"`
-	Origin              string   `json:"origin"`
-	Execution           string   `json:"execution"`
-	RawArguments        string   `json:"raw_arguments,omitempty"`
-	Agent               string   `json:"agent,omitempty"`
-	Model               string   `json:"model,omitempty"`
-	AllowedTools        []string `json:"allowed_tools,omitempty"`
-	AllowedToolsPresent bool     `json:"allowed_tools_present,omitempty"`
-	RunID               string   `json:"run_id,omitempty"`
-	ChildSessionID      string   `json:"child_session_id,omitempty"`
-	Status              string   `json:"status,omitempty"`
-	StartedAt           string   `json:"started_at,omitempty"`
-	CompletedAt         string   `json:"completed_at,omitempty"`
-	ActivatedAt         string   `json:"activated_at"`
-}
-
-const (
-	ToolActivityCompleted = "completed"
-	ToolActivityFailed    = "failed"
-)
-
-// ToolActivity is a display-only record of a provider-managed tool invocation.
-// It is persisted with assistant history but ignored by provider request builders.
-type ToolActivity struct {
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name"`
-	Info      string          `json:"info,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Status    string          `json:"status"` // "completed" or "failed"
-}
-
-func cloneToolActivity(activity *ToolActivity) *ToolActivity {
-	if activity == nil {
-		return nil
-	}
-	cloned := *activity
-	cloned.Arguments = append(json.RawMessage(nil), activity.Arguments...)
-	return &cloned
-}
-
-// ProviderReplayItem preserves a completed Responses output item byte-for-byte.
-// Raw is persisted for provider continuation but omitted from display and exports.
-type ProviderReplayItem struct {
-	Raw json.RawMessage `json:"raw"`
-}
-
-// NativeToolDiscoveryRequest is provider-neutral orchestration metadata. Search
-// is the planner-owned input contract; provider adapters translate it to their
-// native discovery tool only when NativeToolDiscoverySupport succeeds.
-type NativeToolDiscoveryRequest struct {
-	Search ToolSpec `json:"search"`
-}
-
-// ToolDiscoveryCall records a provider-native request for local catalogue search.
-type ToolDiscoveryCall struct {
-	ID        string          `json:"id"`
-	Arguments json.RawMessage `json:"arguments"`
-}
-
-// ToolNamespaceIdentity carries an explicit provider-neutral namespace route for
-// a callable tool. Name and ChildName are model-visible native identities;
-// ToolSpec.Name remains the canonical flattened executable name used by the
-// registry and function-only providers.
-type ToolNamespaceIdentity struct {
-	Name        string `json:"name"`
-	ChildName   string `json:"child_name"`
-	Description string `json:"description,omitempty"`
-}
-
-// DiscoveredTool is a trusted catalogue schema selected by the local planner.
-// SchemaHash binds replay to the authorised catalogue generation that supplied it.
-type DiscoveredTool struct {
-	Spec       ToolSpec `json:"spec"`
-	SchemaHash string   `json:"schema_hash"`
-}
-
-// ToolDiscoveryOutput pairs trusted schemas with one native discovery call.
-type ToolDiscoveryOutput struct {
-	CallID        string           `json:"call_id"`
-	CatalogueHash string           `json:"catalogue_hash"`
-	CatalogueGen  uint64           `json:"catalogue_generation"`
-	Tools         []DiscoveredTool `json:"tools"`
-}
-
-func cloneToolDiscoveryOutput(output *ToolDiscoveryOutput) *ToolDiscoveryOutput {
-	if output == nil {
-		return nil
-	}
-	cloned := *output
-	cloned.Tools = make([]DiscoveredTool, len(output.Tools))
-	for i, selected := range output.Tools {
-		selected.Spec.Schema = deepCopyMap(selected.Spec.Schema)
-		selected.Spec.OutputSchema = deepCopyMap(selected.Spec.OutputSchema)
-		selected.Spec.AllowedCallers = append([]string(nil), selected.Spec.AllowedCallers...)
-		if selected.Spec.Namespace != nil {
-			namespace := *selected.Spec.Namespace
-			selected.Spec.Namespace = &namespace
-		}
-		cloned.Tools[i] = selected
-	}
-	return &cloned
-}
-
-// ToolSpec describes a callable tool.
-//
-// Tool specs are treated as immutable after registration. In particular, Schema
-// maps returned from registries may be shared across calls; provider code that
-// needs to rewrite a schema must copy it first.
-type ToolSpec struct {
-	Name        string
-	Description string
-	Schema      map[string]interface{}
-	// Namespace is optional provider-neutral identity metadata. Portable and
-	// function-only providers continue to use Name; native namespace-capable
-	// adapters may expose ChildName under the explicit namespace.
-	Namespace *ToolNamespaceIdentity `json:",omitempty"`
-	// Strict opts this tool into OpenAI strict function-parameter schemas.
-	// Default is false to match Codex/OpenAI flagship behavior for broad MCP
-	// schemas. When enabled, all object properties are required and free-form maps
-	// are converted to strict-compatible key/value arrays.
-	Strict         bool
-	AllowedCallers []string               // Immutable caller allow-list (for example, "programmatic").
-	OutputSchema   map[string]interface{} // Optional structured output schema for PTC callers.
-}
-
-// ToolChoiceMode controls tool selection behavior.
-type ToolChoiceMode string
-
-const (
-	ToolChoiceAuto     ToolChoiceMode = "auto"
-	ToolChoiceNone     ToolChoiceMode = "none"
-	ToolChoiceRequired ToolChoiceMode = "required"
-	ToolChoiceName     ToolChoiceMode = "name"
-)
-
-// ToolChoice configures which tool the model should call.
-type ToolChoice struct {
-	Mode ToolChoiceMode
-	Name string
-}
-
-// ToolCall is a model-requested tool invocation.
-type ToolCall struct {
-	ID   string
-	Name string // Canonical executable name after engine routing.
-	// Namespace and ChildName preserve an explicit native provider identity.
-	// They are never reconstructed by splitting Name.
-	Namespace  string `json:",omitempty"`
-	ChildName  string `json:",omitempty"`
-	Arguments  json.RawMessage
-	Caller     string `json:",omitempty"` // PTC caller provenance; copied to function_call_output.
-	ToolInfo   string `json:",omitempty"` // Persisted display text for TUI/history (already formatted, e.g. "(main.go)")
-	ThoughtSig []byte // Gemini 3 thought signature (must be passed back in result)
-}
-
-// Diff operation identifiers for structured diff rendering.
-const (
-	DiffOperationCreate = "create"
-)
-
-// DiffData represents structured diff information from edit/write tools.
-type DiffData struct {
-	File      string `json:"f"`
-	Old       string `json:"o"`
-	New       string `json:"n"`
-	Line      int    `json:"l"`            // 1-indexed starting line number
-	Operation string `json:"op,omitempty"` // Optional operation hint, e.g. "create" for new files
-}
-
-// FileChange describes one recorded file modification made by a tool.
-// Emitted on EventToolExecEnd when file-change tracking is enabled.
-// Contents are never carried here — only metadata; the recorded blobs
-// are served on demand by the session file-changes endpoints.
-type FileChange struct {
-	Path             string   `json:"path"` // Absolute file path
-	Kind             string   `json:"kind"` // "create" | "modify" | "delete"
-	Adds             int      `json:"adds"` // Lines added by this change (0 when unavailable)
-	Dels             int      `json:"dels"` // Lines removed by this change (0 when unavailable)
-	Seq              int64    `json:"seq"`  // Per-session monotonic attributed-change sequence
-	EventSeq         int64    `json:"event_seq,omitempty"`
-	Truncated        bool     `json:"truncated,omitempty"` // Legacy compatibility; ContentStatus is authoritative
-	Provenance       string   `json:"provenance,omitempty"`
-	Provenances      []string `json:"provenances,omitempty"`
-	BaselineState    string   `json:"baseline_state,omitempty"`
-	ContentStatus    string   `json:"content_status,omitempty"`
-	ContentAvailable bool     `json:"content_available"`
-	ClaimCoverage    string   `json:"claim_coverage,omitempty"`
-	TrustedPersisted bool     `json:"-"` // set only by the trusted recorder after persistence
-}
-
-// FilesystemObservationSummary describes detected but non-attributed effects.
-type FilesystemObservationSummary struct {
-	ID               int64    `json:"id"`
-	Classification   string   `json:"classification"`
-	Root             string   `json:"root,omitempty"`
-	CreatedCount     int      `json:"created_count"`
-	ModifiedCount    int      `json:"modified_count"`
-	DeletedCount     int      `json:"deleted_count"`
-	SampledPaths     []string `json:"sampled_paths,omitempty"`
-	SamplesTruncated bool     `json:"samples_truncated,omitempty"`
-	CoverageStatus   string   `json:"coverage_status"`
-	EventSeq         int64    `json:"event_seq"`
-}
-
-// OutputClaimDiagnostic reports confirmation, mismatch, coverage, and tracker failures.
-type OutputClaimDiagnostic struct {
-	NormalizedPattern string `json:"normalized_pattern"`
-	ClaimKind         string `json:"claim_kind"`
-	Reason            string `json:"reason"`
-	CoverageStatus    string `json:"coverage_status"`
-	MatchingPathCount int    `json:"matching_path_count"`
-	Message           string `json:"message,omitempty"`
-}
-
-// ToolContentPartType identifies a structured tool result content item.
-type ToolContentPartType string
-
-const (
-	ToolContentPartText      ToolContentPartType = "text"
-	ToolContentPartImageData ToolContentPartType = "image_data"
-)
-
-// ToolImageData represents base64-encoded image data in user input or tool output.
-type ToolImageData struct {
-	MediaType string `json:"media_type,omitempty"`
-	Base64    string `json:"base64,omitempty"`
-	Detail    string `json:"detail,omitempty"`
-	Width     int    `json:"width,omitempty"`
-	Height    int    `json:"height,omitempty"`
-}
-
-// ToolFileData represents base64-encoded file data in user input.
-type ToolFileData struct {
-	MediaType string `json:"media_type,omitempty"`
-	Base64    string `json:"base64,omitempty"`
-	Filename  string `json:"filename,omitempty"`
-	SizeBytes int64  `json:"size_bytes,omitempty"`
-}
-
-// ToolContentPart represents one structured piece of tool result content.
-// Use a sequence like [text, image_data, text] to preserve multimodal ordering.
-type ToolContentPart struct {
-	Type      ToolContentPartType `json:"type"`
-	Text      string              `json:"text,omitempty"`
-	ImageData *ToolImageData      `json:"image_data,omitempty"`
-}
-
-// MediaArtifact describes a local image, video, or audio produced for presentation to
-// the user. SourcePath remains useful to local terminal surfaces; StoredPath is
-// an optional durable copy owned by a serve runtime. Neither path is sent to a
-// browser directly.
-type MediaArtifact struct {
-	Reference  string `json:"reference,omitempty"`
-	SourcePath string `json:"source_path,omitempty"`
-	StoredPath string `json:"stored_path,omitempty"`
-	MediaType  string `json:"media_type,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Caption    string `json:"caption,omitempty"`
-}
-
-// Path returns the durable copy when available, falling back to the approved
-// source path for local-only terminal sessions.
-func (m MediaArtifact) Path() string {
-	if m.StoredPath != "" {
-		return m.StoredPath
-	}
-	return m.SourcePath
-}
-
-// PublishedPath returns the durable path preferred by remote serve surfaces.
-func (m MediaArtifact) PublishedPath() string {
-	if m.StoredPath != "" {
-		return m.StoredPath
-	}
-	return m.SourcePath
-}
-
-// NormalizeMedia combines structured media with legacy image paths while
-// preserving order and suppressing duplicate paths.
+// Deprecated: use core.NormalizeMedia for new package boundaries.
 func NormalizeMedia(media []MediaArtifact, images []string) []MediaArtifact {
-	out := make([]MediaArtifact, 0, len(media)+len(images))
-	seen := make(map[string]struct{}, len(media)+len(images))
-	appendOne := func(item MediaArtifact) {
-		path := item.Path()
-		key := path
-		if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
-			key = "reference:" + reference
-		}
-		if key == "" {
-			return
-		}
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		out = append(out, item)
-	}
-	for _, item := range media {
-		appendOne(item)
-	}
-	for _, imagePath := range images {
-		appendOne(MediaArtifact{SourcePath: imagePath, MediaType: "image/*"})
-	}
-	return out
+	return core.NormalizeMedia(media, images)
 }
 
-// ToolOutput is the structured return type from Tool.Execute().
-// Most tools only populate Content. Edit/media tools also populate Diffs/Media.
-type ToolOutput struct {
-	Content                string                         // Text result (sent to LLM)
-	ContentParts           []ToolContentPart              `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
-	Diffs                  []DiffData                     // Structured diff data (for UI rendering)
-	Images                 []string                       // Legacy image paths (for UI rendering)
-	Media                  []MediaArtifact                `json:"media,omitempty"`        // Ordered image/video/audio artifacts for UI rendering
-	FileChanges            []FileChange                   `json:"file_changes,omitempty"` // Persisted attributed changes only
-	FilesystemObservations []FilesystemObservationSummary `json:"filesystem_observations,omitempty"`
-	OutputClaimDiagnostics []OutputClaimDiagnostic        `json:"output_claim_diagnostics,omitempty"`
-	GuardianReviews        []GuardianReview               `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata; never provider content
-	TrustedUserInput       string                         `json:"-"`                          // Canonical direct first-party human input for Guardian; empty for ordinary tool output
-	TimedOut               bool                           // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
-	IsError                bool                           // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
+// Deprecated: use core.NormalizeReasoningKind for new package boundaries.
+func NormalizeReasoningKind(kind ReasoningKind) ReasoningKind {
+	return core.NormalizeReasoningKind(kind)
 }
 
-// TextOutput creates a ToolOutput with only text content.
-func TextOutput(s string) ToolOutput {
-	return ToolOutput{Content: s}
+// Deprecated: use core.NormalizeStoredReasoningKind for new package boundaries.
+func NormalizeStoredReasoningKind(kind ReasoningKind, hasReasoningContent bool) ReasoningKind {
+	return core.NormalizeStoredReasoningKind(kind, hasReasoningContent)
 }
 
-// ToolResult is the output from executing a tool call.
-type ToolResult struct {
-	ID              string
-	Name            string
-	Content         string            // Clean text sent to LLM
-	ContentParts    []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content
-	Display         string            // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
-	Diffs           []DiffData        `json:"diffs,omitempty"`            // Structured diff data
-	Images          []string          `json:"images,omitempty"`           // Legacy image paths
-	Media           []MediaArtifact   `json:"media,omitempty"`            // Ordered image/video/audio artifacts
-	GuardianReviews []GuardianReview  `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata
-	IsError         bool              // True if this result represents a tool execution error
-	Caller          string            `json:",omitempty"` // PTC caller provenance.
-	ThoughtSig      []byte            // Gemini 3 thought signature (passed through from ToolCall)
+// Deprecated: use core.RecordGuardianReview for new package boundaries.
+func RecordGuardianReview(ctx context.Context, review GuardianReview) {
+	core.RecordGuardianReview(ctx, review)
 }
 
-// EventType describes streaming events.
-type EventType string
+// Deprecated: use core.SessionIDFromContext for new package boundaries.
+func SessionIDFromContext(ctx context.Context) string { return core.SessionIDFromContext(ctx) }
+
+// Deprecated: use core.SystemText for new package boundaries.
+func SystemText(text string) Message { return core.SystemText(text) }
+
+// Deprecated: use core.TextOutput for new package boundaries.
+func TextOutput(s string) ToolOutput { return core.TextOutput(s) }
+
+// Deprecated: use core.ToolErrorMessage for new package boundaries.
+func ToolErrorMessage(id, name, errorText string, thoughtSig []byte) Message {
+	return core.ToolErrorMessage(id, name, errorText, thoughtSig)
+}
+
+// Deprecated: use core.ToolResultMessage for new package boundaries.
+func ToolResultMessage(id, name, content string, thoughtSig []byte) Message {
+	return core.ToolResultMessage(id, name, content, thoughtSig)
+}
+
+// Deprecated: use core.ToolResultMessageFromOutput for new package boundaries.
+func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig []byte) Message {
+	return core.ToolResultMessageFromOutput(id, name, output, thoughtSig)
+}
+
+// Deprecated: use core.ToolRunIDFromContext for new package boundaries.
+func ToolRunIDFromContext(ctx context.Context) string { return core.ToolRunIDFromContext(ctx) }
+
+// Deprecated: use core.UserImageMessage for new package boundaries.
+func UserImageMessage(mediaType, base64Data, caption string) Message {
+	return core.UserImageMessage(mediaType, base64Data, caption)
+}
+
+// Deprecated: use core.UserImageMessageWithPath for new package boundaries.
+func UserImageMessageWithPath(mediaType, base64Data, filePath, caption string) Message {
+	return core.UserImageMessageWithPath(mediaType, base64Data, filePath, caption)
+}
+
+// Deprecated: use core.UserText for new package boundaries.
+func UserText(text string) Message { return core.UserText(text) }
+
+// Deprecated: use core.DiffOperationCreate for new package boundaries.
+const DiffOperationCreate = core.DiffOperationCreate
+
+// Deprecated: use core.EventAttemptDiscard for new package boundaries.
+const EventAttemptDiscard = core.EventAttemptDiscard
+
+// Deprecated: use core.EventCompaction for new package boundaries.
+const EventCompaction = core.EventCompaction
+
+// Deprecated: use core.EventDiscoveryCall for new package boundaries.
+const EventDiscoveryCall = core.EventDiscoveryCall
+
+// Deprecated: use core.EventDiscoveryOutput for new package boundaries.
+const EventDiscoveryOutput = core.EventDiscoveryOutput
+
+// Deprecated: use core.EventDone for new package boundaries.
+const EventDone = core.EventDone
+
+// Deprecated: use core.EventError for new package boundaries.
+const EventError = core.EventError
+
+// Deprecated: use core.EventHeartbeat for new package boundaries.
+const EventHeartbeat = core.EventHeartbeat
+
+// Deprecated: use core.EventImageGenerated for new package boundaries.
+const EventImageGenerated = core.EventImageGenerated
+
+// Deprecated: use core.EventModelSwitch for new package boundaries.
+const EventModelSwitch = core.EventModelSwitch
+
+// Deprecated: use core.EventPhase for new package boundaries.
+const EventPhase = core.EventPhase
+
+// Deprecated: use core.EventProviderReplay for new package boundaries.
+const EventProviderReplay = core.EventProviderReplay
+
+// Deprecated: use core.EventReasoningDelta for new package boundaries.
+const EventReasoningDelta = core.EventReasoningDelta
+
+// Deprecated: use core.EventRetry for new package boundaries.
+const EventRetry = core.EventRetry
+
+// Deprecated: use core.EventSteering for new package boundaries.
+const EventSteering = core.EventSteering
+
+// Deprecated: use core.EventTextDelta for new package boundaries.
+const EventTextDelta = core.EventTextDelta
+
+// Deprecated: use core.EventToolActivity for new package boundaries.
+const EventToolActivity = core.EventToolActivity
+
+// Deprecated: use core.EventToolCall for new package boundaries.
+const EventToolCall = core.EventToolCall
+
+// Deprecated: use core.EventToolExecEnd for new package boundaries.
+const EventToolExecEnd = core.EventToolExecEnd
+
+// Deprecated: use core.EventToolExecStart for new package boundaries.
+const EventToolExecStart = core.EventToolExecStart
+
+// Deprecated: use core.EventUsage for new package boundaries.
+const EventUsage = core.EventUsage
+
+// Deprecated: use core.PartAgentMention for new package boundaries.
+const PartAgentMention = core.PartAgentMention
+
+// Deprecated: use core.PartConversationStart for new package boundaries.
+const PartConversationStart = core.PartConversationStart
+
+// Deprecated: use core.PartDiffComment for new package boundaries.
+const PartDiffComment = core.PartDiffComment
+
+// Deprecated: use core.PartDiscoveryCall for new package boundaries.
+const PartDiscoveryCall = core.PartDiscoveryCall
+
+// Deprecated: use core.PartDiscoveryOutput for new package boundaries.
+const PartDiscoveryOutput = core.PartDiscoveryOutput
+
+// Deprecated: use core.PartDisplayText for new package boundaries.
+const PartDisplayText = core.PartDisplayText
+
+// Deprecated: use core.PartFile for new package boundaries.
+const PartFile = core.PartFile
+
+// Deprecated: use core.PartGoalSteering for new package boundaries.
+const PartGoalSteering = core.PartGoalSteering
+
+// Deprecated: use core.PartImage for new package boundaries.
+const PartImage = core.PartImage
+
+// Deprecated: use core.PartPathNote for new package boundaries.
+const PartPathNote = core.PartPathNote
+
+// Deprecated: use core.PartPlatformContext for new package boundaries.
+const PartPlatformContext = core.PartPlatformContext
+
+// Deprecated: use core.PartProviderReplay for new package boundaries.
+const PartProviderReplay = core.PartProviderReplay
+
+// Deprecated: use core.PartSkillActivation for new package boundaries.
+const PartSkillActivation = core.PartSkillActivation
+
+// Deprecated: use core.PartText for new package boundaries.
+const PartText = core.PartText
+
+// Deprecated: use core.PartToolActivity for new package boundaries.
+const PartToolActivity = core.PartToolActivity
+
+// Deprecated: use core.PartToolCall for new package boundaries.
+const PartToolCall = core.PartToolCall
+
+// Deprecated: use core.PartToolResult for new package boundaries.
+const PartToolResult = core.PartToolResult
+
+// Deprecated: use core.ReasoningKindEncrypted for new package boundaries.
+const ReasoningKindEncrypted = core.ReasoningKindEncrypted
+
+// Deprecated: use core.ReasoningKindRaw for new package boundaries.
+const ReasoningKindRaw = core.ReasoningKindRaw
+
+// Deprecated: use core.ReasoningKindSummary for new package boundaries.
+const ReasoningKindSummary = core.ReasoningKindSummary
+
+// Deprecated: use core.ReasoningKindUnknown for new package boundaries.
+const ReasoningKindUnknown = core.ReasoningKindUnknown
+
+// Deprecated: use core.RoleAssistant for new package boundaries.
+const RoleAssistant = core.RoleAssistant
+
+// Deprecated: use core.RoleDeveloper for new package boundaries.
+const RoleDeveloper = core.RoleDeveloper
+
+// Deprecated: use core.RoleEvent for new package boundaries.
+const RoleEvent = core.RoleEvent
+
+// Deprecated: use core.RoleSystem for new package boundaries.
+const RoleSystem = core.RoleSystem
+
+// Deprecated: use core.RoleTool for new package boundaries.
+const RoleTool = core.RoleTool
+
+// Deprecated: use core.RoleUser for new package boundaries.
+const RoleUser = core.RoleUser
+
+// Deprecated: use core.ToolActivityCompleted for new package boundaries.
+const ToolActivityCompleted = core.ToolActivityCompleted
+
+// Deprecated: use core.ToolActivityFailed for new package boundaries.
+const ToolActivityFailed = core.ToolActivityFailed
+
+// Deprecated: use core.ToolChoiceAuto for new package boundaries.
+const ToolChoiceAuto = core.ToolChoiceAuto
+
+// Deprecated: use core.ToolChoiceName for new package boundaries.
+const ToolChoiceName = core.ToolChoiceName
+
+// Deprecated: use core.ToolChoiceNone for new package boundaries.
+const ToolChoiceNone = core.ToolChoiceNone
+
+// Deprecated: use core.ToolChoiceRequired for new package boundaries.
+const ToolChoiceRequired = core.ToolChoiceRequired
+
+// Deprecated: use core.ToolContentPartImageData for new package boundaries.
+const ToolContentPartImageData = core.ToolContentPartImageData
+
+// Deprecated: use core.ToolContentPartText for new package boundaries.
+const ToolContentPartText = core.ToolContentPartText
+
+// Deprecated: use core.TrustedUserInputToolName for new package boundaries.
+const TrustedUserInputToolName = core.TrustedUserInputToolName
+
+// Deprecated: use core.WarningPhasePrefix for new package boundaries.
+const WarningPhasePrefix = core.WarningPhasePrefix
+
+// Deprecated: use core.TurnMetrics for new package boundaries.
+type TurnMetrics = core.TurnMetrics
+
+// Deprecated: use core.SteeringStatus for new package boundaries.
+type SteeringStatus = core.SteeringStatus
+
+// Deprecated: use core.Continuation for new package boundaries.
+type Continuation = core.Continuation
+
+// Deprecated: use core.ModelServiceTier for new package boundaries.
+type ModelServiceTier = core.ModelServiceTier
 
 const (
-	EventTextDelta       EventType = "text_delta"
-	EventReasoningDelta  EventType = "reasoning_delta" // For thinking models (OpenRouter reasoning_content)
-	EventToolCall        EventType = "tool_call"
-	EventToolExecStart   EventType = "tool_exec_start" // Emitted when tool execution begins
-	EventToolExecEnd     EventType = "tool_exec_end"   // Emitted when tool execution completes
-	EventHeartbeat       EventType = "heartbeat"       // Emitted while a long-running tool is still active
-	EventUsage           EventType = "usage"
-	EventPhase           EventType = "phase"      // Emitted for high-level phase changes (Thinking, Searching, etc.)
-	EventCompaction      EventType = "compaction" // Emitted after context compaction has been applied by the owner.
-	EventDone            EventType = "done"
-	EventError           EventType = "error"
-	EventRetry           EventType = "retry"            // Emitted when retrying after rate limit or transport recovery
-	EventAttemptDiscard  EventType = "attempt_discard"  // Discard provisional assistant output from the current streamed attempt
-	EventSteering        EventType = "steering"         // User steered a message mid-stream
-	EventModelSwitch     EventType = "model_switch"     // Request model changed at a provider-turn boundary
-	EventImageGenerated  EventType = "image_generated"  // Emitted when a built-in image_generation tool returns an image
-	EventToolActivity    EventType = "tool_activity"    // Internal-only durable display state for provider-managed tools.
-	EventProviderReplay  EventType = "provider_replay"  // Internal-only opaque Responses output item.
-	EventDiscoveryCall   EventType = "discovery_call"   // Provider-neutral native client-executed discovery request.
-	EventDiscoveryOutput EventType = "discovery_output" // Planner-selected schemas returned to native discovery.
+	SteeringQueued    = core.SteeringQueued
+	SteeringCommitted = core.SteeringCommitted
 )
 
-// WarningPhasePrefix is the prefix for warning-level phase events.
-// Phase events starting with this prefix are rendered as visible warnings
-// in both the TUI and plain text output.
-const WarningPhasePrefix = "WARNING: "
-
-// ToolExecutionResponse holds the result of a synchronous tool execution.
-// Used by CLI bridge providers to receive synchronous tool results from the engine.
-type ToolExecutionResponse struct {
-	Result ToolOutput
-	Err    error
-}
-
-// Event represents a streamed output update.
-type Event struct {
-	Type EventType
-	Text string
-	// ProviderTurnIndex identifies the zero-based engine turn that emitted model
-	// output. ProviderTurnIndexSet distinguishes the first turn from events that
-	// originate outside the engine loop and carry no turn identity.
-	ProviderTurnIndex          int
-	ProviderTurnIndexSet       bool
-	Model                      string // For EventModelSwitch: request model applied at provider-turn boundary
-	ReasoningEffort            string // For EventModelSwitch: request reasoning effort applied at provider-turn boundary
-	PreviousModel              string // For EventModelSwitch: request model used by the preceding provider turn
-	PreviousReasoningEffort    string // For EventModelSwitch: request reasoning effort used by the preceding provider turn
-	ModelSwitchBoundaryID      string // For EventModelSwitch: stable identity shared by live and durable transcript markers
-	SteeringID                 string // For EventSteering: stable ID for matching queued steering in the UI
-	SteeringStatus             SteeringStatus
-	Message                    Message       // For EventSteering: structured user message including attachments
-	ReasoningItemID            string        // For EventReasoningDelta: reasoning item ID
-	ReasoningEncryptedContent  string        // For EventReasoningDelta: encrypted reasoning content
-	ReasoningKind              ReasoningKind // For EventReasoningDelta: summary/raw/encrypted/unknown classification
-	ReasoningSummaryParts      []string      // For EventReasoningDelta: structured display-safe summary parts, when available
-	ReasoningIndex             int           // For EventReasoningDelta: provider reasoning block/index when available
-	ReasoningFinal             bool          // For EventReasoningDelta: true when provider marks the reasoning block complete
-	Tool                       *ToolCall
-	ToolInline                 bool            // For EventToolCall: executed inline during the provider stream, outside the end-of-turn tool split
-	ToolCallID                 string          // For EventToolExecStart/End: unique ID of this tool invocation
-	ToolName                   string          // For EventToolExecStart/End: name of tool being executed
-	ToolInfo                   string          // For EventToolExecStart/End: additional info (e.g., URL being fetched)
-	ToolArgs                   json.RawMessage // For EventToolExecStart: raw args JSON
-	ToolSuccess                bool            // For EventToolExecEnd: whether tool execution succeeded
-	ToolOutput                 string          // For EventToolExecEnd: the tool's text content
-	ToolDiffs                  []DiffData      // For EventToolExecEnd: structured diffs from edit tools
-	ToolFileChanges            []FileChange    // Persisted attributed changes
-	ToolFilesystemObservations []FilesystemObservationSummary
-	ToolOutputClaimDiagnostics []OutputClaimDiagnostic
-	ToolImages                 []string        // Legacy image paths from image tools
-	ToolMedia                  []MediaArtifact // Ordered image/video/audio artifacts from presentation tools
-	Use                        *Usage
-	Err                        error
-	// Retry fields (for EventRetry). RetryMaxAttempts == 0 means the retry
-	// policy is governed by a time budget rather than a fixed attempt count.
-	RetryAttempt     int
-	RetryMaxAttempts int
-	RetryWaitSecs    float64
-	// ToolResponse is set when a provider needs synchronous bridged tool execution.
-	// The engine will execute the tool and send the result back on this channel.
-	ToolResponse    chan<- ToolExecutionResponse
-	ToolActivity    *ToolActivity        // For EventToolActivity; persisted for display and never forwarded to providers.
-	ProviderReplay  *ProviderReplayItem  // For EventProviderReplay; never forwarded to UI consumers.
-	DiscoveryCall   *ToolDiscoveryCall   // For EventDiscoveryCall.
-	DiscoveryOutput *ToolDiscoveryOutput // For EventDiscoveryOutput.
-	// Image fields (for EventImageGenerated)
-	ImageData     []byte // Raw decoded image bytes
-	ImageMimeType string // e.g. "image/png"
-	RevisedPrompt string // Model's revised prompt, if any
-}
-
-// Usage captures token usage if available.
-//
-// InputTokens is the count of non-cached input tokens — i.e. the portion that was
-// freshly processed. CachedInputTokens is the portion served from cache. The two
-// are always additive: InputTokens + CachedInputTokens = total prompt/context size.
-//
-// All providers must normalise to this convention:
-//   - Anthropic already reports input_tokens (non-cached) + cache_read_input_tokens separately.
-//   - OpenAI/ChatGPT reports prompt_tokens (inclusive of cached); providers must subtract
-//     the cached portion before populating InputTokens.
-type Usage struct {
-	InputTokens       int // Non-cached input tokens (newly processed this turn)
-	OutputTokens      int
-	CachedInputTokens int // Tokens read from cache (additive with InputTokens, NOT a subset)
-	CacheWriteTokens  int // Tokens written to cache (cache_creation_input_tokens)
-
-	// ProviderRawInputTokens is the provider-reported input/prompt token count
-	// before term-llm normalization. For OpenAI-family APIs this includes cached
-	// tokens; for providers that already report non-cached input separately this
-	// may be zero or equal to InputTokens.
-	ProviderRawInputTokens int
-	// ProviderTotalTokens is the provider-reported total_tokens when available.
-	// For OpenAI Responses/Chat Completions this is input_tokens + output_tokens.
-	ProviderTotalTokens int
-	// ReasoningTokens is provider-reported reasoning output tokens when available.
-	ReasoningTokens int
-}
-
-// Add accumulates another usage value into u.
-func (u *Usage) Add(other Usage) {
-	if u == nil {
-		return
-	}
-	u.InputTokens += other.InputTokens
-	u.OutputTokens += other.OutputTokens
-	u.CachedInputTokens += other.CachedInputTokens
-	u.CacheWriteTokens += other.CacheWriteTokens
-	u.ProviderRawInputTokens += other.ProviderRawInputTokens
-	u.ProviderTotalTokens += other.ProviderTotalTokens
-	u.ReasoningTokens += other.ReasoningTokens
-}
-
-// IsZero reports whether no token usage was reported.
-func (u Usage) IsZero() bool {
-	return u.InputTokens == 0 &&
-		u.OutputTokens == 0 &&
-		u.CachedInputTokens == 0 &&
-		u.CacheWriteTokens == 0 &&
-		u.ProviderRawInputTokens == 0 &&
-		u.ProviderTotalTokens == 0 &&
-		u.ReasoningTokens == 0
-}
-
-// BillableCountersZero reports whether the normalized token counters term-llm
-// persists for usage/cost displays are all zero.
-func (u Usage) BillableCountersZero() bool {
-	return u.InputTokens == 0 && u.OutputTokens == 0 && u.CachedInputTokens == 0 && u.CacheWriteTokens == 0
-}
-
-// CommandSuggestion represents a single command suggestion from the LLM.
-type CommandSuggestion struct {
-	Command     string `json:"command"`
-	Explanation string `json:"explanation"`
-	Likelihood  int    `json:"likelihood"` // 1-10, how likely this matches user intent
-}
-
-// EditToolCall represents a single edit tool call (find/replace).
-type EditToolCall struct {
-	FilePath  string `json:"file_path"`
-	OldString string `json:"old_string"`
-	NewString string `json:"new_string"`
-}
-
-// ModelInfo represents a model available from a provider.
-type ModelInfo struct {
-	RecommendedContext     int                `json:"recommended_context,omitempty"` // Shipped input budget before user overrides.
-	BackendContext         int                `json:"backend_context,omitempty"`     // Backend default, not an override ceiling.
-	MaxContext             int                `json:"max_context,omitempty"`         // Backend maximum permitted context.
-	ID                     string             `json:"id"`
-	DisplayName            string             `json:"display_name,omitempty"`
-	Created                int64              `json:"created,omitempty"`
-	OwnedBy                string             `json:"owned_by,omitempty"`
-	InputLimit             int                `json:"input_limit,omitempty"`        // Max input tokens (0 = unknown)
-	OutputLimit            int                `json:"output_limit,omitempty"`       // Max output tokens (0 = unknown)
-	ConfiguredContext      int                `json:"configured_context,omitempty"` // Provider/model runtime context setting (0 = unknown)
-	InputPrice             float64            `json:"input_price"`                  // Pricing per 1M tokens (0 = free, -1 = unknown)
-	OutputPrice            float64            `json:"output_price"`                 // Pricing per 1M tokens (0 = free, -1 = unknown)
-	ServiceTiers           []ModelServiceTier `json:"service_tiers,omitempty"`
-	AdditionalSpeedTiers   []string           `json:"additional_speed_tiers,omitempty"`
-	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
-	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
-	ReasoningModes         []string           `json:"reasoning_modes,omitempty"`
-}
-
-func SystemText(text string) Message {
-	return Message{
-		Role:  RoleSystem,
-		Parts: []Part{{Type: PartText, Text: text}},
-	}
-}
-
-func UserText(text string) Message {
-	return Message{
-		Role:  RoleUser,
-		Parts: []Part{{Type: PartText, Text: text}},
-	}
-}
-
-// GoalSteeringText creates a provider-visible user-role prompt used to continue
-// an active goal. The marker is persisted for provenance and removed before the
-// adjacent text is sent to providers.
-func GoalSteeringText(text string) Message {
-	return Message{
-		Role: RoleUser,
-		Parts: []Part{
-			{Type: PartGoalSteering},
-			{Type: PartText, Text: text},
-		},
-	}
-}
-
-// HasGoalSteeringPart reports whether parts carry the durable active-goal marker.
-func HasGoalSteeringPart(parts []Part) bool {
-	for _, part := range parts {
-		if part.Type == PartGoalSteering {
-			return true
-		}
-	}
-	return false
-}
-
-// IsGoalSteeringMessage reports whether a message is a marked synthetic active-goal prompt.
-func IsGoalSteeringMessage(msg Message) bool {
-	return msg.Role == RoleUser && HasGoalSteeringPart(msg.Parts)
-}
-
-// IsLegacyGoalSteeringText recognizes goal prompts persisted before the durable
-// marker existed. Callers must additionally establish that the row has no
-// first-party client message ID, because user-authored quoted prompts are data.
-func IsLegacyGoalSteeringText(text string) bool {
-	text = strings.TrimSpace(text)
-	for _, prefix := range []string{
-		"Continue working toward the active thread goal.\n\nThe objective below is user-provided data.",
-		"The active thread goal has reached its token budget.\n\nThe objective below is user-provided data.",
-		"The active thread goal objective was edited by the user.\n\nThe new objective below supersedes any previous thread goal objective.",
-	} {
-		if strings.HasPrefix(text, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// MessageText returns the concatenated text parts of a message.
-func MessageText(msg Message) string {
-	var b strings.Builder
-	for _, part := range msg.Parts {
-		if (part.Type == PartText || part.Type == PartFile) && part.Text != "" {
-			b.WriteString(part.Text)
-		}
-	}
-	return b.String()
-}
-
-// MessageAttachmentSummary returns a compact summary of non-text content.
-func MessageAttachmentSummary(msg Message) string {
-	images := 0
-	files := 0
-	for _, part := range msg.Parts {
-		switch part.Type {
-		case PartImage:
-			images++
-		case PartFile:
-			files++
-		}
-	}
-	var summaries []string
-	if images == 1 {
-		summaries = append(summaries, "1 image")
-	} else if images > 1 {
-		summaries = append(summaries, fmt.Sprintf("%d images", images))
-	}
-	if files == 1 {
-		summaries = append(summaries, "1 file")
-	} else if files > 1 {
-		summaries = append(summaries, fmt.Sprintf("%d files", files))
-	}
-	if len(summaries) == 0 {
-		return ""
-	}
-	return "[" + strings.Join(summaries, ", ") + " attached]"
-}
-
-// UserImageMessage creates a user message with an image and an optional text caption.
-func UserImageMessage(mediaType, base64Data, caption string) Message {
-	return UserImageMessageWithPath(mediaType, base64Data, "", caption)
-}
-
-// UserImageMessageWithPath creates a user message with an image, an optional local
-// file path (so tools like image_generate can reference it), and an optional caption.
-func UserImageMessageWithPath(mediaType, base64Data, filePath, caption string) Message {
-	parts := []Part{{
-		Type:      PartImage,
-		ImageData: &ToolImageData{MediaType: mediaType, Base64: base64Data},
-		ImagePath: filePath,
-	}}
-	if caption != "" {
-		parts = append(parts, Part{Type: PartText, Text: caption})
-	}
-	return Message{Role: RoleUser, Parts: parts}
-}
-
-func AssistantText(text string) Message {
-	return Message{
-		Role:  RoleAssistant,
-		Parts: []Part{{Type: PartText, Text: text}},
-	}
-}
-
-func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig []byte) Message {
-	return Message{
-		Role: RoleTool,
-		Parts: []Part{{
-			Type: PartToolResult,
-			ToolResult: &ToolResult{
-				ID:              id,
-				Name:            name,
-				Content:         output.Content,
-				ContentParts:    output.ContentParts,
-				Diffs:           output.Diffs,
-				Images:          output.Images,
-				Media:           append([]MediaArtifact(nil), output.Media...),
-				GuardianReviews: append([]GuardianReview(nil), output.GuardianReviews...),
-				IsError:         output.IsError || output.TimedOut,
-				ThoughtSig:      thoughtSig,
-			},
-		}},
-	}
-}
-
-// ToolResultMessage creates a tool result message from a plain string.
-// Convenience wrapper for callers that only have text content (no diffs/images).
-func ToolResultMessage(id, name, content string, thoughtSig []byte) Message {
-	return ToolResultMessageFromOutput(id, name, TextOutput(content), thoughtSig)
-}
-
-// ToolErrorMessage creates a tool result message that indicates an error.
-// The error is passed to the LLM so it can respond gracefully instead of failing the stream.
-func ToolErrorMessage(id, name, errorText string, thoughtSig []byte) Message {
-	return Message{
-		Role: RoleTool,
-		Parts: []Part{{
-			Type: PartToolResult,
-			ToolResult: &ToolResult{
-				ID:         id,
-				Name:       name,
-				Content:    errorText,
-				IsError:    true,
-				ThoughtSig: thoughtSig,
-			},
-		}},
-	}
+func cloneToolActivity(a *ToolActivity) *ToolActivity { return core.CloneToolActivity(a) }
+func cloneToolDiscoveryOutput(o *ToolDiscoveryOutput) *ToolDiscoveryOutput {
+	return core.CloneToolDiscoveryOutput(o)
 }

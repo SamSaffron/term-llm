@@ -1,9 +1,11 @@
 package llm
 
 import (
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/gemini"
 )
 
 func TestProviderFastModelsMatchConfigDefaults(t *testing.T) {
@@ -19,28 +21,22 @@ func TestProviderFastModelsMatchConfigDefaults(t *testing.T) {
 func TestProviderConstructorsUseConfigDefaultModels(t *testing.T) {
 	t.Parallel()
 
-	if got := NewXAIProvider("", "").model; got != config.DefaultProviderModel("xai") {
+	if got := NewXAIProvider("", "").Model(); got != config.DefaultProviderModel("xai") {
 		t.Fatalf("xai default model = %q, want %q", got, config.DefaultProviderModel("xai"))
 	}
-	if got := NewGeminiProvider("", "").model; got != config.DefaultProviderModel("gemini") {
+	if got := gemini.New("", "").Model(); got != config.DefaultProviderModel("gemini") {
 		t.Fatalf("gemini default model = %q, want %q", got, config.DefaultProviderModel("gemini"))
 	}
-	if got := NewVeniceProvider("", "").model; got != config.DefaultProviderModel("venice") {
+	if got := NewVeniceProvider("", "").Model(); got != config.DefaultProviderModel("venice") {
 		t.Fatalf("venice default model = %q, want %q", got, config.DefaultProviderModel("venice"))
 	}
-	if got := NewNearAIProvider("", "").model; got != config.DefaultProviderModel("nearai") {
+	if got := NewNearAIProvider("", "").Model(); got != config.DefaultProviderModel("nearai") {
 		t.Fatalf("nearai default model = %q, want %q", got, config.DefaultProviderModel("nearai"))
 	}
-	if got := NewSambaNovaProvider("", "").model; got != config.DefaultProviderModel("sambanova") {
+	if got := NewSambaNovaProvider("", "").Model(); got != config.DefaultProviderModel("sambanova") {
 		t.Fatalf("sambanova default model = %q, want %q", got, config.DefaultProviderModel("sambanova"))
 	}
-	if got := NewOllamaChatProvider("", "", OllamaOptions{}).model; got != config.DefaultProviderModel("ollama") {
+	if got := ollama.New("", "", ollama.Options{}).Model(); got != config.DefaultProviderModel("ollama") {
 		t.Fatalf("ollama default model = %q, want %q", got, config.DefaultProviderModel("ollama"))
-	}
-	if chatGPTDefaultModel != config.DefaultProviderModel("chatgpt") {
-		t.Fatalf("chatgpt default model = %q, want %q", chatGPTDefaultModel, config.DefaultProviderModel("chatgpt"))
-	}
-	if copilotDefaultModel != config.DefaultProviderModel("copilot") {
-		t.Fatalf("copilot default model = %q, want %q", copilotDefaultModel, config.DefaultProviderModel("copilot"))
 	}
 }

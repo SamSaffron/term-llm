@@ -1,17 +1,7 @@
 package llm
 
-import "strings"
+import "github.com/samsaffron/term-llm/internal/llm/core"
 
-func chooseModel(requested, fallback string) string {
-	if strings.TrimSpace(requested) != "" {
-		return requested
-	}
-	return fallback
-}
+func chooseModel(requested, fallback string) string { return core.ChooseModel(requested, fallback) }
 
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
+func truncate(s string, maxLen int) string { return core.Truncate(s, maxLen) }

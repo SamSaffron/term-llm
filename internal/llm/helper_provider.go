@@ -6,6 +6,12 @@ type helperConversationIsolator interface {
 	isolateHelperConversation() Provider
 }
 
+// ExportedHelperConversationIsolator is implemented by provider packages that
+// cannot satisfy the root package's private helper method across a package boundary.
+type ExportedHelperConversationIsolator interface {
+	IsolateHelperConversation() Provider
+}
+
 // helperConversationForker is implemented by providers that can branch from
 // their current conversation without mutating the live provider state.
 //
@@ -14,6 +20,11 @@ type helperConversationIsolator interface {
 // carries no parent transcript at all. Handover depends on it.
 type helperConversationForker interface {
 	forkHelperConversation() (Provider, bool)
+}
+
+// ExportedHelperConversationForker is the same contract for provider packages.
+type ExportedHelperConversationForker interface {
+	ForkHelperConversation() (Provider, bool)
 }
 
 // HelperBoundaryForker is implemented by providers that can branch from a
@@ -36,6 +47,11 @@ type HelperBoundaryForker interface {
 }
 
 func isolatedConversationProvider(provider Provider) Provider {
+	if isolator, ok := provider.(ExportedHelperConversationIsolator); ok {
+		if isolated := isolator.IsolateHelperConversation(); isolated != nil {
+			return isolated
+		}
+	}
 	if isolator, ok := provider.(helperConversationIsolator); ok {
 		if isolated := isolator.isolateHelperConversation(); isolated != nil {
 			return isolated
@@ -75,6 +91,11 @@ func SupportsHelperBoundaryFork(provider Provider) bool {
 }
 
 func forkConversationProvider(provider Provider) (Provider, bool) {
+	if forker, ok := provider.(ExportedHelperConversationForker); ok {
+		if forked, forkedOK := forker.ForkHelperConversation(); forkedOK && forked != nil {
+			return forked, true
+		}
+	}
 	if forker, ok := provider.(helperConversationForker); ok {
 		forked, forkedOK := forker.forkHelperConversation()
 		if forkedOK && forked != nil {
