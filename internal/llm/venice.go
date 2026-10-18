@@ -78,6 +78,9 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	model, veniceParams := buildVeniceModelAndParams(baseModel, req.Search)
+	if isVeniceClaudeModel(model) {
+		applyVeniceClaudeCacheBreakpoint(messages)
+	}
 	chatReq := oaiChatRequest{
 		Model:            model,
 		Messages:         messages,
@@ -85,6 +88,8 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		Stream:           true,
 		ReasoningEffort:  effort,
 		VeniceParameters: veniceParams,
+		// Routing hint: requests with the same key are more likely to reach a server with a warm cache.
+		PromptCacheKey: req.SessionID,
 	}
 
 	if req.ToolChoice.Mode != "" {
@@ -180,10 +185,14 @@ func (s *veniceStreamState) processData(data string) error {
 	}
 	if chatResp.Usage != nil {
 		cached := chatResp.Usage.PromptTokensDetails.CachedTokens
+		written := chatResp.Usage.PromptTokensDetails.CacheCreationInputTokens
 		s.lastUsage = &Usage{
-			InputTokens:            chatResp.Usage.PromptTokens - cached,
+			// prompt_tokens includes cache reads and (Claude) cache writes; report them separately like
+			// the native Anthropic provider does.
+			InputTokens:            max(chatResp.Usage.PromptTokens-cached-written, 0),
 			OutputTokens:           chatResp.Usage.CompletionTokens,
 			CachedInputTokens:      cached,
+			CacheWriteTokens:       written,
 			ProviderRawInputTokens: chatResp.Usage.PromptTokens,
 			ProviderTotalTokens:    chatResp.Usage.TotalTokens,
 			ReasoningTokens:        chatResp.Usage.CompletionTokensDetails.ReasoningTokens,
@@ -340,4 +349,54 @@ func parseVeniceParamValue(v string) interface{} {
 		return i
 	}
 	return v
+}
+
+// isVeniceClaudeModel reports whether a Venice model id is an Anthropic Claude model, which only caches up to
+// explicit cache_control breakpoints.
+func isVeniceClaudeModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "claude-")
+}
+
+// veniceToolCallPlaceholder is the text block given to tool-call-only assistant turns for Claude. Venice rejects
+// empty text blocks and offers no other place for a breakpoint on such a turn; the placeholder must be sent on
+// EVERY such turn so the cached prefix stays byte-identical from request to request.
+const veniceToolCallPlaceholder = " "
+
+// applyVeniceClaudeCacheBreakpoint places a rolling cache_control breakpoint on the latest assistant message.
+//
+// Venice adds Claude breakpoints itself only on the system prompt and the second-to-last USER message
+// (docs.venice.ai/guides/features/prompt-caching). An agent loop has a single user message followed by
+// assistant/tool pairs, so without this only the system prompt is ever cached. Venice ignores cache_control on
+// tool messages, tool calls and assistant messages, and rejects top-level cache_control; a marker on an
+// assistant content part works. Measured on claude-haiku-5-5 (4 tool turns): cached tokens per request went
+// from a constant ~4.3k (system prompt only) to 4.4k, 8.4k, 12.5k (the whole conversation except the newest
+// tool result).
+func applyVeniceClaudeCacheBreakpoint(messages []oaiMessage) {
+	last := -1
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		switch c := messages[i].Content.(type) {
+		case string:
+			if c == "" {
+				c = veniceToolCallPlaceholder
+			}
+			messages[i].Content = []oaiContentPart{{Type: "text", Text: c}}
+		case []oaiContentPart:
+			if len(c) == 0 {
+				messages[i].Content = []oaiContentPart{{Type: "text", Text: veniceToolCallPlaceholder}}
+			}
+		case nil:
+			messages[i].Content = []oaiContentPart{{Type: "text", Text: veniceToolCallPlaceholder}}
+		default:
+			continue
+		}
+		last = i
+	}
+	if last < 0 {
+		return
+	}
+	parts := messages[last].Content.([]oaiContentPart)
+	parts[len(parts)-1].CacheControl = &oaiCacheControl{Type: "ephemeral"}
 }
