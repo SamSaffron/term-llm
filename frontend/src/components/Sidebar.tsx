@@ -197,6 +197,21 @@ function SessionMenu({
           >
             Rename
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onOpenChange(false);
+              void (async () => {
+                if (store.activeSession.peek()?.id !== session.id)
+                  await store.selectSession(session);
+                if (store.activeSession.peek()?.id === session.id && !store.authRequired.peek())
+                  store.modal.value = 'inspect';
+              })().catch((reason: unknown) => store.toast(reason, 'error'));
+            }}
+          >
+            Inspect
+          </button>
           {store.projectsEnabled.value && !session.projectId && (
             <button
               type="button"

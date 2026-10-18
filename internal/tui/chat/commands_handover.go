@@ -626,7 +626,10 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	// conversational handover context. Keeping the system prompt at sequence 0 is
 	// required so every resume/reload sees the target agent's prompt before the
 	// handover document and does not inject duplicates later.
-	for _, msg := range handoverMessagesToPersist(result.NewMessages, targetSystemPrompt) {
+	messages := handoverMessagesToPersist(result.NewMessages, targetSystemPrompt)
+	marker := m.handoverModelSwapMarker(newSess, result.SourceAgent)
+	messages = insertHandoverMarker(messages, marker)
+	for _, msg := range messages {
 		newMsg := session.NewMessage(newSess.ID, msg, -1)
 		if err := m.store.AddMessage(ctx, newSess.ID, newMsg); err != nil {
 			cleanupNewSession()
@@ -680,6 +683,38 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	m.detachMainRun()
 	m.quitting = true
 	return m, m.quitCmd()
+}
+
+func insertHandoverMarker(messages []llm.Message, marker llm.Message) []llm.Message {
+	insertAt := 0
+	if len(messages) > 0 && messages[0].Role == llm.RoleSystem {
+		insertAt = 1
+	}
+	out := make([]llm.Message, 0, len(messages)+1)
+	out = append(out, messages[:insertAt]...)
+	out = append(out, marker)
+	return append(out, messages[insertAt:]...)
+}
+
+// handoverModelSwapMarker records provenance in the target session only.
+func (m *Model) handoverModelSwapMarker(target *session.Session, sourceAgent string) llm.Message {
+	provider, model := m.currentProviderAndModel()
+	base, effort := llm.BaseModelAndEffortForProvider(provider, model)
+	if m.sess != nil && m.sess.ReasoningEffort != "" {
+		effort = m.sess.ReasoningEffort
+	}
+	targetBase, targetEffort := llm.BaseModelAndEffortForProvider(target.ProviderKey, target.Model)
+	if target.ReasoningEffort != "" {
+		targetEffort = target.ReasoningEffort
+	}
+	if sourceAgent == "" {
+		sourceAgent = handoverSourceAgent(nil, m.agentName)
+	}
+	return llm.ModelSwapEventMessage(llm.ModelSwapMarker{
+		FromProvider: provider, FromModel: base, FromEffort: effort, FromAgent: sourceAgent,
+		ToProvider: target.ProviderKey, ToModel: targetBase, ToEffort: targetEffort, ToAgent: target.Agent,
+		Strategy: "handover", Status: "succeeded",
+	})
 }
 
 func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agents.Agent) *session.Session {

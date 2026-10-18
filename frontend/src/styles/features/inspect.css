@@ -1,0 +1,229 @@
+.modal.inspect-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  height: min(92dvh, 70rem);
+  max-height: 100%;
+  overflow: hidden;
+  padding: 1rem;
+}
+
+.inspect-modal .modal-title-row {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.inspect-modal .close-button {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.inspect-modal button:not(.close-button) {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 0.45rem 0.65rem;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.inspect-modal button:focus-visible,
+.inspect-scroll:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+
+.inspect-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.8rem 0;
+  font-size: 0.75rem;
+}
+
+.inspect-toolbar button[aria-pressed='false'] {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.inspect-toolbar button[aria-pressed='true'] {
+  border-color: var(--text);
+}
+
+.inspect-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  padding: 0.25rem;
+}
+
+.inspect-modal h3 {
+  font-size: 0.95rem;
+}
+
+.inspect-modal h4 {
+  font-size: 0.85rem;
+}
+
+.inspect-modal .inspect-note,
+.inspect-modal .inspect-preview,
+.inspect-modal .inspect-header p {
+  font-size: 0.78rem;
+}
+
+.inspect-runtime {
+  border-block: 1px solid var(--border);
+  margin-block: 1rem;
+  padding-block: 0.5rem;
+}
+
+.inspect-block {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-block: 0.6rem;
+  padding: 0.6rem;
+}
+
+.inspect-block-toggle,
+.inspect-block-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.inspect-block-heading {
+  font-size: 0.8rem;
+}
+
+.inspect-kind {
+  border-radius: 3px;
+  background: var(--surface-2);
+  padding: 0.1rem 0.25rem;
+  font-size: 0.7rem;
+}
+
+.inspect-meta {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.inspect-modal .inspect-preview {
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+}
+
+.inspect-modal pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.inspect-copy {
+  margin-top: 0.6rem;
+}
+
+.inspect-failed,
+.inspect-modal .inspect-notice {
+  border-left: 3px solid var(--danger);
+  padding-left: 0.6rem;
+}
+
+.inspect-tail {
+  border-left: 3px solid var(--border-strong);
+  margin-left: 0.6rem;
+}
+
+.inspect-turn {
+  border-top: 1px solid var(--border-strong);
+  margin-top: 1.25rem;
+  padding-top: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.inspect-children {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.inspect-diagnostics {
+  font-size: 0.75rem;
+}
+
+.inspect-diagnostics dt {
+  font-weight: 600;
+}
+
+.inspect-diagnostics dd {
+  margin: 0.3rem 0 0.8rem;
+}
+
+.inspect-back {
+  max-width: 55%;
+}
+
+@media (width <= 520px) {
+  .modal.inspect-modal {
+    height: 100%;
+    padding: 0.65rem;
+  }
+
+  .inspect-toolbar {
+    gap: 0.3rem;
+  }
+}
+
+.inspect-model-panel,
+.inspect-model-change,
+.inspect-active-model {
+  border: 2px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+  padding: 0.65rem;
+}
+
+.inspect-model-panel {
+  flex: 0 0 auto;
+  max-height: 25dvh;
+  overflow: auto;
+}
+
+.inspect-model-panel h3,
+.inspect-model-panel p {
+  margin: 0.2rem 0;
+}
+
+.inspect-model-panel p,
+.inspect-model-change,
+.inspect-active-model {
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.inspect-model-change {
+  width: 100%;
+  margin-block: 1rem;
+}
+
+.inspect-model-warning {
+  border-color: var(--danger);
+}

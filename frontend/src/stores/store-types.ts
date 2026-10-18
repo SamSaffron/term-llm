@@ -10,6 +10,7 @@ export type Modal =
   | ''
   | 'settings'
   | 'stats'
+  | 'inspect'
   | 'rename'
   | 'ask-user'
   | 'approval'

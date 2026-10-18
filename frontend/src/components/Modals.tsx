@@ -37,6 +37,10 @@ function lazyModal(
   );
 }
 
+const LazyInspectModal = lazyModal('Inspect', () =>
+  import('./InspectModal').then(({ InspectModal }) => InspectModal),
+);
+
 const LazySettings = lazyModal('Settings', () =>
   import('./SettingsModal').then(({ Settings }) => Settings),
 );
@@ -77,6 +81,7 @@ const LazyWorktrees = lazyModal('Worktrees', () =>
 export function preloadDeferredModals(): Promise<unknown> {
   return Promise.all(
     [
+      LazyInspectModal,
       LazySettings,
       LazyRename,
       LazyGoalModal,
@@ -631,6 +636,8 @@ export function Modals() {
         ? 'ask-user'
         : store.modal.value;
   switch (modal) {
+    case 'inspect':
+      return <LazyInspectModal />;
     case 'stats':
       return <LazyStatsModal />;
     case 'settings':

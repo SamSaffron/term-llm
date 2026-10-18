@@ -212,6 +212,21 @@ export function App({ store }: { store: AppStore }) {
       if (store.authRequired.peek()) return;
       const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
       const primary = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      const target = event.composedPath()[0];
+      // The shared shell owns Ctrl+O (e.g. editors in the terminal).
+      const inShell = target instanceof Element && Boolean(target.closest('.shell-overlay'));
+      if (
+        event.key.toLowerCase() === 'o' &&
+        primary &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !event.defaultPrevented &&
+        !inShell &&
+        store.activeSession.peek()
+      ) {
+        event.preventDefault();
+        store.modal.value = store.modal.peek() === 'inspect' ? '' : 'inspect';
+      }
       if (
         (event.key === 'k' || event.key === 'K') &&
         primary &&

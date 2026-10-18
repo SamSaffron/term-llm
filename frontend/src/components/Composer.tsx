@@ -525,9 +525,9 @@ function ConversationComposer() {
     if (voiceBusy || (store.workspaceShown.peek() && !store.startupDone.peek())) return;
     const value = store.prompt.value.trim();
     const command = value.toLowerCase();
-    if (command === '/stats') {
+    if (command === '/stats' || command === '/inspect') {
       store.prompt.value = '';
-      store.modal.value = 'stats';
+      store.modal.value = command === '/inspect' ? 'inspect' : 'stats';
       return;
     }
     if (/^\/commit(?:\s|$)/i.test(value)) {

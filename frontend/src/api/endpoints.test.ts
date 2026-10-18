@@ -524,3 +524,22 @@ it('verifies an explicit token without using or invalidating the shared session 
   expect(headers.get('Authorization')).toBe('Bearer candidate-token');
   expect(onAuthRequired).not.toHaveBeenCalled();
 });
+
+describe('inspect safe reads', () => {
+  it('encodes session/body IDs and forwards cancellation through the API client', async () => {
+    const get = vi.fn(async () => ({}));
+    const routes = endpoints({ get } as unknown as APIClient);
+    const controller = new AbortController();
+    await routes.sessionInspect('session/one', controller.signal);
+    expect(get).toHaveBeenLastCalledWith('/v1/sessions/session%2Fone/inspect', controller.signal);
+    await routes.sessionInspectBodies(
+      'session/one',
+      ['m1.p0.user', 'runtime.tool.0'],
+      controller.signal,
+    );
+    expect(get).toHaveBeenLastCalledWith(
+      '/v1/sessions/session%2Fone/inspect/bodies?ids=m1.p0.user%2Cruntime.tool.0',
+      controller.signal,
+    );
+  });
+});

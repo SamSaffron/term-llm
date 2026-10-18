@@ -142,3 +142,34 @@ it('renders agent approval and ask-user prompts without waiting for a chunk', ()
     store.dispose();
   }
 });
+
+it('loads the inspector on demand and closes through the overlay', async () => {
+  const store = new AppStore(testConfig);
+  store.sessions.value = [testSession()];
+  store.activeSessionId.value = 's1';
+  store.draftActive.value = false;
+  store.endpoints.sessionInspect = vi.fn(async () => ({
+    schema_version: 1 as const,
+    session_id: 's1',
+    transcript_rev: 1,
+    scope: 'persisted_history' as const,
+    header: { runtime: { loaded: false } },
+    blocks: [],
+  }));
+  store.modal.value = 'inspect';
+  try {
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(await screen.findByRole('dialog', { name: 'Inspect' })).toBeVisible();
+    expect(
+      await screen.findByText('Tool definitions unavailable: runtime not loaded.'),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Close Inspect' }));
+    expect(store.modal.value).toBe('');
+  } finally {
+    store.dispose();
+  }
+});

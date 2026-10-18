@@ -374,6 +374,20 @@ func (s *serveServer) routeSessionResources(w http.ResponseWriter, r *http.Reque
 		return true
 	}
 
+	if suffix == "inspect" || suffix == "inspect/bodies" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return true
+		}
+		if suffix == "inspect" {
+			s.handleSessionInspect(w, r, sessionID)
+		} else {
+			s.handleSessionInspectBodies(w, r, sessionID)
+		}
+		return true
+	}
+
 	if suffix == "transcript" || suffix == "transcript/bodies" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")

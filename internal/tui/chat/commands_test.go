@@ -2855,7 +2855,7 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 	if startCount != 0 {
 		t.Fatalf("default-off target persisted conversation start count = %d, want 0", startCount)
 	}
-	expectedCount := len(expectedResult.NewMessages)
+	expectedCount := len(expectedResult.NewMessages) + 1
 	if _, ok := llm.ConversationStartFrom(expectedResult.NewMessages); ok {
 		expectedCount--
 	}
@@ -2870,8 +2870,12 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 	if added[0].Role != llm.RoleSystem || added[0].TextContent != targetAgent.SystemPrompt {
 		t.Fatalf("first added message = role %q text %q, want target system prompt", added[0].Role, added[0].TextContent)
 	}
-	if !strings.Contains(added[1].TextContent, "handover doc") || !strings.Contains(added[1].TextContent, "@source -> @target") {
-		t.Fatalf("handover message missing document/source-target prefix: %q", added[1].TextContent)
+	marker, ok := llm.ParseModelSwapMarker(added[1].ToLLMMessage())
+	if !ok || marker.FromProvider != "old-provider" || marker.FromModel != "old-model" || marker.FromAgent != "source" || marker.ToProvider != "gemini" || marker.ToModel != "gemini-2.5-pro" || marker.ToAgent != "target" || marker.Strategy != "handover" || marker.Status != "succeeded" {
+		t.Fatalf("persisted handover model change = %+v, parsed %v", marker, ok)
+	}
+	if !strings.Contains(added[2].TextContent, "handover doc") || !strings.Contains(added[2].TextContent, "@source -> @target") {
+		t.Fatalf("handover message missing document/source-target prefix: %q", added[2].TextContent)
 	}
 	if len(rm.messages) != len(oldMessages) {
 		t.Fatalf("old in-memory messages length changed: got %d want %d", len(rm.messages), len(oldMessages))
@@ -2948,7 +2952,7 @@ func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *
 		t.Fatalf("expected exactly one new session, got %d", len(store.created))
 	}
 	added := withoutConversationStartMessages(store.added)
-	expectedCount := len(expectedResult.NewMessages)
+	expectedCount := len(expectedResult.NewMessages) + 1
 	if _, ok := llm.ConversationStartFrom(expectedResult.NewMessages); ok {
 		expectedCount--
 	}
@@ -2968,13 +2972,13 @@ func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *
 	if added[0].Sequence != 0 {
 		t.Fatalf("first persisted system sequence = %d, want 0", added[0].Sequence)
 	}
-	if len(added) < 2 || added[1].Role != llm.RoleUser || !strings.Contains(added[1].TextContent, "handover doc") {
-		t.Fatalf("expected handover document immediately after system prompt, got %#v", added)
+	if len(added) < 3 || added[2].Role != llm.RoleUser || !strings.Contains(added[2].TextContent, "handover doc") {
+		t.Fatalf("expected handover document immediately after model change, got %#v", added)
 	}
 
 	active := session.LLMActiveMessages(added, 0, wantPrompt)
-	if len(active) != len(added) {
-		t.Fatalf("active message count = %d, want %d", len(active), len(added))
+	if len(active) != len(added)-1 {
+		t.Fatalf("active message count = %d, want %d", len(active), len(added)-1)
 	}
 	if active[0].Role != llm.RoleSystem || llm.MessageText(active[0]) != wantPrompt {
 		t.Fatalf("active first message = role %q text %q, want resolved target system prompt", active[0].Role, llm.MessageText(active[0]))
@@ -3031,8 +3035,8 @@ func TestExecuteHandover_PersistsAgentsMdSystemPromptWhenTargetPromptEmpty(t *te
 		t.Fatal("expected executeHandover to request relaunch")
 	}
 	added := withoutConversationStartMessages(store.added)
-	if len(added) != 3 {
-		t.Fatalf("expected system + handover user + ack to be persisted, got %d messages: %#v", len(added), added)
+	if len(added) != 4 {
+		t.Fatalf("expected system + model change + handover user + ack to be persisted, got %d messages: %#v", len(added), added)
 	}
 	if added[0].Role != llm.RoleSystem || added[0].TextContent != "AGENTS-only instructions" {
 		t.Fatalf("first persisted message = role %q text %q, want AGENTS.md-only system prompt", added[0].Role, added[0].TextContent)
@@ -3040,8 +3044,8 @@ func TestExecuteHandover_PersistsAgentsMdSystemPromptWhenTargetPromptEmpty(t *te
 	if added[0].Sequence != 0 {
 		t.Fatalf("first persisted system sequence = %d, want 0", added[0].Sequence)
 	}
-	if added[1].Role != llm.RoleUser || !strings.Contains(added[1].TextContent, "handover doc") {
-		t.Fatalf("expected handover document immediately after system prompt, got %#v", added[1])
+	if added[2].Role != llm.RoleUser || !strings.Contains(added[2].TextContent, "handover doc") {
+		t.Fatalf("expected handover document immediately after model change, got %#v", added[2])
 	}
 }
 

@@ -1577,6 +1577,33 @@ func handoverPrefix(source, target string) string {
 	return fmt.Sprintf("[Agent Handover: @%s -> @%s]\n\n", source, target)
 }
 
+// ParseHandoverDocument separates a reconstructed briefing from its provenance.
+// Only the exact prefix emitted by ReconstructHandoverHistory is accepted.
+func ParseHandoverDocument(text string) (source, target, body string, ok bool) {
+	line, body, found := strings.Cut(text, "\n\n")
+	if !found || !strings.HasPrefix(line, "[Agent Handover: @") || !strings.HasSuffix(line, "]") {
+		return "", "", "", false
+	}
+	names := strings.TrimSuffix(strings.TrimPrefix(line, "[Agent Handover: @"), "]")
+	source, target, found = strings.Cut(names, " -> @")
+	if !found || source == "" || target == "" || strings.ContainsAny(source+target, "\r\n") || strings.Contains(target, " -> @") {
+		return "", "", "", false
+	}
+	return source, target, body, true
+}
+
+func handoverAcknowledgement(source string) string {
+	return fmt.Sprintf("I've reviewed the handover briefing from @%s. I'll continue from where they left off.", source)
+}
+
+// IsHandoverAcknowledgement recognizes the synthetic acknowledgement, not model output.
+func IsHandoverAcknowledgement(text string) bool {
+	const prefix = "I've reviewed the handover briefing from @"
+	const suffix = ". I'll continue from where they left off."
+	source := strings.TrimSuffix(strings.TrimPrefix(text, prefix), suffix)
+	return source != "" && !strings.ContainsAny(source, "\r\n") && text == handoverAcknowledgement(source)
+}
+
 func conversationEndsAtSettledAssistant(messages []Message) bool {
 	last := len(messages) - 1
 	for last >= 0 && messages[last].Role == RoleEvent {
@@ -1728,7 +1755,7 @@ func ReconstructHandoverHistory(systemPrompt, document, sourceAgent, targetAgent
 		CacheAnchor: true,
 	})
 
-	ack := fmt.Sprintf("I've reviewed the handover briefing from @%s. I'll continue from where they left off.", sourceAgent)
+	ack := handoverAcknowledgement(sourceAgent)
 	messages = append(messages, AssistantText(ack))
 
 	return messages

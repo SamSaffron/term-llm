@@ -4879,6 +4879,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it.each([
     ['/stats', 'stats'],
+    ['/inspect', 'inspect'],
     ['/model', 'settings'],
     ['/goal', 'goal'],
   ])('handles %s locally during an idle Live call', async (command, modal) => {
@@ -5854,6 +5855,19 @@ describe('Preact-owned chat surfaces', () => {
       );
     },
   );
+
+  it('opens Inspect from the session actions menu', () => {
+    const store = createStore();
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Inspect' }));
+    expect(store.modal.value).toBe('inspect');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
 
   it('omits explicit attention control for sessions without an attention marker', () => {
     const store = createStore();

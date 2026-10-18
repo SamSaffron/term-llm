@@ -1,3 +1,5 @@
+import type { SessionInspect, SessionInspectBodies } from '../domain/inspect';
+
 export interface LiveSessionStartResponse {
   live_id: string;
   session_id: string;
@@ -303,6 +305,13 @@ export const endpoints = (api: APIClient) => ({
       '/v1/sessions',
       { method: 'POST', body: JSON.stringify(body) },
       { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
+  sessionInspect: (id: string, signal?: AbortSignal) =>
+    api.get<SessionInspect>(`/v1/sessions/${encoded(id)}/inspect`, signal),
+  sessionInspectBodies: (id: string, ids: string[], signal?: AbortSignal) =>
+    api.get<SessionInspectBodies>(
+      `/v1/sessions/${encoded(id)}/inspect/bodies?ids=${encoded(ids.join(','))}`,
+      signal,
     ),
   sessionStats: (id: string, signal?: AbortSignal) =>
     api.get<SessionStats>(`/v1/sessions/${encoded(id)}/stats`, signal),

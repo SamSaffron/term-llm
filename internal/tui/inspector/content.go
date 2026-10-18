@@ -8,10 +8,10 @@ import (
 
 	"charm.land/lipgloss/v2"
 	appconfig "github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/inspect"
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -402,31 +402,7 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 }
 
 func (r *ContentRenderer) compactionBoundaryMarkerIndex(messages []session.Message) int {
-	if !r.hasCompactionBoundary || len(messages) == 0 {
-		return -1
-	}
-	idx := -1
-	if r.compactionBoundarySeq >= 0 {
-		for i, msg := range messages {
-			if msg.Sequence >= r.compactionBoundarySeq {
-				idx = i
-				break
-			}
-		}
-	}
-	if idx < 0 && r.compactionBoundaryIndex >= 0 && r.compactionBoundaryIndex < len(messages) {
-		idx = r.compactionBoundaryIndex
-	}
-	if idx < 0 {
-		return -1
-	}
-	for idx < len(messages) && messages[idx].Role == llm.RoleSystem {
-		idx++
-	}
-	if idx >= len(messages) {
-		return -1
-	}
-	return idx
+	return inspect.CompactionBoundaryIndex(messages, r.hasCompactionBoundary, r.compactionBoundarySeq, r.compactionBoundaryIndex)
 }
 
 func (r *ContentRenderer) renderCompactionMarker(number int, activeBoundary, summaryFollows bool) string {
@@ -500,11 +476,7 @@ func (r *ContentRenderer) renderCompactionDebugBlock(messages []session.Message,
 }
 
 func compactionDebugTailEnd(messages []session.Message, summaryIdx int) int {
-	end := summaryIdx + 1
-	for end < len(messages) && messages[end].CompactionTail {
-		end++
-	}
-	return end
+	return inspect.CompactionTailEnd(messages, summaryIdx)
 }
 
 func (r *ContentRenderer) renderCollapsedCompactionDebug(summary session.Message, tail []session.Message, activeBoundary bool) string {
@@ -703,15 +675,7 @@ func visualLineCount(s string) int {
 }
 
 func isInspectorCompactionSummaryMessage(msg session.Message) bool {
-	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
-		return true
-	}
-	for _, part := range msg.Parts {
-		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
-			return true
-		}
-	}
-	return false
+	return inspect.IsCompactionSummary(msg)
 }
 
 // renderMessage renders a single message with its parts (backward compat, no item tracking)
@@ -966,36 +930,7 @@ func (r *ContentRenderer) renderTextContent(msg session.Message) string {
 }
 
 func formatSkillActivationProvenance(provenance *llm.SkillActivationProvenance) string {
-	if provenance == nil {
-		return ""
-	}
-	var lines []string
-	lines = append(lines, "Skill activation: "+provenance.Name)
-	appendField := func(label, value string) {
-		if strings.TrimSpace(value) != "" {
-			lines = append(lines, label+": "+value)
-		}
-	}
-	appendField("Source", provenance.Source)
-	appendField("Source path", provenance.SourcePath)
-	appendField("Origin", provenance.Origin)
-	appendField("Execution", provenance.Execution)
-	appendField("Arguments", provenance.RawArguments)
-	appendField("Agent", provenance.Agent)
-	appendField("Model", provenance.Model)
-	appendField("Run ID", provenance.RunID)
-	appendField("Child session", provenance.ChildSessionID)
-	appendField("Status", provenance.Status)
-	appendField("Started", provenance.StartedAt)
-	appendField("Completed", provenance.CompletedAt)
-	if provenance.AllowedToolsPresent {
-		allowed := "(none)"
-		if len(provenance.AllowedTools) > 0 {
-			allowed = strings.Join(provenance.AllowedTools, ", ")
-		}
-		appendField("Allowed tools", allowed)
-	}
-	return strings.Join(lines, "\n")
+	return inspect.FormatSkillActivationProvenance(provenance)
 }
 
 // renderAssistantContent renders assistant message content including tool calls
@@ -1067,19 +1002,7 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 }
 
 func reasoningSummaryDisplayContent(part llm.Part) string {
-	if len(part.ReasoningSummaryParts) == 0 {
-		return part.ReasoningContent
-	}
-	var parts []string
-	for _, text := range part.ReasoningSummaryParts {
-		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			parts = append(parts, trimmed)
-		}
-	}
-	if len(parts) == 0 {
-		return part.ReasoningContent
-	}
-	return strings.Join(parts, "\n\n")
+	return inspect.ReasoningSummaryDisplayContent(part)
 }
 
 func (r *ContentRenderer) renderReasoningForPart(part llm.Part) string {
@@ -1409,21 +1332,7 @@ func (r *ContentRenderer) renderToolResultsWithCalls(msg session.Message, msgID 
 
 // formatJSON formats JSON with indentation
 func (r *ContentRenderer) formatJSON(data json.RawMessage) string {
-	if len(data) == 0 {
-		return "{}"
-	}
-
-	var parsed any
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		// If it's not valid JSON, return as-is
-		return string(data)
-	}
-
-	formatted, err := json.MarshalIndent(parsed, "", "  ")
-	if err != nil {
-		return string(data)
-	}
-	return string(formatted)
+	return inspect.FormatJSON(data)
 }
 
 // truncateID shortens a tool call ID for display
@@ -1447,18 +1356,7 @@ func (r *ContentRenderer) lifecycleResultSession(name, content string, startLine
 // extractSessionIDFromSpawnAgentResult extracts the child link through the
 // canonical durable spawn_agent result parser.
 func extractSessionIDFromSpawnAgentResult(content string) string {
-	if strings.HasPrefix(strings.TrimSpace(content), "[") {
-		var results []json.RawMessage
-		if err := json.Unmarshal([]byte(content), &results); err != nil || len(results) == 0 {
-			return ""
-		}
-		content = string(results[0])
-	}
-	result, err := tools.ParseSpawnAgentResult(content)
-	if err != nil {
-		return ""
-	}
-	return result.SessionID
+	return inspect.ExtractSessionIDFromSpawnAgentResult(content)
 }
 
 // renderSubagentSession renders the internal turns of a subagent session

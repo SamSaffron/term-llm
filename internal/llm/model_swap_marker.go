@@ -16,9 +16,11 @@ type ModelSwapMarker struct {
 	FromProvider string `json:"from_provider,omitempty"`
 	FromModel    string `json:"from_model,omitempty"`
 	FromEffort   string `json:"from_effort,omitempty"`
+	FromAgent    string `json:"from_agent,omitempty"`
 	ToProvider   string `json:"to_provider,omitempty"`
 	ToModel      string `json:"to_model,omitempty"`
 	ToEffort     string `json:"to_effort,omitempty"`
+	ToAgent      string `json:"to_agent,omitempty"`
 	Strategy     string `json:"strategy,omitempty"`
 	Status       string `json:"status,omitempty"`
 	BoundaryID   string `json:"boundary_id,omitempty"`
@@ -74,6 +76,8 @@ func FormatModelSwapMarker(marker ModelSwapMarker) string {
 	if to == "" {
 		to = "target model"
 	}
+	from = formatModelSwapAgent(from, marker.FromAgent)
+	to = formatModelSwapAgent(to, marker.ToAgent)
 	strategy := strings.TrimSpace(marker.Strategy)
 	status := strings.TrimSpace(marker.Status)
 	switch status {
@@ -109,4 +113,11 @@ func formatProviderModelEffort(provider, model, effort string) string {
 		return base + " / " + effort
 	}
 	return base
+}
+
+func formatModelSwapAgent(model, agent string) string {
+	if agent = strings.TrimSpace(agent); agent != "" {
+		return "@" + strings.TrimPrefix(agent, "@") + " " + model
+	}
+	return model
 }

@@ -2480,3 +2480,49 @@ func TestCompactRetainsAudioMediaAndSummarizesKinds(t *testing.T) {
 		t.Fatalf("mixed=%v", mixed)
 	}
 }
+
+func TestParseHandoverDocument(t *testing.T) {
+	for _, tt := range []struct {
+		name, text, source, target, body string
+		ok                               bool
+	}{
+		{"agents", handoverPrefix("dev", "reviewer") + "briefing\n\nverbatim\n", "dev", "reviewer", "briefing\n\nverbatim\n", true},
+		{"models", handoverPrefix("openai:gpt-5-high", "anthropic:claude-max") + "doc", "openai:gpt-5-high", "anthropic:claude-max", "doc", true},
+		{"empty body", handoverPrefix("a", "b"), "a", "b", "", true},
+		{name: "ordinary", text: "briefing"},
+		{name: "not prefix", text: "intro\n" + handoverPrefix("a", "b")},
+		{name: "missing separator", text: "[Agent Handover: @a -> @b]\ndoc"},
+		{name: "missing source", text: handoverPrefix("", "b")},
+		{name: "missing target", text: handoverPrefix("a", "")},
+		{name: "multiline name", text: handoverPrefix("a\nb", "c")},
+		{name: "ambiguous names", text: handoverPrefix("a", "b -> @c")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source, target, body, ok := ParseHandoverDocument(tt.text)
+			if source != tt.source || target != tt.target || body != tt.body || ok != tt.ok {
+				t.Fatalf("parse = %q, %q, %q, %v", source, target, body, ok)
+			}
+		})
+	}
+}
+
+func TestIsHandoverAcknowledgement(t *testing.T) {
+	for _, tt := range []struct {
+		text string
+		want bool
+	}{
+		{MessageText(ReconstructHandoverHistory("", "doc", "dev", "reviewer")[1]), true},
+		{handoverAcknowledgement("openai:gpt-5-high"), true},
+		{handoverAcknowledgement(""), false},
+		{handoverAcknowledgement("a\nb"), false},
+		{"ordinary response", false},
+		{handoverAcknowledgement("dev") + "\nextra", false},
+		{"prefix " + handoverAcknowledgement("dev"), false},
+	} {
+		t.Run(tt.text, func(t *testing.T) {
+			if got := IsHandoverAcknowledgement(tt.text); got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -38,6 +38,11 @@ export interface MentionSearchResponse {
 
 export const SLASH_COMMANDS = [
   {
+    command: '/inspect',
+    description: 'Inspect the full conversation and current runtime definitions',
+    streamingSafe: true,
+  },
+  {
     command: '/stats',
     description: 'Show session and subagent usage statistics',
     streamingSafe: true,
