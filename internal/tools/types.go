@@ -147,124 +147,43 @@ const (
 	HubCheckDelegationToolName = "hub_check_delegation"
 )
 
-// StandardToolNames returns the implicit tool set used by --tools all and
-// disabled-list agents. Behavior-changing opt-in tools are intentionally absent.
-// Hub delegation tools are included only when this process has Hub delegation
-// credentials, so implicit tool lists do not advertise inoperable hub tools.
-// Note: activate_skill is excluded as it requires a skills registry and is registered separately.
+// StandardToolNames returns the implicit tool set used by --tools all and disabled-list agents.
 func StandardToolNames() []string {
-	names := []string{
-		ReadFileToolName,
-		WriteFileToolName,
-		EditFileToolName,
-		UnifiedDiffToolName,
-		ShellToolName,
-		GrepToolName,
-		GlobToolName,
-		ViewImageToolName,
-		ShowMediaToolName,
-		ImageGenerateToolName,
-		AskUserToolName,
-		SpawnAgentToolName,
-		WaitAgentToolName,
-		ContinueAgentToolName,
-		CancelAgentToolName,
-		ListAgentsToolName,
-		QueueAgentToolName,
-		WaitForJobsToolName,
-		RunAgentScriptToolName,
-		InitiateHandoverToolName,
-	}
-	if HubDelegationConfigured() {
-		names = append(names, HubDelegateToolName, HubCheckDelegationToolName)
+	var names []string
+	for _, d := range builtinTools {
+		if d.DefaultEnabled && (!d.hubCredentials || HubDelegationConfigured()) {
+			names = append(names, d.Name)
+		}
 	}
 	return names
 }
 
-// ValidToolNames returns every accepted built-in tool name for validation and
-// shell completion. Hub names remain valid even on standalone nodes so explicit
-// configuration behaves consistently with the historical allowlist.
+// ValidToolNames returns every accepted built-in name, including opt-in tools.
 func ValidToolNames() []string {
 	names := StandardToolNames()
-	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, LiveSettingsToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName} {
-		found := false
-		for _, existing := range names {
-			if existing == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			names = append(names, name)
+	for _, d := range builtinTools {
+		if !d.nonLocal && !d.hiddenCompletion && !containsBuiltinName(names, d.Name) {
+			names = append(names, d.Name)
 		}
 	}
 	return names
 }
-
-// validToolNames is a set of valid tool spec names for fast lookup.
-// Note: activate_skill is excluded as it requires a skills registry and is registered separately.
-var validToolNames = map[string]bool{
-	UIGetSourceToolName:        true,
-	UIExtensionsToolName:       true,
-	UIActivateToolName:         true,
-	ReadFileToolName:           true,
-	WriteFileToolName:          true,
-	EditFileToolName:           true,
-	UnifiedDiffToolName:        true,
-	ShellToolName:              true,
-	GrepToolName:               true,
-	GlobToolName:               true,
-	ViewImageToolName:          true,
-	ShowImageToolName:          true,
-	ShowMediaToolName:          true,
-	ImageGenerateToolName:      true,
-	AskUserToolName:            true,
-	SpawnAgentToolName:         true,
-	WaitAgentToolName:          true,
-	ContinueAgentToolName:      true,
-	CancelAgentToolName:        true,
-	ListAgentsToolName:         true,
-	QueueAgentToolName:         true,
-	WaitForJobsToolName:        true,
-	RunAgentScriptToolName:     true,
-	InitiateHandoverToolName:   true,
-	ManageWorkspaceToolName:    true,
-	UpdatePlanToolName:         true,
-	LiveSettingsToolName:       true,
-	HubDelegateToolName:        true,
-	HubCheckDelegationToolName: true,
-}
-
-// ValidToolName checks if a name is a valid tool spec name.
-func ValidToolName(name string) bool {
-	return validToolNames[name]
-}
-
-// GetToolKind returns the kind for a tool spec name.
-func GetToolKind(specName string) ToolKind {
-	switch specName {
-	case ReadFileToolName, ViewImageToolName, UIGetSourceToolName:
-		return KindRead
-	case WriteFileToolName, EditFileToolName, UnifiedDiffToolName:
-		return KindEdit
-	case GrepToolName, GlobToolName:
-		return KindSearch
-	case ShellToolName:
-		return KindExecute
-	case ImageGenerateToolName, ShowImageToolName, ShowMediaToolName:
-		return KindImage
-	case AskUserToolName:
-		return KindInteractive
-	case SpawnAgentToolName, QueueAgentToolName, WaitForJobsToolName, InitiateHandoverToolName,
-		HubDelegateToolName, HubCheckDelegationToolName:
-		return KindAgent
-	case RunAgentScriptToolName:
-		return KindExecute
-	case LiveSettingsToolName, UpdatePlanToolName, ManageWorkspaceToolName, UIExtensionsToolName, UIActivateToolName:
-		return KindSessionState
-	case ActivateSkillToolName:
-		return KindSkill
-	default:
-		return ""
+func containsBuiltinName(names []string, name string) bool {
+	for _, n := range names {
+		if n == name {
+			return true
+		}
 	}
+	return false
+}
+
+// ValidToolName checks if a name is a valid local tool spec name.
+func ValidToolName(name string) bool { d := lookupBuiltin(name); return d != nil && !d.nonLocal }
+
+// GetToolKind returns the permission policy class for a tool spec name.
+func GetToolKind(name string) ToolKind {
+	if d := lookupBuiltin(name); d != nil {
+		return d.Policy
+	}
+	return ""
 }

@@ -88,8 +88,7 @@ User-facing documentation lives in `docs-site/content/`; there is no separate `d
 - Config lives under `$XDG_CONFIG_HOME/term-llm/config.yaml` (falling back to `~/.config/term-llm/config.yaml`). Credential names and supported providers are defined in code; do not maintain a second static list here.
 
 ### Tools
-- Wire tools through the registry in `internal/tools/` and update `internal/tools/permissions.go` when access policy changes.
-- Cover permission denial as well as successful execution.
+See `internal/tools/README.md` for adding a built-in tool and permission-denial coverage.
 
 ### Web UI (`frontend/` and `internal/serveui/`)
 - Markdown configuration and sanitization live in `frontend/src/domain/markdown.ts`, with shared renderer hooks in `markdown-hooks.ts`. Add rendering cases to `frontend/src/domain/rendering.test.ts`.
