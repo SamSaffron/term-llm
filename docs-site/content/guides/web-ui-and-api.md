@@ -174,7 +174,7 @@ A fresh project-aware Responses request includes:
 }
 ```
 
-The server resolves the stable ID, revalidates the canonical path, verifies managed-worktree repository ownership, and atomically snapshots the binding before execution. Repeating the same binding is idempotent; conflicting project/worktree values return `409 workspace_conflict`. First-party UI requests require `project_id` in project mode. Authenticated third-party Responses clients may supply it, but omission keeps their existing unbound/explicit behavior.
+The server resolves the stable ID, revalidates the canonical path, verifies managed-worktree repository ownership, and atomically snapshots the binding before execution. Repeating the same binding is idempotent; conflicting project/worktree values return `409 workspace_conflict`. Fresh first-party UI conversations in project mode must supply either `project_id` or `no_project: true`; these are mutually exclusive. Continuations retain the persisted workspace binding when selection fields are omitted. Authenticated third-party Responses clients may supply it, but omission keeps their existing unbound/explicit behavior.
 
 Session archival is separate from project archival. **Archive** in a conversation's sidebar menu (or `/archive` in its composer) removes that conversation from the default lists without deleting it. Enable **Show archived sessions** in Web UI settings to find it and choose **Restore**. Archived sessions are exempt from automatic cleanup when `sessions.max_age_days` or `sessions.max_count` is set; projects have their own Archive/Restore action.
 
@@ -190,7 +190,7 @@ Stable project/workspace errors use the normal authenticated JSON error envelope
 
 | Code | Meaning and recovery |
 |---|---|
-| `project_required` | A fresh first-party project-mode conversation omitted its project; choose or add one. |
+| `project_required` | A fresh first-party project-mode conversation omitted both `project_id` and `no_project: true`; choose a project or **No project**. |
 | `project_not_found` | The registry identity no longer exists; refresh projects and choose another. |
 | `project_archived` | An archived project cannot start a new conversation; restore it or use another. |
 | `project_unavailable` | The path is missing or its canonical identity changed; repair it or archive/re-add the moved path. |
