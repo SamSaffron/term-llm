@@ -1,3 +1,9 @@
+import type {
+  ServeMentionSearchResponse,
+  ServeMentionToken,
+  ServeMentionSearchItem,
+} from '../api/generated/types';
+
 export interface SkillCommand {
   name?: unknown;
   description?: unknown;
@@ -17,24 +23,9 @@ export interface Completion {
   segments?: Array<{ text: string; matched?: boolean }>;
 }
 
-export interface MentionSearchToken {
-  start_utf16: number;
-  end_utf16: number;
-  query: string;
-  quoted?: boolean;
-}
-export interface MentionSearchItem {
-  path: string;
-  kind: 'file' | 'directory';
-  insert_text: string;
-  segments?: Array<{ text: string; matched?: boolean }>;
-}
-export interface MentionSearchResponse {
-  active?: boolean;
-  token?: MentionSearchToken;
-  items?: MentionSearchItem[];
-  index_truncated?: boolean;
-}
+export type MentionSearchToken = ServeMentionToken;
+export type MentionSearchItem = ServeMentionSearchItem;
+export type MentionSearchResponse = ServeMentionSearchResponse;
 
 export const SLASH_COMMANDS = [
   {

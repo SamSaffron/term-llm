@@ -21,6 +21,8 @@ const session = (overrides: Partial<Session> = {}): Session => ({
 const child = (overrides: Partial<StatsChild> = {}): StatsChild => ({
   session_id: 'child-1',
   parent_session_id: 'parent-1',
+  attention: false,
+  revision: 1,
   parent_spawn_call_id: 'spawn-1',
   title: 'Research task',
   state: 'active',

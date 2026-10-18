@@ -90,7 +90,7 @@ export function ShareModal() {
       .sharingCapabilities()
       .then((loaded) => {
         if (!active) return;
-        if (!loaded.enabled || !loaded.visibilities.length) {
+        if (!loaded.enabled || !loaded.visibilities?.length) {
           throw new Error('Sharing is not enabled on this server.');
         }
         setCapabilities(loaded);
@@ -318,13 +318,13 @@ export function ShareModal() {
 
               <fieldset class="share-fieldset share-visibility" disabled={submitting}>
                 <legend>Visibility</legend>
-                {capabilities.visibilities.length === 1 ? (
+                {capabilities.visibilities?.length === 1 ? (
                   <div class="share-included">
-                    <strong>{visibilityLabel(capabilities.visibilities[0])}</strong>
-                    <span>{visibilityDescription(capabilities.visibilities[0])}</span>
+                    <strong>{visibilityLabel(capabilities.visibilities?.[0])}</strong>
+                    <span>{visibilityDescription(capabilities.visibilities?.[0])}</span>
                   </div>
                 ) : (
-                  capabilities.visibilities.map((option) => (
+                  capabilities.visibilities?.map((option) => (
                     <label
                       key={option}
                       class={`share-choice ${visibility === option ? 'is-selected' : ''}`}

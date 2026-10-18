@@ -337,7 +337,7 @@ describe('composer completion', () => {
   it('applies server mention ranges without damaging text after the caret', () => {
     const [completion] = mentionCompletions({
       active: true,
-      token: { start_utf16: 7, end_utf16: 11, query: 'typ' },
+      token: { start_utf16: 7, end_utf16: 11, query: 'typ', quoted: false },
       items: [{ path: 'types.go', kind: 'file', insert_text: '@types.go', segments: [] }],
     });
     expect(applyCompletion('review @typ now', completion)).toBe('review @types.go now');
@@ -362,7 +362,7 @@ describe('composer completion', () => {
   it('rebinds stale mention payloads to the live token range', () => {
     const stale: MentionSearchResponse = {
       active: true,
-      token: { start_utf16: 0, end_utf16: 3, query: 'ja' },
+      token: { start_utf16: 0, end_utf16: 3, query: 'ja', quoted: false },
       items: [{ path: 'jar.go', kind: 'file', insert_text: '@jar.go', segments: [] }],
     };
     const [completion] = mentionCompletions(stale, { start: 0, end: 4 });

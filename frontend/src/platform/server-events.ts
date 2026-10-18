@@ -1,3 +1,5 @@
+import type { ServeEvent } from '../api/generated/types';
+
 export const SERVER_EVENT_TYPES = [
   'session.created',
   'session.metadata_changed',
@@ -21,6 +23,7 @@ export const SERVER_EVENT_TYPES = [
 export type ServerEventType = (typeof SERVER_EVENT_TYPES)[number];
 const eventTypes = new Set<string>(SERVER_EVENT_TYPES);
 
+// Validated and camel-cased UI projection of generated ServeEvent wire JSON.
 export interface ServerEvent {
   v: 1;
   sequence: number;
@@ -67,40 +70,40 @@ const optionalString = (source: Record<string, unknown>, key: string): string | 
 
 export function parseServerEvent(value: unknown): ServerEvent | null {
   const source = object(value);
+  // Validate untrusted JSON before projecting its snake_case wire fields to UI names.
+  const wire = source as unknown as ServeEvent;
   if (
     !source ||
-    source.v !== 1 ||
-    !safeInteger(source.sequence) ||
-    typeof source.instance_id !== 'string' ||
-    !source.instance_id ||
-    typeof source.type !== 'string' ||
-    !eventTypes.has(source.type) ||
-    !safeInteger(source.occurred_at)
+    wire.v !== 1 ||
+    !safeInteger(wire.sequence) ||
+    typeof wire.instance_id !== 'string' ||
+    !wire.instance_id ||
+    typeof wire.type !== 'string' ||
+    !eventTypes.has(wire.type) ||
+    !safeInteger(wire.occurred_at)
   )
     return null;
   if (
-    (source.transcript_rev !== undefined && !safeInteger(source.transcript_rev)) ||
-    (source.run_epoch !== undefined && !safeInteger(source.run_epoch))
+    (wire.transcript_rev !== undefined && !safeInteger(wire.transcript_rev)) ||
+    (wire.run_epoch !== undefined && !safeInteger(wire.run_epoch))
   )
     return null;
   return {
     v: 1,
-    sequence: Number(source.sequence),
-    instanceId: source.instance_id,
-    type: source.type as ServerEventType,
-    occurredAt: Number(source.occurred_at),
-    ...(optionalString(source, 'session_id') ? { sessionId: String(source.session_id) } : {}),
-    ...(optionalString(source, 'response_id') ? { responseId: String(source.response_id) } : {}),
-    ...(optionalString(source, 'project_id') ? { projectId: String(source.project_id) } : {}),
+    sequence: Number(wire.sequence),
+    instanceId: wire.instance_id,
+    type: wire.type as ServerEventType,
+    occurredAt: Number(wire.occurred_at),
+    ...(optionalString(source, 'session_id') ? { sessionId: String(wire.session_id) } : {}),
+    ...(optionalString(source, 'response_id') ? { responseId: String(wire.response_id) } : {}),
+    ...(optionalString(source, 'project_id') ? { projectId: String(wire.project_id) } : {}),
     ...(optionalString(source, 'parent_session_id')
-      ? { parentSessionId: String(source.parent_session_id) }
+      ? { parentSessionId: String(wire.parent_session_id) }
       : {}),
-    ...(source.transcript_rev !== undefined
-      ? { transcriptRev: Number(source.transcript_rev) }
-      : {}),
-    ...(source.run_epoch !== undefined ? { runEpoch: Number(source.run_epoch) } : {}),
-    ...(optionalString(source, 'operation_id') ? { operationId: String(source.operation_id) } : {}),
-    ...(optionalString(source, 'reason') ? { reason: String(source.reason) } : {}),
+    ...(wire.transcript_rev !== undefined ? { transcriptRev: Number(wire.transcript_rev) } : {}),
+    ...(wire.run_epoch !== undefined ? { runEpoch: Number(wire.run_epoch) } : {}),
+    ...(optionalString(source, 'operation_id') ? { operationId: String(wire.operation_id) } : {}),
+    ...(optionalString(source, 'reason') ? { reason: String(wire.reason) } : {}),
   };
 }
 
