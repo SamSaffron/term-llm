@@ -169,6 +169,7 @@ type oaiChatRequest struct {
 	ParseReasoning      *bool                  `json:"parse_reasoning,omitempty"`
 	IncludeReasoning    *bool                  `json:"include_reasoning,omitempty"`
 	VeniceParameters    map[string]interface{} `json:"venice_parameters,omitempty"`
+	PromptCacheKey      string                 `json:"prompt_cache_key,omitempty"`
 }
 
 type oaiStreamOptions struct {
@@ -185,9 +186,16 @@ type oaiMessage struct {
 }
 
 type oaiContentPart struct {
-	Type     string       `json:"type"`
-	Text     string       `json:"text,omitempty"`
-	ImageURL *oaiImageURL `json:"image_url,omitempty"`
+	Type         string           `json:"type"`
+	Text         string           `json:"text,omitempty"`
+	ImageURL     *oaiImageURL     `json:"image_url,omitempty"`
+	CacheControl *oaiCacheControl `json:"cache_control,omitempty"`
+}
+
+// oaiCacheControl is an Anthropic-style prompt-cache breakpoint accepted on content parts by
+// OpenAI-compatible gateways that front Claude (e.g. Venice).
+type oaiCacheControl struct {
+	Type string `json:"type"`
 }
 
 type oaiImageURL struct {
@@ -237,7 +245,8 @@ type oaiUsage struct {
 	CompletionTokens    int `json:"completion_tokens"`
 	TotalTokens         int `json:"total_tokens"`
 	PromptTokensDetails struct {
-		CachedTokens int `json:"cached_tokens"`
+		CachedTokens             int `json:"cached_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens"`

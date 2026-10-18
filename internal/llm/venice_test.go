@@ -713,3 +713,98 @@ func TestVeniceProvider429IsRetried(t *testing.T) {
 		t.Fatalf("text = %q, want %q", text, "ok")
 	}
 }
+
+func TestApplyVeniceClaudeCacheBreakpoint(t *testing.T) {
+	msgs := []oaiMessage{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "", ToolCalls: []oaiToolCall{{ID: "a"}}},
+		{Role: "tool", ToolCallID: "a", Content: "r1"},
+		{Role: "assistant", Content: "thinking out loud", ToolCalls: []oaiToolCall{{ID: "b"}}},
+		{Role: "tool", ToolCallID: "b", Content: "r2"},
+		{Role: "assistant", Content: nil, ToolCalls: []oaiToolCall{{ID: "c"}}},
+		{Role: "tool", ToolCallID: "c", Content: "r3"},
+	}
+	applyVeniceClaudeCacheBreakpoint(msgs)
+
+	part := func(i int) []oaiContentPart {
+		p, ok := msgs[i].Content.([]oaiContentPart)
+		if !ok {
+			t.Fatalf("message %d content = %#v, want parts", i, msgs[i].Content)
+		}
+		return p
+	}
+	// Tool-call-only turns get the same placeholder every time (stable prefix); text turns keep their text.
+	if p := part(2); p[0].Text != veniceToolCallPlaceholder || p[0].CacheControl != nil {
+		t.Fatalf("earlier tool-call-only turn = %#v", p)
+	}
+	if p := part(4); p[0].Text != "thinking out loud" || p[0].CacheControl != nil {
+		t.Fatalf("earlier text turn = %#v", p)
+	}
+	// Exactly one breakpoint, on the latest assistant turn.
+	if p := part(6); p[0].Text != veniceToolCallPlaceholder || p[0].CacheControl == nil || p[0].CacheControl.Type != "ephemeral" {
+		t.Fatalf("latest assistant turn = %#v", p)
+	}
+	for _, i := range []int{0, 1, 3, 5, 7} {
+		if _, ok := msgs[i].Content.(string); !ok {
+			t.Fatalf("non-assistant message %d changed: %#v", i, msgs[i].Content)
+		}
+	}
+}
+
+func TestVeniceStream_ClaudeGetsCacheBreakpointOthersDoNot(t *testing.T) {
+	for _, tc := range []struct {
+		model      string
+		wantMarker bool
+	}{{"claude-haiku-5-5-high", true}, {"deepseek-v4-1-flash", false}} {
+		var got struct {
+			Messages       []json.RawMessage `json:"messages"`
+			PromptCacheKey string            `json:"prompt_cache_key"`
+		}
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":60,\"cache_creation_input_tokens\":30}}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		}))
+		provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "k", tc.model, "Venice")}
+		stream, err := provider.Stream(context.Background(), Request{
+			SessionID: "sess-1",
+			Messages: []Message{
+				UserText("task"),
+				{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{ID: "a", Name: "shell", Arguments: json.RawMessage(`{}`)}}}},
+				{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: &ToolResult{ID: "a", Name: "shell", Content: "out"}}}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("%s: Stream: %v", tc.model, err)
+		}
+		var usage *Usage
+		for {
+			ev, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("%s: Recv: %v", tc.model, err)
+			}
+			if ev.Type == EventUsage {
+				usage = ev.Use
+			}
+			if ev.Type == EventDone {
+				break
+			}
+		}
+		stream.Close()
+		ts.Close()
+		raw := string(got.Messages[1])
+		if has := strings.Contains(raw, `"cache_control"`); has != tc.wantMarker {
+			t.Fatalf("%s: assistant message %s: cache_control present=%v want %v", tc.model, raw, has, tc.wantMarker)
+		}
+		if got.PromptCacheKey != "sess-1" {
+			t.Fatalf("%s: prompt_cache_key = %q", tc.model, got.PromptCacheKey)
+		}
+		if usage == nil || usage.CachedInputTokens != 60 || usage.CacheWriteTokens != 30 || usage.InputTokens != 10 {
+			t.Fatalf("%s: usage = %+v, want input 10 cached 60 write 30", tc.model, usage)
+		}
+	}
+}
