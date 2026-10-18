@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -1639,22 +1640,17 @@ func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string
 		}
 	}
 
-	switch {
-	case strings.HasPrefix(lower, "github copilot ("):
-		return "copilot"
-	case strings.HasPrefix(lower, "claude cli ("):
-		return "claude-bin"
-	case strings.HasPrefix(lower, "grok cli ("):
-		return "grok-bin"
-	case strings.HasPrefix(lower, "cursor cli ("):
-		return "cursor-bin"
-	case lower == "agy cli" || strings.HasPrefix(lower, "agy cli ("):
-		return "agy-bin"
-	case strings.HasPrefix(lower, "debug"):
-		return "debug"
-	default:
-		return ""
+	for _, spec := range providerspec.All() {
+		for _, alias := range spec.Aliases {
+			if lower == alias || strings.HasPrefix(lower, alias+" (") {
+				return spec.Name
+			}
+		}
 	}
+	if strings.HasPrefix(lower, "debug") {
+		return "debug"
+	}
+	return ""
 }
 
 // getModelName returns the configured model; "" means caller should fall back to extractModelFromProviderName(provider.Name()).

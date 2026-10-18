@@ -11,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -1331,12 +1332,10 @@ func isFixedBridgeProvider(provider llm.Provider) bool {
 	if provider == nil {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(provider.Credential())) {
-	case "claude-bin", "cursor-bin", "grok-bin", "agy-bin":
-		return true
-	default:
-		return false
+	if spec, ok := providerspec.Lookup(strings.ToLower(strings.TrimSpace(provider.Credential()))); ok {
+		return spec.Capabilities.FixedToolBridge
 	}
+	return false
 }
 
 func isDynamicActivation(reason string) bool {

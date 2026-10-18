@@ -69,7 +69,7 @@ User-facing documentation lives in `docs-site/content/`; there is no separate `d
 
 ## Common Change Paths
 ### Providers and configuration
-- Trace provider changes through the implementation, `internal/llm/factory.go`, config schema/defaults, model listing, and tests; do not update only the transport.
+- For provider changes, follow [`internal/providerspec/README.md`](internal/providerspec/README.md).
 - Config lives under `$XDG_CONFIG_HOME/term-llm/config.yaml` (falling back to `~/.config/term-llm/config.yaml`). Credential names and supported providers are defined in code; do not maintain a second static list here.
 
 ### Tools

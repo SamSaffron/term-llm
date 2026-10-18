@@ -12,7 +12,7 @@
     },
     {
       "path": "cmd/chat.go",
-      "lines": 1691
+      "lines": 1687
     },
     {
       "path": "cmd/config.go",
@@ -84,11 +84,7 @@
     },
     {
       "path": "internal/config/config.go",
-      "lines": 2958
-    },
-    {
-      "path": "internal/config/schema.go",
-      "lines": 1012
+      "lines": 2935
     },
     {
       "path": "internal/filetrack/store.go",
@@ -128,7 +124,7 @@
     },
     {
       "path": "internal/llm/models.go",
-      "lines": 1212
+      "lines": 1138
     },
     {
       "path": "internal/llm/openai_compat.go",
@@ -196,11 +192,11 @@
     },
     {
       "path": "internal/tooldiscovery/planner.go",
-      "lines": 1411
+      "lines": 1410
     },
     {
       "path": "internal/tools/approval.go",
-      "lines": 2543
+      "lines": 2541
     },
     {
       "path": "internal/tools/grep.go",
@@ -274,11 +270,11 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 105450
+      "lines": 105488
     },
     {
       "dir": "internal/llm",
-      "lines": 48157
+      "lines": 48245
     },
     {
       "dir": "internal/session",
@@ -286,7 +282,7 @@
     },
     {
       "dir": "internal/tools",
-      "lines": 22776
+      "lines": 22807
     },
     {
       "dir": "internal/tui/chat",

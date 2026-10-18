@@ -8,6 +8,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 )
 
 // Provider availability answers one question for every provider picker (web
@@ -28,8 +29,12 @@ const (
 // CLI. Some probes stat files and (agy on macOS) spawn a helper, so pickers
 // should go through a ProviderCredentialCache.
 func ProviderHasLocalCredentials(name string) bool {
-	switch name {
-	case "claude-bin":
+	spec, ok := providerspec.Lookup(name)
+	if !ok {
+		return false
+	}
+	switch spec.Availability {
+	case "claude":
 		// Claude Code keeps its login in the macOS keychain or its own config;
 		// an installed CLI is the cheap, reliable signal.
 		_, err := exec.LookPath("claude")

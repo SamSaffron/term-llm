@@ -214,34 +214,42 @@ func resolvedProviderConfig(cfg *config.Config, name string) (config.ProviderCon
 	return providerCfg, nil
 }
 
-// newBinProvider validates model overrides before creating a CLI-backed provider.
-func newBinProvider(providerType config.ProviderType, model string, env map[string]string, enableHooks bool) (Provider, error) {
-	switch providerType {
-	case config.ProviderTypeClaudeBin:
+var binProviderConstructors = map[config.ProviderType]func(string, map[string]string, bool) (Provider, error){
+	config.ProviderTypeClaudeBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
 		if err := ValidateClaudeBinModel(model); err != nil {
 			return nil, err
 		}
 		provider := NewClaudeBinProvider(model, env)
 		provider.SetEnableHooks(enableHooks)
 		return provider, nil
-	case config.ProviderTypeGrokBin:
+	},
+	config.ProviderTypeGrokBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
 		if err := ValidateGrokBinModel(model); err != nil {
 			return nil, err
 		}
 		return NewGrokBinProvider(model, env), nil
-	case config.ProviderTypeCursorBin:
+	},
+	config.ProviderTypeCursorBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
 		if err := ValidateCursorBinModel(model); err != nil {
 			return nil, err
 		}
 		return NewCursorBinProvider(model, env), nil
-	case config.ProviderTypeAgyBin:
+	},
+	config.ProviderTypeAgyBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
 		if err := ValidateAgyBinModel(model); err != nil {
 			return nil, err
 		}
 		return NewAgyBinProvider(model, env), nil
-	default:
+	},
+}
+
+// newBinProvider validates model overrides before creating a CLI-backed provider.
+func newBinProvider(providerType config.ProviderType, model string, env map[string]string, enableHooks bool) (Provider, error) {
+	constructor := binProviderConstructors[providerType]
+	if constructor == nil {
 		return nil, fmt.Errorf("unsupported bin provider type %q", providerType)
 	}
+	return constructor(model, env, enableHooks)
 }
 
 // NewProviderByNameNoRetry creates the same provider as NewProviderByName but
@@ -339,6 +347,36 @@ func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
 	return NewProviderByName(cfg, target, model)
 }
 
+var apiKeyProviderConstructors = map[config.ProviderType]func(string, string, *config.ProviderConfig) (Provider, error){
+	config.ProviderTypeOpenRouter: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		return NewOpenRouterProvider(key, cfg.Model, cfg.AppURL, cfg.AppTitle), nil
+	},
+	config.ProviderTypeGemini: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		return NewGeminiProvider(key, cfg.Model), nil
+	},
+	config.ProviderTypeXAI: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		return NewXAIProvider(key, cfg.Model), nil
+	},
+	config.ProviderTypeZen: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		return NewZenProvider(key, cfg.Model), nil
+	},
+	config.ProviderTypeVenice: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		return NewVeniceProvider(key, cfg.Model), nil
+	},
+	config.ProviderTypeNearAI: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		return NewNearAIProvider(key, cfg.Model), nil
+	},
+	config.ProviderTypeSambaNova: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		return NewSambaNovaProvider(key, cfg.Model), nil
+	},
+	config.ProviderTypeOpenCodeGo: func(name, key string, cfg *config.ProviderConfig) (Provider, error) {
+		if strings.TrimSpace(cfg.URL) != "" {
+			return nil, fmt.Errorf("provider %q does not support url overrides; use base_url", name)
+		}
+		return NewOpenCodeGoProviderWithBaseURL(key, cfg.Model, cfg.BaseURL), nil
+	},
+}
+
 // newAPIKeyProvider creates a built-in provider that authenticates with an
 // API key: the resolved config value, else the registry environment variable.
 func newAPIKeyProvider(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
@@ -350,57 +388,35 @@ func newAPIKeyProvider(name string, providerType config.ProviderType, cfg *confi
 	if key == "" {
 		return nil, fmt.Errorf("provider %q requires %s or explicit config", name, spec.APIKeyEnv)
 	}
-	switch providerType {
-	case config.ProviderTypeOpenRouter:
-		return NewOpenRouterProvider(key, cfg.Model, cfg.AppURL, cfg.AppTitle), nil
-	case config.ProviderTypeGemini:
-		return NewGeminiProvider(key, cfg.Model), nil
-	case config.ProviderTypeXAI:
-		return NewXAIProvider(key, cfg.Model), nil
-	case config.ProviderTypeZen:
-		return NewZenProvider(key, cfg.Model), nil
-	case config.ProviderTypeVenice:
-		return NewVeniceProvider(key, cfg.Model), nil
-	case config.ProviderTypeNearAI:
-		return NewNearAIProvider(key, cfg.Model), nil
-	case config.ProviderTypeSambaNova:
-		return NewSambaNovaProvider(key, cfg.Model), nil
-	case config.ProviderTypeOpenCodeGo:
-		if strings.TrimSpace(cfg.URL) != "" {
-			return nil, fmt.Errorf("provider %q does not support url overrides; use base_url", name)
-		}
-		return NewOpenCodeGoProviderWithBaseURL(key, cfg.Model, cfg.BaseURL), nil
+	constructor := apiKeyProviderConstructors[providerType]
+	if constructor == nil {
+		return nil, fmt.Errorf("unsupported API-key provider type %q", providerType)
 	}
-	return nil, fmt.Errorf("unsupported API-key provider type %q", providerType)
+	return constructor(name, key, cfg)
 }
 
-// createProviderFromConfig creates a provider from a ProviderConfig.
-func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider, error) {
-	// Resolve lazy config values (op://, srv://, $()) before creating provider
-	if err := cfg.ResolveForInference(); err != nil {
-		return nil, fmt.Errorf("provider %q: %w", name, err)
-	}
-
-	providerType := config.InferProviderType(name, cfg.Type)
-	if err := config.ValidateProviderCompatibility(name, cfg); err != nil {
-		return nil, err
-	}
-
-	switch providerType {
-	case config.ProviderTypeAnthropic:
+// providerConstructors binds implementation-specific constructors to the leaf
+// provider registry. The completeness test guards against missing/extra types.
+var providerConstructors = func() map[config.ProviderType]func(string, config.ProviderType, *config.ProviderConfig) (Provider, error) {
+	constructors := make(map[config.ProviderType]func(string, config.ProviderType, *config.ProviderConfig) (Provider, error))
+	constructor := func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		return NewAnthropicProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials, AnthropicProviderOptions{BaseURL: cfg.BaseURL, Headers: cfg.Headers})
-
-	case config.ProviderTypeOpenAI:
+	}
+	constructors[config.ProviderTypeAnthropic] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{ProviderName: name, UsePreviousResponseID: cfg.UsePreviousResponseID, RequestEncryptedReasoning: cfg.RequestEncryptedReasoning, Endpoint: cfg.OpenAIEndpoint(), UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)}), nil
-
-	case config.ProviderTypeChatGPT:
+	}
+	constructors[config.ProviderTypeOpenAI] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		// ChatGPT uses native OAuth with interactive authentication
 		return NewChatGPTProviderWithOptions(cfg.Model, ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)})
-
-	case config.ProviderTypeGrok:
+	}
+	constructors[config.ProviderTypeChatGPT] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		return NewGrokProviderWithOptions(cfg.Model, GrokProviderOptions{FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg)})
-
-	case config.ProviderTypeCopilot:
+	}
+	constructors[config.ProviderTypeGrok] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		// Copilot uses GitHub device code OAuth with interactive authentication
 		provider, err := NewCopilotProvider(cfg.Model)
 		if err != nil {
@@ -408,19 +424,31 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		}
 		provider.fileUploadPolicy = cloneFileUploadPolicy(FileUploadPolicyOverrideForProviderConfig(name, *cfg))
 		return provider, nil
-
-	case config.ProviderTypeOpenRouter, config.ProviderTypeGemini, config.ProviderTypeXAI,
-		config.ProviderTypeZen, config.ProviderTypeVenice, config.ProviderTypeNearAI,
-		config.ProviderTypeSambaNova, config.ProviderTypeOpenCodeGo:
+	}
+	constructors[config.ProviderTypeCopilot] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		return newAPIKeyProvider(name, providerType, cfg)
-
-	case config.ProviderTypeBedrock:
+	}
+	constructors[config.ProviderTypeOpenRouter] = constructor
+	constructors[config.ProviderTypeGemini] = constructor
+	constructors[config.ProviderTypeXAI] = constructor
+	constructors[config.ProviderTypeZen] = constructor
+	constructors[config.ProviderTypeVenice] = constructor
+	constructors[config.ProviderTypeNearAI] = constructor
+	constructors[config.ProviderTypeSambaNova] = constructor
+	constructors[config.ProviderTypeOpenCodeGo] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap, cfg.Headers)
-
-	case config.ProviderTypeClaudeBin, config.ProviderTypeGrokBin, config.ProviderTypeCursorBin, config.ProviderTypeAgyBin:
+	}
+	constructors[config.ProviderTypeBedrock] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		return newBinProvider(providerType, cfg.Model, cfg.Env, cfg.EnableHooks)
-
-	case config.ProviderTypeOllama:
+	}
+	constructors[config.ProviderTypeClaudeBin] = constructor
+	constructors[config.ProviderTypeGrokBin] = constructor
+	constructors[config.ProviderTypeCursorBin] = constructor
+	constructors[config.ProviderTypeAgyBin] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		thinkLevel, err := normalizeOllamaThinkLevel(cfg.ThinkLevel)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
@@ -435,8 +463,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 			NumPredict:      cfg.NumPredict,
 		}
 		return NewOllamaChatProvider(cfg.BaseURL, cfg.Model, opts), nil
-
-	case config.ProviderTypeOpenAICompat, config.ProviderTypeVLLM:
+	}
+	constructors[config.ProviderTypeOllama] = constructor
+	constructor = func(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 		// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values
 		baseURL := cfg.BaseURL
 		chatURL := cfg.URL
@@ -464,10 +493,29 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		p.SetReasoningParser(parseReasoning, includeReasoning, thinkingParam)
 		p.SetModelConfigs(cfg.ModelConfigs)
 		return p, nil
+	}
+	constructors[config.ProviderTypeOpenAICompat] = constructor
+	constructors[config.ProviderTypeVLLM] = constructor
+	return constructors
+}()
 
-	default:
+// createProviderFromConfig creates a provider from a ProviderConfig.
+func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider, error) {
+	// Resolve lazy config values (op://, srv://, $()) before creating provider
+	if err := cfg.ResolveForInference(); err != nil {
+		return nil, fmt.Errorf("provider %q: %w", name, err)
+	}
+
+	providerType := config.InferProviderType(name, cfg.Type)
+	if err := config.ValidateProviderCompatibility(name, cfg); err != nil {
+		return nil, err
+	}
+
+	constructor, ok := providerConstructors[providerType]
+	if !ok {
 		return nil, fmt.Errorf("unknown provider type: %s", providerType)
 	}
+	return constructor(name, providerType, cfg)
 }
 
 func openAICompatReasoningParserOptions(cfg *config.ProviderConfig) (parseReasoning, includeReasoning *bool, thinkingParam string) {

@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -297,79 +296,6 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 		}
 	}
 	return 0, 0, false
-}
-
-// ProviderModelIDs returns model IDs for a built-in provider.
-// Dynamic providers prefer the latest live model-list cache when present and
-// otherwise fall back to their curated starter lists where available.
-// For callers that might receive a custom alias name, use ResolveProviderModelIDs.
-func ProviderModelIDs(provider string) []string {
-	switch resolveProviderType(provider) {
-	case "chatgpt":
-		if ids := GetCachedChatGPTModels(); len(ids) > 0 {
-			return ids
-		}
-	case "copilot":
-		return GetCachedCopilotModels()
-	case "opencode-go":
-		return GetCachedOpenCodeGoModels()
-	case "zen":
-		if ids := GetCachedZenModels(); len(ids) > 0 {
-			return ids
-		}
-	case "anthropic":
-		// The cached catalog is the public API's; custom-named Anthropic
-		// gateways keep the curated list (or their configured models).
-		if provider == "anthropic" && strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")) == "" {
-			if ids := GetCachedAnthropicModels(); len(ids) > 0 {
-				return ids
-			}
-		}
-	case "agy-bin":
-		if ids := GetCachedAgyBinModels(); len(ids) > 0 {
-			return ids
-		}
-	case "cursor-bin":
-		if ids := GetCachedCursorBinModels(); len(ids) > 0 {
-			return ids
-		}
-	case "grok":
-		if models, _, err := CachedGrokModels(); err == nil {
-			ids := make([]string, 0, len(models))
-			for _, model := range models {
-				ids = append(ids, model.ID)
-			}
-			return ids
-		}
-	case "grok-bin":
-		if ids := GetCachedGrokBinModels(); len(ids) > 0 {
-			return ids
-		}
-	}
-	entries := ProviderModels[provider]
-	if entries == nil {
-		return nil
-	}
-	ids := make([]string, len(entries))
-	for i, e := range entries {
-		ids[i] = e.ID
-	}
-	return ids
-}
-
-// ResolveProviderModelIDs returns curated model IDs for a provider, resolving
-// custom aliases (e.g., "acme" → "venice") via registered provider aliases
-// and built-in type inference.
-func ResolveProviderModelIDs(name string) []string {
-	if ids := ProviderModelIDs(name); len(ids) > 0 {
-		return ids
-	}
-	// Resolve via alias or type inference
-	resolved := resolveProviderType(name)
-	if resolved != name {
-		return ProviderModelIDs(resolved)
-	}
-	return nil
 }
 
 // ProviderFastModels contains the default lightweight model for each provider type.
