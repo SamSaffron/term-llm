@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,6 +114,145 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	s.handler().ServeHTTP(projectRec, projectReq)
 	if projectRec.Code != http.StatusOK || projectPath != "/chat/v1/projects/prj_one/worktrees/diff" || projectQuery != "dir=%2Fmanaged%2Fone" {
 		t.Fatalf("project reverse status=%d path=%q query=%q body=%s", projectRec.Code, projectPath, projectQuery, projectRec.Body.String())
+	}
+}
+
+func TestHubReverseNodeProxyPreservesCompression(t *testing.T) {
+	const html = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";</script></head><body></body></html>`
+	asset := strings.Repeat("console.log('reverse asset');\n", 200)
+	compressedAsset := hubTestGzip(t, asset)
+	compressedHTML := hubTestGzip(t, html)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// With no explicit header the connector's Transport negotiates gzip
+		// itself. With an explicit header it must leave the bytes encoded.
+		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Errorf("node Accept-Encoding = %q, want only gzip", got)
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		body := compressedAsset
+		w.Header().Set("Content-Type", "text/javascript")
+		if r.URL.Path == "/chat/" {
+			body = compressedHTML
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
+	}))
+	defer backend.Close()
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, node.ID, node.Token, backend.URL, node.BasePath, backend.Client())
+	waitForReverseNode(t, s, node.ID)
+
+	for _, encoding := range []string{"gzip, deflate, br", "", "gzip;q=0, br"} {
+		for _, path := range []string{"", "asset.js"} {
+			t.Run(encoding+"/"+path, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodGet, "/node/artist/"+path, nil)
+				req.Header.Set("Accept-Encoding", encoding)
+				rec := httptest.NewRecorder()
+				s.handler().ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+				}
+				body := rec.Body.Bytes()
+				if encoding == "gzip, deflate, br" {
+					if rec.Header().Get("Content-Encoding") != "gzip" {
+						t.Fatalf("lost gzip: %v", rec.Header())
+					}
+					if rec.Header().Get("Content-Length") != strconv.Itoa(len(body)) {
+						t.Fatalf("incorrect compressed Content-Length: %v", rec.Header())
+					}
+					if path != "" && !bytes.Equal(body, compressedAsset) {
+						t.Fatal("non-HTML gzip bytes changed across the reverse tunnel")
+					}
+					reader, err := gzip.NewReader(bytes.NewReader(body))
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer reader.Close()
+					body, err = io.ReadAll(reader)
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if rec.Header().Get("Content-Encoding") != "" {
+					t.Fatalf("non-gzip client received encoded body: %v", rec.Header())
+				}
+				if path != "" {
+					if string(body) != asset {
+						t.Fatal("asset body changed")
+					}
+					return
+				}
+				if !strings.Contains(string(body), `<base href="/node/artist/">`) ||
+					!strings.Contains(string(body), `window.TERM_LLM_UI_PREFIX="/node/artist"`) ||
+					!strings.Contains(string(body), `window.TERM_LLM_HUB=`) {
+					t.Fatalf("HTML not rewritten: %s", body)
+				}
+				if !strings.Contains(rec.Header().Get("Vary"), "Accept-Encoding") {
+					t.Fatalf("missing compression Vary: %v", rec.Header())
+				}
+			})
+		}
+	}
+}
+
+func hubTestGzip(t *testing.T, body string) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := io.WriteString(writer, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return compressed.Bytes()
+}
+
+// Assert the connector's actual frame bytes, not just the final browser body:
+// an explicit encoding disables Go's transparent decompression, while leaving
+// the header absent retains today's identity behavior for non-gzip clients.
+func TestHubReverseConnectorGzipFrameBytes(t *testing.T) {
+	body := strings.Repeat("reverse tunnel payload\n", 200)
+	compressed := hubTestGzip(t, body)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed)
+	}))
+	defer backend.Close()
+	for _, encoding := range []string{"gzip", ""} {
+		t.Run("accept="+encoding, func(t *testing.T) {
+			var frames []hubReverseResponse
+			header := http.Header{}
+			if encoding != "" {
+				header.Set("Accept-Encoding", encoding)
+			}
+			handleHubReverseRequest(t.Context(), hubReverseRequest{
+				ID: "gzip-test", Method: http.MethodGet, Path: "/chat/asset.js", Header: header,
+			}, "", backend.URL, "/chat", &http.Client{}, func(frame hubReverseResponse) error {
+				frames = append(frames, frame)
+				return nil
+			})
+			if len(frames) < 3 || frames[0].Error != "" || frames[0].Status != http.StatusOK || frames[len(frames)-1].Type != hubReverseFrameResponseEnd {
+				t.Fatalf("unexpected reverse frames: %+v", frames)
+			}
+			var got []byte
+			for _, frame := range frames {
+				got = append(got, frame.Body...)
+			}
+			want := []byte(body)
+			if encoding == "gzip" {
+				want = compressed
+			}
+			if !bytes.Equal(got, want) || frames[0].Header.Get("Content-Encoding") != encoding {
+				t.Fatalf("frame encoding = %q, bytes = %d; want encoding %q, bytes %d", frames[0].Header.Get("Content-Encoding"), len(got), encoding, len(want))
+			}
+		})
 	}
 }
 
@@ -241,6 +383,7 @@ func TestHubReverseNodeProxyStreamsShellSSEIncrementally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
+	request.Header.Set("Accept-Encoding", "gzip")
 	type readResult struct {
 		body string
 		err  error
@@ -256,6 +399,10 @@ func TestHubReverseNodeProxyStreamsShellSSEIncrementally(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			firstRead <- readResult{err: errors.New(resp.Status + ": " + string(body))}
+			return
+		}
+		if encoding := resp.Header.Get("Content-Encoding"); encoding != "" {
+			firstRead <- readResult{err: errors.New("SSE unexpectedly compressed: " + encoding)}
 			return
 		}
 		buf := make([]byte, len(firstEvent))
