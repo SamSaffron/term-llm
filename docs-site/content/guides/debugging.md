@@ -12,7 +12,7 @@ Use `--debug` to print provider-level diagnostics (requests, model info, etc.). 
 
 ## Check the install with `term-llm doctor`
 
-`term-llm doctor` inspects a local install and reports what is broken, ignored, or left over. Every check is offline and read-only by default; repairs run only with `--fix`, prompt individually unless `--yes` is given, and back up whatever they rewrite.
+`term-llm doctor` inspects a local install and reports what is broken, ignored, or left over. Built-in repairs run only with `--fix`, prompt individually unless `--yes` is given, and back up whatever they rewrite. By default, configuration checks resolve deferred values, which may access the network or execute configured shell commands with side effects. Use `--skip-deferred` to avoid those lookups and commands.
 
 ```bash
 term-llm doctor                 # report problems
