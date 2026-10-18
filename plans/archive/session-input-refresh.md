@@ -1,6 +1,8 @@
 # Automatic session prompt/tool refresh — implementation plan
 
-Status: implemented on 2026-09-09. The narrow SQLite transaction, process-local selection coordinator, CLI/web owning-surface integration, staged runtime replacement/admission, explicit lifecycle invalidation, and regression coverage are in place. The historical review disposition below is retained; implementation does not imply a new group-review sign-off.
+Status: implemented
+
+Note: implemented on 2026-09-09. The narrow SQLite transaction, process-local selection coordinator, CLI/web owning-surface integration, staged runtime replacement/admission, explicit lifecycle invalidation, and regression coverage are in place. The historical review disposition below is retained; implementation does not imply a new group-review sign-off.
 
 ## Scope and contract
 

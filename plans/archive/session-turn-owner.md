@@ -1,12 +1,8 @@
 # TUI sessions in web + one turn owner per session
 
-Status: implemented (uncommitted) after an astra review of v1 and a group review
-of the implementation. Deviations from the text below: the staleness check uses a
-store-tracked "own revision" (`SQLiteStore.OwnTranscriptRev`, noted after commit)
-instead of per-site bookkeeping; `release` marks the terminal attention seen; the
-transcript fence shares the admission/renewal grace term; the TUI cancels its run
-when a fenced write reports a lost lease. Production LOC landed above the ~175
-estimate.
+Status: implemented
+
+Audited against code 2026-10-18: `ForeignTurnOwner` (`internal/session/attention.go`), `OwnTranscriptRevReporter` (`internal/session/store.go`) and `internal/tui/chat/turn_lease.go` exist. The "uncommitted" wording below is obsolete.
 
 ## Goal
 

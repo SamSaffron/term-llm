@@ -1,5 +1,9 @@
 # Interactive terminal output audit (follow-up to #1183)
 
+Status: implemented
+
+Routing implemented in `internal/runtimeoutput`.
+
 Scope: `chat` (alternate-screen and inline, including runtime switches), `skills browse/add`, `mcp browse`, `sessions browse`, and `config theme`; shared skill/agent/tool/provider/session/MCP/diagnostic workers reachable from those surfaces. Searched Go production code for `fmt.Print*`, `fmt.Fprint*`, `os.Stdout`/`os.Stderr`, builtin `print`/`println`, `log.Print*`, `slog.*`, `exec.Command*` and child `Stdout`/`Stderr` bindings. This is a static audit with regression tests, **not** proof that every dependency or runtime branch is silent.
 
 ## Routing policy

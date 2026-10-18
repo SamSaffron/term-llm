@@ -1,8 +1,8 @@
 # Safe Go complexity reduction — implementation plan
 
-Status: implemented, 2026-09-11. See `go-complexity-progress.md`,
-`go-complexity-contracts.md`, and the versioned before/current reports for the
-requirement-by-requirement acceptance evidence.
+Status: implemented
+
+Note: implemented, 2026-09-11. See `go-complexity-progress.md`, `go-complexity-contracts.md`, and the versioned before/current reports for the requirement-by-requirement acceptance evidence.
 
 ## Objective and scope
 

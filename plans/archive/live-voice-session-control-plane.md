@@ -1,6 +1,8 @@
 # Live voice session control plane
 
-Status: **shipped, with one part superseded.** Read this note first.
+Status: implemented
+
+Shipped; the delegated-turn tool injection part is superseded by `live-voice-control-plane-isolation.md` Revision 3.
 
 Everything about the binding and the switch shipped as designed: the mutable
 binding under `record.mu`, `boundSession`/`rebindLiveSession`, the shared
@@ -14,7 +16,7 @@ three control tools injected into the *delegated chat turn* via
 sections below). That was replaced twice, and the shipped design is neither: control
 requests never reach a chat turn at all. Every delegation is now triaged by a fast
 LLM router that owns the three tools, and hands everything else to the workspace
-agent — see `plans/live-voice-control-plane-isolation.md`, Revision 3.
+agent — see `plans/archive/live-voice-control-plane-isolation.md`, Revision 3.
 
 So: read the binding, switch, directory, event and frontend sections as the record
 of what shipped; read every mention of tool exposure on a delegated turn as
@@ -307,7 +309,7 @@ runtime automatically after a switch.
 - Creating a new session by voice (the frontend has `createBlankSession`).
 - `session_directory` for non-live turns.
 - Multiple concurrent live calls per chat session — still a non-goal
-  (`plans/live-voice-mode.md:26-28`).
+  (`plans/archive/live-voice-mode.md:26-28`).
 
 ### 8. Verified non-issues
 

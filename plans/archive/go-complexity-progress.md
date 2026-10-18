@@ -1,5 +1,9 @@
 # Go complexity reduction progress and acceptance
 
+Status: implemented
+
+Acceptance record for `go-complexity-reduction.md`. The JSON reports moved to `ledger/`.
+
 Owner: package maintainers for each listed subsystem
 Base revision: `4363767c`
 Implementation: current worktree (2026-09-11)

@@ -1,7 +1,8 @@
 # Subagent drill-down and steering in the web UI — implementation plan
 
-Status: proposed, 2026-09-19. Not implemented. Revised after review by fable and astra; their
-corrections are folded in and the staging changed materially as a result. No sign-off.
+Status: proposed
+
+Note: proposed, 2026-09-19. Not implemented. Revised after review by fable and astra; their corrections are folded in and the staging changed materially as a result. No sign-off.
 
 ## Problem
 

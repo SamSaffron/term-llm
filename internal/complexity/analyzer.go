@@ -1,5 +1,5 @@
 // Package complexity provides the repository's versioned complexity analysis.
-// Its counting rules deliberately match plans/go-complexity-reduction.md: one
+// Its counting rules deliberately match plans/archive/go-complexity-reduction.md: one
 // plus a nesting-weighted increment for every branch, loop, switch and select,
 // one for each else or else-if, one for each sequence of logical operators, and
 // one for each labeled branch. A switch or select costs the same whether it has

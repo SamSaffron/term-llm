@@ -40,6 +40,8 @@ func main() {
 	jsonOutput := flag.Bool("json", false, "write the complete report as JSON")
 	writeBaseline := flag.String("write-baseline", "", "write ratchet baseline to this path")
 	checkBaseline := flag.String("check", "", "check against a ratchet baseline")
+	writeSizeBaseline := flag.String("write-size-baseline", "", "write file-size ratchet baseline to this path")
+	checkSize := flag.String("check-size", "", "check file sizes against a size ratchet baseline; violations fail")
 	threshold := flag.Int("threshold", 20, "minimum complexity shown in text output")
 	flag.Parse()
 
@@ -50,6 +52,30 @@ func main() {
 	if *writeBaseline != "" {
 		if err := writeBase(*writeBaseline, report); err != nil {
 			fatal(err)
+		}
+	}
+	if *writeSizeBaseline != "" {
+		if err := writeSizeBase(*writeSizeBaseline, report); err != nil {
+			fatal(err)
+		}
+	}
+	if *checkSize != "" {
+		violations, notes, err := checkSizes(*checkSize, report)
+		if err != nil {
+			fatal(err)
+		}
+		for _, n := range notes {
+			fmt.Fprintln(os.Stderr, "size note:", n)
+		}
+		if len(notes) > 0 {
+			fmt.Fprintln(os.Stderr, "complexity: size baseline is out of date (not a failure); run `make complexity-baseline` to lock in the gain")
+		}
+		if len(violations) > 0 {
+			for _, v := range violations {
+				fmt.Fprintln(os.Stderr, "size violation:", v)
+			}
+			fmt.Fprintf(os.Stderr, "complexity: %d size violation(s); split the file or package (see ledger/go-size-baseline.json rules)\n", len(violations))
+			os.Exit(1)
 		}
 	}
 	if *checkBaseline != "" {
@@ -129,7 +155,7 @@ func summarize(report complexity.Report) summary {
 }
 
 func writeBase(path string, report complexity.Report) error {
-	initial, err := readBaseline("plans/go-complexity-baseline-initial.json")
+	initial, err := readBaseline("ledger/go-complexity-baseline-initial.json")
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read initial baseline: %w", err)
 	}

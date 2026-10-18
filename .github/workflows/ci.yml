@@ -90,8 +90,11 @@ jobs:
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-      - name: Check complexity ratchet
+      - name: Check complexity and size ratchets
         run: make complexity
+
+      - name: Lint plan lifecycle
+        run: make plans-lint
 
       - name: Build, test, and vet nested modules
         run: scripts/verify_nested_modules.sh

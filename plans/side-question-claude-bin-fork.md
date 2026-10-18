@@ -1,5 +1,9 @@
 # `/side` on claude-bin: a promotable side lane over a shared boundary
 
+Status: in-progress
+
+Phase 1 (helper input budget for self-managed providers, `selfManagedHelperInputLimits` in `internal/llm/context_window.go`) has landed; the Phase 0 probe and the fork/promote phases remain open.
+
 ## Problem
 
 `/side` runs on claude-bin today, but answers are context-starved. claude-bin

@@ -1,6 +1,6 @@
 # Remote Compaction (Responses API server-side compaction)
 
-Status: design / not yet implemented
+Status: proposed
 Owner: term-llm core (`internal/llm`)
 Reference implementation: `codex-rs` (`core/src/compact_remote_v2.rs`, `core/src/compact_remote_v2_attempt.rs`)
 

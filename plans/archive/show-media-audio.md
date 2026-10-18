@@ -1,5 +1,9 @@
 # End-to-end audio presentation with `show_media`
 
+Status: implemented
+
+Audio is accepted by `show_media` (`internal/tools/show_media.go`). The "this is a plan, not an implementation" wording below predates that.
+
 ## Status, scope, and acceptance criteria
 
 This is an implementation plan, not an implementation. Repository inspection started at the repository root (`pwd` was run). The planning task changes only this file. All proposed new symbols/files below are explicitly described as new; other names refer to existing code inspected in this checkout.
@@ -387,6 +391,6 @@ git diff
 
 Use an isolated temporary HOME/XDG directory for Go tests if needed while preserving `GOMODCACHE`; never mutate user configuration to pass tests. Node must be on PATH for Go-driven JS tests. Follow `.github/workflows/ci.yml` for relevant lifecycle coverage, including `scripts/check_frontend_network_policy.sh`, `scripts/browser_lifecycle_smoke.sh` when event/DOM lifecycle changes warrant it, and targeted race tests for changed shared state. No nested terminal/reflow module change is proposed, so nested-module checks are not required unless implementation actually touches them.
 
-`make complexity` runs `go run ./cmd/complexity --check plans/go-complexity-baseline.json --threshold 30`. Prefer table-driven MIME metadata and small inspector/dispatch functions; do not raise the baseline to conceal new complexity. Never hand-edit generated `internal/serveui/static/dist`; build it with `make frontend`, and review only authored source changes. Report every command run, skipped browser/codec check and any remaining format limitation.
+`make complexity` runs `go run ./cmd/complexity --check ledger/go-complexity-baseline.json --threshold 30 --check-size ledger/go-size-baseline.json`. Prefer table-driven MIME metadata and small inspector/dispatch functions; do not raise the baseline to conceal new complexity. Never hand-edit generated `internal/serveui/static/dist`; build it with `make frontend`, and review only authored source changes. Report every command run, skipped browser/codec check and any remaining format limitation.
 
 For this planning-only task, do not run builds/formatters that rewrite other repository files. Validate this plan's diff and run the read-only complexity check; implementation checks above are instructions for the implementer, not claims of completed feature verification.
