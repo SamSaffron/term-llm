@@ -57,9 +57,14 @@ func TestEmbeddedAssetMapsToNearestPackage(t *testing.T) {
 	}
 }
 
-func TestDocsOnlyChangeRunsNothing(t *testing.T) {
-	if p := plan(false, "README.md", "docs-site/content/x.md"); len(p.Steps) != 0 {
-		t.Fatalf("steps %s", names(p))
+func TestDocsOnlyChangeRunsDriftCheck(t *testing.T) {
+	if got := names(plan(false, "README.md", "docs-site/content/x.md")); got != "docs drift" {
+		t.Fatalf("steps %s", got)
+	}
+	for _, file := range []string{"internal/providerspec/spec.go", "internal/tools/descriptors.go", "internal/config/schema.go", "cmd/root.go", "internal/docsgen/docsgen.go"} {
+		if got := names(plan(false, file)); !strings.Contains(got, "docs drift") {
+			t.Errorf("%s: steps %s", file, got)
+		}
 	}
 }
 
@@ -79,7 +84,7 @@ func TestSpecialAreas(t *testing.T) {
 }
 
 func TestInfrastructureChanges(t *testing.T) {
-	if got := names(plan(false, "Makefile")); got != "make build,go build,go vet,go test,nested modules,frontend format:check,frontend lint,frontend typecheck,frontend test,complexity,plans-lint" {
+	if got := names(plan(false, "Makefile")); got != "make build,go build,go vet,go test,docs drift,nested modules,frontend format:check,frontend lint,frontend typecheck,frontend test,complexity,plans-lint" {
 		t.Fatal(got)
 	}
 	if got := names(plan(false, "scripts/lint-plans.sh")); got != "plans-lint" {
@@ -96,7 +101,7 @@ func TestGoModAndAll(t *testing.T) {
 		t.Fatalf("go.mod should affect all: %v", p.Affected)
 	}
 	all := plan(true)
-	want := "gofmt,make build,go build,go vet,go test,nested modules,frontend format:check,frontend lint,frontend typecheck,frontend test,complexity,plans-lint"
+	want := "gofmt,make build,go build,go vet,go test,docs drift,nested modules,frontend format:check,frontend lint,frontend typecheck,frontend test,complexity,plans-lint"
 	if got := names(all); got != want {
 		t.Fatal(got)
 	}

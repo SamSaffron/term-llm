@@ -83,6 +83,10 @@ create media, and automate recurring work—from your terminal or browser.`,
 	},
 }
 
+// ReferenceCommand returns the registered Cobra tree for reference generation.
+// Callers must not execute or modify the returned command.
+func ReferenceCommand() *cobra.Command { return rootCmd }
+
 func shellCompletionExecution(cmd *cobra.Command) bool {
 	if cmd == nil || cmd.Context() == nil {
 		return false

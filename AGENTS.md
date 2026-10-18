@@ -58,7 +58,7 @@ CI runs `format:check` and `lint`; do not rely on CI to rewrite files. Keep lint
 - Test observable behavior and failure paths, not implementation trivia. Avoid network access, real API keys, timing sleeps, and dependence on the user's home directory.
 
 ## Package Documentation
-User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Contributor rules live beside the code they govern:
+User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Run `make docs` after changing reference sources to regenerate marked tables and CLI flags. Contributor rules live beside the code they govern:
 
 - `internal/sqliteutil/README.md` – adding and testing SQLite migrations
 - `internal/doctor/README.md` – adding a `term-llm doctor` check

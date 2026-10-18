@@ -31,6 +31,10 @@ This is a source-backed audit, not a certification of every upstream service.
   registry), the provider reference joins accessibility/responsive checks, and
   every article gets narrow-viewport overflow validation.
 
+## Generated reference sections
+
+`make docs` now regenerates marked sections in `reference/configuration.md` (config key index), `reference/built-in-tools.md` (built-in tool catalog), `reference/providers-and-models.md` (provider inventory), `reference/provider-setup-details.md` (setup/default summary), and the new `reference/cli.md` (Cobra commands and flags). `go test ./cmd/gendocs` checks these sections for drift; `make check-changed` runs that check for documentation and the owning code. The surrounding explanatory prose and examples remain curated and need review when behavior changes. Schema keys without descriptions are displayed as unspecified rather than inventing descriptions; provider model availability remains account-dependent.
+
 ## Page-by-page coverage
 
 Paths below are relative to `content/`.

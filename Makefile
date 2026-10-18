@@ -1,4 +1,4 @@
-.PHONY: build frontend frontend-deps complexity complexity-baseline complexity-report plans-lint check-changed
+.PHONY: build frontend frontend-deps complexity complexity-baseline complexity-report plans-lint check-changed docs
 
 FRONTEND_STAMP := frontend/node_modules/.term-llm-install-stamp
 VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
@@ -32,6 +32,9 @@ complexity-report:
 
 plans-lint:
 	scripts/lint-plans.sh
+
+docs:
+	go run ./cmd/gendocs
 
 check-changed:
 	scripts/check-changed.sh $(ARGS)

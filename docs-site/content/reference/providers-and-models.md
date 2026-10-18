@@ -103,30 +103,32 @@ These are **text/agent providers**. [Image](/guides/image-generation/), [audio](
 
 Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.config/term-llm/`. Use `term-llm config path` to locate your file. Provider-specific API keys can also be supplied in `providers.<name>.api_key` with the normal [deferred credential resolution](/guides/secret-management/).
 
-| Provider | Authentication / setup | Notes |
-|---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | Native Anthropic Messages API; also supports compatible gateways. |
-| `openai` | `OPENAI_API_KEY` | Public OpenAI Responses API; distinct from a ChatGPT subscription. |
-| `chatgpt` | `term-llm auth login chatgpt`; `chatgpt_oauth.json` | Account's ChatGPT/Codex model access and limits apply. |
-| `grok` | `term-llm auth login grok`; `grok_oauth.json` | Grok subscription OAuth, not the public xAI API or Grok Build CLI. |
-| `copilot` | `term-llm auth login copilot`; `copilot_oauth.json` | GitHub account and organization policy determine available models. |
-| `gemini` | `GEMINI_API_KEY` | Google Gemini API. |
-| `bedrock` | AWS credential chain or explicit `access_key_id` / `secret_access_key` | Region, profile, model access, and inference-profile routing matter. |
-| `openrouter` | `OPENROUTER_API_KEY` | Default provider; main and fast models use `openrouter/free` unless overridden. |
-| `xai` | `XAI_API_KEY` | Public xAI API. |
-| `venice` | `VENICE_API_KEY` | Hosted text models and Venice-native search. |
-| `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud; check the service's privacy and TEE policies. |
-| `sambanova` | `SAMBANOVA_API_KEY` | SambaNova Cloud. |
-| `zen` | `ZEN_API_KEY` | Paid models only; the free tier is restricted to OpenCode. |
-| `opencode-go` | `OPENCODE_API_KEY` | OpenCode Go subscription key; distinct from Zen's API key. |
-| `ollama` | Running local Ollama server; no API key needed for local use | Native `/api/chat`; configure `base_url` or `OLLAMA_HOST`, without `/v1`. |
-| `vllm` | Configured endpoint/model; optional `VLLM_API_KEY` | Whether a key is required depends on your server. |
-| `claude-bin` | Installed `claude` CLI and its login | Uses Claude Code's authentication; no separate term-llm API key required. |
-| `cursor-bin` | Installed `cursor-agent` CLI and its login, or `CURSOR_API_KEY` | Model availability comes from the companion CLI/account. |
-| `agy-bin` | Installed `agy` CLI (1.3.3 or newer) and its login | Uses Antigravity CLI credentials. |
-| `grok-bin` | Installed `grok` CLI; `GROK_AUTH_PATH` or `~/.grok/auth.json` | Grok Build CLI integration, separate from `grok` OAuth. |
-| `lmstudio` | Configured `openai_compatible` endpoint and loaded model | A custom provider name, not a separate built-in adapter. |
-| Other custom names | Explicit `type` and endpoint; `api_key` or `<PROVIDER_NAME>_API_KEY` when required | Unknown provider names default to `openai_compatible`; configure them before use. |
+<!-- BEGIN GENERATED: providers -->
+| Provider | Type | Display name | Credentials / environment | Capabilities | Model listing |
+|---|---|---|---|---|---|
+| `anthropic` | `anthropic` | anthropic | api_key; `ANTHROPIC_API_KEY` | tools, reasoning effort | anthropic (upstream listing) |
+| `openai` | `openai` | openai | api_key; `OPENAI_API_KEY` | tools, images, reasoning effort | api_key (upstream listing) |
+| `chatgpt` | `chatgpt` | chatgpt | oauth; run term-llm auth login chatgpt | tools, images, reasoning effort | chatgpt (upstream listing) |
+| `grok` | `grok` | grok | oauth; run term-llm auth login grok | tools, reasoning effort | grok (upstream listing) |
+| `gemini` | `gemini` | gemini | api_key; `GEMINI_API_KEY` | tools, images | curated (local catalog) |
+| `openrouter` | `openrouter` | openrouter | api_key; `OPENROUTER_API_KEY` | tools, images | api_key (upstream listing) |
+| `xai` | `xai` | xai | api_key; `XAI_API_KEY` | tools, images | api_key (upstream listing) |
+| `venice` | `venice` | venice | api_key; `VENICE_API_KEY` | tools, images | api_key (upstream listing) |
+| `nearai` | `nearai` | nearai | api_key; `NEARAI_API_KEY` | tools | nearai (upstream listing) |
+| `sambanova` | `sambanova` | sambanova | api_key; `SAMBANOVA_API_KEY` | tools | api_key (upstream listing) |
+| `zen` | `zen` | zen | api_key; `ZEN_API_KEY` | tools | zen (upstream listing) |
+| `opencode-go` | `opencode-go` | opencode-go | api_key; `OPENCODE_API_KEY` | tools, reasoning effort | opencode-go (upstream listing) |
+| `copilot` | `copilot` | copilot | oauth; run term-llm auth login copilot | tools, reasoning effort | copilot (upstream listing) |
+| `claude-bin` | `claude-bin` | claude-bin | none; install Claude Code (claude on PATH) | tools, reasoning effort, companion CLI, fixed tool bridge | curated (local catalog) |
+| `grok-bin` | `grok-bin` | grok-bin | oauth; install the Grok Build CLI and log in | tools, reasoning effort, companion CLI, fixed tool bridge | grok-bin (upstream listing) |
+| `cursor-bin` | `cursor-bin` | cursor-bin | oauth; `CURSOR_API_KEY`; run cursor-agent login or set CURSOR_API_KEY | tools, companion CLI, fixed tool bridge | cursor-bin (upstream listing) |
+| `agy-bin` | `agy-bin` | agy-bin | oauth; install agy and complete its login | tools, companion CLI, fixed tool bridge | agy-bin (upstream listing) |
+| `ollama` | `ollama` | ollama | none; `OLLAMA_HOST`; set OLLAMA_HOST or add providers.ollama to config.yaml | tools | ollama (upstream listing) |
+| `vllm` | `vllm` | vllm | none; add providers.vllm (base_url) to config.yaml | tools, reasoning effort | compatible (upstream listing) |
+| `bedrock` | `bedrock` | bedrock | aws | tools, reasoning effort | curated (local catalog) |
+<!-- END GENERATED: providers -->
+
+Custom names such as `lmstudio` use `openai_compatible` endpoints; unknown names require explicit configuration and may use `<PROVIDER_NAME>_API_KEY`. The table lists built-in adapters only.
 
 `debug` is a local test provider, not a hosted service. See the [compaction debugging example](/guides/debugging/#exercise-automatic-compaction-locally).
 

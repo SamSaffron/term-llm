@@ -98,10 +98,13 @@ func BuildPlan(in Input) Plan {
 		byDir[p.Dir] = p
 	}
 	var goFiles []string
-	var goChanged, sourceChanged, nestedChanged, frontend, plans, ledger, unknownGo bool
+	var goChanged, sourceChanged, nestedChanged, frontend, plans, ledger, docs, unknownGo bool
 	nested := map[string]bool{}
 	changedPkgs := map[string]bool{}
 	for _, f := range in.Files {
+		if isUnder(f, "docs-site") || isUnder(f, "internal/providerspec") || isUnder(f, "internal/tools") || isUnder(f, "internal/config") || isUnder(f, "internal/docsgen") || isUnder(f, "cmd") || f == "Makefile" || isUnder(f, "scripts/checkchanged") {
+			docs = true
+		}
 		inNested := ""
 		for _, m := range in.NestedMods {
 			if isUnder(f, m) {
@@ -160,7 +163,7 @@ func BuildPlan(in Input) Plan {
 		}
 	}
 	if in.All {
-		goChanged, unknownGo, nestedChanged, frontend, plans, ledger, sourceChanged = true, true, true, true, true, true, true
+		goChanged, unknownGo, nestedChanged, frontend, plans, ledger, sourceChanged, docs = true, true, true, true, true, true, true, true
 		for _, m := range in.NestedMods {
 			nested[m] = true
 		}
@@ -198,6 +201,9 @@ func BuildPlan(in Input) Plan {
 			Step{Name: "go vet", Args: append([]string{"go", "vet"}, targets...)},
 			Step{Name: "go test", Args: append([]string{"go", "test"}, targets...)},
 		)
+	}
+	if docs {
+		pl.Steps = append(pl.Steps, Step{Name: "docs drift", Args: []string{"go", "test", "./cmd/gendocs", "-run", "^TestReferenceDocsUpToDate$"}})
 	}
 	if nestedChanged {
 		pl.Steps = append(pl.Steps, Step{Name: "nested modules", Args: []string{"scripts/verify_nested_modules.sh"}})
