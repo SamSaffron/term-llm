@@ -271,15 +271,13 @@ func TestServeStatsActualWebRunnerSpawnWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{DefaultProvider: "debug", Providers: map[string]config.ProviderConfig{"debug": {Model: "fast", FastModel: "fast"}}, Agents: config.AgentsConfig{SearchPaths: []string{root}}}
-	oldTools := serveTools
-	serveTools = "spawn_agent"
-	t.Cleanup(func() { serveTools = oldTools })
+	flags := &ServeOptions{Tools: "spawn_agent"}
 	command := &cobra.Command{}
 	command.Flags().String("tools", "spawn_agent", "")
 	if err := command.Flags().Set("tools", "spawn_agent"); err != nil {
 		t.Fatal(err)
 	}
-	rt, err := newServeAgentRuntime(context.Background(), serveRuntimeRequest{SessionID: "stats-parent", Provider: "debug", Model: "fast", RuntimeDir: t.TempDir()}, serveAgentRuntimeOptions{cfg: cfg, cmd: command, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
+	rt, err := newServeAgentRuntime(context.Background(), serveRuntimeRequest{SessionID: "stats-parent", Provider: "debug", Model: "fast", RuntimeDir: t.TempDir()}, serveAgentRuntimeOptions{flags: flags, cfg: cfg, cmd: command, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
 	if err != nil {
 		t.Fatal(err)
 	}

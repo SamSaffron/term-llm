@@ -1,15 +1,12 @@
 package cmd
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"net/http"
-	"net/url"
-	"strings"
-	"time"
+
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 )
 
-const hubAuthCookieName = "term_llm_hub_token"
+const hubAuthCookieName = apphub.AuthCookieName
 
 func (s *hubServer) handler() http.Handler {
 	mux := http.NewServeMux()
@@ -81,58 +78,26 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 	})
 }
 
-func hubPublicAssetRoute(path string) bool {
-	return path == "/dist/hub.js" || path == "/dist/hub.css"
-}
+// Thin adapters keep existing cmd call sites on the extracted hub helpers.
+func hubPublicAssetRoute(path string) bool { return apphub.PublicAssetRoute(path) }
 
-// hubNodeAuthRoute reports requests that skip Hub operator authentication
-// because their handler authenticates the calling node instead: the reverse
-// websocket, node-originated delegation calls, and a node saving the
-// dashboard order (PATCH only; see hubNodeOrderNodeRequest). Bearer and
-// passkey authentication share this list.
-func hubNodeAuthRoute(r *http.Request) bool {
-	if r.URL.Path == "/api/connect" || hubNodeOrderNodeRequest(r) {
-		return true
-	}
-	return (r.URL.Path == "/api/delegations" || strings.HasPrefix(r.URL.Path, "/api/delegations/")) && strings.TrimSpace(r.Header.Get(hubNodeIDHeader)) != ""
-}
+// hubNodeAuthRoute reports requests whose handler authenticates the calling
+// node instead of the Hub operator; see apphub.NodeAuthRoute.
+func hubNodeAuthRoute(r *http.Request) bool { return apphub.NodeAuthRoute(r) }
 
-func hubDelegationOperatorRoute(r *http.Request) bool {
-	return (r.URL.Path == "/api/delegations" || strings.HasPrefix(r.URL.Path, "/api/delegations/")) && strings.TrimSpace(r.Header.Get(hubNodeIDHeader)) == ""
-}
+func hubDelegationOperatorRoute(r *http.Request) bool { return apphub.DelegationOperatorRoute(r) }
 
 func hubBearerTokenMatches(r *http.Request, want string) bool {
-	if hubTokenMatches(strings.TrimSpace(want), bearerTokenFromHeader(r)) {
-		return true
-	}
-	if c, err := r.Cookie(hubAuthCookieName); err == nil && hubTokenMatches(strings.TrimSpace(want), c.Value) {
-		return true
-	}
-	return false
+	return apphub.BearerTokenMatches(r, want)
 }
 
 func hubQueryTokenMatches(r *http.Request, want string) bool {
-	return hubTokenMatches(strings.TrimSpace(want), r.URL.Query().Get("token"))
+	return apphub.QueryTokenMatches(r, want)
 }
 
-func hubQueryTokenSupplied(r *http.Request) bool {
-	_, ok := r.URL.Query()["token"]
-	return ok
-}
+func hubQueryTokenSupplied(r *http.Request) bool { return apphub.QueryTokenSupplied(r) }
 
-func hubShouldRenderLogin(r *http.Request) bool {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return false
-	}
-	if strings.HasPrefix(r.URL.Path, "/api/") {
-		return false
-	}
-	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")), "navigate") {
-		return true
-	}
-	accept := strings.ToLower(r.Header.Get("Accept"))
-	return strings.Contains(accept, "text/html")
-}
+func hubShouldRenderLogin(r *http.Request) bool { return apphub.ShouldRenderLogin(r) }
 
 func (s *hubServer) writeHubLoginPage(w http.ResponseWriter, r *http.Request, invalid bool) {
 	action := s.publicPath(r.URL.EscapedPath())
@@ -148,68 +113,16 @@ func (s *hubServer) writeHubLoginPage(w http.ResponseWriter, r *http.Request, in
 	})
 }
 
-func bearerTokenFromHeader(r *http.Request) string {
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	scheme, rest, ok := strings.Cut(auth, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return ""
-	}
-	return strings.TrimSpace(rest)
-}
+func bearerTokenFromHeader(r *http.Request) string { return apphub.BearerTokenFromHeader(r) }
 
-func hubTokenMatches(want, got string) bool {
-	got = strings.TrimSpace(got)
-	if got == "" || want == "" {
-		return false
-	}
-	wantHash := sha256.Sum256([]byte(want))
-	gotHash := sha256.Sum256([]byte(got))
-	return subtle.ConstantTimeCompare(wantHash[:], gotHash[:]) == 1
-}
+func hubTokenMatches(want, got string) bool { return apphub.TokenMatches(want, got) }
 
 func setHubAuthCookie(w http.ResponseWriter, token, path string) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		path = "/"
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     hubAuthCookieName,
-		Value:    strings.TrimSpace(token),
-		Path:     path,
-		Expires:  time.Now().Add(365 * 24 * time.Hour),
-		MaxAge:   365 * 24 * 60 * 60,
-		SameSite: http.SameSiteStrictMode,
-		HttpOnly: true,
-	})
+	apphub.SetAuthCookie(w, token, path)
 }
 
-// hubBrowserRequestAllowed rejects cross-site browser requests before the hub
-// exercises any token-injecting authority or mutates its node registry. This is
-// defense-in-depth for --auth none and for bearer-authenticated browser use.
-// Same-origin proxied node content is still trusted in v1; long-term host-based
-// node isolation should remove that caveat. Requests without Origin and without
-// Sec-Fetch-Site are allowed for non-browser clients; public hubs rely on bearer
-// auth as the primary boundary for those requests.
+// hubBrowserRequestAllowed rejects cross-site browser requests; see
+// apphub.BrowserRequestAllowed.
 func hubBrowserRequestAllowed(r *http.Request, requireJSON bool) bool {
-	if requireJSON {
-		ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
-		if ct == "" || (!strings.HasPrefix(ct, "application/json") && !strings.HasPrefix(ct, "application/merge-patch+json")) {
-			return false
-		}
-	}
-	if site := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); site == "cross-site" || site == "same-site" {
-		return false
-	}
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return true
-	}
-	if expected, ok := r.Context().Value(hubExpectedOriginKey{}).(string); ok && expected != "" {
-		return strings.EqualFold(origin, expected)
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
-		return false
-	}
-	return strings.EqualFold(u.Host, r.Host)
+	return apphub.BrowserRequestAllowed(r, requireJSON)
 }

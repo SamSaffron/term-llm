@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
+	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -199,27 +200,6 @@ func init() {
 	rootCmd.AddCommand(chatCmd)
 }
 
-func restoreLifecycleOSC(reporter chatLifecycleReporter) {
-	if reporter == nil {
-		return
-	}
-	_, _ = chat.WriteTerminalControlSequence(reporter.RestoreOSC())
-}
-
-func restoreLifecycleOSCToTTY(reporter chatLifecycleReporter) {
-	forcedLifecycleCleanup(reporter, chat.WriteTerminalControlSequenceToTTY)
-}
-
-func forcedLifecycleCleanup(reporter chatLifecycleReporter, write func(string) (int, error)) {
-	if reporter == nil {
-		return
-	}
-	if write != nil {
-		_, _ = write(reporter.RestoreOSC())
-	}
-	reporter.Close()
-}
-
 func chatOwnsTerminalHost() bool {
 	// Authority belongs only to a command genuinely invoked through terminal
 	// stdin and stdout. This excludes tool-spawned/captured --auto-send children,
@@ -277,14 +257,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var lifecycleManager *termhost.Manager
-	var lifecycleReporter chatLifecycleReporter
+	var lifecycleReporter appchat.LifecycleReporter
 	if interactive {
 		lifecycleManager, err = termhost.New(launchConfig.Lifecycle, legacyTerminalProgressEnabled(launchConfig))
 		if err != nil {
 			return fmt.Errorf("initialize terminal-host lifecycle: %w", err)
 		}
 		defer lifecycleManager.Close()
-		defer restoreLifecycleOSC(lifecycleManager)
+		defer appchat.RestoreLifecycleOSC(lifecycleManager)
 		lifecycleReporter = lifecycleManager
 	}
 	chatHandoverApprovalMode = nil
@@ -436,7 +416,7 @@ type chatSessionRuntime struct {
 	model         *chat.Model
 	store         session.Store
 	storeCleanup  func()
-	storeWarnings *tuiWarningWriter
+	storeWarnings *appchat.TUIWarningWriter
 	sess          *session.Session
 	toolMgr       *tools.ToolManager
 	approvalMgr   *tools.ApprovalManager
@@ -472,7 +452,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup.
 	// Store warnings are raised in the background for the whole TUI lifetime, so
 	// they route through the program instead of stderr once it is rendering.
-	storeWarnings, finishWarningsBuild := newChatSessionWarningWriter(cmd.ErrOrStderr(), launch.warningSink)
+	storeWarnings, finishWarningsBuild := appchat.NewSessionWarningWriter(cmd.ErrOrStderr(), launch.warningSink)
 	defer finishWarningsBuild()
 	warnings := storeWarnings
 	store, storeCleanup := InitSessionStore(cfg, storeWarnings)
@@ -855,7 +835,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	model.SetFastProviderResolver(func(key, name string) (llm.Provider, error) {
 		return auxProviderForPolicy(cfg, effectivePolicy, modelSelection{Provider: key, Model: name}, key, cfg.DefaultProvider)
 	})
-	model.SetAgentMentionCapability(runtimeAgentMentionCapability{engine: model.CurrentAgentMentionEngine, manager: toolMgr})
+	model.SetAgentMentionCapability(appchat.RuntimeAgentMentionCapability{Engine: model.CurrentAgentMentionEngine, Manager: toolMgr})
 	if sess != nil {
 		model.SetConversationBranch(sessionIsConversationBranch(context.Background(), store, sess.ID))
 	}
@@ -897,7 +877,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		ApprovalSource:     resolvedApproval.Source,
 		Debug:              chatDebug,
 		DebugRaw:           debugRaw,
-		ErrWriter:          chatChildProgressWriter(),
+		ErrWriter:          appchat.ChildProgressWriter(),
 		Store:              store,
 		ParentApprovalMgr:  approvalMgr,
 	}))
@@ -1035,7 +1015,7 @@ func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Progr
 	approvalMgr := rt.approvalMgr
 	useAltScreen := rt.useAltScreen
 
-	rt.storeWarnings.attach(p)
+	rt.storeWarnings.Attach(p)
 
 	sessionUIID := model.SessionID()
 	sendSessionUI := func(message tea.Msg) {
@@ -1188,7 +1168,7 @@ func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Progr
 		// Covers both attach paths: the model records the manager detach for
 		// sinks installed here and for sinks installed by the swap handler.
 		model.DetachMainRunUISink()
-		rt.storeWarnings.detach()
+		rt.storeWarnings.Detach()
 		if useAltScreen {
 			tools.ClearAskUserUIFunc()
 		} else {
@@ -1198,7 +1178,7 @@ func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Progr
 	}
 }
 
-func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter chatLifecycleReporter, launchConfig *config.Config) (string, string, error) {
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter appchat.LifecycleReporter, launchConfig *config.Config) (string, string, error) {
 	rt, err := buildChatSessionRuntime(ctx, cmd, chatSessionLaunch{
 		initialText:      initialText,
 		cliAgent:         cliAgent,
@@ -1287,10 +1267,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		rt.model.RestoreReloadState(*relaunchHandoff.reloadState)
 		relaunchHandoff.reloadState = nil
 	}
-	programModel := newChatProgramModel(rt.model, lifecycleReporter)
+	programModel := appchat.NewProgramModel(rt.model, lifecycleReporter)
 	if reloadEnabled {
-		programModel.reloadCommands = &chatCommandScope{}
-		programModel.reloadReady = make(chan struct{})
+		programModel.EnableReloadScope()
 	}
 	p := tea.NewProgram(programModel, opts...)
 	rt.model.SetProgram(p)
@@ -1369,20 +1348,20 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			fmt.Fprintln(os.Stderr, "term-llm: forced exit after interrupt")
 			// Bubble Tea failed to stop, so restore OSC directly through /dev/tty
 			// before spending the remaining bounded budget releasing adapters.
-			restoreLifecycleOSCToTTY(lifecycleReporter)
+			appchat.RestoreLifecycleOSCToTTY(lifecycleReporter)
 			os.Exit(130)
 		}
 	}()
 
 	stopReload := func() {}
 	if reloadEnabled {
-		stopReload = bindChatReload(ctx, p, programModel, lifecycleReporter)
+		stopReload = appchat.BindReload(ctx, p, programModel, lifecycleReporter, execReload)
 	}
 	defer stopReload()
 	programFinalModel, runErr := p.Run()
 	stopReload()
 	currentRuntime().restoreTitle()
-	restoreLifecycleOSC(lifecycleReporter)
+	appchat.RestoreLifecycleOSC(lifecycleReporter)
 
 	if runErr != nil {
 		if ctx.Err() != nil && errors.Is(runErr, tea.ErrProgramKilled) {
@@ -1390,7 +1369,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 		return "", "", fmt.Errorf("failed to run chat: %w", runErr)
 	}
-	finalModel, err := finalChatModel(programFinalModel)
+	finalModel, err := appchat.FinalModel(programFinalModel)
 	if err != nil {
 		return "", "", fmt.Errorf("extract final chat model: %w", err)
 	}

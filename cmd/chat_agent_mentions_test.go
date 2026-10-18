@@ -4,77 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
-
-func TestRuntimeAgentMentionCapabilityTracksRegisteredToolAndLiveEngineFilter(t *testing.T) {
-	manager, err := tools.NewToolManager(&tools.ToolConfig{
-		Enabled: []string{tools.SpawnAgentToolName},
-		Spawn: tools.SpawnConfig{
-			MaxDepth:       2,
-			AllowedAgents:  []string{"codebase", "reviewer"},
-			MaxParallel:    1,
-			DefaultTimeout: 30,
-		},
-	}, &config.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := &capturingSpawnRunner{catalogNames: []string{"codebase", "reviewer", "web-researcher"}}
-	manager.GetSpawnAgentTool().SetRunner(runner)
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
-	manager.SetupEngine(engine)
-	currentEngine := engine
-	capability := runtimeAgentMentionCapability{engine: func() *llm.Engine { return currentEngine }, manager: manager}
-
-	names, err := capability.PermittedAgentNames()
-	if err != nil || len(names) != 2 || names[0] != "codebase" || names[1] != "reviewer" {
-		t.Fatalf("runtime intersection = %#v, err=%v", names, err)
-	}
-
-	engine.SetAllowedToolsFilter([]string{})
-	if _, err := capability.PermittedAgentNames(); err == nil || !strings.Contains(err.Error(), "active tool restriction") {
-		t.Fatalf("filtered catalog error = %v", err)
-	}
-	if err := capability.ValidateAgentMention("codebase"); err == nil || !strings.Contains(err.Error(), "active tool restriction") {
-		t.Fatalf("filtered exact error = %v", err)
-	}
-
-	engine.RestoreAllowedToolsFilter(nil, false)
-	if err := capability.ValidateAgentMention("codebase"); err != nil {
-		t.Fatalf("restored filter validation = %v", err)
-	}
-
-	deniedEngine := llm.NewEngine(llm.NewMockProvider("denied"), nil)
-	manager.SetupEngine(deniedEngine)
-	deniedEngine.SetAllowedToolsFilter([]string{})
-	currentEngine = deniedEngine
-	if err := capability.ValidateAgentMention("codebase"); err == nil || !strings.Contains(err.Error(), "active tool restriction") {
-		t.Fatalf("allow-to-deny replacement used stale engine: %v", err)
-	}
-
-	allowedEngine := llm.NewEngine(llm.NewMockProvider("allowed"), nil)
-	manager.SetupEngine(allowedEngine)
-	currentEngine = allowedEngine
-	if err := capability.ValidateAgentMention("codebase"); err != nil {
-		t.Fatalf("deny-to-allow replacement used stale engine: %v", err)
-	}
-
-	manager.GetSpawnAgentTool().SetRemainingDepth(0)
-	if err := capability.ValidateAgentMention("codebase"); err == nil || !strings.Contains(err.Error(), "depth") {
-		t.Fatalf("depth validation = %v", err)
-	}
-}
-
-func TestRuntimeAgentMentionCapabilityFailsClosedWithoutActualSpawnTool(t *testing.T) {
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
-	capability := runtimeAgentMentionCapability{engine: func() *llm.Engine { return engine }, manager: &tools.ToolManager{}}
-	if _, err := capability.PermittedAgentNames(); err == nil || !strings.Contains(err.Error(), "not enabled") {
-		t.Fatalf("missing tool error = %v", err)
-	}
-}
 
 func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) {
 	t.Chdir(t.TempDir())
@@ -116,7 +50,7 @@ func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) 
 			manager.GetSpawnAgentTool().SetRunner(runner)
 			engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
 			manager.SetupEngine(engine)
-			capability := runtimeAgentMentionCapability{engine: func() *llm.Engine { return engine }, manager: manager}
+			capability := appchat.RuntimeAgentMentionCapability{Engine: func() *llm.Engine { return engine }, Manager: manager}
 
 			got, err := capability.PermittedAgentNames()
 			if err != nil {

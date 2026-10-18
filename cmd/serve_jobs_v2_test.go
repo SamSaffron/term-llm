@@ -12,14 +12,15 @@ import (
 	"testing"
 	"time"
 
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestServeJobsRunnerOptionsUseCapturedResolvedApproval(t *testing.T) {
-	oldAuto, oldYolo := serveAuto, serveYolo
-	serveAuto, serveYolo = false, true
-	t.Cleanup(func() { serveAuto, serveYolo = oldAuto, oldYolo })
+	oldAuto, oldYolo := serveFlags.Auto, serveFlags.Yolo
+	serveFlags.Auto, serveFlags.Yolo = false, true
+	t.Cleanup(func() { serveFlags.Auto, serveFlags.Yolo = oldAuto, oldYolo })
 
 	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceSurfaceConfig}
 	opts := serveJobsRunnerOptions(resolved)
@@ -185,8 +186,8 @@ func TestJobsV2RunSummaryUsesCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 WHERE job_id = ? ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", "job_test", 50, 0)
-	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunSummaryIndexName) {
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+servejobs.RunSummaryColumns+" FROM job_runs_v2 WHERE job_id = ? ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", "job_test", 50, 0)
+	if !strings.Contains(plan, "USING COVERING INDEX "+servejobs.RunSummaryIndexName) {
 		t.Fatalf("summary query plan = %q, want covering summary index", plan)
 	}
 	if strings.Contains(plan, "USE TEMP B-TREE") {
@@ -201,8 +202,8 @@ func TestJobsV2GlobalRunSummaryUsesCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", 50, 0)
-	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunGlobalSummaryIndexName) {
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+servejobs.RunSummaryColumns+" FROM job_runs_v2 ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", 50, 0)
+	if !strings.Contains(plan, "USING COVERING INDEX "+servejobs.RunGlobalSummaryIndexName) {
 		t.Fatalf("global summary query plan = %q, want covering global summary index", plan)
 	}
 	if strings.Contains(plan, "USE TEMP B-TREE") {
@@ -217,8 +218,8 @@ func TestJobsV2RunSummaryByIDUsesCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 INDEXED BY "+jobsV2RunByIDSummaryIndexName+" WHERE id = ?", "run_test")
-	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunByIDSummaryIndexName) {
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+servejobs.RunSummaryColumns+" FROM job_runs_v2 INDEXED BY "+servejobs.RunByIDSummaryIndexName+" WHERE id = ?", "run_test")
+	if !strings.Contains(plan, "USING COVERING INDEX "+servejobs.RunByIDSummaryIndexName) {
 		t.Fatalf("by-id summary query plan = %q, want covering summary index", plan)
 	}
 }
@@ -2439,4 +2440,9 @@ func TestJobsV2DatabaseHasOneLiveRecoveryOwner(t *testing.T) {
 		t.Fatal("closed owner retained lock:", err)
 	}
 	defer next.Close()
+}
+
+// execJobsV2Schema creates a complete current jobs database for tests.
+func execJobsV2Schema(db *sql.DB) error {
+	return servejobs.InitSchema(context.Background(), db)
 }

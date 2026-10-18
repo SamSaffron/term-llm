@@ -1,8 +1,7 @@
 package cmd
 
 import (
-	"fmt"
-
+	versionapp "github.com/samsaffron/term-llm/internal/app/version"
 	"github.com/samsaffron/term-llm/internal/buildinfo"
 	"github.com/spf13/cobra"
 )
@@ -13,14 +12,14 @@ var Commit = "unknown"
 var Date = "unknown"
 
 func versionString() string {
-	return fmt.Sprintf("%s (commit: %s, built: %s)", Version, Commit, Date)
+	return (versionapp.Options{Version: Version, Commit: Commit, Date: Date}).String()
 }
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Fprintf(cmd.OutOrStdout(), "term-llm version %s\n", versionString())
+		(versionapp.Options{Version: Version, Commit: Commit, Date: Date}).Run(cmd, args)
 	},
 }
 

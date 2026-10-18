@@ -136,9 +136,9 @@ func TestRunnerGrandchildInheritsRootRuleThroughUnrestrictedMiddle(t *testing.T)
 }
 
 func TestJobsExecutorParentSelectionAndPolicyPersistence(t *testing.T) {
-	old := serveProvider
-	serveProvider = "other"
-	t.Cleanup(func() { serveProvider = old })
+	old := serveFlags.Provider
+	serveFlags.Provider = "other"
+	t.Cleanup(func() { serveFlags.Provider = old })
 	cfg := &config.Config{DefaultProvider: "other", Providers: map[string]config.ProviderConfig{"other": {Model: "wrong"}, "debug": {Model: "allowed"}}, Sessions: config.SessionsConfig{Enabled: true, Path: filepath.Join(t.TempDir(), "jobs.db")}}
 	policy := modelpolicy.Policy{}.With("boss", []string{"debug:allowed"})
 	parent := runpkg.ParentModel{Provider: "debug", Model: "allowed"}

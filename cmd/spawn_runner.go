@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
@@ -668,7 +669,7 @@ type spawnRunSink struct {
 	handle childRunSession
 
 	mu             sync.Mutex
-	output         runnerOutput
+	output         runtime.RunnerOutput
 	started        bool
 	doneSent       bool
 	pendingUsage   []tools.SubagentEvent
@@ -716,7 +717,7 @@ func (s *spawnRunSink) Output() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.output.response.String()
+	return s.output.Response()
 }
 
 // SetResolvedModel replaces the preview identity with the actual runner model.

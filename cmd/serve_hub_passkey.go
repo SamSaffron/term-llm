@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"io"
 	"log"
 	"mime"
@@ -82,7 +83,7 @@ type hubPasskeyRuntime struct {
 	grantCommitMu sync.Mutex
 }
 type hubPrincipalKey struct{}
-type hubExpectedOriginKey struct{}
+type hubExpectedOriginKey = apphub.ExpectedOriginKey
 
 func hubPrincipal(r *http.Request) (passkeyauth.Principal, bool) {
 	p, ok := r.Context().Value(hubPrincipalKey{}).(passkeyauth.Principal)

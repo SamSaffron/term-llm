@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"io"
 	"net/http"
 	"net/url"
@@ -31,7 +32,7 @@ import (
 const (
 	// hubNodeIDHeader carries the caller's claimed node id; the bearer token
 	// must match that node's stored token.
-	hubNodeIDHeader = "X-Term-LLM-Node-ID"
+	hubNodeIDHeader = apphub.NodeIDHeader
 
 	hubDelegationDefaultTimeout = 3600
 	hubDelegationMinTimeout     = 10

@@ -1,10 +1,7 @@
 package cmd
 
 import (
-	"context"
-	"fmt"
-	"os"
-
+	"github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
@@ -36,10 +33,7 @@ Examples:
 }
 
 func init() {
-	defaultDB := "~/.local/share/term-llm/memory.db"
-	if dbPath, err := memorydb.GetDBPath(); err == nil {
-		defaultDB = dbPath
-	}
+	defaultDB := memory.DefaultDBPath()
 	defaultMemoryDBPath = defaultDB
 
 	memoryCmd.PersistentFlags().StringVar(&memoryAgent, "agent", "", "Filter by agent")
@@ -58,86 +52,40 @@ func init() {
 	memoryCmd.AddCommand(memoryInsightsCmd)
 }
 
-type imageRecordStore interface {
-	tools.ImageRecorder
-	Close() error
-}
-
-type imageRecordStoreOpener func(path string) (imageRecordStore, error)
-
-type lazyImageRecorder struct {
-	path string
-	open imageRecordStoreOpener
-}
-
-func (r *lazyImageRecorder) RecordImage(ctx context.Context, record *memorydb.ImageRecord) error {
-	store, err := r.open(r.path)
-	if err != nil {
-		return err
+// memoryEnv builds the shared memory command environment from the persistent
+// flags and CLI helpers.
+func memoryEnv() memory.Env {
+	return memory.Env{
+		Agent:         memoryAgent,
+		DBPath:        memoryDBPath,
+		DefaultDBPath: defaultMemoryDBPath,
+		DryRun:        memoryDryRun,
+		Deps: memory.Deps{
+			LoadConfig: loadConfig,
+			ApplyAskProviderOverrides: func(cfg *config.Config) error {
+				return applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, "", "", "")
+			},
+			NewEngine:          newEngine,
+			SessionStoreConfig: sessionStoreConfig,
+			ParseTags:          parseTags,
+			FormatRelativeTime: formatRelativeTime,
+			FormatBytes:        formatBytes,
+			ActiveModel:        activeModel,
+			LoadAgent:          LoadAgent,
+			DebugRaw:           func() bool { return debugRaw },
+		},
 	}
-	defer store.Close()
-	return store.RecordImage(ctx, record)
-}
-
-func resolvedMemoryDBPath() string {
-	if dbEnv := os.Getenv("TERM_LLM_MEMORY_DB"); dbEnv != "" && memoryDBPath == defaultMemoryDBPath {
-		return dbEnv
-	}
-	return memoryDBPath
-}
-
-func openMemoryStoreAtPath(path string) (*memorydb.Store, error) {
-	store, err := memorydb.NewStore(memorydb.Config{Path: path})
-	if err != nil {
-		return nil, fmt.Errorf("open memory store: %w", err)
-	}
-	return store, nil
 }
 
 func openMemoryStore() (*memorydb.Store, error) {
-	return openMemoryStoreAtPath(resolvedMemoryDBPath())
+	return memoryEnv().OpenStore()
 }
 
-func openImageRecordStore(path string) (imageRecordStore, error) {
-	return openMemoryStoreAtPath(path)
-}
-
-// wireImageRecorder attaches a recorder that opens the memory store only when
-// an image is generated, then closes it after recording. Recording remains
-// non-fatal if the store cannot be opened.
+// wireImageRecorder attaches a lazy image recorder to the tool registry.
 func wireImageRecorder(registry *tools.LocalToolRegistry, agent, sessionID string) {
-	wireImageRecorderWithOpener(registry, agent, sessionID, openImageRecordStore)
-}
-
-func wireImageRecorderWithOpener(registry *tools.LocalToolRegistry, agent, sessionID string, open imageRecordStoreOpener) {
-	if registry == nil {
-		return
-	}
-	recorder := &lazyImageRecorder{
-		// Runtime setup has already applied flags and environment overrides. Keep
-		// that selected path stable for the lifetime of this registry.
-		path: resolvedMemoryDBPath(),
-		open: open,
-	}
-	registry.SetImageRecorder(recorder, agent, sessionID)
+	memory.WireImageRecorder(registry, memoryDBPath, defaultMemoryDBPath, agent, sessionID)
 }
 
 func recordImageDirect(cfg *config.Config, prompt, outputPath string, result *image.ImageResult, providerName string) {
-	if cfg == nil || outputPath == "" || result == nil {
-		return
-	}
-	store, err := openMemoryStore()
-	if err != nil {
-		return
-	}
-	defer store.Close()
-
-	rec := &memorydb.ImageRecord{
-		Prompt:     prompt,
-		OutputPath: outputPath,
-		MimeType:   result.MimeType,
-		Provider:   providerName,
-		FileSize:   len(result.Data),
-	}
-	_ = store.RecordImage(context.Background(), rec)
+	memory.RecordImageDirect(memoryDBPath, defaultMemoryDBPath, cfg, prompt, outputPath, result, providerName)
 }

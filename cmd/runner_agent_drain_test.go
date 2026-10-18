@@ -139,7 +139,7 @@ func TestAgentHostOwnerRejectsAdoptionAfterShutdown(t *testing.T) {
 	}
 	<-child.entered
 	closed := false
-	owner.adopt(&serveRuntime{spawnRunner: runner}, func() { closed = true })
+	owner.Adopt(&serveRuntime{spawnRunner: runner}, func() { closed = true })
 	if !closed || len(runner.OutstandingAgentIDs()) != 0 {
 		t.Fatalf("late child survived shutdown: store closed=%t outstanding=%v", closed, runner.OutstandingAgentIDs())
 	}

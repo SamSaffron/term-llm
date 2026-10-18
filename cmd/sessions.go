@@ -1,26 +1,11 @@
 package cmd
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"slices"
-	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/agents/gist"
-	"github.com/samsaffron/term-llm/internal/config"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	"github.com/samsaffron/term-llm/internal/tui/sessions"
-	"github.com/samsaffron/term-llm/internal/ui"
+	sessionsapp "github.com/samsaffron/term-llm/internal/app/sessions"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
-	"gopkg.in/yaml.v3"
 )
 
 var sessionsCmd = &cobra.Command{
@@ -250,768 +235,92 @@ func init() {
 	rootCmd.AddCommand(sessionsCmd)
 }
 
-func getSessionStore() (session.Store, error) {
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, err
+// sessionsApp binds the flag variables and cmd-level helpers to the
+// implementation in internal/app/sessions.
+func sessionsApp() sessionsapp.App {
+	return sessionsapp.App{
+		Options: sessionsapp.Options{
+			Provider:                  sessionsProvider,
+			Limit:                     sessionsLimit,
+			Status:                    sessionsStatus,
+			Mode:                      sessionsMode,
+			TagFilter:                 sessionsTag,
+			JSON:                      sessionsJSON,
+			ExportIncludeSystem:       sessionsExportIncludeSystem,
+			ExportIncludeAudio:        sessionsExportIncludeAudio,
+			ExportIncludeReasoning:    sessionsExportIncludeReasoning,
+			ExportIncludeRawReasoning: sessionsExportIncludeRawReasoning,
+			GistPublic:                sessionsGistPublic,
+			GistIncludeSystem:         sessionsGistIncludeSystem,
+			GistIncludeReasoning:      sessionsGistIncludeReasoning,
+			GistIncludeRawReasoning:   sessionsGistIncludeRawReasoning,
+			ShareVisibility:           sessionsShareVisibility,
+			ShareNew:                  sessionsShareNew,
+			ShareJSON:                 sessionsShareJSON,
+			ShareIncludeRawReasoning:  sessionsShareIncludeRawReasoning,
+			ShareIncludeAudio:         sessionsShareIncludeAudio,
+			ShareNoImages:             sessionsShareNoImages,
+			ShareNoTools:              sessionsShareNoTools,
+			ResetYes:                  sessionsResetYes,
+			AutotitleDryRun:           sessionsAutotitleDryRun,
+			AutotitleForce:            sessionsAutotitleForce,
+			AutotitleMinAge:           sessionsAutotitleMinAge,
+			AutotitleVerbose:          sessionsAutotitleVerbose,
+		},
+		Deps: sessionsapp.Deps{
+			LoadConfig:                  loadConfig,
+			SessionStoreConfig:          sessionStoreConfig,
+			StartInteractiveDiagnostics: startInteractiveDiagnostics,
+			ResumeChat:                  resumeChatSession,
+			NewSharePublisher:           newSessionSharePublisher,
+		},
 	}
+}
 
-	storeCfg := sessionStoreConfig(cfg)
-	if !storeCfg.Enabled {
-		return nil, fmt.Errorf("session storage is disabled (check sessions.enabled and --no-session)")
+// resumeChatSession runs `chat --resume <id>` after the session browser exits.
+func resumeChatSession(sessionID string) error {
+	chatResume = sessionID
+	// Mark the flag as changed so runChat processes it
+	if err := chatCmd.Flags().Set("resume", chatResume); err != nil {
+		return fmt.Errorf("failed to set resume flag: %w", err)
 	}
-
-	return session.NewStore(storeCfg)
+	return runChat(chatCmd, nil)
 }
 
 func runSessionsList(cmd *cobra.Command, args []string) error {
-	// Validate status if provided
-	if sessionsStatus != "" {
-		validStatuses := []string{"active", "complete", "error", "interrupted"}
-		if !slices.Contains(validStatuses, sessionsStatus) {
-			return fmt.Errorf("invalid status %q: must be one of %v", sessionsStatus, validStatuses)
-		}
-	}
-
-	// Validate mode if provided
-	if sessionsMode != "" {
-		validModes := []string{"chat", "ask", "exec"}
-		if !slices.Contains(validModes, sessionsMode) {
-			return fmt.Errorf("invalid mode %q: must be one of %v", sessionsMode, validModes)
-		}
-	}
-
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	summaries, err := store.List(ctx, session.ListOptions{
-		Provider: sessionsProvider,
-		Mode:     session.SessionMode(sessionsMode),
-		Status:   session.SessionStatus(sessionsStatus),
-		Tag:      sessionsTag,
-		Limit:    sessionsLimit,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to list sessions: %w", err)
-	}
-
-	if len(summaries) == 0 {
-		fmt.Println("No sessions found.")
-		return nil
-	}
-
-	// Header line
-	fmt.Printf("%4s %-25s %4s %5s %5s %-11s %-8s %s\n",
-		"#", "SUMMARY", "MSGS", "TURNS", "TOOLS", "TOKENS", "STATUS", "AGE")
-	fmt.Println(strings.Repeat("-", 100))
-
-	for _, s := range summaries {
-		summary := s.PreferredShortTitle()
-		if summary == "" {
-			summary = "(untitled)"
-		}
-		if len(summary) > 25 {
-			summary = summary[:22] + "..."
-		}
-
-		// Format tokens as "total_input/output" in k format
-		// Total input = input (after cache breakpoint) + cache read + cache write
-		totalInput := s.InputTokens + s.CachedInputTokens + s.CacheWriteTokens
-		tokens := formatSessionTokens(totalInput, s.OutputTokens)
-
-		// Format status
-		status := string(s.Status)
-		if status == "" {
-			status = "active"
-		}
-
-		age := formatRelativeTime(s.UpdatedAt)
-
-		// MSGS shows actual message count (MessageCount), TURNS shows LLM API round-trips
-		fmt.Printf("%4d %-25s %4d %5d %5d %-11s %-8s %s\n",
-			s.Number, summary, s.MessageCount, s.LLMTurns, s.ToolCalls, tokens, status, age)
-	}
-
-	return nil
+	return sessionsApp().List(cmd, args)
 }
-
-// formatSessionTokens formats input/output tokens in compact form
-func formatSessionTokens(input, output int) string {
-	if input == 0 && output == 0 {
-		return "-"
-	}
-	return fmt.Sprintf("%s/%s", ui.FormatTokenCount(input), ui.FormatTokenCount(output))
-}
-
 func runSessionsSearch(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	query := strings.Join(args, " ")
-	ctx := context.Background()
-	results, err := store.Search(ctx, session.SearchOptions{Query: query, Limit: 20})
-	if err != nil {
-		return fmt.Errorf("search failed: %w", err)
-	}
-
-	if len(results) == 0 {
-		fmt.Printf("No results found for '%s'\n", query)
-		return nil
-	}
-
-	fmt.Printf("Found %d matches for '%s':\n\n", len(results), query)
-	for _, r := range results {
-		name := r.SessionName
-		if name == "" {
-			name = fmt.Sprintf("#%d", r.SessionNumber)
-		}
-		fmt.Printf("**%s** (%s)\n", name, r.Provider)
-		fmt.Printf("  %s\n\n", r.Snippet)
-	}
-
-	return nil
+	return sessionsApp().Search(cmd, args)
 }
-
 func runSessionsShow(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	sess, err := store.GetByPrefix(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	if sess == nil {
-		return fmt.Errorf("session '%s' not found", args[0])
-	}
-
-	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
-	if err != nil {
-		return fmt.Errorf("failed to get messages: %w", err)
-	}
-
-	if sessionsJSON {
-		data := struct {
-			Session  *session.Session  `json:"session"`
-			Messages []session.Message `json:"messages"`
-		}{
-			Session:  sess,
-			Messages: messages,
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(data)
-	}
-
-	// Text output
-	fmt.Printf("Session: %s\n", sess.ID)
-	fmt.Printf("Title: %s\n", fallbackString(sess.PreferredShortTitle(), "(untitled)"))
-	if sess.Name != "" {
-		fmt.Printf("Name: %s\n", sess.Name)
-	}
-	if sess.GeneratedShortTitle != "" {
-		fmt.Printf("Generated Short Title: %s\n", sess.GeneratedShortTitle)
-	}
-	if sess.GeneratedLongTitle != "" {
-		fmt.Printf("Generated Long Title: %s\n", sess.GeneratedLongTitle)
-	}
-	fmt.Printf("Provider: %s\n", sess.Provider)
-	fmt.Printf("Model: %s\n", sess.Model)
-	mode := string(sess.Mode)
-	if mode == "" {
-		mode = "chat"
-	}
-	fmt.Printf("Mode: %s\n", mode)
-	fmt.Printf("Created: %s\n", sess.CreatedAt.Format(time.RFC3339))
-	fmt.Printf("Updated: %s\n", sess.UpdatedAt.Format(time.RFC3339))
-	if sess.CWD != "" {
-		fmt.Printf("CWD: %s\n", sess.CWD)
-	}
-	fmt.Printf("Messages: %d\n", len(messages))
-
-	// Show metrics
-	status := string(sess.Status)
-	if status == "" {
-		status = "active"
-	}
-	fmt.Printf("Status: %s\n", status)
-	fmt.Printf("User Turns: %d\n", sess.UserTurns)
-	fmt.Printf("LLM Turns: %d\n", sess.LLMTurns)
-	fmt.Printf("Tool Calls: %d\n", sess.ToolCalls)
-	totalInput := sess.InputTokens + sess.CachedInputTokens + sess.CacheWriteTokens
-	fmt.Printf("Tokens: %s (input: %d, cache_read: %d, cache_write: %d, output: %d)\n",
-		formatSessionTokens(totalInput, sess.OutputTokens),
-		sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens)
-	if sess.Tags != "" {
-		fmt.Printf("Tags: %s\n", sess.Tags)
-	}
-	fmt.Println()
-
-	for _, msg := range messages {
-		role := string(msg.Role)
-		if msg.Role == "user" {
-			role = "❯"
-		} else if msg.Role == "assistant" {
-			role = "🤖"
-		}
-		content := msg.TextContent
-		if len(content) > 200 {
-			content = content[:197] + "..."
-		}
-		fmt.Printf("%s %s\n\n", role, content)
-	}
-
-	return nil
+	return sessionsApp().Show(cmd, args)
 }
-
 func runSessionsDelete(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	// Look up session by prefix first to get full ID
-	sess, err := store.GetByPrefix(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	if sess == nil {
-		return fmt.Errorf("session '%s' not found", args[0])
-	}
-
-	if err := store.Delete(ctx, sess.ID); err != nil {
-		return fmt.Errorf("failed to delete session: %w", err)
-	}
-
-	fmt.Printf("Deleted session: #%d\n", sess.Number)
-	return nil
+	return sessionsApp().Delete(cmd, args)
 }
-
 func runSessionsExport(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	sess, err := store.GetByPrefix(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	if sess == nil {
-		return fmt.Errorf("session '%s' not found", args[0])
-	}
-
-	messages, _, err := session.LoadScrollbackWithBoundary(ctx, store, sess)
-	if err != nil {
-		return fmt.Errorf("failed to get messages: %w", err)
-	}
-	messages = session.VisibleExportMessages(messages)
-
-	var outputPath string
-	if len(args) > 1 {
-		outputPath = args[1]
-	} else {
-		name := sess.PreferredShortTitle()
-		if name == "" {
-			name = fmt.Sprintf("session-%d", sess.Number)
-		}
-		outputPath = fmt.Sprintf("%s.md", name)
-	}
-
-	// Apply export policy from config and explicit flags.
-	opts := buildSessionExportOptions(
-		sess,
-		sessionsExportIncludeSystem,
-		sessionsExportIncludeReasoning,
-		sessionsExportIncludeRawReasoning,
-	)
-	opts.IncludeAudio = sessionsExportIncludeAudio
-	content, exportResult, err := renderSessionExport(sess, messages, opts, outputPath)
-	if err != nil {
-		return err
-	}
-
-	if opts.IncludeAudio {
-		if !isHTMLExportPath(outputPath) {
-			fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: --include-audio is ignored for non-HTML output; use an .html or .htm filename to embed recordings.")
-		} else {
-			reportAudioOmissions(cmd, exportResult)
-		}
-	}
-
-	if err := writeSessionExport(outputPath, content, exportResult.AudioEmbedded > 0); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	fmt.Fprintf(cmd.OutOrStdout(), "Exported %d messages to %s\n", len(messages), outputPath)
-	return nil
+	return sessionsApp().Export(cmd, args)
 }
-
-// renderSessionExport keeps Markdown text-only; an explicit HTML filename
-// selects the self-contained player-capable exporter.
-func renderSessionExport(sess *session.Session, messages []session.Message, opts session.ExportOptions, outputPath string) (string, session.ExportResult, error) {
-	if isHTMLExportPath(outputPath) {
-		return session.ExportToHTMLWithResult(sess, messages, opts)
-	}
-	return session.ExportToMarkdown(sess, messages, opts), session.ExportResult{}, nil
-}
-
-func isHTMLExportPath(outputPath string) bool {
-	ext := strings.ToLower(filepath.Ext(outputPath))
-	return ext == ".html" || ext == ".htm"
-}
-
-// Protect both new files and an existing, previously public export before any
-// private recording bytes are written. Audio-free exports keep their old mode.
-func writeSessionExport(path, content string, embeddedAudio bool) error {
-	if !embeddedAudio {
-		return os.WriteFile(path, []byte(content), 0644)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if err := file.Chmod(0600); err != nil {
-		return err
-	}
-	if _, err := file.WriteString(content); err != nil {
-		return err
-	}
-	return file.Close()
-}
-
-func sessionExportReasoningSurface(sess *session.Session) string {
-	if sess == nil {
-		return "chat"
-	}
-	if sess.Origin == session.OriginWeb || sess.Origin == session.OriginTelegram {
-		return "serve"
-	}
-	switch sess.Mode {
-	case session.ModeAsk:
-		return "ask"
-	default:
-		return "chat"
-	}
-}
-
-func loadSessionReasoningConfig(surface string) config.ReasoningConfig {
-	if cfg, err := config.Load(); err == nil && cfg != nil {
-		return cfg.ResolveReasoning(surface)
-	}
-
-	for _, path := range candidateConfigFiles() {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var raw struct {
-			Reasoning config.ReasoningConfig `yaml:"reasoning"`
-		}
-		if err := yaml.Unmarshal(data, &raw); err != nil {
-			continue
-		}
-		return (&config.Config{Reasoning: raw.Reasoning}).ResolveReasoning(surface)
-	}
-	return (&config.Config{}).ResolveReasoning(surface)
-}
-
-func candidateConfigFiles() []string {
-	var paths []string
-	if dir, err := config.GetConfigDir(); err == nil && dir != "" {
-		paths = append(paths, filepath.Join(dir, "config.yaml"))
-	}
-	paths = append(paths, "config.yaml")
-	return paths
-}
-
-func buildSessionExportOptions(sess *session.Session, includeSystem, includeReasoningSummaries, includeRawReasoning bool) session.ExportOptions {
-	reasoningCfg := loadSessionReasoningConfig(sessionExportReasoningSurface(sess))
-
-	rawRequested := includeRawReasoning || strings.EqualFold(strings.TrimSpace(reasoningCfg.Export), config.ReasoningExportRaw)
-	includeSummaries := includeReasoningSummaries || includeRawReasoning || internalreasoning.ExportSummaries(reasoningCfg)
-	includeRaw := false
-	if rawRequested {
-		switch {
-		case !reasoningCfg.Raw:
-			fmt.Fprintln(os.Stderr, "Raw reasoning export is disabled. Set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
-		case !internalreasoning.SourceAllowsRaw(reasoningCfg):
-			fmt.Fprintln(os.Stderr, "Raw reasoning export is disabled by reasoning.source. Set reasoning.source=all to allow it.")
-		default:
-			includeRaw = true
-			includeSummaries = true
-		}
-	}
-
-	return session.ExportOptions{
-		IncludeSystem:             includeSystem,
-		IncludeReasoningSummaries: includeSummaries,
-		IncludeRawReasoning:       includeRaw,
-	}
-}
-
-// formatRelativeTime returns a human-readable relative time string
-func formatRelativeTime(t time.Time) string {
-	dur := time.Since(t)
-	switch {
-	case dur < time.Minute:
-		return "just now"
-	case dur < time.Hour:
-		return fmt.Sprintf("%dm ago", int(dur.Minutes()))
-	case dur < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(dur.Hours()))
-	case dur < 7*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(dur.Hours()/24))
-	default:
-		return t.Format("Jan 2")
-	}
-}
-
-func fallbackString(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
-}
-
 func runSessionsReset(cmd *cobra.Command, args []string) error {
-	if !sessionsResetYes && !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
-		return fmt.Errorf("sessions reset requires an interactive terminal; use --yes to confirm non-interactively")
-	}
-
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-
-	storeCfg := sessionStoreConfig(cfg)
-	if !storeCfg.Enabled {
-		return fmt.Errorf("session storage is disabled (check sessions.enabled and --no-session)")
-	}
-
-	dbPath, err := session.ResolveDBPath(storeCfg.Path)
-	if err != nil {
-		return fmt.Errorf("failed to get database path: %w", err)
-	}
-	if dbPath == ":memory:" {
-		fmt.Println("Session database is configured as :memory: (ephemeral), nothing to reset.")
-		return nil
-	}
-
-	// Check if database exists
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		fmt.Println("No sessions database found.")
-		return nil
-	}
-
-	// Require confirmation unless explicitly supplied.
-	if !sessionsResetYes {
-		fmt.Printf("This will delete ALL sessions at:\n  %s\n\n", dbPath)
-		fmt.Print("Type 'yes' to confirm: ")
-
-		var response string
-		if _, err := fmt.Scanln(&response); err != nil {
-			return fmt.Errorf("failed to read response: %w", err)
-		}
-
-		if response != "yes" {
-			fmt.Println("Aborted.")
-			return nil
-		}
-	}
-
-	// Delete the database file and WAL files
-	filesToDelete := []string{
-		dbPath,
-		dbPath + "-wal",
-		dbPath + "-shm",
-	}
-
-	for _, f := range filesToDelete {
-		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to delete %s: %w", f, err)
-		}
-	}
-
-	fmt.Println("Sessions database deleted.")
-	return nil
+	return sessionsApp().Reset(cmd, args)
 }
-
 func runSessionsName(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	sess, err := store.GetByPrefix(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	if sess == nil {
-		return fmt.Errorf("session '%s' not found", args[0])
-	}
-
-	sess.Name = args[1]
-	sess.TitleSource = session.TitleSourceUser
-	if err := store.Update(ctx, sess); err != nil {
-		return fmt.Errorf("failed to update session: %w", err)
-	}
-
-	fmt.Printf("Session #%d named: %s\n", sess.Number, sess.Name)
-	return nil
+	return sessionsApp().Name(cmd, args)
 }
-
 func runSessionsTag(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	sess, err := store.GetByPrefix(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	if sess == nil {
-		return fmt.Errorf("session '%s' not found", args[0])
-	}
-
-	// Parse existing tags
-	existingTags := parseTags(sess.Tags)
-
-	// Add new tags (normalize and avoid duplicates)
-	addedTags := []string{}
-	for _, tag := range args[1:] {
-		normalized := normalizeTag(tag)
-		if normalized == "" {
-			continue // Skip empty tags
-		}
-		if !containsTag(existingTags, normalized) {
-			existingTags = append(existingTags, normalized)
-			addedTags = append(addedTags, normalized)
-		}
-	}
-
-	if len(addedTags) == 0 {
-		fmt.Println("No new tags to add (all already present or empty).")
-		return nil
-	}
-
-	sess.Tags = strings.Join(existingTags, ",")
-	if err := store.Update(ctx, sess); err != nil {
-		return fmt.Errorf("failed to update session: %w", err)
-	}
-
-	fmt.Printf("Added tags to session #%d: %s\n", sess.Number, strings.Join(addedTags, ", "))
-	return nil
+	return sessionsApp().Tag(cmd, args)
 }
-
 func runSessionsUntag(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	sess, err := store.GetByPrefix(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	if sess == nil {
-		return fmt.Errorf("session '%s' not found", args[0])
-	}
-
-	// Parse existing tags (already normalized)
-	existingTags := parseTags(sess.Tags)
-
-	// Normalize tags to remove
-	tagsToRemove := make([]string, 0, len(args[1:]))
-	for _, t := range args[1:] {
-		if nt := normalizeTag(t); nt != "" {
-			tagsToRemove = append(tagsToRemove, nt)
-		}
-	}
-
-	// Remove specified tags
-	removedTags := []string{}
-	newTags := []string{}
-	for _, tag := range existingTags {
-		if slices.Contains(tagsToRemove, tag) {
-			removedTags = append(removedTags, tag)
-		} else {
-			newTags = append(newTags, tag)
-		}
-	}
-
-	if len(removedTags) == 0 {
-		fmt.Println("No tags to remove (none present).")
-		return nil
-	}
-
-	sess.Tags = strings.Join(newTags, ",")
-	if err := store.Update(ctx, sess); err != nil {
-		return fmt.Errorf("failed to update session: %w", err)
-	}
-
-	fmt.Printf("Removed tags from session #%d: %s\n", sess.Number, strings.Join(removedTags, ", "))
-	return nil
+	return sessionsApp().Untag(cmd, args)
 }
-
-// parseTags parses a comma-separated tag string into a slice of normalized tags.
-func parseTags(tags string) []string {
-	if tags == "" {
-		return nil
-	}
-	parts := strings.Split(tags, ",")
-	var result []string
-	for _, tag := range parts {
-		normalized := normalizeTag(tag)
-		if normalized != "" {
-			result = append(result, normalized)
-		}
-	}
-	return result
-}
-
-// normalizeTag normalizes a tag: trim whitespace, lowercase.
-func normalizeTag(tag string) string {
-	return strings.ToLower(strings.TrimSpace(tag))
-}
-
-// containsTag checks if a slice contains a tag (already normalized)
-func containsTag(tags []string, tag string) bool {
-	return slices.Contains(tags, normalizeTag(tag))
-}
-
 func runSessionsBrowse(cmd *cobra.Command, args []string) error {
-	if !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
-		return runSessionsList(cmd, args)
-	}
-	closeLog, logErr := startInteractiveDiagnostics(cmd.ErrOrStderr())
-	if logErr != nil {
-		return logErr
-	}
-	defer closeLog()
-
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	// Get terminal size
-	width, height := 80, 24
-	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
-		width, height = w, h
-	}
-
-	styles := ui.DefaultStyles()
-	model := sessions.New(store, width, height, styles)
-
-	p := tea.NewProgram(model)
-	finalModel, err := p.Run()
-	if err != nil {
-		return fmt.Errorf("failed to run browser: %w", err)
-	}
-
-	// Check if user wants to chat with a session
-	if m, ok := finalModel.(*sessions.Model); ok && m.ChatSessionID() != "" {
-		// Set the resume flag and call runChat
-		chatResume = m.ChatSessionID()
-		// Mark the flag as changed so runChat processes it
-		if err := chatCmd.Flags().Set("resume", chatResume); err != nil {
-			return fmt.Errorf("failed to set resume flag: %w", err)
-		}
-		closeLog() // The browser has quit; chat owns a new terminal UI lifecycle.
-		return runChat(chatCmd, nil)
-	}
-
-	return nil
+	return sessionsApp().Browse(cmd, args)
 }
-
 func runSessionsExportGist(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	sess, err := store.GetByPrefix(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	if sess == nil {
-		return fmt.Errorf("session '%s' not found", args[0])
-	}
-
-	messages, _, err := session.LoadScrollbackWithBoundary(ctx, store, sess)
-	if err != nil {
-		return fmt.Errorf("failed to get messages: %w", err)
-	}
-	messages = session.VisibleExportMessages(messages)
-
-	opts := buildSessionExportOptions(
-		sess,
-		sessionsGistIncludeSystem,
-		sessionsGistIncludeReasoning,
-		sessionsGistIncludeRawReasoning,
-	)
-	files, err := session.GistFiles(sess, messages, opts)
-	if err != nil {
-		return err
-	}
-
-	client, err := gist.NewClient()
-	if err != nil {
-		return err
-	}
-
-	name := sess.Name
-	if name == "" {
-		name = fmt.Sprintf("#%d", sess.Number)
-	}
-	description := fmt.Sprintf("term-llm session: %s", name)
-
-	out := cmd.OutOrStdout()
-	fmt.Fprintln(out, "Creating Gist...")
-	g, err := client.Create(description, sessionsGistPublic, files)
-	if err != nil {
-		return fmt.Errorf("create gist: %w", err)
-	}
-	preview := session.GistPreviewURL(g.ID)
-	if preview == "" {
-		return fmt.Errorf("created Gist returned an invalid ID %q", g.ID)
-	}
-
-	fmt.Fprintln(out, "Share:")
-	fmt.Fprintln(out, preview)
-	fmt.Fprintf(out, "Gist/source: %s\n", g.URL)
-	return nil
+	return sessionsApp().ExportGist(cmd, args)
 }
 
-// Compatibility wrappers retained for package-local callers and tests.
-func buildSessionGistFiles(sess *session.Session, messages []session.Message, opts session.ExportOptions) (map[string]string, error) {
-	return session.GistFiles(sess, messages, opts)
-}
-
-func gistPreviewURL(id string) string { return session.GistPreviewURL(id) }
+// Helpers shared with other cmd files.
+func parseTags(tags string) []string        { return sessionsapp.ParseTags(tags) }
+func formatRelativeTime(t time.Time) string { return sessionsapp.FormatRelativeTime(t) }

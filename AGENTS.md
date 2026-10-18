@@ -8,7 +8,9 @@
 - Before finishing, inspect `git diff`, run checks for every touched area, and report commands and omissions.
 
 ## Project Map
-- `main.go`, `cmd/` – CLI entry point, commands, and cross-package wiring
+- `main.go`, `cmd/` – CLI entry point and thin Cobra glue; command implementation moves into `internal/app/<command>/`
+- `internal/app/serve/` – serve application seams (Hub and shell protocol); remaining HTTP handlers, jobs, and live runtime are still in `cmd/`
+- `internal/app/process/`, `internal/app/usage/`, `internal/app/memory/`, `internal/app/ask/`, `internal/app/chat/`, `internal/app/sessions/`, `internal/app/service/`, `internal/app/notify/`, `internal/app/agent/` – extracted command implementations
 - `internal/config/`, `internal/llm/` – config/provider resolution; provider implementations, engine, compaction, and mocks (`llm/factory.go` constructs providers)
 - `internal/tools/`, `internal/edit/` – tool registry/permissions and file editing
 - `internal/serve/`, `internal/serveui/` – server primitives and embedded web UI

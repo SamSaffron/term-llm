@@ -1,262 +1,49 @@
 package cmd
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"slices"
+	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
 )
 
-func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
-	got := supportedModelListProviderTypes()
-	for _, want := range []string{"agy-bin", "cursor-bin", "grok-bin"} {
-		if !slices.Contains(got, want) {
-			t.Fatalf("supported provider types %v missing %q", got, want)
-		}
-	}
-	if !slices.IsSorted(got) {
-		t.Fatalf("supported provider types are not sorted: %v", got)
-	}
-}
-
-func TestModelListSupportedTypesIncludesSambaNova(t *testing.T) {
-	if !supportsModelListing(config.ProviderTypeSambaNova) {
-		t.Fatal("SambaNova should be wired for dynamic model listing")
-	}
-}
-
-func TestModelListSupportedTypesIncludesNearAI(t *testing.T) {
-	if !supportsModelListing(config.ProviderTypeNearAI) {
-		t.Fatal("NEAR AI should be wired for dynamic model listing")
-	}
-}
-
-func TestModelListSupportedTypesIncludesOllama(t *testing.T) {
-	if !supportsModelListing(config.ProviderTypeOllama) {
-		t.Fatal("Ollama should be wired for dynamic model listing")
-	}
-}
-
-func TestRunModelsQueriesAgyCLIAndCachesCatalog(t *testing.T) {
-
-	binDir := t.TempDir()
-	script := `#!/bin/sh
-if [ "$1" = "models" ]; then
-  printf '%b\n' \
-    'gemini-3.8-flash-high\tGemini 3.8 Flash (High)' \
-    'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)' \
-    'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)' \
-    'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)' \
-    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)'
-  exit 0
-fi
-exit 1
-`
-	if err := os.WriteFile(filepath.Join(binDir, "agy"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-
-	oldProvider, oldJSON := modelsProvider, modelsJSON
-	modelsProvider, modelsJSON = "agy-bin", true
-	t.Cleanup(func() {
-		modelsProvider, modelsJSON = oldProvider, oldJSON
-	})
-
-	readOut, writeOut, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldStdout := os.Stdout
-	os.Stdout = writeOut
-	err = runModels(modelsCmd, nil)
-	_ = writeOut.Close()
-	os.Stdout = oldStdout
-	if err != nil {
-		t.Fatalf("runModels: %v", err)
-	}
-	defer readOut.Close()
-
-	var models []llm.ModelInfo
-	if err := json.NewDecoder(readOut).Decode(&models); err != nil {
-		t.Fatalf("decode output: %v", err)
-	}
-	got := make([]string, 0, len(models))
-	for _, model := range models {
-		got = append(got, model.ID)
-	}
-	want := []string{
-		"gemini-3.8-flash-high",
-		"gemini-3.8-flash-medium",
-		"gemini-3.8-flash-low",
-		"claude-sonnet-4-6",
-		"gpt-oss-120b-medium",
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("listed models = %v, want %v", got, want)
-	}
-	if cached := llm.GetCachedAgyBinModels(); !slices.Equal(cached, want) {
-		t.Fatalf("cached models = %v, want %v", cached, want)
-	}
-}
-
-func TestRunModelsQueriesConfiguredOllamaEndpoint(t *testing.T) {
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/tags":
-			fmt.Fprint(w, `{"models":[{"name":"remote-only:latest"},{"name":"embedding:4b"}]}`)
-		case "/api/show":
-			fmt.Fprint(w, `{"capabilities":["completion"]}`)
-		default:
-			t.Errorf("requested unexpected path %q", r.URL.Path)
-			http.Error(w, "not found", http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	configHome := t.TempDir()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	configDir := filepath.Join(configHome, "term-llm")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	configYAML := fmt.Sprintf("default_provider: ollama\nproviders:\n  ollama:\n    type: ollama\n    base_url: %s\n    model: remote-only:latest\n", server.URL)
-	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	oldProvider, oldJSON := modelsProvider, modelsJSON
-	modelsProvider, modelsJSON = "ollama", true
-	t.Cleanup(func() {
-		modelsProvider, modelsJSON = oldProvider, oldJSON
-	})
-
-	readOut, writeOut, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldStdout := os.Stdout
-	os.Stdout = writeOut
-	err = runModels(modelsCmd, nil)
-	_ = writeOut.Close()
-	os.Stdout = oldStdout
-	if err != nil {
-		t.Fatalf("runModels: %v", err)
-	}
-	var models []llm.ModelInfo
-	if err := json.NewDecoder(readOut).Decode(&models); err != nil {
-		t.Fatalf("decode output: %v", err)
-	}
-	_ = readOut.Close()
-
-	got := make([]string, 0, len(models))
-	for _, model := range models {
-		got = append(got, model.ID)
-	}
-	want := []string{"remote-only:latest", "embedding:4b"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("listed models = %v, want %v", got, want)
-	}
-	if slices.Contains(got, "qwen2.5-coder:7b") {
-		t.Fatalf("listed models unexpectedly contain static fallback: %v", got)
-	}
-}
-
 func TestModelsRefreshFlag(t *testing.T) {
+	t.Parallel()
 	if flag := modelsCmd.Flags().Lookup("refresh"); flag == nil {
 		t.Fatal("models command missing --refresh")
 	}
 }
 
-func TestModelListSupportedTypesIncludesChatGPT(t *testing.T) {
-	if !supportsModelListing(config.ProviderTypeChatGPT) {
-		t.Fatal("chatgpt should be wired for authenticated dynamic model listing")
-	}
-}
-
-func TestBuiltinProviderRegistryDescribesListingProviders(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		credential config.ProviderCredential
-		apiKeyEnv  string
-	}{
-		{"chatgpt", config.CredentialOAuth, ""},
-		{"grok", config.CredentialOAuth, ""},
-		{"grok-bin", config.CredentialOAuth, ""},
-		{"cursor-bin", config.CredentialOAuth, "CURSOR_API_KEY"},
-		{"sambanova", config.CredentialAPIKey, "SAMBANOVA_API_KEY"},
-		{"nearai", config.CredentialAPIKey, "NEARAI_API_KEY"},
+func TestModelsFlagDefaults(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, value string }{
+		{"provider", ""},
+		{"json", "false"},
+		{"refresh", "false"},
 	} {
-		spec, ok := config.BuiltinProvider(tc.name)
-		if !ok {
-			t.Fatalf("%s missing from the provider registry", tc.name)
-		}
-		if spec.Credential != tc.credential || spec.APIKeyEnv != tc.apiKeyEnv || !spec.ListModels {
-			t.Errorf("%s registry entry = %+v, want %s credential, env %q, model listing", tc.name, spec, tc.credential, tc.apiKeyEnv)
+		flag := modelsCmd.Flags().Lookup(tc.name)
+		if flag == nil || flag.DefValue != tc.value {
+			t.Errorf("%s default = %v, want %q", tc.name, flag, tc.value)
 		}
 	}
 }
 
-func TestModelListSupportedTypesIncludesGrok(t *testing.T) {
-	isolateGrokCmdTestEnv(t)
-	if !supportsModelListing(config.ProviderTypeGrok) {
-		t.Fatal("grok should be wired for authenticated dynamic model listing")
+// TestModelsRunSeesParsedFlags guards against binding RunE to a copy of the
+// options taken before Cobra parses flags (a value-receiver method value).
+func TestModelsRunSeesParsedFlags(t *testing.T) {
+	saved := modelsOptions
+	t.Cleanup(func() {
+		modelsOptions = saved
+		_ = modelsCmd.Flags().Set("provider", "")
+	})
+	modelsOptions.LoadConfig = func() (*config.Config, error) {
+		return &config.Config{DefaultProvider: "default-sentinel-provider"}, nil
 	}
-}
-
-func TestModelListSupportedTypesIncludesGrokBin(t *testing.T) {
-	isolateGrokCmdTestEnv(t)
-	if !supportsModelListing(config.ProviderTypeGrokBin) {
-		t.Fatal("grok-bin should be wired for dynamic model listing")
+	if err := modelsCmd.Flags().Set("provider", "flag-sentinel-provider"); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestModelListSupportedTypesIncludesCursorBin(t *testing.T) {
-	if !supportsModelListing(config.ProviderTypeCursorBin) {
-		t.Fatal("cursor-bin should be wired for dynamic model listing")
-	}
-}
-
-func TestChatGPTContextSummary(t *testing.T) {
-	got := chatGPTContextSummary(llm.ModelInfo{RecommendedContext: 372000, MaxContext: 872000, ConfiguredContext: 600000, InputLimit: 580000})
-	want := "[context: 600K selected, 372K recommended, 872K max]"
-	if got != want {
-		t.Fatalf("got %q want %q", got, want)
-	}
-	if got := chatGPTContextSummary(llm.ModelInfo{}); got != "[context: unknown selected, unknown recommended, unknown max]" {
-		t.Fatal(got)
-	}
-}
-
-func TestChatGPTContextReserveSummary(t *testing.T) {
-	for _, tc := range []struct {
-		name            string
-		selected, input int
-		want            string
-	}{
-		{"default", 372000, 372000, ""},
-		{"unknown", 0, 0, ""},
-		{"reserve", 600000, 580000, "Input budget: 580K · Output reserve: 20K"},
-		{"capped", 872000, 852000, "Input budget: 852K · Output reserve: 20K"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := chatGPTContextReserveSummary(llm.ModelInfo{ConfiguredContext: tc.selected, InputLimit: tc.input}); got != tc.want {
-				t.Fatalf("got %q want %q", got, tc.want)
-			}
-		})
+	err := modelsCmd.RunE(modelsCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "flag-sentinel-provider") {
+		t.Fatalf("models ignored --provider: err = %v", err)
 	}
 }

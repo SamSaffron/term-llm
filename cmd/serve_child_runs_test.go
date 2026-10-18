@@ -116,9 +116,7 @@ func (f *childRunFixture) spawnChild(t *testing.T) tools.SpawnAgentResult {
 // Supplying a registry directly in the fixture hides an eager nil capture here.
 func TestServeRuntimeFactoryRegistersChildBeforeResult(t *testing.T) {
 	f := newChildRunFixture(t, false)
-	oldTools := serveTools
-	serveTools = "spawn_agent"
-	t.Cleanup(func() { serveTools = oldTools })
+	flags := &ServeOptions{Tools: "spawn_agent"}
 	command := &cobra.Command{}
 	command.Flags().String("tools", "spawn_agent", "")
 	if err := command.Flags().Set("tools", "spawn_agent"); err != nil {
@@ -127,7 +125,7 @@ func TestServeRuntimeFactoryRegistersChildBeforeResult(t *testing.T) {
 
 	var srv *serveServer
 	factory := newServeAgentRuntimeFactory(serveAgentRuntimeOptions{
-		cfg: f.env.cfg, cmd: command, store: f.store,
+		flags: flags, cfg: f.env.cfg, cmd: command, store: f.store,
 		approval: resolvedApprovalMode{Mode: tools.ModePrompt},
 	}, func() *serveServer { return srv })
 	// Match runServe's order: only now does the server exist.

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 	"net/http"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 
 func TestTelegramAPIResponseErrorUsesHTTPStatusWhenErrorCodeMissing(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header)}
-	err := telegramAPIResponseError(resp, telegramSendResponse{Description: "request rejected"}, []byte(`{"ok":false}`))
+	err := appnotify.TelegramAPIResponseError(resp, appnotify.TelegramSendResponse{Description: "request rejected"}, []byte(`{"ok":false}`))
 
 	var statusErr interface{ HTTPStatusCode() int }
 	if !errors.As(err, &statusErr) {
@@ -25,9 +26,9 @@ func TestTelegramAPIResponseErrorUsesHTTPStatusWhenErrorCodeMissing(t *testing.T
 
 func TestTelegramAPIResponseErrorPreservesRetryAfter(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK, Status: "200 OK"}
-	apiResp := telegramSendResponse{ErrorCode: http.StatusTooManyRequests, Description: "rate limited"}
+	apiResp := appnotify.TelegramSendResponse{ErrorCode: http.StatusTooManyRequests, Description: "rate limited"}
 	apiResp.Parameters.RetryAfter = 7
-	err := telegramAPIResponseError(resp, apiResp, []byte(`{"ok":false}`))
+	err := appnotify.TelegramAPIResponseError(resp, apiResp, []byte(`{"ok":false}`))
 
 	var retryAfterErr interface {
 		RetryAfterDelay() (time.Duration, bool)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -25,21 +26,21 @@ type askProgressiveExecution struct {
 	request         run.Request
 	options         askProgressiveOptions
 	applyResult     func(run.Result)
-	wrapEvents      func(<-chan ui.StreamEvent) <-chan ui.StreamEvent
+	WrapEvents      func(<-chan ui.StreamEvent) <-chan ui.StreamEvent
 	useRichRenderer bool
-	jsonEmit        *jsonEmitter
-	jsonInfo        sessionInfo
+	jsonEmit        *ask.JSONEmitter
+	jsonInfo        ask.SessionInfo
 	captureOutput   func(string) error
 }
 
 func (e *askProgressiveExecution) run() (askExecutionResult, error) {
-	bridge := newAskProgressiveBridge(ui.DefaultStreamBufferSize)
+	bridge := ask.NewProgressiveBridge(ui.DefaultStreamBufferSize)
 	if e.session != nil {
 		bridge.Stats().SeedTotals(e.session.InputTokens, e.session.OutputTokens, e.session.CachedInputTokens, e.session.CacheWriteTokens, e.session.ToolCalls, e.session.LLMTurns+e.session.CompactionCount)
 	}
 	bridge.Stats().SetModel(activeModel(e.cfg))
 	result := askExecutionResult{stats: bridge.Stats()}
-	events := e.wrapEvents(bridge.Events())
+	events := e.WrapEvents(bridge.Events())
 	var drain <-chan struct{}
 	if askPorcelain && !askJSON {
 		done := make(chan struct{})
@@ -48,7 +49,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 			defer close(done)
 			for event := range events {
 				if event.Type == ui.StreamEventGuardian {
-					writeGuardianStatus(e.cmd.ErrOrStderr(), event.Guardian)
+					ask.WriteGuardianStatus(e.cmd.ErrOrStderr(), event.Guardian)
 				}
 			}
 		}()
@@ -57,7 +58,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	request.Progressive = &run.ProgressiveOptions{Timeout: e.options.Timeout, StopWhen: string(e.options.StopWhen), ContinueWith: e.options.ContinueWith}
 	runProgressive := func() askProgressiveRunResult {
 		bridge.Stats().RequestStart()
-		sink := askProgressiveRunnerSink{bridge: bridge, onGuardian: func(event tools.GuardianEvent) {
+		sink := ask.ProgressiveRunnerSink{Bridge: bridge, OnGuardian: func(event tools.GuardianEvent) {
 			if !event.Usage.BillableCountersZero() && e.store != nil && e.session != nil {
 				recordStoreHelperUsage(context.Background(), e.store, e.session.ID, event.Model, session.ModelUsageGuardian, event.Usage)
 			}
@@ -77,18 +78,18 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	}
 	var program *tea.Program
 	if e.useRichRenderer && e.toolMgr != nil {
-		_, program = newAskRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
+		_, program = ask.NewRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
 	}
 	render := func(ctx context.Context) error {
 		if program != nil {
-			return runAskStreamProgram(ctx, program)
+			return ask.RunStreamProgram(ctx, program)
 		}
-		return streamWithRenderer(ctx, e.cfg, events, e.store, e.session)
+		return ask.StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
 	}
 	var progressive askProgressiveRunResult
 	var jsonStreamErr, displayErr error
 	if askJSON {
-		if err := emitSessionStarted(e.jsonEmit, e.jsonInfo); err != nil {
+		if err := ask.EmitSessionStarted(e.jsonEmit, e.jsonInfo); err != nil {
 			return result, err
 		}
 	}
@@ -104,12 +105,12 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 		switch {
 		case askJSON:
 			var writeErr error
-			result.jsonTotalTokens, jsonStreamErr, writeErr = streamJSONEvents(displayCtx, events, e.jsonEmit)
+			result.jsonTotalTokens, jsonStreamErr, writeErr = ask.StreamJSONEvents(displayCtx, events, e.jsonEmit)
 			displayErr = writeErr
 		case e.useRichRenderer:
 			displayErr = render(displayCtx)
 		default:
-			displayErr = streamPlainText(displayCtx, events, false, e.cmd.ErrOrStderr())
+			displayErr = ask.StreamPlainText(displayCtx, events, false, e.cmd.ErrOrStderr())
 		}
 		if displayErr != nil {
 			bridge.Stop()
@@ -119,7 +120,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	tools.ClearAskUserHooks()
 	if displayErr != nil {
 		if askJSON {
-			_ = emitFatalError(e.jsonEmit, result.stats, displayErr)
+			_ = ask.EmitFatalError(e.jsonEmit, result.stats, displayErr)
 		}
 		return result, displayErr
 	}
@@ -136,7 +137,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 				_ = e.store.UpdateStatus(context.Background(), e.session.ID, session.StatusError)
 			}
 			if askJSON {
-				_ = emitFatalError(e.jsonEmit, result.stats, err)
+				_ = ask.EmitFatalError(e.jsonEmit, result.stats, err)
 			}
 			return result, err
 		}
@@ -151,12 +152,12 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 		_ = e.store.SetCurrent(context.Background(), e.session.ID)
 	}
 	if askJSON {
-		if err := emitProgressiveResult(e.jsonEmit, result.progressive); err != nil {
+		if err := ask.EmitProgressiveResult(e.jsonEmit, ask.ProgressiveResult(result.progressive)); err != nil {
 			return result, fmt.Errorf("emit progressive result: %w", err)
 		}
 		result.jsonFinalPending = true
 		if jsonStreamErr != nil {
-			if err := emitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
+			if err := ask.EmitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
 				return result, fmt.Errorf("emit final: %w", err)
 			}
 			result.jsonFinalPending = false
@@ -168,4 +169,9 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 		}
 	}
 	return result, nil
+}
+
+type askProgressiveRunResult struct {
+	Result progressiveRunResult
+	Err    error
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -137,5 +138,5 @@ func deriveAskResumeAutoTools(ctx context.Context, store session.Store, sess *se
 	for i := range rows {
 		history = append(history, rows[i].ToLLMMessage())
 	}
-	addAskAutoTools(settings, history)
+	settings.AutoTools = ask.AddAutoTools(settings.AutoTools, history)
 }

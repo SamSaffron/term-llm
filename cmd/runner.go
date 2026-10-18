@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
@@ -64,7 +65,7 @@ type cmdRunnerOptions struct {
 	// into nested runners, because a runner built for a child knows nothing
 	// about serve otherwise.
 	ChildRunObserver childRunObserver
-	AgentOwner       *agentHostOwner
+	AgentOwner       *runtime.AgentHostOwner
 }
 
 type cmdRunner struct {
@@ -97,7 +98,7 @@ type cmdRunEnvironment struct {
 	llmReq        llm.Request
 	inputMessages []llm.Message
 	runCtx        context.Context
-	agentOwner    *agentHostOwner
+	agentOwner    *runtime.AgentHostOwner
 }
 
 func (env *cmdRunEnvironment) Close() {
@@ -113,7 +114,7 @@ func (env *cmdRunEnvironment) Close() {
 	}
 	if env.runtime != nil && !env.req.IsSubagent {
 		if env.agentOwner != nil {
-			env.agentOwner.adopt(env.runtime, env.closeStore)
+			env.agentOwner.Adopt(env.runtime, env.closeStore)
 		} else {
 			// One-shot callers have no host owner to shut down adopted children.
 			env.runtime.CloseAfterRun(env.runCtx)
@@ -1031,7 +1032,7 @@ func (f eventSinkFunc) Event(ev llm.Event) {
 type runnerEventCollector struct {
 	sink runpkg.EventSink
 
-	runnerOutput
+	runtime.RunnerOutput
 	turns  int
 	input  int
 	output int
@@ -1041,7 +1042,7 @@ func (c *runnerEventCollector) Event(ev llm.Event) error {
 	if c == nil {
 		return nil
 	}
-	c.runnerOutput.Event(ev)
+	c.RunnerOutput.Event(ev)
 	switch ev.Type {
 	case llm.EventUsage:
 		if ev.Use != nil {
@@ -1065,8 +1066,8 @@ func (c *runnerEventCollector) Result(sessionID string) runpkg.Result {
 	}
 	return runpkg.Result{
 		SessionID:    sessionID,
-		Response:     c.response.String(),
-		Thinking:     c.thinking.String(),
+		Response:     c.Response(),
+		Thinking:     c.Thinking(),
 		Turns:        c.turns,
 		InputTokens:  c.input,
 		OutputTokens: c.output,

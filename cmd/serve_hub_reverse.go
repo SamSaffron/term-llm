@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
@@ -31,7 +32,7 @@ const (
 	hubReversePingInterval = 20 * time.Second
 	hubReversePongWait     = 60 * time.Second
 	hubReverseWriteWait    = 10 * time.Second
-	hubReverseChunkSize    = 32 * 1024
+	hubReverseChunkSize    = appserver.ReverseChunkSize
 	// Bound each request by both frames and decoded body bytes. This absorbs an
 	// ~8 MiB burst at the connector's maximum chunk size without allowing one
 	// downstream client to wedge the multiplexed websocket reader.
@@ -44,9 +45,9 @@ const (
 
 	hubReverseFrameRequest       = "request"
 	hubReverseFrameCancel        = "cancel"
-	hubReverseFrameResponseStart = "response_start"
-	hubReverseFrameResponseBody  = "response_body"
-	hubReverseFrameResponseEnd   = "response_end"
+	hubReverseFrameResponseStart = appserver.ReverseFrameResponseStart
+	hubReverseFrameResponseBody  = appserver.ReverseFrameResponseBody
+	hubReverseFrameResponseEnd   = appserver.ReverseFrameResponseEnd
 )
 
 var (
@@ -54,23 +55,8 @@ var (
 	errHubReverseResponseTooLarge = errors.New("reverse response frame body exceeds per-request limit")
 )
 
-type hubReverseRequest struct {
-	Type   string      `json:"type,omitempty"`
-	ID     string      `json:"id"`
-	Method string      `json:"method,omitempty"`
-	Path   string      `json:"path,omitempty"`
-	Header http.Header `json:"header,omitempty"`
-	Body   []byte      `json:"body,omitempty"`
-}
-
-type hubReverseResponse struct {
-	Type   string      `json:"type,omitempty"`
-	ID     string      `json:"id"`
-	Status int         `json:"status,omitempty"`
-	Header http.Header `json:"header,omitempty"`
-	Body   []byte      `json:"body,omitempty"`
-	Error  string      `json:"error,omitempty"`
-}
+type hubReverseRequest = appserver.ReverseRequest
+type hubReverseResponse = appserver.ReverseResponse
 
 type hubReversePending struct {
 	ch          chan hubReverseResponse

@@ -13,12 +13,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -26,6 +22,14 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
+
+import serveshell "github.com/samsaffron/term-llm/internal/app/serve/shell"
+
+type shellCreateResponse struct {
+	ShellID string `json:"shell_id"`
+	CWD     string `json:"cwd"`
+	Created bool   `json:"created"`
+}
 
 func newShellTestServer(t *testing.T, requireAuth bool) (*serveServer, session.Store, string) {
 	t.Helper()
@@ -48,7 +52,7 @@ func newShellTestServer(t *testing.T, requireAuth bool) (*serveServer, session.S
 		store: store, startupDir: cwd,
 	}
 	srv.shutdownCh = make(chan struct{})
-	srv.shells = newServeShellManager(time.Minute, srv.shellSessionExists)
+	srv.shells = serveshell.NewManager(time.Minute, srv.shellSessionExists)
 	t.Cleanup(srv.closeShellManager)
 	return srv, store, cwd
 }
@@ -88,12 +92,6 @@ func decodeShellResponse[T any](t *testing.T, response *http.Response) T {
 		t.Fatalf("decode status %d: %v", response.StatusCode, err)
 	}
 	return value
-}
-
-type shellCreateResponse struct {
-	ShellID string `json:"shell_id"`
-	CWD     string `json:"cwd"`
-	Created bool   `json:"created"`
 }
 
 type shellSSEEvent struct {
@@ -175,15 +173,11 @@ func TestServeShellHTTPCreateInputOutputResizeAttachDeleteAndStaleID(t *testing.
 
 	// Exercise the collaboration transition and command contract over the real
 	// HTTP SSE stream, not only through direct state snapshots.
-	shell, err := srv.shells.get("shell-session", created.ShellID)
+	shell, err := srv.shells.Get("shell-session", created.ShellID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shell.mu.Lock()
-	shell.shellToolAvailable = true
-	shell.resetActivityCursorLocked()
-	shell.transitionCollaborationLocked(serveShellCollaborationReady, true, "collaboration", "")
-	shell.mu.Unlock()
+	shell.MarkCollaborationReady()
 	controller := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) { return srv.shells, nil }}
 	sharedResult := make(chan tools.ShellResult, 1)
 	sharedErr := make(chan error, 1)
@@ -275,109 +269,6 @@ func TestServeShellHTTPCreateInputOutputResizeAttachDeleteAndStaleID(t *testing.
 	}
 }
 
-func TestServeShellReplayResetAndExit(t *testing.T) {
-	shell := newServeShell("sh_test", "session", t.TempDir())
-	payload := bytes.Repeat([]byte("x"), serveShellReplayBytes+123)
-	shell.appendOutput(payload)
-	snapshot := shell.snapshot(0)
-	if !snapshot.reset || snapshot.baseOffset != 123 || snapshot.nextOffset != int64(len(payload)) {
-		t.Fatalf("reset snapshot = %+v", snapshot)
-	}
-	snapshot = shell.snapshot(snapshot.baseOffset)
-	if snapshot.reset || snapshot.dataOffset != 123 || len(snapshot.data) != serveShellChunkBytes {
-		t.Fatalf("replay snapshot = offset %d len %d reset %t", snapshot.dataOffset, len(snapshot.data), snapshot.reset)
-	}
-	shell.mu.Lock()
-	shell.exited = true
-	shell.exitCode = 7
-	shell.notifyLocked()
-	shell.mu.Unlock()
-	exit := shell.snapshot(shell.nextOffset)
-	if !exit.exited || exit.exitCode != 7 {
-		t.Fatalf("exit snapshot = %+v", exit)
-	}
-}
-
-func TestServeShellReplayCompactsDroppedPrefixesInBatches(t *testing.T) {
-	const totalBytes = 3*serveShellReplayBytes + 3*serveShellChunkBytes + 123
-	all := make([]byte, totalBytes)
-	for i := range all {
-		all[i] = byte((i*31 + 17) % 251)
-	}
-
-	shell := newServeShell("sh_compaction", "session", t.TempDir())
-	for start := 0; start < len(all); start += serveShellChunkBytes {
-		end := min(start+serveShellChunkBytes, len(all))
-		shell.appendOutput(all[start:end])
-	}
-
-	wantBase := int64(len(all) - serveShellReplayBytes)
-	wantOutputStart := len(all) - 3*serveShellReplayBytes
-	shell.mu.Lock()
-	if shell.baseOffset != wantBase || shell.nextOffset != int64(len(all)) {
-		t.Fatalf("offsets = base %d next %d, want base %d next %d", shell.baseOffset, shell.nextOffset, wantBase, len(all))
-	}
-	if shell.outputStart != wantOutputStart || len(shell.output)-shell.outputStart != serveShellReplayBytes {
-		t.Fatalf("storage = start %d active %d, want start %d active %d", shell.outputStart, len(shell.output)-shell.outputStart, wantOutputStart, serveShellReplayBytes)
-	}
-
-	redactionStart := shell.baseOffset + 1234
-	redactionEnd := redactionStart + 32
-	replacement := []byte("shared")
-	shell.replaceReplayRangeLocked(redactionStart, redactionEnd, replacement)
-	shell.mu.Unlock()
-
-	want := append([]byte(nil), all[len(all)-serveShellReplayBytes:]...)
-	redactionIndex := int(redactionStart - wantBase)
-	clear(want[redactionIndex : redactionIndex+int(redactionEnd-redactionStart)])
-	copy(want[redactionIndex:], replacement)
-
-	reset := shell.snapshot(0)
-	if !reset.reset || reset.baseOffset != wantBase || reset.dataOffset != wantBase {
-		t.Fatalf("reset snapshot = reset %t base %d data %d, want base/data %d", reset.reset, reset.baseOffset, reset.dataOffset, wantBase)
-	}
-
-	var replay []byte
-	for offset := wantBase; offset < int64(len(all)); {
-		snapshot := shell.snapshot(offset)
-		if snapshot.reset || snapshot.dataOffset != offset || len(snapshot.data) == 0 || len(snapshot.data) > serveShellChunkBytes {
-			t.Fatalf("snapshot at %d = reset %t data offset %d len %d", offset, snapshot.reset, snapshot.dataOffset, len(snapshot.data))
-		}
-		replay = append(replay, snapshot.data...)
-		offset += int64(len(snapshot.data))
-	}
-	if !bytes.Equal(replay, want) {
-		t.Fatalf("chunked replay differs: got %d bytes, want %d", len(replay), len(want))
-	}
-
-	// A large write must reset the logical prefix left by small writes.
-	large := bytes.Repeat([]byte("z"), serveShellReplayBytes+17)
-	shell.appendOutput(large)
-	shell.appendOutput([]byte("tail"))
-	snapshot := shell.snapshot(0)
-	wantBase = int64(len(all) + len(large) + 4 - serveShellReplayBytes)
-	if !snapshot.reset || snapshot.baseOffset != wantBase || !bytes.Equal(snapshot.data, large[:serveShellChunkBytes]) {
-		t.Fatalf("large write after compaction: base %d, reset %t, data length %d", snapshot.baseOffset, snapshot.reset, len(snapshot.data))
-	}
-	if tail := shell.snapshot(snapshot.nextOffset - 4); string(tail.data) != "tail" {
-		t.Fatalf("replay tail = %q, want tail", tail.data)
-	}
-}
-
-func BenchmarkServeShellReplaySmallChunks(b *testing.B) {
-	const bytesPerIteration = 256 << 20
-	chunk := bytes.Repeat([]byte("x"), serveShellChunkBytes)
-	shell := newServeShell("sh_benchmark", "session", b.TempDir())
-	shell.appendOutput(bytes.Repeat([]byte("p"), serveShellReplayBytes))
-	b.SetBytes(bytesPerIteration)
-	b.ResetTimer()
-	for range b.N {
-		for written := 0; written < bytesPerIteration; written += len(chunk) {
-			shell.appendOutput(chunk)
-		}
-	}
-}
-
 func TestResolveShellCWDUsesPersistedProjectBindings(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	ctx := context.Background()
@@ -449,50 +340,6 @@ func TestResolveShellCWDUsesPersistedNoProjectWorkspace(t *testing.T) {
 	}
 }
 
-func TestServeShellProcessDrainsHighVolumeOutputBeforeExit(t *testing.T) {
-	dir := t.TempDir()
-	const repetitions = 4_096
-	const block = "0123456789abcdef0123456789abcdef"
-	payload := strings.Repeat(block, repetitions)
-	if err := os.WriteFile(filepath.Join(dir, "output.txt"), []byte(payload), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(dir, "write-and-exit.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat output.txt\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SHELL", script)
-
-	var outputMu sync.Mutex
-	var output bytes.Buffer
-	process, err := startServeShellProcess(dir, 80, 24, func(data []byte) {
-		// Simulate a temporarily busy consumer so output can still be queued in
-		// the PTY when the producer exits.
-		time.Sleep(125 * time.Millisecond)
-		outputMu.Lock()
-		_, _ = output.Write(data)
-		outputMu.Unlock()
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(process.Close)
-	select {
-	case exit := <-process.Done():
-		if exit.Code != 0 {
-			t.Fatalf("exit = %+v", exit)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("shell process did not finish")
-	}
-	outputMu.Lock()
-	got := output.Len()
-	outputMu.Unlock()
-	if want := repetitions * len(block); got != want {
-		t.Fatalf("drained output bytes = %d, want %d", got, want)
-	}
-}
-
 func TestServeShellManagerShutdownPermanentlyDisablesLazyCreation(t *testing.T) {
 	srv := &serveServer{}
 	const callers = 32
@@ -520,10 +367,7 @@ func TestServeShellManagerShutdownPermanentlyDisablesLazyCreation(t *testing.T) 
 	close(results)
 
 	for manager := range results {
-		manager.mu.Lock()
-		closed := manager.closed
-		manager.mu.Unlock()
-		if !closed {
+		if !manager.Closed() {
 			t.Fatal("manager returned during shutdown remained open")
 		}
 	}
@@ -538,61 +382,13 @@ func TestServeShellManagerShutdownPermanentlyDisablesLazyCreation(t *testing.T) 
 	}
 }
 
-func TestServeShellCleanupOnIdleSessionDeletionAndShutdown(t *testing.T) {
-	t.Setenv("SHELL", "/bin/sh")
-	var exists atomic.Bool
-	exists.Store(true)
-	manager := newServeShellManager(10*time.Millisecond, func(string) bool { return exists.Load() })
-	cwd := t.TempDir()
-	first, _, err := manager.create("idle", cwd, 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first.mu.Lock()
-	first.lastUsed = time.Now().Add(-time.Hour)
-	first.mu.Unlock()
-	manager.evictExpired()
-	waitForShellExit(t, first)
-
-	second, _, err := manager.create("deleted", cwd, 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exists.Store(false)
-	manager.evictExpired()
-	waitForShellExit(t, second)
-
-	exists.Store(true)
-	third, _, err := manager.create("shutdown", cwd, 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager.Close()
-	waitForShellExit(t, third)
-	if _, _, err := manager.create("late", cwd, 80, 24); !errors.Is(err, errServeShellClosed) {
-		t.Fatalf("create after shutdown error = %v", err)
-	}
-}
-
-func waitForShellExit(t *testing.T, shell *serveShell) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if !shell.alive() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("shell process did not exit")
-}
-
 func TestServeShellServerStopTerminatesProcess(t *testing.T) {
 	srv, _, cwd := newShellTestServer(t, false)
 	manager, err := srv.shellManager()
 	if err != nil {
 		t.Fatal(err)
 	}
-	shell, _, err := manager.create("shell-session", cwd, 80, 24)
+	shell, _, err := manager.Create("shell-session", cwd, 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,61 +396,6 @@ func TestServeShellServerStopTerminatesProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForShellExit(t, shell)
-}
-
-func TestServeShellProcessGroupCleanup(t *testing.T) {
-	t.Setenv("SHELL", "/bin/sh")
-	manager := newServeShellManager(time.Minute, nil)
-	defer manager.Close()
-	shell, _, err := manager.create("group", t.TempDir(), 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Whitespace after $! avoids interactive Bash history expansion of !;.
-	if err := shell.write([]byte("sleep 30 & child=$! ; printf '__child__%s\\n' \"$child\"\n")); err != nil {
-		t.Fatal(err)
-	}
-	var childPID int
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		snapshot := shell.snapshot(0)
-		text := string(snapshot.data)
-		if marker := strings.LastIndex(text, "__child__"); marker >= 0 {
-			_, _ = fmt.Sscanf(text[marker:], "__child__%d", &childPID)
-			if childPID > 0 {
-				break
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if childPID <= 0 {
-		t.Fatalf("did not capture background child PID; shell output: %q", shell.snapshot(0).data)
-	}
-	manager.closeSession("group")
-	waitForShellExit(t, shell)
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if !serveShellTestProcessRunning(childPID) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("background process %d survived shell cleanup", childPID)
-}
-
-func serveShellTestProcessRunning(pid int) bool {
-	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-		return false
-	}
-	// Linux keeps a killed orphan visible briefly as a zombie until PID 1
-	// reaps it. It can no longer execute and therefore counts as terminated.
-	if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
-		fields := strings.Fields(string(stat))
-		if len(fields) > 2 && fields[2] == "Z" {
-			return false
-		}
-	}
-	return true
 }
 
 func TestServeShellMethodsAuthOriginAndPathBinding(t *testing.T) {
@@ -747,4 +488,16 @@ func TestSameOriginShellRequestAcceptsHubBackendHost(t *testing.T) {
 	if sameOriginShellRequest(req) {
 		t.Fatal("cross-site browser request was accepted")
 	}
+}
+
+func waitForShellExit(t *testing.T, shell *serveShell) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !shell.Alive() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("shell process did not exit")
 }

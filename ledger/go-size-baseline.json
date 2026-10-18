@@ -7,12 +7,8 @@
       "lines": 1057
     },
     {
-      "path": "cmd/ask.go",
-      "lines": 2701
-    },
-    {
       "path": "cmd/chat.go",
-      "lines": 1682
+      "lines": 1661
     },
     {
       "path": "cmd/config.go",
@@ -23,16 +19,12 @@
       "lines": 1006
     },
     {
-      "path": "cmd/memory_mine.go",
-      "lines": 1563
-    },
-    {
       "path": "cmd/runner.go",
-      "lines": 1074
+      "lines": 1075
     },
     {
       "path": "cmd/serve.go",
-      "lines": 1886
+      "lines": 1830
     },
     {
       "path": "cmd/serve_handlers.go",
@@ -44,7 +36,7 @@
     },
     {
       "path": "cmd/serve_jobs_v2.go",
-      "lines": 3204
+      "lines": 3063
     },
     {
       "path": "cmd/serve_live.go",
@@ -60,11 +52,7 @@
     },
     {
       "path": "cmd/serve_runtime.go",
-      "lines": 2515
-    },
-    {
-      "path": "cmd/serve_shell.go",
-      "lines": 1115
+      "lines": 2523
     },
     {
       "path": "cmd/serve_skills.go",
@@ -75,12 +63,12 @@
       "lines": 1075
     },
     {
-      "path": "cmd/sessions.go",
-      "lines": 1017
-    },
-    {
       "path": "cmd/skills.go",
       "lines": 1117
+    },
+    {
+      "path": "internal/app/memory/mine.go",
+      "lines": 1538
     },
     {
       "path": "internal/config/config.go",
@@ -250,7 +238,7 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 105242
+      "lines": 84301
     },
     {
       "dir": "internal/session",

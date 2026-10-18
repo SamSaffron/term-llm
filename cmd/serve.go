@@ -19,6 +19,8 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/live"
@@ -37,61 +39,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/usage"
 	"github.com/samsaffron/term-llm/internal/widgets"
 	"github.com/spf13/cobra"
-)
-
-var (
-	serveHost                   string
-	servePort                   int
-	serveToken                  string
-	serveAllowNoAuth            bool
-	serveAuthMode               string
-	serveBasePath               string
-	servePublicURL              string
-	serveTitle                  string
-	serveDisableLocationSharing bool
-	serveCORSOrigins            []string
-	serveSessionTTL             time.Duration
-	serveSessionMax             int
-	serveDebug                  bool
-	serveSearch                 bool
-	serveNoSearch               bool
-	serveProvider               string
-	serveMCP                    string
-	serveNativeSearch           bool
-	serveNoNativeSearch         bool
-	serveMaxTurns               int
-	serveTools                  string
-	serveReadDirs               []string
-	serveWriteDirs              []string
-	serveShellAllow             []string
-	serveSystemMessage          string
-	serveAgent                  string
-	serveApproval               string
-	serveYolo                   bool
-	serveAuto                   bool
-	serveTelegramCarryoverChars int
-	serveJobsWorkers            int
-	serveSetup                  bool
-	serveVerbose                bool
-	serveFilterServerTools      bool
-	serveSidebarSessions        string
-	serveToolMap                []string
-	serveFilesDir               string
-	serveDisableWidgets         bool
-	serveWidgetsDir             string
-	serveExtensionsDir          string
-	serveExtensionIDs           []string
-	serveDisableExtensions      bool
-	serveResponseTimeout        time.Duration
-	serveEnableFileTracking     bool
-	serveHubURL                 string
-	serveHubNodeID              string
-	serveHubNodeName            string
-	serveHubConnect             string
-	serveHubRegister            bool
-	serveHubRegistrationToken   string
-	serveProjects               bool
-	serveNoProjects             bool
 )
 
 const (
@@ -157,68 +104,71 @@ Use --setup to configure credentials for the selected platforms.`,
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
+	bindServeFlags(serveCmd, &serveFlags)
+}
 
-	serveCmd.Flags().StringVar(&serveHost, "host", "127.0.0.1", "Bind host")
-	serveCmd.Flags().IntVar(&servePort, "port", 8080, "Bind port")
-	serveCmd.Flags().StringVar(&serveToken, "token", "", "Bearer token for API auth (defaults to $TERM_LLM_SERVE_TOKEN, else auto-generated)")
-	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "no-auth", false, "Disable auth (only allowed on loopback host)")
-	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (alias for --no-auth)")
-	_ = serveCmd.Flags().MarkHidden("allow-no-auth")
-	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer, passkey (web only), or none")
-	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
-	serveCmd.Flags().StringVar(&servePublicURL, "public-url", "", "Browser-visible URL required for passkeys, also used for OAuth callbacks (defaults to $TERM_LLM_SERVE_PUBLIC_URL or the authenticated request origin)")
-	serveCmd.Flags().StringVar(&serveTitle, "title", "", "Override the web UI sidebar title (defaults to agent name or Chat)")
-	serveCmd.Flags().BoolVar(&serveDisableLocationSharing, "disable-location-sharing", false, "Hide the web UI action for sharing the browser's current location")
-	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
-	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
-	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
+func bindServeFlags(cmd *cobra.Command, opts *ServeOptions) {
+	cmd.Flags().StringVar(&opts.Host, "host", "127.0.0.1", "Bind host")
+	cmd.Flags().IntVar(&opts.Port, "port", 8080, "Bind port")
+	cmd.Flags().StringVar(&opts.Token, "token", "", "Bearer token for API auth (defaults to $TERM_LLM_SERVE_TOKEN, else auto-generated)")
+	cmd.Flags().BoolVar(&opts.AllowNoAuth, "no-auth", false, "Disable auth (only allowed on loopback host)")
+	cmd.Flags().BoolVar(&opts.AllowNoAuth, "allow-no-auth", false, "Disable auth (alias for --no-auth)")
+	_ = cmd.Flags().MarkHidden("allow-no-auth")
+	cmd.Flags().StringVar(&opts.AuthMode, "auth", "bearer", "Auth mode: bearer, passkey (web only), or none")
+	cmd.Flags().StringVar(&opts.BasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
+	cmd.Flags().StringVar(&opts.PublicURL, "public-url", "", "Browser-visible URL required for passkeys, also used for OAuth callbacks (defaults to $TERM_LLM_SERVE_PUBLIC_URL or the authenticated request origin)")
+	cmd.Flags().StringVar(&opts.Title, "title", "", "Override the web UI sidebar title (defaults to agent name or Chat)")
+	cmd.Flags().BoolVar(&opts.DisableLocationSharing, "disable-location-sharing", false, "Hide the web UI action for sharing the browser's current location")
+	cmd.Flags().StringArrayVar(&opts.CORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
+	cmd.Flags().DurationVar(&opts.SessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
+	cmd.Flags().IntVar(&opts.SessionMax, "session-max", 1000, "Max stateful sessions in memory")
 
-	serveCmd.Flags().BoolVar(&serveSetup, "setup", false, "Re-run setup wizard for selected platforms")
-	serveCmd.Flags().IntVar(&serveTelegramCarryoverChars, "telegram-carryover-chars", 4000, "Characters of previous Telegram session context to carry into replacement sessions (0 disables)")
-	serveCmd.Flags().IntVar(&serveJobsWorkers, "jobs-workers", 4, "Number of concurrent job workers for --platform jobs")
-	serveCmd.Flags().StringVar(&serveSidebarSessions, "sidebar-sessions", "all", "Default web sidebar session categories: all or a comma-separated list like chat,web,ask,plan,exec")
-	serveCmd.Flags().BoolVar(&serveVerbose, "verbose", false, "Log API request/response summaries to stderr")
-	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
-	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
-	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
-	serveCmd.Flags().Bool("enable-widgets", false, "Deprecated no-op; widgets are enabled by default")
-	serveCmd.Flags().BoolVar(&serveDisableWidgets, "disable-widgets", false, "Disable local widget apps under {base}/widgets/<mount>/")
-	serveCmd.Flags().StringSliceVar(&serveExtensionIDs, "extensions", nil, "Ordered web extension IDs (overrides serve.extensions; empty disables all)")
-	serveCmd.Flags().StringVar(&serveExtensionsDir, "extensions-dir", "", "Directory containing web extension sub-directories")
-	serveCmd.Flags().BoolVar(&serveDisableExtensions, "disable-extensions", false, "Disable all web extension code for this process")
-	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
-	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
-	serveCmd.Flags().BoolVar(&serveEnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
-	serveCmd.Flags().BoolVar(&serveProjects, "projects", false, "Strictly enable Web UI project selection")
-	serveCmd.Flags().BoolVar(&serveNoProjects, "no-projects", false, "Use the single-workspace Web UI for dedicated agent deployments")
-	serveCmd.Flags().StringVar(&serveHubURL, "hub-url", "", "URL of the term-llm Hub this node belongs to (renders a Back to Hub link in the web UI)")
-	serveCmd.Flags().StringVar(&serveHubNodeID, "hub-node-id", "", "This node's id on the hub (used with --hub-url)")
-	serveCmd.Flags().StringVar(&serveHubNodeName, "hub-node-name", "", "This node's display name on the hub (used with --hub-url)")
-	serveCmd.Flags().StringVar(&serveHubConnect, "hub-connect", "direct", "Hub connection mode for this node: direct or reverse")
-	serveCmd.Flags().BoolVar(&serveHubRegister, "hub-register", false, "Register this reverse node with the Hub before connecting")
-	serveCmd.Flags().StringVar(&serveHubRegistrationToken, "hub-registration-token", "", "Hub registration token for --hub-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN)")
+	cmd.Flags().BoolVar(&opts.Setup, "setup", false, "Re-run setup wizard for selected platforms")
+	cmd.Flags().IntVar(&opts.TelegramCarryoverChars, "telegram-carryover-chars", 4000, "Characters of previous Telegram session context to carry into replacement sessions (0 disables)")
+	cmd.Flags().IntVar(&opts.JobsWorkers, "jobs-workers", 4, "Number of concurrent job workers for --platform jobs")
+	cmd.Flags().StringVar(&opts.SidebarSessions, "sidebar-sessions", "all", "Default web sidebar session categories: all or a comma-separated list like chat,web,ask,plan,exec")
+	cmd.Flags().BoolVar(&opts.Verbose, "verbose", false, "Log API request/response summaries to stderr")
+	cmd.Flags().StringArrayVar(&opts.ToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
+	cmd.Flags().BoolVar(&opts.FilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
+	cmd.Flags().StringVar(&opts.FilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
+	cmd.Flags().Bool("enable-widgets", false, "Deprecated no-op; widgets are enabled by default")
+	cmd.Flags().BoolVar(&opts.DisableWidgets, "disable-widgets", false, "Disable local widget apps under {base}/widgets/<mount>/")
+	cmd.Flags().StringSliceVar(&opts.ExtensionIDs, "extensions", nil, "Ordered web extension IDs (overrides serve.extensions; empty disables all)")
+	cmd.Flags().StringVar(&opts.ExtensionsDir, "extensions-dir", "", "Directory containing web extension sub-directories")
+	cmd.Flags().BoolVar(&opts.DisableExtensions, "disable-extensions", false, "Disable all web extension code for this process")
+	cmd.Flags().StringVar(&opts.WidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
+	cmd.Flags().DurationVar(&opts.ResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
+	cmd.Flags().BoolVar(&opts.EnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
+	cmd.Flags().BoolVar(&opts.Projects, "projects", false, "Strictly enable Web UI project selection")
+	cmd.Flags().BoolVar(&opts.NoProjects, "no-projects", false, "Use the single-workspace Web UI for dedicated agent deployments")
+	cmd.Flags().StringVar(&opts.HubURL, "hub-url", "", "URL of the term-llm Hub this node belongs to (renders a Back to Hub link in the web UI)")
+	cmd.Flags().StringVar(&opts.HubNodeID, "hub-node-id", "", "This node's id on the hub (used with --hub-url)")
+	cmd.Flags().StringVar(&opts.HubNodeName, "hub-node-name", "", "This node's display name on the hub (used with --hub-url)")
+	cmd.Flags().StringVar(&opts.HubConnect, "hub-connect", "direct", "Hub connection mode for this node: direct or reverse")
+	cmd.Flags().BoolVar(&opts.HubRegister, "hub-register", false, "Register this reverse node with the Hub before connecting")
+	cmd.Flags().StringVar(&opts.HubRegistrationToken, "hub-registration-token", "", "Hub registration token for --hub-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN)")
 
-	AddCommonFlags(serveCmd,
+	AddCommonFlags(cmd,
 		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
 		CommonFlagBindings{
-			Provider:        &serveProvider,
-			Debug:           &serveDebug,
-			Search:          &serveSearch,
-			NoSearch:        &serveNoSearch,
-			NativeSearch:    &serveNativeSearch,
-			NoNativeSearch:  &serveNoNativeSearch,
-			MCP:             &serveMCP,
-			MaxTurns:        &serveMaxTurns,
+			Provider:        &opts.Provider,
+			Debug:           &opts.Debug,
+			Search:          &opts.Search,
+			NoSearch:        &opts.NoSearch,
+			NativeSearch:    &opts.NativeSearch,
+			NoNativeSearch:  &opts.NoNativeSearch,
+			MCP:             &opts.MCP,
+			MaxTurns:        &opts.MaxTurns,
 			MaxTurnsDefault: 200,
-			Tools:           &serveTools,
-			ReadDirs:        &serveReadDirs,
-			WriteDirs:       &serveWriteDirs,
-			ShellAllow:      &serveShellAllow,
-			SystemMessage:   &serveSystemMessage,
-			Agent:           &serveAgent,
-			Approval:        &serveApproval,
-			Yolo:            &serveYolo,
-			Auto:            &serveAuto,
+			Tools:           &opts.Tools,
+			ReadDirs:        &opts.ReadDirs,
+			WriteDirs:       &opts.WriteDirs,
+			ShellAllow:      &opts.ShellAllow,
+			SystemMessage:   &opts.SystemMessage,
+			Agent:           &opts.Agent,
+			Approval:        &opts.Approval,
+			Yolo:            &opts.Yolo,
+			Auto:            &opts.Auto,
 		})
 }
 
@@ -249,13 +199,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	warnDeprecatedEnableWidgets(cmd)
 
 	svc, err := serve.NewService(serve.Options{
-		Host:      serveHost,
-		Port:      servePort,
-		BasePath:  serveBasePath,
-		Title:     serveTitle,
+		Host:      serveFlags.Host,
+		Port:      serveFlags.Port,
+		BasePath:  serveFlags.BasePath,
+		Title:     serveFlags.Title,
 		Platforms: append([]string(nil), args...),
 		Runner: func(ctx context.Context) error {
-			return runServeLegacy(ctx, cmd, args)
+			return runServeLegacy(ctx, cmd, args, &serveFlags)
 		},
 	})
 	if err != nil {
@@ -297,6 +247,7 @@ func resolveServeAgentMetadata(cfg *config.Config, agent *agents.Agent, hasWeb b
 }
 
 type serveAgentRuntimeOptions struct {
+	flags                   *ServeOptions
 	cfg                     *config.Config
 	cmd                     *cobra.Command
 	store                   session.Store
@@ -311,7 +262,16 @@ type serveAgentRuntimeOptions struct {
 	hasWeb          bool
 	jobsServerURL   string
 	jobsServerToken string
-	agentOwner      *agentHostOwner
+	agentOwner      *runtime.AgentHostOwner
+}
+
+// Tests that build a runtime directly without command binding retain the
+// registered defaults; production passes its command's options explicitly.
+func (opts serveAgentRuntimeOptions) serveOptions() *ServeOptions {
+	if opts.flags != nil {
+		return opts.flags
+	}
+	return &serveFlags
 }
 
 func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *serveServer) func(context.Context, serveRuntimeRequest) (*serveRuntime, error) {
@@ -326,7 +286,8 @@ func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *s
 }
 
 func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts serveAgentRuntimeOptions) (*serveRuntime, error) {
-	runtimeAgent := strings.TrimSpace(serveAgent)
+	flags := opts.serveOptions()
+	runtimeAgent := strings.TrimSpace(flags.Agent)
 	if runtimeAgent == "" {
 		runtimeAgent = strings.TrimSpace(request.Agent)
 	}
@@ -365,15 +326,16 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 }
 
 func serveRuntimeRunnerDefaults(opts serveAgentRuntimeOptions, request serveRuntimeRequest, approvalMode tools.ApprovalMode) cmdRunnerOptions {
+	flags := opts.serveOptions()
 	// Leave WireSpawn unset: cmdRunner binds child persistence to this store and session.
 	return cmdRunnerOptions{
 		Inputs: request.Inputs, RestoreSettings: request.settings, RestoreAgentSkills: request.agentSkills,
 		ToolsSet: opts.cmd.Flags().Changed("tools"), SystemMessageSet: opts.cmd.Flags().Changed("system"),
-		Provider: serveProvider, Tools: serveTools, ReadDirs: append([]string(nil), serveReadDirs...), WriteDirs: append([]string(nil), serveWriteDirs...), ShellAllow: append([]string(nil), serveShellAllow...),
-		MCP: serveMCP, SystemMessage: serveSystemMessage, MaxTurns: serveMaxTurns, Search: serveSearch, NoSearch: serveNoSearch,
-		NativeSearch: serveNativeSearch, NoNativeSearch: serveNoNativeSearch, ApprovalMode: approvalMode, ApprovalModeSet: true,
-		ApprovalSource: opts.approval.Source, ApprovalHeadless: true, ApprovalPrepare: true, ApprovalDiagnostics: serveVerbose,
-		Debug: serveDebug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, Store: opts.store,
+		Provider: flags.Provider, Tools: flags.Tools, ReadDirs: append([]string(nil), flags.ReadDirs...), WriteDirs: append([]string(nil), flags.WriteDirs...), ShellAllow: append([]string(nil), flags.ShellAllow...),
+		MCP: flags.MCP, SystemMessage: flags.SystemMessage, MaxTurns: flags.MaxTurns, Search: flags.Search, NoSearch: flags.NoSearch,
+		NativeSearch: flags.NativeSearch, NoNativeSearch: flags.NoNativeSearch, ApprovalMode: approvalMode, ApprovalModeSet: true,
+		ApprovalSource: opts.approval.Source, ApprovalHeadless: true, ApprovalPrepare: true, ApprovalDiagnostics: flags.Verbose,
+		Debug: flags.Debug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, Store: opts.store,
 		ChildRunObserver: childRunObserverOrNil(opts.childRuns), AgentOwner: opts.agentOwner,
 	}
 }
@@ -424,6 +386,7 @@ func validateServeRuntimeToolMap(runtime *serveRuntime, toolMap map[string]strin
 }
 
 func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOptions) {
+	flags := opts.serveOptions()
 	if runtime.toolMgr == nil {
 		return
 	}
@@ -434,7 +397,7 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 
 	imageBaseURL := ""
 	if opts.hasWeb {
-		imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
+		imageBaseURL = strings.TrimRight(flags.BasePath, "/") + "/images/"
 	}
 	runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
 	runtime.toolMgr.Registry.SetMediaPublisher(opts.mediaPublisher)
@@ -448,7 +411,7 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 	}
 	if opts.approval.Mode != tools.ModeYolo {
 		runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
-		runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
+		runtime.toolMgr.ApprovalMgr.DebugApproval = flags.Debug
 		runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			return runtime.awaitApproval(path, isWrite, isShell, workDir)
 		}
@@ -459,8 +422,8 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 	}
 }
 
-func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string) error {
-	startup, err := resolveServeStartup(cmd)
+func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string, opts *ServeOptions) error {
+	startup, err := resolveServeStartup(cmd, opts)
 	if err != nil {
 		return err
 	}
@@ -479,15 +442,15 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if err != nil {
 		return err
 	}
-	applyServeFileTrackingOverride(cfg, serveEnableFileTracking)
-	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceServe, cfg, nil, serveApproval, serveAuto, serveYolo)
+	applyServeFileTrackingOverride(cfg, opts.EnableFileTracking)
+	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceServe, cfg, nil, opts.Approval, opts.Auto, opts.Yolo)
 	if err != nil {
 		return err
 	}
 	resolvedYolo := resolvedApproval.Mode == tools.ModeYolo
-	serveApproval = resolvedApproval.Mode.String()
-	serveYolo = resolvedYolo
-	serveAuto = resolvedApproval.Mode == tools.ModeAuto
+	opts.Approval = resolvedApproval.Mode.String()
+	opts.Yolo = resolvedYolo
+	opts.Auto = resolvedApproval.Mode == tools.ModeAuto
 
 	platformNames, err := resolvePlatforms(args, cfg.Serve.Platforms)
 	if err != nil {
@@ -507,7 +470,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			return err
 		}
 		var closePasskeys func() error
-		browserAuth, bootstrapDisplay, closePasskeys, err = openWebPasskeys(cmd, passkeyEndpoint)
+		browserAuth, bootstrapDisplay, closePasskeys, err = openWebPasskeys(cmd, passkeyEndpoint, opts)
 		if err != nil {
 			return err
 		}
@@ -538,37 +501,37 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 
 	// Apply config fallback for base-path if not set via flag
 	if authMode != "passkey" && !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
-		serveBasePath = cfg.Serve.BasePath
+		opts.BasePath = cfg.Serve.BasePath
 	}
-	serveBasePath, err = normalizeBasePath(serveBasePath)
+	opts.BasePath, err = normalizeBasePath(opts.BasePath)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(servePublicURL) == "" {
-		servePublicURL = strings.TrimSpace(os.Getenv("TERM_LLM_SERVE_PUBLIC_URL"))
+	if strings.TrimSpace(opts.PublicURL) == "" {
+		opts.PublicURL = strings.TrimSpace(os.Getenv("TERM_LLM_SERVE_PUBLIC_URL"))
 	}
-	servePublicURL, err = normalizeServePublicURL(servePublicURL)
+	opts.PublicURL, err = normalizeServePublicURL(opts.PublicURL)
 	if err != nil {
 		return fmt.Errorf("invalid serve --public-url: %w", err)
 	}
 
-	resolvedTitle := strings.TrimSpace(serveTitle)
+	resolvedTitle := strings.TrimSpace(opts.Title)
 	if !cmd.Flags().Changed("title") {
 		resolvedTitle = strings.TrimSpace(cfg.Serve.Title)
 	}
-	locationSharingDisabled := serveDisableLocationSharing
+	locationSharingDisabled := opts.DisableLocationSharing
 	if !cmd.Flags().Changed("disable-location-sharing") {
 		locationSharingDisabled = cfg.Serve.DisableLocationSharing
 	}
 
-	responseTimeout, err := resolveServeResponseTimeout(cmd.Flags().Changed("response-timeout"), serveResponseTimeout, cfg.Serve.ResponseTimeout)
+	responseTimeout, err := resolveServeResponseTimeout(cmd.Flags().Changed("response-timeout"), opts.ResponseTimeout, cfg.Serve.ResponseTimeout)
 	if err != nil {
 		return err
 	}
 
 	var agent *agents.Agent
 	if hasWeb || hasAPI || hasTelegram {
-		agent, err = LoadAgent(serveAgent, cfg)
+		agent, err = LoadAgent(opts.Agent, cfg)
 		if err != nil {
 			return err
 		}
@@ -580,25 +543,25 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		agentProvider = agent.Provider
 		agentModel = agent.Model
 	}
-	if err := applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, serveProvider, agentProvider, agentModel); err != nil {
+	if err := applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, opts.Provider, agentProvider, agentModel); err != nil {
 		return err
 	}
 
 	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
-		Provider:       serveProvider,
+		Provider:       opts.Provider,
 		ActiveProvider: promptProvider,
 		ActiveModel:    promptModel,
-		Tools:          serveTools,
-		ReadDirs:       serveReadDirs,
-		WriteDirs:      serveWriteDirs,
-		ShellAllow:     serveShellAllow,
-		MCP:            serveMCP,
-		SystemMessage:  serveSystemMessage,
-		MaxTurns:       serveMaxTurns,
+		Tools:          opts.Tools,
+		ReadDirs:       opts.ReadDirs,
+		WriteDirs:      opts.WriteDirs,
+		ShellAllow:     opts.ShellAllow,
+		MCP:            opts.MCP,
+		SystemMessage:  opts.SystemMessage,
+		MaxTurns:       opts.MaxTurns,
 		MaxTurnsSet:    cmd.Flags().Changed("max-turns"),
-		Search:         serveSearch,
-		NoSearch:       serveNoSearch,
+		Search:         opts.Search,
+		NoSearch:       opts.NoSearch,
 		Platform:       singleServeTemplatePlatform(platformNames),
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
@@ -633,13 +596,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return err
 	}
 
-	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
+	forceExternalSearch := resolveForceExternalSearch(cfg, opts.NativeSearch, opts.NoNativeSearch)
 	mediaPublisher, err := newServeMediaPublisher()
 	if err != nil {
 		return fmt.Errorf("initialize media publisher: %w", err)
 	}
 
-	toolMap, err := parseServeToolMap(serveToolMap)
+	toolMap, err := appserve.ParseToolMap(opts.ToolMap)
 	if err != nil {
 		return err
 	}
@@ -649,11 +612,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return err
 	}
 	var approvalErrWriter io.Writer = io.Discard
-	if serveDebug || serveVerbose {
+	if opts.Debug || opts.Verbose {
 		approvalErrWriter = cmd.ErrOrStderr()
 	}
 	// The runner below is built before the server; share one owner pointer.
-	agentOwner := &agentHostOwner{}
+	agentOwner := &runtime.AgentHostOwner{}
 	var s *serveServer
 	collaborationController := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) {
 		if s == nil {
@@ -662,11 +625,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return s.shellManager()
 	}}
 	runtimeOptions := serveAgentRuntimeOptions{
-		cfg: cfg, cmd: cmd, store: store, approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
+		flags: opts, cfg: cfg, cmd: cmd, store: store, approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
 		toolMap: toolMap, mediaPublisher: mediaPublisher, collaborationController: collaborationController,
 		hasWeb: hasWeb,
 	}
-	runtimeOptions.jobsServerURL, runtimeOptions.jobsServerToken = serveJobsToolClientConfig(hasJobs, hasWeb, hasAPI, serveHost, servePort, serveBasePath, token)
+	runtimeOptions.jobsServerURL, runtimeOptions.jobsServerToken = serveJobsToolClientConfig(hasJobs, hasWeb, hasAPI, opts.Host, opts.Port, opts.BasePath, token)
 	agentRuntimeFactory := newServeAgentRuntimeFactory(runtimeOptions, func() *serveServer { return s })
 
 	runtimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
@@ -675,24 +638,24 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		return runtimeFactory(ctx, serveRuntimeRequest{})
 	}
-	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
+	sessionMgr := newServeSessionManager(opts.SessionTTL, opts.SessionMax, factory)
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		sessionMgr.CloseContext(shutdownCtx)
 	}()
 
-	if hasJobs && strings.TrimSpace(serveAgent) != "" {
+	if hasJobs && strings.TrimSpace(opts.Agent) != "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
 	}
 
 	// Build the serve.Settings used by non-web platforms.
 	serveSettings := serve.Settings{
 		SystemPrompt:           settings.SystemPrompt,
-		IdleTimeout:            serveSessionTTL,
-		TelegramCarryoverChars: serveTelegramCarryoverChars,
+		IdleTimeout:            opts.SessionTTL,
+		TelegramCarryoverChars: opts.TelegramCarryoverChars,
 		MaxTurns:               settings.MaxTurns,
-		Debug:                  serveDebug,
+		Debug:                  opts.Debug,
 		DebugRaw:               debugRaw,
 		Search:                 settings.Search,
 		ForceExternalSearch:    forceExternalSearch,
@@ -704,24 +667,24 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		Store:                  store,
 		Runner: newCmdRunner(cfg, cmdRunnerOptions{
 			AgentOwner:          agentOwner,
-			Provider:            serveProvider,
-			Tools:               serveTools,
-			ReadDirs:            append([]string(nil), serveReadDirs...),
-			WriteDirs:           append([]string(nil), serveWriteDirs...),
-			ShellAllow:          append([]string(nil), serveShellAllow...),
-			MCP:                 serveMCP,
-			SystemMessage:       serveSystemMessage,
-			MaxTurns:            serveMaxTurns,
-			Search:              serveSearch,
-			NoSearch:            serveNoSearch,
-			NativeSearch:        serveNativeSearch,
-			NoNativeSearch:      serveNoNativeSearch,
+			Provider:            opts.Provider,
+			Tools:               opts.Tools,
+			ReadDirs:            append([]string(nil), opts.ReadDirs...),
+			WriteDirs:           append([]string(nil), opts.WriteDirs...),
+			ShellAllow:          append([]string(nil), opts.ShellAllow...),
+			MCP:                 opts.MCP,
+			SystemMessage:       opts.SystemMessage,
+			MaxTurns:            opts.MaxTurns,
+			Search:              opts.Search,
+			NoSearch:            opts.NoSearch,
+			NativeSearch:        opts.NativeSearch,
+			NoNativeSearch:      opts.NoNativeSearch,
 			ApprovalMode:        resolvedApproval.Mode,
 			ApprovalModeSet:     true,
 			ApprovalSource:      resolvedApproval.Source,
 			ApprovalHeadless:    true,
-			ApprovalDiagnostics: serveVerbose,
-			Debug:               serveDebug,
+			ApprovalDiagnostics: opts.Verbose,
+			Debug:               opts.Debug,
 			DebugRaw:            debugRaw,
 			ErrWriter:           approvalErrWriter,
 			Store:               store,
@@ -760,7 +723,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 
 	// Run setup wizard for platforms that need it (or --setup flag).
 	for _, p := range platforms {
-		if serveSetup || p.NeedsSetup() {
+		if opts.Setup || p.NeedsSetup() {
 			if err := p.RunSetup(); err != nil {
 				return fmt.Errorf("setup %s: %w", p.Name(), err)
 			}
@@ -783,7 +746,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 		defer closeLiveDecisionStore(liveDecisionStore)
 
-		widgetsMgr, stopWidgets, widgetsErr := setupServeWidgets(ctx, cfg, hasWeb)
+		widgetsMgr, stopWidgets, widgetsErr := setupServeWidgets(ctx, cfg, hasWeb, opts)
 		if widgetsErr != nil {
 			return widgetsErr
 		}
@@ -793,30 +756,30 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			agentOwner:  agentOwner,
 			browserAuth: browserAuth,
 			cfg: serveServerConfig{
-				host:                    serveHost,
-				port:                    servePort,
+				host:                    opts.Host,
+				port:                    opts.Port,
 				requireAuth:             requireAuth,
 				token:                   token,
 				ui:                      serveUI,
 				api:                     hasAPI,
-				suppressServerTools:     serveFilterServerTools,
-				verbose:                 serveVerbose,
-				debug:                   serveDebug,
+				suppressServerTools:     opts.FilterServerTools,
+				verbose:                 opts.Verbose,
+				debug:                   opts.Debug,
 				debugRaw:                debugRaw,
-				basePath:                serveBasePath,
-				publicURL:               servePublicURL,
+				basePath:                opts.BasePath,
+				publicURL:               opts.PublicURL,
 				uiTitle:                 resolvedTitle,
 				locationSharingDisabled: locationSharingDisabled,
 				sidebarSessions:         append([]string(nil), sidebarSessions...),
 				agentName:               agentName,
 				agentNames:              append([]string(nil), availableAgentNames...),
-				corsOrigins:             append([]string(nil), serveCORSOrigins...),
-				filesDir:                resolveFilesDir(serveFilesDir, cfg),
-				writeDirs:               resolveServeWriteDirs(serveWriteDirs, cfg),
+				corsOrigins:             append([]string(nil), opts.CORSOrigins...),
+				filesDir:                resolveFilesDir(opts.FilesDir, cfg),
+				writeDirs:               resolveServeWriteDirs(opts.WriteDirs, cfg),
 				responseTimeout:         responseTimeout,
-				hubURL:                  strings.TrimSpace(serveHubURL),
-				hubNodeID:               strings.TrimSpace(serveHubNodeID),
-				hubNodeName:             strings.TrimSpace(serveHubNodeName),
+				hubURL:                  strings.TrimSpace(opts.HubURL),
+				hubNodeID:               strings.TrimSpace(opts.HubNodeID),
+				hubNodeName:             strings.TrimSpace(opts.HubNodeName),
 			},
 			sessionMgr:          sessionMgr,
 			jobsV2:              jobsV2,
@@ -835,7 +798,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			runtimeFactory:      runtimeFactory,
 			agentRuntimeFactory: agentRuntimeFactory,
 			widgetsMgr:          widgetsMgr,
-			shells: newServeShellManager(serveSessionTTL, func(sessionID string) bool {
+			shells: newServeShellManager(opts.SessionTTL, func(sessionID string) bool {
 				if store == nil {
 					return false
 				}
@@ -844,13 +807,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}),
 		}
 		if hasWeb {
-			s.extensions, err = newServeExtensions(serveExtensionsDir, serveExtensionIDs, cmd.Flags().Changed("extensions"), serveDisableExtensions)
+			s.extensions, err = newServeExtensions(opts.ExtensionsDir, opts.ExtensionIDs, cmd.Flags().Changed("extensions"), opts.DisableExtensions)
 			if err != nil {
 				return fmt.Errorf("extensions: %w", err)
 			}
 		}
 		if hasJobs {
-			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
+			jobsV2, err = newServeJobsV2Manager(cfg, opts.JobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
 			if err != nil {
 				return fmt.Errorf("initialize jobs v2 manager: %w", err)
 			}
@@ -862,17 +825,17 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}
 		}
 
-		reverseHubURL := strings.TrimSpace(serveHubURL)
-		reverseHubNodeID := strings.TrimSpace(serveHubNodeID)
-		if serveHubRegister {
-			if serveHubConnect != "reverse" {
+		reverseHubURL := strings.TrimSpace(opts.HubURL)
+		reverseHubNodeID := strings.TrimSpace(opts.HubNodeID)
+		if opts.HubRegister {
+			if opts.HubConnect != "reverse" {
 				return fmt.Errorf("--hub-register requires --hub-connect reverse")
 			}
 			if reverseHubURL == "" || reverseHubNodeID == "" || token == "" || hubRegistrationToken == "" {
 				return fmt.Errorf("--hub-register requires --hub-url, --hub-node-id, --hub-registration-token, and a bearer --token")
 			}
 		}
-		if serveHubConnect == "reverse" && (reverseHubURL == "" || reverseHubNodeID == "" || token == "") {
+		if opts.HubConnect == "reverse" && (reverseHubURL == "" || reverseHubNodeID == "" || token == "") {
 			return fmt.Errorf("--hub-connect reverse requires --hub-url, --hub-node-id, and a bearer --token")
 		}
 
@@ -880,12 +843,12 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			return err
 		}
 
-		if serveHubRegister {
+		if opts.HubRegister {
 			if err := registerServeHubNode(ctx, nil, reverseHubURL, hubRegistrationToken, hubRegisterNodeRequest{
 				ID:         reverseHubNodeID,
-				Name:       strings.TrimSpace(serveHubNodeName),
+				Name:       strings.TrimSpace(opts.HubNodeName),
 				Connection: "reverse",
-				BasePath:   serveBasePath,
+				BasePath:   opts.BasePath,
 				Token:      token,
 			}); err != nil {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -898,13 +861,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			fmt.Fprintf(cmd.ErrOrStderr(), "hub registration: registered %s with %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
-		if serveHubConnect == "reverse" {
-			localBase := localHubConnectBase(serveHost, servePort)
-			go runHubReverseConnector(ctx, reverseHubURL, reverseHubNodeID, token, localBase, serveBasePath, newHubReverseLocalClient())
+		if opts.HubConnect == "reverse" {
+			localBase := localHubConnectBase(opts.Host, opts.Port)
+			go runHubReverseConnector(ctx, reverseHubURL, reverseHubNodeID, token, localBase, opts.BasePath, newHubReverseLocalClient())
 			fmt.Fprintf(cmd.ErrOrStderr(), "hub reverse: connecting %s to %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
-		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s\n", net.JoinHostPort(serveHost, strconv.Itoa(servePort)))
+		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s\n", net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port)))
 		if browserAuth == nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
 		}
@@ -919,11 +882,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", s.cfg.ui)
-		if warning := plainHTTPConnectionWarning(s.cfg.ui, serveHost, servePublicURL); warning != "" {
+		if warning := plainHTTPConnectionWarning(s.cfg.ui, opts.Host, opts.PublicURL); warning != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), warning)
 		}
 		if hasJobs {
-			fmt.Fprintf(cmd.ErrOrStderr(), "jobs workers: %d\n", serveJobsWorkers)
+			fmt.Fprintf(cmd.ErrOrStderr(), "jobs workers: %d\n", opts.JobsWorkers)
 		}
 		if modelName != "" {
 			fmt.Fprintf(cmd.ErrOrStderr(), "model: %s\n", modelName)
@@ -1148,26 +1111,7 @@ func parseSidebarSessionCategories(raw string, defaultAll bool) ([]string, error
 }
 
 func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool, allowNoAuth bool) (string, error) {
-	mode := strings.ToLower(strings.TrimSpace(authMode))
-	if mode == "" {
-		mode = "bearer"
-	}
-	if mode != "bearer" && mode != "none" && mode != "passkey" {
-		return "", fmt.Errorf("invalid --auth %q (must be bearer, passkey, or none)", authMode)
-	}
-
-	if allowNoAuthSet {
-		aliasMode := "bearer"
-		if allowNoAuth {
-			aliasMode = "none"
-		}
-		if authFlagSet && mode != aliasMode {
-			return "", fmt.Errorf("--auth %s conflicts with --no-auth=%v", mode, allowNoAuth)
-		}
-		mode = aliasMode
-	}
-
-	return mode, nil
+	return appserve.ResolveAuthMode(authFlagSet, authMode, allowNoAuthSet, allowNoAuth)
 }
 
 func isLoopbackHost(host string) bool {
@@ -1310,15 +1254,15 @@ func serveWidgetsEnabled(hasWeb, disabled bool) bool {
 // resolveWidgetsDir returns the widgets directory, defaulting to ~/.config/term-llm/widgets.
 // setupServeWidgets builds the widgets manager when widgets are enabled and
 // installs its stop signal. The returned stop function is always safe to defer.
-func setupServeWidgets(ctx context.Context, cfg *config.Config, hasWeb bool) (*widgets.Manager, func(), error) {
-	if !serveWidgetsEnabled(hasWeb, serveDisableWidgets) {
+func setupServeWidgets(ctx context.Context, cfg *config.Config, hasWeb bool, opts *ServeOptions) (*widgets.Manager, func(), error) {
+	if !serveWidgetsEnabled(hasWeb, opts.DisableWidgets) {
 		return nil, func() {}, nil
 	}
-	wDir, err := resolveWidgetsDir(serveWidgetsDir, cfg)
+	wDir, err := resolveWidgetsDir(opts.WidgetsDir, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	mgr := widgets.NewManager(wDir, serveBasePath)
+	mgr := widgets.NewManager(wDir, opts.BasePath)
 	stop := installWidgetStopSignal(ctx, mgr)
 	log.Printf("widgets enabled, dir: %s", wDir)
 	return mgr, stop, nil
@@ -1467,7 +1411,7 @@ type serveServer struct {
 	agentWakeWG              sync.WaitGroup
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
-	agentOwner               *agentHostOwner
+	agentOwner               *runtime.AgentHostOwner
 	childRunsOnce            sync.Once
 	childRuns                *childRunRegistry
 	responseOwnerOnce        sync.Once

@@ -17,8 +17,8 @@ import (
 func initializeServeProjectRuntime(ctx context.Context, cmd *cobra.Command, cfg *config.Config, store session.Store, startupDir string, hasWeb bool, errWriter io.Writer) (bool, string, error) {
 	projectsRequested, projectsStrict := resolveServeProjectsRequested(
 		cmd.Flags().Changed("projects"),
-		serveProjects,
-		cmd.Flags().Changed("no-projects") && serveNoProjects,
+		serveFlags.Projects,
+		cmd.Flags().Changed("no-projects") && serveFlags.NoProjects,
 		cfg.Serve.Projects.Enabled,
 		hasWeb,
 	)

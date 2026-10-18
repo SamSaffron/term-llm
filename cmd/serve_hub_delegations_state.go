@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
-	"unicode"
 
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
@@ -121,31 +120,6 @@ outer:
 	wg.Wait()
 }
 
-func prioritizedActiveDelegations(records []hub.Delegation, originID, targetID string) []hub.Delegation {
-	target := make([]hub.Delegation, 0, len(records))
-	origin := make([]hub.Delegation, 0, len(records))
-	other := make([]hub.Delegation, 0, len(records))
-	for i := len(records) - 1; i >= 0; i-- {
-		d := records[i]
-		if hub.DelegationStatusTerminal(d.Status) {
-			continue
-		}
-		switch {
-		case targetID != "" && d.TargetNode == targetID:
-			target = append(target, d)
-		case originID != "" && d.OriginNode == originID:
-			origin = append(origin, d)
-		default:
-			other = append(other, d)
-		}
-	}
-	active := make([]hub.Delegation, 0, len(target)+len(origin)+len(other))
-	active = append(active, target...)
-	active = append(active, origin...)
-	active = append(active, other...)
-	return active
-}
-
 func (s *hubServer) maybeTerminalizeDelegationRefreshError(d hub.Delegation, err error) {
 	if err == nil || d.ID == "" || hub.DelegationStatusTerminal(d.Status) {
 		return
@@ -231,95 +205,23 @@ func (s *hubServer) refreshDelegation(ctx context.Context, d *hub.Delegation) er
 	return nil
 }
 
-// delegationStatusFromRun maps a jobs-v2 run status onto a delegation status.
-func delegationStatusFromRun(runStatus string) string {
-	switch runStatus {
-	case "succeeded":
-		return hub.DelegationStatusSucceeded
-	case "failed", "skipped":
-		return hub.DelegationStatusFailed
-	case "cancelled":
-		return hub.DelegationStatusCancelled
-	case "cancel_requested":
-		return hub.DelegationStatusCancelRequested
-	case "timed_out":
-		return hub.DelegationStatusTimedOut
-	default:
-		return hub.DelegationStatusRunning
-	}
-}
-
-// resolveDelegationCwd defaults to the target's delegation workdir and
-// confines an explicit cwd inside it: the workdir is the target operator's
-// consent boundary for delegated work. The workdir itself is canonicalized
-// (absolute, "."/".." resolved) so prefix containment cannot be confused by
-// an un-normalized configured path.
-func resolveDelegationCwd(workdir, requested string) (string, error) {
-	workdir = strings.TrimSpace(workdir)
-	if workdir == "" {
-		return "", errors.New("target node has no delegation workdir")
-	}
-	if hasControlRune(workdir) {
-		return "", fmt.Errorf("target node's delegation workdir contains control characters")
-	}
-	if hasControlRune(requested) {
-		return "", fmt.Errorf("cwd contains control characters")
-	}
-	if !strings.HasPrefix(workdir, "/") {
-		return "", fmt.Errorf("target node's delegation workdir %q is not an absolute path", workdir)
-	}
-	workdir = pathClean(workdir)
-	if workdir == "" {
-		return "", errors.New("target node's delegation workdir resolves to the filesystem root; refusing")
-	}
-	requested = strings.TrimSpace(requested)
-	if requested == "" {
-		return workdir, nil
-	}
-	if !strings.HasPrefix(requested, "/") {
-		requested = workdir + "/" + requested
-	}
-	cwd := pathClean(requested)
-	if cwd == workdir || strings.HasPrefix(cwd, workdir+"/") {
-		return cwd, nil
-	}
-	return "", fmt.Errorf("cwd %q is outside the target node's delegation workdir %q", requested, workdir)
-}
-
-func hasControlRune(s string) bool {
-	for _, r := range s {
-		if r == 0 || unicode.IsControl(r) {
-			return true
-		}
-	}
-	return false
-}
-
-// pathClean is filepath.Clean with forward slashes: delegation workdirs are
-// paths on the (POSIX) target node, not on the hub host.
-func pathClean(p string) string {
-	cleaned := strings.Builder{}
-	segments := strings.Split(p, "/")
-	stack := make([]string, 0, len(segments))
-	for _, seg := range segments {
-		switch seg {
-		case "", ".":
-		case "..":
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
-		default:
-			stack = append(stack, seg)
-		}
-	}
-	cleaned.WriteString("/" + strings.Join(stack, "/"))
-	return strings.TrimRight(cleaned.String(), "/")
-}
-
 // hubDelegationInstructions returns the delegated prompt as the target node's
 // user-visible task text. Delegation provenance is trusted metadata carried in
 // hub-written job labels and tool context; it should not pollute the target
 // session transcript or change what the origin asked the target to do.
 func hubDelegationInstructions(_ hub.Delegation, prompt string) string {
 	return prompt
+}
+
+// Thin adapters keep existing cmd call sites on the extracted hub helpers.
+func prioritizedActiveDelegations(records []hub.Delegation, originID, targetID string) []hub.Delegation {
+	return apphub.PrioritizedActiveDelegations(records, originID, targetID)
+}
+
+func delegationStatusFromRun(runStatus string) string {
+	return apphub.DelegationStatusFromRun(runStatus)
+}
+
+func resolveDelegationCwd(workdir, requested string) (string, error) {
+	return apphub.ResolveDelegationCwd(workdir, requested)
 }

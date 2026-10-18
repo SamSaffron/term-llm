@@ -1,5 +1,5 @@
 {
-  "counting_rules": "1 + (1 + nesting depth) per if/for/range/switch/select + 1 per else or else-if + 1 per logical operator sequence + 1 per labeled break/continue/goto; a guard clause that exits is flat and does not deepen its body; switch and select count once regardless of case count; each function literal is measured separately as \u003cimmediate parent\u003e.funcN",
+  "counting_rules": "1 + (1 + nesting depth) per if/for/range/switch/select + 1 per else or else-if + 1 per logical operator sequence + 1 per labeled break/continue/goto; a guard clause that exits is flat and does not deepen its body; switch and select count once regardless of case count; each function literal is measured separately as <immediate parent>.funcN",
   "summary": {
     "files": 978,
     "functions": 14025,
@@ -18,60 +18,12 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/agents.go|cmd||runAgentsShow",
-      "complexity": 36,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/ask.go|cmd||drainOutputToolFinalizationStream",
-      "complexity": 23,
-      "owner": "cmd/ask",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M4",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/ask.go|cmd||enableMCPServersWithFeedback",
-      "complexity": 31,
-      "owner": "cmd/ask",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M4",
-      "origin": "existing"
-    },
-    {
       "key": ".|cmd/ask.go|cmd||runAsk",
       "complexity": 65,
       "owner": "cmd/ask",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M4",
       "origin": "existing"
-    },
-    {
-      "key": ".|cmd/ask.go|cmd||streamPlainText",
-      "complexity": 67,
-      "owner": "cmd/ask",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M4",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/ask.go|cmd|askStreamModel|Update",
-      "complexity": 76,
-      "owner": "cmd/ask",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M4",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/ask.go|cmd|askStreamModel|View",
-      "complexity": 27,
-      "owner": "cmd/ask",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/ask reduction is tracked by M4",
-      "removal_milestone": "M4",
-      "origin": "remeasured"
     },
     {
       "key": ".|cmd/ask_execute.go|cmd|*askStreamingExecution|run",
@@ -106,16 +58,8 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/ask_progressive.go|cmd|*askProgressiveBridge|HandleEvent",
-      "complexity": 50,
-      "owner": "cmd/ask",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M4",
-      "origin": "existing"
-    },
-    {
       "key": ".|cmd/ask_resume.go|cmd||prepareAskResume",
-      "complexity": 33,
+      "complexity": 32,
       "owner": "cmd/ask",
       "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
       "removal_milestone": "M4",
@@ -146,12 +90,12 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/bootstrap.go|cmd||registerModelLimits",
+      "key": ".|internal/app/runtime/bootstrap/bootstrap.go|bootstrap||RegisterModelLimits",
       "complexity": 44,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "owner": "internal/app/runtime/bootstrap",
+      "rationale": "mechanically moved from .|cmd/bootstrap.go|cmd||registerModelLimits with unchanged complexity",
       "removal_milestone": "M7",
-      "origin": "existing"
+      "origin": "moved"
     },
     {
       "key": ".|cmd/chat.go|cmd||buildChatSessionRuntime",
@@ -218,16 +162,16 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/exec.go|cmd||runExec",
-      "complexity": 33,
+      "key": ".|cmd/exec.go|cmd|*execRunSink|Event",
+      "complexity": 44,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
     },
     {
-      "key": ".|cmd/exec.go|cmd|*execRunSink|Event",
-      "complexity": 44,
+      "key": ".|cmd/exec.go|cmd||runExec",
+      "complexity": 33,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -275,7 +219,7 @@
     },
     {
       "key": ".|cmd/loop.go|cmd||runLoop",
-      "complexity": 51,
+      "complexity": 50,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -288,14 +232,6 @@
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/mcp.go|cmd||mcpAddFromRegistry",
-      "complexity": 31,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
     },
     {
       "key": ".|cmd/mcp.go|cmd||mcpBrowse",
@@ -314,112 +250,32 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/memory_mine.go|cmd||buildInsightTranscript",
-      "complexity": 22,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/memory_mine.go|cmd||runInsightExtractionPass",
-      "complexity": 31,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/memory_mine.go|cmd||runMemoryMine",
-      "complexity": 73,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/memory_mine.go|cmd||walkMineCandidates",
+      "key": ".|internal/app/models/models.go|models||printModelList",
       "complexity": 25,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/memory_search.go|cmd||mergeSearchCandidates",
-      "complexity": 39,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
+      "owner": "internal/app/models",
+      "rationale": "mechanically moved from .|cmd/models.go|cmd||printModelList without changing its behavior; original complexity remains capped",
       "removal_milestone": "M7",
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/memory_search.go|cmd||searchMemory",
-      "complexity": 23,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/memory_status.go|cmd||runMemoryStatus",
-      "complexity": 34,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/models.go|cmd||printModelList",
-      "complexity": 25,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/process.go|cmd||newProcessRestartCommand.func2",
-      "complexity": 41,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/process_progress.go|cmd|*processRestartProgress|render",
-      "complexity": 39,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/progressive.go|cmd||runProgressivePass",
+      "key": ".|internal/app/runtime/progressive/progressive.go|progressive||runProgressivePass",
       "complexity": 27,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
+      "owner": "internal/app/runtime/progressive",
+      "rationale": "mechanically moved from .|cmd/progressive.go|cmd||runProgressivePass with unchanged complexity",
       "removal_milestone": "M7",
-      "origin": "remeasured"
+      "origin": "moved"
     },
     {
-      "key": ".|cmd/progressive.go|cmd||runProgressiveSession",
+      "key": ".|internal/app/runtime/progressive/progressive.go|progressive||RunSession",
       "complexity": 28,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "owner": "internal/app/runtime/progressive",
+      "rationale": "mechanically moved from .|cmd/progressive.go|cmd||runProgressiveSession with unchanged complexity",
       "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/providers.go|cmd||buildProviderList",
-      "complexity": 25,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
+      "origin": "moved"
     },
     {
       "key": ".|cmd/runner.go|cmd|*cmdRunner|prepare",
-      "complexity": 88,
+      "complexity": 79,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -498,14 +354,6 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_branch.go|cmd||webBranchTreePointsForActiveRun",
-      "complexity": 21,
-      "owner": "cmd/serve",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|cmd/serve_branch.go|cmd|*serveServer|handleCreateSessionBranch",
       "complexity": 24,
       "owner": "cmd/serve",
@@ -520,6 +368,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_branch.go|cmd||webBranchTreePointsForActiveRun",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
     },
     {
       "key": ".|cmd/serve_children.go|cmd|*serveServer|handleSessionChildren",
@@ -698,14 +554,6 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleUI",
-      "complexity": 22,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|cmd/serve_handlers.go|cmd|*serveServer|selectedWebSession",
       "complexity": 30,
       "owner": "cmd/serve",
@@ -738,14 +586,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers_responses.go|cmd||prepareResponseClientMessageIDs",
-      "complexity": 22,
-      "owner": "cmd/serve",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|handleResolvedResponses",
       "complexity": 90,
       "owner": "cmd/serve",
@@ -768,6 +608,14 @@
       "rationale": "extracted from a function above 100 so each unit owns one responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_handlers_responses.go|cmd||prepareResponseClientMessageIDs",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
     },
     {
       "key": ".|cmd/serve_handlers_status.go|cmd|*serveServer|handleSessionsStatus",
@@ -826,28 +674,12 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_hub_passkey.go|cmd|*browserPasskeyHandler|passkeyAuth.func1",
-      "complexity": 27,
-      "owner": "cmd/serve",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|cmd/serve_hub_reverse_connector.go|cmd||handleHubReverseRequest",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
-    },
-    {
-      "key": ".|cmd/serve_jobs_v2.go|cmd||cloneConfigForServeJob",
-      "complexity": 21,
-      "owner": "cmd/serve",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
     },
     {
       "key": ".|cmd/serve_jobs_v2.go|cmd|*jobsV2LLMRunner|Run.func1",
@@ -874,15 +706,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_jobs_v2_migrations.go|cmd||initJobsV2Schema.func1",
-      "complexity": 27,
-      "owner": "cmd/serve",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/serve_live.go|cmd|*serveLiveDelegator|streamRun",
+      "key": ".|cmd/serve_jobs_v2.go|cmd||cloneConfigForServeJob",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -922,8 +746,16 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_mcp.go|cmd||runServeMCP",
+      "key": ".|cmd/serve_mcp.go|cmd||runServeMCPWithOptions",
       "complexity": 37,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_mcp_handler.go|cmd|*serveServer|handleSessionMCP",
+      "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -938,24 +770,8 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_mcp_handler.go|cmd|*serveRuntime|applyMCPSelectionLocked",
-      "complexity": 25,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/serve_mcp_handler.go|cmd|*serveServer|handleSessionMCP",
-      "complexity": 21,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|cmd/serve_mcp_oauth.go|cmd|*serveServer|handleSessionMCPOAuth",
-      "complexity": 31,
+      "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -986,16 +802,8 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd||listProjectDirectories",
-      "complexity": 27,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleCapabilities",
-      "complexity": 26,
+      "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
       "removal_milestone": "M7",
@@ -1032,6 +840,14 @@
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
+    },
+    {
+      "key": ".|cmd/serve_projects.go|cmd||listProjectDirectories",
+      "complexity": 27,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
     },
     {
       "key": ".|cmd/serve_protocol.go|cmd||jpegEXIFOrientation",
@@ -1330,54 +1146,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_shell.go|cmd|*serveShell|appendOutput",
-      "complexity": 35,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/serve_shell_collaboration.go|cmd|*serveShell|reserveActivity",
-      "complexity": 22,
-      "owner": "cmd/serve",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/serve_shell_controller.go|cmd|*serveCollaborativeShellController|Execute",
-      "complexity": 43,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/serve_shell_controller.go|cmd|*serveShell|finishCommandFailure",
-      "complexity": 46,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/serve_shell_protocol.go|cmd||sanitizeServeShellText",
-      "complexity": 53,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/serve_shell_protocol.go|cmd|*serveShellProtocolParser|Feed",
-      "complexity": 46,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|cmd/serve_side_question.go|cmd|*serveServer|handleSideQuestion",
       "complexity": 40,
       "owner": "cmd/serve",
@@ -1392,14 +1160,6 @@
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/serve_startup.go|cmd||resolveServeStartup",
-      "complexity": 26,
-      "owner": "cmd/serve",
-      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "extracted"
     },
     {
       "key": ".|cmd/serve_stats_endpoint.go|cmd||appendStatsContextSections",
@@ -1442,14 +1202,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_workspace_resolver.go|cmd||persistedProjectWorkspaceBinding",
-      "complexity": 22,
-      "owner": "cmd/serve",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|cmd/serve_workspace_resolver.go|cmd|*serveServer|bindResolvedWorkspace",
       "complexity": 26,
       "owner": "cmd/serve",
@@ -1460,6 +1212,14 @@
     {
       "key": ".|cmd/serve_workspace_resolver.go|cmd|*serveServer|resolveWorkspace",
       "complexity": 53,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_workspace_resolver.go|cmd||persistedProjectWorkspaceBinding",
+      "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -1482,38 +1242,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/service.go|cmd||installUserService",
-      "complexity": 31,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/service_args.go|cmd||parseServiceLaunch",
-      "complexity": 44,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/service_manage.go|cmd||runUserService",
-      "complexity": 38,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/service_manage.go|cmd||showUserService",
-      "complexity": 23,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|cmd/session.go|cmd||ResolveSettingsInDir",
       "complexity": 36,
       "owner": "cmd",
@@ -1524,30 +1252,6 @@
     {
       "key": ".|cmd/session.go|cmd||resolveSessionPromptTools",
       "complexity": 46,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/session.go|cmd|*SessionSettings|SetupToolManager",
-      "complexity": 21,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|cmd/sessions_autotitle.go|cmd||runSessionsAutotitle",
-      "complexity": 46,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/sessions_share.go|cmd||runSessionsShare",
-      "complexity": 52,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -1586,33 +1290,9 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/usage.go|cmd||runUsage",
-      "complexity": 25,
-      "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|cmd/usage_agy_bin.go|cmd||normalizeAgyBinUsage",
-      "complexity": 23,
-      "owner": "cmd",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|cmd/video.go|cmd||runVideo",
       "complexity": 39,
       "owner": "cmd",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/agents/agent.go|agents|*Agent|Validate",
-      "complexity": 24,
-      "owner": "internal/agents",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
@@ -1626,20 +1306,252 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/agyproxy/proxy.go|agyproxy||readAgyArtifact",
-      "complexity": 24,
-      "owner": "internal/agyproxy",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|internal/agyproxy/proxy.go|agyproxy|*Server|forward",
       "complexity": 24,
       "owner": "internal/agyproxy",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/agyproxy reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/app/ask/mcp_feedback.go|ask||EnableMCPServersWithFeedback",
+      "complexity": 26,
+      "owner": "internal/app/ask",
+      "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/ask/output_tool.go|ask||drainOutputToolFinalizationStream",
+      "complexity": 23,
+      "owner": "internal/app/ask",
+      "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/ask/plain_text.go|ask||StreamPlainText",
+      "complexity": 67,
+      "owner": "internal/app/ask",
+      "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/ask/progressive_bridge.go|ask|*ProgressiveBridge|HandleEvent",
+      "complexity": 50,
+      "owner": "internal/app/ask",
+      "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/ask/stream_model.go|ask|askStreamModel|Update",
+      "complexity": 76,
+      "owner": "internal/app/ask",
+      "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/ask/stream_model.go|ask|askStreamModel|View",
+      "complexity": 27,
+      "owner": "internal/app/ask",
+      "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/memory/mine.go|memory|MineOptions|runInsightExtractionPass",
+      "complexity": 31,
+      "owner": "internal/app/memory",
+      "rationale": "internal/app/memory extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/memory/mine.go|memory|MineOptions|walkMineCandidates",
+      "complexity": 25,
+      "owner": "internal/app/memory",
+      "rationale": "internal/app/memory extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/memory/mine.go|memory||Mine",
+      "complexity": 73,
+      "owner": "internal/app/memory",
+      "rationale": "internal/app/memory extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/memory/mine.go|memory||buildInsightTranscript",
+      "complexity": 22,
+      "owner": "internal/app/memory",
+      "rationale": "internal/app/memory extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/memory/search.go|memory|SearchOptions|mergeCandidates",
+      "complexity": 39,
+      "owner": "internal/app/memory",
+      "rationale": "internal/app/memory extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/memory/search.go|memory||searchMemory",
+      "complexity": 23,
+      "owner": "internal/app/memory",
+      "rationale": "internal/app/memory extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/memory/status.go|memory||Status",
+      "complexity": 34,
+      "owner": "internal/app/memory",
+      "rationale": "internal/app/memory extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/process/progress.go|process|*restartProgress|render",
+      "complexity": 39,
+      "owner": "internal/app/process",
+      "rationale": "internal/app/process extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/process/restart.go|process||Restart",
+      "complexity": 25,
+      "owner": "internal/app/process",
+      "rationale": "internal/app/process extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/serve/jobs/schema.go|jobs||initJobsV2Schema.func1",
+      "complexity": 27,
+      "owner": "internal/app/serve/jobs",
+      "rationale": "internal/app/serve/jobs extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/serve/protocol/shell.go|protocol|*Parser|Feed",
+      "complexity": 46,
+      "owner": "internal/app/serve/protocol",
+      "rationale": "internal/app/serve/protocol extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/serve/protocol/shell.go|protocol||SanitizeText",
+      "complexity": 53,
+      "owner": "internal/app/serve/protocol",
+      "rationale": "internal/app/serve/protocol extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/serve/shell/collaboration.go|shell|*Shell|reserveActivity",
+      "complexity": 22,
+      "owner": "internal/app/serve/shell",
+      "rationale": "internal/app/serve/shell extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/serve/shell/controller.go|shell|*Controller|Execute",
+      "complexity": 43,
+      "owner": "internal/app/serve/shell",
+      "rationale": "internal/app/serve/shell extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/serve/shell/controller.go|shell|*Shell|finishCommandFailure",
+      "complexity": 46,
+      "owner": "internal/app/serve/shell",
+      "rationale": "internal/app/serve/shell extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/serve/shell/shell.go|shell|*Shell|AppendOutput",
+      "complexity": 35,
+      "owner": "internal/app/serve/shell",
+      "rationale": "internal/app/serve/shell extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/service/args.go|service|App|parseServiceLaunch",
+      "complexity": 45,
+      "owner": "internal/app/service",
+      "rationale": "internal/app/service extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/service/install.go|service|App|installUserService",
+      "complexity": 31,
+      "owner": "internal/app/service",
+      "rationale": "internal/app/service extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/service/manage.go|service|App|runUserService",
+      "complexity": 38,
+      "owner": "internal/app/service",
+      "rationale": "internal/app/service extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/service/manage.go|service||showUserService",
+      "complexity": 23,
+      "owner": "internal/app/service",
+      "rationale": "internal/app/service extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/sessions/autotitle.go|sessions|App|Autotitle",
+      "complexity": 46,
+      "owner": "internal/app/sessions",
+      "rationale": "internal/app/sessions extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/sessions/share.go|sessions|App|Share",
+      "complexity": 51,
+      "owner": "internal/app/sessions",
+      "rationale": "internal/app/sessions extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/usage/agy_bin.go|usage||normalizeAgyBinUsage",
+      "complexity": 23,
+      "owner": "internal/app/usage",
+      "rationale": "internal/app/usage extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/app/usage/app.go|usage|*Options|Run",
+      "complexity": 30,
+      "owner": "internal/app/usage",
+      "rationale": "internal/app/usage extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
     },
     {
       "key": ".|internal/audio/elevenlabs.go|audio|*ElevenLabsProvider|Generate",
@@ -1698,15 +1610,15 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/config/config.go|config||resolveProviderCredentials",
-      "complexity": 43,
+      "key": ".|internal/config/config.go|config|*Config|ValidateLifecycle",
+      "complexity": 27,
       "owner": "internal/config",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
     },
     {
-      "key": ".|internal/config/config.go|config|*Config|ValidateLifecycle",
+      "key": ".|internal/config/config.go|config||resolveProviderCredentials",
       "complexity": 27,
       "owner": "internal/config",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1810,14 +1722,6 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/doctor/config.go|doctor|*ConfigCheck|providerFindings",
-      "complexity": 22,
-      "owner": "internal/doctor",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/doctor reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|internal/edit/executor.go|edit|*StreamEditExecutor|executeOnce.func4",
       "complexity": 29,
       "owner": "internal/edit",
@@ -1874,14 +1778,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/filetrack/store.go|filetrack||initSchema.func1",
-      "complexity": 24,
-      "owner": "internal/filetrack",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/filetrack reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|internal/filetrack/store.go|filetrack|*Store|fileDiffContentFromSpan",
       "complexity": 21,
       "owner": "internal/filetrack",
@@ -1892,6 +1788,14 @@
     {
       "key": ".|internal/filetrack/store.go|filetrack|*Store|listChangesFromSpans",
       "complexity": 30,
+      "owner": "internal/filetrack",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/filetrack reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/filetrack/store.go|filetrack||initSchema.func1",
+      "complexity": 24,
       "owner": "internal/filetrack",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/filetrack reduction is tracked by M7",
       "removal_milestone": "M7",
@@ -1970,16 +1874,16 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/live/gemini_diagnostics.go|live||geminiIncomingKinds",
-      "complexity": 23,
+      "key": ".|internal/live/gemini_diagnostics.go|live|*geminiDiagnostics|incomingMessage",
+      "complexity": 29,
       "owner": "internal/live",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/live reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/live/gemini_diagnostics.go|live|*geminiDiagnostics|incomingMessage",
-      "complexity": 29,
+      "key": ".|internal/live/gemini_diagnostics.go|live||geminiIncomingKinds",
+      "complexity": 23,
       "owner": "internal/live",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/live reduction is tracked by M7",
       "removal_milestone": "M7",
@@ -1994,6 +1898,286 @@
       "origin": "remeasured"
     },
     {
+      "key": ".|internal/llm/context_window.go|llm||InputLimitForProviderModel",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/context_window.go|llm||init",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/core/stream/sse.go|stream|*Decoder|Next",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/core/tool_history_sanitize.go|core||sanitizeToolHistorySlow",
+      "complexity": 55,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/core/tool_history_sanitize.go|core||toolHistoryAlreadyValid",
+      "complexity": 29,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/debug.go|llm||DebugRawEvent",
+      "complexity": 37,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug.go|llm||DebugRawRequest",
+      "complexity": 74,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug/debug_logger.go|debug|*Logger|LogEvent",
+      "complexity": 51,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug/debug_logger.go|debug||convertParts",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/debug/debug_provider.go|debug|*DebugProvider|streamActionSequence",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/debug/debug_provider.go|debug||parseCommand",
+      "complexity": 49,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug/debug_provider.go|debug||parseSequenceDSL",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/engine/compaction.go|engine||previousTurnEntries",
+      "complexity": 31,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/compaction_helpers.go|engine||compactToolResultSummary",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/context.go|engine|*Engine|ConfigureContextManagement",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/engine/path_notes.go|engine||GeneratePathNotes",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine/path_notes.go|engine||pathNoteFileOperations",
+      "complexity": 49,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine/request.go|engine||hydrateImageDataFromPaths",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/engine/run_loop.go|engine|*Engine|runLoop",
+      "complexity": 32,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine/run_turn.go|engine|*Engine|runProviderTurn",
+      "complexity": 72,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/scratchpad.go|engine|*Engine|runSimpleScratchpad",
+      "complexity": 79,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine/stream.go|engine|*Engine|Stream",
+      "complexity": 48,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine/tool_exec.go|engine|*Engine|executeToolCallOutcomes",
+      "complexity": 29,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeAsyncTurn",
+      "complexity": 76,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeSyncTurn",
+      "complexity": 37,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeTextTurn",
+      "complexity": 34,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/turn_failure.go|engine|*Engine|handleEventStreamFailure",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/turn_failure.go|engine|*Engine|handleReceiveStreamFailure",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/turn_open.go|engine|*Engine|openProviderTurnStream",
+      "complexity": 53,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine/turn_recovery.go|engine|*Engine|recoverCommittedTurn",
+      "complexity": 74,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/factory.go|llm||ParseProviderModel",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/models.go|llm||completeProviderModels",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/models.go|llm||completionModelCandidates",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/models.go|llm||defaultReasoningEffortsForProviderModel",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/anthropic/anthropic_messages.go|anthropic||buildAnthropicBlocks",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
       "key": ".|internal/llm/providers/clibin/agy_bin.go|clibin|*AgyBinProvider|Stream.func1",
       "complexity": 27,
       "owner": "llm",
@@ -2004,30 +2188,6 @@
     {
       "key": ".|internal/llm/providers/clibin/agy_bin.go|clibin|*AgyBinProvider|runCommand",
       "complexity": 22,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responsesproviders/chatgpt.go|responsesproviders||parseChatGPTRateLimitError",
-      "complexity": 21,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/providers/responsesproviders/chatgpt.go|responsesproviders|*ChatGPTProvider|Stream",
-      "complexity": 25,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responsesproviders/chatgpt_context.go|responsesproviders||resolveChatGPTContext",
-      "complexity": 26,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -2090,30 +2250,6 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/context_window.go|llm||InputLimitForProviderModel",
-      "complexity": 24,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/context_window.go|llm||init",
-      "complexity": 26,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/providers/responsesproviders/copilot.go|responsesproviders|*CopilotProvider|streamChatCompletions.func1",
-      "complexity": 61,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|internal/llm/providers/clibin/cursor_bin.go|clibin|*CursorBinProvider|cursorImagePaths",
       "complexity": 35,
       "owner": "llm",
@@ -2124,198 +2260,6 @@
     {
       "key": ".|internal/llm/providers/clibin/cursor_bin.go|clibin|*CursorBinProvider|runCursorCommand",
       "complexity": 22,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/debug.go|llm||DebugRawEvent",
-      "complexity": 37,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/debug.go|llm||DebugRawRequest",
-      "complexity": 74,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/debug/debug_logger.go|debug||convertParts",
-      "complexity": 21,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/debug/debug_logger.go|debug|*Logger|LogEvent",
-      "complexity": 51,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/debug/debug_provider.go|debug||parseCommand",
-      "complexity": 49,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/debug/debug_provider.go|debug||parseSequenceDSL",
-      "complexity": 22,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/debug/debug_provider.go|debug|*DebugProvider|streamActionSequence",
-      "complexity": 23,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/engine/request.go|engine||hydrateImageDataFromPaths",
-      "complexity": 23,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/engine/context.go|engine|*Engine|ConfigureContextManagement",
-      "complexity": 25,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/engine/stream.go|engine|*Engine|Stream",
-      "complexity": 48,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M2",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/engine/tool_exec.go|engine|*Engine|executeToolCallOutcomes",
-      "complexity": 29,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M2",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/engine/run_loop.go|engine|*Engine|runLoop",
-      "complexity": 32,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M2",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/engine/scratchpad.go|engine|*Engine|runSimpleScratchpad",
-      "complexity": 79,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M2",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/engine/run_turn.go|engine|*Engine|runProviderTurn",
-      "complexity": 72,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeAsyncTurn",
-      "complexity": 76,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeSyncTurn",
-      "complexity": 37,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/turn_completion.go|engine|*Engine|completeTextTurn",
-      "complexity": 34,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/turn_failure.go|engine|*Engine|handleEventStreamFailure",
-      "complexity": 23,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/turn_failure.go|engine|*Engine|handleReceiveStreamFailure",
-      "complexity": 23,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/turn_open.go|engine|*Engine|openProviderTurnStream",
-      "complexity": 53,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/turn_recovery.go|engine|*Engine|recoverCommittedTurn",
-      "complexity": 74,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/factory.go|llm||NewProviderByName",
-      "complexity": 24,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/factory.go|llm||ParseProviderModel",
-      "complexity": 22,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/factory.go|llm||createProviderFromConfig",
-      "complexity": 29,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -2354,22 +2298,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin||buildGrokACPPrompt",
-      "complexity": 49,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin||renderGrokConversationParts",
-      "complexity": 48,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin|*GrokBinProvider|Stream.func1",
       "complexity": 25,
       "owner": "llm",
@@ -2386,84 +2314,84 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/providers/responsesproviders/grok_models.go|responsesproviders||loadGrokModelsCache",
-      "complexity": 24,
+      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin||buildGrokACPPrompt",
+      "complexity": 49,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/helper_stream.go|llm||CollectTextStream",
-      "complexity": 29,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/schema/model.go|schema||parseSanitizedToolJSONSchemaMap",
-      "complexity": 34,
+      "key": ".|internal/llm/providers/clibin/grok_bin.go|clibin||renderGrokConversationParts",
+      "complexity": 48,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/schema/model.go|schema|*JSONSchema|ToMap",
-      "complexity": 25,
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini|*Provider|Stream.func1",
+      "complexity": 26,
       "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "remeasured"
+      "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/models.go|llm||completeProviderModels",
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini|*Provider|Stream.func1.func1",
+      "complexity": 36,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini||buildGeminiContent",
       "complexity": 22,
       "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "remeasured"
+      "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/models.go|llm||completionModelCandidates",
-      "complexity": 26,
+      "key": ".|internal/llm/providers/gemini/provider.go|gemini||buildGeminiContents",
+      "complexity": 22,
       "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "remeasured"
+      "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/models.go|llm||defaultReasoningEffortsForProviderModel",
-      "complexity": 21,
+      "key": ".|internal/llm/providers/gemini/schema.go|gemini||normalizeGeminiSchemaRecursive",
+      "complexity": 22,
       "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "existing"
+      "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/schema/openai.go|schema||normalizeSchemaRecursive",
-      "complexity": 38,
+      "key": ".|internal/llm/providers/ollama/ollama.go|ollama|*Provider|Stream",
+      "complexity": 34,
       "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "existing"
+      "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/providers/responsesproviders/openai.go|responsesproviders|*OpenAIProvider|Stream",
-      "complexity": 26,
+      "key": ".|internal/llm/providers/ollama/ollama.go|ollama|*Provider|Stream.func2",
+      "complexity": 29,
       "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "existing"
+      "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/providers/opencompat/openai_compat.go|opencompat||buildCompatMessages",
-      "complexity": 61,
+      "key": ".|internal/llm/providers/ollama/ollama.go|ollama||buildOllamaMessages",
+      "complexity": 85,
       "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "existing"
+      "origin": "extracted"
     },
     {
       "key": ".|internal/llm/providers/opencompat/openai_compat.go|opencompat|*OpenAICompatProvider|Stream",
@@ -2490,128 +2418,8 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/engine/path_notes.go|engine||GeneratePathNotes",
-      "complexity": 26,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/engine/path_notes.go|engine||pathNoteFileOperations",
-      "complexity": 49,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providerusage/usage.go|providerusage||normalizeGrokProviderUsage",
-      "complexity": 21,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_input.go|responses||buildResponsesAssistantItems",
-      "complexity": 27,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_input.go|responses||buildResponsesMessageItems",
-      "complexity": 34,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|Stream",
-      "complexity": 29,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|streamHTTPPrepared",
-      "complexity": 45,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|streamHTTPPrepared.func2",
-      "complexity": 42,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_options.go|responses||validateResponsesOptions",
-      "complexity": 24,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_websocket.go|responses|*ResponsesClient|ensureWebSocket",
-      "complexity": 21,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/providers/responses/responses_websocket.go|responses|*ResponsesClient|streamWebSocketPrepared.func2",
-      "complexity": 38,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/core/stream/sse.go|stream|*Decoder|Next",
-      "complexity": 21,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/tool_history_sanitize.go|llm||clonePart",
-      "complexity": 25,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/core/tool_history_sanitize.go|core||sanitizeToolHistorySlow",
-      "complexity": 55,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/llm/core/tool_history_sanitize.go|core||toolHistoryAlreadyValid",
-      "complexity": 29,
-      "owner": "llm",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/llm/transcribe.go|llm||TranscribeWithConfig",
-      "complexity": 67,
+      "key": ".|internal/llm/providers/opencompat/openai_compat.go|opencompat||buildCompatMessages",
+      "complexity": 61,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -2648,6 +2456,158 @@
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|Stream",
+      "complexity": 29,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|streamHTTPPrepared",
+      "complexity": 45,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_client.go|responses|*ResponsesClient|streamHTTPPrepared.func2",
+      "complexity": 42,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_input.go|responses||buildResponsesAssistantItems",
+      "complexity": 27,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_input.go|responses||buildResponsesMessageItems",
+      "complexity": 34,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_options.go|responses||validateResponsesOptions",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_websocket.go|responses|*ResponsesClient|ensureWebSocket",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responses/responses_websocket.go|responses|*ResponsesClient|streamWebSocketPrepared.func2",
+      "complexity": 38,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/providers/responsesproviders/chatgpt.go|responsesproviders|*ChatGPTProvider|Stream",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responsesproviders/chatgpt.go|responsesproviders||parseChatGPTRateLimitError",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/providers/responsesproviders/chatgpt_context.go|responsesproviders||resolveChatGPTContext",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responsesproviders/copilot.go|responsesproviders|*CopilotProvider|streamChatCompletions.func1",
+      "complexity": 61,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/providers/responsesproviders/grok_models.go|responsesproviders||loadGrokModelsCache",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providers/responsesproviders/openai.go|responsesproviders|*OpenAIProvider|Stream",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/providerusage/usage.go|providerusage||normalizeGrokProviderUsage",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/schema/model.go|schema|*JSONSchema|ToMap",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; llm reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/llm/schema/model.go|schema||parseSanitizedToolJSONSchemaMap",
+      "complexity": 34,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/schema/openai.go|schema||normalizeSchemaRecursive",
+      "complexity": 38,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/transcribe.go|llm||TranscribeWithConfig",
+      "complexity": 62,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
     },
     {
       "key": ".|internal/mcp/manager.go|mcp|*Manager|Enable.func2",
@@ -2786,30 +2746,6 @@
       "origin": "remeasured"
     },
     {
-      "key": "internal/reflow|internal/reflow/indent/indent.go|indent|*Writer|Write",
-      "complexity": 22,
-      "owner": "internal/reflow/indent",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/reflow/indent reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/reflow|internal/reflow/truncate/truncate.go|truncate|*Writer|Write",
-      "complexity": 36,
-      "owner": "internal/reflow/truncate",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/reflow/truncate reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/reflow|internal/reflow/wordwrap/wordwrap.go|wordwrap|*WordWrap|Write",
-      "complexity": 36,
-      "owner": "internal/reflow/wordwrap",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/reflow/wordwrap reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|internal/render/chat/message_block.go|chat|*MessageBlockRenderer|renderAssistantMessage",
       "complexity": 89,
       "owner": "internal/render/chat",
@@ -2820,14 +2756,6 @@
     {
       "key": ".|internal/render/chat/message_block.go|chat|*MessageBlockRenderer|renderReasoningForPart",
       "complexity": 25,
-      "owner": "internal/render/chat",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/render/chat reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/render/chat/renderer.go|chat||messagePartsSignature",
-      "complexity": 26,
       "owner": "internal/render/chat",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/render/chat reduction is tracked by M7",
       "removal_milestone": "M7",
@@ -2850,10 +2778,26 @@
       "origin": "remeasured"
     },
     {
+      "key": ".|internal/render/chat/renderer.go|chat||messagePartsSignature",
+      "complexity": 26,
+      "owner": "internal/render/chat",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/render/chat reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
       "key": ".|internal/render/chat/streaming.go|chat|*StreamingBlock|Render",
       "complexity": 34,
       "owner": "internal/render/chat",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/render/chat reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/render/markdown/ansi.go|markdown|*ANSI|renderTableGrid",
+      "complexity": 27,
+      "owner": "internal/render/markdown",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/render/markdown reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
     },
@@ -2866,14 +2810,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/render/markdown/ansi.go|markdown|*ANSI|renderTableGrid",
-      "complexity": 27,
-      "owner": "internal/render/markdown",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/render/markdown reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|internal/restart/coordinator.go|restart|*Coordinator|startLocked.func1",
       "complexity": 23,
       "owner": "internal/restart",
@@ -2883,7 +2819,7 @@
     },
     {
       "key": ".|internal/serve/telegram.go|serve|*telegramSessionMgr|handleMessageWithAdmission",
-      "complexity": 74,
+      "complexity": 71,
       "owner": "serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M6",
@@ -2899,19 +2835,11 @@
     },
     {
       "key": ".|internal/serve/telegram_markdown.go|serve||htmlToTelegram",
-      "complexity": 44,
+      "complexity": 40,
       "owner": "serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M6",
       "origin": "existing"
-    },
-    {
-      "key": ".|internal/serve/telegram_presentation.go|serve|*telegramPresentation|deliverMedia",
-      "complexity": 23,
-      "owner": "serve",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; serve reduction is tracked by M6",
-      "removal_milestone": "M6",
-      "origin": "remeasured"
     },
     {
       "key": ".|internal/serve/telegram_reload.go|serve|*telegramSessionMgr|runPolling",
@@ -2956,14 +2884,6 @@
     {
       "key": ".|internal/session/context_state.go|session||markCompactionDisplayTailsForPersistence",
       "complexity": 28,
-      "owner": "session",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/session/export.go|session||ExportToMarkdown",
-      "complexity": 60,
       "owner": "session",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -3042,20 +2962,20 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/session/sqlite_push.go|session||scanSessionRow",
-      "complexity": 45,
-      "owner": "session",
-      "rationale": "mechanically moved from .|internal/session/sqlite.go|session||scanSessionRow while preserving its named responsibility",
-      "removal_milestone": "M7",
-      "origin": "moved"
-    },
-    {
       "key": ".|internal/session/sqlite_push.go|session|*SQLiteStore|sessionSelectCols",
       "complexity": 28,
       "owner": "session",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; session reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
+    },
+    {
+      "key": ".|internal/session/sqlite_push.go|session||scanSessionRow",
+      "complexity": 45,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session||scanSessionRow while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
     },
     {
       "key": ".|internal/session/sqlite_schema.go|session||NewSQLiteStore",
@@ -3083,7 +3003,7 @@
     },
     {
       "key": ".|internal/session/sqlite_sessions.go|session|*SQLiteStore|List",
-      "complexity": 89,
+      "complexity": 77,
       "owner": "session",
       "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|List while preserving its named responsibility",
       "removal_milestone": "M7",
@@ -3091,7 +3011,7 @@
     },
     {
       "key": ".|internal/session/sqlite_sessions.go|session|*SQLiteStore|Search",
-      "complexity": 41,
+      "complexity": 40,
       "owner": "session",
       "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|Search while preserving its named responsibility",
       "removal_milestone": "M7",
@@ -3162,16 +3082,16 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/skills/registry.go|skills||CopySkill",
-      "complexity": 29,
+      "key": ".|internal/skills/registry.go|skills|*Registry|Get",
+      "complexity": 35,
       "owner": "internal/skills",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/skills reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/skills/registry.go|skills|*Registry|Get",
-      "complexity": 35,
+      "key": ".|internal/skills/registry.go|skills||CopySkill",
+      "complexity": 29,
       "owner": "internal/skills",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/skills reduction is tracked by M7",
       "removal_milestone": "M7",
@@ -3210,254 +3130,6 @@
       "origin": "remeasured"
     },
     {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/buffer.go|uv||renderLine",
-      "complexity": 23,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/buffer.go|uv|Line|Set",
-      "complexity": 33,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/cell.go|uv||StyleDiff",
-      "complexity": 56,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/cell.go|uv|*Style|String",
-      "complexity": 25,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv||parseKittyKeyboard",
-      "complexity": 66,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseCsiLegacyKey",
-      "complexity": 22,
-      "owner": "internal/terminal/renderer",
-      "rationale": "internal/terminal/renderer extraction owns one ordered domain responsibility; further reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "extracted"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseDcs",
-      "complexity": 22,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseOsc",
-      "complexity": 28,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/key.go|uv||keyMatchString",
-      "complexity": 22,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/key_table.go|uv||buildKeysTable",
-      "complexity": 23,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/styled.go|uv||ReadStyle",
-      "complexity": 28,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/styled.go|uv||printString",
-      "complexity": 45,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader.go|uv|*TerminalReader|StreamEvents",
-      "complexity": 36,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader.go|uv|*eventScanner|encodeGraphemeBufs",
-      "complexity": 23,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader.go|uv|*eventScanner|scanEvents",
-      "complexity": 48,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader_windows.go|uv|*TerminalReader|serializeWin32InputRecords",
-      "complexity": 49,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv||moveCursor",
-      "complexity": 24,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv||relativeCursorMove",
-      "complexity": 120,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|Render",
-      "complexity": 30,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|clearBottom",
-      "complexity": 27,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|emitRange",
-      "complexity": 31,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|transformLine",
-      "complexity": 116,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hardscroll.go|uv|*TerminalRenderer|scrollOptimize",
-      "complexity": 24,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hashmap.go|uv|*TerminalRenderer|growHunks",
-      "complexity": 34,
-      "owner": "internal/terminal/renderer",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hashmap.go|uv|*TerminalRenderer|updateHashmap",
-      "complexity": 45,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|close",
-      "complexity": 40,
-      "owner": "internal/terminal/runtime",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|flush",
-      "complexity": 82,
-      "owner": "internal/terminal/runtime",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|start",
-      "complexity": 24,
-      "owner": "internal/terminal/runtime",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/runtime reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|updateTerminalModesLocked",
-      "complexity": 36,
-      "owner": "internal/terminal/runtime",
-      "rationale": "internal/terminal/runtime extraction owns one ordered domain responsibility; further reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "extracted"
-    },
-    {
-      "key": "internal/terminal/runtime|internal/terminal/runtime/tea.go|tea|*Program|Run",
-      "complexity": 29,
-      "owner": "internal/terminal/runtime",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/runtime|internal/terminal/runtime/tea.go|tea|*Program|eventLoop",
-      "complexity": 34,
-      "owner": "internal/terminal/runtime",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|internal/tooldiscovery/index.go|tooldiscovery||lexicalScore",
       "complexity": 28,
       "owner": "internal/tooldiscovery",
@@ -3468,14 +3140,6 @@
     {
       "key": ".|internal/tooldiscovery/index.go|tooldiscovery||schemaTerms.func1",
       "complexity": 31,
-      "owner": "internal/tooldiscovery",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/tooldiscovery reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/tooldiscovery/planner.go|tooldiscovery||deferredToolSearchDeveloperInstruction",
-      "complexity": 26,
       "owner": "internal/tooldiscovery",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/tooldiscovery reduction is tracked by M7",
       "removal_milestone": "M7",
@@ -3514,25 +3178,17 @@
       "origin": "remeasured"
     },
     {
+      "key": ".|internal/tooldiscovery/planner.go|tooldiscovery||deferredToolSearchDeveloperInstruction",
+      "complexity": 26,
+      "owner": "internal/tooldiscovery",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/tooldiscovery reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
       "key": ".|internal/tooldiscovery/search_tool.go|tooldiscovery|*Planner|activate",
       "complexity": 71,
       "owner": "internal/tooldiscovery",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/tools/approval.go|tools||splitSequentialCommands",
-      "complexity": 28,
-      "owner": "internal/tools",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/tools/approval.go|tools||splitShellCommands",
-      "complexity": 32,
-      "owner": "internal/tools",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
@@ -3586,12 +3242,20 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/tools/ask_user.go|tools||NormalizeAskUserAnswers",
-      "complexity": 21,
+      "key": ".|internal/tools/approval.go|tools||splitSequentialCommands",
+      "complexity": 28,
       "owner": "internal/tools",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/tools reduction is tracked by M7",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
-      "origin": "remeasured"
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/approval.go|tools||splitShellCommands",
+      "complexity": 32,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
     },
     {
       "key": ".|internal/tools/ask_user.go|tools|*AskUserTool|Execute",
@@ -3600,6 +3264,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/ask_user.go|tools||NormalizeAskUserAnswers",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/tools reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
     },
     {
       "key": ".|internal/tools/ask_user_ui.go|tools|*AskUserModel|renderConfirm",
@@ -3626,14 +3298,6 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/tools/config.go|tools|ToolConfig|Merge",
-      "complexity": 21,
-      "owner": "internal/tools",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|internal/tools/custom_tool.go|tools|*CustomScriptTool|Execute",
       "complexity": 24,
       "owner": "internal/tools",
@@ -3658,6 +3322,14 @@
       "origin": "remeasured"
     },
     {
+      "key": ".|internal/tools/grep.go|tools|*GrepTool|Execute",
+      "complexity": 52,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
       "key": ".|internal/tools/grep.go|tools||enrichFileGrepGroup",
       "complexity": 21,
       "owner": "internal/tools",
@@ -3672,14 +3344,6 @@
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/tools reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "remeasured"
-    },
-    {
-      "key": ".|internal/tools/grep.go|tools|*GrepTool|Execute",
-      "complexity": 52,
-      "owner": "internal/tools",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
     },
     {
       "key": ".|internal/tools/manage_workspace.go|tools|*ManageWorkspaceTool|Execute",
@@ -3738,6 +3402,14 @@
       "origin": "existing"
     },
     {
+      "key": ".|internal/tools/shell_track.go|tools|*shellSnapshot|buildChangeRecord",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
       "key": ".|internal/tools/shell_track.go|tools||gitShowIndexBatch",
       "complexity": 24,
       "owner": "internal/tools",
@@ -3748,14 +3420,6 @@
     {
       "key": ".|internal/tools/shell_track.go|tools||preShellSnapshotWithClaims",
       "complexity": 32,
-      "owner": "internal/tools",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/tools/shell_track.go|tools|*shellSnapshot|buildChangeRecord",
-      "complexity": 21,
       "owner": "internal/tools",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -3819,7 +3483,7 @@
     },
     {
       "key": ".|internal/tools/workspace_capability.go|tools|*ApprovalManager|ensurePrimaryWorkspaceAccess",
-      "complexity": 39,
+      "complexity": 35,
       "owner": "internal/tools",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -3831,14 +3495,6 @@
       "owner": "internal/tools",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/tui/chat/chat.go|chat||NewWithFastProviderAndApproval",
-      "complexity": 29,
-      "owner": "tui/chat",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M1",
       "origin": "existing"
     },
     {
@@ -3866,12 +3522,12 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/tui/chat/commands.go|chat||filterCommandEntries",
-      "complexity": 27,
+      "key": ".|internal/tui/chat/chat.go|chat||NewWithFastProviderAndApproval",
+      "complexity": 29,
       "owner": "tui/chat",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; tui/chat reduction is tracked by M1",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M1",
-      "origin": "remeasured"
+      "origin": "existing"
     },
     {
       "key": ".|internal/tui/chat/commands.go|chat|*Model|ExecuteCommand",
@@ -3880,6 +3536,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M1",
       "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/commands.go|chat||filterCommandEntries",
+      "complexity": 27,
+      "owner": "tui/chat",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; tui/chat reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "remeasured"
     },
     {
       "key": ".|internal/tui/chat/commands_handover.go|chat|*Model|buildHandoverSession",
@@ -4331,7 +3995,7 @@
     },
     {
       "key": ".|internal/tui/inspector/content.go|inspector|*ContentRenderer|renderToolResultsWithCalls",
-      "complexity": 56,
+      "complexity": 47,
       "owner": "internal/tui/inspector",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -4370,14 +4034,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/tui/skills/browse.go|skills||injectProvenance",
-      "complexity": 47,
-      "owner": "internal/tui/skills",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|internal/tui/skills/browse.go|skills|*Model|Update",
       "complexity": 35,
       "owner": "internal/tui/skills",
@@ -4404,6 +4060,14 @@
     {
       "key": ".|internal/tui/skills/browse.go|skills|*Model|viewBrowse",
       "complexity": 67,
+      "owner": "internal/tui/skills",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/skills/browse.go|skills||injectProvenance",
+      "complexity": 47,
       "owner": "internal/tui/skills",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -4467,7 +4131,7 @@
     },
     {
       "key": ".|internal/ui/media.go|ui||RenderMediaMarkdown",
-      "complexity": 37,
+      "complexity": 35,
       "owner": "internal/ui",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -4538,14 +4202,6 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/ui/tool_tracker.go|ui||isBlankOrANSI",
-      "complexity": 23,
-      "owner": "internal/ui",
-      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/ui reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "remeasured"
-    },
-    {
       "key": ".|internal/ui/tool_tracker.go|ui|*ToolTracker|FlushBeforeExternalUI",
       "complexity": 23,
       "owner": "internal/ui",
@@ -4568,6 +4224,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/tool_tracker.go|ui||isBlankOrANSI",
+      "complexity": 23,
+      "owner": "internal/ui",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/ui reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
     },
     {
       "key": ".|internal/ui/unified_diff.go|ui||RenderDiffSegmentWithOperation",
@@ -4682,92 +4346,276 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/engine/compaction.go|engine||previousTurnEntries",
-      "complexity": 31,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/engine/compaction_helpers.go|engine||compactToolResultSummary",
-      "complexity": 23,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
-      "removal_milestone": "M2",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/providers/anthropic/anthropic_messages.go|anthropic||buildAnthropicBlocks",
-      "complexity": 26,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "key": "internal/reflow|internal/reflow/indent/indent.go|indent|*Writer|Write",
+      "complexity": 22,
+      "owner": "internal/reflow/indent",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/reflow/indent reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "extracted"
+      "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/providers/gemini/provider.go|gemini|*Provider|Stream.func1",
-      "complexity": 26,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
-      "removal_milestone": "M7",
-      "origin": "extracted"
-    },
-    {
-      "key": ".|internal/llm/providers/gemini/provider.go|gemini|*Provider|Stream.func1.func1",
+      "key": "internal/reflow|internal/reflow/truncate/truncate.go|truncate|*Writer|Write",
       "complexity": 36,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "owner": "internal/reflow/truncate",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/reflow/truncate reduction is tracked by M7",
       "removal_milestone": "M7",
-      "origin": "extracted"
+      "origin": "remeasured"
     },
     {
-      "key": ".|internal/llm/providers/gemini/provider.go|gemini||buildGeminiContent",
+      "key": "internal/reflow|internal/reflow/wordwrap/wordwrap.go|wordwrap|*WordWrap|Write",
+      "complexity": 36,
+      "owner": "internal/reflow/wordwrap",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/reflow/wordwrap reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/buffer.go|uv|Line|Set",
+      "complexity": 33,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/buffer.go|uv||renderLine",
+      "complexity": 23,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/cell.go|uv|*Style|String",
+      "complexity": 25,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/cell.go|uv||StyleDiff",
+      "complexity": 56,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseCsiLegacyKey",
       "complexity": 22,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "owner": "internal/terminal/renderer",
+      "rationale": "internal/terminal/renderer extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/providers/gemini/provider.go|gemini||buildGeminiContents",
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseDcs",
       "complexity": 22,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
-      "origin": "extracted"
+      "origin": "existing"
     },
     {
-      "key": ".|internal/llm/providers/gemini/schema.go|gemini||normalizeGeminiSchemaRecursive",
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseOsc",
+      "complexity": 28,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv||parseKittyKeyboard",
+      "complexity": 66,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/key.go|uv||keyMatchString",
       "complexity": 22,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
-      "origin": "extracted"
+      "origin": "existing"
     },
     {
-      "key": ".|internal/llm/providers/ollama/ollama.go|ollama|*Provider|Stream",
+      "key": "internal/terminal/renderer|internal/terminal/renderer/key_table.go|uv||buildKeysTable",
+      "complexity": 23,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/styled.go|uv||ReadStyle",
+      "complexity": 28,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/styled.go|uv||printString",
+      "complexity": 45,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader.go|uv|*TerminalReader|StreamEvents",
+      "complexity": 36,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader.go|uv|*eventScanner|encodeGraphemeBufs",
+      "complexity": 23,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader.go|uv|*eventScanner|scanEvents",
+      "complexity": 48,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader_windows.go|uv|*TerminalReader|serializeWin32InputRecords",
+      "complexity": 49,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|Render",
+      "complexity": 30,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|clearBottom",
+      "complexity": 27,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|emitRange",
+      "complexity": 31,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|transformLine",
+      "complexity": 116,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv||moveCursor",
+      "complexity": 24,
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv||relativeCursorMove",
+      "complexity": 120,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hardscroll.go|uv|*TerminalRenderer|scrollOptimize",
+      "complexity": 24,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hashmap.go|uv|*TerminalRenderer|growHunks",
       "complexity": 34,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "owner": "internal/terminal/renderer",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/renderer reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hashmap.go|uv|*TerminalRenderer|updateHashmap",
+      "complexity": 45,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|close",
+      "complexity": 40,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|flush",
+      "complexity": 82,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|start",
+      "complexity": 24,
+      "owner": "internal/terminal/runtime",
+      "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; internal/terminal/runtime reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "remeasured"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|updateTerminalModesLocked",
+      "complexity": 36,
+      "owner": "internal/terminal/runtime",
+      "rationale": "internal/terminal/runtime extraction owns one ordered domain responsibility; further reduction is tracked by M7",
       "removal_milestone": "M7",
       "origin": "extracted"
     },
     {
-      "key": ".|internal/llm/providers/ollama/ollama.go|ollama|*Provider|Stream.func2",
+      "key": "internal/terminal/runtime|internal/terminal/runtime/tea.go|tea|*Program|Run",
       "complexity": 29,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
-      "origin": "extracted"
+      "origin": "existing"
     },
     {
-      "key": ".|internal/llm/providers/ollama/ollama.go|ollama||buildOllamaMessages",
-      "complexity": 85,
-      "owner": "llm",
-      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "key": "internal/terminal/runtime|internal/terminal/runtime/tea.go|tea|*Program|eventLoop",
+      "complexity": 34,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
-      "origin": "extracted"
+      "origin": "existing"
     }
   ]
 }

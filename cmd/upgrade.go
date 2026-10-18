@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/update"
+	upgradeapp "github.com/samsaffron/term-llm/internal/app/upgrade"
 	"github.com/spf13/cobra"
 )
 
-var upgradeVersionFlag string
+var upgradeOptions upgradeapp.Options
 
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
@@ -18,11 +18,13 @@ Examples:
   term-llm upgrade                    # upgrade to latest
   term-llm upgrade --version v0.2.0   # install specific version`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return update.RunUpgrade(cmd.Context(), Version, upgradeVersionFlag, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		options := upgradeOptions
+		options.CurrentVersion = Version
+		return options.Run(cmd, args)
 	},
 }
 
 func init() {
-	upgradeCmd.Flags().StringVar(&upgradeVersionFlag, "version", "", "Install a specific version (e.g. v0.2.0)")
+	upgradeCmd.Flags().StringVar(&upgradeOptions.Version, "version", "", "Install a specific version (e.g. v0.2.0)")
 	rootCmd.AddCommand(upgradeCmd)
 }

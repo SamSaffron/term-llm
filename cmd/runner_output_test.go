@@ -98,16 +98,3 @@ func TestResultCollectorsDiscardAbandonedAttempts(t *testing.T) {
 		})
 	}
 }
-
-func TestRunnerOutputTaggedDiscardBeforeNewTurnOutput(t *testing.T) {
-	var output runnerOutput
-	output.Event(llm.Event{Type: llm.EventTextDelta, Text: "accepted", ProviderTurnIndexSet: true})
-	// A restart discard can identify a new turn before it has emitted text.
-	output.Event(llm.Event{Type: llm.EventAttemptDiscard, ProviderTurnIndex: 2, ProviderTurnIndexSet: true})
-	output.Event(llm.Event{Type: llm.EventTextDelta, Text: "abandoned", ProviderTurnIndex: 2, ProviderTurnIndexSet: true})
-	output.Event(llm.Event{Type: llm.EventAttemptDiscard, ProviderTurnIndex: 2, ProviderTurnIndexSet: true})
-	output.Event(llm.Event{Type: llm.EventTextDelta, Text: " replacement", ProviderTurnIndex: 2, ProviderTurnIndexSet: true})
-	if got := output.response.String(); got != "accepted replacement" {
-		t.Fatalf("response = %q, want accepted replacement", got)
-	}
-}

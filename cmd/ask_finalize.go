@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -16,7 +17,7 @@ import (
 type askFinalization struct {
 	ctx               context.Context
 	cmd               *cobra.Command
-	collector         *textCollector
+	collector         *ask.TextCollector
 	outputTool        *tools.SetOutputTool
 	outputRequest     func() llm.Request
 	progressive       bool
@@ -27,7 +28,7 @@ type askFinalization struct {
 	session           *session.Session
 	agent             *agents.Agent
 	json              bool
-	jsonEmit          *jsonEmitter
+	jsonEmit          *ask.JSONEmitter
 	stats             *ui.SessionStats
 	jsonTotalTokens   int
 	jsonFinalPending  bool
@@ -49,12 +50,12 @@ func (f *askFinalization) run() error {
 		} else if f.progressive {
 			text = progressiveOutputText(f.progressiveResult)
 		}
-		if err := ensureOutputToolCaptured(f.ctx, f.provider, f.engine.Tools(), f.outputRequest(), f.outputTool, text); err != nil {
+		if err := ask.EnsureOutputToolCaptured(f.ctx, f.provider, f.engine.Tools(), f.outputRequest(), f.outputTool, text); err != nil {
 			if f.store != nil && f.session != nil {
 				_ = f.store.UpdateStatus(f.ctx, f.session.ID, session.StatusError)
 			}
 			if f.json {
-				_ = emitFatalError(f.jsonEmit, f.stats, err)
+				_ = ask.EmitFatalError(f.jsonEmit, f.stats, err)
 				f.jsonFinalPending = false
 			}
 			return err
@@ -68,7 +69,7 @@ func (f *askFinalization) run() error {
 		return err
 	}
 	if f.json && f.jsonFinalPending {
-		if err := emitFinal(f.jsonEmit, f.stats, f.jsonTotalTokens); err != nil {
+		if err := ask.EmitFinal(f.jsonEmit, f.stats, f.jsonTotalTokens); err != nil {
 			return fmt.Errorf("emit final: %w", err)
 		}
 		f.jsonFinalPending = false
@@ -98,7 +99,7 @@ func (f *askFinalization) runCompletionHook() error {
 		if f.outputTool != nil && !f.outputTool.Captured() {
 			err := fmt.Errorf("output tool %q did not produce a value", f.outputTool.Name())
 			if f.json {
-				_ = emitFatalError(f.jsonEmit, f.stats, err)
+				_ = ask.EmitFatalError(f.jsonEmit, f.stats, err)
 				f.jsonFinalPending = false
 			}
 			return err
@@ -108,26 +109,26 @@ func (f *askFinalization) runCompletionHook() error {
 			return nil
 		}
 		if f.json {
-			if err := emitOnCompleteStarted(f.jsonEmit); err != nil {
+			if err := ask.EmitOnCompleteStarted(f.jsonEmit); err != nil {
 				return err
 			}
-			result, err := runOnCompleteCapture(f.agent.OnComplete, output)
+			result, err := ask.RunOnCompleteCapture(f.agent.OnComplete, output)
 			if result.Stdout != "" {
-				if emitErr := emitOnCompleteOutput(f.jsonEmit, result.Stdout); emitErr != nil {
+				if emitErr := ask.EmitOnCompleteOutput(f.jsonEmit, result.Stdout); emitErr != nil {
 					return emitErr
 				}
 			}
 			if err != nil {
-				if emitErr := emitOnCompleteFailed(f.jsonEmit, result.Stderr, err); emitErr != nil {
+				if emitErr := ask.EmitOnCompleteFailed(f.jsonEmit, result.Stderr, err); emitErr != nil {
 					return emitErr
 				}
 				fmt.Fprintf(f.cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
-			} else if err := emitOnCompleteCompleted(f.jsonEmit, result.Stderr); err != nil {
+			} else if err := ask.EmitOnCompleteCompleted(f.jsonEmit, result.Stderr); err != nil {
 				return err
 			}
 			return nil
 		}
-		if err := runOnComplete(f.agent.OnComplete, output); err != nil {
+		if err := ask.RunOnComplete(f.agent.OnComplete, output); err != nil {
 			fmt.Fprintf(f.cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
 		}
 		return nil
@@ -140,7 +141,7 @@ func (f *askFinalization) runCompletionHook() error {
 			output = progressiveOutputText(f.progressiveResult)
 		}
 		if output != "" {
-			if err := writeCommitEditMsg(output); err != nil {
+			if err := ask.WriteCommitEditMsg(output); err != nil {
 				fmt.Fprintf(f.cmd.ErrOrStderr(), "warning: failed to write commit message: %v\n", err)
 			} else {
 				fmt.Fprintln(f.cmd.ErrOrStderr(), "\nCommit message written to .git/COMMIT_EDITMSG and .git/GITGUI_MSG")
