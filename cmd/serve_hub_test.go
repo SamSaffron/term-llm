@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -934,27 +935,90 @@ func TestHubProxyRebasesAndInjectsHubContext(t *testing.T) {
 }
 
 func TestHubProxySkipsRebaseForOversizedHTML(t *testing.T) {
-	body := strings.Repeat("x", hubHTMLRebaseMaxBytes+2)
-	target := &hubProxyTarget{nodeID: "alpha", nodeName: "Alpha", basePath: "/chat", mount: "/node/alpha"}
-	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(withHubProxyTarget(context.Background(), target))
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
-		Body:       io.NopCloser(strings.NewReader(body)),
-		Request:    req,
+	body := `<html><head></head><body>` + strings.Repeat("x", hubHTMLRebaseMaxBytes) + `</body></html>`
+	for _, encoded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("gzip=%v", encoded), func(t *testing.T) {
+			target := &hubProxyTarget{nodeID: "alpha", nodeName: "Alpha", basePath: "/chat", mount: "/node/alpha"}
+			req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(withHubProxyTarget(context.Background(), target))
+			req.Header.Set("Accept-Encoding", "gzip")
+			data := []byte(body)
+			header := http.Header{"Content-Type": []string{"text/html; charset=utf-8"}}
+			if encoded {
+				var compressed bytes.Buffer
+				writer := gzip.NewWriter(&compressed)
+				_, _ = writer.Write(data)
+				_ = writer.Close()
+				data = compressed.Bytes()
+				header.Set("Content-Encoding", "gzip")
+			}
+			header.Set("Content-Length", fmt.Sprint(len(data)))
+			resp := &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body: io.NopCloser(bytes.NewReader(data)), Request: req,
+				ContentLength: int64(len(data)),
+			}
+			if err := hubRebaseProxyResponse(resp); err != nil {
+				t.Fatalf("hubRebaseProxyResponse: %v", err)
+			}
+			defer resp.Body.Close()
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if string(got) != body {
+				t.Fatalf("oversized body changed: len=%d want=%d", len(got), len(body))
+			}
+			if resp.Header.Get("Content-Encoding") != "" {
+				t.Fatalf("oversized fallback must be identity: %v", resp.Header)
+			}
+			if encoded && (resp.Header.Get("Content-Length") != "" || resp.ContentLength != -1) {
+				t.Fatalf("decoded oversized body retained compressed length: %v, length=%d", resp.Header, resp.ContentLength)
+			}
+		})
 	}
-	if err := hubRebaseProxyResponse(resp); err != nil {
-		t.Fatalf("hubRebaseProxyResponse: %v", err)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if string(data) != body {
-		t.Fatalf("oversized body changed: len=%d want=%d", len(data), len(body))
-	}
-	if strings.Contains(string(data), "TERM_LLM_HUB") {
-		t.Fatal("oversized HTML should not be buffered and injected")
+}
+
+func TestHubProxyPreservesHTMLRepresentationMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		method       string
+		status       int
+		rangeRequest bool
+		contentRange string
+	}{
+		{name: "head", method: http.MethodHead, status: http.StatusOK},
+		{name: "not-modified", method: http.MethodGet, status: http.StatusNotModified},
+		{name: "no-content", method: http.MethodGet, status: http.StatusNoContent},
+		{name: "partial", method: http.MethodGet, status: http.StatusPartialContent},
+		{name: "range-request", method: http.MethodGet, status: http.StatusOK, rangeRequest: true},
+		{name: "content-range", method: http.MethodGet, status: http.StatusOK, contentRange: "bytes 0-10/100"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/", nil)
+			req = req.WithContext(withHubProxyTarget(req.Context(), &hubProxyTarget{mount: "/node/alpha"}))
+			req.Header.Set("Accept-Encoding", "gzip")
+			if tc.rangeRequest {
+				req.Header.Set("Range", "bytes=0-10")
+			}
+			// Not a valid gzip body: these responses must never be decoded.
+			body := io.NopCloser(strings.NewReader("untouched"))
+			header := http.Header{
+				"Content-Type":     []string{"text/html"},
+				"Content-Encoding": []string{"gzip"},
+				"Content-Length":   []string{"123"},
+			}
+			if tc.contentRange != "" {
+				header.Set("Content-Range", tc.contentRange)
+			}
+			resp := &http.Response{Request: req, StatusCode: tc.status, Header: header, Body: body, ContentLength: 123}
+			if err := hubRebaseProxyResponse(resp); err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.Body != body || resp.ContentLength != 123 || resp.Header.Get("Content-Length") != "123" || resp.Header.Get("Content-Encoding") != "gzip" {
+				t.Fatalf("response representation was changed: %+v", resp)
+			}
+		})
 	}
 }
 
@@ -1557,8 +1621,8 @@ func TestHubRebaseNeedlesMatchServeOutput(t *testing.T) {
 	}
 }
 
-// A proxied node UI must keep the node's compression for JS/CSS/JSON; only the
-// HTML shell is decoded so the Hub can rebase and inject into it.
+// A proxied node UI must keep the node's compression for JS/CSS/JSON; the
+// HTML shell is decoded, rewritten, and re-compressed for gzip clients.
 func TestHubProxyPreservesNodeCompression(t *testing.T) {
 	const html = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";</script></head><body></body></html>`
 	asset := strings.Repeat("console.log('proxied asset');\n", 200)
@@ -1601,15 +1665,28 @@ func TestHubProxyPreservesNodeCompression(t *testing.T) {
 	}
 
 	rec = get("/node/alpha/", "gzip")
-	if rec.Header().Get("Content-Encoding") != "" {
-		t.Fatalf("rewritten HTML kept a stale encoding: %v", rec.Header())
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("rewritten HTML lost compression: %v", rec.Header())
 	}
-	got := rec.Body.String()
+	compressedLen := rec.Body.Len()
+	reader, err = gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.Close()
+	got := string(decoded)
 	if !strings.Contains(got, `<base href="/node/alpha/">`) || !strings.Contains(got, "window.TERM_LLM_HUB=") {
 		t.Fatalf("gzip HTML was not decoded and rewritten: %q", got)
 	}
-	if cl := rec.Header().Get("Content-Length"); cl != fmt.Sprintf("%d", len(got)) {
-		t.Fatalf("Content-Length = %q, want %d", cl, len(got))
+	if cl := rec.Header().Get("Content-Length"); cl != fmt.Sprintf("%d", compressedLen) {
+		t.Fatalf("Content-Length = %q, want %d", cl, compressedLen)
+	}
+	if !strings.Contains(rec.Header().Get("Vary"), "Accept-Encoding") {
+		t.Fatalf("missing Accept-Encoding Vary: %v", rec.Header())
 	}
 
 	rec = get("/node/alpha/dist/app-abcdefgh.js", "")

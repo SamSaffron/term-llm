@@ -149,7 +149,13 @@ func (s *hubServer) handleReverseNodeProxy(w http.ResponseWriter, r *http.Reques
 	}
 	req.Header.Del("Cookie")
 	req.Header.Del("X-Api-Key")
-	req.Header.Del("Accept-Encoding")
+	// Match direct-node negotiation. An explicit gzip header also prevents the
+	// connector's HTTP Transport from transparently decoding tunnel bytes.
+	if uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
+		req.Header.Set("Accept-Encoding", "gzip")
+	} else {
+		req.Header.Del("Accept-Encoding")
+	}
 	req.Header.Del("X-Forwarded-For")
 	req.Header.Del("X-Forwarded-Host")
 	req.Header.Del("X-Forwarded-Proto")
@@ -395,11 +401,15 @@ func hubRebaseProxyResponse(resp *http.Response) error {
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 		return nil
 	}
-	// A HEAD response carries the real Content-Length but no body; rewriting
-	// would clobber that length to 0.
-	if resp.Request.Method == http.MethodHead {
+	// Bodyless responses retain the node's representation metadata. Ranges
+	// must remain byte-for-byte intact: rewriting would invalidate offsets.
+	if resp.Request.Method == http.MethodHead || resp.StatusCode < http.StatusOK ||
+		resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified ||
+		resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != "" ||
+		resp.Request.Header.Get("Range") != "" {
 		return nil
 	}
+	uiAddVary(resp.Header, "Accept-Encoding")
 	if err := hubDecodeGzipBody(resp); err != nil {
 		return err
 	}
@@ -435,18 +445,35 @@ func hubRebaseProxyResponse(resp *http.Response) error {
 	}
 	body = hubInjectContext(body, t)
 
+	return hubSetRebasedHTMLBody(resp, body)
+}
+
+// hubSetRebasedHTMLBody re-compresses only bounded, rewritten HTML. Oversized
+// documents keep the streaming identity fallback after decoding; non-HTML
+// responses never enter this path.
+func hubSetRebasedHTMLBody(resp *http.Response, body []byte) error {
+	resp.Header.Del("Content-Encoding")
+	if uiAcceptsGzip(resp.Request.Header.Get("Accept-Encoding")) {
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		if _, err := writer.Write(body); err != nil {
+			return fmt.Errorf("compress rebased node HTML: %w", err)
+		}
+		if err := writer.Close(); err != nil {
+			return fmt.Errorf("finish compressed node HTML: %w", err)
+		}
+		body = compressed.Bytes()
+		resp.Header.Set("Content-Encoding", "gzip")
+	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	// hubDecodeGzipBody (or the Transport) already decoded the body; make sure
-	// no stale encoding header survives the rewrite.
-	resp.Header.Del("Content-Encoding")
 	return nil
 }
 
 // hubDecodeGzipBody decodes a gzip-encoded HTML body in place so it can be
-// rewritten. The HTML shell is small, uncached, and rewritten per request;
-// every other proxied body keeps the node's compression.
+// rewritten. Only bounded HTML is re-compressed after rewriting; every other
+// proxied body keeps the node's compression.
 func hubDecodeGzipBody(resp *http.Response) error {
 	if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Content-Encoding")), "gzip") {
 		return nil
