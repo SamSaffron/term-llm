@@ -8,7 +8,7 @@ import (
 	"math/rand"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 var payloadVocabulary = []string{
@@ -79,6 +79,6 @@ func GeneratePayload(seed int64, estimatedTokens int, workload string, outputTok
 		SHA256:    hex.EncodeToString(sum[:]),
 		Bytes:     len(text),
 		Words:     words,
-		Estimated: llm.EstimateTokens(text),
+		Estimated: engine.EstimateTokens(text),
 	}
 }

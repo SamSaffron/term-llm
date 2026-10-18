@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestUpdateProgressToolRejectsNonObjectState(t *testing.T) {
@@ -24,7 +24,7 @@ func TestFinalizeProgressToolIsFinishing(t *testing.T) {
 
 	tool := NewFinalizeProgressTool()
 
-	finishing, ok := any(tool).(llm.FinishingTool)
+	finishing, ok := any(tool).(core.FinishingTool)
 	if !ok {
 		t.Fatal("expected finalize progress tool to implement FinishingTool")
 	}

@@ -1,6 +1,8 @@
 package cmd
 
-import "github.com/samsaffron/term-llm/internal/llm"
+import (
+	"github.com/samsaffron/term-llm/internal/llm/core"
+)
 
 // pendingClientCallTracker records which client (passthrough) tool calls a run
 // hands back to its caller unanswered.
@@ -14,7 +16,7 @@ type pendingClientCallTracker struct {
 	turn       int
 	turnSet    bool
 	serverTool bool
-	calls      []llm.ToolCall
+	calls      []core.ToolCall
 }
 
 func (t *pendingClientCallTracker) resetTurn() {
@@ -22,18 +24,18 @@ func (t *pendingClientCallTracker) resetTurn() {
 	t.calls = nil
 }
 
-func (t *pendingClientCallTracker) observe(event llm.Event, isServerTool func(string) bool) {
+func (t *pendingClientCallTracker) observe(event core.Event, isServerTool func(string) bool) {
 	if event.ProviderTurnIndexSet && (!t.turnSet || event.ProviderTurnIndex > t.turn) {
 		t.turn, t.turnSet = event.ProviderTurnIndex, true
 		t.resetTurn()
 	}
 	switch event.Type {
-	case llm.EventAttemptDiscard:
+	case core.EventAttemptDiscard:
 		// A discarded attempt is retried as the same provider turn.
 		if !event.ProviderTurnIndexSet || event.ProviderTurnIndex == t.turn {
 			t.resetTurn()
 		}
-	case llm.EventToolCall:
+	case core.EventToolCall:
 		// Inline calls ran during the provider stream and never enter the
 		// engine's end-of-turn split, so they neither stop the run nor cause
 		// passthrough calls in their turn to be dropped.
@@ -55,15 +57,15 @@ func (t *pendingClientCallTracker) observe(event llm.Event, isServerTool func(st
 
 // pending returns the client calls awaiting results, in call order. It is
 // never nil so that callers can publish an authoritative, possibly empty, list.
-func (t *pendingClientCallTracker) pending() []llm.ToolCall {
+func (t *pendingClientCallTracker) pending() []core.ToolCall {
 	if t.serverTool || len(t.calls) == 0 {
-		return []llm.ToolCall{}
+		return []core.ToolCall{}
 	}
-	return append([]llm.ToolCall(nil), t.calls...)
+	return append([]core.ToolCall(nil), t.calls...)
 }
 
 // pendingClientCallsPayload is the wire form published on response.completed.
-func pendingClientCallsPayload(calls []llm.ToolCall) []map[string]any {
+func pendingClientCallsPayload(calls []core.ToolCall) []map[string]any {
 	out := make([]map[string]any, 0, len(calls))
 	for _, call := range calls {
 		arguments := string(call.Arguments)

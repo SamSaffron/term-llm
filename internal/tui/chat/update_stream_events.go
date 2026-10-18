@@ -7,7 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -87,7 +88,7 @@ func (m *Model) handleStreamToolStart(msg streamEventMsg, ev ui.StreamEvent, sta
 	}
 
 	// Check for web search
-	if ev.ToolName == llm.WebSearchToolName || ev.ToolName == "WebSearch" {
+	if ev.ToolName == core.WebSearchToolName || ev.ToolName == "WebSearch" {
 		m.webSearchUsed = true
 	}
 
@@ -224,7 +225,7 @@ func (m *Model) handleStreamAttemptDiscard(msg streamEventMsg, ev ui.StreamEvent
 	m.resetAttemptUsage()
 	m.currentResponse.Reset()
 	m.pendingMu.Lock()
-	m.pendingAssistantSnapshot = llm.Message{}
+	m.pendingAssistantSnapshot = core.Message{}
 	m.pendingAssistantSnapshotSet = false
 	m.pendingMu.Unlock()
 	m.resetCurrentReasoning()
@@ -257,7 +258,7 @@ func (m *Model) handleStreamAttemptDiscard(msg streamEventMsg, ev ui.StreamEvent
 }
 
 func (m *Model) handleStreamPhase(msg streamEventMsg, ev ui.StreamEvent, state *streamCommandBuffer) {
-	if ev.Phase == llm.PhaseCompactingResumeTask {
+	if ev.Phase == engine.PhaseCompactingResumeTask {
 		// The resume phase is the ordered handoff before continuation provider
 		// text. Earlier stream events stay ahead of the durable boundary.
 		if m.applyNextPendingCompactionToUI(msg.generation) {
@@ -267,7 +268,7 @@ func (m *Model) handleStreamPhase(msg streamEventMsg, ev ui.StreamEvent, state *
 	m.phase = ev.Phase
 	m.setRetryStatus("")
 	// Display WARNING phases as visible text in the conversation
-	if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) && m.tracker != nil {
+	if strings.HasPrefix(ev.Phase, core.WarningPhasePrefix) && m.tracker != nil {
 		m.tracker.AddTextSegment(ev.Phase+"\n", m.width)
 	}
 
@@ -316,7 +317,7 @@ func (m *Model) handleStreamMedia(msg streamEventMsg, ev ui.StreamEvent, state *
 	m.setRetryStatus("")
 	if reference := strings.ToLower(strings.TrimSpace(ev.Media.Reference)); reference != "" {
 		if m.mediaByReference == nil {
-			m.mediaByReference = make(map[string]llm.MediaArtifact)
+			m.mediaByReference = make(map[string]core.MediaArtifact)
 		}
 		m.mediaByReference[reference] = ev.Media
 	}

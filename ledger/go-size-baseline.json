@@ -8,11 +8,11 @@
     },
     {
       "path": "cmd/chat.go",
-      "lines": 1661
+      "lines": 1663
     },
     {
       "path": "cmd/config.go",
-      "lines": 1484
+      "lines": 1485
     },
     {
       "path": "cmd/jobs.go",
@@ -20,19 +20,19 @@
     },
     {
       "path": "cmd/runner.go",
-      "lines": 1075
+      "lines": 1077
     },
     {
       "path": "cmd/serve.go",
-      "lines": 1830
+      "lines": 1832
     },
     {
       "path": "cmd/serve_handlers.go",
-      "lines": 4340
+      "lines": 4343
     },
     {
       "path": "cmd/serve_handlers_responses.go",
-      "lines": 1106
+      "lines": 1107
     },
     {
       "path": "cmd/serve_jobs_v2.go",
@@ -40,7 +40,7 @@
     },
     {
       "path": "cmd/serve_live.go",
-      "lines": 2068
+      "lines": 2067
     },
     {
       "path": "cmd/serve_projects.go",
@@ -52,7 +52,7 @@
     },
     {
       "path": "cmd/serve_runtime.go",
-      "lines": 2523
+      "lines": 2525
     },
     {
       "path": "cmd/serve_skills.go",
@@ -60,7 +60,7 @@
     },
     {
       "path": "cmd/session.go",
-      "lines": 1075
+      "lines": 1077
     },
     {
       "path": "cmd/skills.go",
@@ -68,7 +68,7 @@
     },
     {
       "path": "internal/app/memory/mine.go",
-      "lines": 1538
+      "lines": 1540
     },
     {
       "path": "internal/config/config.go",
@@ -84,7 +84,7 @@
     },
     {
       "path": "internal/llm/models.go",
-      "lines": 1160
+      "lines": 1157
     },
     {
       "path": "internal/llm/providers/clibin/claude_bin.go",
@@ -120,11 +120,11 @@
     },
     {
       "path": "internal/serve/telegram.go",
-      "lines": 2569
+      "lines": 2571
     },
     {
       "path": "internal/session/sqlite_messages.go",
-      "lines": 2186
+      "lines": 2187
     },
     {
       "path": "internal/session/sqlite_schema.go",
@@ -136,7 +136,7 @@
     },
     {
       "path": "internal/session/store.go",
-      "lines": 1432
+      "lines": 1433
     },
     {
       "path": "internal/skills/registry.go",
@@ -160,7 +160,7 @@
     },
     {
       "path": "internal/tooldiscovery/planner.go",
-      "lines": 1409
+      "lines": 1410
     },
     {
       "path": "internal/tools/approval.go",
@@ -184,23 +184,23 @@
     },
     {
       "path": "internal/tui/chat/chat.go",
-      "lines": 2635
+      "lines": 2639
     },
     {
       "path": "internal/tui/chat/dialog.go",
-      "lines": 1313
+      "lines": 1314
     },
     {
       "path": "internal/tui/chat/handlers.go",
-      "lines": 1279
+      "lines": 1280
     },
     {
       "path": "internal/tui/chat/render.go",
-      "lines": 2440
+      "lines": 2441
     },
     {
       "path": "internal/tui/chat/streaming.go",
-      "lines": 1834
+      "lines": 1836
     },
     {
       "path": "internal/tui/chat/worktree.go",
@@ -208,7 +208,7 @@
     },
     {
       "path": "internal/tui/inspector/content.go",
-      "lines": 1629
+      "lines": 1630
     },
     {
       "path": "internal/tui/skills/browse.go",
@@ -216,7 +216,7 @@
     },
     {
       "path": "internal/ui/segment.go",
-      "lines": 1077
+      "lines": 1078
     },
     {
       "path": "internal/ui/streaming/streaming.go",
@@ -238,19 +238,19 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 84301
+      "lines": 84368
     },
     {
       "dir": "internal/session",
-      "lines": 17625
+      "lines": 17633
     },
     {
       "dir": "internal/tools",
-      "lines": 22706
+      "lines": 22713
     },
     {
       "dir": "internal/tui/chat",
-      "lines": 33190
+      "lines": 33218
     }
   ]
 }

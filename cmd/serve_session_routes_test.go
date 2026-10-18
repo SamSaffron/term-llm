@@ -28,6 +28,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -257,7 +260,7 @@ func TestHandleSessionRuntimeEffortQueuesEngineSwitch(t *testing.T) {
 	defer mgr.Close()
 	provider := newStagedProvider("ok", "")
 	close(provider.releaseSecond)
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "staged", defaultModel: "gpt-5.4"}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{}), model: "gpt-5.4", reasoningEffort: "medium"}
 	rt.setActiveInterrupt(state)
@@ -276,11 +279,11 @@ func TestHandleSessionRuntimeEffortQueuesEngineSwitch(t *testing.T) {
 		t.Fatalf("response body = %s, want queued high", rr.Body.String())
 	}
 
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	stream, err := engine.Stream(context.Background(), core.Request{
 		Model:           "gpt-5.4",
 		ReasoningEffort: "medium",
-		Messages:        []llm.Message{llm.UserText("hello")},
-		Tools:           []llm.ToolSpec{{Name: "noop", Description: "unused", Schema: map[string]interface{}{"type": "object"}}},
+		Messages:        []core.Message{core.UserText("hello")},
+		Tools:           []core.ToolSpec{{Name: "noop", Description: "unused", Schema: map[string]interface{}{"type": "object"}}},
 		MaxTurns:        1,
 	})
 	if err != nil {
@@ -310,7 +313,7 @@ func TestHandleSessionRuntimeEffortQueuesEngineSwitch(t *testing.T) {
 func TestHandleSessionRuntimeEffortRejectsModelMismatch(t *testing.T) {
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	rt := &serveRuntime{engine: engine, providerKey: "mock", defaultModel: "gpt-5.4"}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{}), model: "gpt-5.4", reasoningEffort: "medium"}
 	rt.setActiveInterrupt(state)
@@ -332,12 +335,12 @@ func TestHandleSessionRuntimeEffortRejectsModelMismatch(t *testing.T) {
 
 func TestServeRuntimeRunClearsUnappliedRuntimeSwitch(t *testing.T) {
 	provider := newStagedProvider("hello ", "done")
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "staged", defaultModel: "gpt-5.4"}
 
 	runDone := make(chan error, 1)
 	go func() {
-		_, err := rt.Run(context.Background(), true, false, []llm.Message{llm.UserText("hello")}, llm.Request{
+		_, err := rt.Run(context.Background(), true, false, []core.Message{core.UserText("hello")}, core.Request{
 			Model:           "gpt-5.4",
 			ReasoningEffort: "medium",
 		})
@@ -362,10 +365,10 @@ func TestServeRuntimeRunClearsUnappliedRuntimeSwitch(t *testing.T) {
 		t.Fatal("run did not finish")
 	}
 
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	stream, err := engine.Stream(context.Background(), core.Request{
 		Model:           "gpt-5.4",
 		ReasoningEffort: "low",
-		Messages:        []llm.Message{llm.UserText("next")},
+		Messages:        []core.Message{core.UserText("next")},
 	})
 	if err != nil {
 		t.Fatalf("engine stream: %v", err)
@@ -400,11 +403,11 @@ func TestServeRuntimeRun_RejectsSteeringDuringSimpleStream(t *testing.T) {
 	defer store.Close()
 
 	provider := newStagedProvider("hello ", "world")
-	engine := llm.NewEngine(provider, nil)
+	eng := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "staged",
-		engine:       engine,
+		engine:       eng,
 		store:        store,
 		defaultModel: "staged-model",
 	}
@@ -412,9 +415,9 @@ func TestServeRuntimeRun_RejectsSteeringDuringSimpleStream(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, runErr := rt.Run(context.Background(), true, false, []llm.Message{
-			llm.UserText("original request"),
-		}, llm.Request{SessionID: "serve-steer-persist", MaxTurns: 3})
+		_, runErr := rt.Run(context.Background(), true, false, []core.Message{
+			core.UserText("original request"),
+		}, core.Request{SessionID: "serve-steer-persist", MaxTurns: 3})
 		errCh <- runErr
 	}()
 
@@ -425,13 +428,13 @@ func TestServeRuntimeRun_RejectsSteeringDuringSimpleStream(t *testing.T) {
 	}
 
 	action, err := rt.Interrupt(context.Background(), "also remember this", nil)
-	if action != llm.InterruptSteer {
-		t.Fatalf("Interrupt action = %v, want %v", action, llm.InterruptSteer)
+	if action != engine.InterruptSteer {
+		t.Fatalf("Interrupt action = %v, want %v", action, engine.InterruptSteer)
 	}
 	if err == nil || !strings.Contains(err.Error(), "active run finished") {
 		t.Fatalf("Interrupt error = %v, want non-consuming simple-stream error", err)
 	}
-	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+	if pending := eng.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("simple stream retained phantom steering: %#v", pending)
 	}
 
@@ -449,7 +452,7 @@ func TestServeRuntimeRun_RejectsSteeringDuringSimpleStream(t *testing.T) {
 	if len(rt.history) != 2 {
 		t.Fatalf("history len = %d, want 2", len(rt.history))
 	}
-	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+	if pending := eng.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("pending steering = %#v, want none", pending)
 	}
 
@@ -472,13 +475,13 @@ func TestServeRuntimeRun_PersistsMessagesOnErrorExit(t *testing.T) {
 
 	// Turn 1: tool call (succeeds, callbacks persist).
 	// Turn 2: error (run returns error — deferred persist must save turn 1).
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
 		AddError(errors.New("provider exploded"))
 
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -488,13 +491,13 @@ func TestServeRuntimeRun_PersistsMessagesOnErrorExit(t *testing.T) {
 	}
 	rt.Touch()
 
-	req := llm.Request{
+	req := core.Request{
 		SessionID: "error-persist-test",
 		MaxTurns:  5,
-		Tools:     []llm.ToolSpec{(&echoTool{}).Spec()},
+		Tools:     []core.ToolSpec{(&echoTool{}).Spec()},
 	}
-	_, runErr := rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("call the echo tool"),
+	_, runErr := rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("call the echo tool"),
 	}, req)
 	if runErr == nil {
 		t.Fatal("expected Run to return an error")
@@ -509,10 +512,10 @@ func TestServeRuntimeRun_PersistsMessagesOnErrorExit(t *testing.T) {
 	var hasToolCall, hasToolResult bool
 	for _, m := range msgs {
 		for _, p := range m.Parts {
-			if p.Type == llm.PartToolCall && p.ToolCall != nil && p.ToolCall.Name == "echo" {
+			if p.Type == core.PartToolCall && p.ToolCall != nil && p.ToolCall.Name == "echo" {
 				hasToolCall = true
 			}
-			if p.Type == llm.PartToolResult && p.ToolResult != nil && p.ToolResult.ID == "call-1" {
+			if p.Type == core.PartToolResult && p.ToolResult != nil && p.ToolResult.ID == "call-1" {
 				hasToolResult = true
 			}
 		}
@@ -534,13 +537,13 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 	defer store.Close()
 
 	// The provider fails on the very first call — no callbacks fire.
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddError(errors.New("immediate boom")).
 		AddTextResponse("recovered")
 
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -551,15 +554,15 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 	rt.Touch()
 
 	sid := "immediate-error-test"
-	req := llm.Request{
+	req := core.Request{
 		SessionID: sid,
 		MaxTurns:  5,
-		Tools:     []llm.ToolSpec{(&echoTool{}).Spec()},
+		Tools:     []core.ToolSpec{(&echoTool{}).Spec()},
 	}
 
 	// First run: immediate error, no produced messages.
-	_, runErr := rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("hello"),
+	_, runErr := rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("hello"),
 	}, req)
 	if runErr == nil {
 		t.Fatal("expected Run to return an error")
@@ -576,13 +579,13 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMessages failed: %v", err)
 	}
-	if len(msgs) != 1 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hello" {
+	if len(msgs) != 1 || msgs[0].Role != core.RoleUser || msgs[0].TextContent != "hello" {
 		t.Fatalf("persisted messages after immediate error = %+v, want durable user prompt", msgs)
 	}
 
 	// Second run: succeeds — must not be confused by stale DB state.
-	_, runErr = rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("hello again"),
+	_, runErr = rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("hello again"),
 	}, req)
 	if runErr != nil {
 		t.Fatalf("second Run failed: %v", runErr)
@@ -598,11 +601,11 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 }
 
 func TestServeRuntimeRun_ReplaceHistoryRestoresInMemoryHistoryOnEarlyFailure(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddTextResponse("old reply").
 		AddError(errors.New("fresh-start boom")).
 		AddTextResponse("recovered")
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -611,10 +614,10 @@ func TestServeRuntimeRun_ReplaceHistoryRestoresInMemoryHistoryOnEarlyFailure(t *
 	}
 	rt.Touch()
 
-	req := llm.Request{SessionID: "replace-history-early-failure", MaxTurns: 1}
+	req := core.Request{SessionID: "replace-history-early-failure", MaxTurns: 1}
 
-	_, err := rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("old context"),
+	_, err := rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("old context"),
 	}, req)
 	if err != nil {
 		t.Fatalf("first Run failed: %v", err)
@@ -623,8 +626,8 @@ func TestServeRuntimeRun_ReplaceHistoryRestoresInMemoryHistoryOnEarlyFailure(t *
 		t.Fatal("expected first Run to populate history")
 	}
 
-	_, err = rt.Run(context.Background(), true, true, []llm.Message{
-		llm.UserText("fresh start"),
+	_, err = rt.Run(context.Background(), true, true, []core.Message{
+		core.UserText("fresh start"),
 	}, req)
 	if err == nil || !strings.Contains(err.Error(), "fresh-start boom") {
 		t.Fatalf("replaceHistory Run error = %v, want fresh-start boom", err)
@@ -633,8 +636,8 @@ func TestServeRuntimeRun_ReplaceHistoryRestoresInMemoryHistoryOnEarlyFailure(t *
 		t.Fatalf("history len after failed replaceHistory run = %d, want 2 restored messages", len(rt.history))
 	}
 
-	_, err = rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("after failure"),
+	_, err = rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("after failure"),
 	}, req)
 	if err != nil {
 		t.Fatalf("third Run failed: %v", err)
@@ -645,19 +648,19 @@ func TestServeRuntimeRun_ReplaceHistoryRestoresInMemoryHistoryOnEarlyFailure(t *
 	if len(provider.Requests[2].Messages) != 3 {
 		t.Fatalf("third request message count = %d, want 3 restored-history messages", len(provider.Requests[2].Messages))
 	}
-	if provider.Requests[2].Messages[0].Role != llm.RoleUser {
+	if provider.Requests[2].Messages[0].Role != core.RoleUser {
 		t.Fatalf("third request[0] role = %s, want user", provider.Requests[2].Messages[0].Role)
 	}
 	if got := provider.Requests[2].Messages[0].Parts[0].Text; got != "old context" {
 		t.Fatalf("third request[0] text = %q, want %q", got, "old context")
 	}
-	if provider.Requests[2].Messages[1].Role != llm.RoleAssistant {
+	if provider.Requests[2].Messages[1].Role != core.RoleAssistant {
 		t.Fatalf("third request[1] role = %s, want assistant", provider.Requests[2].Messages[1].Role)
 	}
 	if got := provider.Requests[2].Messages[1].Parts[0].Text; got != "old reply" {
 		t.Fatalf("third request[1] text = %q, want %q", got, "old reply")
 	}
-	if provider.Requests[2].Messages[2].Role != llm.RoleUser {
+	if provider.Requests[2].Messages[2].Role != core.RoleUser {
 		t.Fatalf("third request[2] role = %s, want user", provider.Requests[2].Messages[2].Role)
 	}
 	if got := provider.Requests[2].Messages[2].Parts[0].Text; got != "after failure" {
@@ -666,12 +669,12 @@ func TestServeRuntimeRun_ReplaceHistoryRestoresInMemoryHistoryOnEarlyFailure(t *
 }
 
 func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddError(errors.New("boom")).
 		AddTextResponse("hello from serve")
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	devText := "telegram developer instructions"
-	input := []llm.Message{llm.UserText("hello")}
+	input := []core.Message{core.UserText("hello")}
 
 	rt := &serveRuntime{
 		provider:         provider,
@@ -681,7 +684,7 @@ func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t 
 	}
 	rt.Touch()
 
-	_, err := rt.Run(context.Background(), true, false, input, llm.Request{})
+	_, err := rt.Run(context.Background(), true, false, input, core.Request{})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("first Run error = %v, want boom", err)
 	}
@@ -697,11 +700,11 @@ func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t 
 	if len(provider.Requests[0].Messages) != 2 {
 		t.Fatalf("first request message count = %d, want 2", len(provider.Requests[0].Messages))
 	}
-	if provider.Requests[0].Messages[0].Role != llm.RoleDeveloper || provider.Requests[0].Messages[0].Parts[0].Text != devText {
+	if provider.Requests[0].Messages[0].Role != core.RoleDeveloper || provider.Requests[0].Messages[0].Parts[0].Text != devText {
 		t.Fatalf("first request did not include injected developer message: %+v", provider.Requests[0].Messages)
 	}
 
-	_, err = rt.Run(context.Background(), true, false, input, llm.Request{})
+	_, err = rt.Run(context.Background(), true, false, input, core.Request{})
 	if err != nil {
 		t.Fatalf("second Run failed: %v", err)
 	}
@@ -714,21 +717,21 @@ func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t 
 	if len(provider.Requests[1].Messages) != 2 {
 		t.Fatalf("second request message count = %d, want 2", len(provider.Requests[1].Messages))
 	}
-	if provider.Requests[1].Messages[0].Role != llm.RoleDeveloper || provider.Requests[1].Messages[0].Parts[0].Text != devText {
+	if provider.Requests[1].Messages[0].Role != core.RoleDeveloper || provider.Requests[1].Messages[0].Parts[0].Text != devText {
 		t.Fatalf("second request did not re-include injected developer message: %+v", provider.Requests[1].Messages)
 	}
 	if len(rt.history) < 3 {
 		t.Fatalf("history len = %d, want at least 3 after successful run", len(rt.history))
 	}
-	if rt.history[0].Role != llm.RoleDeveloper || llm.MessageText(rt.history[0]) != devText || !llm.IsPlatformContextMessage(rt.history[0]) {
+	if rt.history[0].Role != core.RoleDeveloper || core.MessageText(rt.history[0]) != devText || !llm.IsPlatformContextMessage(rt.history[0]) {
 		t.Fatalf("history missing injected developer message: %+v", rt.history)
 	}
 }
 
 func TestHandleResponses_GeneratesSessionIDHeaderWhenMissing(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
-		engine := llm.NewEngine(provider, nil)
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -774,18 +777,18 @@ func TestHandleResponses_UIFollowUpClaimsQueuedSteering(t *testing.T) {
 		messageID = "msg_steering_handoff"
 	)
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("follow-up response")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("follow-up response")
+	eng := engine.NewEngine(provider, nil)
 	runtime := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       engine,
+		engine:       eng,
 		defaultModel: "mock-model",
 	}
 	runtime.Touch()
-	engine.QueueSteering(llm.QueuedSteering{
+	eng.QueueSteering(engine.QueuedSteering{
 		ID:          messageID,
-		Message:     llm.UserText("same logical message"),
+		Message:     core.UserText("same logical message"),
 		DisplayText: "same logical message",
 	})
 
@@ -804,7 +807,7 @@ func TestHandleResponses_UIFollowUpClaimsQueuedSteering(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
 		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
-		inputMessages:      []llm.Message{llm.UserText("same logical message")},
+		inputMessages:      []core.Message{core.UserText("same logical message")},
 		sessionID:          sessionID,
 		previousResponseID: "resp_previous",
 		previousDurable:    true,
@@ -814,7 +817,7 @@ func TestHandleResponses_UIFollowUpClaimsQueuedSteering(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
-	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+	if pending := eng.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("pending steering after follow-up handoff = %#v, want none", pending)
 	}
 	if len(provider.Requests) != 1 {
@@ -830,11 +833,11 @@ func TestHandleResponses_UIQueuedFollowUpBatchRunsOnceAndPersistsDistinctRows(t 
 	}
 	defer store.Close()
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("initial answer").AddTextResponse("one batched answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("initial answer").AddTextResponse("one batched answer")
 	runtime := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 		store:        store,
 	}
@@ -853,7 +856,7 @@ func TestHandleResponses_UIQueuedFollowUpBatchRunsOnceAndPersistsDistinctRows(t 
 	}
 
 	for _, queued := range []struct{ id, text string }{{"msg-first", "first queued"}, {"msg-second", "second queued"}} {
-		runtime.engine.QueueSteering(llm.QueuedSteering{ID: queued.id, Message: llm.UserText(queued.text), DisplayText: queued.text})
+		runtime.engine.QueueSteering(engine.QueuedSteering{ID: queued.id, Message: core.UserText(queued.text), DisplayText: queued.text})
 	}
 	body := `{"input":[` +
 		`{"type":"message","role":"user","client_message_id":"msg-first","content":"first queued"},` +
@@ -870,9 +873,9 @@ func TestHandleResponses_UIQueuedFollowUpBatchRunsOnceAndPersistsDistinctRows(t 
 		t.Fatalf("provider request count = %d, want initial + one batch", len(provider.Requests))
 	}
 	lastRequest := provider.Requests[1]
-	var batchUsers []llm.Message
+	var batchUsers []core.Message
 	for _, message := range lastRequest.Messages {
-		if message.Role == llm.RoleUser && (message.ClientMessageID == "msg-first" || message.ClientMessageID == "msg-second") {
+		if message.Role == core.RoleUser && (message.ClientMessageID == "msg-first" || message.ClientMessageID == "msg-second") {
 			batchUsers = append(batchUsers, message)
 		}
 	}
@@ -890,7 +893,7 @@ func TestHandleResponses_UIQueuedFollowUpBatchRunsOnceAndPersistsDistinctRows(t 
 		if message.ClientMessageID == "msg-first" || message.ClientMessageID == "msg-second" {
 			storedBatch = append(storedBatch, message)
 		}
-		if message.Role == llm.RoleAssistant && message.TextContent == "one batched answer" {
+		if message.Role == core.RoleAssistant && message.TextContent == "one batched answer" {
 			batchAssistantCount++
 		}
 	}
@@ -908,10 +911,10 @@ func TestHandleResponses_UIFollowUpStartFailureReleasesClaim(t *testing.T) {
 		messageID = "msg-follow-up-start-failure"
 	)
 	provider := &serveRuntimeErrorProvider{err: errors.New("provider failed before response")}
-	engine := llm.NewEngine(provider, nil)
-	entry := llm.QueuedSteering{ID: messageID, Message: llm.UserText("retry me")}
-	engine.QueueSteering(entry)
-	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model"}
+	eng := engine.NewEngine(provider, nil)
+	entry := engine.QueuedSteering{ID: messageID, Message: core.UserText("retry me")}
+	eng.QueueSteering(entry)
+	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: eng, defaultModel: "mock-model"}
 	runtime.Touch()
 	manager := newServeSessionManager(time.Minute, 10, nil)
 	defer manager.Close()
@@ -924,13 +927,13 @@ func TestHandleResponses_UIFollowUpStartFailureReleasesClaim(t *testing.T) {
 	req.Header.Set("X-Term-LLM-UI-Version", "test")
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
-		req: responsesCreateRequest{Stream: true, ClientMessageID: messageID}, inputMessages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: messageID}},
+		req: responsesCreateRequest{Stream: true, ClientMessageID: messageID}, inputMessages: []core.Message{{Role: core.RoleUser, ClientMessageID: messageID}},
 		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_start_failure",
 	})
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body: %s", rr.Code, rr.Body.String())
 	}
-	if _, status := engine.QueueSteeringWithStatus(entry); status != llm.SteeringQueueQueued {
+	if _, status := eng.QueueSteeringWithStatus(entry); status != engine.SteeringQueueQueued {
 		t.Fatalf("claim was not released after start failure: %q", status)
 	}
 }
@@ -941,10 +944,10 @@ func TestHandleResponses_UIFollowUpRunFailureReleasesClaim(t *testing.T) {
 		messageID = "msg-follow-up-run-failure"
 	)
 	provider := &serveRuntimeErrorProvider{err: errors.New("provider failed before response")}
-	engine := llm.NewEngine(provider, nil)
-	entry := llm.QueuedSteering{ID: messageID, Message: llm.UserText("retry me")}
-	engine.QueueSteering(entry)
-	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model"}
+	eng := engine.NewEngine(provider, nil)
+	entry := engine.QueuedSteering{ID: messageID, Message: core.UserText("retry me")}
+	eng.QueueSteering(entry)
+	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: eng, defaultModel: "mock-model"}
 	runtime.Touch()
 	manager := newServeSessionManager(time.Minute, 10, nil)
 	defer manager.Close()
@@ -956,19 +959,19 @@ func TestHandleResponses_UIFollowUpRunFailureReleasesClaim(t *testing.T) {
 	req.Header.Set("X-Term-LLM-UI-Version", "test")
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
-		req: responsesCreateRequest{Stream: true, ClientMessageID: messageID}, inputMessages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: messageID}},
+		req: responsesCreateRequest{Stream: true, ClientMessageID: messageID}, inputMessages: []core.Message{{Role: core.RoleUser, ClientMessageID: messageID}},
 		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_run_failure",
 	})
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "event: response.failed") {
 		t.Fatalf("run failure response status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if status := engine.ClaimSteeringEntry(messageID); status != llm.SteeringClaimNotFound {
+	if status := eng.ClaimSteeringEntry(messageID); status != engine.SteeringClaimNotFound {
 		t.Fatalf("claim was not released after run failure: %q", status)
 	}
-	if _, status := engine.QueueSteeringWithStatus(entry); status != llm.SteeringQueueRunFinished {
+	if _, status := eng.QueueSteeringWithStatus(entry); status != engine.SteeringQueueRunFinished {
 		t.Fatalf("finished run unexpectedly reclaimed retry ownership: %q", status)
 	}
-	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+	if pending := eng.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("finished run retained retry as phantom steering: %#v", pending)
 	}
 }
@@ -979,20 +982,20 @@ func TestHandleResponses_UIFollowUpRejectsCommittedSteering(t *testing.T) {
 		messageID = "msg_committed_steering_handoff"
 	)
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
-	engine := llm.NewEngine(provider, nil)
-	engine.QueueSteering(llm.QueuedSteering{
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("must not run")
+	eng := engine.NewEngine(provider, nil)
+	eng.QueueSteering(engine.QueuedSteering{
 		ID:          messageID,
-		Message:     llm.UserText("already committed"),
+		Message:     core.UserText("already committed"),
 		DisplayText: "already committed",
 	})
-	if drained := engine.DrainSteering(); len(drained) != 1 {
+	if drained := eng.DrainSteering(); len(drained) != 1 {
 		t.Fatalf("drained steering = %#v, want one", drained)
 	}
 	runtime := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       engine,
+		engine:       eng,
 		defaultModel: "mock-model",
 	}
 	runtime.Touch()
@@ -1008,7 +1011,7 @@ func TestHandleResponses_UIFollowUpRejectsCommittedSteering(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
 		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
-		inputMessages:      []llm.Message{llm.UserText("already committed")},
+		inputMessages:      []core.Message{core.UserText("already committed")},
 		sessionID:          sessionID,
 		previousResponseID: "resp_previous",
 		previousDurable:    true,
@@ -1031,16 +1034,16 @@ func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredRetry(t *testing.T) {
 		sessionID = "sess_trailing_retry"
 		messageID = "msg_trailing_retry"
 	)
-	provider := llm.NewMockProvider("mock").AddTextResponse("retry succeeded")
-	engine := llm.NewEngine(provider, nil)
-	trailing := llm.UserText("retry me")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("retry succeeded")
+	engine := engine.NewEngine(provider, nil)
+	trailing := core.UserText("retry me")
 	trailing.ClientMessageID = messageID
 	runtime := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
 		engine:       engine,
 		defaultModel: "mock-model",
-		history:      []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), trailing},
+		history:      []core.Message{core.UserText("earlier"), core.AssistantText("done"), trailing},
 	}
 	runtime.Touch()
 	manager := newServeSessionManager(time.Minute, 10, nil)
@@ -1054,7 +1057,7 @@ func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredRetry(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
 		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
-		inputMessages:      []llm.Message{llm.UserText("retry me")},
+		inputMessages:      []core.Message{core.UserText("retry me")},
 		sessionID:          sessionID,
 		previousResponseID: "resp_previous",
 		previousDurable:    true,
@@ -1071,19 +1074,19 @@ func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredRetry(t *testing.T) {
 
 func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredBatchRetry(t *testing.T) {
 	const sessionID = "sess-trailing-batch-retry"
-	provider := llm.NewMockProvider("mock").AddTextResponse("batch retry succeeded")
-	engine := llm.NewEngine(provider, nil)
-	first := llm.UserText("first")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("batch retry succeeded")
+	eng := engine.NewEngine(provider, nil)
+	first := core.UserText("first")
 	first.ClientMessageID = "msg-first"
-	second := llm.UserText("second")
+	second := core.UserText("second")
 	second.ClientMessageID = "msg-second"
-	for _, message := range []llm.Message{first, second} {
-		engine.QueueSteering(llm.QueuedSteering{ID: message.ClientMessageID, Message: message})
+	for _, message := range []core.Message{first, second} {
+		eng.QueueSteering(engine.QueuedSteering{ID: message.ClientMessageID, Message: message})
 	}
-	engine.ClaimSteering([]string{first.ClientMessageID, second.ClientMessageID})
+	eng.ClaimSteering([]string{first.ClientMessageID, second.ClientMessageID})
 	runtime := &serveRuntime{
-		provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model",
-		history: []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), first, second},
+		provider: provider, providerKey: provider.Name(), engine: eng, defaultModel: "mock-model",
+		history: []core.Message{core.UserText("earlier"), core.AssistantText("done"), first, second},
 	}
 	runtime.Touch()
 	manager := newServeSessionManager(time.Minute, 10, nil)
@@ -1096,7 +1099,7 @@ func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredBatchRetry(t *testing
 	req.Header.Set("X-Term-LLM-UI-Version", "test")
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
-		req: responsesCreateRequest{Stream: true, ClientMessageID: second.ClientMessageID}, inputMessages: []llm.Message{first, second},
+		req: responsesCreateRequest{Stream: true, ClientMessageID: second.ClientMessageID}, inputMessages: []core.Message{first, second},
 		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_batch_retry",
 	})
 	if rr.Code != http.StatusOK {
@@ -1109,19 +1112,19 @@ func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredBatchRetry(t *testing
 
 func TestHandleResponses_UIFollowUpRejectsMixedOwnedAndPendingBatch(t *testing.T) {
 	const sessionID = "sess-mixed-batch-ownership"
-	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
-	engine := llm.NewEngine(provider, nil)
-	first := llm.UserText("first")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("must not run")
+	eng := engine.NewEngine(provider, nil)
+	first := core.UserText("first")
 	first.ClientMessageID = "msg-owned"
-	second := llm.UserText("second")
+	second := core.UserText("second")
 	second.ClientMessageID = "msg-pending"
-	for _, message := range []llm.Message{first, second} {
-		engine.QueueSteering(llm.QueuedSteering{ID: message.ClientMessageID, Message: message})
+	for _, message := range []core.Message{first, second} {
+		eng.QueueSteering(engine.QueuedSteering{ID: message.ClientMessageID, Message: message})
 	}
-	engine.ClaimSteeringEntry(first.ClientMessageID)
+	eng.ClaimSteeringEntry(first.ClientMessageID)
 	runtime := &serveRuntime{
-		provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model",
-		history: []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), first, second},
+		provider: provider, providerKey: provider.Name(), engine: eng, defaultModel: "mock-model",
+		history: []core.Message{core.UserText("earlier"), core.AssistantText("done"), first, second},
 	}
 	runtime.Touch()
 	manager := newServeSessionManager(time.Minute, 10, nil)
@@ -1134,7 +1137,7 @@ func TestHandleResponses_UIFollowUpRejectsMixedOwnedAndPendingBatch(t *testing.T
 	req.Header.Set("X-Term-LLM-UI-Version", "test")
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
-		req: responsesCreateRequest{Stream: true, ClientMessageID: second.ClientMessageID}, inputMessages: []llm.Message{first, second},
+		req: responsesCreateRequest{Stream: true, ClientMessageID: second.ClientMessageID}, inputMessages: []core.Message{first, second},
 		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_mixed_ownership",
 	})
 	if rr.Code != http.StatusConflict {
@@ -1143,7 +1146,7 @@ func TestHandleResponses_UIFollowUpRejectsMixedOwnedAndPendingBatch(t *testing.T
 	if len(provider.Requests) != 0 {
 		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
 	}
-	if _, status := engine.QueueSteeringWithStatus(llm.QueuedSteering{ID: second.ClientMessageID, Message: second}); status != llm.SteeringQueueAlreadyQueued {
+	if _, status := eng.QueueSteeringWithStatus(engine.QueuedSteering{ID: second.ClientMessageID, Message: second}); status != engine.SteeringQueueAlreadyQueued {
 		t.Fatalf("pending batch member was transferred despite mixed ownership: %q", status)
 	}
 }
@@ -1162,20 +1165,20 @@ func TestHandleResponses_UIFollowUpRejectsColdDurableDuplicate(t *testing.T) {
 	if err := store.Create(ctx, &session.Session{ID: sessionID, Provider: "mock", Model: "mock-model", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	persisted := session.NewMessage(sessionID, llm.UserText("already durable"), -1)
+	persisted := session.NewMessage(sessionID, core.UserText("already durable"), -1)
 	persisted.ClientMessageID = messageID
 	if err := store.AddMessage(ctx, sessionID, persisted); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
-	if err := store.AddMessage(ctx, sessionID, session.NewMessage(sessionID, llm.AssistantText("already answered"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sessionID, session.NewMessage(sessionID, core.AssistantText("already answered"), -1)); err != nil {
 		t.Fatalf("Add assistant: %v", err)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("must not run")
 	runtime := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 		store:        store,
 	}
@@ -1191,7 +1194,7 @@ func TestHandleResponses_UIFollowUpRejectsColdDurableDuplicate(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
 		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
-		inputMessages:      []llm.Message{llm.UserText("already durable")},
+		inputMessages:      []core.Message{core.UserText("already durable")},
 		sessionID:          sessionID,
 		previousResponseID: "resp_previous",
 		previousDurable:    true,
@@ -1212,9 +1215,9 @@ func TestHandleResponses_StreamIdempotencyKeyReplaysExistingRun(t *testing.T) {
 		idempotencyKey = "req-grab-tuner"
 	)
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("first response")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("first response")
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  provider.Name(),
@@ -1287,7 +1290,7 @@ func TestHandleResponses_StreamIdempotencyKeyReattachesInProgressRun(t *testing.
 	defer releaseSecond()
 
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  provider.Name(),
@@ -1410,8 +1413,8 @@ func TestStreamUIResponses_SetsSessionNumberHeader(t *testing.T) {
 	defer store.Close()
 
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock").AddTextResponse("hi")
-		engine := llm.NewEngine(provider, nil)
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("hi")
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1460,13 +1463,13 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
-		*session.NewMessage(sessionID, llm.UserText("old question"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("old answer"), -1),
+		*session.NewMessage(sessionID, core.UserText("old question"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("old answer"), -1),
 	}); err != nil {
 		t.Fatalf("seed ReplaceMessages: %v", err)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("new answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("new answer")
 	// A fresh post-restart web runtime still has a tool manager. Restoring its
 	// persisted BaseDir loads session metadata before Run; that metadata must not
 	// make Run mistake the otherwise empty runtime for a hydrated conversation.
@@ -1477,7 +1480,7 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 		t.Fatalf("NewToolManager: %v", err)
 	}
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1515,13 +1518,13 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 		t.Fatalf("stored message count = %d, want 4 appended messages", len(msgs))
 	}
 	want := []struct {
-		role llm.Role
+		role core.Role
 		text string
 	}{
-		{llm.RoleUser, "old question"},
-		{llm.RoleAssistant, "old answer"},
-		{llm.RoleUser, "new question"},
-		{llm.RoleAssistant, "new answer"},
+		{core.RoleUser, "old question"},
+		{core.RoleAssistant, "old answer"},
+		{core.RoleUser, "new question"},
+		{core.RoleAssistant, "new answer"},
 	}
 	for i, w := range want {
 		if msgs[i].Role != w.role || msgs[i].TextContent != w.text {
@@ -1544,14 +1547,14 @@ func TestResponsesMessageBackedPreviousResponseAcceptsBatchedToolOutputs(t *test
 	}
 	defer store.Close()
 
-	provider := llm.NewMockProvider("mock").
-		AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{
 			{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.txt"}`)},
 			{ID: "call_2", Name: "read_file", Arguments: json.RawMessage(`{"path":"b.txt"}`)},
 		}}).
 		AddTextResponse("done")
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1584,10 +1587,10 @@ func TestResponsesMessageBackedPreviousResponseAcceptsBatchedToolOutputs(t *test
 		t.Fatalf("provider request count = %d, want 2", len(provider.Requests))
 	}
 
-	gotResults := map[string]llm.ToolResult{}
+	gotResults := map[string]core.ToolResult{}
 	for _, msg := range provider.Requests[1].Messages {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolResult && part.ToolResult != nil {
+			if part.Type == core.PartToolResult && part.ToolResult != nil {
 				gotResults[part.ToolResult.ID] = *part.ToolResult
 			}
 		}
@@ -1616,10 +1619,10 @@ func TestResponsesMessageBackedPreviousResponseIgnoresStaleRuntimeTail(t *testin
 		t.Fatalf("Create: %v", err)
 	}
 	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
-		*session.NewMessage(sessionID, llm.UserText("old question"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("old answer"), -1),
-		*session.NewMessage(sessionID, llm.UserText("newer question"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("newer answer"), -1),
+		*session.NewMessage(sessionID, core.UserText("old question"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("old answer"), -1),
+		*session.NewMessage(sessionID, core.UserText("newer question"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("newer answer"), -1),
 	}); err != nil {
 		t.Fatalf("seed ReplaceMessages: %v", err)
 	}
@@ -1630,9 +1633,9 @@ func TestResponsesMessageBackedPreviousResponseIgnoresStaleRuntimeTail(t *testin
 	staleRuntimeID := durableResponseIDForMessageID(seed[1].ID)
 	previousID := durableResponseIDForMessageID(seed[len(seed)-1].ID)
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("continued")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("continued")
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1676,8 +1679,8 @@ func TestResponsesMessageBackedPreviousResponseRejectsReplayShape(t *testing.T) 
 		t.Fatalf("Create: %v", err)
 	}
 	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
-		*session.NewMessage(sessionID, llm.UserText("old"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("old answer"), -1),
+		*session.NewMessage(sessionID, core.UserText("old"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("old answer"), -1),
 	}); err != nil {
 		t.Fatalf("seed ReplaceMessages: %v", err)
 	}
@@ -1686,9 +1689,9 @@ func TestResponsesMessageBackedPreviousResponseRejectsReplayShape(t *testing.T) 
 		t.Fatalf("GetMessages: %v", err)
 	}
 	previousID := durableResponseIDForMessageID(seed[len(seed)-1].ID)
-	provider := llm.NewMockProvider("mock").AddTextResponse("should not run")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("should not run")
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		return &serveRuntime{provider: provider, engine: engine, store: store, defaultModel: "mock-model"}, nil
 	})
 	defer manager.Close()
@@ -1728,10 +1731,10 @@ func TestResponsesMessageBackedPreviousResponseRejectsStaleTail(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
-		*session.NewMessage(sessionID, llm.UserText("first"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("first answer"), -1),
-		*session.NewMessage(sessionID, llm.UserText("second"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("second answer"), -1),
+		*session.NewMessage(sessionID, core.UserText("first"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("first answer"), -1),
+		*session.NewMessage(sessionID, core.UserText("second"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("second answer"), -1),
 	}); err != nil {
 		t.Fatalf("seed ReplaceMessages: %v", err)
 	}
@@ -1741,9 +1744,9 @@ func TestResponsesMessageBackedPreviousResponseRejectsStaleTail(t *testing.T) {
 	}
 	staleID := durableResponseIDForMessageID(seed[1].ID)
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("should not run")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("should not run")
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		return &serveRuntime{provider: provider, engine: engine, store: store, defaultModel: "mock-model"}, nil
 	})
 	defer manager.Close()
@@ -1783,8 +1786,8 @@ func TestResponsesMessageBackedPreviousResponseResolvesThroughLoggingStore(t *te
 		t.Fatalf("Create: %v", err)
 	}
 	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
-		*session.NewMessage(sessionID, llm.UserText("hello"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("hi"), -1),
+		*session.NewMessage(sessionID, core.UserText("hello"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("hi"), -1),
 	}); err != nil {
 		t.Fatalf("seed ReplaceMessages: %v", err)
 	}
@@ -1827,8 +1830,8 @@ func TestResponsesMessageBackedPreviousResponseRejectsConflictingSessionHeader(t
 		}
 	}
 	if err := store.ReplaceMessages(context.Background(), sessionA, []session.Message{
-		*session.NewMessage(sessionA, llm.UserText("hello"), -1),
-		*session.NewMessage(sessionA, llm.AssistantText("hi"), -1),
+		*session.NewMessage(sessionA, core.UserText("hello"), -1),
+		*session.NewMessage(sessionA, core.AssistantText("hi"), -1),
 	}); err != nil {
 		t.Fatalf("seed ReplaceMessages: %v", err)
 	}
@@ -2797,9 +2800,9 @@ func TestHandleSessionsSearch_UsesFTSAndReturnsSessionSummaries(t *testing.T) {
 		t.Fatalf("Create session: %v", err)
 	}
 	if err := store.AddMessage(ctx, sess.ID, &session.Message{
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: "How do I configure linux mount entries in fstab with UUIDs?",
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "How do I configure linux mount entries in fstab with UUIDs?"}},
+		Parts:       []core.Part{{Type: core.PartText, Text: "How do I configure linux mount entries in fstab with UUIDs?"}},
 		CreatedAt:   time.Now(),
 	}); err != nil {
 		t.Fatalf("AddMessage: %v", err)
@@ -2880,9 +2883,9 @@ func TestHandleSessionsSearch_DoesNotDropOlderMatchesOutsideRecent2000ListWindow
 		t.Fatalf("Create matching session: %v", err)
 	}
 	if err := store.AddMessage(ctx, matching.ID, &session.Message{
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: "needle older searchable session",
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "needle older searchable session"}},
+		Parts:       []core.Part{{Type: core.PartText, Text: "needle older searchable session"}},
 		CreatedAt:   base,
 	}); err != nil {
 		t.Fatalf("AddMessage matching session: %v", err)
@@ -3321,7 +3324,7 @@ func TestHandleTranscribe_RejectsUnsupportedType(t *testing.T) {
 func TestActiveRuntimeEffortPolicyRejectsBeforeQueue(t *testing.T) {
 	provider := newStagedProvider("ok", "")
 	close(provider.releaseSecond)
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "openai", defaultModel: "gpt-5.4", agentName: "boss", modelPolicy: modelpolicy.Policy{}.With("boss", []string{"openai:gpt-5.4-medium"})}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{}), model: "gpt-5.4", reasoningEffort: "medium"}
 	rt.setActiveInterrupt(state)
@@ -3329,7 +3332,7 @@ func TestActiveRuntimeEffortPolicyRejectsBeforeQueue(t *testing.T) {
 	if err := rt.QueueActiveRunRuntimeSwitch("gpt-5.4", "high"); err == nil || !strings.Contains(err.Error(), "not allowed") {
 		t.Fatalf("expected policy denial before queue: %v", err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{Model: "gpt-5.4", ReasoningEffort: "medium", Messages: []llm.Message{llm.UserText("hello")}})
+	stream, err := engine.Stream(context.Background(), core.Request{Model: "gpt-5.4", ReasoningEffort: "medium", Messages: []core.Message{core.UserText("hello")}})
 	if err != nil {
 		t.Fatal(err)
 	}

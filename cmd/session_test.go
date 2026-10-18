@@ -13,7 +13,9 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -27,7 +29,7 @@ func TestServeSettingsDoNotGrantDaemonWorkingDirectory(t *testing.T) {
 	if settings.PrimaryWorkspace != "" {
 		t.Fatalf("serve PrimaryWorkspace = %q, want empty", settings.PrimaryWorkspace)
 	}
-	manager, err := settings.SetupToolManager(&config.Config{}, llm.NewEngine(nil, nil))
+	manager, err := settings.SetupToolManager(&config.Config{}, engine.NewEngine(nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +81,7 @@ func TestPrimaryWorkspaceConfirmsOnlyActiveWorkspace(t *testing.T) {
 		t.Fatalf("ShellAllow = %#v, workspace binding must not approve shell commands", settings.ShellAllow)
 	}
 
-	toolMgr, err := settings.SetupToolManager(&config.Config{}, llm.NewEngine(nil, nil))
+	toolMgr, err := settings.SetupToolManager(&config.Config{}, engine.NewEngine(nil, nil))
 	if err != nil {
 		t.Fatalf("SetupToolManager() error = %v", err)
 	}
@@ -154,7 +156,7 @@ func TestResolveSettingsInDirKeepsExplicitDirsAdditiveWithoutWorkspaceDuplicates
 		t.Fatalf("WriteDirs = %#v, want explicit dir plus one workspace grant", settings.WriteDirs)
 	}
 
-	toolMgr, err := settings.SetupToolManager(&config.Config{}, llm.NewEngine(nil, nil))
+	toolMgr, err := settings.SetupToolManager(&config.Config{}, engine.NewEngine(nil, nil))
 	if err != nil {
 		t.Fatalf("SetupToolManager() error = %v", err)
 	}
@@ -407,7 +409,7 @@ func TestResolveSettings_AgentSpawnConfigAppliesToToolManager(t *testing.T) {
 		t.Fatalf("settings.Spawn.AllowedAgents = %#v, want codebase and reviewer", settings.Spawn.AllowedAgents)
 	}
 
-	engine := llm.NewEngine(nil, nil)
+	engine := engine.NewEngine(nil, nil)
 	toolMgr, err := settings.SetupToolManager(&config.Config{}, engine)
 	if err != nil {
 		t.Fatalf("SetupToolManager() error = %v", err)
@@ -927,7 +929,7 @@ Fixture content.
 				t.Fatalf("ResolveSettings() error = %v", err)
 			}
 
-			engine := newEngine(llm.NewMockProvider("mock"), cfg)
+			engine := newEngine(mockprovider.NewMockProvider("mock"), cfg)
 			toolMgr, err := settings.SetupToolManager(cfg, engine)
 			if err != nil {
 				t.Fatalf("SetupToolManager() error = %v", err)
@@ -1016,7 +1018,7 @@ tools:
 		t.Fatalf("ResolveSettings() error = %v", err)
 	}
 
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("activate", tools.ActivateSkillToolName, map[string]any{"name": "test-skill"}).
 		AddTextResponse("skill activated").
 		AddTextResponse("continued")
@@ -1035,7 +1037,7 @@ tools:
 	}
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
-	drain := func(stream llm.Stream, err error) {
+	drain := func(stream core.Stream, err error) {
 		t.Helper()
 		if err != nil {
 			t.Fatal(err)
@@ -1054,13 +1056,13 @@ tools:
 
 	// The first run reproduces the immediate post-activation boundary. The second
 	// run represents the next user message in the same developer session.
-	drain(engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("activate the skill")},
+	drain(engine.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("activate the skill")},
 		Tools:    engine.Tools().AllSpecs(),
 		MaxTurns: 3,
 	}))
-	drain(engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("continue")},
+	drain(engine.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("continue")},
 		Tools:    engine.Tools().AllSpecs(),
 		MaxTurns: 3,
 	}))
@@ -1087,7 +1089,7 @@ tools:
 
 func TestRegisterSkillToolWithEnginePreservesActiveToolPolicy(t *testing.T) {
 	setup, _ := serveSkillTestSetup(t)
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	engine.RegisterTool(tools.NewReadFileTool(nil, tools.OutputLimits{}))
 	engine.RegisterTool(tools.NewGrepTool(nil, tools.OutputLimits{}))
 	RegisterSkillToolWithEngine(engine, nil, setup)

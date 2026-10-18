@@ -5,7 +5,7 @@ package runboundary
 import (
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // ProviderContext is the provider-side state captured with one boundary. It is
@@ -47,7 +47,7 @@ func (c ProviderContext) clone() ProviderContext {
 type Snapshot struct {
 	RunID           string
 	TurnIndex       int
-	Messages        []llm.Message
+	Messages        []core.Message
 	DurableAnchorID int64
 	Durable         bool
 	Provider        ProviderContext
@@ -58,9 +58,9 @@ type Tracker struct {
 	mu sync.RWMutex
 
 	runID            string
-	live             []llm.Message
+	live             []core.Message
 	pendingAssistant bool
-	completed        []llm.Message
+	completed        []core.Message
 	completedTurn    int
 	durableAnchorID  int64
 	durable          bool
@@ -71,7 +71,7 @@ type Tracker struct {
 // durable is true and durableAnchorID is positive. provider is the state
 // captured before the run's first provider turn, so the first turn of a run can
 // still branch from the previous run's session.
-func New(runID string, messages []llm.Message, durableAnchorID int64, durable bool, provider ProviderContext) *Tracker {
+func New(runID string, messages []core.Message, durableAnchorID int64, durable bool, provider ProviderContext) *Tracker {
 	t := &Tracker{}
 	t.Reset(runID, messages, durableAnchorID, durable, provider)
 	return t
@@ -79,7 +79,7 @@ func New(runID string, messages []llm.Message, durableAnchorID int64, durable bo
 
 // Reset starts ownership of a new run and invalidates callbacks carrying the
 // previous run identity.
-func (t *Tracker) Reset(runID string, messages []llm.Message, durableAnchorID int64, durable bool, provider ProviderContext) {
+func (t *Tracker) Reset(runID string, messages []core.Message, durableAnchorID int64, durable bool, provider ProviderContext) {
 	if t == nil {
 		return
 	}
@@ -107,7 +107,7 @@ func (t *Tracker) RunID() string {
 
 // UpdateAssistant replaces the pending assistant in live context. It never
 // advances the completed or durable boundary.
-func (t *Tracker) UpdateAssistant(runID string, assistant llm.Message) bool {
+func (t *Tracker) UpdateAssistant(runID string, assistant core.Message) bool {
 	if t == nil {
 		return false
 	}
@@ -132,7 +132,7 @@ func (t *Tracker) UpdateAssistant(runID string, assistant llm.Message) bool {
 // Capturing both here is what keeps state from being published ahead of the
 // messages it belongs to: a rejected or out-of-order commit leaves the previous
 // pair intact rather than pairing new state with old messages.
-func (t *Tracker) Commit(runID string, turnIndex int, messages []llm.Message, provider ProviderContext) bool {
+func (t *Tracker) Commit(runID string, turnIndex int, messages []core.Message, provider ProviderContext) bool {
 	if t == nil {
 		return false
 	}
@@ -142,7 +142,7 @@ func (t *Tracker) Commit(runID string, turnIndex int, messages []llm.Message, pr
 		return false
 	}
 	appendStart := 0
-	if len(messages) > 0 && messages[0].Role == llm.RoleAssistant {
+	if len(messages) > 0 && messages[0].Role == core.RoleAssistant {
 		if t.pendingAssistant && len(t.live) > 0 {
 			t.live[len(t.live)-1] = cloneMessage(messages[0])
 		} else {
@@ -215,7 +215,7 @@ func (t *Tracker) InvalidateDurable(runID string) bool {
 
 // LiveSnapshot returns context suitable for estimation, including a pending
 // assistant when one exists.
-func (t *Tracker) LiveSnapshot() []llm.Message {
+func (t *Tracker) LiveSnapshot() []core.Message {
 	if t == nil {
 		return nil
 	}
@@ -237,19 +237,19 @@ func (t *Tracker) CompletedSnapshot() Snapshot {
 	}
 }
 
-func cloneMessages(messages []llm.Message) []llm.Message {
+func cloneMessages(messages []core.Message) []core.Message {
 	if len(messages) == 0 {
 		return nil
 	}
-	out := make([]llm.Message, len(messages))
+	out := make([]core.Message, len(messages))
 	for i := range messages {
 		out[i] = cloneMessage(messages[i])
 	}
 	return out
 }
 
-func cloneMessage(message llm.Message) llm.Message {
+func cloneMessage(message core.Message) core.Message {
 	copy := message
-	copy.Parts = append([]llm.Part(nil), message.Parts...)
+	copy.Parts = append([]core.Part(nil), message.Parts...)
 	return copy
 }

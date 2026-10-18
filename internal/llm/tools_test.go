@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 type namedTestTool struct{ name string }
 
 type finishingNamedTestTool struct{ namedTestTool }
 
-func (t *namedTestTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.name, Description: t.name, Schema: map[string]any{"type": "object"}}
+func (t *namedTestTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: t.name, Description: t.name, Schema: map[string]any{"type": "object"}}
 }
 
-func (t *namedTestTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
-	return TextOutput(t.name), nil
+func (t *namedTestTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput(t.name), nil
 }
 
 func (t *namedTestTool) Preview(args json.RawMessage) string { return t.name }
@@ -25,7 +28,7 @@ func (t *namedTestTool) Preview(args json.RawMessage) string { return t.name }
 func (t *finishingNamedTestTool) IsFinishingTool() bool { return true }
 
 func TestToolRegistryDeferredVisibility(t *testing.T) {
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	visible := &namedTestTool{name: "visible"}
 	deferred := &namedTestTool{name: "deferred"}
 	registry.Register(visible)
@@ -54,7 +57,7 @@ func TestToolRegistryDeferredVisibility(t *testing.T) {
 func TestToolRegistryAllSpecsSorted(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "zeta"})
 	registry.Register(&namedTestTool{name: "alpha"})
 	registry.Register(&namedTestTool{name: "middle"})
@@ -75,11 +78,11 @@ func TestToolRegistryAllSpecsSorted(t *testing.T) {
 func TestToolSpecsForRequestPreservesSortedOrderAfterFiltering(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "zeta"})
-	registry.Register(&namedTestTool{name: WebSearchToolName})
+	registry.Register(&namedTestTool{name: core.WebSearchToolName})
 	registry.Register(&namedTestTool{name: "alpha"})
-	registry.Register(&namedTestTool{name: ReadURLToolName})
+	registry.Register(&namedTestTool{name: core.ReadURLToolName})
 
 	specs := ToolSpecsForRequest(registry, false)
 	if len(specs) != 2 {
@@ -97,7 +100,7 @@ func TestToolSpecsForRequestPreservesSortedOrderAfterFiltering(t *testing.T) {
 func TestToolRegistryConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&finishingNamedTestTool{namedTestTool{name: "base"}})
 
 	const (
@@ -152,7 +155,7 @@ func TestToolRegistryConcurrentAccess(t *testing.T) {
 func TestToolRegistryAllSpecsReturnedSliceIsIndependent(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "alpha"})
 	registry.Register(&namedTestTool{name: "beta"})
 
@@ -171,7 +174,7 @@ func TestToolRegistryAllSpecsReturnedSliceIsIndependent(t *testing.T) {
 func TestToolRegistryAllSpecsInvalidatesCache(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "alpha"})
 
 	_ = registry.AllSpecs()
@@ -189,7 +192,7 @@ func TestToolRegistryAllSpecsInvalidatesCache(t *testing.T) {
 }
 
 func BenchmarkToolRegistryAllSpecs(b *testing.B) {
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	const toolCount = 128
 	for i := 0; i < toolCount; i++ {
 		registry.Register(&namedTestTool{name: fmt.Sprintf("tool-%03d", i)})

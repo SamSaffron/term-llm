@@ -2,40 +2,39 @@ package responsesproviders_test
 
 import (
 	"context"
-	. "github.com/samsaffron/term-llm/internal/llm"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
-
 	"encoding/json"
 	"errors"
-
-	"github.com/gorilla/websocket"
-
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
-
-	"github.com/samsaffron/term-llm/internal/openaiapi"
 	"io"
 	"net/http"
 	"net/http/httptest"
-
 	"reflect"
 	"slices"
 	"strings"
-
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
+	. "github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
 func TestChatGPTContextEngineUsesScopedAccountCeiling(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	defer RegisterChatGPTContextConfig(nil)
-	RegisterChatGPTContextConfig(map[string]config.ProviderConfig{"work": {Type: config.ProviderTypeChatGPT, ContextWindow: 600000, ModelConfigs: []config.ProviderModelConfig{{ID: "gpt-6-astra", Alias: "astra"}}}})
-	if err := rp.SaveChatGPTModelsCacheForTest(rp.ChatGPTModelsCacheForTest{AccountID: "test", FetchedAt: time.Now(), ClientVersion: rp.ChatGPTModelsClientVersionForTest, Models: []ModelInfo{{ID: "gpt-6-astra", BackendContext: 272000, MaxContext: 400000}}}); err != nil {
+	defer rp.RegisterChatGPTContextConfig(nil)
+	rp.RegisterChatGPTContextConfig(map[string]config.ProviderConfig{"work": {Type: config.ProviderTypeChatGPT, ContextWindow: 600000, ModelConfigs: []config.ProviderModelConfig{{ID: "gpt-6-astra", Alias: "astra"}}}})
+	if err := rp.SaveChatGPTModelsCacheForTest(rp.ChatGPTModelsCacheForTest{AccountID: "test", FetchedAt: time.Now(), ClientVersion: rp.ChatGPTModelsClientVersionForTest, Models: []core.ModelInfo{{ID: "gpt-6-astra", BackendContext: 272000, MaxContext: 400000}}}); err != nil {
 		t.Fatal(err)
 	}
-	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{AccountID: "test", AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour).Unix()}, "gpt-6-astra")
-	eng := NewEngine(provider, NewToolRegistry())
+	provider := rp.NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{AccountID: "test", AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour).Unix()}, "gpt-6-astra")
+	eng := engine.NewEngine(provider, engine.NewToolRegistry())
 	eng.ConfigureContextManagement(provider, "work", "astra-high", true)
 	if got := eng.InputLimit(); got != 400000 {
 		t.Fatalf("engine context %d want account maximum 400000", got)
@@ -49,7 +48,7 @@ func TestChatGPTListModelsFallsBackToStaticCatalogOnColdFailure(t *testing.T) {
 	(*rp.ChatGPTHTTPClientForTest) = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return nil, errors.New("offline")
 	})}
-	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+	provider := rp.NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
 		AccessToken: "test-token",
 		AccountID:   "test-account",
 		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
@@ -70,7 +69,7 @@ func TestChatGPTCachedCatalogDrivesModelsAndContextLimit(t *testing.T) {
 	if err := rp.SaveChatGPTModelsCacheForTest(rp.ChatGPTModelsCacheForTest{
 		FetchedAt:     time.Now(),
 		ClientVersion: rp.ChatGPTModelsClientVersionForTest,
-		Models:        []ModelInfo{{ID: "account-preview", InputLimit: 333_000}},
+		Models:        []core.ModelInfo{{ID: "account-preview", InputLimit: 333_000}},
 	}); err != nil {
 		t.Fatalf("save cache: %v", err)
 	}
@@ -89,11 +88,11 @@ func TestChatGPTModelSuffixes(t *testing.T) {
 	if model, tier := rp.ChatGPTModelServiceTierForTest("gpt-reserve-low-fast"); model != "gpt-reserve-low-fast" || tier != "" {
 		t.Fatalf("without metadata, got (%q, %q)", model, tier)
 	}
-	models := []ModelInfo{
-		{ID: "gpt-reserve", InputLimit: 272000, ReasoningEfforts: []string{"low", "medium", "max"}, ServiceTiers: []ModelServiceTier{{ID: "priority"}}},
+	models := []core.ModelInfo{
+		{ID: "gpt-reserve", InputLimit: 272000, ReasoningEfforts: []string{"low", "medium", "max"}, ServiceTiers: []core.ModelServiceTier{{ID: "priority"}}},
 		{ID: "slow", ReasoningEfforts: []string{"low"}},
 		{ID: "speed", ReasoningEfforts: []string{"low"}, AdditionalSpeedTiers: []string{"fast"}},
-		{ID: "literal", ServiceTiers: []ModelServiceTier{{ID: "priority"}}},
+		{ID: "literal", ServiceTiers: []core.ModelServiceTier{{ID: "priority"}}},
 		{ID: "literal-fast"},
 	}
 	if err := rp.SaveChatGPTModelsCacheForTest(rp.ChatGPTModelsCacheForTest{ClientVersion: rp.ChatGPTModelsClientVersionForTest, Models: models}); err != nil {
@@ -111,7 +110,7 @@ func TestChatGPTModelSuffixes(t *testing.T) {
 		{"unknown-low-fast", "unknown-low-fast", "", ""},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
-			p := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{}, tc.input)
+			p := rp.NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{}, tc.input)
 			model, effort, tier := rp.ChatGPTModelEffortTierForTest(p)
 			if model != tc.model || effort != tc.effort || tier != tc.tier {
 				t.Fatalf("got (%s, %s, %s), want (%s, %s, %s)", model, effort, tier, tc.model, tc.effort, tc.tier)
@@ -163,9 +162,9 @@ func TestChatGPTModelSuffixes(t *testing.T) {
 
 	origClient := (*rp.ChatGPTHTTPClientForTest)
 	t.Cleanup(func() { (*rp.ChatGPTHTTPClientForTest) = origClient })
-	var captured ResponsesRequest
+	var captured responses.ResponsesRequest
 	(*rp.ChatGPTHTTPClientForTest) = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		captured = ResponsesRequest{}
+		captured = responses.ResponsesRequest{}
 		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
 			t.Fatal(err)
 		}
@@ -173,16 +172,16 @@ func TestChatGPTModelSuffixes(t *testing.T) {
 	})}
 	for _, tc := range []struct {
 		name, model  string
-		req          Request
+		req          core.Request
 		tier, effort string
 	}{
-		{"constructor", "gpt-reserve-low-fast", Request{}, ServiceTierFast, "low"},
-		{"request", "gpt-reserve", Request{Model: "gpt-reserve-low-fast"}, ServiceTierFast, "low"},
-		{"explicit overrides", "gpt-reserve-low-fast", Request{ReasoningEffort: "max", ServiceTierSet: true}, "", "max"},
+		{"constructor", "gpt-reserve-low-fast", core.Request{}, ServiceTierFast, "low"},
+		{"request", "gpt-reserve", core.Request{Model: "gpt-reserve-low-fast"}, ServiceTierFast, "low"},
+		{"explicit overrides", "gpt-reserve-low-fast", core.Request{ReasoningEffort: "max", ServiceTierSet: true}, "", "max"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour).Unix()}, tc.model)
-			tc.req.Messages = []Message{UserText("hi")}
+			p := rp.NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour).Unix()}, tc.model)
+			tc.req.Messages = []core.Message{core.UserText("hi")}
 			stream, err := p.Stream(context.Background(), tc.req)
 			if err != nil {
 				t.Fatal(err)
@@ -286,7 +285,7 @@ func TestGrokCatalogAuthenticatedFilteringBoundsAndCache(t *testing.T) {
 	if err := credentials.SaveGrokCredentials(creds); err != nil {
 		t.Fatal(err)
 	}
-	provider := NewGrokProviderWithCreds(creds, "grok-4.6")
+	provider := rp.NewGrokProviderWithCreds(creds, "grok-4.6")
 	if got := InputLimitForProviderModel("grok", "grok-4.6-high"); got != 192_000 {
 		t.Fatalf("static Grok fallback input limit = %d, want 192000", got)
 	}
@@ -343,7 +342,7 @@ func TestConfiguredGrokAliasUsesNativeProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := provider.(*GrokProvider); !ok {
+	if _, ok := provider.(*rp.GrokProvider); !ok {
 		t.Fatalf("configured type grok created %T", provider)
 	}
 }
@@ -407,16 +406,16 @@ func TestGrokProviderReplaysEncryptedReasoningThroughToolLoopWithoutServerState(
 	})}
 
 	creds := &credentials.GrokCredentials{AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "acct_1"}
-	provider := NewGrokProviderWithCreds(creds, "grok-4.6")
+	provider := rp.NewGrokProviderWithCreds(creds, "grok-4.6")
 	rp.ResetGrokResponsesClientForTest(provider, creds, "must-not-send")
 	tool := &countingTool{}
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
-	stream, err := engine.Stream(context.Background(), Request{
-		Messages: []Message{UserText("use the tool")},
-		Tools:    []ToolSpec{tool.Spec()},
+	stream, err := engine.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("use the tool")},
+		Tools:    []core.ToolSpec{tool.Spec()},
 		MaxTurns: 4,
 	})
 	if err != nil {
@@ -496,12 +495,12 @@ func TestGrokEncryptedContent400IsNotRetriedByOuterProvider(t *testing.T) {
 		}, nil
 	})}
 	creds := &credentials.GrokCredentials{AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "acct_1"}
-	provider := WrapWithRetry(NewGrokProviderWithCreds(creds, "grok-4.6"), RetryConfig{
+	provider := WrapWithRetry(rp.NewGrokProviderWithCreds(creds, "grok-4.6"), RetryConfig{
 		MaxAttempts: 3,
 		BaseBackoff: time.Nanosecond,
 		MaxBackoff:  time.Nanosecond,
 	})
-	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("continue")}})
+	stream, err := provider.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("continue")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +547,7 @@ func TestOpenAIProviderConfigDeclaredEffortSuffixForCustomProvider(t *testing.T)
 		{name: "gpt suffix under custom name", providerModel: "gpt-5.4-xhigh", wantModel: "gpt-5.4", wantEffort: "xhigh"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var got ResponsesRequest
+			var got responses.ResponsesRequest
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 					t.Errorf("decode request: %v", err)
@@ -566,7 +565,7 @@ func TestOpenAIProviderConfigDeclaredEffortSuffixForCustomProvider(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			stream, err := created.Stream(context.Background(), Request{Model: tc.requestModel, Messages: []Message{UserText("hello")}, ReasoningEffort: tc.requestEffort})
+			stream, err := created.Stream(context.Background(), core.Request{Model: tc.requestModel, Messages: []core.Message{core.UserText("hello")}, ReasoningEffort: tc.requestEffort})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -599,7 +598,7 @@ func TestCreateOpenAIProviderFromConfigUsesBaseURLAndHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createProviderFromConfig: %v", err)
 	}
-	openai, ok := provider.(*OpenAIProvider)
+	openai, ok := provider.(*rp.OpenAIProvider)
 	if !ok {
 		t.Fatalf("provider = %T", provider)
 	}
@@ -623,9 +622,9 @@ func TestOpenAIProviderRequestEncryptedReasoning(t *testing.T) {
 		{name: "disabled", option: boolPtr(false)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var requests []ResponsesRequest
+			var requests []responses.ResponsesRequest
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var payload ResponsesRequest
+				var payload responses.ResponsesRequest
 				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 					t.Errorf("decode request: %v", err)
 					w.WriteHeader(http.StatusBadRequest)
@@ -650,9 +649,9 @@ func TestOpenAIProviderRequestEncryptedReasoning(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			provider := created.(*OpenAIProvider)
-			messages := []Message{UserText("hello")}
-			stream, err := provider.Stream(context.Background(), Request{Messages: messages})
+			provider := created.(*rp.OpenAIProvider)
+			messages := []core.Message{core.UserText("hello")}
+			stream, err := provider.Stream(context.Background(), core.Request{Messages: messages})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -660,10 +659,10 @@ func TestOpenAIProviderRequestEncryptedReasoning(t *testing.T) {
 			stream.Close()
 
 			// Existing or unsolicited encrypted reasoning must still survive full-history replay.
-			messages = append(messages, Message{Role: RoleAssistant, Parts: []Part{{
-				Type: PartText, Text: "answer", ReasoningItemID: "rs_saved", ReasoningEncryptedContent: "enc_saved",
-			}}}, UserText("follow up"))
-			stream, err = provider.Stream(context.Background(), Request{Messages: messages})
+			messages = append(messages, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+				Type: core.PartText, Text: "answer", ReasoningItemID: "rs_saved", ReasoningEncryptedContent: "enc_saved",
+			}}}, core.UserText("follow up"))
+			stream, err = provider.Stream(context.Background(), core.Request{Messages: messages})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -717,7 +716,7 @@ func TestOpenAIProviderUsePreviousResponseID(t *testing.T) {
 				transport = "websocket"
 			}
 			t.Run(transport+"/"+tc.name, func(t *testing.T) {
-				requests := make(chan ResponsesRequest, 2)
+				requests := make(chan responses.ResponsesRequest, 2)
 				upgrader := websocket.Upgrader{}
 				completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_saved", "output": []any{}}}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -729,7 +728,7 @@ func TestOpenAIProviderUsePreviousResponseID(t *testing.T) {
 						}
 						defer conn.Close()
 						for range 2 {
-							var payload ResponsesRequest
+							var payload responses.ResponsesRequest
 							if err := conn.ReadJSON(&payload); err != nil {
 								t.Errorf("read WebSocket request: %v", err)
 								return
@@ -742,7 +741,7 @@ func TestOpenAIProviderUsePreviousResponseID(t *testing.T) {
 						}
 						return
 					}
-					var payload ResponsesRequest
+					var payload responses.ResponsesRequest
 					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 						t.Errorf("decode request: %v", err)
 						w.WriteHeader(http.StatusBadRequest)
@@ -761,19 +760,19 @@ func TestOpenAIProviderUsePreviousResponseID(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				provider := created.(*OpenAIProvider)
+				provider := created.(*rp.OpenAIProvider)
 				defer func() { rp.OpenAIResponsesClientForTest(provider).CloseWebSocket() }()
-				messages := []Message{UserText("old question"), {Role: RoleAssistant, Parts: []Part{{
-					Type: PartText, Text: "old answer", ReasoningItemID: "rs_saved", ReasoningEncryptedContent: "enc_saved",
-				}}}, UserText("hello")}
+				messages := []core.Message{core.UserText("old question"), {Role: core.RoleAssistant, Parts: []core.Part{{
+					Type: core.PartText, Text: "old answer", ReasoningItemID: "rs_saved", ReasoningEncryptedContent: "enc_saved",
+				}}}, core.UserText("hello")}
 				for range 2 {
-					stream, err := provider.Stream(context.Background(), Request{Messages: messages})
+					stream, err := provider.Stream(context.Background(), core.Request{Messages: messages})
 					if err != nil {
 						t.Fatal(err)
 					}
 					drainStreamToDone(t, stream)
 					stream.Close()
-					messages = append(messages, UserText("follow up"))
+					messages = append(messages, core.UserText("follow up"))
 				}
 				first, second := <-requests, <-requests
 				if first.PreviousResponseID != "" {
@@ -812,7 +811,7 @@ func TestOpenCodeGoListModelsMergesLiveCatalog(t *testing.T) {
 	if len(models) != 7 { // deprecated-model is intentionally hidden
 		t.Fatalf("models = %#v, want seven active models", models)
 	}
-	byID := make(map[string]ModelInfo)
+	byID := make(map[string]core.ModelInfo)
 	for _, model := range models {
 		byID[model.ID] = model
 	}
@@ -828,14 +827,14 @@ func TestOpenCodeGoListModelsMergesLiveCatalog(t *testing.T) {
 	if got := byID["unknown-preview"].DisplayName; got != "" {
 		t.Fatalf("unknown preview display name = %q, want empty fallback metadata", got)
 	}
-	if ids := GetCachedOpenCodeGoModels(); strings.Join(ids, ",") != "chat-model,gemini-model,messages-model,muse-spark-1.2,qwen3.8-max,responses-model,unknown-preview" {
+	if ids := rp.GetCachedOpenCodeGoModels(); strings.Join(ids, ",") != "chat-model,gemini-model,messages-model,muse-spark-1.2,qwen3.8-max,responses-model,unknown-preview" {
 		t.Fatalf("cached IDs = %v", ids)
 	}
-	cachedInfos, fresh, err := CachedOpenCodeGoModels()
+	cachedInfos, fresh, err := rp.CachedOpenCodeGoModels()
 	if err != nil || !fresh {
 		t.Fatalf("CachedOpenCodeGoModels = fresh %v, error %v", fresh, err)
 	}
-	cachedByID := make(map[string]ModelInfo, len(cachedInfos))
+	cachedByID := make(map[string]core.ModelInfo, len(cachedInfos))
 	for _, model := range cachedInfos {
 		cachedByID[model.ID] = model
 	}
@@ -878,9 +877,9 @@ func TestGetCachedOpenCodeGoModelsForAPIKeyReadsDiskCache(t *testing.T) {
 
 	cacheKey := rp.OpenCodeGoCatalogScopeForTest("fresh-key", rp.OpenCodeGoBaseURLForTest)
 	models := []rp.OpenCodeGoModelForTest{
-		{ModelInfo: ModelInfo{ID: "active-model", ReasoningEfforts: []string{"low", "medium", "high"}}},
-		{ModelInfo: ModelInfo{ID: "retired-model"}, Deprecated: true},
-		{ModelInfo: ModelInfo{ID: ""}},
+		{ModelInfo: core.ModelInfo{ID: "active-model", ReasoningEfforts: []string{"low", "medium", "high"}}},
+		{ModelInfo: core.ModelInfo{ID: "retired-model"}, Deprecated: true},
+		{ModelInfo: core.ModelInfo{ID: ""}},
 	}
 	if err := rp.WriteCachedOpenCodeGoModelsForTest(cacheKey, models); err != nil {
 		t.Fatalf("write cache: %v", err)
@@ -889,7 +888,7 @@ func TestGetCachedOpenCodeGoModelsForAPIKeyReadsDiskCache(t *testing.T) {
 	// No provider has been constructed for this scope; completion must still
 	// read the on-disk cache directly, and priming the scope must make its
 	// reasoning efforts visible to the provider-aware effort helpers.
-	got := GetCachedOpenCodeGoModelsForAPIKey("fresh-key")
+	got := rp.GetCachedOpenCodeGoModelsForAPIKey("fresh-key")
 	if strings.Join(got, ",") != "active-model" {
 		t.Fatalf("GetCachedOpenCodeGoModelsForAPIKey(fresh-key) = %v, want [active-model]", got)
 	}
@@ -898,7 +897,7 @@ func TestGetCachedOpenCodeGoModelsForAPIKeyReadsDiskCache(t *testing.T) {
 		t.Fatalf("ReasoningEffortsForProviderModel(active-model) = %v, want low/medium/high", efforts)
 	}
 
-	if got := GetCachedOpenCodeGoModelsForAPIKey("other-key"); got != nil {
+	if got := rp.GetCachedOpenCodeGoModelsForAPIKey("other-key"); got != nil {
 		t.Fatalf("GetCachedOpenCodeGoModelsForAPIKey(other-key) = %v, want nil", got)
 	}
 }
@@ -909,8 +908,8 @@ func TestOpenCodeGoCompletionRevealsCachedReasoningEfforts(t *testing.T) {
 	const apiKey = "completion-key"
 	cacheKey := rp.OpenCodeGoCatalogScopeForTest(apiKey, rp.OpenCodeGoBaseURLForTest)
 	models := []rp.OpenCodeGoModelForTest{
-		{ModelInfo: ModelInfo{ID: "gemini-model", ReasoningEfforts: []string{"low", "medium", "high"}}, Protocol: rp.OpenCodeGoProtocolGeminiForTest},
-		{ModelInfo: ModelInfo{ID: "chat-model", ReasoningEfforts: []string{"high", "max"}}, Protocol: rp.OpenCodeGoProtocolChatForTest},
+		{ModelInfo: core.ModelInfo{ID: "gemini-model", ReasoningEfforts: []string{"low", "medium", "high"}}, Protocol: rp.OpenCodeGoProtocolGeminiForTest},
+		{ModelInfo: core.ModelInfo{ID: "chat-model", ReasoningEfforts: []string{"high", "max"}}, Protocol: rp.OpenCodeGoProtocolChatForTest},
 	}
 	if err := rp.WriteCachedOpenCodeGoModelsForTest(cacheKey, models); err != nil {
 		t.Fatalf("write cache: %v", err)
@@ -949,7 +948,7 @@ func TestOpenCodeGoCompletionRevealsCachedReasoningEfforts(t *testing.T) {
 	// scope must not complete (or lend their efforts) under the other.
 	const gatewayBase = "https://gateway.example.com/v1"
 	gatewayModels := []rp.OpenCodeGoModelForTest{
-		{ModelInfo: ModelInfo{ID: "gateway-model", ReasoningEfforts: []string{"low", "high"}}, Protocol: rp.OpenCodeGoProtocolGeminiForTest},
+		{ModelInfo: core.ModelInfo{ID: "gateway-model", ReasoningEfforts: []string{"low", "high"}}, Protocol: rp.OpenCodeGoProtocolGeminiForTest},
 	}
 	if err := rp.WriteCachedOpenCodeGoModelsForTest(rp.OpenCodeGoCatalogScopeForTest(apiKey, gatewayBase), gatewayModels); err != nil {
 		t.Fatalf("write gateway cache: %v", err)
@@ -980,7 +979,7 @@ func TestRetryProviderForwardsOpenCodeGoFreshness(t *testing.T) {
 	recorder.SetCatalogFailureForTest(true)
 	wrapped := WrapWithRetry(rp.NewOpenCodeGoProviderForTest("test-key", "chat-model", server.URL, server.URL+"/catalog", server.Client()), RetryConfig{MaxAttempts: 1})
 	lister, ok := wrapped.(interface {
-		ListModelsWithFreshness(context.Context) ([]ModelInfo, bool, error)
+		ListModelsWithFreshness(context.Context) ([]core.ModelInfo, bool, error)
 	})
 	if !ok {
 		t.Fatal("retry provider does not expose model freshness")
@@ -997,7 +996,7 @@ func TestConfigureContextManagementRefreshesOpenCodeGoMetadata(t *testing.T) {
 	defer server.Close()
 	provider := rp.NewOpenCodeGoProviderForTest("test-key", "responses-model", server.URL, server.URL+"/catalog", server.Client())
 	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
-	e := NewEngine(wrapped, nil)
+	e := engine.NewEngine(wrapped, nil)
 	e.ConfigureContextManagement(wrapped, "opencode-go", "responses-model-high", true)
 	if got := e.InputLimit(); got != 900 {
 		t.Fatalf("InputLimit = %d, want 900", got)
@@ -1040,7 +1039,7 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 		(*rp.ZenCatalogURLForTest) = restoreCatalogURL
 	}()
 
-	provider := &ZenProvider{OpenAICompatProvider: NewOpenAICompatProvider(modelsServer.URL, "", "", rp.ZenDisplayNameForTest)}
+	provider := &rp.ZenProvider{OpenAICompatProvider: opencompat.NewOpenAICompatProvider(modelsServer.URL, "", "", rp.ZenDisplayNameForTest)}
 	models, err := provider.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
@@ -1050,7 +1049,7 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 		t.Fatalf("expected only paid models, got %+v", models)
 	}
 
-	byID := make(map[string]ModelInfo, len(models))
+	byID := make(map[string]core.ModelInfo, len(models))
 	for _, m := range models {
 		byID[m.ID] = m
 	}

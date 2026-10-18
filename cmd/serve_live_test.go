@@ -17,11 +17,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 // liveTestHarness wires a serve server to in-process fakes for the provider's
@@ -268,7 +268,7 @@ func TestLiveDelegationRunsAgentTurnAndSpeaksTheAnswer(t *testing.T) {
 	if !ok {
 		t.Fatal("the delegated turn did not create a session runtime")
 	}
-	provider, ok := runtime.provider.(*llm.MockProvider)
+	provider, ok := runtime.provider.(*mockprovider.MockProvider)
 	if !ok {
 		t.Fatalf("unexpected provider %T", runtime.provider)
 	}
@@ -521,16 +521,16 @@ func waitForLiveCondition(t *testing.T, what string, condition func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func lastUserMessageText(t *testing.T, request llm.Request) string {
+func lastUserMessageText(t *testing.T, request core.Request) string {
 	t.Helper()
 	var text strings.Builder
 	for _, message := range request.Messages {
-		if message.Role != llm.RoleUser {
+		if message.Role != core.RoleUser {
 			continue
 		}
 		text.Reset()
 		for _, part := range message.Parts {
-			if part.Type == llm.PartText {
+			if part.Type == core.PartText {
 				text.WriteString(part.Text)
 			}
 		}

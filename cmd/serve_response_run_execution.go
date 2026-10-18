@@ -6,12 +6,13 @@ import (
 	"log"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, closeTask, cancel func(), runTimer *responseRunTimer, mgr *responseRunManager, runtime *serveRuntime, run *responseRun, stateful, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID, respID, model string, created int64, options startResponseRunOptions) {
+func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, closeTask, cancel func(), runTimer *responseRunTimer, mgr *responseRunManager, runtime *serveRuntime, run *responseRun, stateful, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID, respID, model string, created int64, options startResponseRunOptions) {
 	defer closeTask()
 	defer func() { releaseReload() }()
 	defer close(run.settled)
@@ -60,10 +61,10 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 
 	// Every execution path of this run, including a model swap, answers inline
 	// client tool calls with the same runner.
-	var clientToolRunner llm.ClientToolRunner
+	var clientToolRunner core.ClientToolRunner
 	if options.clientToolRunner != nil {
 		clientToolRunner = options.clientToolRunner(respID)
-		runCtx = llm.ContextWithClientToolRunner(runCtx, clientToolRunner)
+		runCtx = core.ContextWithClientToolRunner(runCtx, clientToolRunner)
 	}
 
 	if options.modelSwap != nil && options.modelSwap.plan.enabled {
@@ -76,7 +77,7 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		streamState = options.resume.streamState()
 	}
 	var result serveRunResult
-	var totalUsage llm.Usage
+	var totalUsage core.Usage
 	if options.resume != nil {
 		totalUsage = options.resume.View.Usage
 	}
@@ -86,11 +87,11 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		runtimeRunCtx = s.withLiveSettingsContext(runtimeRunCtx, options.live, sessionID)
 		if clientToolRunner != nil {
 			// A resume replaces runCtx, so the runner is reinstalled on it.
-			runtimeRunCtx = llm.ContextWithClientToolRunner(runtimeRunCtx, clientToolRunner)
+			runtimeRunCtx = core.ContextWithClientToolRunner(runtimeRunCtx, clientToolRunner)
 		}
 		result, err = runtime.RunWithEventsAndStart(runtimeRunCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
 			mgr.setActiveRun(sessionID, respID)
-		}, func(ev llm.Event) error {
+		}, func(ev core.Event) error {
 			if appendErr := s.appendResponseRunEvent(runtime, run, streamState, ev); appendErr != nil {
 				return appendErr
 			}
@@ -101,7 +102,7 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		})
 		totalUsage.Add(result.Usage)
 		result.Usage = totalUsage
-		var suspended *llm.SuspendedError
+		var suspended *engine.SuspendedError
 		if !errors.As(err, &suspended) {
 			break
 		}

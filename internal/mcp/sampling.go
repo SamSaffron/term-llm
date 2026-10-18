@@ -11,7 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
@@ -28,7 +28,7 @@ const (
 
 // SamplingHandler handles sampling/createMessage requests from MCP servers.
 type SamplingHandler struct {
-	provider        llm.Provider
+	provider        core.Provider
 	model           string
 	serverConfigs   map[string]ServerConfig
 	approvedServers map[string]bool // Session-scoped approval tracking
@@ -37,7 +37,7 @@ type SamplingHandler struct {
 }
 
 // NewSamplingHandler creates a new sampling handler.
-func NewSamplingHandler(provider llm.Provider, model string) *SamplingHandler {
+func NewSamplingHandler(provider core.Provider, model string) *SamplingHandler {
 	return &SamplingHandler{
 		provider:        provider,
 		model:           model,
@@ -98,7 +98,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, serverName string, req *mc
 
 	// Add system prompt if provided
 	if req.Params.SystemPrompt != "" {
-		messages = append([]llm.Message{llm.SystemText(req.Params.SystemPrompt)}, messages...)
+		messages = append([]core.Message{core.SystemText(req.Params.SystemPrompt)}, messages...)
 	}
 
 	// Determine provider and model to use
@@ -118,7 +118,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, serverName string, req *mc
 	}
 
 	// Build the LLM request
-	llmReq := llm.Request{
+	llmReq := core.Request{
 		Model:           model,
 		Ephemeral:       true,
 		Messages:        messages,
@@ -151,11 +151,11 @@ func (h *SamplingHandler) Handle(ctx context.Context, serverName string, req *mc
 		}
 
 		switch event.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			responseText.WriteString(event.Text)
-		case llm.EventDone:
+		case core.EventDone:
 			stopReason = "endTurn"
-		case llm.EventError:
+		case core.EventError:
 			if event.Err != nil {
 				return nil, event.Err
 			}
@@ -175,12 +175,12 @@ func (h *SamplingHandler) Handle(ctx context.Context, serverName string, req *mc
 }
 
 // convertSamplingMessages converts MCP SamplingMessages to llm.Messages.
-func convertSamplingMessages(msgs []*mcp.SamplingMessage) []llm.Message {
-	var result []llm.Message
+func convertSamplingMessages(msgs []*mcp.SamplingMessage) []core.Message {
+	var result []core.Message
 	for _, m := range msgs {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if m.Role == "assistant" {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 
 		var text string
@@ -192,9 +192,9 @@ func convertSamplingMessages(msgs []*mcp.SamplingMessage) []llm.Message {
 			continue
 		}
 
-		result = append(result, llm.Message{
+		result = append(result, core.Message{
 			Role:  role,
-			Parts: []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts: []core.Part{{Type: core.PartText, Text: text}},
 		})
 	}
 	return result

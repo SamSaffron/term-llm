@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/diff"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // WriteFileTool implements the write_file tool.
@@ -33,8 +33,8 @@ type WriteFileArgs struct {
 	Content string `json:"content"`
 }
 
-func (t *WriteFileTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *WriteFileTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        WriteFileToolName,
 		Description: "Create or overwrite a file with the specified content. Creates parent directories if needed.",
 		Schema: map[string]interface{}{
@@ -63,10 +63,10 @@ func (t *WriteFileTool) Preview(args json.RawMessage) string {
 	return a.Path
 }
 
-func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	warning := WarnUnknownParams(args, []string{"path", "content"})
-	textOutput := func(message string) llm.ToolOutput {
-		return llm.TextOutput(warning + message)
+	textOutput := func(message string) core.ToolOutput {
+		return core.TextOutput(warning + message)
 	}
 
 	var a WriteFileArgs
@@ -176,22 +176,22 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	}
 
 	// Build result message
-	output := llm.ToolOutput{}
+	output := core.ToolOutput{}
 	if fc, diagnostic := recordFileChange(ctx, t.recorder, WriteFileToolName, absPath, []byte(existingContent), []byte(a.Content), isNew, false); fc != nil {
-		output.FileChanges = []llm.FileChange{*fc}
+		output.FileChanges = []core.FileChange{*fc}
 		if diagnostic != nil {
-			output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
+			output.OutputClaimDiagnostics = []core.OutputClaimDiagnostic{*diagnostic}
 		}
 	} else if diagnostic != nil {
-		output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
+		output.OutputClaimDiagnostics = []core.OutputClaimDiagnostic{*diagnostic}
 	}
 	if isNew {
 		output.Content = fmt.Sprintf("Created new file: %s (%d lines).", absPath, countLines(a.Content))
 
 		// Populate structured diff data (skip if content is too large)
 		if len(a.Content) < diff.MaxDiffSize {
-			output.Diffs = []llm.DiffData{
-				{File: absPath, Old: "", New: a.Content, Line: 1, Operation: llm.DiffOperationCreate},
+			output.Diffs = []core.DiffData{
+				{File: absPath, Old: "", New: a.Content, Line: 1, Operation: core.DiffOperationCreate},
 			}
 		}
 	} else {
@@ -201,7 +201,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 
 		// Populate structured diff data (skip if content is too large)
 		if len(existingContent) < diff.MaxDiffSize && len(a.Content) < diff.MaxDiffSize {
-			output.Diffs = []llm.DiffData{
+			output.Diffs = []core.DiffData{
 				{File: absPath, Old: existingContent, New: a.Content, Line: 1},
 			}
 		}

@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -32,7 +33,7 @@ func appendChildSkillSystemContext(systemPrompt string, skill *runpkg.SkillRunMe
 	return systemPrompt + "\n\n" + context.String()
 }
 
-func applyChildSkillRuntime(engine *llm.Engine, toolMgr *tools.ToolManager, skill *runpkg.SkillRunMetadata) error {
+func applyChildSkillRuntime(engine *engine.Engine, toolMgr *tools.ToolManager, skill *runpkg.SkillRunMetadata) error {
 	if skill == nil {
 		return nil
 	}
@@ -55,7 +56,7 @@ func applyChildSkillRuntime(engine *llm.Engine, toolMgr *tools.ToolManager, skil
 	return nil
 }
 
-func filterEngineAllowedToolSpecs(specs []llm.ToolSpec, engine *llm.Engine) []llm.ToolSpec {
+func filterEngineAllowedToolSpecs(specs []core.ToolSpec, engine *engine.Engine) []core.ToolSpec {
 	if engine == nil {
 		return specs
 	}

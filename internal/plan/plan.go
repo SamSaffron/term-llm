@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 const (
@@ -262,11 +262,11 @@ func (s Snapshot) ChecklistText(running bool) string {
 
 // LatestSuccessfulSnapshot extracts the newest valid update_plan call with a
 // matching successful tool result from active message history.
-func LatestSuccessfulSnapshot(messages []llm.Message) (Snapshot, bool) {
+func LatestSuccessfulSnapshot(messages []core.Message) (Snapshot, bool) {
 	successful := make(map[string]bool)
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
 				continue
 			}
 			result := part.ToolResult
@@ -279,7 +279,7 @@ func LatestSuccessfulSnapshot(messages []llm.Message) (Snapshot, bool) {
 		parts := messages[i].Parts
 		for j := len(parts) - 1; j >= 0; j-- {
 			call := parts[j].ToolCall
-			if parts[j].Type != llm.PartToolCall || call == nil || call.Name != ToolName || !successful[call.ID] {
+			if parts[j].Type != core.PartToolCall || call == nil || call.Name != ToolName || !successful[call.ID] {
 				continue
 			}
 			snapshot, err := Parse(call.Arguments)

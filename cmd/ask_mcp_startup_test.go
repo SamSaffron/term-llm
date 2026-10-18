@@ -16,7 +16,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/app/ask"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"golang.org/x/oauth2"
@@ -94,7 +94,7 @@ func TestAskMCPStartup(t *testing.T) {
 			}()
 			writeServeMCPConfig(t, map[string]mcp.ServerConfig{"slow": {Type: "http", URL: httpServer.URL}})
 			var feedback bytes.Buffer
-			manager, err := ask.EnableMCPServersWithFeedback(ctx, "slow", llm.NewEngine(nil, nil), &feedback, nil)
+			manager, err := ask.EnableMCPServersWithFeedback(ctx, "slow", engine.NewEngine(nil, nil), &feedback, nil)
 			if got := feedback.String(); strings.ContainsAny(got, "\r⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") || !strings.HasPrefix(got, "Starting MCP: slow\n") {
 				t.Fatalf("non-terminal startup feedback = %q", got)
 			}
@@ -202,7 +202,7 @@ func TestEnableMCPServersWithFeedbackRequiresSignIn(t *testing.T) {
 				"greeter":   {Command: os.Args[0], Env: map[string]string{runServeMCPHandlerTestServerEnv: "1"}},
 			})
 			var feedback bytes.Buffer
-			manager, err := ask.EnableMCPServersWithFeedback(t.Context(), selection, llm.NewEngine(nil, llm.NewToolRegistry()), &feedback, nil)
+			manager, err := ask.EnableMCPServersWithFeedback(t.Context(), selection, engine.NewEngine(nil, engine.NewToolRegistry()), &feedback, nil)
 			if manager != nil {
 				defer manager.StopAll()
 				t.Error("startup with missing authorization returned a manager")

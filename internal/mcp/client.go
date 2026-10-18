@@ -18,7 +18,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
@@ -581,21 +581,21 @@ func (c *Client) refreshWorker(ctx context.Context, session *mcp.ClientSession, 
 }
 
 // CallTool invokes a tool on the MCP server.
-func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage) (llm.ToolOutput, error) {
+func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage) (core.ToolOutput, error) {
 	c.mu.RLock()
 	session := c.session
 	running := c.running
 	c.mu.RUnlock()
 
 	if !running || session == nil {
-		return llm.ToolOutput{}, fmt.Errorf("MCP server %s is not running", c.name)
+		return core.ToolOutput{}, fmt.Errorf("MCP server %s is not running", c.name)
 	}
 
 	// Parse arguments
 	var arguments map[string]any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &arguments); err != nil {
-			return llm.ToolOutput{}, fmt.Errorf("invalid tool arguments: %w", err)
+			return core.ToolOutput{}, fmt.Errorf("invalid tool arguments: %w", err)
 		}
 	}
 
@@ -604,7 +604,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 		Arguments: arguments,
 	})
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("call tool %s: %w", name, err)
+		return core.ToolOutput{}, fmt.Errorf("call tool %s: %w", name, err)
 	}
 
 	output := formatContent(result.Content)
@@ -615,9 +615,9 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 // formatContent converts MCP content to ordered LLM tool-result content. Content
 // remains the concatenation of all textual parts for callers and providers that
 // only understand text.
-func formatContent(content []mcp.Content) llm.ToolOutput {
-	output := llm.ToolOutput{
-		ContentParts: make([]llm.ToolContentPart, 0, len(content)),
+func formatContent(content []mcp.Content) core.ToolOutput {
+	output := core.ToolOutput{
+		ContentParts: make([]core.ToolContentPart, 0, len(content)),
 	}
 	var text strings.Builder
 
@@ -631,9 +631,9 @@ func formatContent(content []mcp.Content) llm.ToolOutput {
 			appendTextContentPart(&output, &text, part.Text)
 		case *mcp.ImageContent:
 			if mediaType, ok := supportedImageMediaType(part); ok {
-				output.ContentParts = append(output.ContentParts, llm.ToolContentPart{
-					Type: llm.ToolContentPartImageData,
-					ImageData: &llm.ToolImageData{
+				output.ContentParts = append(output.ContentParts, core.ToolContentPart{
+					Type: core.ToolContentPartImageData,
+					ImageData: &core.ToolImageData{
 						MediaType: mediaType,
 						Base64:    base64.StdEncoding.EncodeToString(part.Data),
 					},
@@ -655,9 +655,9 @@ func formatContent(content []mcp.Content) llm.ToolOutput {
 	return output
 }
 
-func appendTextContentPart(output *llm.ToolOutput, text *strings.Builder, content string) {
-	output.ContentParts = append(output.ContentParts, llm.ToolContentPart{
-		Type: llm.ToolContentPartText,
+func appendTextContentPart(output *core.ToolOutput, text *strings.Builder, content string) {
+	output.ContentParts = append(output.ContentParts, core.ToolContentPart{
+		Type: core.ToolContentPartText,
 		Text: content,
 	})
 	text.WriteString(content)

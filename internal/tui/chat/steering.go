@@ -10,7 +10,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -19,9 +20,9 @@ type SteeringCoordinator struct {
 	mu                sync.Mutex
 	op                *session.RushOperation
 	store             session.RushStore
-	engine            *llm.Engine
-	owner             llm.SteeringTransition
-	entries           []llm.QueuedSteering
+	engine            *engine.Engine
+	owner             engine.SteeringTransition
+	entries           []engine.QueuedSteering
 	cancelled         atomic.Bool
 	sourceInterrupted atomic.Bool
 	settlementOnce    sync.Once
@@ -33,7 +34,7 @@ type SteeringCoordinator struct {
 type steeringReadyMsg struct {
 	sessionID   string
 	operationID string
-	entries     []llm.QueuedSteering
+	entries     []engine.QueuedSteering
 	err         error
 	rows        []*session.Message
 }
@@ -49,8 +50,8 @@ func (m *MainRunManager) steeringCoordinator(sessionID string) *SteeringCoordina
 	return value.(*SteeringCoordinator)
 }
 
-func (m *MainRunManager) Rush(sessionID, expectedRunID string, engine *llm.Engine, store session.Store) (tea.Cmd, error) {
-	if m == nil || engine == nil {
+func (m *MainRunManager) Rush(sessionID, expectedRunID string, eng *engine.Engine, store session.Store) (tea.Cmd, error) {
+	if m == nil || eng == nil {
 		return nil, errors.New("run_not_consuming")
 	}
 	var durable session.RushStore
@@ -67,8 +68,8 @@ func (m *MainRunManager) Rush(sessionID, expectedRunID string, engine *llm.Engin
 		m.mu.Unlock()
 		return nil, errors.New("transition_in_progress")
 	}
-	owner := llm.SteeringTransition{OperationID: session.NewID(), Fence: int64(m.nextRun.Add(1))}
-	entries, err := engine.FreezeSteering(owner)
+	owner := engine.SteeringTransition{OperationID: session.NewID(), Fence: int64(m.nextRun.Add(1))}
+	entries, err := eng.FreezeSteering(owner)
 	if err != nil {
 		m.mu.Unlock()
 		return nil, err
@@ -77,7 +78,7 @@ func (m *MainRunManager) Rush(sessionID, expectedRunID string, engine *llm.Engin
 		m.mu.Unlock()
 		return nil, nil
 	}
-	coordinator := &SteeringCoordinator{engine: engine, owner: owner, entries: entries, source: source, store: durable, admitted: make(chan struct{})}
+	coordinator := &SteeringCoordinator{engine: eng, owner: owner, entries: entries, source: source, store: durable, admitted: make(chan struct{})}
 	m.steering.Store(sessionID, coordinator)
 	m.mu.Unlock()
 	return func() tea.Msg {
@@ -97,7 +98,7 @@ func (m *MainRunManager) Rush(sessionID, expectedRunID string, engine *llm.Engin
 			}
 			pending := make([]session.PendingSteering, 0, len(entries))
 			for _, entry := range entries {
-				row := session.PendingSteering{SessionID: sessionID, ID: entry.ID, Message: entry.Message, DisplayText: entry.DisplayText, Origin: entry.Origin, AttachmentSummary: llm.MessageAttachmentSummary(entry.Message)}
+				row := session.PendingSteering{SessionID: sessionID, ID: entry.ID, Message: entry.Message, DisplayText: entry.DisplayText, Origin: entry.Origin, AttachmentSummary: core.MessageAttachmentSummary(entry.Message)}
 				if err := pendingStore.SavePendingSteering(ctx, row); err != nil {
 					return fail(err)
 				}
@@ -136,13 +137,13 @@ func (m *MainRunManager) Rush(sessionID, expectedRunID string, engine *llm.Engin
 		case <-ctx.Done():
 			return fail(errors.New("settlement_unknown"))
 		}
-		if err := engine.WaitSteeringSettlement(ctx, owner); err != nil {
+		if err := eng.WaitSteeringSettlement(ctx, owner); err != nil {
 			return fail(err)
 		}
 		if coordinator.cancelled.Load() {
 			return fail(context.Canceled)
 		}
-		rows := []*session.Message{session.NewMessage(sessionID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: llm.SteeringInterruptionNotice}}}, -1)}
+		rows := []*session.Message{session.NewMessage(sessionID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: engine.SteeringInterruptionNotice}}}, -1)}
 		for _, entry := range entries {
 			rows = append(rows, sessionMessageForSteering(sessionID, entry.DisplayText, entry.Message))
 		}
@@ -164,7 +165,7 @@ func (m *MainRunManager) Rush(sessionID, expectedRunID string, engine *llm.Engin
 				return fail(err)
 			}
 		}
-		engine.ReleaseSteeringFreeze(owner, true)
+		eng.ReleaseSteeringFreeze(owner, true)
 		result.rows = rows
 		return result
 	}, nil
@@ -213,7 +214,7 @@ func (m *MainRunManager) releaseFailedSteering(sessionID string, c *SteeringCoor
 	// Failed admission may unfreeze the still-running source immediately, but
 	// a cancelled source (including no-store mode) must settle actual tools first.
 	settle := func() {
-		if err := c.engine.WaitSteeringSettlement(m.ctx, c.owner); err != nil && !errors.Is(err, llm.ErrSteeringTransition) {
+		if err := c.engine.WaitSteeringSettlement(m.ctx, c.owner); err != nil && !errors.Is(err, engine.ErrSteeringTransition) {
 			return
 		}
 		cleanup()
@@ -223,7 +224,7 @@ func (m *MainRunManager) releaseFailedSteering(sessionID string, c *SteeringCoor
 		probe, cancel := context.WithCancel(context.Background())
 		cancel()
 		err := c.engine.WaitSteeringSettlement(probe, c.owner)
-		if err == nil || errors.Is(err, llm.ErrSteeringTransition) {
+		if err == nil || errors.Is(err, engine.ErrSteeringTransition) {
 			cleanup()
 		} else {
 			c.settlementOnce.Do(func() { go settle() })

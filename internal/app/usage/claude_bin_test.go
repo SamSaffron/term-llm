@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 )
 
 func TestParseClaudeBinUsageOutput(t *testing.T) {
@@ -96,7 +96,7 @@ func TestWriteClaudeBinUsageASCIIUsesSharedForecastLanguage(t *testing.T) {
 	}
 	now := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
-	if err := writeClaudeBinUsageWithOptions(&out, report, now, llm.ProviderUsageFormatOptions{ASCII: true}); err != nil {
+	if err := writeClaudeBinUsageWithOptions(&out, report, now, providerusage.FormatOptions{ASCII: true}); err != nil {
 		t.Fatalf("writeClaudeBinUsageWithOptions: %v", err)
 	}
 	for _, want := range []string{"[##############-|------]", "Projected: ~89%"} {

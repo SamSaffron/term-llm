@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/share"
@@ -251,7 +251,7 @@ func (s *serveServer) handleCreateSessionShare(w http.ResponseWriter, r *http.Re
 		Media:               selection.Media,
 	}
 	if req.Scope == session.ShareScopeConversation && req.IncludeTools != nil && !*req.IncludeTools {
-		var media []llm.MediaArtifact
+		var media []core.MediaArtifact
 		selection.Messages, media = session.StripToolActivity(selection.Messages)
 		opts.Media = append(opts.Media, media...)
 	}

@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func BenchmarkMarkCompactionDisplayTailsLargeCompactedTranscript(b *testing.B) {
@@ -11,13 +11,13 @@ func BenchmarkMarkCompactionDisplayTailsLargeCompactedTranscript(b *testing.B) {
 
 	messages := make([]Message, 0, tailLen*2+2)
 	for i := 0; i < tailLen; i++ {
-		messages = append(messages, *NewMessage("s", llm.UserText("same repeated message"), i))
+		messages = append(messages, *NewMessage("s", core.UserText("same repeated message"), i))
 	}
-	messages = append(messages, *NewMessage("s", llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), len(messages)))
+	messages = append(messages, *NewMessage("s", core.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), len(messages)))
 	ackIdx := len(messages)
-	messages = append(messages, *NewMessage("s", llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), ackIdx))
+	messages = append(messages, *NewMessage("s", core.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), ackIdx))
 	for i := 0; i < tailLen; i++ {
-		messages = append(messages, *NewMessage("s", llm.UserText("same repeated message"), len(messages)))
+		messages = append(messages, *NewMessage("s", core.UserText("same repeated message"), len(messages)))
 	}
 
 	b.ResetTimer()

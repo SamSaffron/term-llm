@@ -4,7 +4,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -20,7 +21,7 @@ func setEstimatedStatsCost(stats *ui.SessionStats, model string) {
 
 type compactionUsageEntry struct {
 	model string
-	usage llm.Usage
+	usage core.Usage
 }
 
 type compactionUsageCollector struct {
@@ -28,7 +29,7 @@ type compactionUsageCollector struct {
 	usages []compactionUsageEntry
 }
 
-func (c *compactionUsageCollector) add(result *llm.CompactionResult) {
+func (c *compactionUsageCollector) add(result *engine.CompactionResult) {
 	if result == nil {
 		return
 	}

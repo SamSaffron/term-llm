@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func newProjectTestStore(t *testing.T) *SQLiteStore {
@@ -270,7 +270,7 @@ func TestSessionProjectRoundTripSearchAndConditionalBinding(t *testing.T) {
 	if _, err := store.BindSessionWorkspace(ctx, sess.ID, SessionWorkspaceBinding{ProjectID: "prj_other", CWD: t.TempDir()}); !errors.Is(err, ErrWorkspaceConflict) {
 		t.Fatalf("conflicting bind = %v", err)
 	}
-	msg := NewMessage(sess.ID, llm.UserText("project needle"), 0)
+	msg := NewMessage(sess.ID, core.UserText("project needle"), 0)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestProjectSidebarActivityUsesAllRowsBeyondPinnedWindow(t *testing.T) {
 		if _, err := store.SetSessionPinned(ctx, sess.ID, true); err != nil {
 			t.Fatal(err)
 		}
-		message := NewMessage(sess.ID, llm.UserText("old pinned"), 0)
+		message := NewMessage(sess.ID, core.UserText("old pinned"), 0)
 		message.CreatedAt = old.Add(time.Duration(i) * time.Minute)
 		if err := store.AddMessage(ctx, sess.ID, message); err != nil {
 			t.Fatal(err)
@@ -437,7 +437,7 @@ func TestProjectSidebarActivityUsesAllRowsBeyondPinnedWindow(t *testing.T) {
 	if _, err := store.BindSessionWorkspace(ctx, latest.ID, SessionWorkspaceBinding{ProjectID: alpha.ID, CWD: alpha.CanonicalDir}); err != nil {
 		t.Fatal(err)
 	}
-	latestMessage := NewMessage(latest.ID, llm.UserText("latest unpinned"), 0)
+	latestMessage := NewMessage(latest.ID, core.UserText("latest unpinned"), 0)
 	latestMessage.CreatedAt = time.Now()
 	if err := store.AddMessage(ctx, latest.ID, latestMessage); err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestProjectSidebarActivityUsesAllRowsBeyondPinnedWindow(t *testing.T) {
 	if _, err := store.BindSessionWorkspace(ctx, betaSession.ID, SessionWorkspaceBinding{ProjectID: beta.ID, CWD: beta.CanonicalDir}); err != nil {
 		t.Fatal(err)
 	}
-	betaMessage := NewMessage(betaSession.ID, llm.UserText("middle"), 0)
+	betaMessage := NewMessage(betaSession.ID, core.UserText("middle"), 0)
 	betaMessage.CreatedAt = time.Now().Add(-time.Hour)
 	if err := store.AddMessage(ctx, betaSession.ID, betaMessage); err != nil {
 		t.Fatal(err)
@@ -484,7 +484,7 @@ func TestProjectSidebarBoundedGroupsAndIndependentCursor(t *testing.T) {
 		if _, err := store.BindSessionWorkspace(ctx, s.ID, SessionWorkspaceBinding{ProjectID: alpha.ID, CWD: alpha.CanonicalDir}); err != nil {
 			t.Fatal(err)
 		}
-		msg := NewMessage(s.ID, llm.UserText(fmt.Sprintf("turn %d", i)), 0)
+		msg := NewMessage(s.ID, core.UserText(fmt.Sprintf("turn %d", i)), 0)
 		msg.CreatedAt = time.Now().Add(time.Duration(i) * time.Second)
 		if err := store.AddMessage(ctx, s.ID, msg); err != nil {
 			t.Fatal(err)
@@ -499,7 +499,7 @@ func TestProjectSidebarBoundedGroupsAndIndependentCursor(t *testing.T) {
 	if _, err := store.BindSessionWorkspace(ctx, spawnChild.ID, SessionWorkspaceBinding{ProjectID: alpha.ID, CWD: alpha.CanonicalDir}); err != nil {
 		t.Fatal(err)
 	}
-	spawnMessage := NewMessage(spawnChild.ID, llm.UserText("internal delegated review"), 0)
+	spawnMessage := NewMessage(spawnChild.ID, core.UserText("internal delegated review"), 0)
 	spawnMessage.CreatedAt = time.Now().Add(time.Hour)
 	if err := store.AddMessage(ctx, spawnChild.ID, spawnMessage); err != nil {
 		t.Fatal(err)
@@ -554,7 +554,7 @@ func TestProjectSidebarBoundedGroupsAndIndependentCursor(t *testing.T) {
 	if _, err := store.BindSessionWorkspace(ctx, newest.ID, SessionWorkspaceBinding{ProjectID: alpha.ID, CWD: alpha.CanonicalDir}); err != nil {
 		t.Fatal(err)
 	}
-	newestMessage := NewMessage(newest.ID, llm.UserText("new after first page"), 0)
+	newestMessage := NewMessage(newest.ID, core.UserText("new after first page"), 0)
 	newestMessage.CreatedAt = time.Now().Add(time.Hour)
 	if err := store.AddMessage(ctx, newest.ID, newestMessage); err != nil {
 		t.Fatal(err)

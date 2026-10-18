@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestTranscriptRowHasDisplayBodyForGuardianOnlyToolResult(t *testing.T) {
-	result := &llm.ToolResult{ID: "call-shell", GuardianReviews: []llm.GuardianReview{{Outcome: "approved", Message: "guardian: approved"}}}
-	if !transcriptRowHasDisplayBody(llm.RoleTool, []llm.Part{{Type: llm.PartToolResult, ToolResult: result}}, nil) {
+	result := &core.ToolResult{ID: "call-shell", GuardianReviews: []core.GuardianReview{{Outcome: "approved", Message: "guardian: approved"}}}
+	if !transcriptRowHasDisplayBody(core.RoleTool, []core.Part{{Type: core.PartToolResult, ToolResult: result}}, nil) {
 		t.Fatal("guardian-only tool result should be visible in transcript index")
 	}
 }
@@ -27,19 +27,19 @@ func TestSQLitePersistsToolActivityPart(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	activity := &llm.ToolActivity{
+	activity := &core.ToolActivity{
 		ID:        "ws_1",
-		Name:      llm.WebSearchToolName,
+		Name:      core.WebSearchToolName,
 		Info:      "(discourse news)",
 		Arguments: []byte(`{"query":"discourse news"}`),
-		Status:    llm.ToolActivityCompleted,
+		Status:    core.ToolActivityCompleted,
 	}
-	if !transcriptRowHasDisplayBody(llm.RoleAssistant, []llm.Part{{Type: llm.PartToolActivity, ToolActivity: activity}}, nil) {
+	if !transcriptRowHasDisplayBody(core.RoleAssistant, []core.Part{{Type: core.PartToolActivity, ToolActivity: activity}}, nil) {
 		t.Fatal("activity-only assistant row should be visible in transcript index")
 	}
-	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartText, Text: "answer"},
-		{Type: llm.PartToolActivity, ToolActivity: activity},
+	msg := NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartText, Text: "answer"},
+		{Type: core.PartToolActivity, ToolActivity: activity},
 	}}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
@@ -53,7 +53,7 @@ func TestSQLitePersistsToolActivityPart(t *testing.T) {
 		t.Fatalf("messages = %#v", messages)
 	}
 	reloadedActivity := messages[0].Parts[1].ToolActivity
-	if messages[0].Parts[1].Type != llm.PartToolActivity || reloadedActivity == nil || reloadedActivity.ID != "ws_1" || reloadedActivity.Info != "(discourse news)" || string(reloadedActivity.Arguments) != `{"query":"discourse news"}` || reloadedActivity.Status != llm.ToolActivityCompleted {
+	if messages[0].Parts[1].Type != core.PartToolActivity || reloadedActivity == nil || reloadedActivity.ID != "ws_1" || reloadedActivity.Info != "(discourse news)" || string(reloadedActivity.Arguments) != `{"query":"discourse news"}` || reloadedActivity.Status != core.ToolActivityCompleted {
 		t.Fatalf("reloaded activity = %#v", messages[0].Parts[1])
 	}
 }

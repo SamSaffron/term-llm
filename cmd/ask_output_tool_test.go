@@ -8,7 +8,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 func TestAskTypedOutputToolRunsOnCompleteAfterCentralizedRunner(t *testing.T) {
@@ -78,11 +79,11 @@ sessions:
 
 	const message = "chore: replace stale message"
 	const wantOutput = `{"category":"chore","message":"chore: replace stale message"}`
-	provider := llm.NewMockProvider("mock").
-		WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true}).
+	provider := mockprovider.NewMockProvider("mock").
+		WithCapabilities(core.Capabilities{ToolCalls: true, SupportsToolChoice: true}).
 		AddToolCall("call-1", "set_commit_message", map[string]string{"message": message, "category": "chore"})
 	oldProviderFactory := newAskProvider
-	newAskProvider = func(*config.Config, bool) (llm.Provider, error) { return provider, nil }
+	newAskProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
 	t.Cleanup(func() { newAskProvider = oldProviderFactory })
 
 	oldAgent, oldText, oldPorcelain := askAgent, askText, askPorcelain
@@ -118,7 +119,7 @@ sessions:
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider saw %d requests, want 1", len(provider.Requests))
 	}
-	var outputSpec *llm.ToolSpec
+	var outputSpec *core.ToolSpec
 	for i := range provider.Requests[0].Tools {
 		if provider.Requests[0].Tools[i].Name == "set_commit_message" {
 			outputSpec = &provider.Requests[0].Tools[i]

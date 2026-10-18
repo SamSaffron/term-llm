@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -121,7 +121,7 @@ func TestBeginResponseModelSwapRestoresWorkspace(t *testing.T) {
 				enabled: true, previousProvider: "mock", previousModel: "old-model", previousEffort: "medium",
 				requestedProvider: "mock", requestedModel: tc.requestedModel, requestedEffort: "high",
 			}
-			swap, err := srv.beginResponseModelSwap(ctx, sess.ID, plan, []llm.Message{llm.UserText("continue")})
+			swap, err := srv.beginResponseModelSwap(ctx, sess.ID, plan, []core.Message{core.UserText("continue")})
 			if swap != nil {
 				t.Cleanup(swap.markRolledBack)
 			}
@@ -196,35 +196,35 @@ func TestModelSwapStartMessageIncludesEffortWhenModelAlsoChanges(t *testing.T) {
 }
 
 func TestInsertModelSwapMarkerFallsBackToLatestUser(t *testing.T) {
-	history := []llm.Message{
-		llm.UserText("original trigger"),
-		llm.AssistantText("old reply"),
-		llm.UserText("normalized trigger"),
-		llm.AssistantText("current reply"),
+	history := []core.Message{
+		core.UserText("original trigger"),
+		core.AssistantText("old reply"),
+		core.UserText("normalized trigger"),
+		core.AssistantText("current reply"),
 	}
 	updated := insertModelSwapMarkerAfterTrigger(
 		history,
-		llm.ModelSwapEventMessage(llm.ModelSwapMarker{Status: "succeeded"}),
+		core.ModelSwapEventMessage(core.ModelSwapMarker{Status: "succeeded"}),
 	)
 
-	if len(updated) != 5 || updated[2].Role != llm.RoleUser || updated[3].Role != llm.RoleEvent || updated[4].Role != llm.RoleAssistant {
+	if len(updated) != 5 || updated[2].Role != core.RoleUser || updated[3].Role != core.RoleEvent || updated[4].Role != core.RoleAssistant {
 		t.Fatalf("marker matched an older repeated prompt instead of the latest user: %#v", updated)
 	}
 }
 
 func TestInsertModelSwapMarkerImageOnlyTriggerUsesLatestUser(t *testing.T) {
-	imageOnly := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartImage, ImagePath: "image.png"}}}
-	history := []llm.Message{
-		llm.UserText("handover summary"),
+	imageOnly := core.Message{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartImage, ImagePath: "image.png"}}}
+	history := []core.Message{
+		core.UserText("handover summary"),
 		imageOnly,
-		llm.AssistantText("reply"),
+		core.AssistantText("reply"),
 	}
 	updated := insertModelSwapMarkerAfterTrigger(
 		history,
-		llm.ModelSwapEventMessage(llm.ModelSwapMarker{Status: "succeeded"}),
+		core.ModelSwapEventMessage(core.ModelSwapMarker{Status: "succeeded"}),
 	)
 
-	if len(updated) != 4 || updated[1].Role != llm.RoleUser || updated[2].Role != llm.RoleEvent || updated[3].Role != llm.RoleAssistant {
+	if len(updated) != 4 || updated[1].Role != core.RoleUser || updated[2].Role != core.RoleEvent || updated[3].Role != core.RoleAssistant {
 		t.Fatalf("image-only trigger anchored marker to handover context: %#v", updated)
 	}
 }
@@ -241,7 +241,7 @@ func TestPersistModelSwapMarkerSurvivesCancelledRequestContext(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	history := []core.Message{core.UserText("continue"), core.AssistantText("reply")}
 	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
 		*session.NewMessage(sess.ID, history[0], 0),
 		*session.NewMessage(sess.ID, history[1], 1),
@@ -260,7 +260,7 @@ func TestPersistModelSwapMarkerSurvivesCancelledRequestContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMessages: %v", err)
 	}
-	if len(messages) != 3 || messages[1].Role != llm.RoleEvent {
+	if len(messages) != 3 || messages[1].Role != core.RoleEvent {
 		t.Fatalf("cancelled request context lost durable model-swap marker: %#v", messages)
 	}
 }
@@ -277,7 +277,7 @@ func TestPersistModelSwapMarkerUsesServerStoreWhenCandidateStoreMissing(t *testi
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	history := []core.Message{core.UserText("continue"), core.AssistantText("reply")}
 	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
 		*session.NewMessage(sess.ID, history[0], 0),
 		*session.NewMessage(sess.ID, history[1], 1),
@@ -294,7 +294,7 @@ func TestPersistModelSwapMarkerUsesServerStoreWhenCandidateStoreMissing(t *testi
 	if err != nil {
 		t.Fatalf("GetMessages: %v", err)
 	}
-	if len(messages) != 3 || messages[0].Role != llm.RoleUser || messages[1].Role != llm.RoleEvent || messages[2].Role != llm.RoleAssistant {
+	if len(messages) != 3 || messages[0].Role != core.RoleUser || messages[1].Role != core.RoleEvent || messages[2].Role != core.RoleAssistant {
 		t.Fatalf("server-store fallback persisted wrong marker order: %#v", messages)
 	}
 	if candidate.store != store {
@@ -314,7 +314,7 @@ func TestPersistModelSwapMarkerTreatsZeroValueSessionAsUncompacted(t *testing.T)
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	history := []core.Message{core.UserText("continue"), core.AssistantText("reply")}
 	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
 		*session.NewMessage(sess.ID, history[0], 0),
 		*session.NewMessage(sess.ID, history[1], 1),
@@ -335,7 +335,7 @@ func TestPersistModelSwapMarkerTreatsZeroValueSessionAsUncompacted(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetMessages: %v", err)
 	}
-	if len(messages) != 3 || messages[1].Role != llm.RoleEvent {
+	if len(messages) != 3 || messages[1].Role != core.RoleEvent {
 		t.Fatalf("zero-value session was misclassified as compacted: %#v", messages)
 	}
 }
@@ -352,15 +352,15 @@ func TestPersistModelSwapMarkerDoesNotRewriteUnknownCompactionState(t *testing.T
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	for _, msg := range []llm.Message{llm.UserText("old prompt"), llm.AssistantText("old reply")} {
+	for _, msg := range []core.Message{core.UserText("old prompt"), core.AssistantText("old reply")} {
 		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
 			t.Fatalf("AddMessage: %v", err)
 		}
 	}
-	activeHistory := []llm.Message{
-		llm.UserText("compacted context"),
-		llm.UserText("continue"),
-		llm.AssistantText("new reply"),
+	activeHistory := []core.Message{
+		core.UserText("compacted context"),
+		core.UserText("continue"),
+		core.AssistantText("new reply"),
 	}
 	compacted := make([]session.Message, 0, len(activeHistory))
 	for _, msg := range activeHistory {
@@ -412,7 +412,7 @@ func TestPersistModelSwapMarkerHoldsRuntimeLockThroughPersistence(t *testing.T) 
 		t.Fatalf("Create: %v", err)
 	}
 
-	history := []llm.Message{llm.UserText("continue"), llm.AssistantText("reply")}
+	history := []core.Message{core.UserText("continue"), core.AssistantText("reply")}
 	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
 		*session.NewMessage(sess.ID, history[0], 0),
 		*session.NewMessage(sess.ID, history[1], 1),
@@ -460,16 +460,16 @@ func TestPersistModelSwapMarkerPreservesCompactedScrollback(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	for _, msg := range []llm.Message{llm.UserText("old prompt"), llm.AssistantText("old reply")} {
+	for _, msg := range []core.Message{core.UserText("old prompt"), core.AssistantText("old reply")} {
 		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
 			t.Fatalf("AddMessage: %v", err)
 		}
 	}
 
-	activeHistory := []llm.Message{
-		llm.UserText("compacted context"),
-		llm.UserText("continue"),
-		llm.AssistantText("new reply"),
+	activeHistory := []core.Message{
+		core.UserText("compacted context"),
+		core.UserText("continue"),
+		core.AssistantText("new reply"),
 	}
 	compacted := make([]session.Message, 0, len(activeHistory))
 	for _, msg := range activeHistory {
@@ -505,7 +505,7 @@ func TestPersistModelSwapMarkerPreservesCompactedScrollback(t *testing.T) {
 	}
 	markerIndex := -1
 	for i, msg := range messages {
-		if _, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+		if _, ok := core.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
 			markerIndex = i
 			break
 		}

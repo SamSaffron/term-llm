@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/providerspec"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
@@ -65,14 +66,14 @@ type sessionState struct {
 	resetRequired   string
 	fallbackCount   int
 	fallbackReason  string
-	lastDiagnostics llm.ToolDiscoveryDiagnostics
-	recent          []llm.ToolActivationDiagnostic
+	lastDiagnostics core.ToolDiscoveryDiagnostics
+	recent          []core.ToolActivationDiagnostic
 	evictionCount   int
-	recentEvictions []llm.ToolEvictionDiagnostic
+	recentEvictions []core.ToolEvictionDiagnostic
 }
 
 type toolSurfaceSelection struct {
-	activeSpecs    []llm.ToolSpec
+	activeSpecs    []core.ToolSpec
 	deferredCount  int
 	pinnedCount    int
 	activeCount    int
@@ -80,14 +81,14 @@ type toolSurfaceSelection struct {
 	activeTokens   int
 	deferredTokens int
 	activeHashes   map[string]string
-	serverDetails  []llm.ToolDiscoveryServerDiagnostic
+	serverDetails  []core.ToolDiscoveryServerDiagnostic
 }
 
 // Planner owns catalogue indexing, session activation, and authoritative MCP
 // provider visibility. Engine queues are only per-run delivery.
 type Planner struct {
 	manager        *mcp.Manager
-	engine         *llm.Engine
+	engine         *engine.Engine
 	engineMu       sync.RWMutex
 	mode           Mode
 	strategy       Strategy
@@ -106,7 +107,7 @@ type Planner struct {
 	warnedAlways  map[string]uint64
 }
 
-func NewPlanner(cfg config.ToolDiscoveryConfig, manager *mcp.Manager, engine *llm.Engine) (*Planner, error) {
+func NewPlanner(cfg config.ToolDiscoveryConfig, manager *mcp.Manager, engine *engine.Engine) (*Planner, error) {
 	if manager == nil || engine == nil {
 		return nil, fmt.Errorf("tool discovery requires an MCP manager and engine")
 	}
@@ -168,7 +169,7 @@ func NewPlanner(cfg config.ToolDiscoveryConfig, manager *mcp.Manager, engine *ll
 
 // AttachEngine moves planner delivery/registry wiring to a replacement engine
 // while preserving durable session activation state.
-func (p *Planner) AttachEngine(engine *llm.Engine) {
+func (p *Planner) AttachEngine(engine *engine.Engine) {
 	if p == nil || engine == nil {
 		return
 	}
@@ -198,7 +199,7 @@ func (p *Planner) AttachEngine(engine *llm.Engine) {
 	engine.SetToolSurfacePlanner(p)
 }
 
-func (p *Planner) currentEngine() *llm.Engine {
+func (p *Planner) currentEngine() *engine.Engine {
 	p.engineMu.RLock()
 	defer p.engineMu.RUnlock()
 	return p.engine
@@ -313,7 +314,7 @@ func (p *Planner) stateLocked(key string) *sessionState {
 	return state
 }
 
-func (p *Planner) BeginRun(_ context.Context, provider llm.Provider, req *llm.Request, runID string) (string, error) {
+func (p *Planner) BeginRun(_ context.Context, provider core.Provider, req *core.Request, runID string) (string, error) {
 	if req == nil {
 		return "", fmt.Errorf("request is nil")
 	}
@@ -327,7 +328,7 @@ func (p *Planner) BeginRun(_ context.Context, provider llm.Provider, req *llm.Re
 	return p.selectSurface(provider, req, key, runID, true)
 }
 
-func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
+func (p *Planner) restoreNativeHistory(req *core.Request, key string) {
 	if req == nil {
 		return
 	}
@@ -352,7 +353,7 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 	calls := make(map[string]bool)
 	for _, msg := range req.Messages {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartDiscoveryCall && part.DiscoveryCall != nil {
+			if part.Type == core.PartDiscoveryCall && part.DiscoveryCall != nil {
 				calls[part.DiscoveryCall.ID] = true
 			}
 		}
@@ -363,7 +364,7 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 	for mi := range req.Messages {
 		for pi := range req.Messages[mi].Parts {
 			part := &req.Messages[mi].Parts[pi]
-			if part.Type != llm.PartDiscoveryOutput || part.DiscoveryOutput == nil {
+			if part.Type != core.PartDiscoveryOutput || part.DiscoveryOutput == nil {
 				continue
 			}
 			if !calls[part.DiscoveryOutput.CallID] {
@@ -371,7 +372,7 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 				break
 			}
 			output := *part.DiscoveryOutput
-			kept := make([]llm.DiscoveredTool, 0, len(output.Tools))
+			kept := make([]core.DiscoveredTool, 0, len(output.Tools))
 			for _, discovered := range output.Tools {
 				selected := discovered
 				if evicted[selected.Spec.Name] {
@@ -435,7 +436,7 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 		for mi := range req.Messages {
 			parts := req.Messages[mi].Parts[:0]
 			for _, part := range req.Messages[mi].Parts {
-				if part.Type != llm.PartDiscoveryCall && part.Type != llm.PartDiscoveryOutput {
+				if part.Type != core.PartDiscoveryCall && part.Type != core.PartDiscoveryOutput {
 					parts = append(parts, part)
 				}
 			}
@@ -444,7 +445,7 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 	}
 }
 
-func (p *Planner) PrepareTurn(_ context.Context, provider llm.Provider, req *llm.Request, runID string, attempt, maxTurns int) (string, error) {
+func (p *Planner) PrepareTurn(_ context.Context, provider core.Provider, req *core.Request, runID string, attempt, maxTurns int) (string, error) {
 	p.mu.Lock()
 	key := p.runs[runID]
 	p.mu.Unlock()
@@ -458,10 +459,10 @@ func (p *Planner) PrepareTurn(_ context.Context, provider llm.Provider, req *llm
 	// The engine's last attempt is answer-only, so discovery must finish before
 	// the penultimate attempt in order to leave one turn to invoke the loaded
 	// schema and one final turn to answer.
-	searchCutoff := llm.ToolDiscoverySearchCutoff(maxTurns)
-	forcedSearch := req.ToolChoice.Mode == llm.ToolChoiceName && req.ToolChoice.Name == ToolSearchName
+	searchCutoff := core.ToolDiscoverySearchCutoff(maxTurns)
+	forcedSearch := req.ToolChoice.Mode == core.ToolChoiceName && req.ToolChoice.Name == ToolSearchName
 	if attempt == maxTurns-1 && attempt > 0 && req.LastTurnToolChoice != nil {
-		forcedSearch = forcedSearch || (req.LastTurnToolChoice.Mode == llm.ToolChoiceName && req.LastTurnToolChoice.Name == ToolSearchName)
+		forcedSearch = forcedSearch || (req.LastTurnToolChoice.Mode == core.ToolChoiceName && req.LastTurnToolChoice.Name == ToolSearchName)
 	}
 	searchVisible := attempt < searchCutoff && (hasTool(req.Tools, ToolSearchName) || req.NativeToolDiscovery != nil)
 	if attempt >= searchCutoff {
@@ -474,7 +475,7 @@ func (p *Planner) PrepareTurn(_ context.Context, provider llm.Provider, req *llm
 			return "", fmt.Errorf("tool_search cannot be forced after the discovery cutoff")
 		}
 	} else if attempt == searchCutoff-1 && hasTool(req.Tools, ToolSearchName) && !messagesContain(req.Messages, "Use tool_search before the discovery cutoff") {
-		req.Messages = append(req.Messages, llm.SystemText("Use tool_search now if another capability must be loaded; discovery closes before the answer-only final attempt."))
+		req.Messages = append(req.Messages, core.SystemText("Use tool_search now if another capability must be loaded; discovery closes before the answer-only final attempt."))
 	}
 	p.mu.Lock()
 	if p.runs[runID] == key {
@@ -498,12 +499,12 @@ func ResolveMode(configured Mode, threshold, authorisedMCPCount int, externalHar
 	return ModeDeferred
 }
 
-func (p *Planner) resolveStrategy(provider llm.Provider, model string) (Strategy, string, error) {
+func (p *Planner) resolveStrategy(provider core.Provider, model string) (Strategy, string, error) {
 	if isFixedBridgeProvider(provider) {
 		return StrategyDelegated, "fixed CLI bridge owns its eager/delegated tool surface", nil
 	}
-	support := llm.NativeToolDiscoverySupport{Reason: fmt.Sprintf("provider %q has no native tool discovery adapter", provider.Name())}
-	if native, ok := provider.(llm.NativeToolDiscoveryProvider); ok {
+	support := core.NativeToolDiscoverySupport{Reason: fmt.Sprintf("provider %q has no native tool discovery adapter", provider.Name())}
+	if native, ok := provider.(core.NativeToolDiscoveryProvider); ok {
 		support = native.NativeToolDiscoverySupport(model)
 	}
 	switch p.strategy {
@@ -522,7 +523,7 @@ func (p *Planner) resolveStrategy(provider llm.Provider, model string) (Strategy
 	}
 }
 
-func initialToolNameSet(specs []llm.ToolSpec) map[string]bool {
+func initialToolNameSet(specs []core.ToolSpec) map[string]bool {
 	names := make(map[string]bool, len(specs))
 	for _, spec := range specs {
 		names[spec.Name] = true
@@ -530,7 +531,7 @@ func initialToolNameSet(specs []llm.ToolSpec) map[string]bool {
 	return names
 }
 
-func authorizedCatalogueTools(engine *llm.Engine, tools []mcp.CatalogTool) map[string]mcp.CatalogTool {
+func authorizedCatalogueTools(engine *engine.Engine, tools []mcp.CatalogTool) map[string]mcp.CatalogTool {
 	authorized := make(map[string]mcp.CatalogTool, len(tools))
 	for _, tool := range tools {
 		if engine.IsToolAllowed(tool.Name) {
@@ -554,13 +555,13 @@ func (p *Planner) selectRunStrategy(runID string, strategy Strategy, strategyRea
 	return strategy, strategyReason
 }
 
-func sortedServerDiagnostics(diagnostics map[string]*llm.ToolDiscoveryServerDiagnostic) []llm.ToolDiscoveryServerDiagnostic {
+func sortedServerDiagnostics(diagnostics map[string]*core.ToolDiscoveryServerDiagnostic) []core.ToolDiscoveryServerDiagnostic {
 	names := make([]string, 0, len(diagnostics))
 	for name := range diagnostics {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	details := make([]llm.ToolDiscoveryServerDiagnostic, 0, len(names))
+	details := make([]core.ToolDiscoveryServerDiagnostic, 0, len(names))
 	for _, name := range names {
 		details = append(details, *diagnostics[name])
 	}
@@ -568,18 +569,18 @@ func sortedServerDiagnostics(diagnostics map[string]*llm.ToolDiscoveryServerDiag
 }
 
 func buildToolSurfaceSelection(authorized map[string]mcp.CatalogTool, activeTools map[string]activeToolState, resolved Mode, strategy Strategy) toolSurfaceSelection {
-	activeSpecs := make([]llm.ToolSpec, 0, len(authorized))
+	activeSpecs := make([]core.ToolSpec, 0, len(authorized))
 	deferredCount := 0
 	pinnedCount, activeCount := 0, 0
 	pinnedTokens, activeTokens, deferredTokens := 0, 0, 0
 	activeHashes := make(map[string]string)
-	serverDiagnostics := make(map[string]*llm.ToolDiscoveryServerDiagnostic)
+	serverDiagnostics := make(map[string]*core.ToolDiscoveryServerDiagnostic)
 	names := make([]string, 0, len(authorized))
 	for name, tool := range authorized {
 		names = append(names, name)
 		diagnostic := serverDiagnostics[tool.Server]
 		if diagnostic == nil {
-			diagnostic = &llm.ToolDiscoveryServerDiagnostic{Name: tool.Server, ResolvedMode: string(resolved)}
+			diagnostic = &core.ToolDiscoveryServerDiagnostic{Name: tool.Server, ResolvedMode: string(resolved)}
 			serverDiagnostics[tool.Server] = diagnostic
 		}
 		diagnostic.Total++
@@ -626,7 +627,7 @@ func buildToolSurfaceSelection(authorized map[string]mcp.CatalogTool, activeTool
 	}
 }
 
-func (p *Planner) applyToolSurfaceSelection(req *llm.Request, engine *llm.Engine, snapshot *mcp.CatalogueSnapshot, initialToolNames map[string]bool, base []llm.ToolSpec, resolved Mode, strategy Strategy, selection toolSurfaceSelection) {
+func (p *Planner) applyToolSurfaceSelection(req *core.Request, engine *engine.Engine, snapshot *mcp.CatalogueSnapshot, initialToolNames map[string]bool, base []core.ToolSpec, resolved Mode, strategy Strategy, selection toolSurfaceSelection) {
 	req.Tools = append(base, selection.activeSpecs...)
 	req.NativeToolDiscovery = nil
 	if resolved == ModeDeferred && selection.deferredCount > 0 && strategy == StrategyPortable {
@@ -634,7 +635,7 @@ func (p *Planner) applyToolSurfaceSelection(req *llm.Request, engine *llm.Engine
 		engine.Tools().RegisterDeferred(searchTool)
 		req.Tools = append(req.Tools, searchTool.Spec())
 	} else if resolved == ModeDeferred && strategy == StrategyNative {
-		req.NativeToolDiscovery = &llm.NativeToolDiscoveryRequest{Search: (&SearchTool{planner: p}).Spec()}
+		req.NativeToolDiscovery = &core.NativeToolDiscoveryRequest{Search: (&SearchTool{planner: p}).Spec()}
 	}
 	if resolved == ModeDeferred && selection.deferredCount > 0 {
 		ensureDeferredToolSearchInstruction(req, snapshot, selection.serverDetails)
@@ -647,13 +648,13 @@ func (p *Planner) applyToolSurfaceSelection(req *llm.Request, engine *llm.Engine
 		}
 	}
 	if len(req.Tools) == 0 && req.NativeToolDiscovery == nil {
-		req.ToolChoice = llm.ToolChoice{}
+		req.ToolChoice = core.ToolChoice{}
 	} else if req.ToolChoice.Mode == "" && (toolsAdded || req.NativeToolDiscovery != nil) {
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
 	}
 }
 
-func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, runID string, beginning bool) (string, error) {
+func (p *Planner) selectSurface(provider core.Provider, req *core.Request, key, runID string, beginning bool) (string, error) {
 	snapshot := p.manager.CatalogueSnapshot()
 	if snapshot == nil {
 		return "", fmt.Errorf("MCP catalogue is unavailable")
@@ -696,9 +697,9 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 		}
 	}
 	forced := ""
-	if req.ToolChoice.Mode == llm.ToolChoiceName {
+	if req.ToolChoice.Mode == core.ToolChoiceName {
 		forced = req.ToolChoice.Name
-	} else if req.LastTurnToolChoice != nil && req.LastTurnToolChoice.Mode == llm.ToolChoiceName {
+	} else if req.LastTurnToolChoice != nil && req.LastTurnToolChoice.Mode == core.ToolChoiceName {
 		forced = req.LastTurnToolChoice.Name
 	}
 	if forced != "" {
@@ -817,7 +818,7 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 			reason = fmt.Sprintf("%d MCP tools are at or below configured threshold %d", len(authorized), p.threshold)
 		}
 	}
-	state.lastDiagnostics = llm.ToolDiscoveryDiagnostics{
+	state.lastDiagnostics = core.ToolDiscoveryDiagnostics{
 		ConfiguredMode:     string(p.mode),
 		ResolvedMode:       string(resolved),
 		ConfiguredStrategy: string(p.strategy),
@@ -837,8 +838,8 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 		DynamicActive:      selection.activeCount,
 		DynamicLimit:       p.maxActiveTools,
 		EvictionCount:      state.evictionCount,
-		Recent:             append([]llm.ToolActivationDiagnostic(nil), state.recent...),
-		RecentEvictions:    append([]llm.ToolEvictionDiagnostic(nil), state.recentEvictions...),
+		Recent:             append([]core.ToolActivationDiagnostic(nil), state.recent...),
+		RecentEvictions:    append([]core.ToolEvictionDiagnostic(nil), state.recentEvictions...),
 		Servers:            selection.serverDetails,
 		ResetReason:        resetReason,
 	}
@@ -851,25 +852,25 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 	return resetReason, nil
 }
 
-func (p *Planner) ResolveNativeToolDiscovery(_ context.Context, runID string, call llm.ToolDiscoveryCall) (llm.ToolDiscoveryOutput, error) {
+func (p *Planner) ResolveNativeToolDiscovery(_ context.Context, runID string, call core.ToolDiscoveryCall) (core.ToolDiscoveryOutput, error) {
 	p.mu.Lock()
 	strategy := p.runStrategies[runID]
 	allowed := p.searchAllowed[runID]
 	key := p.runs[runID]
 	p.mu.Unlock()
 	if strategy != StrategyNative || key == "" {
-		return llm.ToolDiscoveryOutput{}, fmt.Errorf("native tool discovery is not active for run %q", runID)
+		return core.ToolDiscoveryOutput{}, fmt.Errorf("native tool discovery is not active for run %q", runID)
 	}
 	if !allowed {
-		return llm.ToolDiscoveryOutput{}, fmt.Errorf("tool_search cannot run after the discovery cutoff")
+		return core.ToolDiscoveryOutput{}, fmt.Errorf("tool_search cannot run after the discovery cutoff")
 	}
 	input, err := decodeSearchInput(call.Arguments)
 	if err != nil {
-		return llm.ToolDiscoveryOutput{}, err
+		return core.ToolDiscoveryOutput{}, err
 	}
 	loaded, already, _, _, _, _, err := p.activate(runID, input)
 	if err != nil {
-		return llm.ToolDiscoveryOutput{}, err
+		return core.ToolDiscoveryOutput{}, err
 	}
 	selected := make(map[string]mcp.CatalogTool, len(loaded)+len(already))
 	for _, tool := range loaded {
@@ -890,14 +891,14 @@ func (p *Planner) ResolveNativeToolDiscovery(_ context.Context, runID string, ca
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	output := llm.ToolDiscoveryOutput{CallID: call.ID}
+	output := core.ToolDiscoveryOutput{CallID: call.ID}
 	if snapshot := p.manager.CatalogueSnapshot(); snapshot != nil {
 		output.CatalogueHash = snapshot.Hash
 		output.CatalogueGen = snapshot.Generation
 	}
 	for _, name := range names {
 		tool := selected[name]
-		output.Tools = append(output.Tools, llm.DiscoveredTool{Spec: tool.ToolSpec(), SchemaHash: tool.SchemaHash})
+		output.Tools = append(output.Tools, core.DiscoveredTool{Spec: tool.ToolSpec(), SchemaHash: tool.SchemaHash})
 	}
 	return output, nil
 }
@@ -937,7 +938,7 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func pruneNativeDiscoveryTools(req *llm.Request, active map[string]activeToolState) {
+func pruneNativeDiscoveryTools(req *core.Request, active map[string]activeToolState) {
 	if req == nil {
 		return
 	}
@@ -949,7 +950,7 @@ func pruneNativeDiscoveryTools(req *llm.Request, active map[string]activeToolSta
 				continue
 			}
 			output := *part.DiscoveryOutput
-			kept := make([]llm.DiscoveredTool, 0, len(output.Tools))
+			kept := make([]core.DiscoveredTool, 0, len(output.Tools))
 			for _, tool := range output.Tools {
 				if _, ok := active[tool.Spec.Name]; ok {
 					kept = append(kept, tool)
@@ -965,12 +966,12 @@ func pruneNativeDiscoveryTools(req *llm.Request, active map[string]activeToolSta
 	removeNativeDiscoveryPairs(req, emptyCalls)
 }
 
-func removeNativeDiscoveryPairs(req *llm.Request, callIDs map[string]bool) {
+func removeNativeDiscoveryPairs(req *core.Request, callIDs map[string]bool) {
 	if req == nil || len(callIDs) == 0 {
 		return
 	}
 	for mi := range req.Messages {
-		parts := make([]llm.Part, 0, len(req.Messages[mi].Parts))
+		parts := make([]core.Part, 0, len(req.Messages[mi].Parts))
 		for _, part := range req.Messages[mi].Parts {
 			if part.DiscoveryCall != nil && callIDs[part.DiscoveryCall.ID] {
 				continue
@@ -984,7 +985,7 @@ func removeNativeDiscoveryPairs(req *llm.Request, callIDs map[string]bool) {
 	}
 }
 
-func stripNativeDiscoveryParts(req *llm.Request) bool {
+func stripNativeDiscoveryParts(req *core.Request) bool {
 	if req == nil {
 		return false
 	}
@@ -992,7 +993,7 @@ func stripNativeDiscoveryParts(req *llm.Request) bool {
 	for mi := range req.Messages {
 		parts := req.Messages[mi].Parts[:0]
 		for _, part := range req.Messages[mi].Parts {
-			if part.Type == llm.PartDiscoveryCall || part.Type == llm.PartDiscoveryOutput {
+			if part.Type == core.PartDiscoveryCall || part.Type == core.PartDiscoveryOutput {
 				removed = true
 				continue
 			}
@@ -1019,7 +1020,7 @@ func (p *Planner) EndRun(runID string) {
 // ResolveProviderToolCall maps an explicit native namespace/child identity to
 // the existing flattened executable name. Only the exact child previously
 // loaded (or explicitly pinned) in this run's authorised state can resolve.
-func (p *Planner) ResolveProviderToolCall(runID string, call llm.ToolCall) (llm.ToolCall, error) {
+func (p *Planner) ResolveProviderToolCall(runID string, call core.ToolCall) (core.ToolCall, error) {
 	if strings.TrimSpace(call.Namespace) == "" {
 		return call, nil
 	}
@@ -1126,7 +1127,7 @@ func (p *Planner) ToolExecuted(sessionID, runID, name string) {
 	p.mu.Unlock()
 }
 
-func (p *Planner) ActiveToolSpecs(sessionID string) []llm.ToolSpec {
+func (p *Planner) ActiveToolSpecs(sessionID string) []core.ToolSpec {
 	if p == nil {
 		return nil
 	}
@@ -1147,7 +1148,7 @@ func (p *Planner) ActiveToolSpecs(sessionID string) []llm.ToolSpec {
 	if snapshot == nil || engine == nil {
 		return nil
 	}
-	specs := make([]llm.ToolSpec, 0, len(active))
+	specs := make([]core.ToolSpec, 0, len(active))
 	for _, tool := range snapshot.Tools {
 		toolState, ok := active[tool.Name]
 		if !ok || toolState.SchemaHash != tool.SchemaHash || !engine.IsToolAllowed(tool.Name) {
@@ -1159,17 +1160,17 @@ func (p *Planner) ActiveToolSpecs(sessionID string) []llm.ToolSpec {
 	return specs
 }
 
-func (p *Planner) Diagnostics(sessionID string) llm.ToolDiscoveryDiagnostics {
+func (p *Planner) Diagnostics(sessionID string) core.ToolDiscoveryDiagnostics {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	state := p.sessions[p.stateKey(sessionID, "")]
 	if state == nil {
-		return llm.ToolDiscoveryDiagnostics{ConfiguredMode: string(p.mode), ConfiguredStrategy: string(p.strategy), DynamicLimit: p.maxActiveTools}
+		return core.ToolDiscoveryDiagnostics{ConfiguredMode: string(p.mode), ConfiguredStrategy: string(p.strategy), DynamicLimit: p.maxActiveTools}
 	}
 	diagnostics := state.lastDiagnostics
-	diagnostics.Recent = append([]llm.ToolActivationDiagnostic(nil), diagnostics.Recent...)
-	diagnostics.RecentEvictions = append([]llm.ToolEvictionDiagnostic(nil), diagnostics.RecentEvictions...)
-	diagnostics.Servers = append([]llm.ToolDiscoveryServerDiagnostic(nil), diagnostics.Servers...)
+	diagnostics.Recent = append([]core.ToolActivationDiagnostic(nil), diagnostics.Recent...)
+	diagnostics.RecentEvictions = append([]core.ToolEvictionDiagnostic(nil), diagnostics.RecentEvictions...)
+	diagnostics.Servers = append([]core.ToolDiscoveryServerDiagnostic(nil), diagnostics.Servers...)
 	return diagnostics
 }
 
@@ -1220,17 +1221,17 @@ func (p *Planner) alwaysLoadSet(snapshot *mcp.CatalogueSnapshot) map[string]bool
 	return result
 }
 
-func ensureDeferredToolSearchInstruction(req *llm.Request, snapshot *mcp.CatalogueSnapshot, servers []llm.ToolDiscoveryServerDiagnostic) {
+func ensureDeferredToolSearchInstruction(req *core.Request, snapshot *mcp.CatalogueSnapshot, servers []core.ToolDiscoveryServerDiagnostic) {
 	if req == nil {
 		return
 	}
 	instructionText := deferredToolSearchDeveloperInstruction(snapshot, servers)
 	for i := 0; i < len(req.Messages); i++ {
 		message := req.Messages[i]
-		if message.Role != llm.RoleDeveloper || !strings.Contains(llm.MessageText(message), deferredToolSearchInstructionMarker) {
+		if message.Role != core.RoleDeveloper || !strings.Contains(core.MessageText(message), deferredToolSearchInstructionMarker) {
 			continue
 		}
-		if llm.MessageText(message) == instructionText {
+		if core.MessageText(message) == instructionText {
 			return
 		}
 		// The deferred server set changed during this request. Replace the stale
@@ -1238,20 +1239,20 @@ func ensureDeferredToolSearchInstruction(req *llm.Request, snapshot *mcp.Catalog
 		req.Messages = append(req.Messages[:i], req.Messages[i+1:]...)
 		break
 	}
-	instruction := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: instructionText}}}
+	instruction := core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: instructionText}}}
 	insertAt := len(req.Messages)
 	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == llm.RoleUser {
+		if req.Messages[i].Role == core.RoleUser {
 			insertAt = i
 			break
 		}
 	}
-	req.Messages = append(req.Messages, llm.Message{})
+	req.Messages = append(req.Messages, core.Message{})
 	copy(req.Messages[insertAt+1:], req.Messages[insertAt:])
 	req.Messages[insertAt] = instruction
 }
 
-func deferredToolSearchDeveloperInstruction(snapshot *mcp.CatalogueSnapshot, servers []llm.ToolDiscoveryServerDiagnostic) string {
+func deferredToolSearchDeveloperInstruction(snapshot *mcp.CatalogueSnapshot, servers []core.ToolDiscoveryServerDiagnostic) string {
 	purposes := make(map[string]string)
 	toolNames := make(map[string][]string)
 	if snapshot != nil {
@@ -1328,7 +1329,7 @@ func summarizeDeferredServerPurpose(value string) string {
 	return strings.TrimSpace(string(runes[:maxDeferredServerPurposeRunes-1])) + "…"
 }
 
-func isFixedBridgeProvider(provider llm.Provider) bool {
+func isFixedBridgeProvider(provider core.Provider) bool {
 	if provider == nil {
 		return false
 	}
@@ -1357,12 +1358,12 @@ func pinReason(always, explicit, forced, eager bool) string {
 	}
 }
 
-func removeMCPAndSearch(specs []llm.ToolSpec, tools []mcp.CatalogTool) []llm.ToolSpec {
+func removeMCPAndSearch(specs []core.ToolSpec, tools []mcp.CatalogTool) []core.ToolSpec {
 	mcpNames := make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		mcpNames[tool.Name] = true
 	}
-	out := make([]llm.ToolSpec, 0, len(specs))
+	out := make([]core.ToolSpec, 0, len(specs))
 	for _, spec := range specs {
 		if spec.Name != ToolSearchName && !mcpNames[spec.Name] {
 			out = append(out, spec)
@@ -1371,8 +1372,8 @@ func removeMCPAndSearch(specs []llm.ToolSpec, tools []mcp.CatalogTool) []llm.Too
 	return out
 }
 
-func withoutTool(specs []llm.ToolSpec, name string) []llm.ToolSpec {
-	out := make([]llm.ToolSpec, 0, len(specs))
+func withoutTool(specs []core.ToolSpec, name string) []core.ToolSpec {
+	out := make([]core.ToolSpec, 0, len(specs))
 	for _, spec := range specs {
 		if spec.Name != name {
 			out = append(out, spec)
@@ -1381,7 +1382,7 @@ func withoutTool(specs []llm.ToolSpec, name string) []llm.ToolSpec {
 	return out
 }
 
-func hasTool(specs []llm.ToolSpec, name string) bool {
+func hasTool(specs []core.ToolSpec, name string) bool {
 	for _, spec := range specs {
 		if spec.Name == name {
 			return true
@@ -1399,9 +1400,9 @@ func containsMCPName(tools []mcp.CatalogTool, name string) bool {
 	return false
 }
 
-func messagesContain(messages []llm.Message, text string) bool {
+func messagesContain(messages []core.Message, text string) bool {
 	for _, message := range messages {
-		if strings.Contains(llm.MessageText(message), text) {
+		if strings.Contains(core.MessageText(message), text) {
 			return true
 		}
 	}

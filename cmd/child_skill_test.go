@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -27,7 +28,7 @@ func TestApplyChildSkillRuntimeRegistersToolsBeforeRestricting(t *testing.T) {
 	if err := toolMgr.SetBaseDir(root); err != nil {
 		t.Fatal(err)
 	}
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	toolMgr.SetupEngine(engine)
 
 	skill := &runpkg.SkillRunMetadata{
@@ -63,7 +64,7 @@ func TestApplyChildSkillRuntimeRegistersToolsBeforeRestricting(t *testing.T) {
 }
 
 func TestApplyChildSkillRuntimeExplicitEmptyBlocksAllTools(t *testing.T) {
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	engine.RegisterTool(tools.NewReadFileTool(nil, tools.OutputLimits{}))
 	if err := applyChildSkillRuntime(engine, nil, &runpkg.SkillRunMetadata{Name: "no-tools", AllowedToolsPresent: true}); err != nil {
 		t.Fatal(err)

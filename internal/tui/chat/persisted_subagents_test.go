@@ -6,18 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 func persistedSpawnFixture(parentID, childID, callID, output string) []session.Message {
-	assistant := session.NewMessage(parentID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: callID, Name: tools.SpawnAgentToolName, Arguments: json.RawMessage(`{"agent_name":"reviewer","prompt":"review carefully"}`)},
+	assistant := session.NewMessage(parentID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: callID, Name: tools.SpawnAgentToolName, Arguments: json.RawMessage(`{"agent_name":"reviewer","prompt":"review carefully"}`)},
 	}}}, 0)
 	content, _ := json.Marshal(tools.SpawnAgentResult{AgentName: "reviewer", Output: output, Duration: 250, SessionID: childID})
-	result := session.NewMessage(parentID, llm.ToolResultMessage(callID, tools.SpawnAgentToolName, string(content), nil), 1)
+	result := session.NewMessage(parentID, core.ToolResultMessage(callID, tools.SpawnAgentToolName, string(content), nil), 1)
 	return []session.Message{*assistant, *result}
 }
 
@@ -61,10 +61,10 @@ func TestPersistedSubagentHydrationRestoresChildToolActivity(t *testing.T) {
 	m := newTestChatModel(true)
 	parentID := m.sess.ID
 	childID := "child-tools"
-	childCall := session.NewMessage(childID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "read-1", Name: "read_file", ToolInfo: "important.go"},
+	childCall := session.NewMessage(childID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "read-1", Name: "read_file", ToolInfo: "important.go"},
 	}}}, 0)
-	childResult := session.NewMessage(childID, llm.ToolResultMessage("read-1", "read_file", "ok", nil), 1)
+	childResult := session.NewMessage(childID, core.ToolResultMessage("read-1", "read_file", "ok", nil), 1)
 	store := &mockStore{
 		sessions: map[string]*session.Session{childID: {
 			ID: childID, ParentID: parentID, Provider: "mock", Model: "review-model", Status: session.StatusComplete,
@@ -86,11 +86,11 @@ func TestPersistedSubagentHydrationRestoresChildToolActivity(t *testing.T) {
 func TestPersistedSubagentHydrationRendersStructuredErrorWithPartialOutput(t *testing.T) {
 	m := newTestChatModel(true)
 	parentID := m.sess.ID
-	assistant := session.NewMessage(parentID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "spawn-error", Name: tools.SpawnAgentToolName, Arguments: json.RawMessage(`{"agent_name":"reviewer","prompt":"review carefully"}`)},
+	assistant := session.NewMessage(parentID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "spawn-error", Name: tools.SpawnAgentToolName, Arguments: json.RawMessage(`{"agent_name":"reviewer","prompt":"review carefully"}`)},
 	}}}, 0)
 	content, _ := json.Marshal(tools.SpawnAgentResult{Output: "partial finding", Error: "timed out", Type: "timeout"})
-	result := session.NewMessage(parentID, llm.ToolResultMessage("spawn-error", tools.SpawnAgentToolName, string(content), nil), 1)
+	result := session.NewMessage(parentID, core.ToolResultMessage("spawn-error", tools.SpawnAgentToolName, string(content), nil), 1)
 	m.messages = []session.Message{*assistant, *result}
 	loaded := m.loadPersistedSubagentsCmd()().(persistedSubagentsLoadedMsg)
 	m.applyPersistedSubagents(loaded)
@@ -135,7 +135,7 @@ func TestPersistedSubagentHydrationRejectsUnlinkedAndSelfChildren(t *testing.T) 
 			}
 			m.store = &mockStore{
 				sessions: map[string]*session.Session{tc.childID: {ID: tc.childID, ParentID: tc.parentID, Status: session.StatusComplete}},
-				messages: map[string][]session.Message{tc.childID: {*session.NewMessage(tc.childID, llm.AssistantText("foreign transcript"), 0)}},
+				messages: map[string][]session.Message{tc.childID: {*session.NewMessage(tc.childID, core.AssistantText("foreign transcript"), 0)}},
 			}
 			m.messages = persistedSpawnFixture(m.sess.ID, tc.childID, "spawn-untrusted", "safe fallback")
 			loaded := m.loadPersistedSubagentsCmd()().(persistedSubagentsLoadedMsg)

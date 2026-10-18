@@ -6,12 +6,12 @@ import (
 	"io"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestEventPipeRecvAfterCloseIsStable(t *testing.T) {
 	pipe := NewEventPipe(context.Background(), 1)
-	pipe.Event(llm.Event{Type: llm.EventTextDelta, Text: "hello"})
+	pipe.Event(core.Event{Type: core.EventTextDelta, Text: "hello"})
 	pipe.CloseWithError(nil)
 
 	ev, err := pipe.Recv()

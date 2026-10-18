@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -13,9 +13,9 @@ import (
 func TestInspectorRendersSkillActivationProvenance(t *testing.T) {
 	renderer := NewContentRenderer(100, ui.DefaultStyles(), nil, nil, "", "", nil, defaultInspectorReasoningConfig())
 	message := session.Message{
-		Role: llm.RoleDeveloper,
-		Parts: []llm.Part{
-			{Type: llm.PartSkillActivation, SkillActivation: &llm.SkillActivationProvenance{
+		Role: core.RoleDeveloper,
+		Parts: []core.Part{
+			{Type: core.PartSkillActivation, SkillActivation: &core.SkillActivationProvenance{
 				Name:           "review",
 				Source:         "local",
 				SourcePath:     "/repo/.skills/review",
@@ -28,7 +28,7 @@ func TestInspectorRendersSkillActivationProvenance(t *testing.T) {
 				ChildSessionID: "child-1",
 				Status:         "complete",
 			}},
-			{Type: llm.PartText, Text: "expanded body"},
+			{Type: core.PartText, Text: "expanded body"},
 		},
 		TextContent: "expanded body",
 	}
@@ -44,8 +44,8 @@ func TestInspectorRendersSkillActivationProvenance(t *testing.T) {
 func TestInspectorRendersSkillRunEventMessages(t *testing.T) {
 	renderer := NewContentRenderer(100, ui.DefaultStyles(), nil, nil, "", "", nil, defaultInspectorReasoningConfig())
 	message := session.Message{
-		Role:        llm.RoleEvent,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "↳ Skill /review · complete"}},
+		Role:        core.RoleEvent,
+		Parts:       []core.Part{{Type: core.PartText, Text: "↳ Skill /review · complete"}},
 		TextContent: "↳ Skill /review · complete",
 	}
 	got, _, lines := renderer.renderMessageWithItems(message, "event-1", 0)

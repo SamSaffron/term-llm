@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -18,9 +19,9 @@ func TestAuthPromptsRefuseActiveTUI(t *testing.T) {
 		prompt  func() error
 		command string
 	}{
-		{"ChatGPT", func() error { _, err := PromptForChatGPTAuth(); return err }, "auth login chatgpt"},
-		{"Grok", func() error { _, err := PromptForGrokAuth(); return err }, "auth login grok"},
-		{"Copilot", func() error { _, err := PromptForCopilotAuth(); return err }, "auth login copilot"},
+		{"ChatGPT", func() error { _, err := rp.PromptForChatGPTAuth(); return err }, "auth login chatgpt"},
+		{"Grok", func() error { _, err := rp.PromptForGrokAuth(); return err }, "auth login grok"},
+		{"Copilot", func() error { _, err := rp.PromptForCopilotAuth(); return err }, "auth login copilot"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.prompt()

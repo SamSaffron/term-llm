@@ -10,7 +10,7 @@ import (
 	"charm.land/huh/v2"
 	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
 	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -36,7 +36,7 @@ func authProviders() []authProvider {
 			exists: credentials.ChatGPTCredentialsExist,
 			clear:  credentials.ClearChatGPTCredentials,
 			login: func() error {
-				_, err := llm.PromptForChatGPTAuth()
+				_, err := responsesproviders.PromptForChatGPTAuth()
 				return err
 			},
 			describe: chatgptAuthStatus,
@@ -46,9 +46,9 @@ func authProviders() []authProvider {
 			id:     "grok",
 			exists: credentials.GrokCredentialsExist,
 			clear:  credentials.ClearGrokCredentials,
-			logout: llm.LogoutGrok,
+			logout: responsesproviders.LogoutGrok,
 			login: func() error {
-				_, err := llm.PromptForGrokAuth()
+				_, err := responsesproviders.PromptForGrokAuth()
 				return err
 			},
 			describe: grokAuthStatus,
@@ -59,7 +59,7 @@ func authProviders() []authProvider {
 			exists: credentials.CopilotCredentialsExist,
 			clear:  credentials.ClearCopilotCredentials,
 			login: func() error {
-				_, err := llm.PromptForCopilotAuth()
+				_, err := responsesproviders.PromptForCopilotAuth()
 				return err
 			},
 			describe: copilotAuthStatus,

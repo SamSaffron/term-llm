@@ -23,6 +23,9 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -31,14 +34,14 @@ import (
 type stagedStream struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	events <-chan llm.Event
+	events <-chan core.Event
 }
 
-func (s *stagedStream) Recv() (llm.Event, error) {
+func (s *stagedStream) Recv() (core.Event, error) {
 	select {
 	case event, ok := <-s.events:
 		if !ok {
-			return llm.Event{}, io.EOF
+			return core.Event{}, io.EOF
 		}
 		return event, nil
 	default:
@@ -46,10 +49,10 @@ func (s *stagedStream) Recv() (llm.Event, error) {
 
 	select {
 	case <-s.ctx.Done():
-		return llm.Event{}, s.ctx.Err()
+		return core.Event{}, s.ctx.Err()
 	case event, ok := <-s.events:
 		if !ok {
-			return llm.Event{}, io.EOF
+			return core.Event{}, io.EOF
 		}
 		return event, nil
 	}
@@ -62,7 +65,7 @@ func (s *stagedStream) Close() error {
 
 type stagedProvider struct {
 	mu            sync.Mutex
-	requests      []llm.Request
+	requests      []core.Request
 	firstChunk    string
 	secondChunk   string
 	firstSent     chan struct{}
@@ -77,11 +80,11 @@ type shutdownBlockingStream struct {
 	cancelledOnce sync.Once
 }
 
-func (s *shutdownBlockingStream) Recv() (llm.Event, error) {
+func (s *shutdownBlockingStream) Recv() (core.Event, error) {
 	<-s.ctx.Done()
 	s.cancelledOnce.Do(func() { close(s.cancelled) })
 	<-s.release
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 
 func (s *shutdownBlockingStream) Close() error {
@@ -114,11 +117,11 @@ func (p *shutdownBlockingProvider) Credential() string {
 	return "test"
 }
 
-func (p *shutdownBlockingProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{}
+func (p *shutdownBlockingProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{}
 }
 
-func (p *shutdownBlockingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *shutdownBlockingProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.startOnce.Do(func() { close(p.started) })
 	return &shutdownBlockingStream{ctx: ctx, release: p.release, cancelled: p.cancelled}, nil
 }
@@ -129,7 +132,7 @@ func (p *shutdownBlockingProvider) CleanupMCP() {
 
 type countingListModelsProvider struct {
 	name   string
-	models []llm.ModelInfo
+	models []core.ModelInfo
 	calls  int32
 }
 
@@ -137,15 +140,15 @@ func (p *countingListModelsProvider) Name() string { return p.name }
 
 func (p *countingListModelsProvider) Credential() string { return "mock" }
 
-func (p *countingListModelsProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *countingListModelsProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
 
-func (p *countingListModelsProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *countingListModelsProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return nil, errors.New("not used in test")
 }
 
-func (p *countingListModelsProvider) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+func (p *countingListModelsProvider) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	atomic.AddInt32(&p.calls, 1)
-	out := make([]llm.ModelInfo, len(p.models))
+	out := make([]core.ModelInfo, len(p.models))
 	copy(out, p.models)
 	return out, nil
 }
@@ -171,24 +174,24 @@ func (p *stagedProvider) Credential() string {
 	return "test"
 }
 
-func (p *stagedProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *stagedProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 
-func (p *stagedProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *stagedProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.mu.Lock()
 	p.requests = append(p.requests, req)
 	p.mu.Unlock()
 
 	streamCtx, cancel := context.WithCancel(ctx)
-	ch := make(chan llm.Event, 8)
+	ch := make(chan core.Event, 8)
 	go func() {
 		defer close(ch)
 
 		select {
 		case <-streamCtx.Done():
 			return
-		case ch <- llm.Event{Type: llm.EventTextDelta, Text: p.firstChunk}:
+		case ch <- core.Event{Type: core.EventTextDelta, Text: p.firstChunk}:
 		}
 		p.closeFirst.Do(func() { close(p.firstSent) })
 
@@ -201,13 +204,13 @@ func (p *stagedProvider) Stream(ctx context.Context, req llm.Request) (llm.Strea
 		select {
 		case <-streamCtx.Done():
 			return
-		case ch <- llm.Event{Type: llm.EventTextDelta, Text: p.secondChunk}:
+		case ch <- core.Event{Type: core.EventTextDelta, Text: p.secondChunk}:
 		}
 
 		select {
 		case <-streamCtx.Done():
 			return
-		case ch <- llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 1, OutputTokens: 2}}:
+		case ch <- core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 1, OutputTokens: 2}}:
 		}
 	}()
 
@@ -216,24 +219,24 @@ func (p *stagedProvider) Stream(ctx context.Context, req llm.Request) (llm.Strea
 
 type cancelPreserveProvider struct {
 	mu            sync.Mutex
-	requests      []llm.Request
+	requests      []core.Request
 	secondStarted chan struct{}
 	secondOnce    sync.Once
 }
 
 func (p *cancelPreserveProvider) Name() string       { return "cancel-preserve" }
 func (p *cancelPreserveProvider) Credential() string { return "test" }
-func (p *cancelPreserveProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *cancelPreserveProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
-func (p *cancelPreserveProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *cancelPreserveProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.mu.Lock()
 	p.requests = append(p.requests, req)
 	call := len(p.requests)
 	p.mu.Unlock()
 	switch call {
 	case 1:
-		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{
+		return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventToolCall, Tool: &core.ToolCall{
 			ID:        "call-preserved-context",
 			Name:      "slow_tool",
 			Arguments: json.RawMessage(`{}`),
@@ -242,14 +245,14 @@ func (p *cancelPreserveProvider) Stream(ctx context.Context, req llm.Request) (l
 		p.secondOnce.Do(func() { close(p.secondStarted) })
 		return &serveRuntimeBlockingStream{ctx: ctx}, nil
 	default:
-		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "follow-up saw context"}}}, nil
+		return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventTextDelta, Text: "follow-up saw context"}}}, nil
 	}
 }
 
-func (p *cancelPreserveProvider) Requests() []llm.Request {
+func (p *cancelPreserveProvider) Requests() []core.Request {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]llm.Request(nil), p.requests...)
+	return append([]core.Request(nil), p.requests...)
 }
 
 func newServeHTTPTestServer(srv *serveServer) *httptest.Server {
@@ -1485,7 +1488,7 @@ func TestParseResponsesInput_String(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleUser {
+	if msgs[0].Role != core.RoleUser {
 		t.Fatalf("role = %s, want user", msgs[0].Role)
 	}
 	if got := msgs[0].Parts[0].Text; got != "hello" {
@@ -1510,9 +1513,9 @@ func TestParseResponsesInput_PreservesPerItemClientMessageIDs(t *testing.T) {
 }
 
 func TestPrepareResponseClientMessageIDs_ValidatesFirstPartyBatch(t *testing.T) {
-	messages := []llm.Message{
-		{Role: llm.RoleUser, ClientMessageID: "msg-first"},
-		{Role: llm.RoleUser, ClientMessageID: "msg-second"},
+	messages := []core.Message{
+		{Role: core.RoleUser, ClientMessageID: "msg-first"},
+		{Role: core.RoleUser, ClientMessageID: "msg-second"},
 	}
 	isBatch, err := prepareResponseClientMessageIDs(messages, "msg-second", true)
 	if err != nil || !isBatch {
@@ -1521,12 +1524,12 @@ func TestPrepareResponseClientMessageIDs_ValidatesFirstPartyBatch(t *testing.T) 
 
 	for _, test := range []struct {
 		name      string
-		messages  []llm.Message
+		messages  []core.Message
 		requestID string
 	}{
-		{name: "missing item id", messages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: "msg-first"}, {Role: llm.RoleUser}}, requestID: "msg-second"},
-		{name: "duplicate item id", messages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: "same"}, {Role: llm.RoleUser, ClientMessageID: "same"}}, requestID: "same"},
-		{name: "wrong final id", messages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: "msg-first"}, {Role: llm.RoleUser, ClientMessageID: "msg-second"}}, requestID: "other"},
+		{name: "missing item id", messages: []core.Message{{Role: core.RoleUser, ClientMessageID: "msg-first"}, {Role: core.RoleUser}}, requestID: "msg-second"},
+		{name: "duplicate item id", messages: []core.Message{{Role: core.RoleUser, ClientMessageID: "same"}, {Role: core.RoleUser, ClientMessageID: "same"}}, requestID: "same"},
+		{name: "wrong final id", messages: []core.Message{{Role: core.RoleUser, ClientMessageID: "msg-first"}, {Role: core.RoleUser, ClientMessageID: "msg-second"}}, requestID: "other"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := prepareResponseClientMessageIDs(test.messages, test.requestID, true); err == nil {
@@ -1551,17 +1554,17 @@ func TestParseResponsesInput_DeveloperDoesNotSuppressServerSystemPrompt(t *testi
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleDeveloper {
+	if msgs[0].Role != core.RoleDeveloper {
 		t.Fatalf("first role = %s, want developer", msgs[0].Role)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 	rt := &serveRuntime{
 		provider:     provider,
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		systemPrompt: "server system prompt",
 	}
-	_, err = rt.Run(context.Background(), true, replaceHistory, msgs, llm.Request{})
+	_, err = rt.Run(context.Background(), true, replaceHistory, msgs, core.Request{})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1571,13 +1574,13 @@ func TestParseResponsesInput_DeveloperDoesNotSuppressServerSystemPrompt(t *testi
 	if len(provider.Requests[0].Messages) != 3 {
 		t.Fatalf("request message count = %d, want 3", len(provider.Requests[0].Messages))
 	}
-	if provider.Requests[0].Messages[0].Role != llm.RoleSystem || provider.Requests[0].Messages[0].Parts[0].Text != "server system prompt" {
+	if provider.Requests[0].Messages[0].Role != core.RoleSystem || provider.Requests[0].Messages[0].Parts[0].Text != "server system prompt" {
 		t.Fatalf("first request message = %+v, want server system prompt", provider.Requests[0].Messages[0])
 	}
-	if provider.Requests[0].Messages[1].Role != llm.RoleDeveloper || provider.Requests[0].Messages[1].Parts[0].Text != "Be concise" {
+	if provider.Requests[0].Messages[1].Role != core.RoleDeveloper || provider.Requests[0].Messages[1].Parts[0].Text != "Be concise" {
 		t.Fatalf("second request message = %+v, want developer prompt", provider.Requests[0].Messages[1])
 	}
-	if provider.Requests[0].Messages[2].Role != llm.RoleUser || provider.Requests[0].Messages[2].Parts[0].Text != "hello" {
+	if provider.Requests[0].Messages[2].Role != core.RoleUser || provider.Requests[0].Messages[2].Parts[0].Text != "hello" {
 		t.Fatalf("third request message = %+v, want user prompt", provider.Requests[0].Messages[2])
 	}
 }
@@ -1600,13 +1603,13 @@ func TestParseResponsesInput_ImageContent(t *testing.T) {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
 	msg := msgs[0]
-	if msg.Role != llm.RoleUser {
+	if msg.Role != core.RoleUser {
 		t.Fatalf("role = %s, want user", msg.Role)
 	}
 	if len(msg.Parts) != 2 {
 		t.Fatalf("len(parts) = %d, want 2", len(msg.Parts))
 	}
-	if msg.Parts[0].Type != llm.PartImage {
+	if msg.Parts[0].Type != core.PartImage {
 		t.Fatalf("parts[0].type = %s, want image", msg.Parts[0].Type)
 	}
 	if msg.Parts[0].ImageData == nil {
@@ -1636,7 +1639,7 @@ func TestParseResponsesInput_ImageContent(t *testing.T) {
 	if string(got) != "hello" {
 		t.Fatalf("saved image bytes = %q, want hello", got)
 	}
-	if msg.Parts[1].Type != llm.PartText {
+	if msg.Parts[1].Type != core.PartText {
 		t.Fatalf("parts[1].type = %s, want text", msg.Parts[1].Type)
 	}
 	if msg.Parts[1].Text != "describe this image" {
@@ -1667,7 +1670,7 @@ func TestParseResponsesInput_FileUploadSavesToDisk(t *testing.T) {
 	if len(msg.Parts) != 2 {
 		t.Fatalf("len(parts) = %d, want 2", len(msg.Parts))
 	}
-	if msg.Parts[0].Type != llm.PartFile {
+	if msg.Parts[0].Type != core.PartFile {
 		t.Fatalf("parts[0].type = %s, want file", msg.Parts[0].Type)
 	}
 	if msg.Parts[0].FileData == nil {
@@ -1731,7 +1734,7 @@ func TestParseResponsesInput_TextFileUploadEmbedsFallback(t *testing.T) {
 		t.Fatalf("messages = %#v, want one file part", msgs)
 	}
 	part := msgs[0].Parts[0]
-	if part.Type != llm.PartFile {
+	if part.Type != core.PartFile {
 		t.Fatalf("part type = %s, want file", part.Type)
 	}
 	if part.FileData == nil || part.FileData.MediaType != "text/csv" {
@@ -1815,7 +1818,7 @@ func TestParseResponsesInput_FunctionCallOutputDoesNotReplaceHistory(t *testing.
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
 	}
-	if msgs[1].Role != llm.RoleTool {
+	if msgs[1].Role != core.RoleTool {
 		t.Fatalf("second role = %s, want tool", msgs[1].Role)
 	}
 	if msgs[1].Parts[0].ToolResult == nil || msgs[1].Parts[0].ToolResult.ID != "call_1" {
@@ -1839,7 +1842,7 @@ func TestParseResponsesInput_FunctionCallHistoryWithUserReplacesHistory(t *testi
 	if len(msgs) != 3 {
 		t.Fatalf("len(msgs) = %d, want 3", len(msgs))
 	}
-	if msgs[2].Role != llm.RoleUser {
+	if msgs[2].Role != core.RoleUser {
 		t.Fatalf("third role = %s, want user", msgs[2].Role)
 	}
 }
@@ -1876,10 +1879,10 @@ func TestParseChatMessages_ToolCallAndToolResult(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleAssistant {
+	if msgs[0].Role != core.RoleAssistant {
 		t.Fatalf("first role = %s, want assistant", msgs[0].Role)
 	}
-	if msgs[1].Role != llm.RoleTool {
+	if msgs[1].Role != core.RoleTool {
 		t.Fatalf("second role = %s, want tool", msgs[1].Role)
 	}
 	if msgs[1].Parts[0].ToolResult == nil || msgs[1].Parts[0].ToolResult.Name != "read_file" {
@@ -1900,11 +1903,11 @@ func TestPopulateMissingToolResultNames_UsesHistory(t *testing.T) {
 		t.Fatalf("replaceHistory = true, want false for tool-only follow-up")
 	}
 
-	history := []llm.Message{{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartToolCall,
-			ToolCall: &llm.ToolCall{
+	history := []core.Message{{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type: core.PartToolCall,
+			ToolCall: &core.ToolCall{
 				ID:        "call_1",
 				Name:      "read_file",
 				Arguments: json.RawMessage(`{"path":"a.txt"}`),
@@ -1920,20 +1923,20 @@ func TestPopulateMissingToolResultNames_UsesHistory(t *testing.T) {
 }
 
 func TestPopulateResponsesToolResultNames_UsesRuntimeHistoryBeforeStore(t *testing.T) {
-	messages := []llm.Message{{
-		Role: llm.RoleTool,
-		Parts: []llm.Part{{
-			Type: llm.PartToolResult,
-			ToolResult: &llm.ToolResult{
+	messages := []core.Message{{
+		Role: core.RoleTool,
+		Parts: []core.Part{{
+			Type: core.PartToolResult,
+			ToolResult: &core.ToolResult{
 				ID: "call_1",
 			},
 		}},
 	}}
-	runtime := &serveRuntime{history: []llm.Message{{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartToolCall,
-			ToolCall: &llm.ToolCall{
+	runtime := &serveRuntime{history: []core.Message{{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type: core.PartToolCall,
+			ToolCall: &core.ToolCall{
 				ID:   "call_1",
 				Name: "read_file",
 			},
@@ -1953,21 +1956,21 @@ func TestPopulateResponsesToolResultNames_UsesRuntimeHistoryBeforeStore(t *testi
 }
 
 func TestPopulateResponsesToolResultNames_FallsBackToStoreForUnresolvedNames(t *testing.T) {
-	messages := []llm.Message{{
-		Role: llm.RoleTool,
-		Parts: []llm.Part{{
-			Type: llm.PartToolResult,
-			ToolResult: &llm.ToolResult{
+	messages := []core.Message{{
+		Role: core.RoleTool,
+		Parts: []core.Part{{
+			Type: core.PartToolResult,
+			ToolResult: &core.ToolResult{
 				ID: "call_2",
 			},
 		}},
 	}}
 	store := newServeRuntimeTestStore()
-	store.messages["sess-store"] = []session.Message{*session.NewMessage("sess-store", llm.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartToolCall,
-			ToolCall: &llm.ToolCall{
+	store.messages["sess-store"] = []session.Message{*session.NewMessage("sess-store", core.Message{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type: core.PartToolCall,
+			ToolCall: &core.ToolCall{
 				ID:   "call_2",
 				Name: "bash",
 			},
@@ -2012,11 +2015,11 @@ func (s *pagedResponsesToolNameStore) GetMessagesPageDescending(ctx context.Cont
 }
 
 func TestPopulateResponsesToolResultNames_UsesReversePagedStoreLookup(t *testing.T) {
-	messages := []llm.Message{{
-		Role: llm.RoleTool,
-		Parts: []llm.Part{{
-			Type: llm.PartToolResult,
-			ToolResult: &llm.ToolResult{
+	messages := []core.Message{{
+		Role: core.RoleTool,
+		Parts: []core.Part{{
+			Type: core.PartToolResult,
+			ToolResult: &core.ToolResult{
 				ID: "call_older",
 			},
 		}},
@@ -2024,13 +2027,13 @@ func TestPopulateResponsesToolResultNames_UsesReversePagedStoreLookup(t *testing
 	base := newServeRuntimeTestStore()
 	store := &pagedResponsesToolNameStore{serveRuntimeTestStore: base}
 	for i := 0; i < 300; i++ {
-		msg := llm.AssistantText(fmt.Sprintf("filler-%d", i))
+		msg := core.AssistantText(fmt.Sprintf("filler-%d", i))
 		if i == 42 {
-			msg = llm.Message{
-				Role: llm.RoleAssistant,
-				Parts: []llm.Part{{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+			msg = core.Message{
+				Role: core.RoleAssistant,
+				Parts: []core.Part{{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:   "call_older",
 						Name: "grep",
 					},
@@ -2068,17 +2071,17 @@ func TestParseChatMessages_DeveloperDoesNotSuppressServerSystemPrompt(t *testing
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleDeveloper {
+	if msgs[0].Role != core.RoleDeveloper {
 		t.Fatalf("first role = %s, want developer", msgs[0].Role)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 	rt := &serveRuntime{
 		provider:     provider,
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		systemPrompt: "server system prompt",
 	}
-	_, err = rt.Run(context.Background(), true, replaceHistory, msgs, llm.Request{})
+	_, err = rt.Run(context.Background(), true, replaceHistory, msgs, core.Request{})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -2088,13 +2091,13 @@ func TestParseChatMessages_DeveloperDoesNotSuppressServerSystemPrompt(t *testing
 	if len(provider.Requests[0].Messages) != 3 {
 		t.Fatalf("request message count = %d, want 3", len(provider.Requests[0].Messages))
 	}
-	if provider.Requests[0].Messages[0].Role != llm.RoleSystem || provider.Requests[0].Messages[0].Parts[0].Text != "server system prompt" {
+	if provider.Requests[0].Messages[0].Role != core.RoleSystem || provider.Requests[0].Messages[0].Parts[0].Text != "server system prompt" {
 		t.Fatalf("first request message = %+v, want server system prompt", provider.Requests[0].Messages[0])
 	}
-	if provider.Requests[0].Messages[1].Role != llm.RoleDeveloper || provider.Requests[0].Messages[1].Parts[0].Text != "Be concise" {
+	if provider.Requests[0].Messages[1].Role != core.RoleDeveloper || provider.Requests[0].Messages[1].Parts[0].Text != "Be concise" {
 		t.Fatalf("second request message = %+v, want developer prompt", provider.Requests[0].Messages[1])
 	}
-	if provider.Requests[0].Messages[2].Role != llm.RoleUser || provider.Requests[0].Messages[2].Parts[0].Text != "hello" {
+	if provider.Requests[0].Messages[2].Role != core.RoleUser || provider.Requests[0].Messages[2].Parts[0].Text != "hello" {
 		t.Fatalf("third request message = %+v, want user prompt", provider.Requests[0].Messages[2])
 	}
 }
@@ -2118,19 +2121,19 @@ func TestParseChatMessages_UserImageContent(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleUser {
+	if msgs[0].Role != core.RoleUser {
 		t.Fatalf("role = %s, want user", msgs[0].Role)
 	}
 	if len(msgs[0].Parts) != 2 {
 		t.Fatalf("len(parts) = %d, want 2", len(msgs[0].Parts))
 	}
-	if msgs[0].Parts[0].Type != llm.PartImage {
+	if msgs[0].Parts[0].Type != core.PartImage {
 		t.Fatalf("parts[0].type = %s, want image", msgs[0].Parts[0].Type)
 	}
 	if msgs[0].Parts[0].ImageData == nil || msgs[0].Parts[0].ImageData.MediaType != "image/png" || msgs[0].Parts[0].ImageData.Base64 != "aGVsbG8=" {
 		t.Fatalf("parts[0].image = %#v, want png data URL", msgs[0].Parts[0].ImageData)
 	}
-	if msgs[0].Parts[1].Type != llm.PartText || msgs[0].Parts[1].Text != "describe this" {
+	if msgs[0].Parts[1].Type != core.PartText || msgs[0].Parts[1].Text != "describe this" {
 		t.Fatalf("parts[1] = %+v, want trailing text", msgs[0].Parts[1])
 	}
 }
@@ -2154,16 +2157,16 @@ func TestParseChatMessages_AssistantImageContent(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleAssistant {
+	if msgs[0].Role != core.RoleAssistant {
 		t.Fatalf("role = %s, want assistant", msgs[0].Role)
 	}
 	if len(msgs[0].Parts) != 2 {
 		t.Fatalf("len(parts) = %d, want 2", len(msgs[0].Parts))
 	}
-	if msgs[0].Parts[0].Type != llm.PartText || msgs[0].Parts[0].Text != "looking" {
+	if msgs[0].Parts[0].Type != core.PartText || msgs[0].Parts[0].Text != "looking" {
 		t.Fatalf("parts[0] = %+v, want leading text", msgs[0].Parts[0])
 	}
-	if msgs[0].Parts[1].Type != llm.PartImage {
+	if msgs[0].Parts[1].Type != core.PartImage {
 		t.Fatalf("parts[1].type = %s, want image", msgs[0].Parts[1].Type)
 	}
 	if msgs[0].Parts[1].ImageData == nil || msgs[0].Parts[1].ImageData.MediaType != "image/png" || msgs[0].Parts[1].ImageData.Base64 != "aGVsbG8=" {
@@ -2172,10 +2175,10 @@ func TestParseChatMessages_AssistantImageContent(t *testing.T) {
 }
 
 func TestParseToolChoice(t *testing.T) {
-	if got := parseToolChoice(json.RawMessage(`"none"`)); got.Mode != llm.ToolChoiceNone {
+	if got := parseToolChoice(json.RawMessage(`"none"`)); got.Mode != core.ToolChoiceNone {
 		t.Fatalf("mode = %s, want none", got.Mode)
 	}
-	if got := parseToolChoice(json.RawMessage(`{"type":"function","name":"shell"}`)); got.Mode != llm.ToolChoiceName || got.Name != "shell" {
+	if got := parseToolChoice(json.RawMessage(`{"type":"function","name":"shell"}`)); got.Mode != core.ToolChoiceName || got.Name != "shell" {
 		t.Fatalf("name choice = %#v", got)
 	}
 }
@@ -2229,10 +2232,10 @@ func newServeSessionBlockingCleanupProvider() *serveSessionBlockingCleanupProvid
 
 func (p *serveSessionBlockingCleanupProvider) Name() string       { return "blocking-cleanup" }
 func (p *serveSessionBlockingCleanupProvider) Credential() string { return "test" }
-func (p *serveSessionBlockingCleanupProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{}
+func (p *serveSessionBlockingCleanupProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{}
 }
-func (p *serveSessionBlockingCleanupProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+func (p *serveSessionBlockingCleanupProvider) Stream(context.Context, core.Request) (core.Stream, error) {
 	return nil, errors.New("not used")
 }
 func (p *serveSessionBlockingCleanupProvider) CleanupMCP() {
@@ -2784,10 +2787,10 @@ type serveSessionCloseTrackingProvider struct {
 
 func (p *serveSessionCloseTrackingProvider) Name() string       { return "close-tracking" }
 func (p *serveSessionCloseTrackingProvider) Credential() string { return "test" }
-func (p *serveSessionCloseTrackingProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{}
+func (p *serveSessionCloseTrackingProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{}
 }
-func (p *serveSessionCloseTrackingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveSessionCloseTrackingProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return &serveRuntimeTestStream{}, nil
 }
 func (p *serveSessionCloseTrackingProvider) CleanupMCP() { p.closed.Store(true) }
@@ -2932,7 +2935,7 @@ func TestRequireJSONContentType(t *testing.T) {
 func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.T) {
 	cfg := &config.Config{}
 	settings := SessionSettings{Tools: tools.ReadFileToolName}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 
 	wireCalls := 0
 	gotYolo := false
@@ -2975,7 +2978,7 @@ func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.
 func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	settings := SessionSettings{}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 
 	wireCalls := 0
 	wireSpawn := func(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
@@ -3003,7 +3006,7 @@ func TestNewServeEngineWithTools_ConfiguresContextManagement(t *testing.T) {
 	defer llm.RegisterConfigLimits(nil)
 
 	cfg := &config.Config{AutoCompact: true}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 
 	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, false, nil, nil)
 	if err != nil {
@@ -3027,7 +3030,7 @@ func TestNewServeEngineWithTools_TracksContextWhenAutoCompactDisabled(t *testing
 	defer llm.RegisterConfigLimits(nil)
 
 	cfg := &config.Config{AutoCompact: false}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 
 	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, false, nil, nil)
 	if err != nil {
@@ -3053,8 +3056,8 @@ func TestServeRuntimeRun_ReconfiguresContextManagementForRequestModel(t *testing
 	})
 	defer llm.RegisterConfigLimits(nil)
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+	engine := engine.NewEngine(provider, nil)
 	engine.ConfigureContextManagement(provider, "mock", "default-model", false)
 
 	rt := &serveRuntime{
@@ -3065,7 +3068,7 @@ func TestServeRuntimeRun_ReconfiguresContextManagementForRequestModel(t *testing
 	}
 	rt.Touch()
 
-	_, err := rt.Run(context.Background(), false, false, []llm.Message{llm.UserText("hello")}, llm.Request{
+	_, err := rt.Run(context.Background(), false, false, []core.Message{core.UserText("hello")}, core.Request{
 		SessionID: "request-model-override",
 		Model:     "override-model",
 	})
@@ -3082,17 +3085,17 @@ type blockingModelSwitchTool struct {
 	release chan struct{}
 }
 
-func (t *blockingModelSwitchTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "blocking_model_switch", Description: "Waits for a model switch", Schema: map[string]any{"type": "object"}}
+func (t *blockingModelSwitchTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "blocking_model_switch", Description: "Waits for a model switch", Schema: map[string]any{"type": "object"}}
 }
 
-func (t *blockingModelSwitchTool) Execute(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+func (t *blockingModelSwitchTool) Execute(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
 	close(t.started)
 	select {
 	case <-ctx.Done():
-		return llm.ToolOutput{}, ctx.Err()
+		return core.ToolOutput{}, ctx.Err()
 	case <-t.release:
-		return llm.TextOutput("released"), nil
+		return core.TextOutput("released"), nil
 	}
 }
 
@@ -3105,16 +3108,16 @@ func TestServeRuntimePersistsModelSwitchAtProviderTurnBoundary(t *testing.T) {
 	}
 	defer store.Close()
 
-	provider := llm.NewMockProvider("mock").
-		WithCapabilities(llm.Capabilities{ToolCalls: true}).
+	provider := mockprovider.NewMockProvider("mock").
+		WithCapabilities(core.Capabilities{ToolCalls: true}).
 		AddToolCall("before", "blocking_model_switch", map[string]any{}).
 		AddToolCall("after", "echo", map[string]any{}).
 		AddTextResponse("done")
 	blocking := &blockingModelSwitchTool{started: make(chan struct{}), release: make(chan struct{})}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(blocking)
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	runtime := &serveRuntime{
 		provider: provider, providerKey: "mock", defaultModel: "old-model",
 		engine: engine, store: store,
@@ -3122,9 +3125,9 @@ func TestServeRuntimePersistsModelSwitchAtProviderTurnBoundary(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, runErr := runtime.Run(context.Background(), true, false, []llm.Message{llm.UserText("work")}, llm.Request{
+		_, runErr := runtime.Run(context.Background(), true, false, []core.Message{core.UserText("work")}, core.Request{
 			SessionID: "model-switch-boundary", Model: "old-model", ReasoningEffort: "high", MaxTurns: 4,
-			Tools: []llm.ToolSpec{blocking.Spec(), (&echoTool{}).Spec()},
+			Tools: []core.ToolSpec{blocking.Spec(), (&echoTool{}).Spec()},
 		})
 		done <- runErr
 	}()
@@ -3153,7 +3156,7 @@ func TestServeRuntimePersistsModelSwitchAtProviderTurnBoundary(t *testing.T) {
 	beforeIndex := -1
 	afterIndex := -1
 	for index, message := range messages {
-		if marker, ok := llm.ParseModelSwapMarker(message.ToLLMMessage()); ok {
+		if marker, ok := core.ParseModelSwapMarker(message.ToLLMMessage()); ok {
 			markerCount++
 			markerIndex = index
 			if marker.FromModel != "old-model" || marker.ToModel != "new-model" || marker.FromEffort != "high" || marker.ToEffort != "medium" || marker.BoundaryID == "" {
@@ -3177,32 +3180,32 @@ func TestServeRuntimePersistsModelSwitchAtProviderTurnBoundary(t *testing.T) {
 // echoTool is a minimal tool for testing the agentic loop in serve.
 type echoTool struct{}
 
-func (e *echoTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (e *echoTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "echo",
 		Description: "Echoes input",
 		Schema:      map[string]any{"type": "object"},
 	}
 }
 
-func (e *echoTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("echoed"), nil
+func (e *echoTool) Execute(_ context.Context, _ json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("echoed"), nil
 }
 
 func (e *echoTool) Preview(_ json.RawMessage) string { return "" }
 
 type secondEchoTool struct{}
 
-func (e *secondEchoTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (e *secondEchoTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "second_echo",
 		Description: "Echoes input a second way",
 		Schema:      map[string]any{"type": "object"},
 	}
 }
 
-func (e *secondEchoTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("second echoed"), nil
+func (e *secondEchoTool) Execute(_ context.Context, _ json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("second echoed"), nil
 }
 
 func (e *secondEchoTool) Preview(_ json.RawMessage) string { return "" }
@@ -3220,11 +3223,11 @@ func TestResponseServerTools_FirstPartyUIHeaderIncludesServerTools(t *testing.T)
 }
 
 func TestResponseServerTools_IncludeServerToolsKeepsAllRegisteredTools(t *testing.T) {
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
 	registry.Register(&secondEchoTool{})
-	provider := llm.NewMockProvider("mock")
-	rt := &serveRuntime{engine: llm.NewEngine(provider, registry)}
+	provider := mockprovider.NewMockProvider("mock")
+	rt := &serveRuntime{engine: engine.NewEngine(provider, registry)}
 
 	requested := map[string]bool{"client_music_tool": true}
 	filtered := responseServerTools(rt, requested, false)
@@ -3243,8 +3246,8 @@ func TestResponseServerTools_IncludeServerToolsKeepsAllRegisteredTools(t *testin
 }
 
 func TestAppendResponsePassthroughTools_AddsClientToolsWithoutDuplicatingServerTools(t *testing.T) {
-	serverTools := []llm.ToolSpec{{Name: "echo"}}
-	passthrough := []llm.ToolSpec{{Name: "echo"}, {Name: "client_music_tool"}}
+	serverTools := []core.ToolSpec{{Name: "echo"}}
+	passthrough := []core.ToolSpec{{Name: "echo"}, {Name: "client_music_tool"}}
 
 	tools := appendResponsePassthroughTools(serverTools, passthrough, nil)
 	if len(tools) != 2 {
@@ -3264,13 +3267,13 @@ func TestServeRuntimeRun_PersistsToolCallMessages(t *testing.T) {
 	defer store.Close()
 
 	// Script: turn 1 = tool call, turn 2 = final text after tool result
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
 		AddTextResponse("done")
 
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -3280,13 +3283,13 @@ func TestServeRuntimeRun_PersistsToolCallMessages(t *testing.T) {
 	}
 	rt.Touch()
 
-	req := llm.Request{
+	req := core.Request{
 		SessionID: "toolcall-persist-test",
 		MaxTurns:  5,
-		Tools:     []llm.ToolSpec{(&echoTool{}).Spec()},
+		Tools:     []core.ToolSpec{(&echoTool{}).Spec()},
 	}
-	_, err = rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("call the echo tool"),
+	_, err = rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("call the echo tool"),
 	}, req)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
@@ -3303,10 +3306,10 @@ func TestServeRuntimeRun_PersistsToolCallMessages(t *testing.T) {
 	var hasToolResult bool
 	for _, m := range msgs {
 		for _, p := range m.Parts {
-			if p.Type == llm.PartToolCall && p.ToolCall != nil && p.ToolCall.Name == "echo" {
+			if p.Type == core.PartToolCall && p.ToolCall != nil && p.ToolCall.Name == "echo" {
 				hasToolCall = true
 			}
-			if p.Type == llm.PartToolResult && p.ToolResult != nil && p.ToolResult.ID == "call-1" {
+			if p.Type == core.PartToolResult && p.ToolResult != nil && p.ToolResult.ID == "call-1" {
 				hasToolResult = true
 			}
 		}
@@ -3327,8 +3330,8 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 	defer store.Close()
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("hello from serve")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("hello from serve")
+	engine := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{
 		provider:     provider,
 		engine:       engine,
@@ -3341,12 +3344,12 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 	rt.Touch()
 
-	req := llm.Request{
+	req := core.Request{
 		SessionID: "serve-session-1",
 		MaxTurns:  3,
 	}
-	_, err = rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("test persistence"),
+	_, err = rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("test persistence"),
 	}, req)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
@@ -3370,22 +3373,22 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	if len(msgs) < 2 {
 		t.Fatalf("message count = %d, want >= 2", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleUser {
+	if msgs[0].Role != core.RoleUser {
 		t.Fatalf("first role = %s, want user", msgs[0].Role)
 	}
-	if msgs[len(msgs)-1].Role != llm.RoleAssistant {
+	if msgs[len(msgs)-1].Role != core.RoleAssistant {
 		t.Fatalf("last role = %s, want assistant", msgs[len(msgs)-1].Role)
 	}
 }
 
 func TestInterruptMessageSerializesPersistenceWithCancellation(t *testing.T) {
-	rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("engine"), nil)}
+	rt := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("engine"), nil)}
 	persistStarted := make(chan struct{})
 	allowPersist := make(chan struct{})
 	state := &runtimeInterruptState{
 		cancel: func() {},
 		done:   make(chan struct{}),
-		persistPendingSteering: func(context.Context, llm.QueuedSteering) error {
+		persistPendingSteering: func(context.Context, engine.QueuedSteering) error {
 			close(persistStarted)
 			<-allowPersist
 			return nil
@@ -3397,7 +3400,7 @@ func TestInterruptMessageSerializesPersistenceWithCancellation(t *testing.T) {
 	interruptDone := make(chan error, 1)
 	go func() {
 		_, _, err := rt.InterruptMessage(
-			context.Background(), llm.UserText("change course"), "change course", "race-1", nil, interruptDeliverySteer,
+			context.Background(), core.UserText("change course"), "change course", "race-1", nil, interruptDeliverySteer,
 		)
 		interruptDone <- err
 	}()
@@ -3435,16 +3438,16 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("engine"), nil), store: store}
+	rt := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("engine"), nil), store: store}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
 	rt.configurePendingSteeringPersistence(state, sessionID)
 	rt.setActiveInterrupt(state)
 	defer rt.clearActiveInterrupt(state)
 
 	action, _, err := rt.InterruptMessage(
-		context.Background(), llm.UserText("change course"), "change course", "web-pending-1", nil, interruptDeliverySteer,
+		context.Background(), core.UserText("change course"), "change course", "web-pending-1", nil, interruptDeliverySteer,
 	)
-	if err != nil || action != llm.InterruptSteer {
+	if err != nil || action != engine.InterruptSteer {
 		t.Fatalf("InterruptMessage action=%v err=%v", action, err)
 	}
 	pendingStore, ok := session.AsPendingSteeringStore(store)
@@ -3464,9 +3467,9 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 		t.Fatalf("state status/body=%d %s", rr.Code, rr.Body.String())
 	}
 
-	committed := llm.UserText("change course")
+	committed := core.UserText("change course")
 	committed.ClientMessageID = "web-pending-1"
-	result := rt.appendMessagesDetailed(context.Background(), sessionID, []llm.Message{committed}, 0)
+	result := rt.appendMessagesDetailed(context.Background(), sessionID, []core.Message{committed}, 0)
 	if !result.Complete {
 		t.Fatalf("committed steering persistence=%#v", result)
 	}
@@ -3476,7 +3479,7 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 	}
 
 	if _, _, err := rt.InterruptMessage(
-		context.Background(), llm.UserText("one more"), "one more", "web-abandoned-2", nil, interruptDeliverySteer,
+		context.Background(), core.UserText("one more"), "one more", "web-abandoned-2", nil, interruptDeliverySteer,
 	); err != nil {
 		t.Fatalf("queue abandoned steering: %v", err)
 	}
@@ -3488,10 +3491,10 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 		t.Fatalf("pending entries after run cleanup=%#v err=%v", entries, err)
 	}
 
-	detached := llm.UserText("cancel from another tab")
+	detached := core.UserText("cancel from another tab")
 	detached.ClientMessageID = "web-detached-3"
 	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
-		SessionID: sessionID, ID: detached.ClientMessageID, Message: detached, DisplayText: llm.MessageText(detached),
+		SessionID: sessionID, ID: detached.ClientMessageID, Message: detached, DisplayText: core.MessageText(detached),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3507,10 +3510,10 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 	}
 
 	rt.clearActiveInterrupt(state)
-	idle := llm.UserText("cancel from loaded idle runtime")
+	idle := core.UserText("cancel from loaded idle runtime")
 	idle.ClientMessageID = "web-idle-4"
 	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
-		SessionID: sessionID, ID: idle.ClientMessageID, Message: idle, DisplayText: llm.MessageText(idle),
+		SessionID: sessionID, ID: idle.ClientMessageID, Message: idle, DisplayText: core.MessageText(idle),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3525,10 +3528,10 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 		t.Fatalf("idle runtime cancel status/body=%d %s", rr.Code, rr.Body.String())
 	}
 
-	filtered := llm.UserText("already committed")
+	filtered := core.UserText("already committed")
 	filtered.ClientMessageID = "web-filtered-4"
 	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
-		SessionID: sessionID, ID: filtered.ClientMessageID, Message: filtered, DisplayText: llm.MessageText(filtered),
+		SessionID: sessionID, ID: filtered.ClientMessageID, Message: filtered, DisplayText: core.MessageText(filtered),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3540,15 +3543,15 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 		t.Fatalf("committed client id was still listed as pending: entries=%#v err=%v", entries, err)
 	}
 
-	restored := llm.UserText("restore failed follow-up")
+	restored := core.UserText("restore failed follow-up")
 	restored.ClientMessageID = "web-claimed-5"
 	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
-		SessionID: sessionID, ID: restored.ClientMessageID, Message: restored, DisplayText: llm.MessageText(restored),
+		SessionID: sessionID, ID: restored.ClientMessageID, Message: restored, DisplayText: core.MessageText(restored),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	rt.engine.QueueSteering(llm.QueuedSteering{ID: restored.ClientMessageID, Message: restored})
-	if claim := rt.engine.ClaimSteeringEntry(restored.ClientMessageID); claim != llm.SteeringClaimed {
+	rt.engine.QueueSteering(engine.QueuedSteering{ID: restored.ClientMessageID, Message: restored})
+	if claim := rt.engine.ClaimSteeringEntry(restored.ClientMessageID); claim != engine.SteeringClaimed {
 		t.Fatalf("claim status=%q", claim)
 	}
 	rt.releaseClaimedPendingSteering(context.Background(), sessionID, []string{restored.ClientMessageID})
@@ -3562,7 +3565,7 @@ func TestHandleSessionInterrupt_DeduplicatesRetriedImageSteering(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	rt := &serveRuntime{engine: engine, providerKey: "mock"}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
 	rt.setActiveInterrupt(state)
@@ -3608,7 +3611,7 @@ func TestHandleSessionInterrupt_DeduplicatesRetriedImageSteering(t *testing.T) {
 	}
 
 	parts := entries[0].Message.Parts
-	if len(parts) != 2 || parts[0].Type != llm.PartImage || parts[1].Type != llm.PartText || parts[1].Text != "please inspect this image" {
+	if len(parts) != 2 || parts[0].Type != core.PartImage || parts[1].Type != core.PartText || parts[1].Text != "please inspect this image" {
 		t.Fatalf("queued parts = %#v, want image plus message text", parts)
 	}
 }
@@ -3632,7 +3635,7 @@ func TestHandleSessionInterrupt_DeliveryDispatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mgr := newServeSessionManager(time.Minute, 10, nil)
 			defer mgr.Close()
-			engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+			engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 			cancelCalls := 0
 			rt := &serveRuntime{engine: engine, providerKey: "mock"}
 			state := &runtimeInterruptState{cancel: func() { cancelCalls++ }, done: make(chan struct{})}
@@ -3684,16 +3687,16 @@ func TestInterruptMessage_DeliveryControlsFastClassifier(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
 		delivery      interruptDelivery
-		wantAction    llm.InterruptAction
+		wantAction    engine.InterruptAction
 		wantFastTurns int
 		wantQueued    int
 	}{
-		{name: "auto invokes fast classifier", delivery: interruptDeliveryAuto, wantAction: llm.InterruptCancel, wantFastTurns: 1},
-		{name: "steer bypasses fast classifier", delivery: interruptDeliverySteer, wantAction: llm.InterruptSteer, wantQueued: 1},
+		{name: "auto invokes fast classifier", delivery: interruptDeliveryAuto, wantAction: engine.InterruptCancel, wantFastTurns: 1},
+		{name: "steer bypasses fast classifier", delivery: interruptDeliverySteer, wantAction: engine.InterruptSteer, wantQueued: 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			engine := llm.NewEngine(llm.NewMockProvider("engine"), nil)
-			fastProvider := llm.NewMockProvider("classifier").AddTextResponse("cancel")
+			engine := engine.NewEngine(mockprovider.NewMockProvider("engine"), nil)
+			fastProvider := mockprovider.NewMockProvider("classifier").AddTextResponse("cancel")
 			rt := &serveRuntime{engine: engine}
 			state := &runtimeInterruptState{done: make(chan struct{}), cancel: func() {}}
 			rt.setActiveInterrupt(state)
@@ -3701,7 +3704,7 @@ func TestInterruptMessage_DeliveryControlsFastClassifier(t *testing.T) {
 
 			action, replayed, err := rt.InterruptMessage(
 				context.Background(),
-				llm.UserText("change course"),
+				core.UserText("change course"),
 				"change course",
 				"delivery-direct-"+string(tt.delivery),
 				fastProvider,
@@ -3727,16 +3730,16 @@ func TestInterruptMessage_DeliveryControlsFastClassifier(t *testing.T) {
 }
 
 func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
-	engine := llm.NewEngine(llm.NewMockProvider("engine"), nil)
-	fastProvider := llm.NewMockProvider("classifier")
-	fastProvider.AddTurn(llm.MockTurn{Text: "steer", Delay: 100 * time.Millisecond})
-	rt := &serveRuntime{engine: engine}
+	eng := engine.NewEngine(mockprovider.NewMockProvider("eng"), nil)
+	fastProvider := mockprovider.NewMockProvider("classifier")
+	fastProvider.AddTurn(mockprovider.MockTurn{Text: "steer", Delay: 100 * time.Millisecond})
+	rt := &serveRuntime{engine: eng}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
 	rt.setActiveInterrupt(state)
 	defer rt.clearActiveInterrupt(state)
 
 	type result struct {
-		action   llm.InterruptAction
+		action   engine.InterruptAction
 		replayed bool
 		err      error
 	}
@@ -3744,7 +3747,7 @@ func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
 	call := func() {
 		action, replayed, err := rt.InterruptMessage(
 			context.Background(),
-			llm.UserText("please incorporate this"),
+			core.UserText("please incorporate this"),
 			"please incorporate this",
 			"web-concurrent-1",
 			fastProvider,
@@ -3768,7 +3771,7 @@ func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
 	if first.err != nil || second.err != nil {
 		t.Fatalf("interrupt errors = %v, %v", first.err, second.err)
 	}
-	if first.action != llm.InterruptSteer || second.action != llm.InterruptSteer {
+	if first.action != engine.InterruptSteer || second.action != engine.InterruptSteer {
 		t.Fatalf("actions = %v, %v, want steer", first.action, second.action)
 	}
 	if first.replayed == second.replayed {
@@ -3777,7 +3780,7 @@ func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
 	if got := fastProvider.CurrentTurn(); got != 1 {
 		t.Fatalf("classifier calls = %d, want 1", got)
 	}
-	if pending := engine.ListPendingSteering(); len(pending) != 1 {
+	if pending := eng.ListPendingSteering(); len(pending) != 1 {
 		t.Fatalf("pending steering = %d, want 1", len(pending))
 	}
 }

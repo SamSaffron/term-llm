@@ -4,17 +4,17 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestApplyReasoningPersistencePolicyDropsSummaryContentWhenDisabled(t *testing.T) {
 	cfg := config.DefaultReasoningConfig()
 	cfg.PersistSummaries = false
-	msg := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type:                      llm.PartText,
+	msg := core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type:                      core.PartText,
 		Text:                      "answer",
 		ReasoningContent:          "summary body",
-		ReasoningKind:             llm.ReasoningKindSummary,
+		ReasoningKind:             core.ReasoningKindSummary,
 		ReasoningSummaryTitle:     "Summary title",
 		ReasoningItemID:           "rs_1",
 		ReasoningEncryptedContent: "enc_1",
@@ -25,7 +25,7 @@ func TestApplyReasoningPersistencePolicyDropsSummaryContentWhenDisabled(t *testi
 	if part.ReasoningContent != "" || part.ReasoningSummaryTitle != "" {
 		t.Fatalf("summary display content should be stripped, got content=%q title=%q", part.ReasoningContent, part.ReasoningSummaryTitle)
 	}
-	if part.ReasoningItemID != "rs_1" || part.ReasoningEncryptedContent != "enc_1" || part.ReasoningKind != llm.ReasoningKindSummary {
+	if part.ReasoningItemID != "rs_1" || part.ReasoningEncryptedContent != "enc_1" || part.ReasoningKind != core.ReasoningKindSummary {
 		t.Fatalf("replay metadata should be preserved, got %#v", part)
 	}
 	if msg.Parts[0].ReasoningContent == "" {
@@ -36,8 +36,8 @@ func TestApplyReasoningPersistencePolicyDropsSummaryContentWhenDisabled(t *testi
 func TestApplyReasoningPersistencePolicyTreatsLegacyEmptyKindAsSummary(t *testing.T) {
 	cfg := config.DefaultReasoningConfig()
 	cfg.PersistSummaries = false
-	msg := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type:             llm.PartText,
+	msg := core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type:             core.PartText,
 		Text:             "answer",
 		ReasoningContent: "legacy summary body",
 	}}}
@@ -54,11 +54,11 @@ func TestApplyReasoningPersistencePolicyTreatsLegacyEmptyKindAsSummary(t *testin
 func TestApplyReasoningPersistencePolicyKeepsRawReasoning(t *testing.T) {
 	cfg := config.DefaultReasoningConfig()
 	cfg.PersistSummaries = false
-	msg := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type:             llm.PartText,
+	msg := core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type:             core.PartText,
 		Text:             "answer",
 		ReasoningContent: "raw replay text",
-		ReasoningKind:    llm.ReasoningKindRaw,
+		ReasoningKind:    core.ReasoningKindRaw,
 	}}}
 
 	got := ApplyReasoningPersistencePolicy(msg, cfg)

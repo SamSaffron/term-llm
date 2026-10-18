@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/debug"
 )
 
 // Cobra callers retain these adapters until their command implementations move.
@@ -20,7 +20,7 @@ func initThemeFromConfig(cfg *config.Config) { bootstrap.InitThemeFromConfig(cfg
 func resolveForceExternalSearch(cfg *config.Config, nativeSearchFlag, noNativeSearchFlag bool) bool {
 	return bootstrap.ResolveForceExternalSearch(cfg, nativeSearchFlag, noNativeSearchFlag)
 }
-func createDebugLogger(cfg *config.Config) (*llm.DebugLogger, error) {
+func createDebugLogger(cfg *config.Config) (*debug.Logger, error) {
 	return bootstrap.CreateDebugLogger(cfg)
 }
 func activeModel(cfg *config.Config) string { return bootstrap.ActiveModel(cfg) }

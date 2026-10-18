@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // AgentRunDeliveryStore is implemented by durable stores able to reconcile
@@ -107,30 +107,30 @@ func AsAgentRunStore(store Store) AgentRunStore {
 }
 
 type AgentRun struct {
-	ID               string              `json:"agent_id"`
-	ParentSessionID  string              `json:"parent_session_id"`
-	ParentResponseID string              `json:"parent_response_id,omitempty"`
-	AgentName        string              `json:"agent_name"`
-	Prompt           string              `json:"prompt"`
-	Model            string              `json:"model,omitempty"`
-	BaseDir          string              `json:"base_dir,omitempty"`
-	RunGeneration    int64               `json:"run_generation"`
-	NotifyWhenDone   bool                `json:"notify_when_done,omitempty"`
-	NotifyOrigin     string              `json:"notify_origin,omitempty"` // Trusted host surface, never a tool argument
-	WakeSuppressed   bool                `json:"wake_suppressed,omitempty"`
-	NotifiedAt       time.Time           `json:"notified_at,omitempty"`
-	Started          bool                `json:"started"`
-	Status           string              `json:"status"`
-	StopReason       string              `json:"stop_reason,omitempty"`
-	CurrentTool      string              `json:"current_tool,omitempty"` // In-process progress; not persisted
-	TurnsUsed        int                 `json:"turns_used"`
-	TurnsGranted     int                 `json:"turns_granted"`
-	Output           string              `json:"output,omitempty"`
-	Media            []llm.MediaArtifact `json:"-"`
-	Error            string              `json:"error,omitempty"`
-	OwnerInstanceID  string              `json:"owner_instance_id"`
-	UpdatedAt        time.Time           `json:"last_activity"`
-	CollectedAt      time.Time           `json:"collected_at,omitempty"`
+	ID               string               `json:"agent_id"`
+	ParentSessionID  string               `json:"parent_session_id"`
+	ParentResponseID string               `json:"parent_response_id,omitempty"`
+	AgentName        string               `json:"agent_name"`
+	Prompt           string               `json:"prompt"`
+	Model            string               `json:"model,omitempty"`
+	BaseDir          string               `json:"base_dir,omitempty"`
+	RunGeneration    int64                `json:"run_generation"`
+	NotifyWhenDone   bool                 `json:"notify_when_done,omitempty"`
+	NotifyOrigin     string               `json:"notify_origin,omitempty"` // Trusted host surface, never a tool argument
+	WakeSuppressed   bool                 `json:"wake_suppressed,omitempty"`
+	NotifiedAt       time.Time            `json:"notified_at,omitempty"`
+	Started          bool                 `json:"started"`
+	Status           string               `json:"status"`
+	StopReason       string               `json:"stop_reason,omitempty"`
+	CurrentTool      string               `json:"current_tool,omitempty"` // In-process progress; not persisted
+	TurnsUsed        int                  `json:"turns_used"`
+	TurnsGranted     int                  `json:"turns_granted"`
+	Output           string               `json:"output,omitempty"`
+	Media            []core.MediaArtifact `json:"-"`
+	Error            string               `json:"error,omitempty"`
+	OwnerInstanceID  string               `json:"owner_instance_id"`
+	UpdatedAt        time.Time            `json:"last_activity"`
+	CollectedAt      time.Time            `json:"collected_at,omitempty"`
 }
 
 const agentRunSchemaV62 = `

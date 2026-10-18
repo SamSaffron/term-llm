@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // WebP decode support
 )
@@ -26,7 +26,7 @@ import (
 type ViewImageTool struct {
 	approval       *ApprovalManager
 	config         *ToolConfig
-	visionProvider llm.Provider
+	visionProvider core.Provider
 	visionModel    string
 }
 
@@ -40,7 +40,7 @@ func NewViewImageTool(approval *ApprovalManager, configs ...*ToolConfig) *ViewIm
 
 // NewViewImageToolWithVision creates a view_image tool that analyzes images by
 // calling a separate vision-capable LLM and returning text only.
-func NewViewImageToolWithVision(approval *ApprovalManager, provider llm.Provider, model string, configs ...*ToolConfig) *ViewImageTool {
+func NewViewImageToolWithVision(approval *ApprovalManager, provider core.Provider, model string, configs ...*ToolConfig) *ViewImageTool {
 	return &ViewImageTool{
 		approval:       approval,
 		config:         optionalToolConfig(configs),
@@ -81,8 +81,8 @@ var supportedImageMimes = map[string]struct{}{
 	"image/webp": {},
 }
 
-func (t *ViewImageTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *ViewImageTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        ViewImageToolName,
 		Description: "View and analyze an image file. Supports PNG, JPEG, GIF, WebP. In routed-vision mode this returns a textual analysis from a vision-capable model. For transcription, dense handwriting, or two-page spreads, use a preset region and high detail.",
 		Schema: map[string]interface{}{
@@ -133,22 +133,22 @@ func (t *ViewImageTool) Preview(args json.RawMessage) string {
 	return a.FilePath
 }
 
-func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a ViewImageArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.FilePath == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
 	resolvedPath, err := resolveToolPathWithConfig(a.FilePath, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return llm.TextOutput(formatToolError(toolErr)), nil
+			return core.TextOutput(formatToolError(toolErr)), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	// Check permissions via approval manager
@@ -165,15 +165,15 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	// Check file exists
 	if _, err := os.Stat(resolvedPath); err != nil {
 		if os.IsNotExist(err) {
-			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
+			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
 	}
 
 	// Read file
 	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err))), nil
 	}
 
 	// Detect format from file content
@@ -187,23 +187,23 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		var ok bool
 		mimeType, ok = supportedImageFormats[ext]
 		if !ok {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext))), nil
+			return core.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext))), nil
 		}
 	} else if !isSupportedImageMime(mimeType) {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", mimeType))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", mimeType))), nil
 	}
 
 	// Apply optional region/scale before normal provider-size processing.
 	transformDesc := ""
 	data, mimeType, transformDesc, err = transformImageForView(data, mimeType, a)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "%v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "%v", err))), nil
 	}
 
 	// Process image: resize if needed, ensure under size limit
 	processedData, processedMime, resized, err := processImage(data, mimeType)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to process image: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to process image: %v", err))), nil
 	}
 
 	// Encode as base64
@@ -233,18 +233,18 @@ Detail: %s`,
 	if t.visionProvider != nil {
 		analysis, err := t.analyzeWithVisionProvider(ctx, processedMime, encoded, textResult, a)
 		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "vision analysis failed: %v", err))), nil
+			return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "vision analysis failed: %v", err))), nil
 		}
-		return llm.TextOutput(analysis), nil
+		return core.TextOutput(analysis), nil
 	}
 
-	return llm.ToolOutput{
+	return core.ToolOutput{
 		Content: textResult,
-		ContentParts: []llm.ToolContentPart{
-			{Type: llm.ToolContentPartText, Text: textResult},
+		ContentParts: []core.ToolContentPart{
+			{Type: core.ToolContentPartText, Text: textResult},
 			{
-				Type: llm.ToolContentPartImageData,
-				ImageData: &llm.ToolImageData{
+				Type: core.ToolContentPartImageData,
+				ImageData: &core.ToolImageData{
 					MediaType: processedMime,
 					Base64:    encoded,
 					Detail:    getDetail(a.Detail),
@@ -274,14 +274,14 @@ Tool request metadata:
 Question/task from caller:
 %s`, metadata, question)
 
-	req := llm.Request{
+	req := core.Request{
 		Model:     strings.TrimSpace(t.visionModel),
 		Ephemeral: true,
-		Messages: []llm.Message{{
-			Role: llm.RoleUser,
-			Parts: []llm.Part{
-				{Type: llm.PartText, Text: prompt},
-				{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: mimeType, Base64: base64Data, Detail: getDetail(args.Detail)}},
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			Parts: []core.Part{
+				{Type: core.PartText, Text: prompt},
+				{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: mimeType, Base64: base64Data, Detail: getDetail(args.Detail)}},
 			},
 		}},
 		MaxTurns: 1,
@@ -303,9 +303,9 @@ Question/task from caller:
 			return "", err
 		}
 		switch event.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			b.WriteString(event.Text)
-		case llm.EventError:
+		case core.EventError:
 			if event.Err != nil {
 				return "", event.Err
 			}

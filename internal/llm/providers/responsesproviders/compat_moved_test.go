@@ -16,24 +16,26 @@ import (
 	"github.com/samsaffron/term-llm/internal/credentials"
 	. "github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
 	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 const testWebSearchCallRaw = `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"example"}}`
 
-func replayPart(raw string) Part {
-	return Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: json.RawMessage(raw)}}
+func replayPart(raw string) core.Part {
+	return core.Part{Type: core.PartProviderReplay, ProviderReplay: &core.ProviderReplayItem{Raw: json.RawMessage(raw)}}
 }
 
 type capturedResponsesRequest struct {
-	PreviousResponseID string                       `json:"previous_response_id"`
-	Input              []ResponsesInputItem         `json:"input"`
-	Reasoning          *ResponsesReasoning          `json:"reasoning"`
-	MultiAgent         *ResponsesMultiAgent         `json:"multi_agent"`
-	PromptCacheOptions *ResponsesPromptCacheOptions `json:"prompt_cache_options"`
+	PreviousResponseID string                                 `json:"previous_response_id"`
+	Input              []responses.ResponsesInputItem         `json:"input"`
+	Reasoning          *responses.ResponsesReasoning          `json:"reasoning"`
+	MultiAgent         *responses.ResponsesMultiAgent         `json:"multi_agent"`
+	PromptCacheOptions *responses.ResponsesPromptCacheOptions `json:"prompt_cache_options"`
 }
 
-func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string) (Provider, *OpenAIProvider, <-chan capturedResponsesRequest) {
+func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string) (core.Provider, *rp.OpenAIProvider, <-chan capturedResponsesRequest) {
 	t.Helper()
 
 	captured := make(chan capturedResponsesRequest, 1)
@@ -74,7 +76,7 @@ func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string)
 		}),
 	}
 
-	provider := rp.NewOpenAIProviderForTest("test-key", "gpt-5.2", &ResponsesClient{
+	provider := rp.NewOpenAIProviderForTest("test-key", "gpt-5.2", &responses.ResponsesClient{
 		BaseURL:        "https://example.test/v1/responses",
 		GetAuthHeader:  func() string { return "Bearer test-key" },
 		HTTPClient:     httpClient,
@@ -87,11 +89,11 @@ func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string)
 func TestCompactUsesIsolatedProviderConversationState(t *testing.T) {
 	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "summary", "resp_compact")
 
-	result, err := Compact(context.Background(), provider, "gpt-5.2", "sys", []Message{
-		UserText("hello"),
-		AssistantText("hi"),
-		UserText("please summarize"),
-	}, DefaultCompactionConfig())
+	result, err := Compact(context.Background(), provider, "gpt-5.2", "sys", []core.Message{
+		core.UserText("hello"),
+		core.AssistantText("hi"),
+		core.UserText("please summarize"),
+	}, engine.DefaultCompactionConfig())
 	if err != nil {
 		t.Fatalf("Compact failed: %v", err)
 	}
@@ -119,12 +121,12 @@ func TestCompactUsesIsolatedProviderConversationState(t *testing.T) {
 func TestHandoverUsesForkedProviderConversationState(t *testing.T) {
 	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
 
-	result, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []Message{
-		UserText("hello"),
-		AssistantText("hi"),
-		UserText("prepare handover"),
-		AssistantText("ready to hand over"),
-	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
+	result, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []core.Message{
+		core.UserText("hello"),
+		core.AssistantText("hi"),
+		core.UserText("prepare handover"),
+		core.AssistantText("ready to hand over"),
+	}, "source", "target", engine.DefaultCompactionConfig(), engine.HandoverOptions{AllowProviderFork: true})
 	if err != nil {
 		t.Fatalf("Handover failed: %v", err)
 	}
@@ -157,20 +159,20 @@ func TestHandoverUsesForkedProviderConversationState(t *testing.T) {
 
 func TestHandoverForkDoesNotInheritOpenAIAdvancedOptions(t *testing.T) {
 	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
-	rp.SetOpenAIModelAndResponsesOptionsForTest(liveProvider, "gpt-5.6-sol", ResponsesOptions{
+	rp.SetOpenAIModelAndResponsesOptionsForTest(liveProvider, "gpt-5.6-sol", core.ResponsesOptions{
 		ReasoningMode: "pro",
-		MultiAgent: MultiAgentOptions{
+		MultiAgent: core.MultiAgentOptions{
 			Enabled:                true,
 			EnabledSet:             true,
 			MaxConcurrentSubagents: 4,
 		},
-		PromptCache: PromptCacheOptions{Mode: "explicit", TTL: "30m"},
+		PromptCache: core.PromptCacheOptions{Mode: "explicit", TTL: "30m"},
 	})
 
-	_, err := Handover(context.Background(), provider, "gpt-5.6-sol", "current sys", "new sys", []Message{
-		UserText("hello"),
-		AssistantText("ready to hand over"),
-	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
+	_, err := Handover(context.Background(), provider, "gpt-5.6-sol", "current sys", "new sys", []core.Message{
+		core.UserText("hello"),
+		core.AssistantText("ready to hand over"),
+	}, "source", "target", engine.DefaultCompactionConfig(), engine.HandoverOptions{AllowProviderFork: true})
 	if err != nil {
 		t.Fatalf("Handover failed: %v", err)
 	}
@@ -191,11 +193,11 @@ func TestHandoverForkDoesNotInheritOpenAIAdvancedOptions(t *testing.T) {
 func TestHandoverFallsBackWhenTranscriptIsPastProviderBoundary(t *testing.T) {
 	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
 
-	_, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []Message{
-		UserText("hello"),
-		AssistantText("hi"),
-		UserText("this turn has no provider response"),
-	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
+	_, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []core.Message{
+		core.UserText("hello"),
+		core.AssistantText("hi"),
+		core.UserText("this turn has no provider response"),
+	}, "source", "target", engine.DefaultCompactionConfig(), engine.HandoverOptions{AllowProviderFork: true})
 	if err != nil {
 		t.Fatalf("Handover failed: %v", err)
 	}
@@ -219,10 +221,10 @@ func TestHandoverFallsBackWhenTranscriptIsPastProviderBoundary(t *testing.T) {
 func TestOpenAIHTTPInterruptThenResumeWithSeparateSteeringRows(t *testing.T) {
 	var calls atomic.Int32
 	cancelled := make(chan struct{})
-	secondInput := make(chan []ResponsesInputItem, 1)
+	secondInput := make(chan []responses.ResponsesInputItem, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Input []ResponsesInputItem `json:"input"`
+			Input []responses.ResponsesInputItem `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			return
@@ -239,7 +241,7 @@ func TestOpenAIHTTPInterruptThenResumeWithSeparateSteeringRows(t *testing.T) {
 		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"replacement\"}}\n\n")
 	}))
 	defer server.Close()
-	p := rp.NewOpenAIProviderForTest("", "gpt-4.1", &ResponsesClient{BaseURL: server.URL, HTTPClient: server.Client()})
+	p := rp.NewOpenAIProviderForTest("", "gpt-4.1", &responses.ResponsesClient{BaseURL: server.URL, HTTPClient: server.Client()})
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := p.Stream(ctx, core.Request{Messages: []core.Message{core.UserText("source")}})
 	if err != nil {
@@ -285,12 +287,12 @@ func TestOpenAIHTTPInterruptThenResumeWithSeparateSteeringRows(t *testing.T) {
 // Responses provider actually sends, so provider wiring cannot drift from the
 // shared guard.
 func TestResponsesProvidersGuardReplayedWebSearchOnTheWire(t *testing.T) {
-	history := []Message{
-		UserText("q"),
-		{Role: RoleAssistant, Parts: []Part{replayPart(testWebSearchCallRaw), {Type: PartText, Text: "answer"}}},
-		UserText("again"),
+	history := []core.Message{
+		core.UserText("q"),
+		{Role: core.RoleAssistant, Parts: []core.Part{replayPart(testWebSearchCallRaw), {Type: core.PartText, Text: "answer"}}},
+		core.UserText("again"),
 	}
-	fnTool := ToolSpec{Name: "example_tool", Description: "example", Schema: map[string]any{"type": "object"}}
+	fnTool := core.ToolSpec{Name: "example_tool", Description: "example", Schema: map[string]any{"type": "object"}}
 
 	type wire struct {
 		Tools      []map[string]any `json:"tools"`
@@ -305,9 +307,9 @@ func TestResponsesProvidersGuardReplayedWebSearchOnTheWire(t *testing.T) {
 
 	providers := map[string]struct {
 		searchType string
-		stream     func(t *testing.T, req Request) wire
+		stream     func(t *testing.T, req core.Request) wire
 	}{
-		"chatgpt": {searchType: "web_search", stream: func(t *testing.T, req Request) wire {
+		"chatgpt": {searchType: "web_search", stream: func(t *testing.T, req core.Request) wire {
 			origClient := *rp.ChatGPTHTTPClientForTest
 			defer func() { *rp.ChatGPTHTTPClientForTest = origClient }()
 			var got wire
@@ -317,7 +319,7 @@ func TestResponsesProvidersGuardReplayedWebSearchOnTheWire(t *testing.T) {
 				}
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sse)), Header: make(http.Header)}, nil
 			})}
-			provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+			provider := rp.NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
 				AccessToken: "test-token", AccountID: "test-account", ExpiresAt: time.Now().Add(time.Hour).Unix(),
 			}, "gpt-5.5-medium")
 			stream, err := provider.Stream(context.Background(), req)
@@ -328,7 +330,7 @@ func TestResponsesProvidersGuardReplayedWebSearchOnTheWire(t *testing.T) {
 			drainStreamToDone(t, stream)
 			return got
 		}},
-		"openai": {searchType: "web_search_preview", stream: func(t *testing.T, req Request) wire {
+		"openai": {searchType: "web_search_preview", stream: func(t *testing.T, req core.Request) wire {
 			var got wire
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
@@ -338,7 +340,7 @@ func TestResponsesProvidersGuardReplayedWebSearchOnTheWire(t *testing.T) {
 				_, _ = w.Write([]byte(sse))
 			}))
 			defer ts.Close()
-			provider := rp.NewOpenAIProviderForTest("test-key", "gpt-4.1", &ResponsesClient{
+			provider := rp.NewOpenAIProviderForTest("test-key", "gpt-4.1", &responses.ResponsesClient{
 				BaseURL: ts.URL, GetAuthHeader: func() string { return "Bearer test-key" }, HTTPClient: ts.Client(),
 			})
 			stream, err := provider.Stream(context.Background(), req)
@@ -355,43 +357,43 @@ func TestResponsesProvidersGuardReplayedWebSearchOnTheWire(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cases := []struct {
 				name          string
-				req           Request
+				req           core.Request
 				wantToolsJSON string   // exact tools array, when set
 				wantToolTypes []string // tool types in order, when set
 				wantChoice    string
 			}{
 				{
 					name:          "replay without tools",
-					req:           Request{Messages: history},
+					req:           core.Request{Messages: history},
 					wantToolsJSON: `[{"external_web_access":false,"type":"web_search"}]`,
 					wantChoice:    `"none"`,
 				},
 				{
 					name:          "replay with caller tool",
-					req:           Request{Messages: history, Tools: []ToolSpec{fnTool}},
+					req:           core.Request{Messages: history, Tools: []core.ToolSpec{fnTool}},
 					wantToolTypes: []string{"web_search", "function"},
 					wantChoice:    `{"mode":"auto","tools":[{"name":"example_tool","type":"function"}],"type":"allowed_tools"}`,
 				},
 				{
 					name:          "replay with required choice",
-					req:           Request{Messages: history, Tools: []ToolSpec{fnTool}, ToolChoice: ToolChoice{Mode: ToolChoiceRequired}},
+					req:           core.Request{Messages: history, Tools: []core.ToolSpec{fnTool}, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceRequired}},
 					wantToolTypes: []string{"web_search", "function"},
 					wantChoice:    `{"mode":"required","tools":[{"name":"example_tool","type":"function"}],"type":"allowed_tools"}`,
 				},
 				{
 					name:          "replay with none choice",
-					req:           Request{Messages: history, Tools: []ToolSpec{fnTool}, ToolChoice: ToolChoice{Mode: ToolChoiceNone}},
+					req:           core.Request{Messages: history, Tools: []core.ToolSpec{fnTool}, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceNone}},
 					wantToolTypes: []string{"web_search", "function"},
 					wantChoice:    `"none"`,
 				},
 				{
 					name:          "search enabled is unchanged",
-					req:           Request{Messages: history, Search: true},
+					req:           core.Request{Messages: history, Search: true},
 					wantToolsJSON: `[{"type":"` + p.searchType + `"}]`,
 				},
 				{
 					name: "no replay is unchanged",
-					req:  Request{Messages: []Message{UserText("q")}},
+					req:  core.Request{Messages: []core.Message{core.UserText("q")}},
 				},
 			}
 			for _, c := range cases {

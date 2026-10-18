@@ -11,7 +11,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 )
 
 func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
@@ -92,7 +93,7 @@ exit 1
 	}
 	defer readOut.Close()
 
-	var models []llm.ModelInfo
+	var models []core.ModelInfo
 	if err := json.NewDecoder(readOut).Decode(&models); err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
@@ -110,7 +111,7 @@ exit 1
 	if !slices.Equal(got, want) {
 		t.Fatalf("listed models = %v, want %v", got, want)
 	}
-	if cached := llm.GetCachedAgyBinModels(); !slices.Equal(cached, want) {
+	if cached := clibin.GetCachedAgyBinModels(); !slices.Equal(cached, want) {
 		t.Fatalf("cached models = %v, want %v", cached, want)
 	}
 }
@@ -163,7 +164,7 @@ func TestRunModelsQueriesConfiguredOllamaEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runModels: %v", err)
 	}
-	var models []llm.ModelInfo
+	var models []core.ModelInfo
 	if err := json.NewDecoder(readOut).Decode(&models); err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
@@ -236,12 +237,12 @@ func TestModelListSupportedTypesIncludesCursorBin(t *testing.T) {
 
 func TestChatGPTContextSummary(t *testing.T) {
 	t.Parallel()
-	got := chatGPTContextSummary(llm.ModelInfo{RecommendedContext: 372000, MaxContext: 872000, ConfiguredContext: 600000, InputLimit: 580000})
+	got := chatGPTContextSummary(core.ModelInfo{RecommendedContext: 372000, MaxContext: 872000, ConfiguredContext: 600000, InputLimit: 580000})
 	want := "[context: 600K selected, 372K recommended, 872K max]"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
-	if got := chatGPTContextSummary(llm.ModelInfo{}); got != "[context: unknown selected, unknown recommended, unknown max]" {
+	if got := chatGPTContextSummary(core.ModelInfo{}); got != "[context: unknown selected, unknown recommended, unknown max]" {
 		t.Fatal(got)
 	}
 }
@@ -259,7 +260,7 @@ func TestChatGPTContextReserveSummary(t *testing.T) {
 		{"capped", 872000, 852000, "Input budget: 852K · Output reserve: 20K"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := chatGPTContextReserveSummary(llm.ModelInfo{ConfiguredContext: tc.selected, InputLimit: tc.input}); got != tc.want {
+			if got := chatGPTContextReserveSummary(core.ModelInfo{ConfiguredContext: tc.selected, InputLimit: tc.input}); got != tc.want {
 				t.Fatalf("got %q want %q", got, tc.want)
 			}
 		})

@@ -8,18 +8,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type testStream struct {
-	events []llm.Event
+	events []core.Event
 	index  int
 }
 
-func (s *testStream) Recv() (llm.Event, error) {
+func (s *testStream) Recv() (core.Event, error) {
 	if s.index >= len(s.events) {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	event := s.events[s.index]
 	s.index++
@@ -35,17 +35,17 @@ type gatedToolStream struct {
 	continueEnd <-chan struct{}
 }
 
-func (s *gatedToolStream) Recv() (llm.Event, error) {
+func (s *gatedToolStream) Recv() (core.Event, error) {
 	switch s.index {
 	case 0:
 		s.index++
-		return llm.Event{Type: llm.EventToolExecStart, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)"}, nil
+		return core.Event{Type: core.EventToolExecStart, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)"}, nil
 	case 1:
 		s.index++
 		<-s.continueEnd
-		return llm.Event{Type: llm.EventToolExecEnd, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)", ToolSuccess: true}, nil
+		return core.Event{Type: core.EventToolExecEnd, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)", ToolSuccess: true}, nil
 	default:
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 }
 
@@ -99,7 +99,7 @@ func TestStreamAdapterSerializesGuardianBeforeToolEnd(t *testing.T) {
 		Message:    "guardian: approved",
 		Outcome:    tools.GuardianApproved,
 		Model:      "guardian-model",
-		Usage:      llm.Usage{InputTokens: 7, OutputTokens: 2},
+		Usage:      core.Usage{InputTokens: 7, OutputTokens: 2},
 	}
 	if !adapter.EmitGuardian(context.Background(), guardian) {
 		t.Fatal("guardian event was not accepted")
@@ -126,11 +126,11 @@ func TestStreamAdapterSerializesGuardianBeforeToolEnd(t *testing.T) {
 
 func TestStreamAdapterDedupesToolEvents(t *testing.T) {
 	stream := &testStream{
-		events: []llm.Event{
-			{Type: llm.EventToolExecStart, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)"},
-			{Type: llm.EventToolExecStart, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)"},
-			{Type: llm.EventToolExecEnd, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)", ToolSuccess: true},
-			{Type: llm.EventToolExecEnd, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)", ToolSuccess: true},
+		events: []core.Event{
+			{Type: core.EventToolExecStart, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)"},
+			{Type: core.EventToolExecStart, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)"},
+			{Type: core.EventToolExecEnd, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)", ToolSuccess: true},
+			{Type: core.EventToolExecEnd, ToolCallID: "call-1", ToolName: "shell", ToolInfo: "(git status)", ToolSuccess: true},
 		},
 	}
 
@@ -160,17 +160,17 @@ func TestStreamAdapterDedupesToolCallAndExecStart(t *testing.T) {
 	// Simulate: EventToolCall (during streaming) followed by EventToolExecStart (at execution)
 	// Both should result in only ONE ToolStartEvent
 	stream := &testStream{
-		events: []llm.Event{
+		events: []core.Event{
 			// During streaming, we receive EventToolCall
-			{Type: llm.EventToolCall, ToolCallID: "call-1", ToolName: "read_file", Tool: &llm.ToolCall{
+			{Type: core.EventToolCall, ToolCallID: "call-1", ToolName: "read_file", Tool: &core.ToolCall{
 				ID:        "call-1",
 				Name:      "read_file",
 				Arguments: []byte(`{"file_path": "test.txt"}`),
 			}},
 			// Later, at execution, we receive EventToolExecStart
-			{Type: llm.EventToolExecStart, ToolCallID: "call-1", ToolName: "read_file", ToolInfo: "test.txt"},
+			{Type: core.EventToolExecStart, ToolCallID: "call-1", ToolName: "read_file", ToolInfo: "test.txt"},
 			// And the end event
-			{Type: llm.EventToolExecEnd, ToolCallID: "call-1", ToolName: "read_file", ToolSuccess: true},
+			{Type: core.EventToolExecEnd, ToolCallID: "call-1", ToolName: "read_file", ToolSuccess: true},
 		},
 	}
 
@@ -199,20 +199,20 @@ func TestStreamAdapterDedupesToolCallAndExecStart(t *testing.T) {
 func TestStreamAdapterExtractedHandlersIgnoreEmptyEvents(t *testing.T) {
 	tests := []struct {
 		name          string
-		handle        func(*StreamAdapter, context.Context, llm.Event) bool
-		event         llm.Event
+		handle        func(*StreamAdapter, context.Context, core.Event) bool
+		event         core.Event
 		wantCommitted bool
 	}{
 		{
 			name:          "empty reasoning delta",
 			handle:        (*StreamAdapter).processReasoningDelta,
-			event:         llm.Event{Type: llm.EventReasoningDelta},
+			event:         core.Event{Type: core.EventReasoningDelta},
 			wantCommitted: false,
 		},
 		{
 			name:          "tool call without tool",
 			handle:        (*StreamAdapter).processToolCall,
-			event:         llm.Event{Type: llm.EventToolCall},
+			event:         core.Event{Type: core.EventToolCall},
 			wantCommitted: true,
 		},
 	}
@@ -237,17 +237,17 @@ func TestStreamAdapterExtractedHandlersIgnoreEmptyEvents(t *testing.T) {
 
 func TestStreamAdapterEmitsDiffOperation(t *testing.T) {
 	stream := &testStream{
-		events: []llm.Event{{
-			Type:        llm.EventToolExecEnd,
+		events: []core.Event{{
+			Type:        core.EventToolExecEnd,
 			ToolCallID:  "call-create",
 			ToolName:    "write_file",
 			ToolSuccess: true,
-			ToolDiffs: []llm.DiffData{{
+			ToolDiffs: []core.DiffData{{
 				File:      "demo.rb",
 				Old:       "",
 				New:       "puts \"hello\"\n",
 				Line:      1,
-				Operation: llm.DiffOperationCreate,
+				Operation: core.DiffOperationCreate,
 			}},
 		}},
 	}
@@ -266,15 +266,15 @@ func TestStreamAdapterEmitsDiffOperation(t *testing.T) {
 	if diffEvent == nil {
 		t.Fatal("expected diff event")
 	}
-	if diffEvent.DiffOperation != llm.DiffOperationCreate {
-		t.Fatalf("diff operation = %q, want %q", diffEvent.DiffOperation, llm.DiffOperationCreate)
+	if diffEvent.DiffOperation != core.DiffOperationCreate {
+		t.Fatalf("diff operation = %q, want %q", diffEvent.DiffOperation, core.DiffOperationCreate)
 	}
 }
 
 func TestStreamAdapterAllZeroUsageConsumesTimingWithoutCall(t *testing.T) {
-	stream := &testStream{events: []llm.Event{
-		{Type: llm.EventTextDelta, Text: "activity"},
-		{Type: llm.EventUsage, Use: &llm.Usage{}},
+	stream := &testStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "activity"},
+		{Type: core.EventUsage, Use: &core.Usage{}},
 	}}
 	adapter := NewStreamAdapter(10)
 	go adapter.ProcessStream(context.Background(), stream)
@@ -302,11 +302,11 @@ func TestStreamAdapterAllZeroUsageConsumesTimingWithoutCall(t *testing.T) {
 
 func TestStreamAdapter_PropagatesSteeringID(t *testing.T) {
 	stream := &testStream{
-		events: []llm.Event{{
-			Type:       llm.EventSteering,
+		events: []core.Event{{
+			Type:       core.EventSteering,
 			Text:       "keep sleeping",
 			SteeringID: "adapter-steer-1",
-			Message:    llm.UserImageMessage("image/png", "aW1n", "keep sleeping"),
+			Message:    core.UserImageMessage("image/png", "aW1n", "keep sleeping"),
 		}},
 	}
 
@@ -326,7 +326,7 @@ func TestStreamAdapter_PropagatesSteeringID(t *testing.T) {
 	if ev.SteeringID != "adapter-steer-1" {
 		t.Fatalf("event steering ID = %q, want %q", ev.SteeringID, "adapter-steer-1")
 	}
-	if len(ev.Message.Parts) != 2 || ev.Message.Parts[0].Type != llm.PartImage {
+	if len(ev.Message.Parts) != 2 || ev.Message.Parts[0].Type != core.PartImage {
 		t.Fatalf("event message parts = %#v, want structured image message", ev.Message.Parts)
 	}
 }
@@ -336,9 +336,9 @@ func TestStreamAdapterCancellationUnblocksBlockedSend(t *testing.T) {
 	defer cancel()
 
 	stream := &testStream{
-		events: []llm.Event{
-			{Type: llm.EventTextDelta, Text: "first"},
-			{Type: llm.EventTextDelta, Text: "second"},
+		events: []core.Event{
+			{Type: core.EventTextDelta, Text: "first"},
+			{Type: core.EventTextDelta, Text: "second"},
 		},
 	}
 	adapter := NewStreamAdapter(1)
@@ -470,9 +470,9 @@ type retryDelayStream struct {
 	delayed bool
 }
 
-func (s *retryDelayStream) Recv() (llm.Event, error) {
+func (s *retryDelayStream) Recv() (core.Event, error) {
 	event, err := s.testStream.Recv()
-	if err == nil && !s.delayed && event.Type == llm.EventTextDelta {
+	if err == nil && !s.delayed && event.Type == core.EventTextDelta {
 		s.delayed = true
 		time.Sleep(60 * time.Millisecond)
 	}
@@ -480,11 +480,11 @@ func (s *retryDelayStream) Recv() (llm.Event, error) {
 }
 
 func TestStreamAdapterRetryWaitExcludedFromReplacementTTFT(t *testing.T) {
-	stream := &retryDelayStream{testStream: testStream{events: []llm.Event{
-		{Type: llm.EventAttemptDiscard},
-		{Type: llm.EventRetry, RetryWaitSecs: 0.04},
-		{Type: llm.EventTextDelta, Text: "replacement"},
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 2, OutputTokens: 3}},
+	stream := &retryDelayStream{testStream: testStream{events: []core.Event{
+		{Type: core.EventAttemptDiscard},
+		{Type: core.EventRetry, RetryWaitSecs: 0.04},
+		{Type: core.EventTextDelta, Text: "replacement"},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 2, OutputTokens: 3}},
 	}}}
 	adapter := NewStreamAdapter(10)
 	adapter.Stats().RequestStart()
@@ -501,11 +501,11 @@ func TestStreamAdapterRetryWaitExcludedFromReplacementTTFT(t *testing.T) {
 }
 
 func TestStreamAdapterAssociatesUsageWithModelSwitches(t *testing.T) {
-	stream := &testStream{events: []llm.Event{
-		{Type: llm.EventModelSwitch, Model: "gpt-5.6-sol"},
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 1}},
-		{Type: llm.EventModelSwitch, Model: "gpt-5.6-luna"},
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 2}},
+	stream := &testStream{events: []core.Event{
+		{Type: core.EventModelSwitch, Model: "gpt-5.6-sol"},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 1}},
+		{Type: core.EventModelSwitch, Model: "gpt-5.6-luna"},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 2}},
 	}}
 	adapter := NewStreamAdapter(10)
 	go adapter.ProcessStream(context.Background(), stream)
@@ -518,10 +518,10 @@ func TestStreamAdapterAssociatesUsageWithModelSwitches(t *testing.T) {
 }
 
 func TestStreamAdapterDiscardRemovesAttemptUsage(t *testing.T) {
-	stream := &testStream{events: []llm.Event{
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 10, OutputTokens: 5, CachedInputTokens: 2, CacheWriteTokens: 1}},
-		{Type: llm.EventAttemptDiscard},
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 4}},
+	stream := &testStream{events: []core.Event{
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 10, OutputTokens: 5, CachedInputTokens: 2, CacheWriteTokens: 1}},
+		{Type: core.EventAttemptDiscard},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 3, OutputTokens: 4}},
 	}}
 	adapter := NewStreamAdapter(10)
 	go adapter.ProcessStream(context.Background(), stream)
@@ -534,13 +534,13 @@ func TestStreamAdapterDiscardRemovesAttemptUsage(t *testing.T) {
 }
 
 func TestStreamAdapterDiscardKeepsCommittedToolUsage(t *testing.T) {
-	stream := &testStream{events: []llm.Event{
-		{Type: llm.EventTextDelta, Text: "before tool"},
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
-		{Type: llm.EventToolExecStart, ToolCallID: "call-1", ToolName: "read_file"},
-		{Type: llm.EventToolExecEnd, ToolCallID: "call-1", ToolName: "read_file", ToolSuccess: true},
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 4}},
-		{Type: llm.EventAttemptDiscard},
+	stream := &testStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "before tool"},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 10, OutputTokens: 5}},
+		{Type: core.EventToolExecStart, ToolCallID: "call-1", ToolName: "read_file"},
+		{Type: core.EventToolExecEnd, ToolCallID: "call-1", ToolName: "read_file", ToolSuccess: true},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 3, OutputTokens: 4}},
+		{Type: core.EventAttemptDiscard},
 	}}
 	adapter := NewStreamAdapter(20)
 	go adapter.ProcessStream(context.Background(), stream)
@@ -553,10 +553,10 @@ func TestStreamAdapterDiscardKeepsCommittedToolUsage(t *testing.T) {
 }
 
 func TestStreamAdapterForwardsClassifiedReasoningSummary(t *testing.T) {
-	stream := &testStream{events: []llm.Event{{
-		Type:            llm.EventReasoningDelta,
+	stream := &testStream{events: []core.Event{{
+		Type:            core.EventReasoningDelta,
 		Text:            "**Inspecting repo**\n\nChecking files.",
-		ReasoningKind:   llm.ReasoningKindSummary,
+		ReasoningKind:   core.ReasoningKindSummary,
 		ReasoningItemID: "rs_1",
 	}}}
 
@@ -573,7 +573,7 @@ func TestStreamAdapterForwardsClassifiedReasoningSummary(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected reasoning event")
 	}
-	if got.ReasoningKind != llm.ReasoningKindSummary {
+	if got.ReasoningKind != core.ReasoningKindSummary {
 		t.Fatalf("kind = %q, want summary", got.ReasoningKind)
 	}
 	if got.ReasoningText != "**Inspecting repo**\n\nChecking files." {
@@ -591,9 +591,9 @@ func TestStreamAdapterForwardsClassifiedReasoningSummary(t *testing.T) {
 }
 
 func TestStreamAdapterHiddenReasoningCountsAsGenerationActivity(t *testing.T) {
-	stream := &testStream{events: []llm.Event{
-		{Type: llm.EventReasoningDelta, ReasoningKind: llm.ReasoningKindEncrypted, ReasoningEncryptedContent: "secret"},
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 4}},
+	stream := &testStream{events: []core.Event{
+		{Type: core.EventReasoningDelta, ReasoningKind: core.ReasoningKindEncrypted, ReasoningEncryptedContent: "secret"},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 3, OutputTokens: 4}},
 	}}
 	adapter := NewStreamAdapter(10)
 	go adapter.ProcessStream(context.Background(), stream)
@@ -610,9 +610,9 @@ func TestStreamAdapterHiddenReasoningCountsAsGenerationActivity(t *testing.T) {
 }
 
 func TestStreamAdapterNeverForwardsEncryptedReasoningPayload(t *testing.T) {
-	stream := &testStream{events: []llm.Event{{
-		Type:                      llm.EventReasoningDelta,
-		ReasoningKind:             llm.ReasoningKindEncrypted,
+	stream := &testStream{events: []core.Event{{
+		Type:                      core.EventReasoningDelta,
+		ReasoningKind:             core.ReasoningKindEncrypted,
 		ReasoningEncryptedContent: "secret-encrypted-payload",
 		ReasoningItemID:           "rs_1",
 	}}}
@@ -628,10 +628,10 @@ func TestStreamAdapterNeverForwardsEncryptedReasoningPayload(t *testing.T) {
 }
 
 func TestStreamAdapterForwardsRawReasoningClassifiedButNotDisplayable(t *testing.T) {
-	stream := &testStream{events: []llm.Event{{
-		Type:          llm.EventReasoningDelta,
+	stream := &testStream{events: []core.Event{{
+		Type:          core.EventReasoningDelta,
 		Text:          "raw thinking",
-		ReasoningKind: llm.ReasoningKindRaw,
+		ReasoningKind: core.ReasoningKindRaw,
 	}}}
 
 	adapter := NewStreamAdapter(10)
@@ -647,7 +647,7 @@ func TestStreamAdapterForwardsRawReasoningClassifiedButNotDisplayable(t *testing
 	if got == nil {
 		t.Fatal("expected reasoning event")
 	}
-	if got.ReasoningKind != llm.ReasoningKindRaw {
+	if got.ReasoningKind != core.ReasoningKindRaw {
 		t.Fatalf("kind = %q, want raw", got.ReasoningKind)
 	}
 	if got.ReasoningDisplayable {
@@ -656,11 +656,11 @@ func TestStreamAdapterForwardsRawReasoningClassifiedButNotDisplayable(t *testing
 }
 
 func TestStreamAdapterEmitsAudioInArtifactOrder(t *testing.T) {
-	artifacts := []llm.MediaArtifact{{Reference: "audio", SourcePath: "speech.mp3", MediaType: "audio/mpeg"}, {Reference: "image", SourcePath: "chart.png", MediaType: "image/png"}}
+	artifacts := []core.MediaArtifact{{Reference: "audio", SourcePath: "speech.mp3", MediaType: "audio/mpeg"}, {Reference: "image", SourcePath: "chart.png", MediaType: "image/png"}}
 	adapter := NewStreamAdapter(10)
-	stream := &testStream{events: []llm.Event{{Type: llm.EventToolExecEnd, ToolCallID: "media-call", ToolName: "show_media", ToolSuccess: true, ToolMedia: artifacts}}}
+	stream := &testStream{events: []core.Event{{Type: core.EventToolExecEnd, ToolCallID: "media-call", ToolName: "show_media", ToolSuccess: true, ToolMedia: artifacts}}}
 	go adapter.ProcessStream(context.Background(), stream)
-	var got []llm.MediaArtifact
+	var got []core.MediaArtifact
 	for ev := range adapter.Events() {
 		if ev.Type == StreamEventMedia {
 			got = append(got, ev.Media)

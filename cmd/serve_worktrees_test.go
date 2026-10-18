@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
@@ -701,10 +703,10 @@ func TestServeWorktreeMergeExclusiveLeaseBlocksNewRootRuns(t *testing.T) {
 	for i, platform := range platforms {
 		started[i] = make(chan struct{})
 		attempted[i] = make(chan struct{})
-		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 		runtime := &serveRuntime{
 			provider:     provider,
-			engine:       llm.NewEngine(provider, nil),
+			engine:       engine.NewEngine(provider, nil),
 			defaultModel: "mock-model",
 			platform:     platform,
 		}
@@ -714,8 +716,8 @@ func TestServeWorktreeMergeExclusiveLeaseBlocksNewRootRuns(t *testing.T) {
 				context.Background(),
 				false,
 				false,
-				[]llm.Message{llm.UserText("wait for merge")},
-				llm.Request{WorkingDir: repo},
+				[]core.Message{core.UserText("wait for merge")},
+				core.Request{WorkingDir: repo},
 				func() {
 					close(started[i])
 					unexpectedlyStarted <- platform

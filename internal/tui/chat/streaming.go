@@ -12,6 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
@@ -21,11 +23,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-func copyLLMMessages(messages []llm.Message) []llm.Message {
+func copyLLMMessages(messages []core.Message) []core.Message {
 	if len(messages) == 0 {
 		return nil
 	}
-	copied := make([]llm.Message, len(messages))
+	copied := make([]core.Message, len(messages))
 	copy(copied, messages)
 	return copied
 }
@@ -44,7 +46,7 @@ func (m *Model) invalidateContextEstimateCache() {
 	m.contextEstimateMu.Unlock()
 }
 
-func (m *Model) setStreamingContextMessages(messages []llm.Message) {
+func (m *Model) setStreamingContextMessages(messages []core.Message) {
 	m.contextEstimateMu.Lock()
 	m.streamingContextMessages = copyLLMMessages(messages)
 	m.streamingContextPendingAssistant = false
@@ -60,7 +62,7 @@ func (m *Model) clearStreamingContextMessages() {
 	m.contextEstimateMu.Unlock()
 }
 
-func (m *Model) updateStreamingContextAssistant(assistantMsg llm.Message) {
+func (m *Model) updateStreamingContextAssistant(assistantMsg core.Message) {
 	m.contextEstimateMu.Lock()
 	defer m.contextEstimateMu.Unlock()
 	if m.streamingContextPendingAssistant && len(m.streamingContextMessages) > 0 {
@@ -73,12 +75,12 @@ func (m *Model) updateStreamingContextAssistant(assistantMsg llm.Message) {
 	m.invalidateContextEstimateCacheLocked()
 }
 
-func (m *Model) appendStreamingContextTurnMessages(turnMessages []llm.Message) {
+func (m *Model) appendStreamingContextTurnMessages(turnMessages []core.Message) {
 	m.contextEstimateMu.Lock()
 	defer m.contextEstimateMu.Unlock()
 
 	appendStart := 0
-	if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
+	if len(turnMessages) > 0 && turnMessages[0].Role == core.RoleAssistant {
 		if m.streamingContextPendingAssistant && len(m.streamingContextMessages) > 0 {
 			m.streamingContextMessages[len(m.streamingContextMessages)-1] = turnMessages[0]
 		} else {
@@ -107,7 +109,7 @@ func (m *Model) clearStreamCallbacks() {
 	m.pendingMu.Lock()
 	m.pendingAssistantMsgID = 0
 	m.pendingAssistantTextSet = false
-	m.pendingAssistantSnapshot = llm.Message{}
+	m.pendingAssistantSnapshot = core.Message{}
 	m.pendingAssistantSnapshotSet = false
 	m.completedAssistantTurns = 0
 	m.pendingMu.Unlock()
@@ -116,7 +118,7 @@ func (m *Model) clearStreamCallbacks() {
 
 // streamPersistenceCallbacks builds callbacks so assistant messages and tool
 // results persist incrementally as the turn progresses.
-func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.AssistantSnapshotCallback, llm.ResponseCompletedCallback, llm.TurnCompletedCallback) {
+func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (engine.AssistantSnapshotCallback, engine.ResponseCompletedCallback, engine.TurnCompletedCallback) {
 	streamSess := m.sess
 	streamSessionID := ""
 	if streamSess != nil {
@@ -132,7 +134,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 	staleStreamSession := func() bool {
 		return streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID)
 	}
-	persistPendingAssistant := func(ctx context.Context, assistantMsg llm.Message, finalizeText bool) (int64, bool) {
+	persistPendingAssistant := func(ctx context.Context, assistantMsg core.Message, finalizeText bool) (int64, bool) {
 		if m.store == nil || streamSess == nil || staleStreamSession() {
 			return 0, false
 		}
@@ -171,7 +173,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		return sessionMsg.ID, sessionMsg.ID > 0
 	}
 
-	assistantSnapshot := func(ctx context.Context, _ int, assistantMsg llm.Message) error {
+	assistantSnapshot := func(ctx context.Context, _ int, assistantMsg core.Message) error {
 		if staleStreamSession() {
 			return nil
 		}
@@ -182,7 +184,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		_, _ = persistPendingAssistant(ctx, assistantMsg, false)
 		return nil
 	}
-	responseCompleted := func(ctx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+	responseCompleted := func(ctx context.Context, _ int, assistantMsg core.Message, _ core.TurnMetrics) error {
 		if staleStreamSession() {
 			return nil
 		}
@@ -193,7 +195,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		_, _ = persistPendingAssistant(ctx, assistantMsg, true)
 		return nil
 	}
-	turnCompleted := func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+	turnCompleted := func(ctx context.Context, turnIndex int, turnMessages []core.Message, metrics core.TurnMetrics) error {
 		if staleStreamSession() {
 			return nil
 		}
@@ -208,7 +210,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		if len(turnMessages) == 0 && (!pendingAssistantPersisted || lastDurableID <= 0) {
 			persistComplete = false
 		}
-		if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
+		if len(turnMessages) > 0 && turnMessages[0].Role == core.RoleAssistant {
 			m.pendingMu.Lock()
 			finalizeText := !m.pendingAssistantTextSet
 			m.pendingMu.Unlock()
@@ -219,7 +221,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		}
 		if m.store != nil && streamSess != nil {
 			for _, msg := range turnMessages[appendStart:] {
-				if msg.Role == llm.RoleUser {
+				if msg.Role == core.RoleUser {
 					// Steering are persisted by the UI event path. Until that write
 					// is coordinated, conservatively retain the preceding boundary.
 					persistComplete = false
@@ -245,14 +247,14 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		m.pendingMu.Lock()
 		m.pendingAssistantMsgID = 0
 		m.pendingAssistantTextSet = false
-		m.pendingAssistantSnapshot = llm.Message{}
+		m.pendingAssistantSnapshot = core.Message{}
 		m.pendingAssistantSnapshotSet = false
 		if appendStart > 0 {
 			m.completedAssistantTurns++
 		}
 		m.pendingMu.Unlock()
 		if m.store != nil && streamSess != nil {
-			m.recordDurableTurnUsage(ctx, streamSess.ID, llm.Usage{
+			m.recordDurableTurnUsage(ctx, streamSess.ID, core.Usage{
 				InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
 				CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
 			}, metrics.ToolCalls)
@@ -271,12 +273,12 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 	m.engine.SetTurnCompletedCallback(turnCompleted)
 }
 
-func (m *Model) streamCompactionCallback(streamSess *session.Session, generation uint64) llm.CompactionCallback {
+func (m *Model) streamCompactionCallback(streamSess *session.Session, generation uint64) engine.CompactionCallback {
 	streamSessionID := ""
 	if streamSess != nil {
 		streamSessionID = streamSess.ID
 	}
-	return func(ctx context.Context, result *llm.CompactionResult) error {
+	return func(ctx context.Context, result *engine.CompactionResult) error {
 		m.messagesMu.Lock()
 		full := append([]session.Message(nil), m.messages...)
 		m.messagesMu.Unlock()
@@ -430,7 +432,7 @@ func (m *Model) resetPendingAssistantAfterCompaction() {
 	m.pendingMu.Lock()
 	m.pendingAssistantMsgID = 0
 	m.pendingAssistantTextSet = false
-	m.pendingAssistantSnapshot = llm.Message{}
+	m.pendingAssistantSnapshot = core.Message{}
 	m.pendingAssistantSnapshotSet = false
 	m.completedAssistantTurns = 0
 	m.pendingMu.Unlock()
@@ -443,7 +445,7 @@ func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
 
 	hasUserMsg := false
 	for _, msg := range m.messages {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			hasUserMsg = true
 			break
 		}
@@ -470,8 +472,8 @@ func (m *Model) insertDeveloperMessage(msg session.Message) {
 	m.resetContextEstimateBaseline(context.Background())
 }
 
-func (m *Model) conversationMessages() []llm.Message {
-	messages := make([]llm.Message, 0, len(m.messages))
+func (m *Model) conversationMessages() []core.Message {
+	messages := make([]core.Message, 0, len(m.messages))
 	for i := range m.messages {
 		messages = append(messages, m.messages[i].ToLLMMessage())
 	}
@@ -481,7 +483,7 @@ func (m *Model) conversationMessages() []llm.Message {
 func (m *Model) ensureContextMessages() {
 	hasSystemMsg := false
 	for _, msg := range m.messages {
-		if msg.Role == llm.RoleSystem {
+		if msg.Role == core.RoleSystem {
 			hasSystemMsg = true
 		}
 	}
@@ -489,8 +491,8 @@ func (m *Model) ensureContextMessages() {
 	if m.config.Chat.Instructions != "" && !hasSystemMsg {
 		sysMsg := &session.Message{
 			SessionID:   m.sess.ID,
-			Role:        llm.RoleSystem,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: m.config.Chat.Instructions}},
+			Role:        core.RoleSystem,
+			Parts:       []core.Part{{Type: core.PartText, Text: m.config.Chat.Instructions}},
 			TextContent: m.config.Chat.Instructions,
 			CreatedAt:   time.Now(),
 			Sequence:    -1,
@@ -506,7 +508,7 @@ func (m *Model) ensureContextMessages() {
 	_, hasStart := llm.ConversationStartFrom(existingMessages)
 	canBegin := !hasStart
 	for _, message := range existingMessages {
-		if message.Role == llm.RoleUser || message.Role == llm.RoleAssistant || message.Role == llm.RoleTool {
+		if message.Role == core.RoleUser || message.Role == core.RoleAssistant || message.Role == core.RoleTool {
 			canBegin = false
 			break
 		}
@@ -634,19 +636,19 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	imageLabels := m.imageAttachmentLabels()
 	parts := m.imagePartList()
 	if content != "" {
-		parts = append(parts, llm.Part{Type: llm.PartText, Text: content})
+		parts = append(parts, core.Part{Type: core.PartText, Text: content})
 	}
 	if delegationContext != "" {
-		parts = append(parts, llm.Part{Type: llm.PartAgentMention, Text: delegationContext})
+		parts = append(parts, core.Part{Type: core.PartAgentMention, Text: delegationContext})
 	}
 	if explicitFiles != "" {
-		parts = append(parts, llm.Part{Type: llm.PartText, Text: explicitFiles})
+		parts = append(parts, core.Part{Type: core.PartText, Text: explicitFiles})
 	}
 	if mentionContext != "" {
-		parts = append(parts, llm.Part{Type: llm.PartFile, Text: mentionContext})
+		parts = append(parts, core.Part{Type: core.PartFile, Text: mentionContext})
 	}
 	if len(parts) == 0 {
-		parts = []llm.Part{{Type: llm.PartText}}
+		parts = []core.Part{{Type: core.PartText}}
 	}
 
 	if strings.TrimSpace(displayText) == "" && len(imageLabels) > 0 {
@@ -670,7 +672,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// Create user message and store it
 	userMsg := &session.Message{
 		SessionID:   m.sess.ID,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		Parts:       parts,
 		TextContent: displayText,
 		CreatedAt:   time.Now(),
@@ -821,7 +823,7 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	m.pendingMu.Lock()
 	m.pendingAssistantMsgID = 0
 	m.pendingAssistantTextSet = false
-	m.pendingAssistantSnapshot = llm.Message{}
+	m.pendingAssistantSnapshot = core.Message{}
 	m.pendingAssistantSnapshotSet = false
 	m.completedAssistantTurns = 0
 	m.pendingMu.Unlock()
@@ -889,7 +891,7 @@ func (m *Model) claimStreamTurnLease(ctx context.Context, sessionID string) (*tu
 // keeps its lease for suspendForReload, which still rewrites under its fence.
 func (m *Model) finalizeMainRunTurn(lease *turnLease, sessionID string, runErr error) {
 	status := session.StatusComplete
-	var suspended *llm.SuspendedError
+	var suspended *engine.SuspendedError
 	if errors.As(runErr, &suspended) {
 		status = session.StatusActive
 	} else if runErr != nil {
@@ -967,7 +969,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		// The discovery planner registers MCP wrappers for execution and owns
 		// provider visibility. Start with non-MCP request tools only.
-		var reqTools []llm.ToolSpec
+		var reqTools []core.ToolSpec
 
 		// Add local tools (read_file, write_file, shell, etc.) if enabled
 		// These are already registered in the engine, we just need their specs
@@ -1005,7 +1007,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// override from the previous run before accepting further live toggles.
 		m.engine.ClearPendingRequestServiceTier()
 		serviceTier, serviceTierSet := m.currentServiceTier()
-		req := llm.Request{
+		req := core.Request{
 			Resume:                  continuation,
 			SessionID:               m.sess.ID,
 			WorkingDir:              m.effectiveWorkingDir(),
@@ -1023,7 +1025,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}
 		if m.sess != nil && strings.EqualFold(m.sess.ReasoningMode, "pro") {
 			if llm.SupportsReasoningMode(m.providerKey, m.modelName) {
-				req.Responses = &llm.ResponsesOptions{ReasoningMode: "pro"}
+				req.Responses = &core.ResponsesOptions{ReasoningMode: "pro"}
 			} else {
 				m.sess.ReasoningMode = ""
 				if m.store != nil {
@@ -1050,11 +1052,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 		if m.runner == nil {
 			m.engine.SetCompactionCallback(compactionCB)
 		}
-		syntheticUserCB := func(cbCtx context.Context, msg llm.Message) error {
+		syntheticUserCB := func(cbCtx context.Context, msg core.Message) error {
 			if streamSess == nil || m.store == nil || streamSess.ID == "" {
 				return nil
 			}
-			msg.Role = llm.RoleUser
+			msg.Role = core.RoleUser
 			m.contextEstimateMu.Lock()
 			m.streamingContextMessages = append(m.streamingContextMessages, msg)
 			m.streamingContextPendingAssistant = false
@@ -1183,14 +1185,14 @@ func (m *Model) startStream(content string) tea.Cmd {
 					return runErr
 				},
 				Finalize: func(runErr error) { m.finalizeMainRunTurn(lease, runSessionID, runErr) },
-				QueueSteering: func(steering llm.QueuedSteering) llm.SteeringQueueStatus {
+				QueueSteering: func(steering engine.QueuedSteering) engine.SteeringQueueStatus {
 					steering.Message.ClientMessageID = steering.ID
 					if store, ok := session.AsPendingSteeringStore(m.store); ok {
 						persistCtx, persistCancel := context.WithTimeout(context.Background(), 4*time.Second)
-						err := store.SavePendingSteering(persistCtx, session.PendingSteering{SessionID: runSessionID, ID: steering.ID, Message: steering.Message, DisplayText: steering.DisplayText, Origin: steering.Origin, AttachmentSummary: llm.MessageAttachmentSummary(steering.Message)})
+						err := store.SavePendingSteering(persistCtx, session.PendingSteering{SessionID: runSessionID, ID: steering.ID, Message: steering.Message, DisplayText: steering.DisplayText, Origin: steering.Origin, AttachmentSummary: core.MessageAttachmentSummary(steering.Message)})
 						persistCancel()
 						if err != nil {
-							return llm.SteeringQueueRunFinished
+							return engine.SteeringQueueRunFinished
 						}
 					}
 					_, status := m.engine.QueueSteeringWithStatus(steering)
@@ -1567,7 +1569,7 @@ func (m *Model) listenForStreamEventsSync(generation uint64) tea.Msg {
 	return mkMsg(event)
 }
 
-func (m *Model) buildMessages() []llm.Message {
+func (m *Model) buildMessages() []core.Message {
 	m.messagesMu.Lock()
 	snapshot := make([]session.Message, len(m.messages))
 	copy(snapshot, m.messages)
@@ -1581,11 +1583,11 @@ func (m *Model) buildMessages() []llm.Message {
 	return messages
 }
 
-func (m *Model) buildMessagesForStream() []llm.Message {
+func (m *Model) buildMessagesForStream() []core.Message {
 	return m.buildMessages()
 }
 
-func (m *Model) buildMessagesForContextEstimate() []llm.Message {
+func (m *Model) buildMessagesForContextEstimate() []core.Message {
 	m.contextEstimateMu.Lock()
 	if m.streaming && len(m.streamingContextMessages) > 0 {
 		messages := copyLLMMessages(m.streamingContextMessages)
@@ -1665,7 +1667,7 @@ func (m *Model) userMessageCount() int {
 	defer m.messagesMu.Unlock()
 	n := 0
 	for _, msg := range m.messages {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			n++
 		}
 	}
@@ -1676,7 +1678,7 @@ func (m *Model) userMessageCount() int {
 // promptFmt (which must contain a single %s), runs it through the fast
 // provider, and returns the trimmed response. Content is truncated to keep
 // the request small.
-func fastSlugGen(provider llm.Provider, promptFmt string) session.HandoverSlugGenerator {
+func fastSlugGen(provider core.Provider, promptFmt string) session.HandoverSlugGenerator {
 	return func(ctx context.Context, content string) (string, error) {
 		if len(content) > 2000 {
 			content = content[:2000]
@@ -1684,10 +1686,10 @@ func fastSlugGen(provider llm.Provider, promptFmt string) session.HandoverSlugGe
 		prompt := fmt.Sprintf(promptFmt, content)
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		stream, err := provider.Stream(ctx, llm.Request{
+		stream, err := provider.Stream(ctx, core.Request{
 			Ephemeral: true,
-			Messages: []llm.Message{
-				llm.UserText(prompt),
+			Messages: []core.Message{
+				core.UserText(prompt),
 			},
 			MaxTurns: 1,
 		})
@@ -1704,7 +1706,7 @@ func fastSlugGen(provider llm.Provider, promptFmt string) session.HandoverSlugGe
 			if err != nil {
 				return "", err
 			}
-			if ev.Type == llm.EventTextDelta {
+			if ev.Type == core.EventTextDelta {
 				b.WriteString(ev.Text)
 			}
 		}

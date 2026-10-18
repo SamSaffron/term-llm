@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -70,12 +70,12 @@ func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLe
 func TestServeMCPToolResultPreservesFailureStatus(t *testing.T) {
 	tests := []struct {
 		name string
-		out  llm.ToolOutput
+		out  core.ToolOutput
 		want bool
 	}{
-		{name: "success", out: llm.TextOutput("ok")},
-		{name: "semantic error", out: llm.ToolOutput{Content: "failed", IsError: true}, want: true},
-		{name: "timeout", out: llm.ToolOutput{Content: "timed out", TimedOut: true}, want: true},
+		{name: "success", out: core.TextOutput("ok")},
+		{name: "semantic error", out: core.ToolOutput{Content: "failed", IsError: true}, want: true},
+		{name: "timeout", out: core.ToolOutput{Content: "timed out", TimedOut: true}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

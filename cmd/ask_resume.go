@@ -5,17 +5,16 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/spf13/cobra"
 )
 
-func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *sessionInputSelection, setup *skills.Setup, cfg *config.Config, provider llm.Provider, resuming bool) (string, string) {
+func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *sessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
@@ -134,7 +133,7 @@ func deriveAskResumeAutoTools(ctx context.Context, store session.Store, sess *se
 	if err != nil {
 		return
 	}
-	history := make([]llm.Message, 0, len(rows))
+	history := make([]core.Message, 0, len(rows))
 	for i := range rows {
 		history = append(history, rows[i].ToLLMMessage())
 	}

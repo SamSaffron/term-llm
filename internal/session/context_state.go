@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 // HasCompactionBoundary reports whether a session has an explicit persisted
@@ -127,7 +128,7 @@ func LoadScrollbackWithBoundary(ctx context.Context, store Store, sess *Session)
 // estimate baseline so future turns don't seed context management with
 // pre-compaction token counts. The full argument is the caller's scrollback
 // snapshot and may be nil for non-UI owners that only need persistence.
-func ApplyCompaction(ctx context.Context, store Store, sess *Session, full []Message, result *llm.CompactionResult) ([]Message, int, *Session, error) {
+func ApplyCompaction(ctx context.Context, store Store, sess *Session, full []Message, result *engine.CompactionResult) ([]Message, int, *Session, error) {
 	activeStart := len(full)
 	if result == nil {
 		return full, activeStart, sess, nil
@@ -163,9 +164,9 @@ func ApplyCompaction(ctx context.Context, store Store, sess *Session, full []Mes
 	return updated, activeStart, refreshed, nil
 }
 
-func dropLeadingCompactionSystemMessages(messages []llm.Message) []llm.Message {
+func dropLeadingCompactionSystemMessages(messages []core.Message) []core.Message {
 	start := 0
-	for start < len(messages) && messages[start].Role == llm.RoleSystem {
+	for start < len(messages) && messages[start].Role == core.RoleSystem {
 		start++
 	}
 	// A compaction result should always include a summary row after any system
@@ -327,14 +328,14 @@ func messageFingerprintSuffixPrefixOverlap(left, right []string) int {
 // syntheticCompactionAckText mirrors the acknowledgement the engine inserts
 // after a compaction summary. It is defined by the producer so tail detection
 // cannot drift from the text actually persisted.
-const syntheticCompactionAckText = llm.CompactionAckText
+const syntheticCompactionAckText = engine.CompactionAckText
 
 // IsSyntheticCompactionAckMessage reports whether msg is the internal assistant
 // acknowledgement inserted after a context-compaction summary. It deliberately
 // matches the persisted TextContent representation used by compaction-tail
 // detection so exporting this predicate does not widen persistence behavior.
 func IsSyntheticCompactionAckMessage(msg Message) bool {
-	if msg.Role != llm.RoleAssistant {
+	if msg.Role != core.RoleAssistant {
 		return false
 	}
 	return strings.TrimSpace(msg.TextContent) == syntheticCompactionAckText
@@ -351,11 +352,11 @@ func messageDisplayFingerprint(msg Message) string {
 // IsInternalCompactionSummaryMessage reports whether msg contains term-llm's
 // internal context-compaction summary payload.
 func IsInternalCompactionSummaryMessage(msg Message) bool {
-	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
+	if engine.IsInternalCompactionSummaryText(msg.TextContent) {
 		return true
 	}
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+		if part.Type == core.PartText && engine.IsInternalCompactionSummaryText(part.Text) {
 			return true
 		}
 	}
@@ -365,7 +366,7 @@ func IsInternalCompactionSummaryMessage(msg Message) bool {
 // LLMActiveMessages converts the active slice of session messages into LLM
 // messages, injecting systemPrompt only when the active context doesn't already
 // include a system message, then applies provider-safe conversation filtering.
-func LLMActiveMessages(messages []Message, activeStart int, systemPrompt string) []llm.Message {
+func LLMActiveMessages(messages []Message, activeStart int, systemPrompt string) []core.Message {
 	if activeStart < 0 || activeStart > len(messages) {
 		activeStart = 0
 	}
@@ -395,14 +396,14 @@ func LLMActiveMessages(messages []Message, activeStart int, systemPrompt string)
 		messages = messages[activeStart:]
 	}
 
-	out := make([]llm.Message, 0, len(retained)+len(messages)+1)
-	hasSystem := len(messages) > 0 && messages[0].Role == llm.RoleSystem
+	out := make([]core.Message, 0, len(retained)+len(messages)+1)
+	hasSystem := len(messages) > 0 && messages[0].Role == core.RoleSystem
 	messageStart := 0
 	if hasSystem {
 		out = append(out, messages[0].ToLLMMessage())
 		messageStart = 1
 	} else if strings.TrimSpace(systemPrompt) != "" {
-		out = append(out, llm.SystemText(systemPrompt))
+		out = append(out, core.SystemText(systemPrompt))
 	}
 	for i := range retained {
 		out = append(out, retained[i].ToLLMMessage())
@@ -410,20 +411,20 @@ func LLMActiveMessages(messages []Message, activeStart int, systemPrompt string)
 	for i := messageStart; i < len(messages); i++ {
 		out = append(out, messages[i].ToLLMMessage())
 	}
-	return llm.FilterConversationMessages(out)
+	return core.FilterConversationMessages(out)
 }
 
 func retainedDeveloperContextKey(message Message) string {
-	if message.Role != llm.RoleDeveloper {
+	if message.Role != core.RoleDeveloper {
 		return ""
 	}
 	for _, part := range message.Parts {
 		switch part.Type {
-		case llm.PartPathNote:
+		case core.PartPathNote:
 			if part.PathNote != nil {
 				return fmt.Sprintf("path-note\x00%s\x00%d", part.PathNote.SourceSessionID, part.PathNote.AnchorMessageID)
 			}
-		case llm.PartSkillActivation:
+		case core.PartSkillActivation:
 			if part.SkillActivation == nil {
 				continue
 			}

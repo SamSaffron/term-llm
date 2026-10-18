@@ -11,7 +11,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -35,7 +36,7 @@ func TestCmdRunnerPrepareCapsSubagentSpawnBudget(t *testing.T) {
 			runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
 			env, err := runner.prepare(context.Background(), runpkg.Request{
 				Platform: runpkg.PlatformConsole, IsSubagent: true, Depth: 1, RemainingDepth: &tc.budget,
-				AgentName: agentDir, ProviderInstance: llm.NewMockProvider("mock"), Cwd: t.TempDir(), DeferSession: true,
+				AgentName: agentDir, ProviderInstance: mockprovider.NewMockProvider("mock"), Cwd: t.TempDir(), DeferSession: true,
 			}, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -61,7 +62,7 @@ func TestCmdDeveloperChainStopsAtThirdLevel(t *testing.T) {
 	developer := &agents.Agent{Name: "developer", Tools: agents.ToolsConfig{Enabled: []string{tools.SpawnAgentToolName}}, Spawn: agents.SpawnConfig{MaxDepth: 1, AllowedAgents: []string{"developer"}}}
 	makeTool := func(depth, budget int) *tools.SpawnAgentTool {
 		t.Helper()
-		mgr, err := runner.setupAgentToolsWithBudget(cfg, llm.NewEngine(llm.NewMockProvider("mock"), nil), developer, depth, "developer-session", budget)
+		mgr, err := runner.setupAgentToolsWithBudget(cfg, engine.NewEngine(mockprovider.NewMockProvider("mock"), nil), developer, depth, "developer-session", budget)
 		if err != nil {
 			t.Fatal(err)
 		}

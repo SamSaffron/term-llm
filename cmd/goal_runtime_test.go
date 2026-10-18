@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -19,20 +21,20 @@ func TestRunnerActiveGoalAutoContinuesUntilUpdateGoalComplete(t *testing.T) {
 	goal := session.NewGoal("finish the integration", 0, time.Now())
 	createGoalTestSession(t, store, "sess-goal-loop", goal)
 
-	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
-	provider.AddTurn(llm.MockTurn{Text: "working", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}})
+	provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+	provider.AddTurn(mockprovider.MockTurn{Text: "working", Usage: core.Usage{InputTokens: 10, OutputTokens: 5}})
 	provider.AddToolCall("goal-1", tools.UpdateGoalToolName, map[string]any{
 		"status":   "complete",
 		"reason":   "all requirements satisfied",
 		"evidence": "tests passed",
 	})
-	provider.AddTurn(llm.MockTurn{Text: "complete", Usage: llm.Usage{InputTokens: 7, OutputTokens: 3}})
+	provider.AddTurn(mockprovider.MockTurn{Text: "complete", Usage: core.Usage{InputTokens: 7, OutputTokens: 3}})
 
 	runner := newCmdRunner(goalTestConfig(), cmdRunnerOptions{Store: store}).(*cmdRunner)
 	_, err := runner.Run(ctx, runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
 		SessionID:        "sess-goal-loop",
-		Messages:         []llm.Message{llm.UserText("please continue")},
+		Messages:         []core.Message{core.UserText("please continue")},
 		ProviderInstance: provider,
 		Persist:          true,
 	}, eventSinkFunc(nil))
@@ -56,7 +58,7 @@ func TestRunnerActiveGoalAutoContinuesUntilUpdateGoalComplete(t *testing.T) {
 	if len(provider.Requests) < 2 {
 		t.Fatalf("provider requests = %d, want at least 2", len(provider.Requests))
 	}
-	firstPrompt := llm.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
+	firstPrompt := core.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
 	if !strings.Contains(firstPrompt, "Completion audit") || !strings.Contains(firstPrompt, "finish the integration") {
 		t.Fatalf("first goal prompt missing continuation steering: %q", firstPrompt)
 	}
@@ -68,26 +70,26 @@ func TestRunnerActiveGoalContinuesAfterMaxTurns(t *testing.T) {
 	goal := session.NewGoal("finish across turn boundaries", 0, time.Now())
 	createGoalTestSession(t, store, "sess-goal-max-turns", goal)
 
-	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+	provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 	provider.AddToolCall("goal-read-1", tools.GetGoalToolName, map[string]any{})
 	provider.AddToolCall("goal-read-2", tools.GetGoalToolName, map[string]any{})
 	provider.AddToolCall("goal-complete", tools.UpdateGoalToolName, map[string]any{
 		"status": "complete",
 		"reason": "completed after yielding to a new pass",
 	})
-	provider.AddTurn(llm.MockTurn{Text: "done", Usage: llm.Usage{InputTokens: 2, OutputTokens: 1}})
+	provider.AddTurn(mockprovider.MockTurn{Text: "done", Usage: core.Usage{InputTokens: 2, OutputTokens: 1}})
 
-	var events []llm.Event
+	var events []core.Event
 	runner := newCmdRunner(goalTestConfig(), cmdRunnerOptions{Store: store}).(*cmdRunner)
 	_, err := runner.Run(ctx, runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
 		SessionID:        "sess-goal-max-turns",
-		Messages:         []llm.Message{llm.UserText("go")},
+		Messages:         []core.Message{core.UserText("go")},
 		ProviderInstance: provider,
 		Persist:          true,
 		MaxTurns:         2,
 		MaxTurnsSet:      true,
-	}, eventSinkFunc(func(ev llm.Event) {
+	}, eventSinkFunc(func(ev core.Event) {
 		events = append(events, ev)
 	}))
 	if err != nil {
@@ -105,10 +107,10 @@ func TestRunnerActiveGoalContinuesAfterMaxTurns(t *testing.T) {
 		t.Fatalf("provider turns = %d, want 4 across two passes", provider.CurrentTurn())
 	}
 	for _, ev := range events {
-		if ev.Type == llm.EventError && llm.IsMaxTurnsExceeded(ev.Err) {
+		if ev.Type == core.EventError && engine.IsMaxTurnsExceeded(ev.Err) {
 			t.Fatalf("max-turn error was exposed to goal caller: %v", ev.Err)
 		}
-		if ev.Type == llm.EventPhase && ev.Text == llm.MaxTurnsExceededWarning(2) {
+		if ev.Type == core.EventPhase && ev.Text == engine.MaxTurnsExceededWarning(2) {
 			t.Fatalf("max-turn warning was exposed to goal caller")
 		}
 	}
@@ -120,15 +122,15 @@ func TestRunnerActiveGoalBudgetExhaustionPausesAfterWrapup(t *testing.T) {
 	goal := session.NewGoal("use a tiny budget", 10, time.Now())
 	createGoalTestSession(t, store, "sess-goal-budget", goal)
 
-	provider := llm.NewMockProvider("mock")
-	provider.AddTurn(llm.MockTurn{Text: "spent", Usage: llm.Usage{InputTokens: 8, OutputTokens: 5}})
-	provider.AddTurn(llm.MockTurn{Text: "wrap up", Usage: llm.Usage{InputTokens: 1, OutputTokens: 1}})
+	provider := mockprovider.NewMockProvider("mock")
+	provider.AddTurn(mockprovider.MockTurn{Text: "spent", Usage: core.Usage{InputTokens: 8, OutputTokens: 5}})
+	provider.AddTurn(mockprovider.MockTurn{Text: "wrap up", Usage: core.Usage{InputTokens: 1, OutputTokens: 1}})
 
 	runner := newCmdRunner(goalTestConfig(), cmdRunnerOptions{Store: store}).(*cmdRunner)
 	_, err := runner.Run(ctx, runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
 		SessionID:        "sess-goal-budget",
-		Messages:         []llm.Message{llm.UserText("start")},
+		Messages:         []core.Message{core.UserText("start")},
 		ProviderInstance: provider,
 		Persist:          true,
 	}, eventSinkFunc(nil))
@@ -146,7 +148,7 @@ func TestRunnerActiveGoalBudgetExhaustionPausesAfterWrapup(t *testing.T) {
 		t.Fatalf("provider turns = %d, want budget wrap-up pass only", provider.CurrentTurn())
 	}
 	lastReq := provider.Requests[len(provider.Requests)-1]
-	lastPrompt := llm.MessageText(lastReq.Messages[len(lastReq.Messages)-1])
+	lastPrompt := core.MessageText(lastReq.Messages[len(lastReq.Messages)-1])
 	if !strings.Contains(lastPrompt, "reached its token budget") {
 		t.Fatalf("budget prompt missing from final request: %q", lastPrompt)
 	}
@@ -170,7 +172,7 @@ func TestRunnerActiveGoalCancelPausesGoal(t *testing.T) {
 		_, err := runner.Run(ctx, runpkg.Request{
 			Platform:         runpkg.PlatformConsole,
 			SessionID:        "sess-goal-cancel",
-			Messages:         []llm.Message{llm.UserText("go")},
+			Messages:         []core.Message{core.UserText("go")},
 			ProviderInstance: provider,
 			Persist:          true,
 		}, eventSinkFunc(nil))
@@ -203,11 +205,11 @@ func TestRunnerActiveGoalHonorsExternalPauseBetweenPasses(t *testing.T) {
 	goal := session.NewGoal("pause externally", 0, time.Now())
 	createGoalTestSession(t, store, "sess-goal-external-pause", goal)
 
-	provider := llm.NewMockProvider("mock")
-	provider.AddTurn(llm.MockTurn{Text: "working", Usage: llm.Usage{InputTokens: 3, OutputTokens: 2}})
+	provider := mockprovider.NewMockProvider("mock")
+	provider.AddTurn(mockprovider.MockTurn{Text: "working", Usage: core.Usage{InputTokens: 3, OutputTokens: 2}})
 	paused := false
-	sink := eventSinkFunc(func(ev llm.Event) {
-		if paused || ev.Type != llm.EventUsage {
+	sink := eventSinkFunc(func(ev core.Event) {
+		if paused || ev.Type != core.EventUsage {
 			return
 		}
 		paused = true
@@ -229,7 +231,7 @@ func TestRunnerActiveGoalHonorsExternalPauseBetweenPasses(t *testing.T) {
 	_, err := runner.Run(ctx, runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
 		SessionID:        "sess-goal-external-pause",
-		Messages:         []llm.Message{llm.UserText("go")},
+		Messages:         []core.Message{core.UserText("go")},
 		ProviderInstance: provider,
 		Persist:          true,
 	}, sink)
@@ -257,11 +259,11 @@ func TestRunnerActiveGoalHonorsExternalClearBetweenPasses(t *testing.T) {
 	goal := session.NewGoal("clear externally", 0, time.Now())
 	createGoalTestSession(t, store, "sess-goal-external-clear", goal)
 
-	provider := llm.NewMockProvider("mock")
-	provider.AddTurn(llm.MockTurn{Text: "working", Usage: llm.Usage{InputTokens: 3, OutputTokens: 2}})
+	provider := mockprovider.NewMockProvider("mock")
+	provider.AddTurn(mockprovider.MockTurn{Text: "working", Usage: core.Usage{InputTokens: 3, OutputTokens: 2}})
 	cleared := false
-	sink := eventSinkFunc(func(ev llm.Event) {
-		if cleared || ev.Type != llm.EventUsage {
+	sink := eventSinkFunc(func(ev core.Event) {
+		if cleared || ev.Type != core.EventUsage {
 			return
 		}
 		cleared = true
@@ -274,7 +276,7 @@ func TestRunnerActiveGoalHonorsExternalClearBetweenPasses(t *testing.T) {
 	_, err := runner.Run(ctx, runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
 		SessionID:        "sess-goal-external-clear",
-		Messages:         []llm.Message{llm.UserText("go")},
+		Messages:         []core.Message{core.UserText("go")},
 		ProviderInstance: provider,
 		Persist:          true,
 	}, sink)
@@ -299,16 +301,16 @@ func TestRunnerActiveGoalHonorsExternalEditBetweenPasses(t *testing.T) {
 	goal := session.NewGoal("old objective", 0, time.Now())
 	createGoalTestSession(t, store, "sess-goal-external-edit", goal)
 
-	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
-	provider.AddTurn(llm.MockTurn{Text: "old work", Usage: llm.Usage{InputTokens: 3, OutputTokens: 2}})
+	provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+	provider.AddTurn(mockprovider.MockTurn{Text: "old work", Usage: core.Usage{InputTokens: 3, OutputTokens: 2}})
 	provider.AddToolCall("goal-edit-complete", tools.UpdateGoalToolName, map[string]any{
 		"status": "complete",
 		"reason": "revised goal satisfied",
 	})
-	provider.AddTurn(llm.MockTurn{Text: "complete", Usage: llm.Usage{InputTokens: 1, OutputTokens: 1}})
+	provider.AddTurn(mockprovider.MockTurn{Text: "complete", Usage: core.Usage{InputTokens: 1, OutputTokens: 1}})
 	edited := false
-	sink := eventSinkFunc(func(ev llm.Event) {
-		if edited || ev.Type != llm.EventUsage {
+	sink := eventSinkFunc(func(ev core.Event) {
+		if edited || ev.Type != core.EventUsage {
 			return
 		}
 		edited = true
@@ -329,7 +331,7 @@ func TestRunnerActiveGoalHonorsExternalEditBetweenPasses(t *testing.T) {
 	_, err := runner.Run(ctx, runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
 		SessionID:        "sess-goal-external-edit",
-		Messages:         []llm.Message{llm.UserText("go")},
+		Messages:         []core.Message{core.UserText("go")},
 		ProviderInstance: provider,
 		Persist:          true,
 	}, sink)
@@ -346,7 +348,7 @@ func TestRunnerActiveGoalHonorsExternalEditBetweenPasses(t *testing.T) {
 	if len(provider.Requests) < 2 {
 		t.Fatalf("provider requests = %d, want edit continuation", len(provider.Requests))
 	}
-	secondPrompt := llm.MessageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
+	secondPrompt := core.MessageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
 	if !strings.Contains(secondPrompt, "objective was edited") || !strings.Contains(secondPrompt, "revised objective") {
 		t.Fatalf("second goal prompt = %q, want objective-updated prompt for revised objective", secondPrompt)
 	}
@@ -359,22 +361,22 @@ func TestRunnerSyntheticGoalCallbackOnlyWhenRuntimePersistenceDisabled(t *testin
 		store := newGoalTestStore(t)
 		goal := session.NewGoal("record synthetic prompt", 0, time.Now())
 		createGoalTestSession(t, store, "sess-goal-synthetic", goal)
-		provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+		provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 		provider.AddToolCall("goal-synthetic-complete", tools.UpdateGoalToolName, map[string]any{
 			"status": "complete",
 			"reason": "done",
 		})
-		provider.AddTurn(llm.MockTurn{Text: "done", Usage: llm.Usage{InputTokens: 1, OutputTokens: 1}})
+		provider.AddTurn(mockprovider.MockTurn{Text: "done", Usage: core.Usage{InputTokens: 1, OutputTokens: 1}})
 		calls := 0
 		runner := newCmdRunner(goalTestConfig(), cmdRunnerOptions{Store: store}).(*cmdRunner)
 		_, err := runner.Run(ctx, runpkg.Request{
 			Platform:                  runpkg.PlatformConsole,
 			SessionID:                 "sess-goal-synthetic",
-			Messages:                  []llm.Message{llm.UserText("go")},
+			Messages:                  []core.Message{core.UserText("go")},
 			ProviderInstance:          provider,
 			Persist:                   true,
 			DisableRuntimePersistence: disableRuntimePersistence,
-			OnSyntheticUserMessage: func(context.Context, llm.Message) error {
+			OnSyntheticUserMessage: func(context.Context, core.Message) error {
 				calls++
 				return nil
 			},
@@ -398,17 +400,17 @@ func TestRunnerPersistsGoalSteeringMarkerButOmitsItFromWebTranscript(t *testing.
 	store := newGoalTestStore(t)
 	goal := session.NewGoal("hide internal continuation", 0, time.Now())
 	createGoalTestSession(t, store, "sess-goal-hidden", goal)
-	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+	provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 	provider.AddToolCall("goal-hidden-complete", tools.UpdateGoalToolName, map[string]any{
 		"status": "complete",
 		"reason": "done",
 	})
-	provider.AddTurn(llm.MockTurn{Text: "done", Usage: llm.Usage{InputTokens: 1, OutputTokens: 1}})
+	provider.AddTurn(mockprovider.MockTurn{Text: "done", Usage: core.Usage{InputTokens: 1, OutputTokens: 1}})
 	runner := newCmdRunner(goalTestConfig(), cmdRunnerOptions{Store: store}).(*cmdRunner)
 	if _, err := runner.Run(ctx, runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
 		SessionID:        "sess-goal-hidden",
-		Messages:         []llm.Message{llm.UserText("go")},
+		Messages:         []core.Message{core.UserText("go")},
 		ProviderInstance: provider,
 		Persist:          true,
 	}, eventSinkFunc(nil)); err != nil {
@@ -437,7 +439,7 @@ func TestRunnerPersistsGoalSteeringMarkerButOmitsItFromWebTranscript(t *testing.
 		}
 	}
 	lastProviderMessage := provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1]
-	if llm.HasGoalSteeringPart(lastProviderMessage.Parts) || !strings.Contains(llm.MessageText(lastProviderMessage), "hide internal continuation") {
+	if core.HasGoalSteeringPart(lastProviderMessage.Parts) || !strings.Contains(core.MessageText(lastProviderMessage), "hide internal continuation") {
 		t.Fatalf("provider goal message = %#v", lastProviderMessage)
 	}
 }

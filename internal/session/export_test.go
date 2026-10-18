@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestExportToMarkdown_BasicSession(t *testing.T) {
@@ -26,13 +26,13 @@ func TestExportToMarkdown_BasicSession(t *testing.T) {
 
 	messages := []Message{
 		{
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello, how are you?"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello, how are you?"}},
 			TextContent: "Hello, how are you?",
 		},
 		{
-			Role:        llm.RoleAssistant,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "I'm doing well, thank you!"}},
+			Role:        core.RoleAssistant,
+			Parts:       []core.Part{{Type: core.PartText, Text: "I'm doing well, thank you!"}},
 			TextContent: "I'm doing well, thank you!",
 		},
 	}
@@ -80,13 +80,13 @@ func TestExportToMarkdown_SystemMessage(t *testing.T) {
 
 	messages := []Message{
 		{
-			Role:        llm.RoleSystem,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "You are a helpful assistant."}},
+			Role:        core.RoleSystem,
+			Parts:       []core.Part{{Type: core.PartText, Text: "You are a helpful assistant."}},
 			TextContent: "You are a helpful assistant.",
 		},
 		{
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hi"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hi"}},
 			TextContent: "Hi",
 		},
 	}
@@ -120,12 +120,12 @@ func TestExportToMarkdown_ToolCalls(t *testing.T) {
 
 	messages := []Message{
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
-				{Type: llm.PartText, Text: "Let me check the files."},
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
+				{Type: core.PartText, Text: "Let me check the files."},
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        "call_123",
 						Name:      "shell",
 						Arguments: args,
@@ -135,11 +135,11 @@ func TestExportToMarkdown_ToolCalls(t *testing.T) {
 			TextContent: "Let me check the files.",
 		},
 		{
-			Role: llm.RoleTool,
-			Parts: []llm.Part{
+			Role: core.RoleTool,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolResult,
-					ToolResult: &llm.ToolResult{
+					Type: core.PartToolResult,
+					ToolResult: &core.ToolResult{
 						ID:      "call_123",
 						Name:    "shell",
 						Content: "file1.txt\nfile2.txt",
@@ -279,12 +279,12 @@ func TestEscapeTableCell(t *testing.T) {
 func TestExportToMarkdownReasoningOptions(t *testing.T) {
 	sess := &Session{ID: "sess-reasoning", Provider: "mock", Model: "model", CreatedAt: time.Now()}
 	messages := []Message{{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:                      llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:                      core.PartText,
 			Text:                      "Final answer.",
 			ReasoningContent:          "**Inspecting repo**\n\nChecking files.",
-			ReasoningKind:             llm.ReasoningKindSummary,
+			ReasoningKind:             core.ReasoningKindSummary,
 			ReasoningSummaryTitle:     "Inspecting repo",
 			ReasoningEncryptedContent: "encrypted-secret",
 		}},
@@ -311,9 +311,9 @@ func TestExportToMarkdownReasoningOptions(t *testing.T) {
 func TestExportToMarkdownLegacyEmptyKindReasoningExportsAsSummary(t *testing.T) {
 	sess := &Session{ID: "sess-legacy-reasoning", Provider: "mock", Model: "model", CreatedAt: time.Now()}
 	messages := []Message{{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Final answer.",
 			ReasoningContent: "**Legacy plan**\n\nOlder saved summary.",
 		}},
@@ -329,12 +329,12 @@ func TestExportToMarkdownLegacyEmptyKindReasoningExportsAsSummary(t *testing.T) 
 func TestExportToMarkdownRawReasoningRequiresExplicitOption(t *testing.T) {
 	sess := &Session{ID: "sess-raw", Provider: "mock", Model: "model", CreatedAt: time.Now()}
 	messages := []Message{{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Final answer.",
 			ReasoningContent: "raw chain",
-			ReasoningKind:    llm.ReasoningKindRaw,
+			ReasoningKind:    core.ReasoningKindRaw,
 		}},
 		TextContent: "Final answer.",
 	}}
@@ -353,10 +353,10 @@ func TestExportToMarkdownRawReasoningRequiresExplicitOption(t *testing.T) {
 func TestExportToMarkdownNeverExportsProviderReplay(t *testing.T) {
 	sess := &Session{ID: "sess-replay", Provider: "openai", Model: "gpt-5.6-sol", CreatedAt: time.Now()}
 	messages := []Message{{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: "Visible answer."},
-			{Type: llm.PartProviderReplay, ProviderReplay: &llm.ProviderReplayItem{Raw: json.RawMessage(`{"type":"reasoning","encrypted_content":"opaque-secret"}`)}},
+		Role: core.RoleAssistant,
+		Parts: []core.Part{
+			{Type: core.PartText, Text: "Visible answer."},
+			{Type: core.PartProviderReplay, ProviderReplay: &core.ProviderReplayItem{Raw: json.RawMessage(`{"type":"reasoning","encrypted_content":"opaque-secret"}`)}},
 		},
 		TextContent: "Visible answer.",
 	}}

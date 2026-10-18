@@ -2,8 +2,9 @@ package tools
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/llm"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 type approvalScopeRunner struct {
@@ -31,13 +32,13 @@ func TestDetachedChildrenFromTwoParentsKeepSeparateApprovalScopes(t *testing.T) 
 	runner := &approvalScopeRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 2), release: make(chan struct{})}, parent: parent, scopes: make(chan *ApprovalManager, 2)}
 	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 2, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	tool.SetRunner(runner)
-	first := lifecycleResult(t, lifecycleCall(t, tool, llm.ContextWithSessionID(context.Background(), "parent-one"), `{"agent_name":"developer","prompt":"first","wait":0}`))
+	first := lifecycleResult(t, lifecycleCall(t, tool, core.ContextWithSessionID(context.Background(), "parent-one"), `{"agent_name":"developer","prompt":"first","wait":0}`))
 	firstScope := <-runner.scopes
 	<-runner.entered
 	if err := parent.ConfigureWorkspacePersistence(context.Background(), nil, "parent-two"); err != nil {
 		t.Fatal(err)
 	}
-	second := lifecycleResult(t, lifecycleCall(t, tool, llm.ContextWithSessionID(context.Background(), "parent-two"), `{"agent_name":"developer","prompt":"second","wait":0}`))
+	second := lifecycleResult(t, lifecycleCall(t, tool, core.ContextWithSessionID(context.Background(), "parent-two"), `{"agent_name":"developer","prompt":"second","wait":0}`))
 	secondScope := <-runner.scopes
 	<-runner.entered
 	if firstScope == nil || secondScope == nil || firstScope.workspaceSessionID != "parent-one" || secondScope.workspaceSessionID != "parent-two" {

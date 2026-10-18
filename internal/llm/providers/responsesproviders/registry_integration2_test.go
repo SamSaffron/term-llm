@@ -2,24 +2,23 @@ package responsesproviders_test
 
 import (
 	"context"
-	. "github.com/samsaffron/term-llm/internal/llm"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
-
 	"encoding/json"
-
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
-
 	"net/http"
 	"net/http/httptest"
-
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestChatGPTContextPolicy(t *testing.T) {
-	defer RegisterChatGPTContextConfig(nil)
+	defer rp.RegisterChatGPTContextConfig(nil)
 	for _, tc := range []struct {
 		name                                                string
 		model                                               string
@@ -37,8 +36,8 @@ func TestChatGPTContextPolicy(t *testing.T) {
 		{name: "legacy 5.4 budget", model: "gpt-5.4", backend: 272000, maximum: 1000000, want: 922000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			RegisterChatGPTContextConfig(map[string]config.ProviderConfig{"work": {Type: config.ProviderTypeChatGPT, ContextWindow: tc.provider, ModelConfigs: []config.ProviderModelConfig{{ID: tc.model, ContextWindow: tc.perModel, MaxOutputTokens: tc.reserve}}}})
-			facts := ModelInfo{ID: tc.model, BackendContext: tc.backend, MaxContext: tc.maximum}
+			rp.RegisterChatGPTContextConfig(map[string]config.ProviderConfig{"work": {Type: config.ProviderTypeChatGPT, ContextWindow: tc.provider, ModelConfigs: []config.ProviderModelConfig{{ID: tc.model, ContextWindow: tc.perModel, MaxOutputTokens: tc.reserve}}}})
+			facts := core.ModelInfo{ID: tc.model, BackendContext: tc.backend, MaxContext: tc.maximum}
 			got := rp.ResolveChatGPTContextForTest("work", facts)
 			if got.InputLimit != tc.want {
 				t.Fatalf("got %d want %d", got.InputLimit, tc.want)
@@ -48,8 +47,8 @@ func TestChatGPTContextPolicy(t *testing.T) {
 			}
 		})
 	}
-	RegisterChatGPTContextConfig(nil)
-	if got := rp.ResolveChatGPTContextForTest("work", ModelInfo{ID: "gpt-6-astra"}).InputLimit; got != 372000 {
+	rp.RegisterChatGPTContextConfig(nil)
+	if got := rp.ResolveChatGPTContextForTest("work", core.ModelInfo{ID: "gpt-6-astra"}).InputLimit; got != 372000 {
 		t.Fatalf("reload did not clear overrides: %d", got)
 	}
 }
@@ -57,14 +56,14 @@ func TestChatGPTContextPolicy(t *testing.T) {
 func TestChatGPTContextCacheStoresFactsAcrossConfigReload(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	defer RegisterChatGPTContextConfig(nil)
+	defer rp.RegisterChatGPTContextConfig(nil)
 	facts := (rp.ChatGPTModelInfoForTest{Slug: "gpt-6-astra", ContextWindow: 272000, MaxContextWindow: 872000}).ToModelInfoForTest()
-	if err := rp.SaveChatGPTModelsCacheForTest(rp.ChatGPTModelsCacheForTest{ClientVersion: rp.ChatGPTModelsClientVersionForTest, Models: []ModelInfo{facts}}); err != nil {
+	if err := rp.SaveChatGPTModelsCacheForTest(rp.ChatGPTModelsCacheForTest{ClientVersion: rp.ChatGPTModelsClientVersionForTest, Models: []core.ModelInfo{facts}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, target := range []int{600000, 700000} {
-		RegisterChatGPTContextConfig(map[string]config.ProviderConfig{"chatgpt": {ContextWindow: target}})
-		models, _, err := CachedChatGPTModels()
+		rp.RegisterChatGPTContextConfig(map[string]config.ProviderConfig{"chatgpt": {ContextWindow: target}})
+		models, _, err := rp.CachedChatGPTModels()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +108,7 @@ func TestChatGPTModelInfoPrefersExplicitMetadata(t *testing.T) {
 func TestNewChatGPTProviderWithCredsDefaultsToGPT56SolMedium(t *testing.T) {
 	t.Parallel()
 
-	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+	provider := rp.NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
 		AccessToken: "test-token",
 		AccountID:   "test-account",
 		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
@@ -186,15 +185,15 @@ func TestGrokProviderExactEndpointHeadersAndResponsesFeatures(t *testing.T) {
 			`data: [DONE]`,
 		), nil
 	})}
-	provider := NewGrokProviderWithCreds(&credentials.GrokCredentials{AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "acct_1"}, "grok-4.6-high")
+	provider := rp.NewGrokProviderWithCreds(&credentials.GrokCredentials{AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "acct_1"}, "grok-4.6-high")
 	rp.ResetGrokResponsesClientForTest(provider, rp.GrokCredsForTest(provider), "must-not-send")
-	stream, err := provider.Stream(context.Background(), Request{
+	stream, err := provider.Stream(context.Background(), core.Request{
 		SessionID: "session_1",
-		Messages: []Message{{Role: RoleUser, Parts: []Part{
-			{Type: PartText, Text: "look"},
-			{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+		Messages: []core.Message{{Role: core.RoleUser, Parts: []core.Part{
+			{Type: core.PartText, Text: "look"},
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
 		}}},
-		Tools:           []ToolSpec{{Name: "shell", Description: "run", Schema: map[string]any{"type": "object"}}},
+		Tools:           []core.ToolSpec{{Name: "shell", Description: "run", Schema: map[string]any{"type": "object"}}},
 		MaxOutputTokens: 123,
 		Temperature:     0.7,
 		TemperatureSet:  true,
@@ -205,21 +204,21 @@ func TestGrokProviderExactEndpointHeadersAndResponsesFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stream.Close()
-	seen := map[EventType]bool{}
+	seen := map[core.EventType]bool{}
 	for {
 		event, err := stream.Recv()
 		if err != nil {
 			t.Fatal(err)
 		}
 		seen[event.Type] = true
-		if event.Type == EventError {
+		if event.Type == core.EventError {
 			t.Fatal(event.Err)
 		}
-		if event.Type == EventDone {
+		if event.Type == core.EventDone {
 			break
 		}
 	}
-	for _, typ := range []EventType{EventReasoningDelta, EventTextDelta, EventToolCall, EventUsage, EventProviderReplay, EventDone} {
+	for _, typ := range []core.EventType{core.EventReasoningDelta, core.EventTextDelta, core.EventToolCall, core.EventUsage, core.EventProviderReplay, core.EventDone} {
 		if !seen[typ] {
 			t.Errorf("missing event type %s", typ)
 		}
@@ -297,7 +296,7 @@ func TestOpenAIProviderStreamReasoningEffortPrecedence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got struct {
-				Reasoning *ResponsesReasoning `json:"reasoning,omitempty"`
+				Reasoning *responses.ResponsesReasoning `json:"reasoning,omitempty"`
 			}
 
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -309,19 +308,19 @@ func TestOpenAIProviderStreamReasoningEffortPrecedence(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			actualModel, effort := ParseModelEffort(tt.providerModel)
-			provider := rp.NewOpenAIProviderRawForTest("test-key", actualModel, effort, &ResponsesClient{
+			actualModel, effort := opencompat.ParseModelEffort(tt.providerModel)
+			provider := rp.NewOpenAIProviderRawForTest("test-key", actualModel, effort, &responses.ResponsesClient{
 				BaseURL:       ts.URL,
 				GetAuthHeader: func() string { return "Bearer test-key" },
 				HTTPClient:    ts.Client(),
-			}, ResponsesOptions{})
+			}, core.ResponsesOptions{})
 			if tt.providerEffort != "" {
 				rp.SetOpenAIEffortForTest(provider, tt.providerEffort)
 			}
 
-			stream, err := provider.Stream(context.Background(), Request{
+			stream, err := provider.Stream(context.Background(), core.Request{
 				Model:           tt.requestModel,
-				Messages:        []Message{UserText("hello")},
+				Messages:        []core.Message{core.UserText("hello")},
 				ReasoningEffort: tt.requestEffort,
 			})
 			if err != nil {
@@ -334,7 +333,7 @@ func TestOpenAIProviderStreamReasoningEffortPrecedence(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Recv() error = %v", err)
 				}
-				if ev.Type == EventDone {
+				if ev.Type == core.EventDone {
 					break
 				}
 			}
@@ -350,7 +349,7 @@ func TestOpenAIProviderStreamReasoningEffortPrecedence(t *testing.T) {
 }
 
 func TestOpenAIProviderStreamMapsGPT56AdvancedResponsesControls(t *testing.T) {
-	var got ResponsesRequest
+	var got responses.ResponsesRequest
 	var beta string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		beta = r.Header.Get("OpenAI-Beta")
@@ -363,37 +362,37 @@ func TestOpenAIProviderStreamMapsGPT56AdvancedResponsesControls(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	provider := rp.NewOpenAIProviderRawForTest("test-key", "gpt-5.6-sol", "", &ResponsesClient{
+	provider := rp.NewOpenAIProviderRawForTest("test-key", "gpt-5.6-sol", "", &responses.ResponsesClient{
 		BaseURL:       ts.URL,
 		GetAuthHeader: func() string { return "Bearer test-key" },
 		HTTPClient:    ts.Client(),
-	}, ResponsesOptions{
+	}, core.ResponsesOptions{
 		ReasoningMode:    "standard",
 		ReasoningContext: "all_turns",
-		MultiAgent: MultiAgentOptions{
+		MultiAgent: core.MultiAgentOptions{
 			Enabled:                true,
 			EnabledSet:             true,
 			MaxConcurrentSubagents: 6,
 		},
-		ProgrammaticToolCalling: ProgrammaticToolCallingOptions{
+		ProgrammaticToolCalling: core.ProgrammaticToolCallingOptions{
 			Enabled:    true,
 			EnabledSet: true,
 			Tools:      []string{"shell"},
 		},
-		PromptCache: PromptCacheOptions{Mode: "implicit", TTL: "30m"},
+		PromptCache: core.PromptCacheOptions{Mode: "implicit", TTL: "30m"},
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{
-		Messages: []Message{UserText("hello")},
-		Tools: []ToolSpec{{
+	stream, err := provider.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("hello")},
+		Tools: []core.ToolSpec{{
 			Name:   "shell",
 			Schema: map[string]any{"type": "object", "properties": map[string]any{}},
 		}},
-		Responses: &ResponsesOptions{
+		Responses: &core.ResponsesOptions{
 			ReasoningMode:    "pro",
 			ReasoningContext: "current_turn",
-			MultiAgent:       MultiAgentOptions{MaxConcurrentSubagents: 2},
-			PromptCache:      PromptCacheOptions{Mode: "explicit"},
+			MultiAgent:       core.MultiAgentOptions{MaxConcurrentSubagents: 2},
+			PromptCache:      core.PromptCacheOptions{Mode: "explicit"},
 		},
 	})
 	if err != nil {

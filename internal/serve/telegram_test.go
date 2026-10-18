@@ -22,6 +22,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/testutil"
@@ -66,7 +69,7 @@ type failingTelegramTurnStore struct {
 	session.Store
 
 	mu           sync.Mutex
-	failRole     llm.Role
+	failRole     core.Role
 	failAfter    int
 	matchedRole  int
 	failed       bool
@@ -254,9 +257,9 @@ func (p *blockingTextProvider) Name() string { return "blocking-text" }
 
 func (p *blockingTextProvider) Credential() string { return "mock" }
 
-func (p *blockingTextProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *blockingTextProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
 
-func (p *blockingTextProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *blockingTextProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return &blockingTextStream{
 		ctx:            ctx,
 		text:           p.text,
@@ -275,21 +278,21 @@ type blockingTextStream struct {
 	done           bool
 }
 
-func (s *blockingTextStream) Recv() (llm.Event, error) {
+func (s *blockingTextStream) Recv() (core.Event, error) {
 	if !s.chunkSent {
 		s.chunkSent = true
 		close(s.firstChunkSent)
-		return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+		return core.Event{Type: core.EventTextDelta, Text: s.text}, nil
 	}
 	if s.done {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	s.done = true
 	select {
 	case <-s.ctx.Done():
-		return llm.Event{}, s.ctx.Err()
+		return core.Event{}, s.ctx.Err()
 	case <-s.closed:
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 }
 
@@ -312,9 +315,9 @@ func (p *uncooperativeCloseProvider) Name() string { return "uncooperative-close
 
 func (p *uncooperativeCloseProvider) Credential() string { return "mock" }
 
-func (p *uncooperativeCloseProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *uncooperativeCloseProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
 
-func (p *uncooperativeCloseProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *uncooperativeCloseProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	if p.runs.Add(1) == 1 {
 		return &uncooperativeCloseStream{
 			ctx:       ctx,
@@ -338,18 +341,18 @@ type uncooperativeCloseStream struct {
 	sent      bool
 }
 
-func (s *uncooperativeCloseStream) Recv() (llm.Event, error) {
+func (s *uncooperativeCloseStream) Recv() (core.Event, error) {
 	if !s.sent {
 		s.sent = true
 		s.startOnce.Do(func() { close(s.started) })
-		return llm.Event{Type: llm.EventTextDelta, Text: "partial answer"}, nil
+		return core.Event{Type: core.EventTextDelta, Text: "partial answer"}, nil
 	}
 	if s.blockRecv {
 		<-s.release
 		s.stopOnce.Do(func() { close(s.stopped) })
 	}
 	<-s.ctx.Done()
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 
 func (s *uncooperativeCloseStream) Close() error {
@@ -370,13 +373,13 @@ type uncooperativeSequenceRunner struct {
 
 func (r *uncooperativeSequenceRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
 	if r.runs.Add(1) == 1 {
-		sink.Event(llm.Event{Type: llm.EventTextDelta, Text: "partial answer"})
+		sink.Event(core.Event{Type: core.EventTextDelta, Text: "partial answer"})
 		close(r.started)
 		<-r.release
 		close(r.stopped)
 		return runpkg.Result{}, nil
 	}
-	sink.Event(llm.Event{Type: llm.EventTextDelta, Text: "replacement answer"})
+	sink.Event(core.Event{Type: core.EventTextDelta, Text: "replacement answer"})
 	return runpkg.Result{}, nil
 }
 
@@ -400,9 +403,9 @@ func (p *errorAfterTextProvider) Name() string { return "error-after-text" }
 
 func (p *errorAfterTextProvider) Credential() string { return "mock" }
 
-func (p *errorAfterTextProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *errorAfterTextProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
 
-func (p *errorAfterTextProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *errorAfterTextProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return &errorAfterTextStream{
 		ctx:            ctx,
 		text:           p.text,
@@ -421,17 +424,17 @@ type errorAfterTextStream struct {
 	chunkSent      bool
 }
 
-func (s *errorAfterTextStream) Recv() (llm.Event, error) {
+func (s *errorAfterTextStream) Recv() (core.Event, error) {
 	if !s.chunkSent {
 		s.chunkSent = true
 		close(s.firstChunkSent)
-		return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+		return core.Event{Type: core.EventTextDelta, Text: s.text}, nil
 	}
 	select {
 	case <-s.ctx.Done():
-		return llm.Event{}, s.ctx.Err()
+		return core.Event{}, s.ctx.Err()
 	case <-s.allowError:
-		return llm.Event{}, s.err
+		return core.Event{}, s.err
 	}
 }
 
@@ -485,10 +488,10 @@ func TestSendStreamDone_OnlyFirstCompletionSends(t *testing.T) {
 
 func TestTelegramInterruptClassificationPolicy(t *testing.T) {
 	t.Run("explicit commands bypass fast classifier", func(t *testing.T) {
-		fast := llm.NewMockProvider("fast").AddTextResponse("steer")
-		mgr := &telegramSessionMgr{fastProviderFactory: func() llm.Provider { return fast }}
+		fast := mockprovider.NewMockProvider("fast").AddTextResponse("steer")
+		mgr := &telegramSessionMgr{fastProviderFactory: func() core.Provider { return fast }}
 		for _, command := range []string{"/stop", "/cancel"} {
-			if got := mgr.classifyInterrupt(context.Background(), command, llm.InterruptActivity{}); got != llm.InterruptCancel {
+			if got := mgr.classifyInterrupt(context.Background(), command, engine.InterruptActivity{}); got != engine.InterruptCancel {
 				t.Fatalf("classifyInterrupt(%q) = %v, want cancel", command, got)
 			}
 		}
@@ -498,9 +501,9 @@ func TestTelegramInterruptClassificationPolicy(t *testing.T) {
 	})
 
 	t.Run("natural prose uses fast classifier", func(t *testing.T) {
-		fast := llm.NewMockProvider("fast").AddTextResponse("cancel")
-		mgr := &telegramSessionMgr{fastProviderFactory: func() llm.Provider { return fast }}
-		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", llm.InterruptActivity{}); got != llm.InterruptCancel {
+		fast := mockprovider.NewMockProvider("fast").AddTextResponse("cancel")
+		mgr := &telegramSessionMgr{fastProviderFactory: func() core.Provider { return fast }}
+		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", engine.InterruptActivity{}); got != engine.InterruptCancel {
 			t.Fatalf("classifyInterrupt(natural prose) = %v, want classifier cancel", got)
 		}
 		if got := fast.CurrentTurn(); got != 1 {
@@ -510,7 +513,7 @@ func TestTelegramInterruptClassificationPolicy(t *testing.T) {
 
 	t.Run("natural prose defaults to steering without fast classifier", func(t *testing.T) {
 		mgr := &telegramSessionMgr{}
-		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", llm.InterruptActivity{}); got != llm.InterruptSteer {
+		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", engine.InterruptActivity{}); got != engine.InterruptSteer {
 			t.Fatalf("classifyInterrupt(natural prose) = %v, want fallback steer", got)
 		}
 	})
@@ -849,7 +852,7 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -888,7 +891,7 @@ func TestStreamReply_TimeAndPlatformContextRemainStableAcrossTurns(t *testing.T)
 		t.Fatal(err)
 	}
 	bot := &fakeBotSender{}
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first question")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("first question")); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(telegramReloadChat{
@@ -908,7 +911,7 @@ func TestStreamReply_TimeAndPlatformContextRemainStableAcrossTurns(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("second question")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("second question")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -916,14 +919,14 @@ func TestStreamReply_TimeAndPlatformContextRemainStableAcrossTurns(t *testing.T)
 	if !ok {
 		t.Fatal("Telegram history has no conversation-start context")
 	}
-	startText := llm.MessageText(start)
+	startText := core.MessageText(start)
 	for i, req := range h.Provider.RecordedRequests() {
 		startCount, platformCount := 0, 0
 		for _, message := range req.Messages {
-			if message.Role != llm.RoleDeveloper {
+			if message.Role != core.RoleDeveloper {
 				continue
 			}
-			switch llm.MessageText(message) {
+			switch core.MessageText(message) {
 			case startText:
 				startCount++
 			case "telegram context":
@@ -952,13 +955,13 @@ func TestStreamReply_TimeAndPlatformContextRemainStableAcrossTurns(t *testing.T)
 func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
-		failRole        llm.Role
+		failRole        core.Role
 		carryoverSystem bool
 	}{
-		{name: "direct system write", failRole: llm.RoleSystem},
-		{name: "direct user write", failRole: llm.RoleUser},
-		{name: "queued callback write", failRole: llm.RoleAssistant},
-		{name: "system write with old carryover system", failRole: llm.RoleSystem, carryoverSystem: true},
+		{name: "direct system write", failRole: core.RoleSystem},
+		{name: "direct user write", failRole: core.RoleUser},
+		{name: "queued callback write", failRole: core.RoleAssistant},
+		{name: "system write with old carryover system", failRole: core.RoleSystem, carryoverSystem: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := testutil.NewEngineHarness()
@@ -996,11 +999,11 @@ func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
 				t.Fatalf("getOrCreate failed: %v", err)
 			}
 			if tc.carryoverSystem {
-				sess.history = []llm.Message{llm.SystemText("old carryover prompt")}
+				sess.history = []core.Message{core.SystemText("old carryover prompt")}
 				sess.carryoverMessageCount = len(sess.history)
 			}
 
-			if err := mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("run tool")); err != nil {
+			if err := mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, core.UserText("run tool")); err != nil {
 				t.Fatalf("streamReply returned error: %v", err)
 			}
 
@@ -1016,7 +1019,7 @@ func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetMessages failed: %v", err)
 			}
-			wantRoles := []llm.Role{llm.RoleSystem, llm.RoleUser, llm.RoleAssistant, llm.RoleTool, llm.RoleAssistant}
+			wantRoles := []core.Role{core.RoleSystem, core.RoleUser, core.RoleAssistant, core.RoleTool, core.RoleAssistant}
 			if len(msgs) != len(wantRoles) {
 				t.Fatalf("persisted message count = %d, want %d: %#v", len(msgs), len(wantRoles), msgs)
 			}
@@ -1035,12 +1038,12 @@ func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
 // cancelBeforeOutputProvider blocks the initial provider call before any response
 // callback, then delegates subsequent requests to the recording mock.
 type cancelBeforeOutputProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	started chan struct{}
 	calls   atomic.Int32
 }
 
-func (p *cancelBeforeOutputProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *cancelBeforeOutputProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	if p.calls.Add(1) == 1 {
 		close(p.started)
 		<-ctx.Done()
@@ -1060,8 +1063,8 @@ func TestStreamReply_PreservesUserBeforeAnyOutput(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer store.Close()
-				mock := llm.NewMockProvider("mock")
-				var provider llm.Provider = mock
+				mock := mockprovider.NewMockProvider("mock")
+				var provider core.Provider = mock
 				started := make(chan struct{})
 				if interrupted {
 					provider = &cancelBeforeOutputProvider{MockProvider: mock, started: started}
@@ -1072,7 +1075,7 @@ func TestStreamReply_PreservesUserBeforeAnyOutput(t *testing.T) {
 				mgr := &telegramSessionMgr{
 					sessions: make(map[int64]*telegramSession), store: store,
 					settings: Settings{MaxTurns: 5, Store: store, NewSession: func(context.Context) (*SessionRuntime, error) {
-						return &SessionRuntime{Engine: llm.NewEngine(provider, llm.NewToolRegistry()), ProviderName: "mock", ModelName: "test"}, nil
+						return &SessionRuntime{Engine: engine.NewEngine(provider, engine.NewToolRegistry()), ProviderName: "mock", ModelName: "test"}, nil
 					}},
 				}
 				sess, err := mgr.getOrCreate(ctx, 42)
@@ -1082,9 +1085,9 @@ func TestStreamReply_PreservesUserBeforeAnyOutput(t *testing.T) {
 				if sess.activeHistory != nil {
 					t.Fatal("expected nil active history")
 				}
-				user := llm.UserText("explain this request")
+				user := core.UserText("explain this request")
 				if image {
-					user = llm.UserImageMessage("image/jpeg", "data", "explain this request")
+					user = core.UserImageMessage("image/jpeg", "data", "explain this request")
 				}
 				wantText := collectUserText(normalizeUserMessageForHistory(user))
 				done := make(chan error, 1)
@@ -1122,7 +1125,7 @@ func TestStreamReply_PreservesUserBeforeAnyOutput(t *testing.T) {
 					}
 					count := 0
 					for _, msg := range msgs {
-						if msg.Role == llm.RoleUser && strings.Contains(msg.TextContent, "explain this request") {
+						if msg.Role == core.RoleUser && strings.Contains(msg.TextContent, "explain this request") {
 							count++
 						}
 					}
@@ -1131,14 +1134,14 @@ func TestStreamReply_PreservesUserBeforeAnyOutput(t *testing.T) {
 					}
 				}
 				assertPersisted(1)
-				if err := mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("try again")); err != nil {
+				if err := mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, core.UserText("try again")); err != nil {
 					t.Fatal(err)
 				}
 				requests := mock.RecordedRequests()
 				request := requests[len(requests)-1]
 				var users []string
 				for _, msg := range request.Messages {
-					if msg.Role == llm.RoleUser {
+					if msg.Role == core.RoleUser {
 						users = append(users, collectUserText(msg))
 					}
 				}
@@ -1164,7 +1167,7 @@ func TestStreamReply_ReconcilesDegradedCallbackQueueAfterStreamError(t *testing.
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleAssistant}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: core.RoleAssistant}
 	defer store.Close()
 	mgr := &telegramSessionMgr{
 		sessions:       make(map[int64]*telegramSession),
@@ -1183,7 +1186,7 @@ func TestStreamReply_ReconcilesDegradedCallbackQueueAfterStreamError(t *testing.
 		t.Fatalf("getOrCreate failed: %v", err)
 	}
 
-	if err := mgr.streamReply(context.Background(), &fakeBotSender{}, sess, 42, llm.UserText("run tool")); err == nil {
+	if err := mgr.streamReply(context.Background(), &fakeBotSender{}, sess, 42, core.UserText("run tool")); err == nil {
 		t.Fatal("streamReply returned nil, want provider error")
 	}
 	failed, replaceCalls := store.stats()
@@ -1194,7 +1197,7 @@ func TestStreamReply_ReconcilesDegradedCallbackQueueAfterStreamError(t *testing.
 	if err != nil {
 		t.Fatalf("GetMessages failed: %v", err)
 	}
-	wantRoles := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleTool}
+	wantRoles := []core.Role{core.RoleUser, core.RoleAssistant, core.RoleTool}
 	if len(msgs) != len(wantRoles) {
 		t.Fatalf("persisted message count = %d, want %d: %#v", len(msgs), len(wantRoles), msgs)
 	}
@@ -1214,7 +1217,7 @@ func TestStreamReply_LaterTurnReconcileRetainsPersistedSystemPrompt(t *testing.T
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleUser, failAfter: 1}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: core.RoleUser, failAfter: 1}
 	defer store.Close()
 	mgr := &telegramSessionMgr{
 		sessions:       make(map[int64]*telegramSession),
@@ -1234,10 +1237,10 @@ func TestStreamReply_LaterTurnReconcileRetainsPersistedSystemPrompt(t *testing.T
 		t.Fatalf("getOrCreate failed: %v", err)
 	}
 	bot := &fakeBotSender{}
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first question")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("first question")); err != nil {
 		t.Fatalf("first streamReply failed: %v", err)
 	}
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("second question")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("second question")); err != nil {
 		t.Fatalf("second streamReply failed: %v", err)
 	}
 
@@ -1251,14 +1254,14 @@ func TestStreamReply_LaterTurnReconcileRetainsPersistedSystemPrompt(t *testing.T
 	}
 	systemCount := 0
 	for _, msg := range msgs {
-		if msg.Role == llm.RoleSystem && msg.TextContent == "be helpful" {
+		if msg.Role == core.RoleSystem && msg.TextContent == "be helpful" {
 			systemCount++
 		}
 	}
 	if systemCount != 1 {
 		t.Fatalf("system prompt count = %d, want 1: %#v", systemCount, msgs)
 	}
-	wantRoles := []llm.Role{llm.RoleSystem, llm.RoleUser, llm.RoleAssistant, llm.RoleUser, llm.RoleAssistant}
+	wantRoles := []core.Role{core.RoleSystem, core.RoleUser, core.RoleAssistant, core.RoleUser, core.RoleAssistant}
 	if len(msgs) != len(wantRoles) {
 		t.Fatalf("persisted message count = %d, want %d: %#v", len(msgs), len(wantRoles), msgs)
 	}
@@ -1278,7 +1281,7 @@ func TestStreamReply_FailedReconcileRetriesSystemPromptNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleSystem, failReplace: true}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: core.RoleSystem, failReplace: true}
 	defer store.Close()
 	mgr := &telegramSessionMgr{
 		sessions:       make(map[int64]*telegramSession),
@@ -1298,7 +1301,7 @@ func TestStreamReply_FailedReconcileRetriesSystemPromptNextTurn(t *testing.T) {
 		t.Fatalf("getOrCreate failed: %v", err)
 	}
 	bot := &fakeBotSender{}
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first question")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("first question")); err != nil {
 		t.Fatalf("first streamReply failed: %v", err)
 	}
 	if sess.systemPromptPersisted {
@@ -1307,7 +1310,7 @@ func TestStreamReply_FailedReconcileRetriesSystemPromptNextTurn(t *testing.T) {
 	store.mu.Lock()
 	store.failReplace = false
 	store.mu.Unlock()
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("second question")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("second question")); err != nil {
 		t.Fatalf("second streamReply failed: %v", err)
 	}
 	if !sess.systemPromptPersisted {
@@ -1319,7 +1322,7 @@ func TestStreamReply_FailedReconcileRetriesSystemPromptNextTurn(t *testing.T) {
 	}
 	systemCount := 0
 	for _, msg := range msgs {
-		if msg.Role == llm.RoleSystem && msg.TextContent == "be helpful" {
+		if msg.Role == core.RoleSystem && msg.TextContent == "be helpful" {
 			systemCount++
 		}
 	}
@@ -1335,7 +1338,7 @@ func TestStreamReply_MarkdownRenderedAsHTML(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1363,7 +1366,7 @@ func TestStreamReply_ForwardsForceExternalSearch(t *testing.T) {
 	mgr.settings.ForceExternalSearch = true
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1388,7 +1391,7 @@ func TestStreamReply_ToolThenText(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("run tool")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("run tool")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1407,7 +1410,7 @@ func TestStreamReply_ToolOnlyNoText(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("run tool")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("run tool")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1424,7 +1427,7 @@ func TestStreamReply_NoResponse(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1444,7 +1447,7 @@ func TestStreamReply_ToolNameShownDuringExec(t *testing.T) {
 	toolRelease := make(chan struct{})
 
 	slowTool := &testutil.MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        "slow_tool",
 			Description: "slow tool for testing",
 			Schema: map[string]interface{}{
@@ -1452,13 +1455,13 @@ func TestStreamReply_ToolNameShownDuringExec(t *testing.T) {
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 			close(toolStarted) // signal: tool execution has begun
 			select {
 			case <-toolRelease:
 			case <-ctx.Done():
 			}
-			return llm.TextOutput("done"), nil
+			return core.TextOutput("done"), nil
 		},
 	}
 	h.Registry.Register(slowTool)
@@ -1473,7 +1476,7 @@ func TestStreamReply_ToolNameShownDuringExec(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("go slow"))
+		done <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("go slow"))
 	}()
 
 	// Wait for the tool to start executing (guarantees EventToolExecStart is in-flight).
@@ -1521,7 +1524,7 @@ func TestStreamReply_ExactChunkBoundary(t *testing.T) {
 	mgr.tickerInterval = 1 * time.Millisecond
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1554,7 +1557,7 @@ func TestStreamReply_UnicodeChunkBoundaryPreservesUTF8(t *testing.T) {
 	mgr.editInterval = time.Millisecond
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1588,7 +1591,7 @@ func TestStreamReply_FinalEditChunksFastLongResponse(t *testing.T) {
 		rejectNextEdit:  true,
 	}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -1624,7 +1627,7 @@ func TestStreamReply_FinalEditPermanentFailureReturnsError(t *testing.T) {
 		err:           &tgbotapi.Error{Code: http.StatusBadRequest, Message: "message cannot be edited"},
 	}
 
-	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+	err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi"))
 	if err == nil {
 		t.Fatal("streamReply returned nil after permanent final edit failure")
 	}
@@ -1640,7 +1643,7 @@ func TestStreamReply_PlaceholderSendFails(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{sendErr: errors.New("telegram: forbidden")}
 
-	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+	err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi"))
 	if err == nil {
 		t.Fatal("expected streamReply to return error when placeholder Send fails")
 	}
@@ -1650,27 +1653,27 @@ func TestStreamReply_PlaceholderSendFails(t *testing.T) {
 }
 
 func TestTelegramAssistantTextCapturedIgnoresToolOnlyAssistant(t *testing.T) {
-	messages := []llm.Message{
+	messages := []core.Message{
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:   "call_1",
 					Name: "noop",
 				},
 			}},
 		},
 		{
-			Role:  llm.RoleTool,
-			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call_1", Content: "ok"}}},
+			Role:  core.RoleTool,
+			Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call_1", Content: "ok"}}},
 		},
 	}
 	if telegramAssistantTextCaptured(messages, "partial visible answer") {
 		t.Fatal("tool-only assistant message should not count as captured visible partial text")
 	}
 
-	messages = append(messages, llm.AssistantText("partial visible answer"))
+	messages = append(messages, core.AssistantText("partial visible answer"))
 	if !telegramAssistantTextCaptured(messages, "partial visible answer") {
 		t.Fatal("assistant text matching visible partial should count as captured")
 	}
@@ -1683,7 +1686,7 @@ func TestStreamReply_StreamEventErrorReturnsError(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+	err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi"))
 	if err == nil {
 		t.Fatal("expected streamReply to return error when stream emits EventError")
 	}
@@ -1716,7 +1719,7 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleUser}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: core.RoleUser}
 	defer store.Close()
 
 	provider := newBlockingTextProvider("partial answer")
@@ -1729,7 +1732,7 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 			Store:    store,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
-					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 					ProviderName: "mock",
 					ModelName:    "test",
 				}, nil
@@ -1745,7 +1748,7 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 	bot := &fakeBotSender{}
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi"))
 	}()
 
 	select {
@@ -1788,13 +1791,13 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 	if !failed || replaceCalls != 1 {
 		t.Fatalf("persistence repair stats = (failed=%v, replacements=%d), want (true, 1)", failed, replaceCalls)
 	}
-	if len(msgs) != 2 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != llm.RoleAssistant {
+	if len(msgs) != 2 || msgs[0].Role != core.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != core.RoleAssistant {
 		t.Fatalf("reconciled interrupted transcript = %#v, want user then partial assistant", msgs)
 	}
 
 	var foundAssistant bool
 	for _, msg := range msgs {
-		if msg.Role == llm.RoleAssistant && msg.TextContent == "partial answer" {
+		if msg.Role == core.RoleAssistant && msg.TextContent == "partial answer" {
 			foundAssistant = true
 			break
 		}
@@ -1813,7 +1816,7 @@ func TestStreamReply_ReconcilesCanceledParentContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleUser}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: core.RoleUser}
 	defer store.Close()
 	provider := newBlockingTextProvider("partial answer")
 	mgr := &telegramSessionMgr{
@@ -1825,7 +1828,7 @@ func TestStreamReply_ReconcilesCanceledParentContext(t *testing.T) {
 			Store:    store,
 			NewSession: func(context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
-					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 					ProviderName: "mock",
 					ModelName:    "test",
 				}, nil
@@ -1840,7 +1843,7 @@ func TestStreamReply_ReconcilesCanceledParentContext(t *testing.T) {
 	replyDone := make(chan error, 1)
 	bot := &fakeBotSender{}
 	go func() {
-		replyDone <- mgr.streamReply(ctx, bot, sess, 42, llm.UserText("hi"))
+		replyDone <- mgr.streamReply(ctx, bot, sess, 42, core.UserText("hi"))
 	}()
 	select {
 	case <-provider.firstChunkSent:
@@ -1866,7 +1869,7 @@ func TestStreamReply_ReconcilesCanceledParentContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMessages failed: %v", err)
 	}
-	if len(msgs) != 2 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "partial answer" {
+	if len(msgs) != 2 || msgs[0].Role != core.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != core.RoleAssistant || msgs[1].TextContent != "partial answer" {
 		t.Fatalf("reconciled canceled transcript = %#v, want user then partial assistant", msgs)
 	}
 }
@@ -1877,7 +1880,7 @@ func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleAssistant}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: core.RoleAssistant}
 	defer store.Close()
 
 	provider := newErrorAfterTextProvider("partial answer", errors.New("upstream unavailable"))
@@ -1890,7 +1893,7 @@ func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
 			Store:    store,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
-					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 					ProviderName: "mock",
 					ModelName:    "test",
 				}, nil
@@ -1906,7 +1909,7 @@ func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
 	bot := &fakeBotSender{}
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hi"))
 	}()
 
 	select {
@@ -1963,13 +1966,13 @@ func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
 	if !failed || replaceCalls != 1 {
 		t.Fatalf("persistence repair stats = (failed=%v, replacements=%d), want (true, 1)", failed, replaceCalls)
 	}
-	if len(msgs) != 2 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != llm.RoleAssistant {
+	if len(msgs) != 2 || msgs[0].Role != core.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != core.RoleAssistant {
 		t.Fatalf("reconciled errored transcript = %#v, want user then partial assistant", msgs)
 	}
 
 	assistantPartialCount := 0
 	for _, msg := range msgs {
-		if msg.Role == llm.RoleAssistant && msg.TextContent == "partial answer" {
+		if msg.Role == core.RoleAssistant && msg.TextContent == "partial answer" {
 			assistantPartialCount++
 		}
 	}
@@ -1988,7 +1991,7 @@ func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
 	}
 	assistantHistoryCount := 0
 	for _, msg := range sess.history {
-		if msg.Role == llm.RoleAssistant && telegramMessageVisibleText(msg) == "partial answer" {
+		if msg.Role == core.RoleAssistant && telegramMessageVisibleText(msg) == "partial answer" {
 			assistantHistoryCount++
 		}
 	}
@@ -2226,7 +2229,7 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 
 	toolStarted := make(chan struct{})
 	slowTool := &testutil.MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        "slow_tool",
 			Description: "slow tool for testing",
 			Schema: map[string]interface{}{
@@ -2234,10 +2237,10 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 			close(toolStarted)
 			<-ctx.Done()
-			return llm.TextOutput("cancelled"), ctx.Err()
+			return core.TextOutput("cancelled"), ctx.Err()
 		},
 	}
 	h.Registry.Register(slowTool)
@@ -2276,7 +2279,7 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 	bot := &fakeBotSender{}
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, original, 42, llm.UserText("do something slow"))
+		streamDone <- mgr.streamReply(context.Background(), bot, original, 42, core.UserText("do something slow"))
 	}()
 
 	select {
@@ -2439,15 +2442,15 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresHistoryFromDB(t *testin
 	// Persist messages to DB for the original session.
 	userMsg := &session.Message{
 		SessionID:   original.meta.ID,
-		Role:        llm.RoleUser,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+		Role:        core.RoleUser,
+		Parts:       []core.Part{{Type: core.PartText, Text: "hello"}},
 		TextContent: "hello",
 		Sequence:    -1,
 	}
 	assistMsg := &session.Message{
 		SessionID:   original.meta.ID,
-		Role:        llm.RoleAssistant,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "hi there"}},
+		Role:        core.RoleAssistant,
+		Parts:       []core.Part{{Type: core.PartText, Text: "hi there"}},
 		TextContent: "hi there",
 		Sequence:    -1,
 	}
@@ -2470,10 +2473,10 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresHistoryFromDB(t *testin
 	if len(replacement.history) != 2 {
 		t.Fatalf("expected 2 messages in restored history, got %d", len(replacement.history))
 	}
-	if replacement.history[0].Role != llm.RoleUser {
+	if replacement.history[0].Role != core.RoleUser {
 		t.Fatalf("expected first message to be user, got %s", replacement.history[0].Role)
 	}
-	if replacement.history[1].Role != llm.RoleAssistant {
+	if replacement.history[1].Role != core.RoleAssistant {
 		t.Fatalf("expected second message to be assistant, got %s", replacement.history[1].Role)
 	}
 }
@@ -2508,13 +2511,13 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresSanitizedCarryoverHisto
 	}
 
 	hugeBase64 := strings.Repeat("a", 128*1024)
-	persisted := []llm.Message{
-		llm.UserImageMessage("image/jpeg", hugeBase64, "caption text"),
+	persisted := []core.Message{
+		core.UserImageMessage("image/jpeg", hugeBase64, "caption text"),
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:        "call-1",
 					Name:      "view_image",
 					Arguments: json.RawMessage(`{"file_path":"photo.jpg"}`),
@@ -2522,16 +2525,16 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresSanitizedCarryoverHisto
 			}},
 		},
 		{
-			Role: llm.RoleTool,
-			Parts: []llm.Part{{
-				Type: llm.PartToolResult,
-				ToolResult: &llm.ToolResult{
+			Role: core.RoleTool,
+			Parts: []core.Part{{
+				Type: core.PartToolResult,
+				ToolResult: &core.ToolResult{
 					ID:      "call-1",
 					Name:    "view_image",
 					Content: "loaded",
-					ContentParts: []llm.ToolContentPart{{
-						Type: llm.ToolContentPartImageData,
-						ImageData: &llm.ToolImageData{
+					ContentParts: []core.ToolContentPart{{
+						Type: core.ToolContentPartImageData,
+						ImageData: &core.ToolImageData{
 							MediaType: "image/jpeg",
 							Base64:    hugeBase64,
 						},
@@ -2558,8 +2561,8 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresSanitizedCarryoverHisto
 	}
 
 	userMsg := replacement.history[0]
-	if userMsg.Role != llm.RoleUser {
-		t.Fatalf("expected first restored message role %q, got %q", llm.RoleUser, userMsg.Role)
+	if userMsg.Role != core.RoleUser {
+		t.Fatalf("expected first restored message role %q, got %q", core.RoleUser, userMsg.Role)
 	}
 	userText := collectUserText(userMsg)
 	if !strings.Contains(userText, "[image uploaded]") {
@@ -2569,16 +2572,16 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresSanitizedCarryoverHisto
 		t.Fatalf("expected user carryover caption, got %q", userText)
 	}
 	for _, part := range userMsg.Parts {
-		if part.Type == llm.PartImage {
+		if part.Type == core.PartImage {
 			t.Fatalf("restored carryover should not keep image parts: %+v", userMsg.Parts)
 		}
 	}
 
 	assistantMsg := replacement.history[1]
-	if assistantMsg.Role != llm.RoleAssistant {
-		t.Fatalf("expected second restored message role %q, got %q", llm.RoleAssistant, assistantMsg.Role)
+	if assistantMsg.Role != core.RoleAssistant {
+		t.Fatalf("expected second restored message role %q, got %q", core.RoleAssistant, assistantMsg.Role)
 	}
-	if len(assistantMsg.Parts) != 1 || assistantMsg.Parts[0].Type != llm.PartToolCall || assistantMsg.Parts[0].ToolCall == nil {
+	if len(assistantMsg.Parts) != 1 || assistantMsg.Parts[0].Type != core.PartToolCall || assistantMsg.Parts[0].ToolCall == nil {
 		t.Fatalf("expected assistant tool call to be preserved, got %+v", assistantMsg.Parts)
 	}
 	if assistantMsg.Parts[0].ToolCall.ID != "call-1" {
@@ -2586,10 +2589,10 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresSanitizedCarryoverHisto
 	}
 
 	toolMsg := replacement.history[2]
-	if toolMsg.Role != llm.RoleTool {
-		t.Fatalf("expected third restored message role %q, got %q", llm.RoleTool, toolMsg.Role)
+	if toolMsg.Role != core.RoleTool {
+		t.Fatalf("expected third restored message role %q, got %q", core.RoleTool, toolMsg.Role)
 	}
-	if len(toolMsg.Parts) != 1 || toolMsg.Parts[0].Type != llm.PartToolResult || toolMsg.Parts[0].ToolResult == nil {
+	if len(toolMsg.Parts) != 1 || toolMsg.Parts[0].Type != core.PartToolResult || toolMsg.Parts[0].ToolResult == nil {
 		t.Fatalf("expected tool result to be preserved, got %+v", toolMsg.Parts)
 	}
 	toolResult := toolMsg.Parts[0].ToolResult
@@ -2636,8 +2639,8 @@ func TestTelegramSessionMgrResetSession_ZeroCarryoverDisablesHistory(t *testing.
 	// Persist messages to DB for the original session.
 	userMsg := &session.Message{
 		SessionID:   original.meta.ID,
-		Role:        llm.RoleUser,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+		Role:        core.RoleUser,
+		Parts:       []core.Part{{Type: core.PartText, Text: "hello"}},
 		TextContent: "hello",
 		Sequence:    -1,
 	}
@@ -2665,7 +2668,7 @@ func TestHandleMessage_StatusIdle(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(testutil.NewEngineHarness())
 	mgr.sessions[42] = sess
 	mgr.allowedUserIDs = map[int64]struct{}{7: {}}
-	sess.history = []llm.Message{llm.UserText("hello"), llm.AssistantText("hi")}
+	sess.history = []core.Message{core.UserText("hello"), core.AssistantText("hi")}
 	sess.lastActivity = time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	bot := &fakeBotSender{}
 	msg := &tgbotapi.Message{
@@ -2686,12 +2689,12 @@ func TestHandleMessage_StatusDoesNotBlockInterrupt(t *testing.T) {
 			toolStarted := make(chan struct{})
 			toolCancelled := make(chan struct{})
 			h.Registry.Register(&testutil.MockTool{
-				SpecData: llm.ToolSpec{Name: "slow_tool", Schema: map[string]interface{}{"type": "object"}},
-				ExecuteFn: func(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+				SpecData: core.ToolSpec{Name: "slow_tool", Schema: map[string]interface{}{"type": "object"}},
+				ExecuteFn: func(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
 					close(toolStarted)
 					<-ctx.Done()
 					close(toolCancelled)
-					return llm.TextOutput("cancelled"), ctx.Err()
+					return core.TextOutput("cancelled"), ctx.Err()
 				},
 			})
 			h.Provider.AddToolCall("id-1", "slow_tool", map[string]any{})
@@ -2763,7 +2766,7 @@ func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
 	toolRelease := make(chan struct{})
 
 	slowTool := &testutil.MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        "slow_tool",
 			Description: "slow tool for testing",
 			Schema: map[string]interface{}{
@@ -2771,14 +2774,14 @@ func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 			close(toolStarted)
 			select {
 			case <-toolRelease:
 			case <-ctx.Done():
-				return llm.TextOutput("cancelled"), ctx.Err()
+				return core.TextOutput("cancelled"), ctx.Err()
 			}
-			return llm.TextOutput("done"), nil
+			return core.TextOutput("done"), nil
 		},
 	}
 	h.Registry.Register(slowTool)
@@ -2793,7 +2796,7 @@ func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
 	// Start the stream in a goroutine (simulates first message handling).
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("do something slow"))
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("do something slow"))
 	}()
 
 	// Wait for the tool to start executing.
@@ -2858,7 +2861,7 @@ func TestHandleMessage_GracePeriodAllowsNaturalCompletion(t *testing.T) {
 	// Start the stream.
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hello"))
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hello"))
 	}()
 
 	// Give the stream a moment to start and publish cancel state.
@@ -2907,7 +2910,7 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 	toolStarted := make(chan struct{})
 
 	slowTool := &testutil.MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        "slow_tool",
 			Description: "slow tool for testing",
 			Schema: map[string]interface{}{
@@ -2915,11 +2918,11 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 			close(toolStarted)
 			// Block until cancelled.
 			<-ctx.Done()
-			return llm.TextOutput("cancelled"), ctx.Err()
+			return core.TextOutput("cancelled"), ctx.Err()
 		},
 	}
 	h.Registry.Register(slowTool)
@@ -2932,14 +2935,14 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 	bot := &fakeBotSender{}
 
 	// Seed some existing history.
-	sess.history = []llm.Message{
-		llm.UserText("previous question"),
-		llm.AssistantText("previous answer"),
+	sess.history = []core.Message{
+		core.UserText("previous question"),
+		core.AssistantText("previous answer"),
 	}
 
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("do slow thing"))
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("do slow thing"))
 	}()
 
 	select {
@@ -2973,7 +2976,7 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 	sess.mu.Lock()
 	foundUser := false
 	for _, msg := range sess.history {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			for _, p := range msg.Parts {
 				if p.Text == "do slow thing" {
 					foundUser = true
@@ -2994,7 +2997,7 @@ func TestHandleMessage_InterruptWaitsForToolCallbackBeforePersistingHistory(t *t
 	toolStarted := make(chan struct{})
 
 	slowTool := &testutil.MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        "slow_tool",
 			Description: "slow tool for testing",
 			Schema: map[string]interface{}{
@@ -3002,11 +3005,11 @@ func TestHandleMessage_InterruptWaitsForToolCallbackBeforePersistingHistory(t *t
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 			close(toolStarted)
 			<-ctx.Done()
 			time.Sleep(25 * time.Millisecond)
-			return llm.TextOutput("cancelled"), ctx.Err()
+			return core.TextOutput("cancelled"), ctx.Err()
 		},
 	}
 	h.Registry.Register(slowTool)
@@ -3019,7 +3022,7 @@ func TestHandleMessage_InterruptWaitsForToolCallbackBeforePersistingHistory(t *t
 
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("do slow thing"))
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("do slow thing"))
 	}()
 
 	select {
@@ -3041,13 +3044,13 @@ func TestHandleMessage_InterruptWaitsForToolCallbackBeforePersistingHistory(t *t
 	}
 
 	sess.mu.Lock()
-	history := append([]llm.Message(nil), sess.history...)
+	history := append([]core.Message(nil), sess.history...)
 	sess.mu.Unlock()
 
 	foundToolResult := false
 	for _, msg := range history {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.ID == "call-1" {
+			if part.Type == core.PartToolResult && part.ToolResult != nil && part.ToolResult.ID == "call-1" {
 				foundToolResult = true
 			}
 		}
@@ -3059,18 +3062,18 @@ func TestHandleMessage_InterruptWaitsForToolCallbackBeforePersistingHistory(t *t
 
 func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
 	h := testutil.NewEngineHarness()
-	h.Provider.AddTurn(llm.MockTurn{Delay: 200 * time.Millisecond, Text: "late reply"})
+	h.Provider.AddTurn(mockprovider.MockTurn{Delay: 200 * time.Millisecond, Text: "late reply"})
 
 	mgr, sess := newTestMgrAndSession(h)
 	mgr.streamEventTimeout = 25 * time.Millisecond
 	bot := &fakeBotSender{}
 
-	sess.history = []llm.Message{
-		llm.UserText("previous question"),
-		llm.AssistantText("previous answer"),
+	sess.history = []core.Message{
+		core.UserText("previous question"),
+		core.AssistantText("previous answer"),
 	}
 
-	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hello"))
+	err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("hello"))
 	if err == nil {
 		t.Fatal("expected streamReply to return timeout error")
 	}
@@ -3094,7 +3097,7 @@ func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
 
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	if len(sess.history) != 3 || sess.history[2].Role != llm.RoleUser || collectUserText(sess.history[2]) != "hello" {
+	if len(sess.history) != 3 || sess.history[2].Role != core.RoleUser || collectUserText(sess.history[2]) != "hello" {
 		t.Fatalf("watchdog timeout should retain the accepted user request without assistant output; got %#v", sess.history)
 	}
 }
@@ -3123,7 +3126,7 @@ func TestStreamReply_UncooperativeCleanupIsBounded(t *testing.T) {
 						MaxTurns: 5,
 						NewSession: func(context.Context) (*SessionRuntime, error) {
 							return &SessionRuntime{
-								Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+								Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 								ProviderName: "mock",
 								ModelName:    "test",
 							}, nil
@@ -3147,9 +3150,9 @@ func TestStreamReply_UncooperativeCleanupIsBounded(t *testing.T) {
 						Runner:   runner,
 						MaxTurns: 5,
 						NewSession: func(context.Context) (*SessionRuntime, error) {
-							provider := llm.NewMockProvider("mock")
+							provider := mockprovider.NewMockProvider("mock")
 							return &SessionRuntime{
-								Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+								Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 								Provider:     provider,
 								ProviderName: "mock",
 								ModelName:    "test",
@@ -3173,7 +3176,7 @@ func TestStreamReply_UncooperativeCleanupIsBounded(t *testing.T) {
 		provider := &uncooperativeCloseProvider{started: started, release: release, stopped: stopped, blockRecv: true}
 		mgr.streamEventTimeout = 15 * time.Millisecond
 		mgr.settings.NewSession = func(context.Context) (*SessionRuntime, error) {
-			return &SessionRuntime{Engine: llm.NewEngine(provider, llm.NewToolRegistry())}, nil
+			return &SessionRuntime{Engine: engine.NewEngine(provider, engine.NewToolRegistry())}, nil
 		}
 		return mgr
 	}
@@ -3196,8 +3199,8 @@ func TestStreamReply_UncooperativeCleanupIsBounded(t *testing.T) {
 
 				mgr := tc.newMgr(started, release, stopped)
 				mgr.interruptGracePeriod = time.Millisecond
-				mgr.fastProviderFactory = func() llm.Provider {
-					return llm.NewMockProvider("classifier").AddTextResponse("cancel")
+				mgr.fastProviderFactory = func() core.Provider {
+					return mockprovider.NewMockProvider("classifier").AddTextResponse("cancel")
 				}
 				sess, err := mgr.getOrCreate(context.Background(), 42)
 				if err != nil {
@@ -3206,7 +3209,7 @@ func TestStreamReply_UncooperativeCleanupIsBounded(t *testing.T) {
 				bot := &fakeBotSender{}
 				replyResult := make(chan error, 1)
 				go func() {
-					replyResult <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first request"))
+					replyResult <- mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("first request"))
 				}()
 
 				select {
@@ -3313,10 +3316,10 @@ func TestStreamReply_InjectsCarryoverSystemNoteOnce(t *testing.T) {
 	sess.carryoverContext = "old context tail"
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("turn one")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("turn one")); err != nil {
 		t.Fatalf("first streamReply returned error: %v", err)
 	}
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("turn two")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("turn two")); err != nil {
 		t.Fatalf("second streamReply returned error: %v", err)
 	}
 
@@ -3326,11 +3329,11 @@ func TestStreamReply_InjectsCarryoverSystemNoteOnce(t *testing.T) {
 
 	firstHasCarry := false
 	for _, msg := range h.Provider.Requests[0].Messages {
-		if msg.Role != llm.RoleSystem {
+		if msg.Role != core.RoleSystem {
 			continue
 		}
 		for _, p := range msg.Parts {
-			if p.Type == llm.PartText && strings.Contains(p.Text, "Context from previous session") && strings.Contains(p.Text, "old context tail") {
+			if p.Type == core.PartText && strings.Contains(p.Text, "Context from previous session") && strings.Contains(p.Text, "old context tail") {
 				firstHasCarry = true
 			}
 		}
@@ -3341,11 +3344,11 @@ func TestStreamReply_InjectsCarryoverSystemNoteOnce(t *testing.T) {
 
 	secondHasCarry := false
 	for _, msg := range h.Provider.Requests[1].Messages {
-		if msg.Role != llm.RoleSystem {
+		if msg.Role != core.RoleSystem {
 			continue
 		}
 		for _, p := range msg.Parts {
-			if p.Type == llm.PartText && strings.Contains(p.Text, "Context from previous session") {
+			if p.Type == core.PartText && strings.Contains(p.Text, "Context from previous session") {
 				secondHasCarry = true
 			}
 		}
@@ -3392,10 +3395,10 @@ func TestStreamReply_PersistsSystemPromptOnlyOncePerSession(t *testing.T) {
 	}
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(ctx, bot, sess, 42, llm.UserText("turn one")); err != nil {
+	if err := mgr.streamReply(ctx, bot, sess, 42, core.UserText("turn one")); err != nil {
 		t.Fatalf("first streamReply returned error: %v", err)
 	}
-	if err := mgr.streamReply(ctx, bot, sess, 42, llm.UserText("turn two")); err != nil {
+	if err := mgr.streamReply(ctx, bot, sess, 42, core.UserText("turn two")); err != nil {
 		t.Fatalf("second streamReply returned error: %v", err)
 	}
 
@@ -3405,7 +3408,7 @@ func TestStreamReply_PersistsSystemPromptOnlyOncePerSession(t *testing.T) {
 	}
 	var systemCount int
 	for _, msg := range msgs {
-		if msg.Role == llm.RoleSystem {
+		if msg.Role == core.RoleSystem {
 			systemCount++
 		}
 	}
@@ -3419,11 +3422,11 @@ func TestStreamReply_PersistsSystemPromptOnlyOncePerSession(t *testing.T) {
 	for i, req := range h.Provider.Requests {
 		found := false
 		for _, msg := range req.Messages {
-			if msg.Role != llm.RoleSystem {
+			if msg.Role != core.RoleSystem {
 				continue
 			}
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartText && part.Text == "be helpful" {
+				if part.Type == core.PartText && part.Text == "be helpful" {
 					found = true
 				}
 			}
@@ -3441,7 +3444,7 @@ func TestStreamReply_PersistsImagePlaceholderInHistory(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSender{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserImageMessage("image/jpeg", "data", "caption text")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserImageMessage("image/jpeg", "data", "caption text")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -3450,8 +3453,8 @@ func TestStreamReply_PersistsImagePlaceholderInHistory(t *testing.T) {
 	}
 
 	userMsg := sess.history[0]
-	if userMsg.Role != llm.RoleUser {
-		t.Fatalf("first history message role = %q, want %q", userMsg.Role, llm.RoleUser)
+	if userMsg.Role != core.RoleUser {
+		t.Fatalf("first history message role = %q, want %q", userMsg.Role, core.RoleUser)
 	}
 	text := collectUserText(userMsg)
 	if !strings.Contains(text, "[image uploaded]") {
@@ -3461,17 +3464,17 @@ func TestStreamReply_PersistsImagePlaceholderInHistory(t *testing.T) {
 		t.Fatalf("expected caption in persisted user text, got %q", text)
 	}
 	for _, part := range userMsg.Parts {
-		if part.Type == llm.PartImage {
+		if part.Type == core.PartImage {
 			t.Fatalf("persisted history should not keep image binary parts: %+v", userMsg.Parts)
 		}
 	}
 }
 
 func TestBuildHistoryContextTail_RuneSafeAndImagePlaceholder(t *testing.T) {
-	history := []llm.Message{
-		llm.UserText("alpha"),
-		llm.UserImageMessage("image/jpeg", "data", "desc"),
-		llm.AssistantText("🙂🙂🙂"),
+	history := []core.Message{
+		core.UserText("alpha"),
+		core.UserImageMessage("image/jpeg", "data", "desc"),
+		core.AssistantText("🙂🙂🙂"),
 	}
 
 	got := buildHistoryContextTail(history, 10)
@@ -3496,13 +3499,13 @@ func TestExtractToolResultTextWithPlaceholders_PrefersContentPartsOverDuplicated
 	// the text ContentPart, plus an ImageData part. Consuming both would
 	// duplicate the text and waste carryover budget.
 	const bodyText = "Viewing image: /foo.png\nMIME: image/png"
-	result := &llm.ToolResult{
+	result := &core.ToolResult{
 		ID:      "call-1",
 		Name:    "view_image",
 		Content: bodyText,
-		ContentParts: []llm.ToolContentPart{
-			{Type: llm.ToolContentPartText, Text: bodyText},
-			{Type: llm.ToolContentPartImageData, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+		ContentParts: []core.ToolContentPart{
+			{Type: core.ToolContentPartText, Text: bodyText},
+			{Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
 		},
 	}
 
@@ -3517,7 +3520,7 @@ func TestExtractToolResultTextWithPlaceholders_PrefersContentPartsOverDuplicated
 }
 
 func TestExtractToolResultTextWithPlaceholders_FallsBackToContentWhenNoParts(t *testing.T) {
-	result := &llm.ToolResult{
+	result := &core.ToolResult{
 		ID:      "call-2",
 		Name:    "shell",
 		Content: "command output",
@@ -3543,11 +3546,11 @@ func TestRestoreHistoryFromDB_LoadsCarryoverTailWithoutReadingWholeSession(t *te
 	}
 
 	for i := 0; i < messageCount; i++ {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
-		msg := session.NewMessage(priorID, llm.Message{Role: role, Parts: []llm.Part{{Type: llm.PartText, Text: fmt.Sprintf("m%03d", i)}}}, i)
+		msg := session.NewMessage(priorID, core.Message{Role: role, Parts: []core.Part{{Type: core.PartText, Text: fmt.Sprintf("m%03d", i)}}}, i)
 		store.messages[priorID] = append(store.messages[priorID], *msg)
 	}
 
@@ -3582,11 +3585,11 @@ func TestRestoreHistoryFromDB_LoadsCarryoverTailWithoutReadingWholeSession(t *te
 }
 
 func TestTailMessages_CapsAtCharLimit(t *testing.T) {
-	msgs := []llm.Message{
-		llm.UserText("aaaa"),      // 4 chars
-		llm.AssistantText("bbbb"), // 4 chars
-		llm.UserText("cccc"),      // 4 chars
-		llm.AssistantText("dddd"), // 4 chars
+	msgs := []core.Message{
+		core.UserText("aaaa"),      // 4 chars
+		core.AssistantText("bbbb"), // 4 chars
+		core.UserText("cccc"),      // 4 chars
+		core.AssistantText("dddd"), // 4 chars
 	}
 
 	// Budget for all = 16 chars, should get all 4.
@@ -3600,7 +3603,7 @@ func TestTailMessages_CapsAtCharLimit(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 messages with budget 8, got %d", len(got))
 	}
-	if got[0].Role != llm.RoleUser {
+	if got[0].Role != core.RoleUser {
 		t.Fatalf("expected user message first in tail, got %s", got[0].Role)
 	}
 
@@ -4019,13 +4022,13 @@ func TestDownloadTelegramVoice_Timeout(t *testing.T) {
 }
 
 func TestCollectUserText(t *testing.T) {
-	msg := llm.UserImageMessage("image/jpeg", "data", "caption text")
+	msg := core.UserImageMessage("image/jpeg", "data", "caption text")
 	got := collectUserText(msg)
 	if got != "caption text" {
 		t.Fatalf("collectUserText = %q, want %q", got, "caption text")
 	}
 
-	msg2 := llm.UserText("hello world")
+	msg2 := core.UserText("hello world")
 	got2 := collectUserText(msg2)
 	if got2 != "hello world" {
 		t.Fatalf("collectUserText = %q, want %q", got2, "hello world")
@@ -4057,7 +4060,7 @@ func TestStreamReply_ToolImagesAreSent(t *testing.T) {
 	}
 
 	imageTool := &testutil.MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        "image_tool",
 			Description: "generates images",
 			Schema: map[string]interface{}{
@@ -4065,8 +4068,8 @@ func TestStreamReply_ToolImagesAreSent(t *testing.T) {
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-			return llm.ToolOutput{
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+			return core.ToolOutput{
 				Content: "Generated image",
 				Images:  []string{tmpFile},
 			}, nil
@@ -4080,7 +4083,7 @@ func TestStreamReply_ToolImagesAreSent(t *testing.T) {
 	mgr, sess := newTestMgrAndSession(h)
 	bot := &fakeBotSenderWithPhotos{}
 
-	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("generate image")); err != nil {
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, core.UserText("generate image")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
@@ -4153,7 +4156,7 @@ type imagePathObservation struct {
 type interruptSequenceProvider struct {
 	firstChunkSent        chan struct{}
 	firstContextCancelled chan struct{}
-	secondRequest         chan llm.Request
+	secondRequest         chan core.Request
 	secondImagePath       chan imagePathObservation
 	streamCount           atomic.Int32
 }
@@ -4162,15 +4165,15 @@ func newInterruptSequenceProvider() *interruptSequenceProvider {
 	return &interruptSequenceProvider{
 		firstChunkSent:        make(chan struct{}),
 		firstContextCancelled: make(chan struct{}),
-		secondRequest:         make(chan llm.Request, 1),
+		secondRequest:         make(chan core.Request, 1),
 		secondImagePath:       make(chan imagePathObservation, 1),
 	}
 }
 
-func (p *interruptSequenceProvider) Name() string                   { return "interrupt-sequence" }
-func (p *interruptSequenceProvider) Credential() string             { return "mock" }
-func (p *interruptSequenceProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *interruptSequenceProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *interruptSequenceProvider) Name() string                    { return "interrupt-sequence" }
+func (p *interruptSequenceProvider) Credential() string              { return "mock" }
+func (p *interruptSequenceProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *interruptSequenceProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	streamNumber := p.streamCount.Add(1)
 	if streamNumber == 1 {
 		return &cancelAwareBlockingStream{
@@ -4185,7 +4188,7 @@ func (p *interruptSequenceProvider) Stream(ctx context.Context, req llm.Request)
 		imagePath := ""
 		for _, msg := range req.Messages {
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartImage && part.ImagePath != "" {
+				if part.Type == core.PartImage && part.ImagePath != "" {
 					imagePath = part.ImagePath
 				}
 			}
@@ -4209,18 +4212,18 @@ type cancelAwareBlockingStream struct {
 	chunkSent             bool
 }
 
-func (s *cancelAwareBlockingStream) Recv() (llm.Event, error) {
+func (s *cancelAwareBlockingStream) Recv() (core.Event, error) {
 	if !s.chunkSent {
 		s.chunkSent = true
 		s.firstOnce.Do(func() { close(s.firstChunkSent) })
-		return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+		return core.Event{Type: core.EventTextDelta, Text: s.text}, nil
 	}
 	select {
 	case <-s.ctx.Done():
 		s.cancelOnce.Do(func() { close(s.firstContextCancelled) })
-		return llm.Event{}, s.ctx.Err()
+		return core.Event{}, s.ctx.Err()
 	case <-s.closed:
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 }
 
@@ -4234,17 +4237,17 @@ type oneShotTextStream struct {
 	sent bool
 }
 
-func (s *oneShotTextStream) Recv() (llm.Event, error) {
+func (s *oneShotTextStream) Recv() (core.Event, error) {
 	if s.sent {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	s.sent = true
-	return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+	return core.Event{Type: core.EventTextDelta, Text: s.text}, nil
 }
 func (s *oneShotTextStream) Close() error { return nil }
 
 type admissionOrderProvider struct {
-	requests              chan llm.Request
+	requests              chan core.Request
 	firstChunkSent        chan struct{}
 	firstContextCancelled chan struct{}
 	streamCount           atomic.Int32
@@ -4252,16 +4255,16 @@ type admissionOrderProvider struct {
 
 func newAdmissionOrderProvider() *admissionOrderProvider {
 	return &admissionOrderProvider{
-		requests:              make(chan llm.Request, 2),
+		requests:              make(chan core.Request, 2),
 		firstChunkSent:        make(chan struct{}),
 		firstContextCancelled: make(chan struct{}),
 	}
 }
 
-func (p *admissionOrderProvider) Name() string                   { return "admission-order" }
-func (p *admissionOrderProvider) Credential() string             { return "mock" }
-func (p *admissionOrderProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *admissionOrderProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *admissionOrderProvider) Name() string                    { return "admission-order" }
+func (p *admissionOrderProvider) Credential() string              { return "mock" }
+func (p *admissionOrderProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *admissionOrderProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.requests <- req
 	if p.streamCount.Add(1) == 1 {
 		return &cancelAwareBlockingStream{
@@ -4275,9 +4278,9 @@ func (p *admissionOrderProvider) Stream(ctx context.Context, req llm.Request) (l
 	return &oneShotTextStream{text: "clarified answer"}, nil
 }
 
-func testMessageHasImage(msg llm.Message) bool {
+func testMessageHasImage(msg core.Message) bool {
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartImage {
+		if part.Type == core.PartImage {
 			return true
 		}
 	}
@@ -4304,7 +4307,7 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 			MaxTurns: 5,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
-					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 					ProviderName: "mock",
 					ModelName:    "test",
 				}, nil
@@ -4374,7 +4377,7 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 	}
 
 	releasePhoto()
-	var firstRequest llm.Request
+	var firstRequest core.Request
 	select {
 	case firstRequest = <-provider.requests:
 	case <-ctx.Done():
@@ -4392,7 +4395,7 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 		t.Fatal("photo stream did not start")
 	}
 
-	var secondRequest llm.Request
+	var secondRequest core.Request
 	select {
 	case secondRequest = <-provider.requests:
 	case <-ctx.Done():
@@ -4424,7 +4427,7 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 	}
 	var userMessages []session.Message
 	for _, msg := range persisted {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			userMessages = append(userMessages, msg)
 		}
 	}
@@ -4452,7 +4455,7 @@ func TestHandleMessage_CancelInterruptIsNotBlockedBySessionMutex(t *testing.T) {
 			MaxTurns: 5,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
-					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 					ProviderName: "mock",
 					ModelName:    "test",
 				}, nil
@@ -4517,7 +4520,7 @@ func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 			MaxTurns: 5,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
-					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					Engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 					ProviderName: "mock",
 					ModelName:    "test",
 				}, nil
@@ -4567,7 +4570,7 @@ func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 		t.Fatal("first message did not finish after photo interrupt")
 	}
 
-	var secondReq llm.Request
+	var secondReq core.Request
 	select {
 	case secondReq = <-provider.secondRequest:
 	case <-time.After(2 * time.Second):
@@ -4598,7 +4601,7 @@ func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 	foundImage := false
 	for _, msg := range secondReq.Messages {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartImage && part.ImageData != nil && part.ImageData.Base64 != "" {
+			if part.Type == core.PartImage && part.ImageData != nil && part.ImageData.Base64 != "" {
 				foundImage = true
 			}
 		}
@@ -4616,19 +4619,19 @@ func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 // Exercise the Telegram/runner handoff directly; the runtime's compaction
 // algorithm is covered separately by TestServeRuntimeCompactionCallbackUpdatesActiveContext.
 type telegramCompactionRunner struct {
-	requests     [][]llm.Message
+	requests     [][]core.Message
 	failFirst    bool
 	suspendFirst bool
 }
 
 func (r *telegramCompactionRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
-	r.requests = append(r.requests, append([]llm.Message(nil), req.Messages...))
+	r.requests = append(r.requests, append([]core.Message(nil), req.Messages...))
 	emit := func(text string) error {
-		msg := llm.AssistantText(text)
-		if err := req.OnResponseCompleted(ctx, 0, msg, llm.TurnMetrics{}); err != nil {
+		msg := core.AssistantText(text)
+		if err := req.OnResponseCompleted(ctx, 0, msg, core.TurnMetrics{}); err != nil {
 			return err
 		}
-		return req.OnTurnCompleted(ctx, 0, []llm.Message{msg}, llm.TurnMetrics{})
+		return req.OnTurnCompleted(ctx, 0, []core.Message{msg}, core.TurnMetrics{})
 	}
 	if len(r.requests) == 1 {
 		if err := emit("before compaction"); err != nil {
@@ -4638,8 +4641,8 @@ func (r *telegramCompactionRunner) Run(ctx context.Context, req runpkg.Request, 
 			// Two compactions in one run must use the latest boundary, without
 			// dropping pre-boundary output from the transcript.
 			for _, summary := range []string{"superseded summary", "[Context Compaction] compact summary"} {
-				if err := req.OnCompaction(ctx, &llm.CompactionResult{NewMessages: []llm.Message{
-					llm.SystemText("be helpful"), llm.UserText(summary), llm.AssistantText("retained tail"),
+				if err := req.OnCompaction(ctx, &engine.CompactionResult{NewMessages: []core.Message{
+					core.SystemText("be helpful"), core.UserText(summary), core.AssistantText("retained tail"),
 				}}); err != nil {
 					return runpkg.Result{}, err
 				}
@@ -4653,10 +4656,10 @@ func (r *telegramCompactionRunner) Run(ctx context.Context, req runpkg.Request, 
 	if err := emit(text); err != nil {
 		return runpkg.Result{}, err
 	}
-	sink.Event(llm.Event{Type: llm.EventTextDelta, Text: text})
+	sink.Event(core.Event{Type: core.EventTextDelta, Text: text})
 	if r.suspendFirst && len(r.requests) == 1 {
-		return runpkg.Result{}, &llm.SuspendedError{Continuation: &llm.Continuation{Request: llm.Request{Messages: []llm.Message{
-			llm.SystemText("be helpful"), llm.UserText("[Context Compaction] compact summary"), llm.AssistantText("retained tail"), llm.AssistantText(text),
+		return runpkg.Result{}, &engine.SuspendedError{Continuation: &core.Continuation{Request: core.Request{Messages: []core.Message{
+			core.SystemText("be helpful"), core.UserText("[Context Compaction] compact summary"), core.AssistantText("retained tail"), core.AssistantText(text),
 		}}}}
 	}
 	return runpkg.Result{}, nil
@@ -4678,7 +4681,7 @@ func TestStreamReply_RetainsCompactedContextAndFullTranscript(t *testing.T) {
 			runner := &telegramCompactionRunner{failFirst: tc.failFirst, suspendFirst: tc.suspendFirst}
 			var turnStore session.Store = store
 			if tc.failPersistence {
-				turnStore = &failingTelegramTurnStore{Store: store, failRole: llm.RoleAssistant, failAfter: 1}
+				turnStore = &failingTelegramTurnStore{Store: store, failRole: core.RoleAssistant, failAfter: 1}
 			}
 			mgr := &telegramSessionMgr{
 				sessions: make(map[int64]*telegramSession), store: turnStore, tickerInterval: 10 * time.Millisecond,
@@ -4695,7 +4698,7 @@ func TestStreamReply_RetainsCompactedContextAndFullTranscript(t *testing.T) {
 			}
 			bot := &fakeBotSender{}
 			prefix := strings.Repeat("oversized historical prefix ", 2000)
-			firstErr := mgr.streamReply(ctx, bot, sess, 42, llm.UserText(prefix))
+			firstErr := mgr.streamReply(ctx, bot, sess, 42, core.UserText(prefix))
 			if !tc.failFirst && firstErr != nil {
 				t.Fatal(firstErr)
 			}
@@ -4720,14 +4723,14 @@ func TestStreamReply_RetainsCompactedContextAndFullTranscript(t *testing.T) {
 			}
 			for i, input := range []string{"second input", "third input"} {
 				if tc.suspendFirst && i == 0 {
-					if err := mgr.streamReplyContinuation(ctx, bot, sess, 42, llm.Message{}, nil, mgr.pendingReload[42]); err != nil {
+					if err := mgr.streamReplyContinuation(ctx, bot, sess, 42, core.Message{}, nil, mgr.pendingReload[42]); err != nil {
 						t.Fatal(err)
 					}
-				} else if err := mgr.streamReply(ctx, bot, sess, 42, llm.UserText(input)); err != nil {
+				} else if err := mgr.streamReply(ctx, bot, sess, 42, core.UserText(input)); err != nil {
 					t.Fatal(err)
 				}
 			}
-			textOf := func(messages []llm.Message) string {
+			textOf := func(messages []core.Message) string {
 				var b strings.Builder
 				for _, msg := range messages {
 					b.WriteString(telegramMessageVisibleText(msg))
@@ -4766,7 +4769,7 @@ func TestStreamReply_RetainsCompactedContextAndFullTranscript(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var transcript []llm.Message
+			var transcript []core.Message
 			for _, msg := range msgs {
 				transcript = append(transcript, msg.ToLLMMessage())
 			}

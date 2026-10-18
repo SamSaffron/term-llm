@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/app/serve/protocol"
 	"io"
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/app/serve/protocol"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -90,38 +91,38 @@ func (c *Controller) pinnedGenerationLive(sessionID string, binding tools.Collab
 	return live
 }
 
-func (c *Controller) PrepareRequestContext(ctx context.Context, sessionID string, messages []llm.Message) ([]llm.Message, error) {
+func (c *Controller) PrepareRequestContext(ctx context.Context, sessionID string, messages []core.Message) ([]core.Message, error) {
 	binding, ok := tools.CollaborativeShellRunBindingFromContext(ctx)
 	if !ok || !c.pinnedGenerationLive(sessionID, binding) {
 		return messages, nil
 	}
 	for _, message := range messages {
-		if message.Role == llm.RoleDeveloper && CollectLLMText(message) == CollaborativeShellInstruction {
+		if message.Role == core.RoleDeveloper && CollectLLMText(message) == CollaborativeShellInstruction {
 			return messages, nil
 		}
 	}
 	insert := 0
 	for insert < len(messages) {
 		message := messages[insert]
-		if message.Role == llm.RoleSystem {
+		if message.Role == core.RoleSystem {
 			insert++
 			continue
 		}
-		if message.Role == llm.RoleDeveloper && !strings.HasPrefix(strings.TrimSpace(CollectLLMText(message)), "<collaborative_shell_activity ") {
+		if message.Role == core.RoleDeveloper && !strings.HasPrefix(strings.TrimSpace(CollectLLMText(message)), "<collaborative_shell_activity ") {
 			insert++
 			continue
 		}
 		break
 	}
-	instruction := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: CollaborativeShellInstruction}}}
-	out := make([]llm.Message, 0, len(messages)+1)
+	instruction := core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: CollaborativeShellInstruction}}}
+	out := make([]core.Message, 0, len(messages)+1)
 	out = append(out, messages[:insert]...)
 	out = append(out, instruction)
 	out = append(out, messages[insert:]...)
 	return out, nil
 }
 
-func (c *Controller) PrepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error {
+func (c *Controller) PrepareCompactionContext(ctx context.Context, sessionID string, result *engine.CompactionResult) error {
 	if result == nil {
 		return nil
 	}
@@ -130,19 +131,19 @@ func (c *Controller) PrepareCompactionContext(ctx context.Context, sessionID str
 		return nil
 	}
 	for _, message := range result.EphemeralMessages {
-		if message.Role == llm.RoleDeveloper && CollectLLMText(message) == CollaborativeShellInstruction {
+		if message.Role == core.RoleDeveloper && CollectLLMText(message) == CollaborativeShellInstruction {
 			return nil
 		}
 	}
-	result.EphemeralMessages = append(result.EphemeralMessages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: CollaborativeShellInstruction}}})
+	result.EphemeralMessages = append(result.EphemeralMessages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: CollaborativeShellInstruction}}})
 	return nil
 }
 
 // CollectLLMText concatenates the text parts of message.
-func CollectLLMText(message llm.Message) string {
+func CollectLLMText(message core.Message) string {
 	var values []string
 	for _, part := range message.Parts {
-		if part.Type == llm.PartText || part.Type == llm.PartFile {
+		if part.Type == core.PartText || part.Type == core.PartFile {
 			values = append(values, part.Text)
 		}
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -14,7 +14,7 @@ import (
 // Call it only alongside UpdateMetrics. The per-model rows are meant to
 // decompose the aggregate session bucket, so recording work that never entered
 // that bucket would make the breakdown and the totals disagree.
-func recordStoreModelUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, llmTurns, toolCalls int) {
+func recordStoreModelUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u core.Usage, llmTurns, toolCalls int) {
 	if store == nil || strings.TrimSpace(sessionID) == "" || u.BillableCountersZero() {
 		return
 	}
@@ -35,7 +35,7 @@ func recordStoreModelUsage(ctx context.Context, store session.Store, sessionID, 
 // attributed to the model that ran it. The per-model row is written only when
 // the aggregate update lands, so the breakdown never claims usage the totals
 // do not have.
-func recordStoreTurnUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, toolCalls int) {
+func recordStoreTurnUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u core.Usage, toolCalls int) {
 	if store == nil {
 		return
 	}
@@ -48,7 +48,7 @@ func recordStoreTurnUsage(ctx context.Context, store session.Store, sessionID, m
 // recordStoreHelperUsage records guardian, compaction and similar helper work.
 // Helpers spend tokens without advancing the session's own turn or tool
 // counters, but they still own a model row so their spend is attributable.
-func recordStoreHelperUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u llm.Usage) {
+func recordStoreHelperUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u core.Usage) {
 	if store == nil {
 		return
 	}

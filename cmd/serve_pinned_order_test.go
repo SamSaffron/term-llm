@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -34,7 +34,7 @@ func createPinnedOrderTestSession(t *testing.T, store *session.SQLiteStore, id, 
 
 func touchPinnedOrderTestSession(t *testing.T, store *session.SQLiteStore, id string, at time.Time) {
 	t.Helper()
-	message := session.NewMessage(id, llm.UserText("hello "+id), -1)
+	message := session.NewMessage(id, core.UserText("hello "+id), -1)
 	message.CreatedAt = at
 	if err := store.AddMessage(context.Background(), id, message); err != nil {
 		t.Fatalf("AddMessage(%s): %v", id, err)

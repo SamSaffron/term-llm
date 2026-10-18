@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/subagentview"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -23,10 +23,10 @@ func generateMessages(count int) []session.Message {
 			// User message
 			messages[i] = session.Message{
 				ID:          int64(i + 1),
-				Role:        llm.RoleUser,
+				Role:        core.RoleUser,
 				TextContent: fmt.Sprintf("This is user message %d with some content that might span multiple lines to simulate realistic message lengths.", i),
-				Parts: []llm.Part{
-					{Type: llm.PartText, Text: fmt.Sprintf("This is user message %d with some content that might span multiple lines to simulate realistic message lengths.", i)},
+				Parts: []core.Part{
+					{Type: core.PartText, Text: fmt.Sprintf("This is user message %d with some content that might span multiple lines to simulate realistic message lengths.", i)},
 				},
 				CreatedAt: time.Now(),
 				Sequence:  i,
@@ -36,10 +36,10 @@ func generateMessages(count int) []session.Message {
 			text := fmt.Sprintf("This is assistant message %d. Here is a detailed response:\n\n1. First point\n2. Second point\n3. Third point\n\nHere's some code:\n```go\nfunc example() {\n    fmt.Println(\"Hello\")\n}\n```\n\nAnd a final thought.", i)
 			messages[i] = session.Message{
 				ID:          int64(i + 1),
-				Role:        llm.RoleAssistant,
+				Role:        core.RoleAssistant,
 				TextContent: text,
-				Parts: []llm.Part{
-					{Type: llm.PartText, Text: text},
+				Parts: []core.Part{
+					{Type: core.PartText, Text: text},
 				},
 				CreatedAt: time.Now(),
 				Sequence:  i,
@@ -91,7 +91,7 @@ func TestRenderer_Render(t *testing.T) {
 
 func TestRenderer_RendersPathNotePlaceholder(t *testing.T) {
 	renderer := NewRenderer(80, 24)
-	message := session.NewPathNoteMessage("child", "- retained finding", llm.PathNoteProvenance{SourceSessionID: "source"}, 0)
+	message := session.NewPathNoteMessage("child", "- retained finding", core.PathNoteProvenance{SourceSessionID: "source"}, 0)
 	message.ID = 1
 
 	output := ui.StripANSI(renderer.Render(RenderState{
@@ -114,9 +114,9 @@ func TestRenderer_SkipsCompactionTailMessages(t *testing.T) {
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
 
 	messages := []session.Message{
-		{ID: 1, Role: llm.RoleUser, TextContent: "visible before", Parts: []llm.Part{{Type: llm.PartText, Text: "visible before"}}},
-		{ID: 2, Role: llm.RoleAssistant, TextContent: "hidden retained tail", Parts: []llm.Part{{Type: llm.PartText, Text: "hidden retained tail"}}, CompactionTail: true},
-		{ID: 3, Role: llm.RoleAssistant, TextContent: "visible after", Parts: []llm.Part{{Type: llm.PartText, Text: "visible after"}}},
+		{ID: 1, Role: core.RoleUser, TextContent: "visible before", Parts: []core.Part{{Type: core.PartText, Text: "visible before"}}},
+		{ID: 2, Role: core.RoleAssistant, TextContent: "hidden retained tail", Parts: []core.Part{{Type: core.PartText, Text: "hidden retained tail"}}, CompactionTail: true},
+		{ID: 3, Role: core.RoleAssistant, TextContent: "visible after", Parts: []core.Part{{Type: core.PartText, Text: "visible after"}}},
 	}
 
 	output := renderer.Render(RenderState{
@@ -139,14 +139,14 @@ func TestRenderer_BlockCacheKeyChangesWhenMessageContentChanges(t *testing.T) {
 
 	msg := &session.Message{
 		ID:          42,
-		Role:        llm.RoleAssistant,
+		Role:        core.RoleAssistant,
 		TextContent: "old reply",
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "old reply"}},
+		Parts:       []core.Part{{Type: core.PartText, Text: "old reply"}},
 	}
 	first := renderer.blockCacheKey(msg, 0)
 
 	msg.TextContent = "new reply"
-	msg.Parts = []llm.Part{{Type: llm.PartText, Text: "new reply"}}
+	msg.Parts = []core.Part{{Type: core.PartText, Text: "new reply"}}
 	second := renderer.blockCacheKey(msg, 0)
 
 	if first == second {
@@ -156,13 +156,13 @@ func TestRenderer_BlockCacheKeyChangesWhenMessageContentChanges(t *testing.T) {
 
 func TestHistorySignatureChangesWhenSameCountMessagesChange(t *testing.T) {
 	messages := []session.Message{
-		{ID: 1, Role: llm.RoleUser, TextContent: "prompt", Parts: []llm.Part{{Type: llm.PartText, Text: "prompt"}}, Sequence: 0},
-		{ID: 2, Role: llm.RoleAssistant, TextContent: "old reply", Parts: []llm.Part{{Type: llm.PartText, Text: "old reply"}}, Sequence: 1},
+		{ID: 1, Role: core.RoleUser, TextContent: "prompt", Parts: []core.Part{{Type: core.PartText, Text: "prompt"}}, Sequence: 0},
+		{ID: 2, Role: core.RoleAssistant, TextContent: "old reply", Parts: []core.Part{{Type: core.PartText, Text: "old reply"}}, Sequence: 1},
 	}
 	first := MessageHistorySignature(messages)
 
 	messages[1].TextContent = "new reply"
-	messages[1].Parts = []llm.Part{{Type: llm.PartText, Text: "new reply"}}
+	messages[1].Parts = []core.Part{{Type: core.PartText, Text: "new reply"}}
 	second := MessageHistorySignature(messages)
 
 	if first == second {
@@ -170,7 +170,7 @@ func TestHistorySignatureChangesWhenSameCountMessagesChange(t *testing.T) {
 	}
 
 	messages[1].TextContent = "old reply"
-	messages[1].Parts = []llm.Part{{Type: llm.PartText, Text: "old reply"}}
+	messages[1].Parts = []core.Part{{Type: core.PartText, Text: "old reply"}}
 	third := MessageHistorySignature(messages)
 	messages[1].CompactionTail = true
 	fourth := MessageHistorySignature(messages)
@@ -180,7 +180,7 @@ func TestHistorySignatureChangesWhenSameCountMessagesChange(t *testing.T) {
 }
 
 func TestRenderer_PersistedSubagentProjectionKeepsUnrelatedCacheKeysStable(t *testing.T) {
-	message := &session.Message{ID: 1, Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "ordinary"}}}
+	message := &session.Message{ID: 1, Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "ordinary"}}}
 	withoutRuns := persistedSubagentSignature(message, nil)
 	withRuns := persistedSubagentSignature(message, map[string]subagentview.CompletedRun{"other": {Fingerprint: 99}})
 	if withoutRuns != 0 || withRuns != 0 {
@@ -192,7 +192,7 @@ func TestRenderer_PersistedSubagentProjectionInvalidatesBlockCache(t *testing.T)
 	renderer := NewRenderer(80, 24)
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
 	messages := []session.Message{{
-		ID: 1, Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "spawn-1", Name: "spawn_agent"}}},
+		ID: 1, Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "spawn-1", Name: "spawn_agent"}}},
 	}}
 	state := RenderState{Messages: messages, Mode: RenderModeAltScreen, Width: 80, Height: 24}
 	before := ui.StripANSI(renderer.Render(state))
@@ -246,12 +246,12 @@ func TestRenderer_ReasoningLineOrdinalMapMatchesRenderedHeaders(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type:                  llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type:                  core.PartText,
 				Text:                  "answer one",
 				ReasoningContent:      "first body",
-				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningKind:         core.ReasoningKindRaw,
 				ReasoningSummaryTitle: "First plan",
 			}},
 			TextContent: "answer one",
@@ -259,9 +259,9 @@ func TestRenderer_ReasoningLineOrdinalMapMatchesRenderedHeaders(t *testing.T) {
 		},
 		{
 			ID:   2,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartText,
 				Text: "```text\n▸ Thought: decoy inside code\n```",
 			}},
 			TextContent: "▸ Thought: decoy inside code",
@@ -269,12 +269,12 @@ func TestRenderer_ReasoningLineOrdinalMapMatchesRenderedHeaders(t *testing.T) {
 		},
 		{
 			ID:   3,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type:                  llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type:                  core.PartText,
 				Text:                  "answer two",
 				ReasoningContent:      "second body",
-				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningKind:         core.ReasoningKindRaw,
 				ReasoningSummaryTitle: "Second plan",
 			}},
 			TextContent: "answer two",
@@ -346,32 +346,32 @@ func TestRenderer_ReasoningOverrideReusesUnaffectedCachedBlocks(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:          1,
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: "answer 1",
-			Parts: []llm.Part{{
-				Type:             llm.PartText,
+			Parts: []core.Part{{
+				Type:             core.PartText,
 				Text:             "answer 1",
 				ReasoningContent: "first thought body",
-				ReasoningKind:    llm.ReasoningKindRaw,
+				ReasoningKind:    core.ReasoningKindRaw,
 			}},
 			Sequence: 0,
 		},
 		{
 			ID:          2,
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: "answer 2",
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "answer 2"}},
+			Parts:       []core.Part{{Type: core.PartText, Text: "answer 2"}},
 			Sequence:    1,
 		},
 		{
 			ID:          3,
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: "answer 3",
-			Parts: []llm.Part{{
-				Type:             llm.PartText,
+			Parts: []core.Part{{
+				Type:             core.PartText,
 				Text:             "answer 3",
 				ReasoningContent: "second thought body",
-				ReasoningKind:    llm.ReasoningKindRaw,
+				ReasoningKind:    core.ReasoningKindRaw,
 			}},
 			Sequence: 2,
 		},
@@ -499,14 +499,14 @@ func TestRenderer_HistoricalNativeToolActivityPrecedesAnswer(t *testing.T) {
 
 	messages := []session.Message{{
 		ID:   1,
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: "Here is the latest Discourse news."},
-			{Type: llm.PartToolActivity, ToolActivity: &llm.ToolActivity{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{
+			{Type: core.PartText, Text: "Here is the latest Discourse news."},
+			{Type: core.PartToolActivity, ToolActivity: &core.ToolActivity{
 				ID:     "ws_1",
-				Name:   llm.WebSearchToolName,
+				Name:   core.WebSearchToolName,
 				Info:   "(discourse news)",
-				Status: llm.ToolActivityCompleted,
+				Status: core.ToolActivityCompleted,
 			}},
 		},
 		Sequence: 0,
@@ -533,10 +533,10 @@ func TestRenderer_HistoricalToolCallUsesErrorCircleForFailedResult(t *testing.T)
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:       "call-1",
 					Name:     "shell",
 					ToolInfo: "(sleep 5)",
@@ -546,10 +546,10 @@ func TestRenderer_HistoricalToolCallUsesErrorCircleForFailedResult(t *testing.T)
 		},
 		{
 			ID:   2,
-			Role: llm.RoleTool,
-			Parts: []llm.Part{{
-				Type: llm.PartToolResult,
-				ToolResult: &llm.ToolResult{
+			Role: core.RoleTool,
+			Parts: []core.Part{{
+				Type: core.PartToolResult,
+				ToolResult: &core.ToolResult{
 					ID:      "call-1",
 					Name:    "shell",
 					Content: "Error: context canceled",
@@ -589,10 +589,10 @@ func TestRenderer_ReloadedHistorySeparatesToolOnlyMessagesFromFollowingContent(t
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:       "call-1",
 					Name:     "shell",
 					ToolInfo: "(review latest diff)",
@@ -602,26 +602,26 @@ func TestRenderer_ReloadedHistorySeparatesToolOnlyMessagesFromFollowingContent(t
 		},
 		{
 			ID:       2,
-			Role:     llm.RoleTool,
+			Role:     core.RoleTool,
 			Sequence: 1,
 		},
 		{
 			ID:   3,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type:                  llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type:                  core.PartText,
 				ReasoningContent:      "checking status",
-				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningKind:         core.ReasoningKindRaw,
 				ReasoningSummaryTitle: "Summarizing git status",
 			}},
 			Sequence: 2,
 		},
 		{
 			ID:   4,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:       "call-2",
 					Name:     "grep",
 					ToolInfo: "(/currentReasoning/)",
@@ -631,14 +631,14 @@ func TestRenderer_ReloadedHistorySeparatesToolOnlyMessagesFromFollowingContent(t
 		},
 		{
 			ID:       5,
-			Role:     llm.RoleTool,
+			Role:     core.RoleTool,
 			Sequence: 4,
 		},
 		{
 			ID:   6,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartText,
 				Text: "Implemented the fix.",
 			}},
 			Sequence: 5,
@@ -836,12 +836,12 @@ func TestMessageBlockRenderer_DiffsOnHydration(t *testing.T) {
 		// Message 0: Assistant message with edit_file tool call
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
-				{Type: llm.PartText, Text: "I'll update the file."},
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
+				{Type: core.PartText, Text: "I'll update the file."},
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        toolCallID,
 						Name:      "edit_file",
 						Arguments: []byte(`{"path":"test.go","old_text":"x = 1","new_text":"x = 2"}`),
@@ -854,11 +854,11 @@ func TestMessageBlockRenderer_DiffsOnHydration(t *testing.T) {
 		// Message 1: Tool result message containing diff marker (Role=RoleTool, not RoleUser)
 		{
 			ID:   2,
-			Role: llm.RoleTool,
-			Parts: []llm.Part{
+			Role: core.RoleTool,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolResult,
-					ToolResult: &llm.ToolResult{
+					Type: core.PartToolResult,
+					ToolResult: &core.ToolResult{
 						ID:      toolCallID,
 						Name:    "edit_file",
 						Content: "Edit applied successfully.\n" + makeDiffMarker("test.go", "x = 1", "x = 2", 10),
@@ -896,12 +896,12 @@ func TestMessageBlockRenderer_NoDiffsWithoutContext(t *testing.T) {
 	toolCallID := "call-456"
 	msg := session.Message{
 		ID:   1,
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: "I'll update the file."},
+		Role: core.RoleAssistant,
+		Parts: []core.Part{
+			{Type: core.PartText, Text: "I'll update the file."},
 			{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:        toolCallID,
 					Name:      "edit_file",
 					Arguments: []byte(`{"file_path":"test.go"}`),
@@ -929,10 +929,10 @@ func TestMessageBlockRenderer_ToolImagesOnHydration(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:        toolCallID,
 					Name:      "image_generate",
 					Arguments: []byte(`{"prompt":"cat"}`),
@@ -942,10 +942,10 @@ func TestMessageBlockRenderer_ToolImagesOnHydration(t *testing.T) {
 		},
 		{
 			ID:   2,
-			Role: llm.RoleTool,
-			Parts: []llm.Part{{
-				Type: llm.PartToolResult,
-				ToolResult: &llm.ToolResult{
+			Role: core.RoleTool,
+			Parts: []core.Part{{
+				Type: core.PartToolResult,
+				ToolResult: &core.ToolResult{
 					ID:      toolCallID,
 					Name:    "image_generate",
 					Content: "Generated image successfully.",
@@ -980,11 +980,11 @@ func TestMessageBlockRenderer_NonEditFileToolNoDiff(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        toolCallID,
 						Name:      "shell", // Not edit_file
 						Arguments: []byte(`{"command":"ls -la"}`),
@@ -995,11 +995,11 @@ func TestMessageBlockRenderer_NonEditFileToolNoDiff(t *testing.T) {
 		},
 		{
 			ID:   2,
-			Role: llm.RoleTool,
-			Parts: []llm.Part{
+			Role: core.RoleTool,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolResult,
-					ToolResult: &llm.ToolResult{
+					Type: core.PartToolResult,
+					ToolResult: &core.ToolResult{
 						ID:      toolCallID,
 						Name:    "shell",
 						Content: "file1.txt\nfile2.txt\n" + makeDiffMarker("fake.go", "a", "b", 1),
@@ -1034,12 +1034,12 @@ func TestMessageBlockRenderer_DiffsFromDisplayField(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
-				{Type: llm.PartText, Text: "Updating file."},
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
+				{Type: core.PartText, Text: "Updating file."},
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        toolCallID,
 						Name:      "edit_file",
 						Arguments: []byte(`{"file_path":"test.go","old_string":"x = 1","new_string":"x = 2"}`),
@@ -1050,11 +1050,11 @@ func TestMessageBlockRenderer_DiffsFromDisplayField(t *testing.T) {
 		},
 		{
 			ID:   2,
-			Role: llm.RoleTool,
-			Parts: []llm.Part{
+			Role: core.RoleTool,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolResult,
-					ToolResult: &llm.ToolResult{
+					Type: core.PartToolResult,
+					ToolResult: &core.ToolResult{
 						ID:      toolCallID,
 						Name:    "edit_file",
 						Content: "Edited test.go: replaced 1 lines with 1 lines.", // Clean (no markers)
@@ -1087,12 +1087,12 @@ func TestMessageBlockRenderer_BackwardCompatNilDisplay(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
-				{Type: llm.PartText, Text: "Updating file."},
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
+				{Type: core.PartText, Text: "Updating file."},
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        toolCallID,
 						Name:      "edit_file",
 						Arguments: []byte(`{"file_path":"compat.go","old_string":"a","new_string":"b"}`),
@@ -1103,11 +1103,11 @@ func TestMessageBlockRenderer_BackwardCompatNilDisplay(t *testing.T) {
 		},
 		{
 			ID:   2,
-			Role: llm.RoleTool,
-			Parts: []llm.Part{
+			Role: core.RoleTool,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolResult,
-					ToolResult: &llm.ToolResult{
+					Type: core.PartToolResult,
+					ToolResult: &core.ToolResult{
 						ID:      toolCallID,
 						Name:    "edit_file",
 						Content: "Edit applied.\n" + makeDiffMarker("compat.go", "a", "b", 1),
@@ -1129,14 +1129,14 @@ func TestMessageBlockRenderer_BackwardCompatNilDisplay(t *testing.T) {
 
 func TestMessagePartsSignatureIncludesDiffOperation(t *testing.T) {
 	base := session.Message{
-		Role: llm.RoleTool,
-		Parts: []llm.Part{{
-			Type: llm.PartToolResult,
-			ToolResult: &llm.ToolResult{
+		Role: core.RoleTool,
+		Parts: []core.Part{{
+			Type: core.PartToolResult,
+			ToolResult: &core.ToolResult{
 				ID:      "call-1",
 				Name:    "write_file",
 				Content: "Created file.",
-				Diffs: []llm.DiffData{{
+				Diffs: []core.DiffData{{
 					File: "demo.rb",
 					Old:  "",
 					New:  "puts \"hello\"\n",
@@ -1146,18 +1146,18 @@ func TestMessagePartsSignatureIncludesDiffOperation(t *testing.T) {
 		}},
 	}
 	withOperation := base
-	withOperation.Parts = []llm.Part{{
-		Type: llm.PartToolResult,
-		ToolResult: &llm.ToolResult{
+	withOperation.Parts = []core.Part{{
+		Type: core.PartToolResult,
+		ToolResult: &core.ToolResult{
 			ID:      "call-1",
 			Name:    "write_file",
 			Content: "Created file.",
-			Diffs: []llm.DiffData{{
+			Diffs: []core.DiffData{{
 				File:      "demo.rb",
 				Old:       "",
 				New:       "puts \"hello\"\n",
 				Line:      1,
-				Operation: llm.DiffOperationCreate,
+				Operation: core.DiffOperationCreate,
 			}},
 		},
 	}}
@@ -1170,19 +1170,19 @@ func TestMessagePartsSignatureIncludesDiffOperation(t *testing.T) {
 func TestMessageBlockRenderer_ToolOnlyAssistantMessage_IsCompact(t *testing.T) {
 	msg := session.Message{
 		ID:   1,
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{
 			{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:        "call-1",
 					Name:      "web_search",
 					Arguments: []byte(`{"query":"first"}`),
 				},
 			},
 			{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID:        "call-2",
 					Name:      "web_search",
 					Arguments: []byte(`{"query":"second"}`),
@@ -1218,11 +1218,11 @@ func TestRenderer_ConsecutiveToolOnlyAssistantMessages_NoBlankLineBetweenTools(t
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        "call-1",
 						Name:      "web_search",
 						Arguments: []byte(`{"query":"first"}`),
@@ -1234,11 +1234,11 @@ func TestRenderer_ConsecutiveToolOnlyAssistantMessages_NoBlankLineBetweenTools(t
 		},
 		{
 			ID:   2,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        "call-2",
 						Name:      "web_search",
 						Arguments: []byte(`{"query":"second"}`),
@@ -1282,22 +1282,22 @@ func TestMessageBlockRendererPlacesReferencedMediaInAssistantText(t *testing.T) 
 	const reference = "0123456789abcdef0123456789abcdef"
 	messages := []session.Message{
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{
 				ID: "call-media", Name: "show_media",
 			}}},
 		},
 		{
-			Role: llm.RoleTool,
-			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
-				ID: "call-media", Name: "show_media", Media: []llm.MediaArtifact{{
+			Role: core.RoleTool,
+			Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+				ID: "call-media", Name: "show_media", Media: []core.MediaArtifact{{
 					Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png",
 				}},
 			}}},
 		},
 		{
-			Role:  llm.RoleAssistant,
-			Parts: []llm.Part{{Type: llm.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter"}},
+			Role:  core.RoleAssistant,
+			Parts: []core.Part{{Type: core.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter"}},
 		},
 	}
 	renderer := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 2, false)
@@ -1342,24 +1342,24 @@ func TestRendererReasoningOverrideIgnoresHiddenUnknownReasoningForOrdinal(t *tes
 	messages := []session.Message{
 		{
 			ID:   1,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type:             llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type:             core.PartText,
 				Text:             "hidden unknown answer",
 				ReasoningContent: "hidden unknown body",
-				ReasoningKind:    llm.ReasoningKindUnknown,
+				ReasoningKind:    core.ReasoningKindUnknown,
 			}},
 			TextContent: "hidden unknown answer",
 			Sequence:    0,
 		},
 		{
 			ID:   2,
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type:                  llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type:                  core.PartText,
 				Text:                  "visible answer",
 				ReasoningContent:      "visible raw body",
-				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningKind:         core.ReasoningKindRaw,
 				ReasoningSummaryTitle: "Visible plan",
 			}},
 			TextContent: "visible answer",
@@ -1389,15 +1389,15 @@ func TestRendererReasoningOverrideIgnoresHiddenUnknownReasoningForOrdinal(t *tes
 
 func TestAudioMediaInToolAndPersistedAssistantUsesLinks(t *testing.T) {
 	const ref = "0123456789abcdef0123456789abcdef"
-	item := llm.MediaArtifact{Reference: ref, StoredPath: "/tmp/narration.mp3", MediaType: "audio/mpeg", Name: "narration.mp3"}
+	item := core.MediaArtifact{Reference: ref, StoredPath: "/tmp/narration.mp3", MediaType: "audio/mpeg", Name: "narration.mp3"}
 	messages := []session.Message{
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "media", Name: "show_media", Media: []llm.MediaArtifact{item}}}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "![Listen](term-llm-media://" + ref + ")"}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "media", Name: "show_media", Media: []core.MediaArtifact{item}}}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "![Listen](term-llm-media://" + ref + ")"}}},
 	}
 	for _, expanded := range []bool{false, true} {
 		renderer := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 1, expanded)
 		renderer.SetImageRenderer(func(string) ui.ImageArtifact { t.Fatal("audio reached image decoder"); return ui.ImageArtifact{} })
-		tool := ansi.Strip(renderer.renderToolMedia([]llm.MediaArtifact{item}))
+		tool := ansi.Strip(renderer.renderToolMedia([]core.MediaArtifact{item}))
 		if !strings.Contains(tool, "♪ Audio:") || !strings.Contains(tool, "file:///tmp/narration.mp3") {
 			t.Fatalf("tool=%q", tool)
 		}
@@ -1411,14 +1411,14 @@ func TestAudioMediaInToolAndPersistedAssistantUsesLinks(t *testing.T) {
 
 func TestCompletedSubagentAudioReferenceRendersAsLink(t *testing.T) {
 	const ref = "0123456789abcdef0123456789abcdef"
-	item := llm.MediaArtifact{Reference: ref, StoredPath: "/tmp/child.mp3", MediaType: "audio/mpeg", Name: "child.mp3"}
+	item := core.MediaArtifact{Reference: ref, StoredPath: "/tmp/child.mp3", MediaType: "audio/mpeg", Name: "child.mp3"}
 	renderer := NewMessageBlockRenderer(80, simpleMarkdownRenderer, false)
 	renderer.SetImageRenderer(func(string) ui.ImageArtifact {
 		t.Fatal("subagent audio reached image decoder")
 		return ui.ImageArtifact{}
 	})
-	renderer.SetPersistedSubagents(map[string]subagentview.CompletedRun{"spawn": {ParentCallID: "spawn", Media: []llm.MediaArtifact{item}}})
-	message := session.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "![Child narration](term-llm-media://" + ref + ")"}}}
+	renderer.SetPersistedSubagents(map[string]subagentview.CompletedRun{"spawn": {ParentCallID: "spawn", Media: []core.MediaArtifact{item}}})
+	message := session.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "![Child narration](term-llm-media://" + ref + ")"}}}
 	block := renderer.Render(&message)
 	if plain := ansi.Strip(block.Rendered); !strings.Contains(plain, "♪ Audio: Child narration — child.mp3") {
 		t.Fatalf("subagent audio=%q", plain)

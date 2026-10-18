@@ -5,7 +5,7 @@ import (
 	"io"
 
 	"github.com/samsaffron/term-llm/internal/app/ask"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -17,7 +17,7 @@ import (
 // MCPOptions contains options for enabling MCP servers.
 type MCPOptions = ask.MCPOptions
 
-func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *llm.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
+func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *engine.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
 	return ask.EnableMCPServersWithFeedback(ctx, mcpFlag, engine, errWriter, opts)
 }
 

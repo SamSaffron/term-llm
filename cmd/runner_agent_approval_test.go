@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -18,7 +19,7 @@ type cmdApprovalSink struct {
 	release chan struct{}
 }
 
-func (*cmdApprovalSink) Event(llm.Event) {}
+func (*cmdApprovalSink) Event(core.Event) {}
 func (s *cmdApprovalSink) PromptApproval(string, bool, bool, string) (tools.ApprovalResult, error) {
 	close(s.entered)
 	<-s.release
@@ -47,7 +48,7 @@ func TestCmdRunnerHostPromptTracksDetachedApproval(t *testing.T) {
 	sink := &cmdApprovalSink{entered: make(chan struct{}), release: make(chan struct{})}
 	runner := newCmdRunner(cfg, cmdRunnerOptions{Tools: "spawn_agent", ToolsSet: true, ApprovalMode: tools.ModePrompt, ApprovalModeSet: true}).(*cmdRunner)
 	env, err := runner.prepare(context.Background(), runpkg.Request{
-		Platform: runpkg.PlatformConsole, SessionID: "parent", ProviderInstance: llm.NewMockProvider("mock"), Cwd: t.TempDir(), DeferSession: true,
+		Platform: runpkg.PlatformConsole, SessionID: "parent", ProviderInstance: mockprovider.NewMockProvider("mock"), Cwd: t.TempDir(), DeferSession: true,
 	}, sink)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestCmdRunnerHostPromptTracksDetachedApproval(t *testing.T) {
 		t.Fatal("spawn tool was not wired")
 	}
 	spawn.SetRunner(&cmdApprovalChild{root: mgr.ApprovalMgr})
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	out, err := spawn.Execute(ctx, json.RawMessage(`{"agent_name":"developer","prompt":"needs approval","wait":0}`))
 	if err != nil {
 		t.Fatal(err)

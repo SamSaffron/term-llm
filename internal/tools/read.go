@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // ReadFileTool implements the read_file tool.
@@ -38,8 +38,8 @@ type ReadFileArgs struct {
 	EndLine   int    `json:"end_line,omitempty"`
 }
 
-func (t *ReadFileTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *ReadFileTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        ReadFileToolName,
 		Description: "Read file contents. Returns line-numbered output. Use start_line/end_line for pagination.",
 		Schema: map[string]interface{}{
@@ -79,10 +79,10 @@ func (t *ReadFileTool) Preview(args json.RawMessage) string {
 	return a.Path
 }
 
-func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	warning := WarnUnknownParams(args, []string{"path", "start_line", "end_line"})
-	textOutput := func(message string) llm.ToolOutput {
-		return llm.TextOutput(warning + message)
+	textOutput := func(message string) core.ToolOutput {
+		return core.TextOutput(warning + message)
 	}
 
 	var a ReadFileArgs

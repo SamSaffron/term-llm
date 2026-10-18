@@ -58,7 +58,7 @@ func drainStreamErr(t *testing.T, stream core.Stream) error {
 	}
 }
 
-func drainStreamToDone(t *testing.T, stream llm.Stream) {
+func drainStreamToDone(t *testing.T, stream core.Stream) {
 	t.Helper()
 	for {
 		event, recvErr := stream.Recv()
@@ -68,10 +68,10 @@ func drainStreamToDone(t *testing.T, stream llm.Stream) {
 		if recvErr != nil {
 			t.Fatalf("stream recv failed: %v", recvErr)
 		}
-		if event.Type == llm.EventError {
+		if event.Type == core.EventError {
 			t.Fatalf("stream returned error event: %v", event.Err)
 		}
-		if event.Type == llm.EventDone {
+		if event.Type == core.EventDone {
 			return
 		}
 	}
@@ -79,7 +79,7 @@ func drainStreamToDone(t *testing.T, stream llm.Stream) {
 
 // createProviderFromConfig builds a provider through the public factory
 // without the retry wrapper.
-func createProviderFromConfig(name string, pc *config.ProviderConfig) (llm.Provider, error) {
+func createProviderFromConfig(name string, pc *config.ProviderConfig) (core.Provider, error) {
 	cfg := &config.Config{Providers: map[string]config.ProviderConfig{name: *pc}}
 	return llm.NewProviderByNameNoRetry(cfg, name, "")
 }

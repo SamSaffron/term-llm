@@ -3,7 +3,6 @@ package chat
 import (
 	"context"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"slices"
 	"strings"
 
@@ -11,6 +10,8 @@ import (
 	"github.com/sahilm/fuzzy"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -562,7 +563,7 @@ func (m *Model) switchEffortStateOnly(resolved effortSwitchResolution, deferMark
 	guardianErr := m.refreshGuardianReviewer(resolved.provider, resolved.targetModel)
 
 	if m.sess != nil && len(m.messages) > 0 {
-		marker := llm.ModelSwapMarker{
+		marker := core.ModelSwapMarker{
 			FromProvider: oldProvider,
 			FromModel:    oldModel,
 			ToProvider:   resolved.provider,

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -34,24 +34,24 @@ type goalTool struct {
 }
 
 // NewCreateGoalTool creates the model-facing tool for starting a persisted goal.
-func NewCreateGoalTool() llm.Tool {
+func NewCreateGoalTool() core.Tool {
 	return &goalTool{name: CreateGoalToolName}
 }
 
 // NewUpdateGoalTool creates the model-facing tool for completing or blocking a goal.
-func NewUpdateGoalTool() llm.Tool {
+func NewUpdateGoalTool() core.Tool {
 	return &goalTool{name: UpdateGoalToolName}
 }
 
 // NewGetGoalTool creates the model-facing tool for reading the active goal.
-func NewGetGoalTool(getter func() *session.Goal) llm.Tool {
+func NewGetGoalTool(getter func() *session.Goal) core.Tool {
 	return &goalTool{name: GetGoalToolName, getter: getter}
 }
 
-func (t *goalTool) Spec() llm.ToolSpec {
+func (t *goalTool) Spec() core.ToolSpec {
 	switch t.name {
 	case CreateGoalToolName:
-		return llm.ToolSpec{
+		return core.ToolSpec{
 			Name:        CreateGoalToolName,
 			Description: "Create or replace the persistent objective for this session. Use only when the user asks to start a goal.",
 			Schema: map[string]any{
@@ -71,7 +71,7 @@ func (t *goalTool) Spec() llm.ToolSpec {
 			},
 		}
 	case UpdateGoalToolName:
-		return llm.ToolSpec{
+		return core.ToolSpec{
 			Name:        UpdateGoalToolName,
 			Description: "Mark the persistent session goal complete or blocked after satisfying the required audit. Do not call for ordinary progress updates.",
 			Schema: map[string]any{
@@ -99,7 +99,7 @@ func (t *goalTool) Spec() llm.ToolSpec {
 			},
 		}
 	default:
-		return llm.ToolSpec{
+		return core.ToolSpec{
 			Name:        GetGoalToolName,
 			Description: "Get the persistent objective and budget state for this session.",
 			Schema: map[string]any{
@@ -110,37 +110,37 @@ func (t *goalTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *goalTool) Execute(_ context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *goalTool) Execute(_ context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	switch t.name {
 	case CreateGoalToolName:
 		parsed, err := ParseCreateGoalArgs(args)
 		if err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
 		msg := "goal created"
 		if parsed.TokenBudget > 0 {
 			msg = fmt.Sprintf("goal created with token budget %d", parsed.TokenBudget)
 		}
-		return llm.TextOutput(msg), nil
+		return core.TextOutput(msg), nil
 	case UpdateGoalToolName:
 		parsed, err := ParseUpdateGoalArgs(args)
 		if err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
-		return llm.TextOutput(fmt.Sprintf("goal marked %s", parsed.Status)), nil
+		return core.TextOutput(fmt.Sprintf("goal marked %s", parsed.Status)), nil
 	default:
 		goal := (*session.Goal)(nil)
 		if t.getter != nil {
 			goal = t.getter()
 		}
 		if goal == nil || !goal.Exists() {
-			return llm.TextOutput(`{"status":"none"}`), nil
+			return core.TextOutput(`{"status":"none"}`), nil
 		}
 		data, err := json.Marshal(goal)
 		if err != nil {
-			return llm.ToolOutput{}, NewToolErrorf(ErrExecutionFailed, "serialize goal: %v", err)
+			return core.ToolOutput{}, NewToolErrorf(ErrExecutionFailed, "serialize goal: %v", err)
 		}
-		return llm.TextOutput(string(data)), nil
+		return core.TextOutput(string(data)), nil
 	}
 }
 

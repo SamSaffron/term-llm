@@ -6,7 +6,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -27,8 +28,8 @@ func testEnv(dbPath, agent string) Env {
 				cfg.ApplyOverrides(cfg.Ask.Provider, cfg.Ask.Model)
 				return nil
 			},
-			NewEngine: func(provider llm.Provider, cfg *config.Config) *llm.Engine {
-				return llm.NewEngine(provider, llm.NewToolRegistry())
+			NewEngine: func(provider core.Provider, cfg *config.Config) *engine.Engine {
+				return engine.NewEngine(provider, engine.NewToolRegistry())
 			},
 			ParseTags: func(tags string) []string {
 				var out []string

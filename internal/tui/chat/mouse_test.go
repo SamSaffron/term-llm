@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -279,16 +279,16 @@ func TestMouseClickThinkingHeaderTogglesOnlyThatBlock(t *testing.T) {
 	m.setTextareaValue("")
 	m.tracker = ui.NewToolTracker()
 
-	first := llm.Part{
-		Type:                  llm.PartText,
+	first := core.Part{
+		Type:                  core.PartText,
 		ReasoningContent:      "first hidden body",
-		ReasoningKind:         llm.ReasoningKindRaw,
+		ReasoningKind:         core.ReasoningKindRaw,
 		ReasoningSummaryTitle: "First plan",
 	}
-	second := llm.Part{
-		Type:                  llm.PartText,
+	second := core.Part{
+		Type:                  core.PartText,
 		ReasoningContent:      "second hidden body",
-		ReasoningKind:         llm.ReasoningKindRaw,
+		ReasoningKind:         core.ReasoningKindRaw,
 		ReasoningSummaryTitle: "Second plan",
 	}
 	m.tracker.AddReasoningSegment(ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(first)), reasoningSegmentFromPart(first))
@@ -340,20 +340,20 @@ func TestMouseClickThinkingHeaderUsesSetContentSnapshotWhenHistoryRenderThrottle
 	m.messages = []session.Message{{
 		ID:        301,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{
 			{
-				Type:                  llm.PartText,
+				Type:                  core.PartText,
 				Text:                  "first answer",
 				ReasoningContent:      "first hidden body\nwith enough lines\nto shift later headers",
-				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningKind:         core.ReasoningKindRaw,
 				ReasoningSummaryTitle: "First throttled plan",
 			},
 			{
-				Type:                  llm.PartText,
+				Type:                  core.PartText,
 				Text:                  "second answer",
 				ReasoningContent:      "second hidden body",
-				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningKind:         core.ReasoningKindRaw,
 				ReasoningSummaryTitle: "Second throttled plan",
 			},
 		},
@@ -402,10 +402,10 @@ func TestMouseClickThinkingHeaderUsesTrackerSegmentIndexSnapshot(t *testing.T) {
 	m.setTextareaValue("")
 	m.tracker = ui.NewToolTracker()
 
-	first := llm.Part{Type: llm.PartText, ReasoningContent: "first body", ReasoningKind: llm.ReasoningKindRaw, ReasoningSummaryTitle: "Visible first"}
-	second := llm.Part{Type: llm.PartText, ReasoningContent: "second body", ReasoningKind: llm.ReasoningKindRaw, ReasoningSummaryTitle: "Visible second"}
+	first := core.Part{Type: core.PartText, ReasoningContent: "first body", ReasoningKind: core.ReasoningKindRaw, ReasoningSummaryTitle: "Visible first"}
+	second := core.Part{Type: core.PartText, ReasoningContent: "second body", ReasoningKind: core.ReasoningKindRaw, ReasoningSummaryTitle: "Visible second"}
 	m.tracker.AddReasoningSegment(ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(first)), reasoningSegmentFromPart(first))
-	empty := reasoningSegmentFromPart(llm.Part{Type: llm.PartText, ReasoningContent: "empty body", ReasoningKind: llm.ReasoningKindRaw, ReasoningSummaryTitle: "Empty skipped"})
+	empty := reasoningSegmentFromPart(core.Part{Type: core.PartText, ReasoningContent: "empty body", ReasoningKind: core.ReasoningKindRaw, ReasoningSummaryTitle: "Empty skipped"})
 	m.tracker.Segments = append(m.tracker.Segments, ui.Segment{Type: ui.SegmentReasoning, Reasoning: &empty, Complete: true})
 	m.tracker.Version++
 	m.tracker.AddReasoningSegment(ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(second)), reasoningSegmentFromPart(second))
@@ -450,10 +450,10 @@ func TestMouseClickCustomHiddenLabelThinkingHeaderTogglesBlock(t *testing.T) {
 		m.chatRenderer.SetReasoningConfig(m.reasoningConfig)
 	}
 
-	part := llm.Part{
-		Type:             llm.PartText,
+	part := core.Part{
+		Type:             core.PartText,
 		ReasoningContent: "custom label body",
-		ReasoningKind:    llm.ReasoningKindRaw,
+		ReasoningKind:    core.ReasoningKindRaw,
 	}
 	m.tracker.AddReasoningSegment(ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(part)), reasoningSegmentFromPart(part))
 	m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(m.tracker.CompletedSegments(), m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
@@ -489,12 +489,12 @@ func TestMouseClickReloadedHistoryThinkingHeaderTogglesBlock(t *testing.T) {
 	m.messages = []session.Message{{
 		ID:        101,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:                  llm.PartText,
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:                  core.PartText,
 			Text:                  "Final answer.",
 			ReasoningContent:      "persisted qwen thinking body",
-			ReasoningKind:         llm.ReasoningKindRaw,
+			ReasoningKind:         core.ReasoningKindRaw,
 			ReasoningSummaryTitle: "Loaded plan",
 		}},
 		TextContent: "Final answer.",
@@ -544,9 +544,9 @@ func TestMouseClickReloadedHistoryThoughtHeaderIgnoresPlainTextDecoys(t *testing
 		{
 			ID:        201,
 			SessionID: "test-session",
-			Role:      llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type: llm.PartText,
+			Role:      core.RoleAssistant,
+			Parts: []core.Part{{
+				Type: core.PartText,
 				Text: "▸ Thought: this is ordinary assistant text, not a collapsible thought block.\n\nCarry on.",
 			}},
 			TextContent: "▸ Thought: this is ordinary assistant text, not a collapsible thought block.\n\nCarry on.",
@@ -556,12 +556,12 @@ func TestMouseClickReloadedHistoryThoughtHeaderIgnoresPlainTextDecoys(t *testing
 		{
 			ID:        202,
 			SessionID: "test-session",
-			Role:      llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type:                  llm.PartText,
+			Role:      core.RoleAssistant,
+			Parts: []core.Part{{
+				Type:                  core.PartText,
 				Text:                  "Final answer.",
 				ReasoningContent:      "body that should expand",
-				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningKind:         core.ReasoningKindRaw,
 				ReasoningSummaryTitle: "Clickable plan",
 			}},
 			TextContent: "Final answer.",
@@ -603,7 +603,7 @@ func TestMouseClickLiveThinkingHeaderTogglesBeforeCommit(t *testing.T) {
 
 	updated, _ := m.Update(streamEventMsg{event: ui.StreamEvent{
 		Type:           ui.StreamEventReasoning,
-		ReasoningKind:  llm.ReasoningKindRaw,
+		ReasoningKind:  core.ReasoningKindRaw,
 		ReasoningText:  "live hidden body",
 		ReasoningTitle: "Live plan",
 	}})
@@ -670,7 +670,7 @@ func TestMouseClickThinkingHeaderTogglesAfterStreamDone(t *testing.T) {
 	}
 	stream(ui.StreamEvent{
 		Type:           ui.StreamEventReasoning,
-		ReasoningKind:  llm.ReasoningKindRaw,
+		ReasoningKind:  core.ReasoningKindRaw,
 		ReasoningText:  "done hidden body",
 		ReasoningTitle: "Done plan",
 	})
@@ -748,7 +748,7 @@ func TestRetainedTrackerDoesNotDuplicateTurnOnNextStream(t *testing.T) {
 	}
 	stream(ui.StreamEvent{
 		Type:           ui.StreamEventReasoning,
-		ReasoningKind:  llm.ReasoningKindRaw,
+		ReasoningKind:  core.ReasoningKindRaw,
 		ReasoningText:  "thinking body",
 		ReasoningTitle: "Plan A",
 	})

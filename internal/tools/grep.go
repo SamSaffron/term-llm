@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 const (
@@ -896,8 +896,8 @@ type GrepMatch struct {
 	Context    string `json:"context,omitempty"` // 3 lines of context
 }
 
-func (t *GrepTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *GrepTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        GrepToolName,
 		Description: "Search file contents using regex patterns (RE2 syntax). Returns matches with context.",
 		Schema: map[string]interface{}{
@@ -974,7 +974,7 @@ func (t *GrepTool) Preview(args json.RawMessage) string {
 	return result
 }
 
-func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
@@ -982,8 +982,8 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		"pattern", "path", "include", "exclude", "type",
 		"max_results", "context_lines", "files_with_matches", "multiline",
 	})
-	textOutput := func(message string) llm.ToolOutput {
-		return llm.TextOutput(warning + message)
+	textOutput := func(message string) core.ToolOutput {
+		return core.TextOutput(warning + message)
 	}
 
 	var a GrepArgs

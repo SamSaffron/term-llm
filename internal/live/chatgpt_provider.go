@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 const chatGPTCallTimeout = 30 * time.Second
@@ -125,7 +124,7 @@ func ChatGPTAuth(_ context.Context, refresh bool) (Auth, error) {
 	return Auth{
 		AccessToken: creds.AccessToken,
 		AccountID:   creds.AccountID,
-		Headers:     llm.ChatGPTRequestHeaders(creds),
+		Headers:     responsesproviders.ChatGPTRequestHeaders(creds),
 	}, nil
 }
 

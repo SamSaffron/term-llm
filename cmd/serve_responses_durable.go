@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -63,8 +65,8 @@ func parseBranchDurableResponseMessageID(responseID string) (int64, bool) {
 	return parseDurableResponseMessageID(responseID)
 }
 
-func isVisibleContinuationRole(role llm.Role) bool {
-	return role == llm.RoleUser || role == llm.RoleAssistant
+func isVisibleContinuationRole(role core.Role) bool {
+	return role == core.RoleUser || role == core.RoleAssistant
 }
 
 func latestVisibleMessage(messages []session.Message) (session.Message, bool) {
@@ -152,7 +154,7 @@ func branchContextRequestValues(requested *responsesBranchContextRequest) (strin
 	return mode, focus, 0, ""
 }
 
-func (s *serveServer) recordPathNoteUsage(ctx context.Context, sourceSessionID, model string, notes *llm.PathNotesResult) {
+func (s *serveServer) recordPathNoteUsage(ctx context.Context, sourceSessionID, model string, notes *engine.PathNotesResult) {
 	if notes == nil || notes.Usage.BillableCountersZero() {
 		return
 	}
@@ -164,7 +166,7 @@ func (s *serveServer) recordPathNoteUsage(ctx context.Context, sourceSessionID, 
 	}
 }
 
-func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionID string, source []llm.Message, mode, focus string) (*session.BranchPathNote, int, string) {
+func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionID string, source []core.Message, mode, focus string) (*session.BranchPathNote, int, string) {
 	if mode == "" || mode == "none" || mode == "clean" || len(source) == 0 {
 		return nil, 0, ""
 	}
@@ -176,7 +178,7 @@ func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionI
 	if providerName == "" {
 		providerName = strings.TrimSpace(sess.Provider)
 	}
-	var provider llm.Provider
+	var provider core.Provider
 	switch {
 	case s.pathNotesProviderFactory != nil:
 		provider, err = s.pathNotesProviderFactory(providerName, sess.Model)
@@ -192,7 +194,7 @@ func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionI
 	if err != nil || provider == nil {
 		return nil, http.StatusConflict, "branch context generation is unavailable"
 	}
-	notes, err := llm.GeneratePathNotes(ctx, provider, sess.Model, source, llm.PathNotesConfig{Focus: focus})
+	notes, err := engine.GeneratePathNotes(ctx, provider, sess.Model, source, engine.PathNotesConfig{Focus: focus})
 	s.recordPathNoteUsage(ctx, sourceSessionID, sess.Model, notes)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -205,7 +207,7 @@ func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionI
 	}
 	return &session.BranchPathNote{
 		Text: notes.Notes,
-		Provenance: llm.PathNoteProvenance{
+		Provenance: core.PathNoteProvenance{
 			SourceMessages:  notes.SourceMessages,
 			OmittedMessages: notes.OmittedMessages,
 			ReadFiles:       notes.ReadFiles,
@@ -268,7 +270,7 @@ func (s *serveServer) prepareBranchPathNoteOnce(ctx context.Context, sourceSessi
 	return flight.note, flight.status, flight.message, workCtx, release
 }
 
-func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []llm.Message, allowIdentifiedUserBatch bool, expectedRev *int64, idempotencyKey string, branchContext *responsesBranchContextRequest) (durablePreviousResponseResolution, int, string) {
+func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []core.Message, allowIdentifiedUserBatch bool, expectedRev *int64, idempotencyKey string, branchContext *responsesBranchContextRequest) (durablePreviousResponseResolution, int, string) {
 	msgID, ok := parseBranchDurableResponseMessageID(previousResponseID)
 	if !ok {
 		return durablePreviousResponseResolution{}, http.StatusBadRequest, "branch requires a durable previous_response_id"
@@ -395,7 +397,7 @@ func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponse
 	}, 0, ""
 }
 
-func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []llm.Message, allowIdentifiedUserBatch bool) (durablePreviousResponseResolution, int, string) {
+func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []core.Message, allowIdentifiedUserBatch bool) (durablePreviousResponseResolution, int, string) {
 	msgID, ok := parseDurableResponseMessageID(previousResponseID)
 	if !ok {
 		return durablePreviousResponseResolution{}, 0, ""
@@ -434,15 +436,15 @@ func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, prev
 	return durablePreviousResponseResolution{sessionID: msg.SessionID, latestID: durableResponseIDForMessageID(msg.ID)}, 0, ""
 }
 
-func validateDurableContinuationInput(inputMessages []llm.Message, allowIdentifiedUserBatch bool) error {
-	if len(inputMessages) == 1 && inputMessages[0].Role == llm.RoleUser {
+func validateDurableContinuationInput(inputMessages []core.Message, allowIdentifiedUserBatch bool) error {
+	if len(inputMessages) == 1 && inputMessages[0].Role == core.RoleUser {
 		return nil
 	}
 	if allowIdentifiedUserBatch && len(inputMessages) > 1 {
 		seen := make(map[string]struct{}, len(inputMessages))
 		for i := range inputMessages {
 			id := strings.TrimSpace(inputMessages[i].ClientMessageID)
-			if inputMessages[i].Role != llm.RoleUser || id == "" {
+			if inputMessages[i].Role != core.RoleUser || id == "" {
 				return fmt.Errorf("identified user batch requires only user messages with client_message_id")
 			}
 			if _, duplicate := seen[id]; duplicate {
@@ -455,7 +457,7 @@ func validateDurableContinuationInput(inputMessages []llm.Message, allowIdentifi
 	if len(inputMessages) > 0 {
 		allTools := true
 		for _, msg := range inputMessages {
-			if msg.Role != llm.RoleTool {
+			if msg.Role != core.RoleTool {
 				allTools = false
 				break
 			}

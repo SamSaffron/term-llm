@@ -13,7 +13,7 @@ import (
 	"time"
 
 	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -1406,23 +1406,23 @@ func TestJobsV2RetentionPrunesOldQueueAgentJobs(t *testing.T) {
 }
 
 func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
-	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		if cfg.AgentName != "planner" {
 			t.Fatalf("agent_name = %q, want %q", cfg.AgentName, "planner")
 		}
 		if strings.TrimSpace(cfg.SessionID) == "" {
 			t.Fatal("expected session_id to be set for llm job runs")
 		}
-		onEvent(llm.Event{
-			Type: llm.EventToolCall,
-			Tool: &llm.ToolCall{
+		onEvent(core.Event{
+			Type: core.EventToolCall,
+			Tool: &core.ToolCall{
 				ID:        "progress-1",
 				Name:      "update_progress",
 				Arguments: json.RawMessage(`{"state":{"step":"draft"},"reason":"milestone","message":"draft ready"}`),
 			},
 		})
-		onEvent(llm.Event{
-			Type:        llm.EventToolExecEnd,
+		onEvent(core.Event{
+			Type:        core.EventToolExecEnd,
 			ToolCallID:  "progress-1",
 			ToolName:    "update_progress",
 			ToolSuccess: true,
@@ -1512,7 +1512,7 @@ func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
 }
 
 func TestJobsV2_ProgressiveLLM_FinalResponseProse(t *testing.T) {
-	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		return serveJobsExecResult{
 			Progressive: &progressiveRunResult{
 				ExitReason:    exitReasonTimeout,
@@ -2259,11 +2259,11 @@ func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
 }
 
 func TestJobsV2LLMRunnerAccumulatesStreamingDeltas(t *testing.T) {
-	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
-		onEvent(llm.Event{Type: llm.EventReasoningDelta, Text: "thinking"})
-		onEvent(llm.Event{Type: llm.EventTextDelta, Text: "hel"})
-		onEvent(llm.Event{Type: llm.EventTextDelta, Text: "lo"})
-		onEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 5}})
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
+		onEvent(core.Event{Type: core.EventReasoningDelta, Text: "thinking"})
+		onEvent(core.Event{Type: core.EventTextDelta, Text: "hel"})
+		onEvent(core.Event{Type: core.EventTextDelta, Text: "lo"})
+		onEvent(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 3, OutputTokens: 5}})
 		return serveJobsExecResult{}, nil
 	}}
 	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"test","instructions":"say hello","cwd":"."}`)}
@@ -2340,7 +2340,7 @@ func TestJobsV2LLMRunnerRequiresCwd(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			runner := &jobsV2LLMRunner{exec: func(context.Context, jobsV2LLMConfig, func(llm.Event)) (serveJobsExecResult, error) {
+			runner := &jobsV2LLMRunner{exec: func(context.Context, jobsV2LLMConfig, func(core.Event)) (serveJobsExecResult, error) {
 				called = true
 				return serveJobsExecResult{}, nil
 			}}
@@ -2361,9 +2361,9 @@ func BenchmarkJobsV2LLMRunnerTextDeltaAccumulation(b *testing.B) {
 	const delta = "0123456789abcdef"
 	wantLen := deltas * len(delta)
 
-	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		for i := 0; i < deltas; i++ {
-			onEvent(llm.Event{Type: llm.EventTextDelta, Text: delta})
+			onEvent(core.Event{Type: core.EventTextDelta, Text: delta})
 		}
 		return serveJobsExecResult{}, nil
 	}}

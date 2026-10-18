@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 type bridgeBarrierTool struct {
@@ -15,55 +18,55 @@ type bridgeBarrierTool struct {
 	release chan struct{}
 }
 
-func (t *bridgeBarrierTool) Spec() ToolSpec {
-	return ToolSpec{Name: "spawn_agent", Schema: map[string]any{"type": "object"}}
+func (t *bridgeBarrierTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "spawn_agent", Schema: map[string]any{"type": "object"}}
 }
 func (t *bridgeBarrierTool) Preview(json.RawMessage) string { return "" }
-func (t *bridgeBarrierTool) Execute(_ context.Context, args json.RawMessage) (ToolOutput, error) {
+func (t *bridgeBarrierTool) Execute(_ context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	t.started <- payload.ID
 	<-t.release
-	return TextOutput("done:" + payload.ID), nil
+	return core.TextOutput("done:" + payload.ID), nil
 }
 
 type concurrentSyncBridgeProvider struct {
 	mu       sync.Mutex
 	turn     int
-	results  []ToolExecutionResponse
+	results  []core.ToolExecutionResponse
 	callIDs  []string
 	finished chan struct{}
 }
 
 func (p *concurrentSyncBridgeProvider) Name() string       { return "sync-bridge" }
 func (p *concurrentSyncBridgeProvider) Credential() string { return "test" }
-func (p *concurrentSyncBridgeProvider) Capabilities() Capabilities {
-	return Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}
+func (p *concurrentSyncBridgeProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}
 }
-func (p *concurrentSyncBridgeProvider) Stream(ctx context.Context, _ Request) (Stream, error) {
+func (p *concurrentSyncBridgeProvider) Stream(ctx context.Context, _ core.Request) (core.Stream, error) {
 	p.mu.Lock()
 	turn := p.turn
 	p.turn++
 	p.mu.Unlock()
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		if turn > 0 {
-			if err := send.Send(Event{Type: EventTextDelta, Text: "complete"}); err != nil {
+			if err := send.Send(core.Event{Type: core.EventTextDelta, Text: "complete"}); err != nil {
 				return err
 			}
-			return send.Send(Event{Type: EventDone})
+			return send.Send(core.Event{Type: core.EventDone})
 		}
-		responses := make([]chan ToolExecutionResponse, 2)
+		responses := make([]chan core.ToolExecutionResponse, 2)
 		for i := range responses {
-			responses[i] = make(chan ToolExecutionResponse, 1)
+			responses[i] = make(chan core.ToolExecutionResponse, 1)
 			id := fmt.Sprintf("toolu_%d", i+1)
 			args, _ := json.Marshal(map[string]string{"id": id})
-			if err := send.Send(Event{
-				Type: EventToolCall, ToolCallID: id, ToolName: "spawn_agent",
-				Tool: &ToolCall{ID: id, Name: "spawn_agent", Arguments: args}, ToolResponse: responses[i],
+			if err := send.Send(core.Event{
+				Type: core.EventToolCall, ToolCallID: id, ToolName: "spawn_agent",
+				Tool: &core.ToolCall{ID: id, Name: "spawn_agent", Arguments: args}, ToolResponse: responses[i],
 			}); err != nil {
 				return err
 			}
@@ -80,20 +83,20 @@ func (p *concurrentSyncBridgeProvider) Stream(ctx context.Context, _ Request) (S
 			}
 		}
 		close(p.finished)
-		return send.Send(Event{Type: EventDone})
+		return send.Send(core.Event{Type: core.EventDone})
 	}), nil
 }
 
 func TestEngineRunsConcurrentSyncBridgeCallsThroughSharedExecutor(t *testing.T) {
 	tool := &bridgeBarrierTool{started: make(chan string, 2), release: make(chan struct{})}
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
 	provider := &concurrentSyncBridgeProvider{finished: make(chan struct{})}
-	engine := NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stream, err := engine.Stream(ctx, Request{
-		Messages: []Message{UserText("run both")}, Tools: []ToolSpec{tool.Spec()},
+	stream, err := engine.Stream(ctx, core.Request{
+		Messages: []core.Message{core.UserText("run both")}, Tools: []core.ToolSpec{tool.Spec()},
 		ParallelToolCalls: true, MaxTurns: 2,
 	})
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestLiveNewSessionRequiresOriginatingTurnAuthority(t *testing.T) {
@@ -19,10 +19,10 @@ func TestLiveNewSessionRequiresOriginatingTurnAuthority(t *testing.T) {
 	}
 	bound := ContextWithLiveNewSession(context.Background(), "parent", create)
 	for name, ctx := range map[string]context.Context{
-		"ordinary turn": llm.ContextWithSessionID(context.Background(), "parent"),
+		"ordinary turn": core.ContextWithSessionID(context.Background(), "parent"),
 		"no session":    bound,
-		"child session": llm.ContextWithSessionID(bound, "child"),
-		"foreign turn":  llm.ContextWithSessionID(ContextWithLiveNewSession(context.Background(), "other", create), "parent"),
+		"child session": core.ContextWithSessionID(bound, "child"),
+		"foreign turn":  core.ContextWithSessionID(ContextWithLiveNewSession(context.Background(), "other", create), "parent"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tool.Execute(ctx, json.RawMessage(`{}`))
@@ -40,13 +40,13 @@ func TestLiveNewSessionRequiresOriginatingTurnAuthority(t *testing.T) {
 func TestLiveNewSessionDeniesMissingAndEmptyBindings(t *testing.T) {
 	tool := &LiveNewSessionTool{}
 	for name, candidate := range map[string]context.Context{
-		"nil callback": llm.ContextWithSessionID(
+		"nil callback": core.ContextWithSessionID(
 			ContextWithLiveNewSession(context.Background(), "parent", nil), "parent"),
-		"empty session": llm.ContextWithSessionID(
+		"empty session": core.ContextWithSessionID(
 			ContextWithLiveNewSession(context.Background(), "", func(context.Context, LiveNewSessionRequest) (LiveNewSessionResult, error) {
 				return LiveNewSessionResult{}, nil
 			}), "parent"),
-		"unbound context": llm.ContextWithSessionID(context.Background(), "parent"),
+		"unbound context": core.ContextWithSessionID(context.Background(), "parent"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tool.Execute(candidate, json.RawMessage(`{}`))
@@ -60,7 +60,7 @@ func TestLiveNewSessionDeniesMissingAndEmptyBindings(t *testing.T) {
 
 func TestLiveNewSessionArgumentsAreOptionalTrimmedAndTyped(t *testing.T) {
 	var seen []LiveNewSessionRequest
-	ctx := llm.ContextWithSessionID(ContextWithLiveNewSession(context.Background(), "chat",
+	ctx := core.ContextWithSessionID(ContextWithLiveNewSession(context.Background(), "chat",
 		func(_ context.Context, request LiveNewSessionRequest) (LiveNewSessionResult, error) {
 			seen = append(seen, request)
 			if request.Project == "missing" {
@@ -123,7 +123,7 @@ func TestLiveNewSessionArgumentsAreOptionalTrimmedAndTyped(t *testing.T) {
 }
 
 func TestLiveNewSessionOutputNamesTheConversationItStarted(t *testing.T) {
-	ctx := llm.ContextWithSessionID(ContextWithLiveNewSession(context.Background(), "chat",
+	ctx := core.ContextWithSessionID(ContextWithLiveNewSession(context.Background(), "chat",
 		func(context.Context, LiveNewSessionRequest) (LiveNewSessionResult, error) {
 			return LiveNewSessionResult{SessionID: "20260917-130000-3f5c1a9b", SessionNumber: 43, Project: "Reflow", Agent: "reviewer"}, nil
 		}), "chat")

@@ -16,6 +16,11 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/cache"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/factory"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	"github.com/samsaffron/term-llm/internal/llm/schema"
 	"github.com/samsaffron/term-llm/internal/venice"
 )
 
@@ -49,7 +54,7 @@ func TestNewProviderByName_ResolvesConfiguredVeniceCredentialsOnDemand(t *testin
 func TestCreateProviderFromConfig_VeniceRequiresAPIKey(t *testing.T) {
 	t.Setenv("VENICE_API_KEY", "")
 
-	_, err := createProviderFromConfig("venice", &config.ProviderConfig{Model: "venice-uncensored"})
+	_, err := factory.Create("venice", &config.ProviderConfig{Model: "venice-uncensored"}, factoryOptions())
 	if err == nil {
 		t.Fatal("expected missing Venice API key to return an error")
 	}
@@ -62,15 +67,15 @@ func TestCreateProviderFromConfig_VeniceRequiresAPIKey(t *testing.T) {
 func TestCreateProviderFromConfig_VeniceTrimsConfiguredAPIKey(t *testing.T) {
 	t.Setenv("VENICE_API_KEY", "")
 
-	provider, err := createProviderFromConfig("venice", &config.ProviderConfig{
+	provider, err := factory.Create("venice", &config.ProviderConfig{
 		ResolvedAPIKey: "  test-key\n",
 		Model:          "venice-uncensored",
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	venice, ok := provider.(*VeniceProvider)
+	venice, ok := provider.(*opencompat.VeniceProvider)
 	if !ok {
 		t.Fatalf("provider type = %T, want *VeniceProvider", provider)
 	}
@@ -95,11 +100,11 @@ func TestVeniceProvider429IsRetried(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	inner := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+	inner := &opencompat.VeniceProvider{OpenAICompatProvider: opencompat.NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
 	provider := WrapWithRetry(inner, RetryConfig{MaxAttempts: 5, BaseBackoff: time.Millisecond, MaxBackoff: 10 * time.Millisecond})
 
-	stream, err := provider.Stream(context.Background(), Request{
-		Messages: []Message{UserText("hello")},
+	stream, err := provider.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("hello")},
 	})
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -115,13 +120,13 @@ func TestVeniceProvider429IsRetried(t *testing.T) {
 			}
 			t.Fatalf("Recv() error = %v", err)
 		}
-		if ev.Type == EventError {
+		if ev.Type == core.EventError {
 			t.Fatalf("unexpected EventError after retry: %v", ev.Err)
 		}
-		if ev.Type == EventDone {
+		if ev.Type == core.EventDone {
 			break
 		}
-		if ev.Type == EventTextDelta {
+		if ev.Type == core.EventTextDelta {
 			text += ev.Text
 		}
 	}
@@ -164,7 +169,7 @@ func TestNewProviderByName_ResolvesConfiguredNearAICredentialsOnDemand(t *testin
 func TestCreateProviderFromConfig_NearAIRequiresAPIKey(t *testing.T) {
 	t.Setenv("NEARAI_API_KEY", "")
 
-	_, err := createProviderFromConfig("nearai", &config.ProviderConfig{Model: "zai-org/GLM-5.1-FP8"})
+	_, err := factory.Create("nearai", &config.ProviderConfig{Model: "zai-org/GLM-5.1-FP8"}, factoryOptions())
 	if err == nil {
 		t.Fatal("expected missing NEAR AI API key to return an error")
 	}
@@ -177,15 +182,15 @@ func TestCreateProviderFromConfig_NearAIRequiresAPIKey(t *testing.T) {
 func TestCreateProviderFromConfig_NearAITrimsConfiguredAPIKey(t *testing.T) {
 	t.Setenv("NEARAI_API_KEY", "")
 
-	provider, err := createProviderFromConfig("nearai", &config.ProviderConfig{
+	provider, err := factory.Create("nearai", &config.ProviderConfig{
 		ResolvedAPIKey: "  test-key\n",
 		Model:          "zai-org/GLM-5.1-FP8",
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	nearai, ok := provider.(*NearAIProvider)
+	nearai, ok := provider.(*opencompat.NearAIProvider)
 	if !ok {
 		t.Fatalf("provider type = %T, want *NearAIProvider", provider)
 	}
@@ -240,7 +245,7 @@ func TestProviderHTTPClients_UseHTTP2WithLargerIdlePool(t *testing.T) {
 func TestNormalizeSchemaForOpenAI_FreeFormMapProperty(t *testing.T) {
 	// Regression: env parameter uses additionalProperties: {type: string} to represent
 	// a free-form string map. The normalizer must not clobber it with false.
-	schema := map[string]interface{}{
+	input := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"command": map[string]interface{}{
@@ -257,7 +262,7 @@ func TestNormalizeSchemaForOpenAI_FreeFormMapProperty(t *testing.T) {
 		"additionalProperties": false,
 	}
 
-	result := normalizeSchemaForOpenAI(schema)
+	result := schema.NormalizeSchemaForOpenAI(input)
 
 	props, ok := result["properties"].(map[string]interface{})
 	if !ok {
@@ -269,11 +274,11 @@ func TestNormalizeSchemaForOpenAI_FreeFormMapProperty(t *testing.T) {
 		t.Fatal("expected env to be a map")
 	}
 
-	// additionalProperties on env must remain a schema map, not false
+	// additionalProperties on env must remain a input map, not false
 	ap := envSchema["additionalProperties"]
 	apMap, ok := ap.(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected env.additionalProperties to remain a schema map, got %T (%v)", ap, ap)
+		t.Fatalf("expected env.additionalProperties to remain a input map, got %T (%v)", ap, ap)
 	}
 	if apMap["type"] != "string" {
 		t.Errorf("expected env.additionalProperties.type = string, got %v", apMap["type"])
@@ -303,7 +308,7 @@ func TestNormalizeSchemaForOpenAI_FreeFormMapProperty(t *testing.T) {
 // from openai_compat_test.go: TestNormalizeSchemaForOpenAI_RegularObjectGetsAdditionalPropertiesFalse
 func TestNormalizeSchemaForOpenAI_RegularObjectGetsAdditionalPropertiesFalse(t *testing.T) {
 	// Regular nested object (no additionalProperties set) should get additionalProperties: false
-	schema := map[string]interface{}{
+	input := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"options": map[string]interface{}{
@@ -315,7 +320,7 @@ func TestNormalizeSchemaForOpenAI_RegularObjectGetsAdditionalPropertiesFalse(t *
 		},
 	}
 
-	result := normalizeSchemaForOpenAI(schema)
+	result := schema.NormalizeSchemaForOpenAI(input)
 
 	props := result["properties"].(map[string]interface{})
 	optionsSchema := props["options"].(map[string]interface{})
@@ -327,7 +332,7 @@ func TestNormalizeSchemaForOpenAI_RegularObjectGetsAdditionalPropertiesFalse(t *
 
 // from openai_compat_test.go: TestNormalizeSchemaForOpenAI_MCPTypeArrayBecomesAnyOf
 func TestNormalizeSchemaForOpenAI_MCPTypeArrayBecomesAnyOf(t *testing.T) {
-	schema := map[string]interface{}{
+	input := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"data": map[string]interface{}{
@@ -338,7 +343,7 @@ func TestNormalizeSchemaForOpenAI_MCPTypeArrayBecomesAnyOf(t *testing.T) {
 		},
 	}
 
-	result := normalizeSchemaForOpenAI(schema)
+	result := schema.NormalizeSchemaForOpenAI(input)
 	props := result["properties"].(map[string]interface{})
 	dataSchema := props["data"].(map[string]interface{})
 
@@ -361,7 +366,7 @@ func TestNormalizeSchemaForOpenAI_MCPTypeArrayBecomesAnyOf(t *testing.T) {
 		t.Fatalf("expected array branch to preserve and normalize items, got %#v", arrayBranch["items"])
 	}
 	if items["type"] != "string" {
-		t.Fatalf("expected empty items schema to be normalized to string, got %#v", items["type"])
+		t.Fatalf("expected empty items input to be normalized to string, got %#v", items["type"])
 	}
 	nullBranch, ok := anyOf[1].(map[string]interface{})
 	if !ok || nullBranch["type"] != "null" {
@@ -371,7 +376,7 @@ func TestNormalizeSchemaForOpenAI_MCPTypeArrayBecomesAnyOf(t *testing.T) {
 
 // from openai_compat_test.go: TestNormalizeSchemaForOpenAI_InfersInvalidMCPPropertyType
 func TestNormalizeSchemaForOpenAI_InfersInvalidMCPPropertyType(t *testing.T) {
-	schema := map[string]interface{}{
+	input := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"data": map[string]interface{}{
@@ -386,7 +391,7 @@ func TestNormalizeSchemaForOpenAI_InfersInvalidMCPPropertyType(t *testing.T) {
 		},
 	}
 
-	result := normalizeSchemaForOpenAI(schema)
+	result := schema.NormalizeSchemaForOpenAI(input)
 	props := result["properties"].(map[string]interface{})
 	dataSchema := props["data"].(map[string]interface{})
 	if dataSchema["type"] != "array" {
@@ -400,10 +405,10 @@ func TestNormalizeSchemaForOpenAI_InfersInvalidMCPPropertyType(t *testing.T) {
 
 // from openai_compat_test.go: TestBuildResponsesTools_DefaultsEmptyParametersToObject
 func TestBuildResponsesTools_DefaultsEmptyParametersToObject(t *testing.T) {
-	tools := BuildResponsesTools([]ToolSpec{{Name: "empty", Schema: map[string]interface{}{}}})
-	tool := tools[0].(ResponsesTool)
+	tools := responses.BuildResponsesTools([]core.ToolSpec{{Name: "empty", Schema: map[string]interface{}{}}})
+	tool := tools[0].(responses.ResponsesTool)
 	if tool.Parameters["type"] != "object" {
-		t.Fatalf("expected empty tool schema to default to object parameters, got %#v", tool.Parameters)
+		t.Fatalf("expected empty tool input to default to object parameters, got %#v", tool.Parameters)
 	}
 	props, ok := tool.Parameters["properties"].(map[string]interface{})
 	if !ok || len(props) != 0 {
@@ -413,7 +418,7 @@ func TestBuildResponsesTools_DefaultsEmptyParametersToObject(t *testing.T) {
 
 // from openai_compat_test.go: TestBuildResponsesTools_NormalizesFreeFormMapProperty
 func TestBuildResponsesTools_NormalizesFreeFormMapProperty(t *testing.T) {
-	specs := []ToolSpec{{
+	specs := []core.ToolSpec{{
 		Name:   "shell",
 		Strict: true,
 		Schema: map[string]interface{}{
@@ -430,8 +435,8 @@ func TestBuildResponsesTools_NormalizesFreeFormMapProperty(t *testing.T) {
 			"additionalProperties": false,
 		},
 	}}
-	tools := BuildResponsesTools(specs)
-	tool := tools[0].(ResponsesTool)
+	tools := responses.BuildResponsesTools(specs)
+	tool := tools[0].(responses.ResponsesTool)
 	props := tool.Parameters["properties"].(map[string]interface{})
 
 	// command must remain unchanged
@@ -469,7 +474,7 @@ func TestBuildResponsesTools_NormalizesFreeFormMapProperty(t *testing.T) {
 		t.Fatal("expected env.items.properties.value to be a map")
 	}
 	if valueSchema["type"] != "string" {
-		t.Errorf("expected env.items.properties.value.type to be string (original additionalProperties schema), got %v", valueSchema["type"])
+		t.Errorf("expected env.items.properties.value.type to be string (original additionalProperties input), got %v", valueSchema["type"])
 	}
 	if items["additionalProperties"] != false {
 		t.Errorf("expected env.items.additionalProperties to be false, got %v", items["additionalProperties"])
@@ -479,7 +484,7 @@ func TestBuildResponsesTools_NormalizesFreeFormMapProperty(t *testing.T) {
 // from openai_compat_test.go: TestNormalizeFreeFormMapProperties_PreservesNonStringValueType
 func TestNormalizeFreeFormMapProperties_PreservesNonStringValueType(t *testing.T) {
 	// A free-form map whose values are integers, not strings.
-	schema := map[string]interface{}{
+	input := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"counts": map[string]interface{}{
@@ -488,7 +493,7 @@ func TestNormalizeFreeFormMapProperties_PreservesNonStringValueType(t *testing.T
 			},
 		},
 	}
-	result := normalizeFreeFormMapProperties(schema)
+	result := schema.NormalizeFreeFormMapProperties(input)
 	props := result["properties"].(map[string]interface{})
 	countsSchema := props["counts"].(map[string]interface{})
 	if countsSchema["type"] != "array" {
@@ -504,8 +509,8 @@ func TestNormalizeFreeFormMapProperties_PreservesNonStringValueType(t *testing.T
 
 // from openai_compat_test.go: TestNormalizeFreeFormMapProperties_TraversesItems
 func TestNormalizeFreeFormMapProperties_TraversesItems(t *testing.T) {
-	// A free-form map nested inside an array's items schema.
-	schema := map[string]interface{}{
+	// A free-form map nested inside an array's items input.
+	input := map[string]interface{}{
 		"type": "array",
 		"items": map[string]interface{}{
 			"type": "object",
@@ -517,7 +522,7 @@ func TestNormalizeFreeFormMapProperties_TraversesItems(t *testing.T) {
 			},
 		},
 	}
-	result := normalizeFreeFormMapProperties(schema)
+	result := schema.NormalizeFreeFormMapProperties(input)
 	items := result["items"].(map[string]interface{})
 	itemProps := items["properties"].(map[string]interface{})
 	envSchema, ok := itemProps["env"].(map[string]interface{})
@@ -531,8 +536,8 @@ func TestNormalizeFreeFormMapProperties_TraversesItems(t *testing.T) {
 
 // from openai_compat_test.go: TestNormalizeFreeFormMapProperties_AnyOfFreeFormMap
 func TestNormalizeFreeFormMapProperties_AnyOfFreeFormMap(t *testing.T) {
-	// A property whose schema is an anyOf where one branch is a free-form map.
-	schema := map[string]interface{}{
+	// A property whose input is an anyOf where one branch is a free-form map.
+	input := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"meta": map[string]interface{}{
@@ -546,7 +551,7 @@ func TestNormalizeFreeFormMapProperties_AnyOfFreeFormMap(t *testing.T) {
 			},
 		},
 	}
-	result := normalizeFreeFormMapProperties(schema)
+	result := schema.NormalizeFreeFormMapProperties(input)
 	props := result["properties"].(map[string]interface{})
 	metaSchema := props["meta"].(map[string]interface{})
 	anyOf := metaSchema["anyOf"].([]interface{})
@@ -573,7 +578,7 @@ func TestNormalizeFreeFormMapProperties_AnyOfFreeFormMap(t *testing.T) {
 // from openai_compat_test.go: TestNormalizeFreeFormMapProperties_PreservesMetadata
 func TestNormalizeFreeFormMapProperties_PreservesMetadata(t *testing.T) {
 	// Metadata fields beyond description (title, default) must survive conversion.
-	schema := map[string]interface{}{
+	input := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"tags": map[string]interface{}{
@@ -585,7 +590,7 @@ func TestNormalizeFreeFormMapProperties_PreservesMetadata(t *testing.T) {
 			},
 		},
 	}
-	result := normalizeFreeFormMapProperties(schema)
+	result := schema.NormalizeFreeFormMapProperties(input)
 	props := result["properties"].(map[string]interface{})
 	tagsSchema := props["tags"].(map[string]interface{})
 	if tagsSchema["type"] != "array" {
@@ -611,9 +616,9 @@ func TestOpenRouterDefaultRequiresKey(t *testing.T) {
 			if configured {
 				cfg.Providers["openrouter"] = config.ProviderConfig{}
 			}
-			for _, build := range []func() (Provider, error){
-				func() (Provider, error) { return NewProviderByNameNoRetry(cfg, "openrouter", "") },
-				func() (Provider, error) {
+			for _, build := range []func() (core.Provider, error){
+				func() (core.Provider, error) { return NewProviderByNameNoRetry(cfg, "openrouter", "") },
+				func() (core.Provider, error) {
 					p, err := NewProvider(cfg)
 					if retry, ok := p.(*RetryProvider); ok {
 						return retry.inner, err
@@ -631,7 +636,7 @@ func TestOpenRouterDefaultRequiresKey(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				router, ok := p.(*OpenAICompatProvider)
+				router, ok := p.(*opencompat.OpenAICompatProvider)
 				if !ok || router.Model() != "openrouter/free" || router.APIKey() != key {
 					t.Fatalf("configured=%v: wrong OpenRouter defaults", configured)
 				}
@@ -670,7 +675,7 @@ func TestNewProviderByName_ResolvesConfiguredSambaNovaCredentialsOnDemand(t *tes
 func TestCreateProviderFromConfig_SambaNovaRequiresAPIKey(t *testing.T) {
 	t.Setenv("SAMBANOVA_API_KEY", "")
 
-	_, err := createProviderFromConfig("sambanova", &config.ProviderConfig{Model: "gpt-oss-120b"})
+	_, err := factory.Create("sambanova", &config.ProviderConfig{Model: "gpt-oss-120b"}, factoryOptions())
 	if err == nil {
 		t.Fatal("expected missing SambaNova API key to return an error")
 	}
@@ -683,15 +688,15 @@ func TestCreateProviderFromConfig_SambaNovaRequiresAPIKey(t *testing.T) {
 func TestCreateProviderFromConfig_SambaNovaTrimsConfiguredAPIKey(t *testing.T) {
 	t.Setenv("SAMBANOVA_API_KEY", "")
 
-	provider, err := createProviderFromConfig("sambanova", &config.ProviderConfig{
+	provider, err := factory.Create("sambanova", &config.ProviderConfig{
 		ResolvedAPIKey: "  test-key\n",
 		Model:          "gpt-oss-120b",
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sn, ok := provider.(*SambaNovaProvider)
+	sn, ok := provider.(*opencompat.SambaNovaProvider)
 	if !ok {
 		t.Fatalf("provider type = %T, want *SambaNovaProvider", provider)
 	}
@@ -726,12 +731,12 @@ func TestVeniceImageModelDiscovery(t *testing.T) {
 		t.Fatalf("completions = %v", got)
 	}
 	for kind, want := range map[string][]string{"image": {"new-image"}, "inpaint": {"new-edit"}} {
-		if got := GetVeniceImageModelIDs(cfg, kind); !reflect.DeepEqual(got, want) {
+		if got := opencompat.GetVeniceImageModelIDs(cfg, kind); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s models = %v, want %v", kind, got, want)
 		}
 	}
 	cfg.Image.Venice.Model = "custom"
-	if got := GetVeniceImageModelIDs(cfg, "image"); !reflect.DeepEqual(got, []string{"custom", "new-image"}) {
+	if got := opencompat.GetVeniceImageModelIDs(cfg, "image"); !reflect.DeepEqual(got, []string{"custom", "new-image"}) {
 		t.Fatalf("configured model missing: %v", got)
 	}
 	if calls != 1 {
@@ -887,7 +892,7 @@ func TestNearAIProviderListModelsUsesCatalogEndpointAndFiltersNonChatModels(t *t
 	}))
 	defer ts.Close()
 
-	provider := &NearAIProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "zai-org/GLM-5.1-FP8", "NEAR AI")}
+	provider := &opencompat.NearAIProvider{OpenAICompatProvider: opencompat.NewOpenAICompatProvider(ts.URL, "test-key", "zai-org/GLM-5.1-FP8", "NEAR AI")}
 	models, err := provider.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
@@ -932,7 +937,7 @@ func TestOpenRouterCachedLimitFeedsProviderModelLookup(t *testing.T) {
 	cacheHome := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
 
-	RefreshOpenRouterCacheSync("", []ModelInfo{{ID: "minimax/minimax-m3", InputLimit: 1048576}})
+	opencompat.RefreshOpenRouterCacheSync("", []core.ModelInfo{{ID: "minimax/minimax-m3", InputLimit: 1048576}})
 
 	if got := InputLimitForProviderModel("openrouter", "minimax/minimax-m3"); got != 1048576 {
 		t.Fatalf("InputLimitForProviderModel(openrouter, minimax/minimax-m3) = %d, want 1048576", got)
@@ -971,7 +976,7 @@ func TestSambaNovaProviderListModelsUsesProviderScopedLimitsAndPricing(t *testin
 	}))
 	defer ts.Close()
 
-	provider := &SambaNovaProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "gpt-oss-120b", "SambaNova")}
+	provider := &opencompat.SambaNovaProvider{OpenAICompatProvider: opencompat.NewOpenAICompatProvider(ts.URL, "test-key", "gpt-oss-120b", "SambaNova")}
 	models, err := provider.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
@@ -1007,7 +1012,7 @@ func TestVeniceListModelsKeepsLiveContextLengthForUncuratedModels(t *testing.T) 
 	}))
 	defer ts.Close()
 
-	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "", "Venice")}
+	provider := &opencompat.VeniceProvider{OpenAICompatProvider: opencompat.NewOpenAICompatProvider(ts.URL, "test-key", "", "Venice")}
 	models, err := provider.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)

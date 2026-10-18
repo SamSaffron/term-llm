@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 func TestSystemPolicyRequestsUsefulMarkdownWithoutForcedVerbosity(t *testing.T) {
@@ -28,12 +30,12 @@ func TestSystemPolicyRequestsUsefulMarkdownWithoutForcedVerbosity(t *testing.T) 
 }
 
 func TestPrepareContextSnapshotRemovesDanglingToolsAndPreservesAnchors(t *testing.T) {
-	messages := []llm.Message{
-		{Role: llm.RoleUser, CacheAnchor: true, Parts: []llm.Part{{Type: llm.PartText, Text: "completed"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "complete", Name: "read"}}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "complete"}}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "partial"}, {Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "dangling", Name: "write"}}, {Type: llm.PartProviderReplay}}},
-		{Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartText, Text: "ui only"}}},
+	messages := []core.Message{
+		{Role: core.RoleUser, CacheAnchor: true, Parts: []core.Part{{Type: core.PartText, Text: "completed"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "complete", Name: "read"}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "complete"}}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "partial"}, {Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "dangling", Name: "write"}}, {Type: core.PartProviderReplay}}},
+		{Role: core.RoleEvent, Parts: []core.Part{{Type: core.PartText, Text: "ui only"}}},
 	}
 	got := PrepareContextSnapshot(messages)
 	if len(got) != 4 {
@@ -52,13 +54,13 @@ func TestPrepareContextSnapshotRemovesDanglingToolsAndPreservesAnchors(t *testin
 }
 
 func TestCloneMessagesDeepCopiesMutablePartMetadata(t *testing.T) {
-	messages := []llm.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type:                  llm.PartProviderReplay,
+	messages := []core.Message{{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type:                  core.PartProviderReplay,
 		ReasoningSummaryParts: []string{"summary"},
-		ProviderReplay:        &llm.ProviderReplayItem{Raw: []byte(`{"id":"one"}`)},
-		ToolCall:              &llm.ToolCall{ID: "call", Arguments: []byte(`{"value":1}`), ThoughtSig: []byte("sig")},
-		ToolResult: &llm.ToolResult{ID: "call", ContentParts: []llm.ToolContentPart{{
-			Type: llm.ToolContentPartImageData, ImageData: &llm.ToolImageData{Base64: "image"},
+		ProviderReplay:        &core.ProviderReplayItem{Raw: []byte(`{"id":"one"}`)},
+		ToolCall:              &core.ToolCall{ID: "call", Arguments: []byte(`{"value":1}`), ThoughtSig: []byte("sig")},
+		ToolResult: &core.ToolResult{ID: "call", ContentParts: []core.ToolContentPart{{
+			Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{Base64: "image"},
 		}}, Images: []string{"path"}, ThoughtSig: []byte("result-sig")},
 	}}}}
 	cloned := CloneMessages(messages)
@@ -79,7 +81,7 @@ func TestCloneMessagesDeepCopiesMutablePartMetadata(t *testing.T) {
 }
 
 func TestBuildMessagesRefreshesMainAndKeepsChronologicalHistory(t *testing.T) {
-	got, err := buildMessagesWithinBudget([]llm.Message{llm.UserText("new main fact")}, []Entry{
+	got, err := buildMessagesWithinBudget([]core.Message{core.UserText("new main fact")}, []Entry{
 		{Question: "q1", Response: "a1"},
 		{Question: "q2", Response: "a2"},
 	}, "q3", 10_000)
@@ -89,7 +91,7 @@ func TestBuildMessagesRefreshesMainAndKeepsChronologicalHistory(t *testing.T) {
 	var texts []string
 	for _, msg := range got {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartText {
+			if part.Type == core.PartText {
 				texts = append(texts, part.Text)
 			}
 		}
@@ -103,16 +105,16 @@ func TestBuildMessagesRefreshesMainAndKeepsChronologicalHistory(t *testing.T) {
 }
 
 func TestBuildMessagesPreservesMainPrefixBeforeSidePolicy(t *testing.T) {
-	got, err := buildMessagesWithinBudget([]llm.Message{
-		llm.SystemText("system"),
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
-		llm.UserText("main question"),
-		llm.AssistantText("main answer"),
+	got, err := buildMessagesWithinBudget([]core.Message{
+		core.SystemText("system"),
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "platform"}}},
+		core.UserText("main question"),
+		core.AssistantText("main answer"),
 	}, []Entry{{Question: "side one", Response: "side answer"}}, "side two", 10_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRoles := []llm.Role{llm.RoleSystem, llm.RoleDeveloper, llm.RoleUser, llm.RoleAssistant, llm.RoleUser, llm.RoleAssistant, llm.RoleDeveloper, llm.RoleUser}
+	wantRoles := []core.Role{core.RoleSystem, core.RoleDeveloper, core.RoleUser, core.RoleAssistant, core.RoleUser, core.RoleAssistant, core.RoleDeveloper, core.RoleUser}
 	wantTexts := []string{"system", "platform", "main question", "main answer", "side one", "side answer", SystemPolicy, "side two"}
 	if len(got) != len(wantRoles) {
 		t.Fatalf("messages = %#v", got)
@@ -125,7 +127,7 @@ func TestBuildMessagesPreservesMainPrefixBeforeSidePolicy(t *testing.T) {
 }
 
 func TestBuildMessagesUsesRuntimeInputLimit(t *testing.T) {
-	got, err := BuildMessages([]llm.Message{llm.UserText(strings.Repeat("main ", 2000))}, nil, "side", "unknown", "unknown", 1_000)
+	got, err := BuildMessages([]core.Message{core.UserText(strings.Repeat("main ", 2000))}, nil, "side", "unknown", "unknown", 1_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,11 +140,11 @@ func TestBuildMessagesKeepsLargeSelfManagedProviderSnapshot(t *testing.T) {
 	// claude-bin publishes no input limit and Engine.InputLimit() is zero for it,
 	// so a realistic transcript used to collapse into the unknown-model fallback
 	// and leave only the policy plus the question.
-	snapshot := []llm.Message{llm.SystemText("system prompt")}
+	snapshot := []core.Message{core.SystemText("system prompt")}
 	for i := range 40 {
 		snapshot = append(snapshot,
-			llm.UserText(fmt.Sprintf("main question %d %s", i, strings.Repeat("detail ", 200))),
-			llm.AssistantText(fmt.Sprintf("main answer %d %s", i, strings.Repeat("reply ", 200))))
+			core.UserText(fmt.Sprintf("main question %d %s", i, strings.Repeat("detail ", 200))),
+			core.AssistantText(fmt.Sprintf("main answer %d %s", i, strings.Repeat("reply ", 200))))
 	}
 	for _, model := range []string{"opus-max", "fable-medium", "sonnet"} {
 		t.Run(model, func(t *testing.T) {
@@ -165,11 +167,11 @@ func TestBuildMessagesStillTrimsBeyondSelfManagedHelperBudget(t *testing.T) {
 	if limit <= 0 {
 		t.Fatalf("helper input limit = %d, want a positive claude-bin assumption", limit)
 	}
-	snapshot := []llm.Message{llm.SystemText("system prompt")}
+	snapshot := []core.Message{core.SystemText("system prompt")}
 	for i := range 400 {
 		snapshot = append(snapshot,
-			llm.UserText(fmt.Sprintf("main question %d %s", i, strings.Repeat("detail ", 400))),
-			llm.AssistantText(fmt.Sprintf("main answer %d %s", i, strings.Repeat("reply ", 400))))
+			core.UserText(fmt.Sprintf("main question %d %s", i, strings.Repeat("detail ", 400))),
+			core.AssistantText(fmt.Sprintf("main answer %d %s", i, strings.Repeat("reply ", 400))))
 	}
 	got, err := BuildMessages(snapshot, nil, "what changed?", "claude-bin", "opus-max", 0)
 	if err != nil {
@@ -184,15 +186,15 @@ func TestBuildMessagesStillTrimsBeyondSelfManagedHelperBudget(t *testing.T) {
 }
 
 func TestBuildMessagesDropsOldSideHistoryBeforeMainPrefix(t *testing.T) {
-	snapshot := []llm.Message{llm.SystemText("system"), llm.UserText("main question"), llm.AssistantText("main answer")}
+	snapshot := []core.Message{core.SystemText("system"), core.UserText("main question"), core.AssistantText("main answer")}
 	history := []Entry{
 		{Question: strings.Repeat("old question ", 30), Response: strings.Repeat("old answer ", 30)},
 		{Question: "recent side question", Response: "recent side answer"},
 	}
-	required := []llm.Message{
-		llm.UserText(history[1].Question), llm.AssistantText(history[1].Response),
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}},
-		llm.UserText("current question"),
+	required := []core.Message{
+		core.UserText(history[1].Question), core.AssistantText(history[1].Response),
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}},
+		core.UserText("current question"),
 	}
 	budget := estimateSideMessageTokens(append(CloneMessages(snapshot), required...))
 	got, err := buildMessagesWithinBudget(snapshot, history, "current question", budget)
@@ -212,22 +214,22 @@ func TestBuildMessagesDropsOldSideHistoryBeforeMainPrefix(t *testing.T) {
 }
 
 func TestBuildMessagesTrimsMainAtCompleteUserTurnBoundary(t *testing.T) {
-	call := &llm.ToolCall{ID: "read-1", Name: "read"}
-	result := &llm.ToolResult{ID: "read-1", Name: "read", Content: "result"}
-	snapshot := []llm.Message{
-		llm.SystemText("system"),
-		llm.UserText(strings.Repeat("old turn ", 80)),
-		llm.AssistantText(strings.Repeat("old response ", 80)),
-		llm.UserText("recent turn"),
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: call}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: result}}},
-		llm.AssistantText("recent answer"),
+	call := &core.ToolCall{ID: "read-1", Name: "read"}
+	result := &core.ToolResult{ID: "read-1", Name: "read", Content: "result"}
+	snapshot := []core.Message{
+		core.SystemText("system"),
+		core.UserText(strings.Repeat("old turn ", 80)),
+		core.AssistantText(strings.Repeat("old response ", 80)),
+		core.UserText("recent turn"),
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: call}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: result}}},
+		core.AssistantText("recent answer"),
 	}
-	required := []llm.Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}},
-		llm.UserText("why?"),
+	required := []core.Message{
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}},
+		core.UserText("why?"),
 	}
-	budget := estimateSideMessageTokens(append(append([]llm.Message{snapshot[0]}, snapshot[3:]...), required...))
+	budget := estimateSideMessageTokens(append(append([]core.Message{snapshot[0]}, snapshot[3:]...), required...))
 	got, err := buildMessagesWithinBudget(snapshot, nil, "why?", budget)
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +238,7 @@ func TestBuildMessagesTrimsMainAtCompleteUserTurnBoundary(t *testing.T) {
 	if strings.Contains(joined, "old turn") || !strings.Contains(joined, "recent turn") {
 		t.Fatalf("wrong main turn retained: %q", joined)
 	}
-	if len(got) < 6 || got[0].Role != llm.RoleSystem || got[1].Role != llm.RoleUser {
+	if len(got) < 6 || got[0].Role != core.RoleSystem || got[1].Role != core.RoleUser {
 		t.Fatalf("invalid retained boundary: %#v", got)
 	}
 	var calls, results int
@@ -259,14 +261,14 @@ func TestBuildMessagesTrimsMainAtCompleteUserTurnBoundary(t *testing.T) {
 }
 
 func TestBuildMessagesPreservesCompactionAnchorWhenItFits(t *testing.T) {
-	anchor := llm.Message{Role: llm.RoleUser, CacheAnchor: true, Parts: []llm.Part{{Type: llm.PartText, Text: "compaction summary"}}}
-	snapshot := []llm.Message{
-		llm.SystemText("system"), anchor, llm.AssistantText("summary acknowledged"),
-		llm.UserText(strings.Repeat("old ", 100)), llm.AssistantText(strings.Repeat("answer ", 100)),
-		llm.UserText("recent"), llm.AssistantText("current"),
+	anchor := core.Message{Role: core.RoleUser, CacheAnchor: true, Parts: []core.Part{{Type: core.PartText, Text: "compaction summary"}}}
+	snapshot := []core.Message{
+		core.SystemText("system"), anchor, core.AssistantText("summary acknowledged"),
+		core.UserText(strings.Repeat("old ", 100)), core.AssistantText(strings.Repeat("answer ", 100)),
+		core.UserText("recent"), core.AssistantText("current"),
 	}
-	required := []llm.Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}}, llm.UserText("side"),
+	required := []core.Message{
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}}, core.UserText("side"),
 	}
 	budget := estimateSideMessageTokens(append(append(CloneMessages(snapshot[:3]), snapshot[5:]...), required...))
 	got, err := buildMessagesWithinBudget(snapshot, nil, "side", budget)
@@ -279,9 +281,9 @@ func TestBuildMessagesPreservesCompactionAnchorWhenItFits(t *testing.T) {
 }
 
 func TestBuildMessagesTruncatesOversizedQuestionToBudget(t *testing.T) {
-	budget := estimateSideMessageTokens([]llm.Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}},
-		llm.UserText(""),
+	budget := estimateSideMessageTokens([]core.Message{
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}},
+		core.UserText(""),
 	}) + 20
 	got, err := buildMessagesWithinBudget(nil, nil, strings.Repeat("question ", 200), budget)
 	if err != nil {
@@ -290,12 +292,12 @@ func TestBuildMessagesTruncatesOversizedQuestionToBudget(t *testing.T) {
 	if tokens := estimateSideMessageTokens(got); tokens > budget {
 		t.Fatalf("tokens = %d, budget = %d", tokens, budget)
 	}
-	if len(got) != 2 || got[1].Role != llm.RoleUser || strings.TrimSpace(got[1].Parts[0].Text) == "" {
+	if len(got) != 2 || got[1].Role != core.RoleUser || strings.TrimSpace(got[1].Parts[0].Text) == "" {
 		t.Fatalf("required question missing: %#v", got)
 	}
 }
 
-func messageText(messages []llm.Message) string {
+func messageText(messages []core.Message) string {
 	var texts []string
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
@@ -306,20 +308,20 @@ func messageText(messages []llm.Message) string {
 }
 
 func TestBuildMessagesResanitizesSteeredToolCycleAfterTrim(t *testing.T) {
-	call := &llm.ToolCall{ID: "call-1", Name: "read"}
-	result := &llm.ToolResult{ID: "call-1", Name: "read", Content: "tool result"}
-	snapshot := []llm.Message{
-		llm.UserText(strings.Repeat("large old turn ", 100)),
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: call}}},
-		llm.UserText("steering"),
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: result}}},
-		llm.AssistantText("answer after tool"),
+	call := &core.ToolCall{ID: "call-1", Name: "read"}
+	result := &core.ToolResult{ID: "call-1", Name: "read", Content: "tool result"}
+	snapshot := []core.Message{
+		core.UserText(strings.Repeat("large old turn ", 100)),
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: call}}},
+		core.UserText("steering"),
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: result}}},
+		core.AssistantText("answer after tool"),
 	}
-	required := []llm.Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}},
-		llm.UserText("side question"),
+	required := []core.Message{
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}},
+		core.UserText("side question"),
 	}
-	budget := estimateSideMessageTokens(append([]llm.Message{snapshot[2], snapshot[4]}, required...))
+	budget := estimateSideMessageTokens(append([]core.Message{snapshot[2], snapshot[4]}, required...))
 	got, err := buildMessagesWithinBudget(snapshot, nil, "side question", budget)
 	if err != nil {
 		t.Fatal(err)
@@ -334,19 +336,19 @@ func TestBuildMessagesResanitizesSteeredToolCycleAfterTrim(t *testing.T) {
 }
 
 func TestBuildMessagesTruncatesOversizedRecentTurnBeforeDroppingIt(t *testing.T) {
-	snapshot := []llm.Message{
-		llm.UserText("inspect the output"),
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read"}}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-1", Name: "read", Content: strings.Repeat("large result ", 500)}}}},
-		llm.AssistantText("the useful conclusion"),
+	snapshot := []core.Message{
+		core.UserText("inspect the output"),
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "read"}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-1", Name: "read", Content: strings.Repeat("large result ", 500)}}}},
+		core.AssistantText("the useful conclusion"),
 	}
-	budget := estimateSideMessageTokens([]llm.Message{
-		llm.UserText("inspect the output"),
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: snapshot[1].Parts[0].ToolCall}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-1", Name: "read", Content: "short"}}}},
-		llm.AssistantText("the useful conclusion"),
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}},
-		llm.UserText("what matters?"),
+	budget := estimateSideMessageTokens([]core.Message{
+		core.UserText("inspect the output"),
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: snapshot[1].Parts[0].ToolCall}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-1", Name: "read", Content: "short"}}}},
+		core.AssistantText("the useful conclusion"),
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}},
+		core.UserText("what matters?"),
 	}) + 20
 	got, err := buildMessagesWithinBudget(snapshot, nil, "what matters?", budget)
 	if err != nil {
@@ -369,11 +371,11 @@ func TestTruncateTextToTokensPreservesValidUTF8(t *testing.T) {
 }
 
 func TestPrepareContextSnapshotRejectsMalformedToolOrdering(t *testing.T) {
-	messages := []llm.Message{
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "same"}}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "same", Name: "read"}}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "same"}}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "same", Name: "duplicate"}}}},
+	messages := []core.Message{
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "same"}}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "same", Name: "read"}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "same"}}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "same", Name: "duplicate"}}}},
 	}
 	got := PrepareContextSnapshot(messages)
 	if len(got) != 2 || got[0].Parts[0].ToolCall == nil || got[1].Parts[0].ToolResult == nil {
@@ -392,11 +394,11 @@ func TestAppendHistoryCapsAtTwenty(t *testing.T) {
 }
 
 func TestRunDisablesCapabilitiesAndRejectsToolCall(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddToolCall("call-1", "danger", map[string]any{"path": "/tmp/x"})
-	result, err := runRequest(context.Background(), provider, llm.Request{
+	provider := mockprovider.NewMockProvider("mock").AddToolCall("call-1", "danger", map[string]any{"path": "/tmp/x"})
+	result, err := runRequest(context.Background(), provider, core.Request{
 		Search:   true,
-		Tools:    []llm.ToolSpec{{Name: "danger"}},
-		Messages: []llm.Message{llm.UserText("do it")},
+		Tools:    []core.ToolSpec{{Name: "danger"}},
+		Messages: []core.Message{core.UserText("do it")},
 	}, true, nil)
 	if err != nil {
 		t.Fatal(err)

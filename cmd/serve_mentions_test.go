@@ -19,6 +19,9 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -265,11 +268,11 @@ func TestHandleResponsesExpandsMentionsServerSide(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("web mention body\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok").AddTextResponse("ok again")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok").AddTextResponse("ok again")
 	manager := newServeSessionManager(time.Minute, 2, func(context.Context) (*serveRuntime, error) {
 		runtime := &serveRuntime{
 			provider:     provider,
-			engine:       llm.NewEngine(provider, nil),
+			engine:       engine.NewEngine(provider, nil),
 			defaultModel: "mock-model",
 		}
 		runtime.Touch()
@@ -288,7 +291,7 @@ func TestHandleResponsesExpandsMentionsServerSide(t *testing.T) {
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
 	}
-	providerText := llm.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
+	providerText := core.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
 	if !strings.Contains(providerText, "inspect @note.txt") || !strings.Contains(providerText, "web mention body") {
 		t.Fatalf("provider text missing server-expanded mention: %q", providerText)
 	}
@@ -303,7 +306,7 @@ func TestHandleResponsesExpandsMentionsServerSide(t *testing.T) {
 	if len(provider.Requests) != 2 {
 		t.Fatalf("provider requests = %d, want 2", len(provider.Requests))
 	}
-	externalText := llm.MessageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
+	externalText := core.MessageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
 	if strings.Contains(externalText, "web mention body") {
 		t.Fatalf("external Responses request unexpectedly expanded mentions: %q", externalText)
 	}
@@ -323,9 +326,9 @@ func TestAugmentMessagesWithMentionsKeepsDisplayClean(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &serveRuntime{toolMgr: toolMgr}
-	messages := []llm.Message{llm.UserText("inspect @note.txt")}
+	messages := []core.Message{core.UserText("inspect @note.txt")}
 	(&serveServer{}).augmentMessagesWithMentions(context.Background(), runtime, "", "", messages)
-	providerText := llm.MessageText(messages[0])
+	providerText := core.MessageText(messages[0])
 	if !strings.Contains(providerText, "mention body") {
 		t.Fatalf("provider text missing mention body: %q", providerText)
 	}
@@ -334,15 +337,15 @@ func TestAugmentMessagesWithMentionsKeepsDisplayClean(t *testing.T) {
 	}
 	before := providerText
 	(&serveServer{}).augmentMessagesWithMentions(context.Background(), runtime, "", "", messages)
-	if after := llm.MessageText(messages[0]); after != before {
+	if after := core.MessageText(messages[0]); after != before {
 		t.Fatalf("mention context duplicated on second expansion:\nbefore=%q\nafter=%q", before, after)
 	}
 
 	explicitText := "compare @note.txt" + "\n\n" + llm.EmbeddedFileIntro + "\n\n" +
 		llm.FormatEmbeddedFileText("explicit.txt", "text/plain", "explicit body")
-	mixed := []llm.Message{llm.UserText(explicitText)}
+	mixed := []core.Message{core.UserText(explicitText)}
 	(&serveServer{}).augmentMessagesWithMentions(context.Background(), runtime, "", "", mixed)
-	mixedProviderText := llm.MessageText(mixed[0])
+	mixedProviderText := core.MessageText(mixed[0])
 	if !strings.Contains(mixedProviderText, "explicit body") || !strings.Contains(mixedProviderText, "mention body") {
 		t.Fatalf("explicit attachment suppressed mention expansion: %q", mixedProviderText)
 	}

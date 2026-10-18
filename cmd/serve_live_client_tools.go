@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // Page tools in server delegation mode.
@@ -541,7 +541,7 @@ func pendingPageToolCalls(run *responseRun, names map[string]bool) []liveClientT
 // runPageTools has the client run one round of page tool calls and returns the
 // tool results that continue the turn. Progress shows the round as tools
 // running on the user's device, so a slow device reads as work, not silence.
-func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string, run *responseRun, calls []liveClientToolCall, progress *liveProgress) ([]llm.Message, error) {
+func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string, run *responseRun, calls []liveClientToolCall, progress *liveProgress) ([]core.Message, error) {
 	var started time.Time
 	published := func() {
 		started = time.Now()
@@ -558,9 +558,9 @@ func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string,
 	if err != nil {
 		return nil, err
 	}
-	messages := make([]llm.Message, len(calls))
+	messages := make([]core.Message, len(calls))
 	for i, call := range calls {
-		messages[i] = llm.ToolResultMessage(call.CallID, call.Name, outputs[i], nil)
+		messages[i] = core.ToolResultMessage(call.CallID, call.Name, outputs[i], nil)
 	}
 	return messages, nil
 }
@@ -639,22 +639,22 @@ type inlinePageToolRun struct {
 // inlinePageToolRunner returns the runner factory for one delegated run, or nil
 // when no page tools are declared. The state it shares — the round gate and the
 // call budget — spans every resume of the run.
-func (d *serveLiveDelegator) inlinePageToolRunner(runtime *serveRuntime, sessionID string, tools []json.RawMessage) func(responseID string) llm.ClientToolRunner {
+func (d *serveLiveDelegator) inlinePageToolRunner(runtime *serveRuntime, sessionID string, tools []json.RawMessage) func(responseID string) core.ClientToolRunner {
 	names := liveClientToolNames(tools)
 	if len(names) == 0 {
 		return nil
 	}
 	shared := &inlinePageTools{d: d, runtime: runtime, sessionID: sessionID, names: names, turn: make(chan struct{}, 1)}
-	return func(responseID string) llm.ClientToolRunner {
+	return func(responseID string) core.ClientToolRunner {
 		return inlinePageToolRun{inlinePageTools: shared, responseID: responseID}
 	}
 }
 
 func (p *inlinePageTools) OwnsClientTool(name string) bool { return p.names[name] }
 
-func (r inlinePageToolRun) RunClientTool(ctx context.Context, call llm.ToolCall) (llm.ToolOutput, error) {
+func (r inlinePageToolRun) RunClientTool(ctx context.Context, call core.ToolCall) (core.ToolOutput, error) {
 	if r.calls.Add(1) > liveClientToolInlineCallLimit {
-		return llm.ToolOutput{}, fmt.Errorf("stopped after %d device tool calls", liveClientToolInlineCallLimit)
+		return core.ToolOutput{}, fmt.Errorf("stopped after %d device tool calls", liveClientToolInlineCallLimit)
 	}
 	// The device's time is not the model's: like an approval wait, it does not
 	// count against the run's response timeout.
@@ -665,7 +665,7 @@ func (r inlinePageToolRun) RunClientTool(ctx context.Context, call llm.ToolCall)
 	case r.turn <- struct{}{}:
 		defer func() { <-r.turn }()
 	case <-ctx.Done():
-		return llm.ToolOutput{}, ctx.Err()
+		return core.ToolOutput{}, ctx.Err()
 	}
 	arguments := string(call.Arguments)
 	if strings.TrimSpace(arguments) == "" {
@@ -674,9 +674,9 @@ func (r inlinePageToolRun) RunClientTool(ctx context.Context, call llm.ToolCall)
 	calls := []liveClientToolCall{{CallID: call.ID, Name: call.Name, Arguments: arguments}}
 	outputs, err := r.d.pageToolRound(ctx, r.sessionID, r.responseID, calls, nil, nil)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
-	return llm.TextOutput(outputs[0]), nil
+	return core.TextOutput(outputs[0]), nil
 }
 
 // observePageTools feeds progress the tool events a round would have had if the
@@ -732,7 +732,7 @@ func (d *serveLiveDelegator) awaitPageTools(ctx context.Context, done <-chan str
 // the model, once the run that stopped on the calls has settled. It refuses when
 // another turn took the session meanwhile, because the results would then answer
 // calls that turn has already dropped.
-func (d *serveLiveDelegator) continueWithPageTools(ctx context.Context, sessionID string, stopped *responseRun, results []llm.Message, tools []json.RawMessage) (*responseRun, error) {
+func (d *serveLiveDelegator) continueWithPageTools(ctx context.Context, sessionID string, stopped *responseRun, results []core.Message, tools []json.RawMessage) (*responseRun, error) {
 	if stopped.settled != nil {
 		select {
 		case <-stopped.settled:

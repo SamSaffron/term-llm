@@ -16,7 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/benchmark"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestResolveBenchmarkTargetsAllActualOllamaModelsFromOpenAICompatibleConfig(t *testing.T) {
@@ -322,7 +322,7 @@ func TestResolveBenchmarkTargetsUsesConfiguredUpstreamModelAlias(t *testing.T) {
 func TestExecuteBenchmarkPlansContinuesAndRendersPerModelFailure(t *testing.T) {
 	originalFactory := newBenchmarkProvider
 	defer func() { newBenchmarkProvider = originalFactory }()
-	newBenchmarkProvider = func(_ *config.Config, _ string, model string) (llm.Provider, error) {
+	newBenchmarkProvider = func(_ *config.Config, _ string, model string) (core.Provider, error) {
 		return &benchmarkCommandProvider{model: model, fail: model == "broken"}, nil
 	}
 	capabilities := benchmark.AdapterCapabilities{ReportsCacheReads: true, SupportsOutputLimit: true}
@@ -425,27 +425,27 @@ type benchmarkCommandProvider struct {
 	fail  bool
 }
 
-func (p *benchmarkCommandProvider) Name() string                   { return p.model }
-func (p *benchmarkCommandProvider) Credential() string             { return "mock" }
-func (p *benchmarkCommandProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *benchmarkCommandProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+func (p *benchmarkCommandProvider) Name() string                    { return p.model }
+func (p *benchmarkCommandProvider) Credential() string              { return "mock" }
+func (p *benchmarkCommandProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *benchmarkCommandProvider) Stream(context.Context, core.Request) (core.Stream, error) {
 	if p.fail {
 		return nil, fmt.Errorf("model unavailable")
 	}
-	return &benchmarkCommandStream{events: []llm.Event{
-		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 1}},
-		{Type: llm.EventDone},
+	return &benchmarkCommandStream{events: []core.Event{
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 1}},
+		{Type: core.EventDone},
 	}}, nil
 }
 
 type benchmarkCommandStream struct {
-	events []llm.Event
+	events []core.Event
 	next   int
 }
 
-func (s *benchmarkCommandStream) Recv() (llm.Event, error) {
+func (s *benchmarkCommandStream) Recv() (core.Event, error) {
 	if s.next >= len(s.events) {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	event := s.events[s.next]
 	s.next++

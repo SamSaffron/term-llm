@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -78,14 +80,14 @@ func TestServeShellCollaborationEnableRejectsUnavailableRuntimeWithoutProbe(t *t
 func TestServeShellCollaborationEnableSucceedsAfterAuthoritativeProbe(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	store.sessions["session"] = &session.Session{ID: "session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Origin: session.OriginWeb}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	approval := tools.NewApprovalManager(tools.NewToolPermissions())
 	registry, err := tools.NewLocalToolRegistry(&tools.ToolConfig{Enabled: []string{tools.ShellToolName}}, nil, approval)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rt := &serveRuntime{
-		store: store, provider: provider, engine: llm.NewEngine(provider, nil),
+		store: store, provider: provider, engine: engine.NewEngine(provider, nil),
 		toolMgr: &tools.ToolManager{Registry: registry, ApprovalMgr: approval}, sessionMeta: store.sessions["session"],
 	}
 	rt.Touch()
@@ -155,14 +157,14 @@ func TestServeShellCollaborationEnableSucceedsAfterAuthoritativeProbe(t *testing
 func TestServeShellCollaborationEnableRejectsActiveRuntimeWithoutProbe(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	store.sessions["session"] = &session.Session{ID: "session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat, Origin: session.OriginWeb}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	approval := tools.NewApprovalManager(tools.NewToolPermissions())
 	registry, err := tools.NewLocalToolRegistry(&tools.ToolConfig{Enabled: []string{tools.ShellToolName}}, nil, approval)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rt := &serveRuntime{
-		store: store, provider: provider, engine: llm.NewEngine(provider, nil),
+		store: store, provider: provider, engine: engine.NewEngine(provider, nil),
 		toolMgr: &tools.ToolManager{Registry: registry, ApprovalMgr: approval}, sessionMeta: store.sessions["session"],
 	}
 	rt.Touch()
@@ -212,7 +214,7 @@ func TestServeShellCollaborationEnableRejectsActiveRuntimeWithoutProbe(t *testin
 func TestServeRuntimePersistsCollaborativeActivityAsAtomicBoundary(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	store.sessions["session"] = &session.Session{ID: "session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	provider := llm.NewMockProvider("mock").AddTextResponse("done")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("done")
 	approval := tools.NewApprovalManager(tools.NewToolPermissions())
 	registry, err := tools.NewLocalToolRegistry(&tools.ToolConfig{Enabled: []string{tools.ShellToolName}}, nil, approval)
 	if err != nil {
@@ -227,7 +229,7 @@ func TestServeRuntimePersistsCollaborativeActivityAsAtomicBoundary(t *testing.T)
 	manager.Adopt("session", shell)
 	controller := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) { return manager, nil }}
 	registry.SetCollaborativeShellController(controller, tools.ShellRoutingControllerRequired)
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	registry.RegisterWithEngine(engine)
 	meta := *store.sessions["session"]
 	rt := &serveRuntime{
@@ -236,7 +238,7 @@ func TestServeRuntimePersistsCollaborativeActivityAsAtomicBoundary(t *testing.T)
 		defaultModel: "mock-model", platform: "web", historyPersisted: true,
 		sessionMeta: &meta,
 	}
-	_, err = rt.Run(context.Background(), true, false, []llm.Message{llm.UserText("continue")}, llm.Request{
+	_, err = rt.Run(context.Background(), true, false, []core.Message{core.UserText("continue")}, core.Request{
 		SessionID: "session", Model: "mock-model", Tools: registry.GetSpecs(),
 	})
 	if err != nil {
@@ -247,13 +249,13 @@ func TestServeRuntimePersistsCollaborativeActivityAsAtomicBoundary(t *testing.T)
 	batchCalls := store.batchAppendCalls
 	storedUserTurns := store.sessions["session"].UserTurns
 	store.mu.Unlock()
-	if batchCalls != 1 || len(rows) < 3 || rows[0].Role != llm.RoleDeveloper || rows[1].Role != llm.RoleUser {
+	if batchCalls != 1 || len(rows) < 3 || rows[0].Role != core.RoleDeveloper || rows[1].Role != core.RoleUser {
 		t.Fatalf("batch calls=%d rows=%#v", batchCalls, rows)
 	}
 	if storedUserTurns != 1 || rt.sessionMeta.UserTurns != 1 {
 		t.Fatalf("user turns stored=%d runtime=%d", storedUserTurns, rt.sessionMeta.UserTurns)
 	}
-	activityText := llm.MessageText(rows[0].ToLLMMessage())
+	activityText := core.MessageText(rows[0].ToLLMMessage())
 	if collaborativeShellActivityID(activityText) == "" || !strings.Contains(activityText, "browser command output") {
 		t.Fatalf("activity row = %q", activityText)
 	}
@@ -269,7 +271,7 @@ func TestServeRuntimePersistsCollaborativeActivityAsAtomicBoundary(t *testing.T)
 func TestCollaborativeShellRuntimePinsSharedAuthorityBeforeSetupCanDisable(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	store.sessions["session"] = &session.Session{ID: "session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	provider := llm.NewMockProvider("mock").AddToolCall("call-shell", tools.ShellToolName, map[string]any{
+	provider := mockprovider.NewMockProvider("mock").AddToolCall("call-shell", tools.ShellToolName, map[string]any{
 		"command": "printf local-fallback > /definitely/not/a/path",
 	}).AddTextResponse("done")
 	approval := tools.NewApprovalManager(tools.NewToolPermissions())
@@ -288,7 +290,7 @@ func TestCollaborativeShellRuntimePinsSharedAuthorityBeforeSetupCanDisable(t *te
 	manager.Adopt("session", shell)
 	controller := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) { return manager, nil }}
 	registry.SetCollaborativeShellController(controller, tools.ShellRoutingControllerRequired)
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	registry.RegisterWithEngine(engine)
 	meta := *store.sessions["session"]
 	rt := &serveRuntime{
@@ -296,11 +298,11 @@ func TestCollaborativeShellRuntimePinsSharedAuthorityBeforeSetupCanDisable(t *te
 		toolMgr: &tools.ToolManager{Registry: registry, ApprovalMgr: approval}, defaultModel: "mock-model",
 		platform: "web", historyPersisted: true, sessionMeta: &meta,
 	}
-	ctx := withServeRuntimeSetup(context.Background(), func(*llm.Request) error {
+	ctx := withServeRuntimeSetup(context.Background(), func(*core.Request) error {
 		shell.DisableCollaborationWithReason("disabled during setup")
 		return nil
 	})
-	if _, err := rt.Run(ctx, true, false, []llm.Message{llm.UserText("run it")}, llm.Request{
+	if _, err := rt.Run(ctx, true, false, []core.Message{core.UserText("run it")}, core.Request{
 		SessionID: "session", Model: "mock-model", Tools: registry.GetSpecs(),
 	}); err != nil {
 		t.Fatal(err)
@@ -323,7 +325,7 @@ func TestCollaborativeShellRuntimePinsSharedAuthorityBeforeSetupCanDisable(t *te
 	lastMessages := provider.Requests[len(provider.Requests)-1].Messages
 	foundDisabled := false
 	for _, message := range lastMessages {
-		if message.Role != llm.RoleTool {
+		if message.Role != core.RoleTool {
 			continue
 		}
 		for _, part := range message.Parts {
@@ -341,7 +343,7 @@ func TestServeRuntimeCollaborativeActivityPersistenceFailureReleasesCursor(t *te
 	store := newServeRuntimeTestStore()
 	store.sessions["session"] = &session.Session{ID: "session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
 	store.batchAppendHook = func(context.Context, string, []*session.Message) error { return errors.New("batch failed") }
-	provider := llm.NewMockProvider("mock").AddTextResponse("done")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("done")
 	approval := tools.NewApprovalManager(tools.NewToolPermissions())
 	registry, err := tools.NewLocalToolRegistry(&tools.ToolConfig{Enabled: []string{tools.ShellToolName}}, nil, approval)
 	if err != nil {
@@ -356,7 +358,7 @@ func TestServeRuntimeCollaborativeActivityPersistenceFailureReleasesCursor(t *te
 	manager.Adopt("session", shell)
 	controller := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) { return manager, nil }}
 	registry.SetCollaborativeShellController(controller, tools.ShellRoutingControllerRequired)
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	registry.RegisterWithEngine(engine)
 	meta := *store.sessions["session"]
 	rt := &serveRuntime{
@@ -364,10 +366,10 @@ func TestServeRuntimeCollaborativeActivityPersistenceFailureReleasesCursor(t *te
 		toolMgr: &tools.ToolManager{Registry: registry, ApprovalMgr: approval}, defaultModel: "mock-model",
 		platform: "web", historyPersisted: true, sessionMeta: &meta,
 	}
-	user := llm.UserText("continue")
+	user := core.UserText("continue")
 	user.ClientMessageID = "client-retry"
 	run := func(runCtx context.Context) error {
-		_, err := rt.Run(runCtx, true, false, []llm.Message{user}, llm.Request{
+		_, err := rt.Run(runCtx, true, false, []core.Message{user}, core.Request{
 			SessionID: "session", Model: "mock-model", Tools: registry.GetSpecs(),
 		})
 		return err
@@ -399,7 +401,7 @@ func TestServeRuntimeCollaborativeActivityPersistenceFailureReleasesCursor(t *te
 	activityRows := 0
 	var activities []tools.SharedShellActivity
 	for _, row := range rows {
-		if activity, ok := collaborativeShellActivityMetadata(llm.MessageText(row.ToLLMMessage())); ok {
+		if activity, ok := collaborativeShellActivityMetadata(core.MessageText(row.ToLLMMessage())); ok {
 			activityRows++
 			activities = append(activities, activity)
 		}

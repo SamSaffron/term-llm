@@ -12,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/search"
@@ -369,7 +370,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	return server.Stop(shutdownCtx)
 }
 
-func serveMCPToolResult(out llm.ToolOutput) mcphttp.ToolResult {
+func serveMCPToolResult(out core.ToolOutput) mcphttp.ToolResult {
 	return mcphttp.ToolResult{Content: out.Content, IsError: out.IsError || out.TimedOut}
 }
 

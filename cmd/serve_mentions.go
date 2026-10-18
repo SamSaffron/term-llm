@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
@@ -414,7 +415,7 @@ func (s *serveServer) evictMentionCacheLocked() bool {
 	return true
 }
 
-func (s *serveServer) augmentMessagesWithMentions(ctx context.Context, runtime *serveRuntime, sessionID, requestedWorktree string, messages []llm.Message) {
+func (s *serveServer) augmentMessagesWithMentions(ctx context.Context, runtime *serveRuntime, sessionID, requestedWorktree string, messages []core.Message) {
 	if !mentions.EnabledFromEnv() || runtime == nil {
 		return
 	}
@@ -437,10 +438,10 @@ func (s *serveServer) augmentMessagesWithMentions(ctx context.Context, runtime *
 	// escapes, and applies all file, token, binary, and directory limits.
 	allowed := func(string) bool { return true }
 	for i := range messages {
-		if messages[i].Role != llm.RoleUser || messages[i].DisplayText != "" {
+		if messages[i].Role != core.RoleUser || messages[i].DisplayText != "" {
 			continue
 		}
-		text := llm.MessageText(messages[i])
+		text := core.MessageText(messages[i])
 		visibleText := llm.StripEmbeddedFileText(text)
 		if visibleText == "" {
 			continue
@@ -448,7 +449,7 @@ func (s *serveServer) augmentMessagesWithMentions(ctx context.Context, runtime *
 		attachments := mentions.LoadEagerAttachments(ctx, root, visibleText, allowed)
 		if suffix := mentions.FormatEagerAttachments(attachments); suffix != "" {
 			messages[i].DisplayText = visibleText
-			messages[i].Parts = append(messages[i].Parts, llm.Part{Type: llm.PartText, Text: suffix})
+			messages[i].Parts = append(messages[i].Parts, core.Part{Type: core.PartText, Text: suffix})
 		}
 	}
 }

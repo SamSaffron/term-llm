@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
 
@@ -31,8 +31,8 @@ func NewSearchSkillsTool(registry *skills.Registry) *SearchSkillsTool {
 }
 
 // Spec returns the tool specification.
-func (t *SearchSkillsTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *SearchSkillsTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: SearchSkillsToolName,
 		Description: `Search for skills by keyword. Returns matching skill names and descriptions.
 Use this when the skill you need is not listed in <available_skills>.
@@ -52,23 +52,23 @@ After finding a relevant skill, use activate_skill to load it.`,
 }
 
 // Execute runs the search_skills tool.
-func (t *SearchSkillsTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *SearchSkillsTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a SearchSkillsArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return core.TextOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 
 	if a.Query == "" {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, "query is required")), nil
+		return core.TextOutput(t.formatError(ErrInvalidParams, "query is required")), nil
 	}
 
 	results, err := t.registry.Search(a.Query, 10)
 	if err != nil {
-		return llm.TextOutput(t.formatError(ErrExecutionFailed, fmt.Sprintf("search failed: %v", err))), nil
+		return core.TextOutput(t.formatError(ErrExecutionFailed, fmt.Sprintf("search failed: %v", err))), nil
 	}
 
 	if len(results) == 0 {
-		return llm.TextOutput("No skills found matching: " + a.Query), nil
+		return core.TextOutput("No skills found matching: " + a.Query), nil
 	}
 
 	var sb strings.Builder
@@ -78,7 +78,7 @@ func (t *SearchSkillsTool) Execute(ctx context.Context, args json.RawMessage) (l
 	}
 	sb.WriteString("\nUse activate_skill to load any of these skills.")
 
-	return llm.TextOutput(sb.String()), nil
+	return core.TextOutput(sb.String()), nil
 }
 
 // Preview returns a short description of the tool call.

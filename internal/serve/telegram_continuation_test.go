@@ -10,18 +10,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 type telegramCheckpointProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	coordinator *restart.Coordinator
 	requested   atomic.Bool
 }
 
-func (p *telegramCheckpointProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *telegramCheckpointProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	stream, err := p.MockProvider.Stream(ctx, req)
 	if p.requested.CompareAndSwap(false, true) {
 		p.coordinator.Request()
@@ -31,13 +33,13 @@ func (p *telegramCheckpointProvider) Stream(ctx context.Context, req llm.Request
 
 type telegramCheckpointTool struct{ calls atomic.Int32 }
 
-func (*telegramCheckpointTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "checkpoint_effect", Schema: map[string]any{"type": "object"}}
+func (*telegramCheckpointTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "checkpoint_effect", Schema: map[string]any{"type": "object"}}
 }
 func (*telegramCheckpointTool) Preview(json.RawMessage) string { return "effect" }
-func (t *telegramCheckpointTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+func (t *telegramCheckpointTool) Execute(context.Context, json.RawMessage) (core.ToolOutput, error) {
 	t.calls.Add(1)
-	return llm.TextOutput("done"), nil
+	return core.TextOutput("done"), nil
 }
 
 func TestTelegramContinuationPreservesMessageAndDoesNotDuplicateUserTurn(t *testing.T) {
@@ -50,12 +52,12 @@ func TestTelegramContinuationPreservesMessageAndDoesNotDuplicateUserTurn(t *test
 		t.Fatal(err)
 	}
 	defer store.Close()
-	provider := &telegramCheckpointProvider{MockProvider: llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Text: "Hello", Usage: llm.Usage{InputTokens: 11, OutputTokens: 7}, ToolCalls: []llm.ToolCall{{ID: "one", Name: "checkpoint_effect", Arguments: json.RawMessage(`{}`)}}}).AddTextResponse("finished"), coordinator: c}
+	provider := &telegramCheckpointProvider{MockProvider: mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Text: "Hello", Usage: core.Usage{InputTokens: 11, OutputTokens: 7}, ToolCalls: []core.ToolCall{{ID: "one", Name: "checkpoint_effect", Arguments: json.RawMessage(`{}`)}}}).AddTextResponse("finished"), coordinator: c}
 	tool := &telegramCheckpointTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
 	mgr := &telegramSessionMgr{store: store, sessions: make(map[int64]*telegramSession), settings: Settings{MaxTurns: 5, Store: store, NewSession: func(context.Context) (*SessionRuntime, error) {
-		return &SessionRuntime{Engine: llm.NewEngine(provider, registry), Provider: provider, ProviderName: "mock", ModelName: "fixture"}, nil
+		return &SessionRuntime{Engine: engine.NewEngine(provider, registry), Provider: provider, ProviderName: "mock", ModelName: "fixture"}, nil
 	}}}
 	sess, err := mgr.getOrCreate(context.Background(), 42)
 	if err != nil {
@@ -72,7 +74,7 @@ func TestTelegramContinuationPreservesMessageAndDoesNotDuplicateUserTurn(t *test
 		t.Fatal(err)
 	}
 	defer stop()
-	if err := mgr.streamReply(ctx, bot, sess, 42, llm.UserText("work")); err != nil {
+	if err := mgr.streamReply(ctx, bot, sess, 42, core.UserText("work")); err != nil {
 		t.Fatal(err)
 	}
 	mgr.mu.Lock()
@@ -93,7 +95,7 @@ func TestTelegramContinuationPreservesMessageAndDoesNotDuplicateUserTurn(t *test
 		t.Fatal(err)
 	}
 	defer releaseResume()
-	if err := mgr.streamReplyContinuation(resumeCtx, bot, sess, 42, llm.Message{}, nil, saved); err != nil {
+	if err := mgr.streamReplyContinuation(resumeCtx, bot, sess, 42, core.Message{}, nil, saved); err != nil {
 		t.Fatal(err)
 	}
 	if tool.calls.Load() != 1 {
@@ -114,7 +116,7 @@ func TestTelegramContinuationPreservesMessageAndDoesNotDuplicateUserTurn(t *test
 	}
 	users := 0
 	for _, msg := range messages {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			users++
 		}
 	}
@@ -130,7 +132,7 @@ func TestTelegramContinuationPreservesMessageAndDoesNotDuplicateUserTurn(t *test
 func TestTelegramResumeErrorDoesNotExposeProviderDetails(t *testing.T) {
 	const secret = "synthetic-provider-secret"
 	mgr := &telegramSessionMgr{
-		pendingReload: map[int64]*telegramContinuation{42: {Engine: &llm.Continuation{}}},
+		pendingReload: map[int64]*telegramContinuation{42: {Engine: &core.Continuation{}}},
 		sessions:      make(map[int64]*telegramSession),
 		settings: Settings{NewSession: func(context.Context) (*SessionRuntime, error) {
 			return nil, errors.New("provider URL contains " + secret)

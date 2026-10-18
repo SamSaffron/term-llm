@@ -13,12 +13,14 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-func startSteeringTestRun(t *testing.T, sessionID string, bridges ...*steeringTestBridge) (*MainRunManager, *llm.Engine, MainRunSnapshot) {
+func startSteeringTestRun(t *testing.T, sessionID string, bridges ...*steeringTestBridge) (*MainRunManager, *engine.Engine, MainRunSnapshot) {
 	t.Helper()
 	entered := make(chan struct{})
 	var calls atomic.Int32
@@ -35,18 +37,18 @@ func startSteeringTestRun(t *testing.T, sessionID string, bridges ...*steeringTe
 		<-r.Context().Done()
 	}))
 	t.Cleanup(server.Close)
-	var provider llm.Provider = llm.NewOpenAICompatProvider(server.URL, "", "test", "compat")
-	registry := llm.NewToolRegistry()
+	var provider core.Provider = opencompat.NewOpenAICompatProvider(server.URL, "", "test", "compat")
+	registry := engine.NewToolRegistry()
 	if len(bridges) > 0 {
 		bridges[0].Provider = provider
 		provider = bridges[0]
 		registry.Register(bridges[0].tool)
 	}
-	engine := llm.NewEngine(provider, registry)
+	eng := engine.NewEngine(provider, registry)
 	manager := NewMainRunManager(context.Background())
 	t.Cleanup(func() { manager.Close(time.Second) })
 	snapshot, err := manager.Start(sessionID, MainRunExecution{Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
-		stream, err := engine.Stream(ctx, llm.Request{Messages: []llm.Message{llm.UserText("source")}, Tools: []llm.ToolSpec{{Name: "never", Schema: map[string]any{"type": "object"}}}})
+		stream, err := eng.Stream(ctx, core.Request{Messages: []core.Message{core.UserText("source")}, Tools: []core.ToolSpec{{Name: "never", Schema: map[string]any{"type": "object"}}}})
 		if err != nil {
 			return err
 		}
@@ -56,10 +58,10 @@ func startSteeringTestRun(t *testing.T, sessionID string, bridges ...*steeringTe
 				return err
 			}
 		}
-	}, QueueSteering: func(entry llm.QueuedSteering) llm.SteeringQueueStatus {
-		_, status := engine.QueueSteeringWithStatus(entry)
+	}, QueueSteering: func(entry engine.QueuedSteering) engine.SteeringQueueStatus {
+		_, status := eng.QueueSteeringWithStatus(entry)
 		return status
-	}, ListSteering: engine.ListPendingSteering})
+	}, ListSteering: eng.ListPendingSteering})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,9 +71,9 @@ func startSteeringTestRun(t *testing.T, sessionID string, bridges ...*steeringTe
 		t.Fatal("source did not start")
 	}
 	for _, id := range []string{"first", "second"} {
-		engine.QueueSteering(llm.QueuedSteering{ID: id, Message: llm.UserText(id), DisplayText: id, Origin: llm.SteeringOriginUser})
+		eng.QueueSteering(engine.QueuedSteering{ID: id, Message: core.UserText(id), DisplayText: id, Origin: engine.SteeringOriginUser})
 	}
-	return manager, engine, snapshot
+	return manager, eng, snapshot
 }
 
 func TestTUICancelRushBeforeAdmissionKeepsGuidanceAndAllowsNewRun(t *testing.T) {
@@ -139,33 +141,33 @@ func TestTUICancelAfterInputCommitKeepsUnansweredUserRowsVisible(t *testing.T) {
 }
 
 type steeringTestBridge struct {
-	llm.Provider
-	tool     llm.Tool
-	requests chan llm.Request
-	execute  func(context.Context, string, json.RawMessage) (llm.ToolOutput, error)
+	core.Provider
+	tool     core.Tool
+	requests chan core.Request
+	execute  func(context.Context, string, json.RawMessage) (core.ToolOutput, error)
 }
 
-func (p *steeringTestBridge) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *steeringTestBridge) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	if p.requests != nil {
 		p.requests <- req
 	}
 	return p.Provider.Stream(ctx, req)
 }
 
-func (p *steeringTestBridge) SetToolExecutor(execute func(context.Context, string, json.RawMessage) (llm.ToolOutput, error)) {
+func (p *steeringTestBridge) SetToolExecutor(execute func(context.Context, string, json.RawMessage) (core.ToolOutput, error)) {
 	p.execute = execute
 }
 
 type steeringUncooperativeTool struct{ started, release chan struct{} }
 
-func (t *steeringUncooperativeTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "ignores_cancel", Schema: map[string]any{"type": "object"}}
+func (t *steeringUncooperativeTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "ignores_cancel", Schema: map[string]any{"type": "object"}}
 }
 func (t *steeringUncooperativeTool) Preview(json.RawMessage) string { return "" }
-func (t *steeringUncooperativeTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+func (t *steeringUncooperativeTool) Execute(context.Context, json.RawMessage) (core.ToolOutput, error) {
 	close(t.started)
 	<-t.release
-	return llm.TextOutput("done"), nil
+	return core.TextOutput("done"), nil
 }
 
 func TestTUICancelRushWaitsForActualBridgedToolWithoutStore(t *testing.T) {
@@ -248,7 +250,7 @@ func TestTUIRushContinuesThroughSourceTerminalUI(t *testing.T) {
 						close(tool.release)
 					}
 				}()
-				bridge := &steeringTestBridge{tool: tool, requests: make(chan llm.Request, 4)}
+				bridge := &steeringTestBridge{tool: tool, requests: make(chan core.Request, 4)}
 				manager, engine, source := startSteeringTestRun(t, model.SessionID(), bridge)
 				<-bridge.requests // Original request.
 				model.mainRunManager = manager
@@ -323,7 +325,7 @@ func TestTUIRushContinuesThroughSourceTerminalUI(t *testing.T) {
 				if model.textarea.Value() != "unsent draft" {
 					t.Fatal("Rush overwrote draft")
 				}
-				var request llm.Request
+				var request core.Request
 				select {
 				case request = <-bridge.requests:
 				case <-time.After(3 * time.Second):
@@ -380,7 +382,7 @@ func TestTUIRushKeepsPendingVisibleUntilReadyIsPresented(t *testing.T) {
 	model.engine = engine
 	_ = model.attachMainRun(model.SessionID())
 	defer model.detachMainRun()
-	model.messages = append(model.messages, *session.NewMessage(model.SessionID(), llm.UserText("sleep 20"), -1))
+	model.messages = append(model.messages, *session.NewMessage(model.SessionID(), core.UserText("sleep 20"), -1))
 	model.invalidateHistoryCache()
 	_, rush := model.rushPendingSteering()
 	if rush == nil {
@@ -405,10 +407,10 @@ func TestTUIRushKeepsPendingVisibleUntilReadyIsPresented(t *testing.T) {
 func TestRushInitialRowsImmediatelyInvalidateRenderedHistory(t *testing.T) {
 	model := newTestChatModel(true)
 	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	model.messages = append(model.messages, *session.NewMessage(model.SessionID(), llm.UserText("sleep 20"), -1))
+	model.messages = append(model.messages, *session.NewMessage(model.SessionID(), core.UserText("sleep 20"), -1))
 	model.invalidateHistoryCache()
 	_ = model.View()
-	row := session.NewMessage(model.SessionID(), llm.UserText("testing a steer"), -1)
+	row := session.NewMessage(model.SessionID(), core.UserText("testing a steer"), -1)
 	row.ClientMessageID = "guidance"
 	model.appendSteeringInitialRows([]*session.Message{row})
 	view := ui.StripANSI(model.View().Content)

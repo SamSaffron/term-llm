@@ -17,6 +17,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/process"
@@ -73,11 +75,11 @@ var chatOutputInteractive = terminalpolicy.OutputInteractive
 func chatRendererOwnsTerminal() bool { return chatOutputInteractive(os.Stdout) }
 
 type chatMCPManager interface {
-	SetSamplingProvider(provider llm.Provider, model string, yoloMode bool)
+	SetSamplingProvider(provider core.Provider, model string, yoloMode bool)
 	Enable(ctx context.Context, name string) error
 }
 
-func configureChatMCPServers(ctx context.Context, manager chatMCPManager, provider llm.Provider, model string, yoloMode bool, serversCSV string, warnings io.Writer) {
+func configureChatMCPServers(ctx context.Context, manager chatMCPManager, provider core.Provider, model string, yoloMode bool, serversCSV string, warnings io.Writer) {
 	// Sampling capability is negotiated during MCP initialization, so the handler
 	// must exist before the first client is enabled.
 	manager.SetSamplingProvider(provider, model, yoloMode)
@@ -832,7 +834,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		liveModel = runpkg.ParentModel{Provider: key, Model: name}
 		liveModelMu.Unlock()
 	})
-	model.SetFastProviderResolver(func(key, name string) (llm.Provider, error) {
+	model.SetFastProviderResolver(func(key, name string) (core.Provider, error) {
 		return auxProviderForPolicy(cfg, effectivePolicy, modelSelection{Provider: key, Model: name}, key, cfg.DefaultProvider)
 	})
 	model.SetAgentMentionCapability(appchat.RuntimeAgentMentionCapability{Engine: model.CurrentAgentMentionEngine, Manager: toolMgr})
@@ -903,7 +905,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 			relaunchHandoff.branchAutoSend = ""
 		}
 	}
-	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (llm.Provider, error) {
+	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (core.Provider, error) {
 		if strings.TrimSpace(providerKey) == "" {
 			providerKey = provider.Name()
 		}
@@ -1479,8 +1481,8 @@ func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.C
 	}, nil
 }
 
-func skillContextApplier(setup *skills.Setup) func(*llm.Engine, *tools.ToolManager) {
-	return func(engine *llm.Engine, toolMgr *tools.ToolManager) {
+func skillContextApplier(setup *skills.Setup) func(*engine.Engine, *tools.ToolManager) {
+	return func(engine *engine.Engine, toolMgr *tools.ToolManager) {
 		if engine == nil {
 			return
 		}
@@ -1587,7 +1589,7 @@ func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string
 				return key
 			}
 		}
-		for _, builtIn := range llm.GetBuiltInProviderNames() {
+		for _, builtIn := range config.GetBuiltInProviderNames() {
 			if strings.EqualFold(candidate, builtIn) {
 				return builtIn
 			}
@@ -1612,7 +1614,7 @@ func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string
 			return key
 		}
 	}
-	for _, builtIn := range llm.GetBuiltInProviderNames() {
+	for _, builtIn := range config.GetBuiltInProviderNames() {
 		lowerBuiltIn := strings.ToLower(builtIn)
 		if lower == lowerBuiltIn || strings.HasPrefix(lower, lowerBuiltIn+" (") {
 			return builtIn

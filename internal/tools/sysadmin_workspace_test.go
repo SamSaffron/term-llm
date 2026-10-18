@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestRootReadGrant(t *testing.T) {
@@ -74,7 +74,7 @@ func TestWorkspaceNoneChild(t *testing.T) {
 func TestWorkspaceNoneToolSpecs(t *testing.T) {
 	m := NewApprovalManager(NewToolPermissions())
 	m.WorkspacePolicy = "none"
-	specs := []llm.ToolSpec{{Name: ManageWorkspaceToolName}, {Name: ReadFileToolName}}
+	specs := []core.ToolSpec{{Name: ManageWorkspaceToolName}, {Name: ReadFileToolName}}
 	got := FilterToolSpecsForApprovalMode(specs, m)
 	if len(got) != 1 || got[0].Name != ReadFileToolName {
 		t.Fatalf("specs=%v", got)

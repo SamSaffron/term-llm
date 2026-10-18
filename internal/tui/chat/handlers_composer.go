@@ -6,7 +6,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 )
 
@@ -112,7 +113,7 @@ func (m *Model) handleStreamingSend() (tea.Model, tea.Cmd) {
 		m.setTextareaValue(strings.TrimSuffix(raw, "\\") + "\n")
 		return m, nil
 	}
-	if action, ok := llm.ClassifyInterruptImmediate(raw); ok && action == llm.InterruptCancel {
+	if action, ok := engine.ClassifyInterruptImmediate(raw); ok && action == engine.InterruptCancel {
 		m.applyInterruptActionWithParts(m.nextPendingSteeringID(), raw, m.imagePartList(), action)
 		return m, nil
 	}
@@ -141,10 +142,10 @@ func (m *Model) handleStreamingSend() (tea.Model, tea.Cmd) {
 	content := m.expandedPastePlaceholders(raw)
 	parts := m.imagePartList()
 	if delegationContext != "" {
-		parts = append(parts, llm.Part{Type: llm.PartAgentMention, Text: delegationContext})
+		parts = append(parts, core.Part{Type: core.PartAgentMention, Text: delegationContext})
 	}
 	if eagerContext, _ := m.eagerMentionContext(content); eagerContext != "" {
-		parts = append(parts, llm.Part{Type: llm.PartFile, Text: eagerContext})
+		parts = append(parts, core.Part{Type: core.PartFile, Text: eagerContext})
 	}
 	if content == "" && len(parts) == 0 {
 		m.phase = "Type to steer, attach an image, or press Esc to cancel"
@@ -153,7 +154,7 @@ func (m *Model) handleStreamingSend() (tea.Model, tea.Cmd) {
 	m.pasteChunks = nil
 
 	steeringID := m.nextPendingSteeringID()
-	m.applyInterruptActionWithParts(steeringID, content, parts, llm.InterruptSteer)
+	m.applyInterruptActionWithParts(steeringID, content, parts, engine.InterruptSteer)
 	return m, nil
 }
 

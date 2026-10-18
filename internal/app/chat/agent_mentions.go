@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type RuntimeAgentMentionCapability struct {
-	Engine  func() *llm.Engine
+	Engine  func() *engine.Engine
 	Manager *tools.ToolManager
 }
 

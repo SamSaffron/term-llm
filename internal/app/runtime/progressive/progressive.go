@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/jobs"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	toolpkg "github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -38,10 +39,10 @@ type RunOptions struct {
 	ContinueWith           string
 	SessionID              string
 	ForceNamedFinalization bool
-	OnEvent                func(llm.Event) error
-	OnSyntheticUserMessage func(context.Context, llm.Message) error
-	OnResponseCompleted    llm.ResponseCompletedCallback
-	OnTurnCompleted        llm.TurnCompletedCallback
+	OnEvent                func(core.Event) error
+	OnSyntheticUserMessage func(context.Context, core.Message) error
+	OnResponseCompleted    engine.ResponseCompletedCallback
+	OnTurnCompleted        engine.TurnCompletedCallback
 }
 
 type RunResult struct {
@@ -57,7 +58,7 @@ type RunResult struct {
 }
 
 type progressivePassResult struct {
-	produced           []llm.Message
+	produced           []core.Message
 	lastText           string
 	newCommitCount     int
 	hadNonProgressTool bool
@@ -224,7 +225,7 @@ func ValidateAskOptions(opts *AskOptions) error {
 	return nil
 }
 
-func RunSession(ctx context.Context, engine *llm.Engine, req llm.Request, opts RunOptions) (RunResult, error) {
+func RunSession(ctx context.Context, engine *engine.Engine, req core.Request, opts RunOptions) (RunResult, error) {
 	if opts.StopWhen == "" {
 		opts.StopWhen = StopWhenDone
 	}
@@ -237,7 +238,7 @@ func RunSession(ctx context.Context, engine *llm.Engine, req llm.Request, opts R
 	engine.RegisterTool(updateTool)
 	defer engine.UnregisterTool(updateTool.Spec().Name)
 
-	history := append([]llm.Message(nil), req.Messages...)
+	history := append([]core.Message(nil), req.Messages...)
 	tracker := newProgressTrackerFromMessages(history)
 	lastText := ""
 
@@ -246,8 +247,8 @@ func RunSession(ctx context.Context, engine *llm.Engine, req llm.Request, opts R
 
 	for {
 		passReq := req
-		passReq.Messages = append([]llm.Message(nil), history...)
-		passReq.Tools = append([]llm.ToolSpec(nil), req.Tools...)
+		passReq.Messages = append([]core.Message(nil), history...)
+		passReq.Tools = append([]core.ToolSpec(nil), req.Tools...)
 		passReq.Tools = append(passReq.Tools, updateTool.Spec())
 
 		passResult, err := runProgressivePass(mainCtx, engine, passReq, opts, tracker)
@@ -290,12 +291,12 @@ func RunSession(ctx context.Context, engine *llm.Engine, req llm.Request, opts R
 		}
 
 		if opts.OnEvent != nil {
-			if err := opts.OnEvent(llm.Event{Type: llm.EventPhase, Text: "Continuing with remaining budget..."}); err != nil {
+			if err := opts.OnEvent(core.Event{Type: core.EventPhase, Text: "Continuing with remaining budget..."}); err != nil {
 				return BuildRunResult(opts.SessionID, jobs.ExitReasonNatural, false, tracker.latest, lastText), err
 			}
 		}
 
-		continueMsg := llm.UserText(expandProgressiveTemplate(opts.ContinueWith, mainCtx))
+		continueMsg := core.UserText(expandProgressiveTemplate(opts.ContinueWith, mainCtx))
 		history = append(history, continueMsg)
 		if opts.OnSyntheticUserMessage != nil {
 			msgCtx, cancel := SyntheticUserMessageContext(mainCtx)
@@ -308,17 +309,17 @@ func RunSession(ctx context.Context, engine *llm.Engine, req llm.Request, opts R
 	}
 }
 
-func newProgressTrackerFromMessages(messages []llm.Message) *Tracker {
+func newProgressTrackerFromMessages(messages []core.Message) *Tracker {
 	tracker := NewTracker()
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
 			switch part.Type {
-			case llm.PartToolCall:
+			case core.PartToolCall:
 				if part.ToolCall == nil {
 					continue
 				}
 				tracker.ObserveToolCall(strings.TrimSpace(part.ToolCall.ID), strings.TrimSpace(part.ToolCall.Name), part.ToolCall.Arguments)
-			case llm.PartToolResult:
+			case core.PartToolResult:
 				if part.ToolResult == nil {
 					continue
 				}
@@ -330,13 +331,13 @@ func newProgressTrackerFromMessages(messages []llm.Message) *Tracker {
 	return tracker
 }
 
-func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request, opts RunOptions, tracker *Tracker) (progressivePassResult, error) {
-	var produced []llm.Message
+func runProgressivePass(ctx context.Context, engine *engine.Engine, req core.Request, opts RunOptions, tracker *Tracker) (progressivePassResult, error) {
+	var produced []core.Message
 	var text strings.Builder
 	var hadNonProgressTool bool
 	startSeq := tracker.latestSequence()
 
-	engine.SetResponseCompletedCallback(func(cbCtx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+	engine.SetResponseCompletedCallback(func(cbCtx context.Context, turnIndex int, assistantMsg core.Message, metrics core.TurnMetrics) error {
 		var err error
 		if opts.OnResponseCompleted != nil {
 			err = opts.OnResponseCompleted(cbCtx, turnIndex, assistantMsg, metrics)
@@ -348,7 +349,7 @@ func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request
 	})
 	defer engine.SetResponseCompletedCallback(nil)
 
-	engine.SetTurnCompletedCallback(func(cbCtx context.Context, turnIndex int, messages []llm.Message, metrics llm.TurnMetrics) error {
+	engine.SetTurnCompletedCallback(func(cbCtx context.Context, turnIndex int, messages []core.Message, metrics core.TurnMetrics) error {
 		produced = append(produced, messages...)
 		if opts.OnTurnCompleted != nil {
 			return opts.OnTurnCompleted(cbCtx, turnIndex, messages, metrics)
@@ -378,9 +379,9 @@ func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request
 		}
 
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			text.WriteString(ev.Text)
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			call := ev.Tool
 			if call != nil {
 				name := strings.TrimSpace(call.Name)
@@ -394,7 +395,7 @@ func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request
 					hadNonProgressTool = true
 				}
 			}
-		case llm.EventToolExecEnd:
+		case core.EventToolExecEnd:
 			if commit := tracker.CommitToolCall(strings.TrimSpace(ev.ToolCallID), strings.TrimSpace(ev.ToolName), ev.ToolSuccess); commit != nil {
 				if opts.OnEvent != nil {
 					if err := opts.OnEvent(ev); err != nil {
@@ -420,7 +421,7 @@ func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request
 	}, nil
 }
 
-func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engine, finalizeTool llm.Tool, baseReq llm.Request, history []llm.Message, opts RunOptions, tracker *Tracker, reserve time.Duration, exitReason string) (bool, string) {
+func attemptProgressiveFinalization(parentCtx context.Context, engine *engine.Engine, finalizeTool core.Tool, baseReq core.Request, history []core.Message, opts RunOptions, tracker *Tracker, reserve time.Duration, exitReason string) (bool, string) {
 	finalizeCtx, finalizeCancel := progressiveFinalizationContext(parentCtx, reserve, exitReason)
 	if finalizeCtx == nil {
 		return false, ""
@@ -428,7 +429,7 @@ func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engin
 	defer finalizeCancel()
 
 	finalPrompt := buildProgressiveFinalizePrompt(tracker.latest)
-	finalizeMsg := llm.UserText(finalPrompt)
+	finalizeMsg := core.UserText(finalPrompt)
 	if opts.OnSyntheticUserMessage != nil {
 		msgCtx, cancel := SyntheticUserMessageContext(finalizeCtx)
 		err := opts.OnSyntheticUserMessage(msgCtx, finalizeMsg)
@@ -439,7 +440,7 @@ func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engin
 	}
 
 	finalReq := baseReq
-	finalReq.Messages = append(append([]llm.Message(nil), history...), finalizeMsg)
+	finalReq.Messages = append(append([]core.Message(nil), history...), finalizeMsg)
 	finalReq.Search = false
 	finalReq.ForceExternalSearch = false
 	finalReq.ParallelToolCalls = false
@@ -448,15 +449,15 @@ func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engin
 		// State has been accumulated — ask model to write prose then call finalize_progress.
 		engine.RegisterTool(finalizeTool)
 		defer engine.UnregisterTool(finalizeTool.Spec().Name)
-		finalReq.Tools = []llm.ToolSpec{finalizeTool.Spec()}
-		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		finalReq.Tools = []core.ToolSpec{finalizeTool.Spec()}
+		finalReq.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
 		if opts.ForceNamedFinalization {
-			finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: finalizeTool.Spec().Name}
+			finalReq.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceName, Name: finalizeTool.Spec().Name}
 		}
 	} else {
 		// No accumulated state — suppress tools so the model writes plain text directly.
-		finalReq.Tools = []llm.ToolSpec{}
-		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceNone}
+		finalReq.Tools = []core.ToolSpec{}
+		finalReq.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceNone}
 	}
 
 	passResult, err := runProgressivePass(finalizeCtx, engine, finalReq, opts, tracker)
@@ -633,7 +634,7 @@ func progressiveExitReason(err error) string {
 		return jobs.ExitReasonTimeout
 	case errors.Is(err, context.Canceled):
 		return jobs.ExitReasonCancelled
-	case llm.IsMaxTurnsExceeded(err):
+	case engine.IsMaxTurnsExceeded(err):
 		return jobs.ExitReasonMaxTurns
 	default:
 		return jobs.ExitReasonException

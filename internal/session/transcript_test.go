@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func newTranscriptTestStore(t *testing.T) (*SQLiteStore, *Session) {
@@ -72,12 +72,12 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevAtomicBoundary(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SavePendingSteering(ctx, PendingSteering{SessionID: sess.ID, ID: "client-1", Message: llm.UserText("hello")}); err != nil {
+	if err := store.SavePendingSteering(ctx, PendingSteering{SessionID: sess.ID, ID: "client-1", Message: core.UserText("hello")}); err != nil {
 		t.Fatal(err)
 	}
 	rows := []*Message{
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "activity"}}}, -1),
-		NewMessage(sess.ID, llm.UserText("hello"), -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "activity"}}}, -1),
+		NewMessage(sess.ID, core.UserText("hello"), -1),
 	}
 	rows[1].ClientMessageID = "client-1"
 	rev, err := store.AppendMessagesWithTranscriptRev(ctx, sess.ID, rows)
@@ -104,19 +104,19 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevPreservesCompleteOrderedSuffi
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 	for _, id := range []string{"client-a", "client-b"} {
-		if err := store.SavePendingSteering(ctx, PendingSteering{SessionID: sess.ID, ID: id, Message: llm.UserText(id)}); err != nil {
+		if err := store.SavePendingSteering(ctx, PendingSteering{SessionID: sess.ID, ID: id, Message: core.UserText(id)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	messages := []llm.Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "activity"}}},
-		{Role: llm.RoleUser, ClientMessageID: "client-a", Parts: []llm.Part{
-			{Type: llm.PartText, Text: "first"},
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+	messages := []core.Message{
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "platform"}}},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "activity"}}},
+		{Role: core.RoleUser, ClientMessageID: "client-a", Parts: []core.Part{
+			{Type: core.PartText, Text: "first"},
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
 		}},
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "skill"}}},
-		{Role: llm.RoleUser, ClientMessageID: "client-b", Parts: []llm.Part{{Type: llm.PartText, Text: "second"}}},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "skill"}}},
+		{Role: core.RoleUser, ClientMessageID: "client-b", Parts: []core.Part{{Type: core.PartText, Text: "second"}}},
 	}
 	rows := make([]*Message, len(messages))
 	for i := range messages {
@@ -137,7 +137,7 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevPreservesCompleteOrderedSuffi
 		if row.ID == 0 || (i > 0 && row.Sequence != rows[i-1].Sequence+1) {
 			t.Fatalf("row %d not stamped in input order: %#v", i, row)
 		}
-		if row.Role != llm.RoleUser && row.ClientMessageID != "" {
+		if row.Role != core.RoleUser && row.ClientMessageID != "" {
 			t.Fatalf("developer row retained client message ID: %#v", row)
 		}
 	}
@@ -145,7 +145,7 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevPreservesCompleteOrderedSuffi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != len(messages) || len(loaded[2].Parts) != 2 || loaded[2].Parts[1].Type != llm.PartImage {
+	if len(loaded) != len(messages) || len(loaded[2].Parts) != 2 || loaded[2].Parts[1].Type != core.PartImage {
 		t.Fatalf("loaded suffix lost order or multimodal parts: %#v", loaded)
 	}
 	updated, err := store.Get(ctx, sess.ID)
@@ -166,9 +166,9 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevRollsBackWholeSuffix(t *testi
 		t.Fatal(err)
 	}
 	rows := []*Message{
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "must roll back"}}}, -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, ClientMessageID: "duplicate", Parts: []llm.Part{{Type: llm.PartText, Text: "one"}}}, -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, ClientMessageID: "duplicate", Parts: []llm.Part{{Type: llm.PartText, Text: "two"}}}, -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "must roll back"}}}, -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleUser, ClientMessageID: "duplicate", Parts: []core.Part{{Type: core.PartText, Text: "one"}}}, -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleUser, ClientMessageID: "duplicate", Parts: []core.Part{{Type: core.PartText, Text: "two"}}}, -1),
 	}
 	if _, err := store.AppendMessagesWithTranscriptRev(ctx, sess.ID, rows); err == nil {
 		t.Fatal("duplicate client identity unexpectedly committed")
@@ -192,17 +192,17 @@ func TestSQLiteStoreTranscriptRevisionCoversMessageWritePaths(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 
-	auto := NewMessage(sess.ID, llm.UserText("auto"), -1)
+	auto := NewMessage(sess.ID, core.UserText("auto"), -1)
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
 		return store.AddMessage(ctx, sess.ID, auto)
 	})
 
-	explicit := NewMessage(sess.ID, llm.AssistantText("explicit"), 10)
+	explicit := NewMessage(sess.ID, core.AssistantText("explicit"), 10)
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
 		return store.AddMessage(ctx, sess.ID, explicit)
 	})
 
-	explicit.Parts = llm.AssistantText("updated").Parts
+	explicit.Parts = core.AssistantText("updated").Parts
 	explicit.TextContent = "updated"
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
 		return store.UpdateMessage(ctx, sess.ID, explicit)
@@ -213,24 +213,24 @@ func TestSQLiteStoreTranscriptRevisionCoversMessageWritePaths(t *testing.T) {
 	})
 
 	replacement := []Message{
-		*NewMessage(sess.ID, llm.UserText("replacement"), 0),
-		*NewMessage(sess.ID, llm.AssistantText("answer"), 1),
+		*NewMessage(sess.ID, core.UserText("replacement"), 0),
+		*NewMessage(sess.ID, core.AssistantText("answer"), 1),
 	}
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
 		return store.ReplaceMessages(ctx, sess.ID, replacement)
 	})
 
 	compacted := []Message{
-		*NewMessage(sess.ID, llm.UserText("summary"), -1),
-		*NewMessage(sess.ID, llm.AssistantText("continuation"), -1),
+		*NewMessage(sess.ID, core.UserText("summary"), -1),
+		*NewMessage(sess.ID, core.AssistantText("continuation"), -1),
 	}
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
 		return store.CompactMessages(ctx, sess.ID, compacted)
 	})
 
 	active := []Message{
-		*NewMessage(sess.ID, llm.UserText("summary changed"), -1),
-		*NewMessage(sess.ID, llm.AssistantText("continuation changed"), -1),
+		*NewMessage(sess.ID, core.UserText("summary changed"), -1),
+		*NewMessage(sess.ID, core.AssistantText("continuation changed"), -1),
 	}
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
 		return store.ReplaceCompactedMessages(ctx, sess.ID, active)
@@ -245,11 +245,11 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 	messages := []*Message{
-		NewMessage(sess.ID, llm.SystemText("hidden"), -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: llm.UserText("hello").Parts, ClientMessageID: "client-hello"}, -1),
-		NewMessage(sess.ID, llm.AssistantText("answer"), -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleTool}, -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent}, -1),
+		NewMessage(sess.ID, core.SystemText("hidden"), -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleUser, Parts: core.UserText("hello").Parts, ClientMessageID: "client-hello"}, -1),
+		NewMessage(sess.ID, core.AssistantText("answer"), -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleTool}, -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleEvent}, -1),
 	}
 	for _, msg := range messages {
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
@@ -302,11 +302,11 @@ func TestSQLiteStoreTranscriptHidesGoalSteeringRows(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 	legacyText := "Continue working toward the active thread goal.\n\nThe objective below is user-provided data. Treat it as the task to pursue."
-	real := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: llm.UserText("go").Parts, ClientMessageID: "client-go"}, -1)
-	marked := NewMessage(sess.ID, llm.GoalSteeringText("marked internal continuation"), -1)
-	legacy := NewMessage(sess.ID, llm.UserText(legacyText), -1)
-	quoted := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: llm.UserText(legacyText).Parts, ClientMessageID: "client-quote"}, -1)
-	answer := NewMessage(sess.ID, llm.AssistantText("done"), -1)
+	real := NewMessage(sess.ID, core.Message{Role: core.RoleUser, Parts: core.UserText("go").Parts, ClientMessageID: "client-go"}, -1)
+	marked := NewMessage(sess.ID, core.GoalSteeringText("marked internal continuation"), -1)
+	legacy := NewMessage(sess.ID, core.UserText(legacyText), -1)
+	quoted := NewMessage(sess.ID, core.Message{Role: core.RoleUser, Parts: core.UserText(legacyText).Parts, ClientMessageID: "client-quote"}, -1)
+	answer := NewMessage(sess.ID, core.AssistantText("done"), -1)
 	for _, msg := range []*Message{real, marked, legacy, quoted, answer} {
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage: %v", err)
@@ -337,7 +337,7 @@ func TestSQLiteStoreTranscriptHidesGoalSteeringRows(t *testing.T) {
 		t.Fatalf("persisted goal steering classification = %#v", loaded)
 	}
 	providerMessage := loaded[1].ToLLMMessage()
-	if llm.HasGoalSteeringPart(providerMessage.Parts) || llm.MessageText(providerMessage) != "marked internal continuation" {
+	if core.HasGoalSteeringPart(providerMessage.Parts) || core.MessageText(providerMessage) != "marked internal continuation" {
 		t.Fatalf("provider replay message = %#v", providerMessage)
 	}
 	if results, searchErr := store.Search(ctx, SearchOptions{Query: "marked internal continuation", Limit: 10}); searchErr != nil || len(results) != 0 {
@@ -349,16 +349,16 @@ func TestSQLiteResponseRunStartStateMatchesTranscriptSnapshot(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 	compacted := []Message{
-		*NewMessage(sess.ID, llm.UserText("[Context Compaction]\nsummary"), -1),
-		*NewMessage(sess.ID, llm.AssistantText("retained answer"), -1),
+		*NewMessage(sess.ID, core.UserText("[Context Compaction]\nsummary"), -1),
+		*NewMessage(sess.ID, core.AssistantText("retained answer"), -1),
 	}
 	compacted[1].CompactionTail = true
 	if err := store.CompactMessages(ctx, sess.ID, compacted); err != nil {
 		t.Fatalf("CompactMessages: %v", err)
 	}
 	for _, message := range []*Message{
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartText, Text: "visible event"}}}, -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "provider context"}}}, -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleEvent, Parts: []core.Part{{Type: core.PartText, Text: "visible event"}}}, -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "provider context"}}}, -1),
 	} {
 		if err := store.AddMessage(ctx, sess.ID, message); err != nil {
 			t.Fatalf("AddMessage(%s): %v", message.Role, err)
@@ -377,8 +377,8 @@ func TestSQLiteResponseRunStartStateMatchesTranscriptSnapshot(t *testing.T) {
 			if item.Flags&TranscriptFlagCompactionTail != 0 {
 				continue
 			}
-			switch llm.Role(item.Role) {
-			case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+			switch core.Role(item.Role) {
+			case core.RoleUser, core.RoleAssistant, core.RoleTool:
 				wantBoundary = item.ID
 			}
 			if wantBoundary != 0 {
@@ -402,9 +402,9 @@ func TestSQLiteResponseRunStartStateMatchesTranscriptSnapshot(t *testing.T) {
 	if compactedState.CompactionSeq < 0 || compactedState.CompactionCount != 1 {
 		t.Fatalf("compaction state = %#v, want active first compaction", compactedState)
 	}
-	tool := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
-		Type:       llm.PartToolResult,
-		ToolResult: &llm.ToolResult{ID: "call-latest", Name: "shell", Content: "done"},
+	tool := NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{
+		Type:       core.PartToolResult,
+		ToolResult: &core.ToolResult{ID: "call-latest", Name: "shell", Content: "done"},
 	}}}, -1)
 	if err := store.AddMessage(ctx, sess.ID, tool); err != nil {
 		t.Fatalf("AddMessage(tool): %v", err)
@@ -494,8 +494,8 @@ func TestSQLiteCompactionPreservesResponseIdentity(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 	messages := []Message{
-		*NewMessage(sess.ID, llm.UserText("summary"), -1),
-		*NewMessage(sess.ID, llm.AssistantText("retained answer"), -1),
+		*NewMessage(sess.ID, core.UserText("summary"), -1),
+		*NewMessage(sess.ID, core.AssistantText("retained answer"), -1),
 	}
 	messages[1].ResponseID = "resp-compaction-identity"
 	messages[1].AssistantSegmentOrdinal = 0
@@ -522,14 +522,14 @@ func TestSQLiteStoreTranscriptIndexMatchesPlanResultDisplayVisibility(t *testing
 	ctx := context.Background()
 	callID := "call-plan"
 	messages := []*Message{
-		NewMessage(sess.ID, llm.UserText("make a plan"), -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-			Type:     llm.PartToolCall,
-			ToolCall: &llm.ToolCall{ID: callID, Name: "update_plan"},
+		NewMessage(sess.ID, core.UserText("make a plan"), -1),
+		NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+			Type:     core.PartToolCall,
+			ToolCall: &core.ToolCall{ID: callID, Name: "update_plan"},
 		}}}, -1),
-		NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
-			Type:       llm.PartToolResult,
-			ToolResult: &llm.ToolResult{ID: callID},
+		NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{
+			Type:       core.PartToolResult,
+			ToolResult: &core.ToolResult{ID: callID},
 		}}}, -1),
 	}
 	for _, msg := range messages {
@@ -549,9 +549,9 @@ func TestSQLiteStoreTranscriptIndexMatchesPlanResultDisplayVisibility(t *testing
 
 func TestSQLiteStoreTranscriptIndexIncludesAskUserResultBody(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
-	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
-		Type:       llm.PartToolResult,
-		ToolResult: &llm.ToolResult{ID: "call-ask", Name: "ask_user", Content: `{"answers":[{"header":"Choice","selected":"A"}]}`},
+	msg := NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{
+		Type:       core.PartToolResult,
+		ToolResult: &core.ToolResult{ID: "call-ask", Name: "ask_user", Content: `{"answers":[{"header":"Choice","selected":"A"}]}`},
 	}}}, -1)
 	if err := store.AddMessage(context.Background(), sess.ID, msg); err != nil {
 		t.Fatal(err)
@@ -575,7 +575,7 @@ func TestSQLiteStoreTranscriptSnapshotIsCoherentDuringConcurrentWrites(t *testin
 	go func() {
 		defer wg.Done()
 		for i := 0; i < writes; i++ {
-			if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText(fmt.Sprintf("row-%d", i)), -1)); err != nil {
+			if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, core.UserText(fmt.Sprintf("row-%d", i)), -1)); err != nil {
 				writerErr <- err
 				return
 			}
@@ -610,8 +610,8 @@ func TestSQLiteStoreTranscriptRewriteRetiresIDs(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 	original := []Message{
-		*NewMessage(sess.ID, llm.UserText("one"), 0),
-		*NewMessage(sess.ID, llm.AssistantText("two"), 1),
+		*NewMessage(sess.ID, core.UserText("one"), 0),
+		*NewMessage(sess.ID, core.AssistantText("two"), 1),
 	}
 	if err := store.ReplaceMessages(ctx, sess.ID, original); err != nil {
 		t.Fatalf("ReplaceMessages original: %v", err)
@@ -623,8 +623,8 @@ func TestSQLiteStoreTranscriptRewriteRetiresIDs(t *testing.T) {
 	oldSecondID := before[1].ID
 
 	rewrite := []Message{
-		*NewMessage(sess.ID, llm.UserText("one"), 0),
-		*NewMessage(sess.ID, llm.AssistantText("changed"), 1),
+		*NewMessage(sess.ID, core.UserText("one"), 0),
+		*NewMessage(sess.ID, core.AssistantText("changed"), 1),
 	}
 	if err := store.ReplaceMessages(ctx, sess.ID, rewrite); err != nil {
 		t.Fatalf("ReplaceMessages rewrite: %v", err)
@@ -644,7 +644,7 @@ func TestSQLiteStoreTranscriptRewriteRetiresIDs(t *testing.T) {
 func TestSQLiteStoreTranscriptPersistsResponseScopedAssistantIdentity(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
-	assistant := llm.AssistantText("stable segment")
+	assistant := core.AssistantText("stable segment")
 	assistant.ResponseID = "resp_identity"
 	assistant.AssistantSegmentOrdinal = 2
 	assistant.SegmentStartSequence = 11

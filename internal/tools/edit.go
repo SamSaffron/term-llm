@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/udiff"
 )
 
@@ -61,8 +62,8 @@ type EditFileArgs struct {
 	NewText string `json:"new_text,omitempty"`
 }
 
-func (t *EditFileTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *EditFileTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: EditFileToolName,
 		Description: `Edit a file. Two modes available:
 1. Direct edit: provide old_text and new_text for deterministic string replacement with 5-level matching
@@ -99,10 +100,10 @@ func (t *EditFileTool) Preview(args json.RawMessage) string {
 	return a.Path
 }
 
-func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	warning := WarnUnknownParams(args, []string{"path", "old_text", "new_text", "instructions", "line_range"})
-	textOutput := func(message string) llm.ToolOutput {
-		return llm.TextOutput(warning + message)
+	textOutput := func(message string) core.ToolOutput {
+		return core.TextOutput(warning + message)
 	}
 
 	var a EditFileArgs
@@ -159,16 +160,16 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 }
 
 // executeDirectEdit performs a deterministic string replacement using 5-level matching.
-func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (llm.ToolOutput, error) {
+func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (core.ToolOutput, error) {
 	// Resolve the execution path so concurrent edits of the same underlying
 	// file share one lock path and the final write does not follow a late
 	// symlink change.
 	absPath, err := resolveToolPathWithConfig(a.Path, true, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return llm.TextOutput(formatToolError(toolErr)), nil
+			return core.TextOutput(formatToolError(toolErr)), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err))), nil
 	}
 
 	// Serialize concurrent edits to the same file path.
@@ -178,14 +179,14 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, absPath))), nil
+			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, absPath))), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "stat error: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "stat error: %v", err))), nil
 	}
 	origMode := info.Mode()
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
 	}
 
 	content := string(data)
@@ -199,7 +200,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	// Find match using 5-level matching
 	result, err := edit.FindMatch(content, search)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "could not find old_text: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "could not find old_text: %v", err))), nil
 	}
 
 	// Apply the replacement
@@ -212,34 +213,34 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	base := filepath.Base(writePath)
 	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
 	}
 	tempPath := tempFile.Name()
 
 	if _, err := tempFile.WriteString(newContent); err != nil {
 		tempFile.Close()
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
 	}
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close()
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
 	}
 	if err := tempFile.Close(); err != nil {
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
 	}
 
 	// Preserve original file permissions (CreateTemp uses 0600)
 	if err := os.Chmod(tempPath, origMode); err != nil {
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
 	}
 
 	if err := os.Rename(tempPath, writePath); err != nil {
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
 
 	// Build result message
@@ -252,20 +253,20 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	}
 	sb.WriteString(".")
 
-	output := llm.ToolOutput{Content: sb.String()}
+	output := core.ToolOutput{Content: sb.String()}
 	if fc, diagnostic := recordFileChange(ctx, t.recorder, EditFileToolName, absPath, data, []byte(newContent), false, false); fc != nil {
-		output.FileChanges = []llm.FileChange{*fc}
+		output.FileChanges = []core.FileChange{*fc}
 		if diagnostic != nil {
-			output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
+			output.OutputClaimDiagnostics = []core.OutputClaimDiagnostic{*diagnostic}
 		}
 	} else if diagnostic != nil {
-		output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
+		output.OutputClaimDiagnostics = []core.OutputClaimDiagnostic{*diagnostic}
 	}
 
 	// Populate structured diff data (skip if content is too large)
 	if len(result.Original) < diff.MaxDiffSize && len(a.NewText) < diff.MaxDiffSize {
 		startLine := strings.Count(content[:result.Start], "\n") + 1
-		output.Diffs = []llm.DiffData{
+		output.Diffs = []core.DiffData{
 			{File: absPath, Old: result.Original, New: a.NewText, Line: startLine},
 		}
 	}
@@ -293,7 +294,7 @@ type UnifiedDiffArgs struct {
 	Diff string `json:"diff"`
 }
 
-func (t *UnifiedDiffTool) Spec() llm.ToolSpec {
+func (t *UnifiedDiffTool) Spec() core.ToolSpec {
 	return llm.UnifiedDiffToolSpec()
 }
 
@@ -314,24 +315,24 @@ func (t *UnifiedDiffTool) Preview(args json.RawMessage) string {
 	return "multiple files"
 }
 
-func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a UnifiedDiffArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.Diff == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "diff is required"))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "diff is required"))), nil
 	}
 
 	// Parse the unified diff
 	fileDiffs, err := udiff.Parse(a.Diff)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "failed to parse diff: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "failed to parse diff: %v", err))), nil
 	}
 
 	if len(fileDiffs) == 0 {
-		return llm.TextOutput("No changes to apply"), nil
+		return core.TextOutput("No changes to apply"), nil
 	}
 
 	// Check permissions for all files first
@@ -339,9 +340,9 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		absPath, err := resolveToolPathWithConfig(fd.Path, true, t.config)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return llm.TextOutput(formatToolError(toolErr)), nil
+				return core.TextOutput(formatToolError(toolErr)), nil
 			}
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+			return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 		}
 		if t.approval != nil {
 			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, UnifiedDiffToolName, absPath, fd.Path, true)
@@ -356,9 +357,9 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 
 	var sb strings.Builder
 	var allWarnings []string
-	var diffs []llm.DiffData
-	var fileChanges []llm.FileChange
-	var diagnostics []llm.OutputClaimDiagnostic
+	var diffs []core.DiffData
+	var fileChanges []core.FileChange
+	var diagnostics []core.OutputClaimDiagnostic
 
 	for _, fd := range fileDiffs {
 		absPath, err := resolveToolPathWithConfig(fd.Path, true, t.config)
@@ -393,11 +394,11 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		}
 	}
 
-	return llm.ToolOutput{Content: sb.String(), Diffs: diffs, FileChanges: fileChanges, OutputClaimDiagnostics: diagnostics}, nil
+	return core.ToolOutput{Content: sb.String(), Diffs: diffs, FileChanges: fileChanges, OutputClaimDiagnostics: diagnostics}, nil
 }
 
 // applyFileDiff applies a single file's hunks while holding a per-path lock.
-func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd udiff.FileDiff) (status string, warnings []string, diffData *llm.DiffData, fileChange *llm.FileChange, diagnostic *llm.OutputClaimDiagnostic) {
+func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd udiff.FileDiff) (status string, warnings []string, diffData *core.DiffData, fileChange *core.FileChange, diagnostic *core.OutputClaimDiagnostic) {
 	defer lockFilePath(absPath)()
 
 	fileInfo, err := os.Stat(absPath)
@@ -460,7 +461,7 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 	status = fmt.Sprintf("Applied changes to %s: %d lines -> %d lines.\n", fd.Path, oldLines, newLines)
 
 	if len(content) < diff.MaxDiffSize && len(result.Content) < diff.MaxDiffSize {
-		diffData = &llm.DiffData{
+		diffData = &core.DiffData{
 			File: absPath, Old: content, New: result.Content, Line: 1,
 		}
 	}

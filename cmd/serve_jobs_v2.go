@@ -23,7 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/jobs"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -43,7 +43,7 @@ type serveJobsExecResult struct {
 	Progressive *progressiveRunResult
 }
 
-type serveJobsExecutor func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error)
+type serveJobsExecutor func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error)
 
 const (
 	jobsV2RunnerLLM     jobsV2RunnerType = jobsV2RunnerType(jobs.RunnerLLM)
@@ -395,16 +395,16 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	}
 	var output runtime.RunnerOutput
 	progressTracker := newProgressTracker()
-	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
-		if ev.Type != llm.EventTextDelta || !cfg.Progressive {
+	execResult, err := r.exec(ctx, cfg, func(ev core.Event) {
+		if ev.Type != core.EventTextDelta || !cfg.Progressive {
 			output.Event(ev)
 		}
 		switch ev.Type {
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			if ev.Tool != nil && cfg.Progressive && isProgressToolName(ev.Tool.Name) {
 				progressTracker.ObserveToolCall(strings.TrimSpace(ev.Tool.ID), strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
 			}
-		case llm.EventUsage:
+		case core.EventUsage:
 			if ev.Use != nil {
 				res.InputTokens += ev.Use.InputTokens
 				res.OutputTokens += ev.Use.OutputTokens
@@ -421,7 +421,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					})
 				}
 			}
-		case llm.EventToolExecStart:
+		case core.EventToolExecStart:
 			if cfg.Progressive && isProgressToolName(ev.ToolName) {
 				return
 			}
@@ -436,7 +436,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					"id":   ev.ToolCallID,
 				})
 			}
-		case llm.EventToolExecEnd:
+		case core.EventToolExecEnd:
 			if cfg.Progressive && isProgressToolName(ev.ToolName) {
 				if commit := progressTracker.CommitToolCall(strings.TrimSpace(ev.ToolCallID), strings.TrimSpace(ev.ToolName), ev.ToolSuccess); commit != nil && pw != nil {
 					message := commit.Message
@@ -459,7 +459,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					"id":      ev.ToolCallID,
 				})
 			}
-		case llm.EventPhase:
+		case core.EventPhase:
 			if pw != nil && ev.Text != "" {
 				pw("phase", ev.Text, map[string]any{"text": ev.Text})
 			}
@@ -3001,7 +3001,7 @@ func serveJobsRunnerOptions(approval resolvedApprovalMode) cmdRunnerOptions {
 }
 
 func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode) serveJobsExecutor {
-	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		var search *bool
 		if cfg.Search {
 			v := true

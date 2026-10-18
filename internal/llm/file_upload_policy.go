@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/filemime"
 	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
 )
@@ -30,26 +31,11 @@ func portableTextEmbedMIMETypeList() []string {
 	return types
 }
 
-// FileUploadPolicy describes provider-level upload capabilities. Native MIME
-// types are allowed to travel as provider-native file/document inputs. Text
-// embed MIME types are safe to inline as ordinary text on providers without
-// native file support.
-//
-// Membership in NativeMimeTypes does not guarantee native forwarding: a modest
-// text-like upload whose body is already embedded is inlined in preference to a
-// native file, because inlining cannot be rejected by a provider MIME allowlist.
-// See responsesFilePrefersTextEmbed for the exact precedence.
-type FileUploadPolicy = responses.FileUploadPolicy
-
-// NormalizeMediaType lowercases a MIME type and strips optional parameters.
-// Deprecated: use filemime.NormalizeMediaType.
-func NormalizeMediaType(mediaType string) string { return filemime.NormalizeMediaType(mediaType) }
-
 // DefaultOpenAIResponsesFileUploadPolicy returns the native file types accepted
 // by the OpenAI Responses file input API. The same policy is used for
 // ChatGPT/Grok/Copilot Responses transports unless overridden in config.
-func DefaultOpenAIResponsesFileUploadPolicy() FileUploadPolicy {
-	return FileUploadPolicy{
+func DefaultOpenAIResponsesFileUploadPolicy() responses.FileUploadPolicy {
+	return responses.FileUploadPolicy{
 		NativeMimeTypes:    cloneStrings(openAIResponsesAcceptedFileMIMETypes),
 		MaxNativeBytes:     defaultFileUploadMaxBytes,
 		TextEmbedMimeTypes: cloneStrings(portableTextEmbedMIMETypes),
@@ -59,8 +45,8 @@ func DefaultOpenAIResponsesFileUploadPolicy() FileUploadPolicy {
 
 // DefaultPortableTextFileUploadPolicy allows no native file forwarding but keeps
 // portable text-like uploads useful by inlining their contents.
-func DefaultPortableTextFileUploadPolicy() FileUploadPolicy {
-	return FileUploadPolicy{
+func DefaultPortableTextFileUploadPolicy() responses.FileUploadPolicy {
+	return responses.FileUploadPolicy{
 		NativeMimeTypes:    nil,
 		MaxNativeBytes:     defaultFileUploadMaxBytes,
 		TextEmbedMimeTypes: cloneStrings(portableTextEmbedMIMETypes),
@@ -71,7 +57,7 @@ func DefaultPortableTextFileUploadPolicy() FileUploadPolicy {
 // DefaultFileUploadPolicyForProviderType returns the built-in upload defaults
 // for a provider implementation. Only providers with an implemented Responses
 // file path get native file MIME types by default.
-func DefaultFileUploadPolicyForProviderType(providerType config.ProviderType) FileUploadPolicy {
+func DefaultFileUploadPolicyForProviderType(providerType config.ProviderType) responses.FileUploadPolicy {
 	switch providerType {
 	case config.ProviderTypeOpenAI, config.ProviderTypeChatGPT, config.ProviderTypeGrok, config.ProviderTypeCopilot:
 		return DefaultOpenAIResponsesFileUploadPolicy()
@@ -83,7 +69,7 @@ func DefaultFileUploadPolicyForProviderType(providerType config.ProviderType) Fi
 // EffectiveFileUploadPolicyForProviderConfig merges provider defaults with any
 // config-level overrides. A configured empty native_mime_types list intentionally
 // disables native file forwarding for that provider.
-func EffectiveFileUploadPolicyForProviderConfig(providerName string, providerCfg config.ProviderConfig) FileUploadPolicy {
+func EffectiveFileUploadPolicyForProviderConfig(providerName string, providerCfg config.ProviderConfig) responses.FileUploadPolicy {
 	policy := DefaultFileUploadPolicyForProviderType(config.InferProviderType(providerName, providerCfg.Type))
 	if providerCfg.FileUpload == nil {
 		return policy
@@ -106,7 +92,7 @@ func EffectiveFileUploadPolicyForProviderConfig(providerName string, providerCfg
 
 // FileUploadPolicyOverrideForProviderConfig returns nil when no file_upload block
 // was configured, allowing provider constructors to use their built-in defaults.
-func FileUploadPolicyOverrideForProviderConfig(providerName string, providerCfg config.ProviderConfig) *FileUploadPolicy {
+func FileUploadPolicyOverrideForProviderConfig(providerName string, providerCfg config.ProviderConfig) *responses.FileUploadPolicy {
 	if providerCfg.FileUpload == nil {
 		return nil
 	}
@@ -132,7 +118,7 @@ func decodedBase64Size(base64Data string) int64 {
 	return int64(decodedLen)
 }
 
-func toolFileSizeBytes(file *ToolFileData) int64 {
+func toolFileSizeBytes(file *core.ToolFileData) int64 {
 	if file == nil {
 		return 0
 	}
@@ -151,7 +137,7 @@ func normalizeMIMETypes(values []string) []string {
 			continue
 		}
 		if v != "*" && v != "*/*" && !strings.HasSuffix(v, "/*") {
-			v = NormalizeMediaType(v)
+			v = filemime.NormalizeMediaType(v)
 		}
 		if v == "" || seen[v] {
 			continue
@@ -163,7 +149,7 @@ func normalizeMIMETypes(values []string) []string {
 }
 
 func mimeAllowed(mediaType string, allowed []string) bool {
-	mediaType = NormalizeMediaType(mediaType)
+	mediaType = filemime.NormalizeMediaType(mediaType)
 	if mediaType == "" {
 		return false
 	}
@@ -188,7 +174,7 @@ func mimeAllowed(mediaType string, allowed []string) bool {
 			}
 			continue
 		}
-		if NormalizeMediaType(candidate) == mediaType {
+		if filemime.NormalizeMediaType(candidate) == mediaType {
 			return true
 		}
 	}

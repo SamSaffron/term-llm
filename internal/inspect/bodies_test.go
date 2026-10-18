@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -21,7 +21,7 @@ func TestInspectBodiesBudgets(t *testing.T) {
 			var messages []session.Message
 			var ids []string
 			for i := 1; i <= 12; i++ {
-				messages = append(messages, inspectMessage(int64(i), llm.RoleTool, llm.Part{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: "read_file", Content: tt.text}}))
+				messages = append(messages, inspectMessage(int64(i), core.RoleTool, core.Part{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: "read_file", Content: tt.text}}))
 				ids = append(ids, fmt.Sprintf("m%d.p0.tool_result", i))
 			}
 			d := Project(messages, Options{TranscriptRev: 42})
@@ -47,8 +47,8 @@ func TestInspectBodiesBudgets(t *testing.T) {
 }
 
 func TestInspectBodiesMissingAndSessionIsolation(t *testing.T) {
-	first := Project([]session.Message{inspectMessage(10, llm.RoleUser, llm.Part{Type: llm.PartText, Text: "first session"})}, Options{SessionID: "first"})
-	second := Project([]session.Message{inspectMessage(11, llm.RoleUser, llm.Part{Type: llm.PartText, Text: "second session"})}, Options{SessionID: "second"})
+	first := Project([]session.Message{inspectMessage(10, core.RoleUser, core.Part{Type: core.PartText, Text: "first session"})}, Options{SessionID: "first"})
+	second := Project([]session.Message{inspectMessage(11, core.RoleUser, core.Part{Type: core.PartText, Text: "second session"})}, Options{SessionID: "second"})
 	if len(first.ResolveBodies([]string{"m10.p0.user"}).Bodies) != 1 {
 		t.Fatal("fixture")
 	}

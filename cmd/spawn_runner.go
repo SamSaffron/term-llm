@@ -12,7 +12,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
@@ -45,7 +46,7 @@ type SpawnAgentRunner struct {
 	observer          childRunObserver
 	warnFunc          func(format string, args ...any)
 	enginesMu         sync.Mutex
-	engines           map[string]*llm.Engine
+	engines           map[string]*engine.Engine
 	lifecycle         *tools.SpawnAgentTool
 	runMu             sync.Mutex
 	draining          bool
@@ -319,7 +320,7 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 	parentSessionID := strings.TrimSpace(request.ParentSessionID)
 	if parentSessionID == "" {
 		parentSessionID = r.parentSessionID
-		if contextSessionID := llm.SessionIDFromContext(ctx); contextSessionID != "" {
+		if contextSessionID := core.SessionIDFromContext(ctx); contextSessionID != "" {
 			parentSessionID = contextSessionID
 		}
 	}
@@ -593,7 +594,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 }
 
 func isChildTurnLimit(err error) bool {
-	var limit *llm.MaxTurnsExceededError
+	var limit *engine.MaxTurnsExceededError
 	return errors.As(err, &limit)
 }
 
@@ -612,22 +613,22 @@ func (r *SpawnAgentRunner) prepareLifecycleChildRequest(ctx context.Context, req
 		if instruction == "" {
 			instruction = "Continue the assigned task."
 		}
-		executionRequest.Messages = []llm.Message{llm.UserText(instruction)}
+		executionRequest.Messages = []core.Message{core.UserText(instruction)}
 	}
 	approvalScope := tools.AgentApprovalScopeFromContext(ctx)
 	if approvalScope == nil {
 		approvalScope = r.AgentApprovalScope(executionRequest.ParentSessionID)
 	}
 	if request.Kind == runpkg.ChildRunSpawnAgent {
-		executionRequest.OnEngineReady = func(engine *llm.Engine) {
+		executionRequest.OnEngineReady = func(eng *engine.Engine) {
 			r.enginesMu.Lock()
 			if r.engines == nil {
-				r.engines = make(map[string]*llm.Engine)
+				r.engines = make(map[string]*engine.Engine)
 			}
-			r.engines[childSessionID] = engine
+			r.engines[childSessionID] = eng
 			r.enginesMu.Unlock()
 		}
-		executionRequest.OnEngineDone = func(engine *llm.Engine) {
+		executionRequest.OnEngineDone = func(eng *engine.Engine) {
 			r.enginesMu.Lock()
 			delete(r.engines, childSessionID)
 			r.enginesMu.Unlock()
@@ -738,7 +739,7 @@ func (s *spawnRunSink) ChildEvent(id string, event tools.SubagentEvent) {
 		s.cb(s.callID+"/"+id, event)
 	}
 }
-func (s *spawnRunSink) CompactionUsage(result *llm.CompactionResult) {
+func (s *spawnRunSink) CompactionUsage(result *engine.CompactionResult) {
 	if s == nil || s.cb == nil || result == nil || result.Usage.BillableCountersZero() {
 		return
 	}
@@ -768,7 +769,7 @@ func (s *spawnRunSink) ChildRunSession() childRunSession {
 	return s.handle
 }
 
-func (s *spawnRunSink) Event(event llm.Event) {
+func (s *spawnRunSink) Event(event core.Event) {
 	if s == nil {
 		return
 	}
@@ -777,19 +778,19 @@ func (s *spawnRunSink) Event(event llm.Event) {
 	s.output.Event(event)
 	var pending []tools.SubagentEvent
 	switch event.Type {
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		s.usageCommitted = false
-	case llm.EventReasoningDelta:
+	case core.EventReasoningDelta:
 		s.usageCommitted = false
-	case llm.EventModelSwitch:
+	case core.EventModelSwitch:
 		s.model = event.Model
-	case llm.EventAttemptDiscard:
+	case core.EventAttemptDiscard:
 		s.pendingUsage = nil
-	case llm.EventToolCall, llm.EventToolExecStart, llm.EventDiscoveryCall:
+	case core.EventToolCall, core.EventToolExecStart, core.EventDiscoveryCall:
 		pending = s.pendingUsage
 		s.pendingUsage = nil
 		s.usageCommitted = true
-	case llm.EventToolExecEnd, llm.EventDiscoveryOutput:
+	case core.EventToolExecEnd, core.EventDiscoveryOutput:
 		pending = s.pendingUsage
 		s.pendingUsage = nil
 		s.usageCommitted = false
@@ -826,26 +827,26 @@ func (s *spawnRunSink) GuardianEvent(event tools.GuardianEvent) {
 	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventGuardian, ToolCallID: event.ToolCallID, Guardian: &event})
 }
 
-func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
+func subagentEventFromLLM(event core.Event) tools.SubagentEvent {
 	switch event.Type {
-	case llm.EventDiscoveryCall:
+	case core.EventDiscoveryCall:
 		if event.DiscoveryCall != nil {
 			return tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolCallID: event.DiscoveryCall.ID, ToolName: "tool_search", ToolArgs: event.DiscoveryCall.Arguments}
 		}
-	case llm.EventDiscoveryOutput:
+	case core.EventDiscoveryOutput:
 		if event.DiscoveryOutput != nil {
 			return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: event.DiscoveryOutput.CallID, ToolName: "tool_search", Success: true}
 		}
 
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		return tools.SubagentEvent{Type: tools.SubagentEventText, Text: event.Text}
-	case llm.EventToolExecStart:
+	case core.EventToolExecStart:
 		return tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolInfo: event.ToolInfo, ToolArgs: event.ToolArgs}
-	case llm.EventToolExecEnd:
-		return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolOutput: event.ToolOutput, Diffs: event.ToolDiffs, Images: event.ToolImages, Media: append([]llm.MediaArtifact(nil), event.ToolMedia...), Success: event.ToolSuccess}
-	case llm.EventPhase:
+	case core.EventToolExecEnd:
+		return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolOutput: event.ToolOutput, Diffs: event.ToolDiffs, Images: event.ToolImages, Media: append([]core.MediaArtifact(nil), event.ToolMedia...), Success: event.ToolSuccess}
+	case core.EventPhase:
 		return tools.SubagentEvent{Type: tools.SubagentEventPhase, Phase: event.Text}
-	case llm.EventUsage:
+	case core.EventUsage:
 		if event.Use != nil {
 			return tools.SubagentEvent{
 				Type:              tools.SubagentEventUsage,
@@ -862,7 +863,7 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 
 // setupAgentTools keeps the historical spawn-agent tool wiring path available for
 // focused tests while delegating to the shared SessionSettings tool setup.
-func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
+func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *engine.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
 	remaining := agent.Spawn.MaxDepth
 	if remaining <= 0 {
 		remaining = tools.DefaultSpawnConfig().MaxDepth
@@ -870,7 +871,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 	return r.setupAgentToolsWithBudget(cfg, engine, agent, depth, childSessionID, remaining)
 }
 
-func (r *SpawnAgentRunner) setupAgentToolsWithBudget(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string, remaining int) (*tools.ToolManager, error) {
+func (r *SpawnAgentRunner) setupAgentToolsWithBudget(cfg *config.Config, engine *engine.Engine, agent *agents.Agent, depth int, childSessionID string, remaining int) (*tools.ToolManager, error) {
 	baseDir := r.currentBaseDir()
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, tools.DefaultSubagentMaxTurns, baseDir)
 	if err != nil {
@@ -916,24 +917,24 @@ func safeStoreOp(op func() error) (err error) {
 
 const maxSubagentParentApprovalEntries = 12
 
-func subagentApprovalTranscriptPrefix(ctx context.Context) []llm.Message {
-	parent := llm.ApprovalTranscriptFromContext(ctx)
+func subagentApprovalTranscriptPrefix(ctx context.Context) []core.Message {
+	parent := core.ApprovalTranscriptFromContext(ctx)
 	if len(parent) == 0 {
 		return nil
 	}
 	if len(parent) > maxSubagentParentApprovalEntries {
 		parent = parent[len(parent)-maxSubagentParentApprovalEntries:]
 	}
-	prefix := make([]llm.Message, 0, len(parent))
+	prefix := make([]core.Message, 0, len(parent))
 	for _, msg := range parent {
 		copyMsg := msg
 		if copyMsg.ApprovalRole == "" {
 			switch copyMsg.Role {
-			case llm.RoleUser:
+			case core.RoleUser:
 				copyMsg.ApprovalRole = "parent_user"
-			case llm.RoleAssistant:
+			case core.RoleAssistant:
 				copyMsg.ApprovalRole = "parent_assistant"
-			case llm.RoleTool:
+			case core.RoleTool:
 				copyMsg.ApprovalRole = "parent_tool"
 			default:
 				copyMsg.ApprovalRole = "parent_" + string(copyMsg.Role)

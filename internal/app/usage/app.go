@@ -14,7 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/samsaffron/term-llm/internal/ui"
 	usagedata "github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
@@ -204,7 +204,7 @@ func copilotUsageFlagsChanged(cmd *cobra.Command) bool {
 }
 
 var (
-	fetchDirectProviderUsage = llm.FetchProviderUsageWithAPIKey
+	fetchDirectProviderUsage = providerusage.FetchWithAPIKey
 	loadProviderUsageConfig  = config.Load
 )
 
@@ -240,7 +240,7 @@ func (o *Options) runDirectProviderUsage(cmd *cobra.Command, provider string) er
 	}
 	out := cmd.OutOrStdout()
 	opts := providerUsageFormatOptions(out)
-	fmt.Fprintln(out, llm.FormatProviderUsageWithOptions(report, time.Now(), opts))
+	fmt.Fprintln(out, providerusage.FormatWithOptions(report, time.Now(), opts))
 	return nil
 }
 
@@ -268,8 +268,8 @@ func resolvedProviderUsageAPIKey(provider string) (string, error) {
 	return strings.TrimSpace(providerCfg.ResolvedAPIKey), nil
 }
 
-func providerUsageFormatOptions(w io.Writer) llm.ProviderUsageFormatOptions {
-	opts := llm.ProviderUsageFormatOptions{ASCII: strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb")}
+func providerUsageFormatOptions(w io.Writer) providerusage.FormatOptions {
+	opts := providerusage.FormatOptions{ASCII: strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb")}
 	fdWriter, ok := w.(interface{ Fd() uintptr })
 	if !ok || !term.IsTerminal(int(fdWriter.Fd())) {
 		return opts

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -29,7 +29,7 @@ func TestAgentCollectAcrossTurnStoreHandles(t *testing.T) {
 	child := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	firstTool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	firstTool.SetRunner(&persistentLifecycleRunner{lifecycleRunner: child, store: firstStore})
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	<-child.entered
 	close(child.release)
@@ -81,7 +81,7 @@ func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 	runner := &persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, store: store}
 	firstTool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	firstTool.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"blocking","wait":0}`))
 	<-runner.entered
 	wait := &agentControlTool{name: WaitAgentToolName, spawn: firstTool}
@@ -152,7 +152,7 @@ func TestAgentLifecycleReloadListInterruptedAndResume(t *testing.T) {
 	runner := &persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, store: store}
 	firstTool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	firstTool.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	<-runner.entered
 	wait := &agentControlTool{name: WaitAgentToolName, spawn: firstTool}
@@ -227,7 +227,7 @@ func TestContinueAgentAdmissionFailurePreservesResumableRecord(t *testing.T) {
 	runner := &admissionRetryRunner{persistentLifecycleRunner: &persistentLifecycleRunner{lifecycleRunner: child, store: store}}
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 5}, 0)
 	spawn.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	initial := lifecycleResult(t, lifecycleCall(t, spawn, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	<-child.entered
 	close(child.release)

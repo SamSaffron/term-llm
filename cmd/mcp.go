@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	mcpTui "github.com/samsaffron/term-llm/internal/tui/mcp"
@@ -782,17 +782,17 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func mcpToolResultError(name string, result llm.ToolOutput) error {
+func mcpToolResultError(name string, result core.ToolOutput) error {
 	if result.IsError {
 		return fmt.Errorf("tool %s returned an error", name)
 	}
 	return nil
 }
 
-func renderMCPToolResult(w io.Writer, result llm.ToolOutput) error {
+func renderMCPToolResult(w io.Writer, result core.ToolOutput) error {
 	hasImage := false
 	for _, part := range result.ContentParts {
-		if part.Type == llm.ToolContentPartImageData {
+		if part.Type == core.ToolContentPartImageData {
 			hasImage = true
 			break
 		}

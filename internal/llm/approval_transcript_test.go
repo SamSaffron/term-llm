@@ -7,46 +7,49 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 // approvalTranscriptTool records the policy-review transcript visible to a tool
 // while it executes, once per execution.
 type approvalTranscriptTool struct {
 	mu          sync.Mutex
-	transcripts [][]Message
+	transcripts [][]core.Message
 }
 
-func (t *approvalTranscriptTool) Spec() ToolSpec {
-	return ToolSpec{
+func (t *approvalTranscriptTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "approval_probe",
 		Description: "Records the approval transcript",
 		Schema:      map[string]any{"type": "object"},
 	}
 }
 
-func (t *approvalTranscriptTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+func (t *approvalTranscriptTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	t.mu.Lock()
-	t.transcripts = append(t.transcripts, ApprovalTranscriptFromContext(ctx))
+	t.transcripts = append(t.transcripts, core.ApprovalTranscriptFromContext(ctx))
 	t.mu.Unlock()
-	return TextOutput("probe result"), nil
+	return core.TextOutput("probe result"), nil
 }
 
 func (t *approvalTranscriptTool) Preview(args json.RawMessage) string { return "" }
 
-func (t *approvalTranscriptTool) snapshot() [][]Message {
+func (t *approvalTranscriptTool) snapshot() [][]core.Message {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return append([][]Message(nil), t.transcripts...)
+	return append([][]core.Message(nil), t.transcripts...)
 }
 
 // approvalToolCallIDs and approvalToolResultIDs mirror what the shell approval
 // renderer consumes, so these assertions fail if structural parts are dropped
 // even when the surrounding text still reads correctly.
-func approvalToolCallIDs(transcript []Message) []string {
+func approvalToolCallIDs(transcript []core.Message) []string {
 	var ids []string
 	for _, msg := range transcript {
 		for _, part := range msg.Parts {
-			if part.Type == PartToolCall && part.ToolCall != nil {
+			if part.Type == core.PartToolCall && part.ToolCall != nil {
 				ids = append(ids, part.ToolCall.ID)
 			}
 		}
@@ -54,11 +57,11 @@ func approvalToolCallIDs(transcript []Message) []string {
 	return ids
 }
 
-func approvalToolResultIDs(transcript []Message) []string {
+func approvalToolResultIDs(transcript []core.Message) []string {
 	var ids []string
 	for _, msg := range transcript {
 		for _, part := range msg.Parts {
-			if part.Type == PartToolResult && part.ToolResult != nil {
+			if part.Type == core.PartToolResult && part.ToolResult != nil {
 				ids = append(ids, part.ToolResult.ID)
 			}
 		}
@@ -69,11 +72,11 @@ func approvalToolResultIDs(transcript []Message) []string {
 // approvalToolResultContents reads tool output the way the shell approval
 // renderer does. MessageText deliberately ignores PartToolResult, so asserting
 // through it would silently pass on an empty result body.
-func approvalToolResultContents(transcript []Message) string {
+func approvalToolResultContents(transcript []core.Message) string {
 	var b strings.Builder
 	for _, msg := range transcript {
 		for _, part := range msg.Parts {
-			if part.Type == PartToolResult && part.ToolResult != nil {
+			if part.Type == core.PartToolResult && part.ToolResult != nil {
 				b.WriteString(part.ToolResult.Content)
 				b.WriteByte('\n')
 			}
@@ -82,18 +85,18 @@ func approvalToolResultContents(transcript []Message) string {
 	return b.String()
 }
 
-func transcriptTexts(messages []Message) string {
+func transcriptTexts(messages []core.Message) string {
 	var b strings.Builder
 	for _, msg := range messages {
 		b.WriteString(string(msg.Role))
 		b.WriteString(":")
-		b.WriteString(MessageText(msg))
+		b.WriteString(core.MessageText(msg))
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func drainStreamToEOF(t *testing.T, stream Stream) {
+func drainStreamToEOF(t *testing.T, stream core.Stream) {
 	t.Helper()
 	defer stream.Close()
 	for {
@@ -107,37 +110,37 @@ func drainStreamToEOF(t *testing.T, stream Stream) {
 	}
 }
 
-func syncToolCallEvent(id string) Event {
-	return Event{
-		Type:         EventToolCall,
+func syncToolCallEvent(id string) core.Event {
+	return core.Event{
+		Type:         core.EventToolCall,
 		ToolCallID:   id,
 		ToolName:     "approval_probe",
-		Tool:         &ToolCall{ID: id, Name: "approval_probe", Arguments: json.RawMessage(`{}`)},
-		ToolResponse: make(chan ToolExecutionResponse, 1),
+		Tool:         &core.ToolCall{ID: id, Name: "approval_probe", Arguments: json.RawMessage(`{}`)},
+		ToolResponse: make(chan core.ToolExecutionResponse, 1),
 	}
 }
 
-func asyncToolCallEvent(id string) Event {
-	return Event{
-		Type:       EventToolCall,
+func asyncToolCallEvent(id string) core.Event {
+	return core.Event{
+		Type:       core.EventToolCall,
 		ToolCallID: id,
 		ToolName:   "approval_probe",
-		Tool:       &ToolCall{ID: id, Name: "approval_probe", Arguments: json.RawMessage(`{}`)},
+		Tool:       &core.ToolCall{ID: id, Name: "approval_probe", Arguments: json.RawMessage(`{}`)},
 	}
 }
 
-func providerReplayPart(secret string) Part {
-	return Part{
-		Type:           PartProviderReplay,
-		ProviderReplay: &ProviderReplayItem{Raw: json.RawMessage(`{"type":"reasoning","encrypted_content":"` + secret + `"}`)},
+func providerReplayPart(secret string) core.Part {
+	return core.Part{
+		Type:           core.PartProviderReplay,
+		ProviderReplay: &core.ProviderReplayItem{Raw: json.RawMessage(`{"type":"reasoning","encrypted_content":"` + secret + `"}`)},
 	}
 }
 
-func countProviderReplayParts(messages []Message) int {
+func countProviderReplayParts(messages []core.Message) int {
 	n := 0
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
-			if part.Type == PartProviderReplay {
+			if part.Type == core.PartProviderReplay {
 				n++
 			}
 		}
@@ -153,31 +156,31 @@ func countProviderReplayParts(messages []Message) int {
 // authorization.
 func TestSyncBridgeToolExecutionCarriesApprovalTranscript(t *testing.T) {
 	tool := &approvalTranscriptTool{}
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
 
 	provider := &fakeProvider{
-		script: func(call int, req Request) []Event {
+		script: func(call int, req core.Request) []core.Event {
 			if call == 0 {
-				return []Event{
-					{Type: EventTextDelta, Text: "I'll run a trivial shell command."},
+				return []core.Event{
+					{Type: core.EventTextDelta, Text: "I'll run a trivial shell command."},
 					syncToolCallEvent("sync-1"),
-					{Type: EventDone},
+					{Type: core.EventDone},
 				}
 			}
-			return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			return []core.Event{{Type: core.EventTextDelta, Text: "done"}, {Type: core.EventDone}}
 		},
 	}
 
-	engine := NewEngine(provider, registry)
-	stream, err := engine.Stream(context.Background(), Request{
-		Messages: []Message{UserText("quick test of guardian: run a trivial shell command")},
-		ApprovalTranscriptPrefix: []Message{{
-			Role:         RoleUser,
+	engine := engine.NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("quick test of guardian: run a trivial shell command")},
+		ApprovalTranscriptPrefix: []core.Message{{
+			Role:         core.RoleUser,
 			ApprovalRole: "parent_user",
-			Parts:        []Part{{Type: PartText, Text: "parent operator request"}},
+			Parts:        []core.Part{{Type: core.PartText, Text: "parent operator request"}},
 		}},
-		Tools: []ToolSpec{tool.Spec()},
+		Tools: []core.ToolSpec{tool.Spec()},
 	})
 	if err != nil {
 		t.Fatalf("engine stream: %v", err)
@@ -201,13 +204,13 @@ func TestSyncBridgeToolExecutionCarriesApprovalTranscript(t *testing.T) {
 	if transcript[0].ApprovalRole != "parent_user" {
 		t.Fatalf("prefix ApprovalRole = %q, want parent_user; spawned-agent provenance was lost", transcript[0].ApprovalRole)
 	}
-	if got := MessageText(transcript[0]); got != "parent operator request" {
+	if got := core.MessageText(transcript[0]); got != "parent operator request" {
 		t.Fatalf("prefix text = %q", got)
 	}
-	if transcript[1].Role != RoleUser || !strings.Contains(MessageText(transcript[1]), "quick test of guardian") {
+	if transcript[1].Role != core.RoleUser || !strings.Contains(core.MessageText(transcript[1]), "quick test of guardian") {
 		t.Fatalf("second entry is not the operator message:\n%s", transcriptTexts(transcript))
 	}
-	if transcript[2].Role != RoleAssistant || !strings.Contains(MessageText(transcript[2]), "I'll run a trivial shell command.") {
+	if transcript[2].Role != core.RoleAssistant || !strings.Contains(core.MessageText(transcript[2]), "I'll run a trivial shell command.") {
 		t.Fatalf("third entry is not the in-progress assistant turn:\n%s", transcriptTexts(transcript))
 	}
 
@@ -220,7 +223,7 @@ func TestSyncBridgeToolExecutionCarriesApprovalTranscript(t *testing.T) {
 		t.Fatalf("approval transcript tool results = %v, want none before the call executes", got)
 	}
 	for _, part := range transcript[2].Parts {
-		if part.Type == PartProviderReplay {
+		if part.Type == core.PartProviderReplay {
 			t.Fatal("opaque provider replay state leaked into the policy-review transcript")
 		}
 	}
@@ -234,40 +237,40 @@ func TestSyncBridgeToolExecutionCarriesApprovalTranscript(t *testing.T) {
 func TestSyncBridgeSequentialToolCallsSeePriorResults(t *testing.T) {
 	tests := []struct {
 		name         string
-		capabilities Capabilities
+		capabilities core.Capabilities
 	}{
-		{name: "claude_bin_style", capabilities: Capabilities{ToolCalls: true}},
-		{name: "grok_bin_style", capabilities: Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}},
-		{name: "cursor_bin_style", capabilities: Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}},
+		{name: "claude_bin_style", capabilities: core.Capabilities{ToolCalls: true}},
+		{name: "grok_bin_style", capabilities: core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}},
+		{name: "cursor_bin_style", capabilities: core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := &approvalTranscriptTool{}
-			registry := NewToolRegistry()
+			registry := engine.NewToolRegistry()
 			registry.Register(tool)
 
 			provider := &fakeProvider{
 				capabilities:    tc.capabilities,
 				hasCapabilities: true,
-				script: func(call int, req Request) []Event {
+				script: func(call int, req core.Request) []core.Event {
 					if call == 0 {
-						return []Event{
-							{Type: EventTextDelta, Text: "first I inspect,"},
+						return []core.Event{
+							{Type: core.EventTextDelta, Text: "first I inspect,"},
 							syncToolCallEvent("sync-1"),
-							{Type: EventTextDelta, Text: " then I act."},
+							{Type: core.EventTextDelta, Text: " then I act."},
 							syncToolCallEvent("sync-2"),
-							{Type: EventDone},
+							{Type: core.EventDone},
 						}
 					}
-					return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+					return []core.Event{{Type: core.EventTextDelta, Text: "done"}, {Type: core.EventDone}}
 				},
 			}
 
-			engine := NewEngine(provider, registry)
-			stream, err := engine.Stream(context.Background(), Request{
-				Messages: []Message{UserText("inspect then act")},
-				Tools:    []ToolSpec{tool.Spec()},
+			engine := engine.NewEngine(provider, registry)
+			stream, err := engine.Stream(context.Background(), core.Request{
+				Messages: []core.Message{core.UserText("inspect then act")},
+				Tools:    []core.ToolSpec{tool.Spec()},
 			})
 			if err != nil {
 				t.Fatalf("engine stream: %v", err)
@@ -324,61 +327,61 @@ func TestSyncBridgeSequentialToolCallsSeePriorResults(t *testing.T) {
 func TestApprovalTranscriptExcludesProviderReplayButSnapshotKeepsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		toolCall Event
+		toolCall core.Event
 	}{
 		{name: "sync_bridge", toolCall: syncToolCallEvent("probe-1")},
 		{name: "async", toolCall: asyncToolCallEvent("probe-1")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := &approvalTranscriptTool{}
-			registry := NewToolRegistry()
+			registry := engine.NewToolRegistry()
 			registry.Register(tool)
 
 			provider := &fakeProvider{
-				script: func(call int, req Request) []Event {
+				script: func(call int, req core.Request) []core.Event {
 					if call == 0 {
-						return []Event{
-							{Type: EventTextDelta, Text: "running the probe"},
-							{Type: EventProviderReplay, ProviderReplay: &ProviderReplayItem{
+						return []core.Event{
+							{Type: core.EventTextDelta, Text: "running the probe"},
+							{Type: core.EventProviderReplay, ProviderReplay: &core.ProviderReplayItem{
 								Raw: json.RawMessage(`{"type":"reasoning","encrypted_content":"live-stream-secret"}`),
 							}},
 							tc.toolCall,
-							{Type: EventDone},
+							{Type: core.EventDone},
 						}
 					}
-					return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+					return []core.Event{{Type: core.EventTextDelta, Text: "done"}, {Type: core.EventDone}}
 				},
 			}
 
 			var (
 				snapMu    sync.Mutex
-				snapshots []Message
+				snapshots []core.Message
 			)
-			engine := NewEngine(provider, registry)
-			engine.SetAssistantSnapshotCallback(func(_ context.Context, _ int, msg Message) error {
+			engine := engine.NewEngine(provider, registry)
+			engine.SetAssistantSnapshotCallback(func(_ context.Context, _ int, msg core.Message) error {
 				snapMu.Lock()
 				snapshots = append(snapshots, msg)
 				snapMu.Unlock()
 				return nil
 			})
 
-			stream, err := engine.Stream(context.Background(), Request{
-				Messages: []Message{
-					UserText("operator asked for the probe"),
-					{Role: RoleAssistant, Parts: []Part{
-						{Type: PartText, Text: "earlier turn"},
+			stream, err := engine.Stream(context.Background(), core.Request{
+				Messages: []core.Message{
+					core.UserText("operator asked for the probe"),
+					{Role: core.RoleAssistant, Parts: []core.Part{
+						{Type: core.PartText, Text: "earlier turn"},
 						providerReplayPart("history-secret"),
 					}},
 				},
-				ApprovalTranscriptPrefix: []Message{{
-					Role:         RoleUser,
+				ApprovalTranscriptPrefix: []core.Message{{
+					Role:         core.RoleUser,
 					ApprovalRole: "parent_user",
-					Parts: []Part{
-						{Type: PartText, Text: "parent operator request"},
+					Parts: []core.Part{
+						{Type: core.PartText, Text: "parent operator request"},
 						providerReplayPart("prefix-secret"),
 					},
 				}},
-				Tools: []ToolSpec{tool.Spec()},
+				Tools: []core.ToolSpec{tool.Spec()},
 			})
 			if err != nil {
 				t.Fatalf("engine stream: %v", err)
@@ -409,7 +412,7 @@ func TestApprovalTranscriptExcludesProviderReplayButSnapshotKeepsIt(t *testing.T
 
 			// Persistence must still receive exactly what policy review must not.
 			snapMu.Lock()
-			persisted := append([]Message(nil), snapshots...)
+			persisted := append([]core.Message(nil), snapshots...)
 			snapMu.Unlock()
 			if len(persisted) == 0 {
 				t.Fatal("no assistant snapshot fired; cannot verify replay state survives persistence")

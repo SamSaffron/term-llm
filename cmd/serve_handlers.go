@@ -30,6 +30,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
@@ -1026,33 +1029,33 @@ const (
 )
 
 type sessionMessagePartEntry struct {
-	CreatedAt           int64                          `json:"created_at,omitempty"`
-	Type                string                         `json:"type"`
-	Text                string                         `json:"text,omitempty"`
-	SkillActivation     *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
-	PathNote            *llm.PathNoteProvenance        `json:"path_note,omitempty"`
-	DiffComment         *llm.DiffComment               `json:"diff_comment,omitempty"`
-	ModelSwap           *llm.ModelSwapMarker           `json:"model_swap,omitempty"`
-	ToolName            string                         `json:"tool_name,omitempty"`
-	ToolInfo            string                         `json:"tool_info,omitempty"`
-	ToolArgs            string                         `json:"tool_arguments,omitempty"`
-	ToolCallID          string                         `json:"tool_call_id,omitempty"`
-	ToolStatus          string                         `json:"tool_status,omitempty"`
-	AskUserSummary      string                         `json:"ask_user_summary,omitempty"`
-	ImageURL            string                         `json:"image_url,omitempty"`
-	Images              []string                       `json:"images,omitempty"`
-	Media               []webMediaEntry                `json:"media,omitempty"`
-	ToolError           bool                           `json:"tool_error,omitempty"`
-	GuardianReviews     []llm.GuardianReview           `json:"guardian_reviews,omitempty"`
-	SpawnAgent          *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
-	SpawnAgentToolCalls *int                           `json:"spawn_agent_tool_calls,omitempty"`
-	AgentSessionIDs     []string                       `json:"agent_session_ids,omitempty"`
-	MimeType            string                         `json:"mime_type,omitempty"`
-	FileURL             string                         `json:"file_url,omitempty"`
-	SizeBytes           int64                          `json:"size_bytes,omitempty"`
-	Kind                string                         `json:"kind,omitempty"`
-	Width               int                            `json:"width,omitempty"`
-	Height              int                            `json:"height,omitempty"`
+	CreatedAt           int64                           `json:"created_at,omitempty"`
+	Type                string                          `json:"type"`
+	Text                string                          `json:"text,omitempty"`
+	SkillActivation     *core.SkillActivationProvenance `json:"skill_activation,omitempty"`
+	PathNote            *core.PathNoteProvenance        `json:"path_note,omitempty"`
+	DiffComment         *core.DiffComment               `json:"diff_comment,omitempty"`
+	ModelSwap           *core.ModelSwapMarker           `json:"model_swap,omitempty"`
+	ToolName            string                          `json:"tool_name,omitempty"`
+	ToolInfo            string                          `json:"tool_info,omitempty"`
+	ToolArgs            string                          `json:"tool_arguments,omitempty"`
+	ToolCallID          string                          `json:"tool_call_id,omitempty"`
+	ToolStatus          string                          `json:"tool_status,omitempty"`
+	AskUserSummary      string                          `json:"ask_user_summary,omitempty"`
+	ImageURL            string                          `json:"image_url,omitempty"`
+	Images              []string                        `json:"images,omitempty"`
+	Media               []webMediaEntry                 `json:"media,omitempty"`
+	ToolError           bool                            `json:"tool_error,omitempty"`
+	GuardianReviews     []core.GuardianReview           `json:"guardian_reviews,omitempty"`
+	SpawnAgent          *tools.SpawnAgentResult         `json:"spawn_agent,omitempty"`
+	SpawnAgentToolCalls *int                            `json:"spawn_agent_tool_calls,omitempty"`
+	AgentSessionIDs     []string                        `json:"agent_session_ids,omitempty"`
+	MimeType            string                          `json:"mime_type,omitempty"`
+	FileURL             string                          `json:"file_url,omitempty"`
+	SizeBytes           int64                           `json:"size_bytes,omitempty"`
+	Kind                string                          `json:"kind,omitempty"`
+	Width               int                             `json:"width,omitempty"`
+	Height              int                             `json:"height,omitempty"`
 }
 
 type sessionMessageEntry struct {
@@ -1070,10 +1073,10 @@ type sessionMessageEntry struct {
 }
 
 type sessionDiffCommentEntry struct {
-	MessageID       int64            `json:"message_id"`
-	ClientMessageID string           `json:"client_message_id,omitempty"`
-	CreatedAt       int64            `json:"created_at"`
-	Comment         *llm.DiffComment `json:"diff_comment"`
+	MessageID       int64             `json:"message_id"`
+	ClientMessageID string            `json:"client_message_id,omitempty"`
+	CreatedAt       int64             `json:"created_at"`
+	Comment         *core.DiffComment `json:"diff_comment"`
 }
 
 func (s *serveServer) handleSessionDiffComments(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -1109,12 +1112,12 @@ func (s *serveServer) handleSessionDiffComments(w http.ResponseWriter, r *http.R
 	comments := make([]sessionDiffCommentEntry, 0)
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if part.Type != llm.PartDiffComment || part.DiffComment == nil {
+			if part.Type != core.PartDiffComment || part.DiffComment == nil {
 				continue
 			}
 			comment := *part.DiffComment
-			comment.ContextBefore = append([]llm.DiffCommentContextLine(nil), part.DiffComment.ContextBefore...)
-			comment.ContextAfter = append([]llm.DiffCommentContextLine(nil), part.DiffComment.ContextAfter...)
+			comment.ContextBefore = append([]core.DiffCommentContextLine(nil), part.DiffComment.ContextBefore...)
+			comment.ContextAfter = append([]core.DiffCommentContextLine(nil), part.DiffComment.ContextAfter...)
 			comments = append(comments, sessionDiffCommentEntry{
 				MessageID:       message.ID,
 				ClientMessageID: message.ClientMessageID,
@@ -1243,7 +1246,7 @@ func imageDimensionsFromReader(reader io.Reader) (width, height int) {
 	return imageDisplayDimensions(metadata)
 }
 
-func sessionMessageImageDimensions(part llm.Part, serveablePath string) (width, height int) {
+func sessionMessageImageDimensions(part core.Part, serveablePath string) (width, height int) {
 	if part.ImageData != nil && part.ImageData.Width > 0 && part.ImageData.Height > 0 {
 		return part.ImageData.Width, part.ImageData.Height
 	}
@@ -1266,7 +1269,7 @@ func sessionMessageImageDimensions(part llm.Part, serveablePath string) (width, 
 	return imageDimensionsFromReader(f)
 }
 
-func (s *serveServer) sessionMessageImageURL(part llm.Part) (url, serveablePath string) {
+func (s *serveServer) sessionMessageImageURL(part core.Part) (url, serveablePath string) {
 	if part.ImagePath != "" {
 		if served, ok := s.ensureImageServeable(part.ImagePath); ok {
 			return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served), served
@@ -1885,7 +1888,7 @@ func askUserResultSummary(content string) string {
 
 type sessionMessageProjectionIndex struct {
 	failedToolCalls       map[string]bool
-	guardianReviewsByCall map[string][]llm.GuardianReview
+	guardianReviewsByCall map[string][]core.GuardianReview
 	planToolCalls         map[string]bool
 	spawnAgentToolCalls   map[string]bool
 	parentSessionID       string
@@ -1894,7 +1897,7 @@ type sessionMessageProjectionIndex struct {
 func buildSessionMessageProjectionIndex(msgs []session.Message) sessionMessageProjectionIndex {
 	index := sessionMessageProjectionIndex{
 		failedToolCalls:       make(map[string]bool),
-		guardianReviewsByCall: make(map[string][]llm.GuardianReview),
+		guardianReviewsByCall: make(map[string][]core.GuardianReview),
 		planToolCalls:         make(map[string]bool),
 		spawnAgentToolCalls:   make(map[string]bool),
 	}
@@ -1909,8 +1912,8 @@ func buildSessionMessageProjectionIndex(msgs []session.Message) sessionMessagePr
 	return index
 }
 
-func (index *sessionMessageProjectionIndex) recordSessionMessagePart(part llm.Part) {
-	if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+func (index *sessionMessageProjectionIndex) recordSessionMessagePart(part core.Part) {
+	if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
 		if part.ToolCall.Name == "update_plan" {
 			index.planToolCalls[part.ToolCall.ID] = true
 		}
@@ -1918,7 +1921,7 @@ func (index *sessionMessageProjectionIndex) recordSessionMessagePart(part llm.Pa
 			index.spawnAgentToolCalls[part.ToolCall.ID] = true
 		}
 	}
-	if part.Type == llm.PartToolResult && part.ToolResult != nil {
+	if part.Type == core.PartToolResult && part.ToolResult != nil {
 		if part.ToolResult.IsError && part.ToolResult.ID != "" {
 			index.failedToolCalls[part.ToolResult.ID] = true
 		}
@@ -1946,7 +1949,7 @@ func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index 
 	// provider context rather than human-authored transcript rows. Path notes
 	// are explicitly marked and expose only their display text/provenance.
 	pathNote, isPathNote := msg.PathNoteProvenance()
-	if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) || msg.IsGoalSteering() {
+	if msg.Role == core.RoleSystem || (msg.Role == core.RoleDeveloper && !isPathNote) || msg.IsGoalSteering() {
 		return sessionMessageEntry{}, false
 	}
 	entryRole := string(msg.Role)
@@ -1964,7 +1967,7 @@ func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index 
 		SegmentStartSequence: msg.SegmentStartSequence,
 		SegmentEndSequence:   msg.SegmentEndSequence,
 	}
-	if msg.Role == llm.RoleAssistant && msg.ResponseID != "" {
+	if msg.Role == core.RoleAssistant && msg.ResponseID != "" {
 		ordinal := msg.AssistantSegmentOrdinal
 		entry.AssistantSegmentOrdinal = &ordinal
 	}
@@ -1975,7 +1978,7 @@ func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index 
 		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "path_note", Text: msg.PathNoteDisplayText(), PathNote: &copyProvenance})
 		return entry, true
 	}
-	if msg.Role == llm.RoleEvent {
+	if msg.Role == core.RoleEvent {
 		appendSessionMessageEventParts(&entry, msg)
 		if len(entry.Parts) == 0 {
 			entry.Parts = []sessionMessagePartEntry{}
@@ -1983,7 +1986,7 @@ func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index 
 		return entry, true
 	}
 	displayText := ""
-	if msg.Role == llm.RoleUser {
+	if msg.Role == core.RoleUser {
 		displayText = msg.DisplayText()
 	}
 	if displayText != "" {
@@ -1998,7 +2001,7 @@ func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index 
 }
 
 func appendSessionMessageEventParts(entry *sessionMessageEntry, msg *session.Message) {
-	if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+	if marker, ok := core.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
 		copyMarker := marker
 		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "model_swap", Text: marker.DisplayText, ModelSwap: &copyMarker})
 	} else if marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage()); ok {
@@ -2006,13 +2009,13 @@ func appendSessionMessageEventParts(entry *sessionMessageEntry, msg *session.Mes
 	} else {
 		for _, p := range msg.Parts {
 			switch p.Type {
-			case llm.PartSkillActivation:
+			case core.PartSkillActivation:
 				if p.SkillActivation != nil {
 					copyProvenance := *p.SkillActivation
 					copyProvenance.AllowedTools = append([]string(nil), p.SkillActivation.AllowedTools...)
 					entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "skill_activation", SkillActivation: &copyProvenance})
 				}
-			case llm.PartText:
+			case core.PartText:
 				if p.Text != "" {
 					entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: p.Text})
 				}
@@ -2024,34 +2027,34 @@ func appendSessionMessageEventParts(entry *sessionMessageEntry, msg *session.Mes
 func (s *serveServer) appendSessionMessageParts(entry *sessionMessageEntry, msg *session.Message, index sessionMessageProjectionIndex, embeddedFiles map[string]bool, displayText string) {
 	for _, p := range msg.Parts {
 		switch p.Type {
-		case llm.PartDiffComment:
+		case core.PartDiffComment:
 			appendSessionMessageDiffCommentPart(entry, p)
-		case llm.PartText:
+		case core.PartText:
 			appendSessionMessageText(entry, msg, p, embeddedFiles, displayText)
-		case llm.PartFile:
+		case core.PartFile:
 			entry.Parts = append(entry.Parts, s.sessionMessageFilePart(p))
-		case llm.PartImage:
+		case core.PartImage:
 			s.appendSessionMessageImagePart(entry, p)
-		case llm.PartToolActivity:
+		case core.PartToolActivity:
 			appendSessionMessageToolActivityPart(entry, p)
-		case llm.PartToolCall:
+		case core.PartToolCall:
 			appendSessionMessageToolCallPart(entry, p, index)
-		case llm.PartToolResult:
+		case core.PartToolResult:
 			s.appendSessionMessageToolResultPart(entry, p, index)
 		}
 	}
 }
 
-func appendSessionMessageDiffCommentPart(entry *sessionMessageEntry, p llm.Part) {
+func appendSessionMessageDiffCommentPart(entry *sessionMessageEntry, p core.Part) {
 	if p.DiffComment != nil {
 		copyComment := *p.DiffComment
-		copyComment.ContextBefore = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextBefore...)
-		copyComment.ContextAfter = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextAfter...)
+		copyComment.ContextBefore = append([]core.DiffCommentContextLine(nil), p.DiffComment.ContextBefore...)
+		copyComment.ContextAfter = append([]core.DiffCommentContextLine(nil), p.DiffComment.ContextAfter...)
 		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "diff_comment", DiffComment: &copyComment})
 	}
 }
 
-func (s *serveServer) appendSessionMessageImagePart(entry *sessionMessageEntry, p llm.Part) {
+func (s *serveServer) appendSessionMessageImagePart(entry *sessionMessageEntry, p core.Part) {
 	if imageURL, serveablePath := s.sessionMessageImageURL(p); imageURL != "" {
 		mimeType := ""
 		if p.ImageData != nil {
@@ -2068,7 +2071,7 @@ func (s *serveServer) appendSessionMessageImagePart(entry *sessionMessageEntry, 
 	}
 }
 
-func appendSessionMessageToolActivityPart(entry *sessionMessageEntry, p llm.Part) {
+func appendSessionMessageToolActivityPart(entry *sessionMessageEntry, p core.Part) {
 	if p.ToolActivity != nil {
 		pe := sessionMessagePartEntry{
 			Type:       "tool_activity",
@@ -2076,7 +2079,7 @@ func appendSessionMessageToolActivityPart(entry *sessionMessageEntry, p llm.Part
 			ToolInfo:   p.ToolActivity.Info,
 			ToolCallID: p.ToolActivity.ID,
 			ToolStatus: p.ToolActivity.Status,
-			ToolError:  p.ToolActivity.Status == llm.ToolActivityFailed,
+			ToolError:  p.ToolActivity.Status == core.ToolActivityFailed,
 		}
 		if len(p.ToolActivity.Arguments) > 0 {
 			pe.ToolArgs = string(p.ToolActivity.Arguments)
@@ -2085,7 +2088,7 @@ func appendSessionMessageToolActivityPart(entry *sessionMessageEntry, p llm.Part
 	}
 }
 
-func appendSessionMessageToolCallPart(entry *sessionMessageEntry, p llm.Part, index sessionMessageProjectionIndex) {
+func appendSessionMessageToolCallPart(entry *sessionMessageEntry, p core.Part, index sessionMessageProjectionIndex) {
 	if p.ToolCall != nil {
 		pe := sessionMessagePartEntry{
 			Type:            "tool_call",
@@ -2093,7 +2096,7 @@ func appendSessionMessageToolCallPart(entry *sessionMessageEntry, p llm.Part, in
 			ToolName:        p.ToolCall.Name,
 			ToolCallID:      p.ToolCall.ID,
 			ToolError:       index.failedToolCalls[p.ToolCall.ID],
-			GuardianReviews: append([]llm.GuardianReview(nil), index.guardianReviewsByCall[p.ToolCall.ID]...),
+			GuardianReviews: append([]core.GuardianReview(nil), index.guardianReviewsByCall[p.ToolCall.ID]...),
 		}
 		if len(p.ToolCall.Arguments) > 0 {
 			pe.ToolArgs = string(p.ToolCall.Arguments)
@@ -2102,13 +2105,13 @@ func appendSessionMessageToolCallPart(entry *sessionMessageEntry, p llm.Part, in
 	}
 }
 
-func (s *serveServer) appendSessionMessageToolResultPart(entry *sessionMessageEntry, p llm.Part, index sessionMessageProjectionIndex) {
+func (s *serveServer) appendSessionMessageToolResultPart(entry *sessionMessageEntry, p core.Part, index sessionMessageProjectionIndex) {
 	if p.ToolResult != nil {
 		s.appendSessionMessageToolResult(entry, p.ToolResult, index)
 	}
 }
 
-func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry, result *llm.ToolResult, index sessionMessageProjectionIndex) {
+func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry, result *core.ToolResult, index sessionMessageProjectionIndex) {
 	isPlanResult := result.ID != "" && (result.Name == "update_plan" || index.planToolCalls[result.ID])
 	isAskUserResult := result.Name == tools.AskUserToolName
 	isSpawnAgentResult := result.Name == tools.SpawnAgentToolName || index.spawnAgentToolCalls[result.ID]
@@ -2131,7 +2134,7 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 		ToolName:            toolName,
 		ToolCallID:          result.ID,
 		ToolError:           result.IsError || (spawnResult != nil && spawnResult.Error != ""),
-		GuardianReviews:     append([]llm.GuardianReview(nil), result.GuardianReviews...),
+		GuardianReviews:     append([]core.GuardianReview(nil), result.GuardianReviews...),
 		SpawnAgent:          spawnResult,
 		SpawnAgentToolCalls: spawnToolCalls,
 		AgentSessionIDs:     agentIDs,
@@ -2187,7 +2190,7 @@ func (s *serveServer) agentResultSessionIDs(parentSessionID, name, content strin
 	return ids
 }
 
-func (s *serveServer) sessionMessageSpawnResult(parentSessionID string, result *llm.ToolResult) (*tools.SpawnAgentResult, *int) {
+func (s *serveServer) sessionMessageSpawnResult(parentSessionID string, result *core.ToolResult) (*tools.SpawnAgentResult, *int) {
 	var spawnResult *tools.SpawnAgentResult
 	var spawnToolCalls *int
 	if parsed, err := tools.ParseSpawnAgentResult(result.Content); err == nil {
@@ -2269,7 +2272,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	s.handleSessionMessagesRoute(w, r, sessionID, suffix)
 }
 
-func interruptFastProvider(cfg *config.Config, rt *serveRuntime) (llm.Provider, error) {
+func interruptFastProvider(cfg *config.Config, rt *serveRuntime) (core.Provider, error) {
 	if cfg == nil || rt == nil {
 		return nil, nil
 	}
@@ -2288,7 +2291,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if transition := s.ensureResponseRuns().steeringTransition(sessionID); transition != nil {
-		if action, immediate := llm.ClassifyInterruptImmediate(req.Message); immediate && action == llm.InterruptCancel && req.Delivery != "steer" {
+		if action, immediate := engine.ClassifyInterruptImmediate(req.Message); immediate && action == engine.InterruptCancel && req.Delivery != "steer" {
 			if store, ok := session.AsRushStore(s.store); ok {
 				op, err := s.cancelSteeringRush(r.Context(), store, sessionID, transition.owner.OperationID)
 				if err != nil {
@@ -2334,7 +2337,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	var msg llm.Message
+	var msg core.Message
 	if len(req.Content) > 0 && strings.TrimSpace(string(req.Content)) != "" && strings.TrimSpace(string(req.Content)) != "null" {
 		msg, err = parseUserMessageContent(req.Content)
 		if err != nil {
@@ -2342,14 +2345,14 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if displayText == "" {
-			displayText = strings.TrimSpace(llm.MessageText(msg))
-		} else if strings.TrimSpace(llm.MessageText(msg)) == "" {
-			msg.Parts = append(msg.Parts, llm.Part{Type: llm.PartText, Text: displayText})
+			displayText = strings.TrimSpace(core.MessageText(msg))
+		} else if strings.TrimSpace(core.MessageText(msg)) == "" {
+			msg.Parts = append(msg.Parts, core.Part{Type: core.PartText, Text: displayText})
 		}
 	} else {
-		msg = llm.UserText(displayText)
+		msg = core.UserText(displayText)
 	}
-	if displayText == "" && strings.TrimSpace(llm.MessageText(msg)) == "" && llm.MessageAttachmentSummary(msg) == "" {
+	if displayText == "" && strings.TrimSpace(core.MessageText(msg)) == "" && core.MessageAttachmentSummary(msg) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "message or content is required")
 		return
 	}
@@ -2363,11 +2366,11 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
-	mentionMessages := []llm.Message{msg}
+	mentionMessages := []core.Message{msg}
 	s.augmentMessagesWithMentions(r.Context(), rt, sessionID, "", mentionMessages)
 	msg = mentionMessages[0]
 
-	var fastProvider llm.Provider
+	var fastProvider core.Provider
 	if delivery == interruptDeliveryAuto {
 		var fastErr error
 		fastProvider, fastErr = interruptFastProvider(s.cfgRef, rt)
@@ -2386,7 +2389,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 			childIntervention.recordIntervention(clientMessageID, displayText)
 		}
 	}
-	var action llm.InterruptAction
+	var action engine.InterruptAction
 	var replayed bool
 	var interruptErr error
 	expectedResponseID := strings.TrimSpace(req.ExpectedResponseID)
@@ -2416,7 +2419,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return
 	}
-	if action == llm.InterruptCancel && !replayed && s.store != nil {
+	if action == engine.InterruptCancel && !replayed && s.store != nil {
 		goalCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), goalPersistTimeout)
 		defer cancel()
 		if sess, err := s.store.Get(goalCtx, sessionID); err == nil && sess != nil && sess.Goal != nil && sess.Goal.IsActive() {
@@ -2431,9 +2434,9 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 
 	actionName := "steer"
 	switch action {
-	case llm.InterruptCancel:
+	case engine.InterruptCancel:
 		actionName = "cancel"
-	case llm.InterruptSteer:
+	case engine.InterruptSteer:
 		actionName = "steer"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -2686,7 +2689,7 @@ func (s *serveServer) handleSessionSteeringCancel(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "steering_id": steeringID})
 }
 
-func (s *serveServer) newTitleProvider() (llm.Provider, error) {
+func (s *serveServer) newTitleProvider() (core.Provider, error) {
 	if s.titleProviderFactory != nil {
 		return s.titleProviderFactory(s.cfgRef)
 	}
@@ -2746,7 +2749,7 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "title model policy unavailable: "+policyErr.Error())
 		return
 	}
-	var provider llm.Provider
+	var provider core.Provider
 	if !policy.Restricted() {
 		provider, err = s.newTitleProvider()
 	} else {
@@ -3137,7 +3140,7 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 const serveModelsCacheTTL = 15 * time.Minute
 
 type serveModelsCacheEntry struct {
-	models    []llm.ModelInfo
+	models    []core.ModelInfo
 	expiresAt time.Time
 }
 
@@ -3155,7 +3158,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models := make([]llm.ModelInfo, 0)
+	models := make([]core.ModelInfo, 0)
 	// OpenRouter ships hundreds of models and maintains a provider-side warm
 	// cache; use it first when available. For other providers, preserve the
 	// OpenAI-compatible /v1/models behavior: prefer a fresh/cache upstream
@@ -3168,7 +3171,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		if hasCfg {
 			apiKey = pc.ResolvedAPIKey
 		}
-		models = append(models, llm.GetCachedOpenRouterModelInfos(apiKey)...)
+		models = append(models, opencompat.GetCachedOpenRouterModelInfos(apiKey)...)
 	}
 	if len(models) == 0 {
 		models = s.getCachedModelsForProvider(effectiveName)
@@ -3177,7 +3180,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		if lister, ok := provider.(interface {
-			ListModels(context.Context) ([]llm.ModelInfo, error)
+			ListModels(context.Context) ([]core.ModelInfo, error)
 		}); ok {
 			listed, err := lister.ListModels(ctx)
 			if err == nil {
@@ -3193,7 +3196,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ids := make([]string, 0, len(models))
-	byID := make(map[string]llm.ModelInfo, len(models))
+	byID := make(map[string]core.ModelInfo, len(models))
 	for _, m := range models {
 		if m.ID == "" {
 			continue
@@ -3263,7 +3266,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 			item["default_reasoning_effort"] = m.DefaultReasoningEffort
 		}
 		if len(m.ServiceTiers) > 0 {
-			item["service_tiers"] = append([]llm.ModelServiceTier(nil), m.ServiceTiers...)
+			item["service_tiers"] = append([]core.ModelServiceTier(nil), m.ServiceTiers...)
 		}
 		if len(m.AdditionalSpeedTiers) > 0 {
 			item["additional_speed_tiers"] = append([]string(nil), m.AdditionalSpeedTiers...)
@@ -3284,45 +3287,45 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func appendModelIDs(dst []llm.ModelInfo, ids []string) []llm.ModelInfo {
+func appendModelIDs(dst []core.ModelInfo, ids []string) []core.ModelInfo {
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
 		}
-		dst = append(dst, llm.ModelInfo{ID: id})
+		dst = append(dst, core.ModelInfo{ID: id})
 	}
 	return dst
 }
 
-func cloneModelInfos(models []llm.ModelInfo) []llm.ModelInfo {
+func cloneModelInfos(models []core.ModelInfo) []core.ModelInfo {
 	if len(models) == 0 {
 		return nil
 	}
-	cloned := make([]llm.ModelInfo, len(models))
+	cloned := make([]core.ModelInfo, len(models))
 	copy(cloned, models)
 	return cloned
 }
 
-func (s *serveServer) getLocalModelsForProvider(effectiveName, queryProvider string) []llm.ModelInfo {
-	models := make([]llm.ModelInfo, 0)
+func (s *serveServer) getLocalModelsForProvider(effectiveName, queryProvider string) []core.ModelInfo {
+	models := make([]core.ModelInfo, 0)
 	if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
 		models = appendModelIDs(models, pc.Models)
 		if id := strings.TrimSpace(pc.Model); id != "" {
-			models = append(models, llm.ModelInfo{ID: id})
+			models = append(models, core.ModelInfo{ID: id})
 		}
 	} else if queryProvider == "" {
 		if providerCfg := s.cfgRef.GetActiveProviderConfig(); providerCfg != nil {
 			models = appendModelIDs(models, providerCfg.Models)
 			if id := strings.TrimSpace(providerCfg.Model); id != "" {
-				models = append(models, llm.ModelInfo{ID: id})
+				models = append(models, core.ModelInfo{ID: id})
 			}
 		}
 	}
 	return appendModelIDs(models, llm.ResolveProviderModelIDs(effectiveName))
 }
 
-func (s *serveServer) getCachedModelsForProvider(name string) []llm.ModelInfo {
+func (s *serveServer) getCachedModelsForProvider(name string) []core.ModelInfo {
 	s.modelsMu.Lock()
 	defer s.modelsMu.Unlock()
 
@@ -3335,7 +3338,7 @@ func (s *serveServer) getCachedModelsForProvider(name string) []llm.ModelInfo {
 	return nil
 }
 
-func (s *serveServer) setCachedModelsForProvider(name string, models []llm.ModelInfo) {
+func (s *serveServer) setCachedModelsForProvider(name string, models []core.ModelInfo) {
 	if len(models) == 0 {
 		return
 	}
@@ -3352,12 +3355,12 @@ func (s *serveServer) setCachedModelsForProvider(name string, models []llm.Model
 	}
 }
 
-func (s *serveServer) getModelsProvider(name string) (llm.Provider, string, error) {
+func (s *serveServer) getModelsProvider(name string) (core.Provider, string, error) {
 	s.modelsMu.Lock()
 	defer s.modelsMu.Unlock()
 
 	if s.modelsProviders == nil {
-		s.modelsProviders = make(map[string]llm.Provider)
+		s.modelsProviders = make(map[string]core.Provider)
 	}
 
 	cacheKey := name
@@ -3369,7 +3372,7 @@ func (s *serveServer) getModelsProvider(name string) (llm.Provider, string, erro
 		return p, cacheKey, nil
 	}
 
-	var provider llm.Provider
+	var provider core.Provider
 	var err error
 	if name == "" || name == s.cfgRef.DefaultProvider {
 		provider, err = llm.NewProvider(s.cfgRef)

@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -294,8 +295,8 @@ func TestAdditionalWorkspaceReadGrantAndWriteElevationAreSeparateReviews(t *test
 		}
 		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high", Rationale: "explicitly requested"}, nil
 	}, nil)
-	ctx := llm.ContextWithSessionID(context.Background(), "session-1")
-	ctx = llm.ContextWithApprovalTranscript(ctx, []llm.Message{llm.UserText("compare against the reference repository")})
+	ctx := core.ContextWithSessionID(context.Background(), "session-1")
+	ctx = core.ContextWithApprovalTranscript(ctx, []core.Message{core.UserText("compare against the reference repository")})
 
 	readResult, err := mgr.GrantWorkspace(ctx, reference, session.WorkspaceAccessRead, "reference requested by user")
 	if err != nil {
@@ -698,7 +699,7 @@ func TestChildWorkspaceGrantPersistsToRootSession(t *testing.T) {
 	if err := child.ConfigureWorkspacePersistence(ctx, store, "child-session"); err != nil {
 		t.Fatal(err)
 	}
-	childCtx := llm.ContextWithSessionID(ctx, "child-session")
+	childCtx := core.ContextWithSessionID(ctx, "child-session")
 	if _, err := child.GrantWorkspace(childCtx, t.TempDir(), session.WorkspaceAccessRead, "reference"); err != nil {
 		t.Fatal(err)
 	}
@@ -1397,7 +1398,7 @@ func TestManageWorkspaceAutomaticRegistration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		registry.SetViewImageVisionProvider(llm.NewMockProvider("vision"), "vision-model")
+		registry.SetViewImageVisionProvider(mockprovider.NewMockProvider("vision"), "vision-model")
 		if _, ok := registry.Get(ManageWorkspaceToolName); !ok {
 			t.Fatal("manage_workspace absent after enabling routed view_image")
 		}

@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -396,7 +396,7 @@ func splitSubagentCallID(callID string) (string, string) {
 func sanitizedSubagentPhase(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch {
-	case strings.HasPrefix(value, strings.ToLower(llm.PhaseCompacting)):
+	case strings.HasPrefix(value, strings.ToLower(engine.PhaseCompacting)):
 		return "compacting"
 	case strings.Contains(value, "think"):
 		return "thinking"

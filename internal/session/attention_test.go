@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func newAttentionTestStore(t *testing.T) (*SQLiteStore, context.Context, string) {
@@ -78,7 +78,7 @@ func TestResponseRunFenceIsAtomicWithTranscriptWriteAndCheckpoint(t *testing.T) 
 	lease := admitAttentionRun(t, store, ctx, sessionID, "resp_fenced", "owner", 0)
 	fencedCtx := WithResponseRunFence(ctx, ResponseRunFence{ResponseID: "resp_fenced", OwnerInstanceID: "owner",
 		FencingToken: lease.FencingToken, DurableOutputCount: 1})
-	first := &Message{Role: llm.RoleAssistant, TextContent: "durable", Sequence: -1, ResponseID: "resp_fenced"}
+	first := &Message{Role: core.RoleAssistant, TextContent: "durable", Sequence: -1, ResponseID: "resp_fenced"}
 	rev, err := store.AddMessageWithTranscriptRev(fencedCtx, sessionID, first)
 	if err != nil {
 		t.Fatal(err)
@@ -91,13 +91,13 @@ func TestResponseRunFenceIsAtomicWithTranscriptWriteAndCheckpoint(t *testing.T) 
 	if state.FinalRev != rev {
 		t.Fatalf("atomic checkpoint final_rev=%d, want %d", state.FinalRev, rev)
 	}
-	stale := &Message{Role: llm.RoleAssistant, TextContent: "late", Sequence: -1, ResponseID: "resp_fenced"}
+	stale := &Message{Role: core.RoleAssistant, TextContent: "late", Sequence: -1, ResponseID: "resp_fenced"}
 	if _, err := store.AddMessageWithTranscriptRev(fencedCtx, sessionID, stale); !errors.Is(err, ErrResponseRunLeaseLost) {
 		t.Fatalf("stale fenced write error = %v", err)
 	}
 	batch := []*Message{
-		{Role: llm.RoleDeveloper, TextContent: "activity", Sequence: -1, ResponseID: "resp_fenced"},
-		{Role: llm.RoleUser, TextContent: "retry", Sequence: -1, ResponseID: "resp_fenced"},
+		{Role: core.RoleDeveloper, TextContent: "activity", Sequence: -1, ResponseID: "resp_fenced"},
+		{Role: core.RoleUser, TextContent: "retry", Sequence: -1, ResponseID: "resp_fenced"},
 	}
 	if _, err := store.AppendMessagesWithTranscriptRev(fencedCtx, sessionID, batch); !errors.Is(err, ErrResponseRunLeaseLost) {
 		t.Fatalf("stale fenced batch error = %v", err)
@@ -140,7 +140,7 @@ func TestSharedStoreRecoveryFencesOtherProcessTranscriptWriter(t *testing.T) {
 	}
 	fencedCtx := WithResponseRunFence(ctx, ResponseRunFence{ResponseID: "resp_shared", OwnerInstanceID: "process-one",
 		FencingToken: lease.FencingToken, DurableOutputCount: 1})
-	late := &Message{Role: llm.RoleAssistant, TextContent: "late output", Sequence: -1, ResponseID: "resp_shared"}
+	late := &Message{Role: core.RoleAssistant, TextContent: "late output", Sequence: -1, ResponseID: "resp_shared"}
 	if _, err := ownerStore.AddMessageWithTranscriptRev(fencedCtx, sessionID, late); !errors.Is(err, ErrResponseRunLeaseLost) {
 		t.Fatalf("other-process stale write error = %v", err)
 	}
@@ -335,7 +335,7 @@ func TestOwnTranscriptRevIsRecordedOnlyForCommittedWrites(t *testing.T) {
 	if _, ok := store.OwnTranscriptRev(sessionID); ok {
 		t.Fatal("own revision reported before any write")
 	}
-	rev, err := store.AddMessageWithTranscriptRev(ctx, sessionID, &Message{Role: llm.RoleUser, TextContent: "mine", Sequence: -1})
+	rev, err := store.AddMessageWithTranscriptRev(ctx, sessionID, &Message{Role: core.RoleUser, TextContent: "mine", Sequence: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestOwnTranscriptRevIsRecordedOnlyForCommittedWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	fencedCtx := WithResponseRunFence(ctx, ResponseRunFence{ResponseID: "resp_lost", OwnerInstanceID: "owner", FencingToken: lease.FencingToken})
-	if _, err := store.AddMessageWithTranscriptRev(fencedCtx, sessionID, &Message{Role: llm.RoleAssistant, TextContent: "late", Sequence: -1}); !errors.Is(err, ErrResponseRunLeaseLost) {
+	if _, err := store.AddMessageWithTranscriptRev(fencedCtx, sessionID, &Message{Role: core.RoleAssistant, TextContent: "late", Sequence: -1}); !errors.Is(err, ErrResponseRunLeaseLost) {
 		t.Fatalf("fenced write after loss = %v", err)
 	}
 	if own, ok := store.OwnTranscriptRev(sessionID); !ok || own != rev {

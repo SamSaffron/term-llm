@@ -8,7 +8,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
@@ -38,9 +39,9 @@ func branchTreeDepths(tree session.BranchTree) map[string]int {
 	return depths
 }
 
-func branchToolPreview(message session.Message, toolCalls map[string]*llm.ToolCall) string {
+func branchToolPreview(message session.Message, toolCalls map[string]*core.ToolCall) string {
 	for _, part := range message.Parts {
-		if part.Type != llm.PartToolResult || part.ToolResult == nil {
+		if part.Type != core.PartToolResult || part.ToolResult == nil {
 			continue
 		}
 		result := part.ToolResult
@@ -52,7 +53,7 @@ func branchToolPreview(message session.Message, toolCalls map[string]*llm.ToolCa
 			}
 			info = call.ToolInfo
 			if info == "" {
-				info = llm.ExtractToolInfo(*call)
+				info = engine.ExtractToolInfo(*call)
 			}
 		}
 		preview := strings.TrimSpace(terminaltext.SanitizeSingleLine(strings.TrimSpace(name + " " + info)))
@@ -63,8 +64,8 @@ func branchToolPreview(message session.Message, toolCalls map[string]*llm.ToolCa
 	return ""
 }
 
-func branchMessagePreview(message session.Message, toolCalls map[string]*llm.ToolCall) string {
-	if message.Role == llm.RoleTool {
+func branchMessagePreview(message session.Message, toolCalls map[string]*core.ToolCall) string {
+	if message.Role == core.RoleTool {
 		if preview := branchToolPreview(message, toolCalls); preview != "" {
 			return preview
 		}
@@ -77,11 +78,11 @@ func branchMessagePreview(message session.Message, toolCalls map[string]*llm.Too
 }
 
 func hiddenBranchTreeMessage(message session.Message) bool {
-	if message.CompactionTail || message.IsGoalSteering() || llm.IsInternalCompactionSummaryText(message.TextContent) {
+	if message.CompactionTail || message.IsGoalSteering() || engine.IsInternalCompactionSummaryText(message.TextContent) {
 		return true
 	}
 	for _, part := range message.Parts {
-		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+		if part.Type == core.PartText && engine.IsInternalCompactionSummaryText(part.Text) {
 			return true
 		}
 	}
@@ -93,9 +94,9 @@ func branchContextSourceMessage(message session.Message) bool {
 		return false
 	}
 	switch message.Role {
-	case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+	case core.RoleUser, core.RoleAssistant, core.RoleTool:
 		return true
-	case llm.RoleDeveloper:
+	case core.RoleDeveloper:
 		_, ok := message.PathNoteProvenance()
 		return ok
 	default:
@@ -108,7 +109,7 @@ func visibleAssistantBranchRow(message session.Message) bool {
 		return true
 	}
 	for _, part := range message.Parts {
-		if part.Type == llm.PartText && strings.TrimSpace(part.Text) != "" {
+		if part.Type == core.PartText && strings.TrimSpace(part.Text) != "" {
 			return true
 		}
 	}
@@ -198,7 +199,7 @@ func (m *Model) cmdThread(rawMessage string) (tea.Model, tea.Cmd) {
 		idempotencyKey:    session.NewID(),
 		sourceMessages:    sourceMessages,
 		laterMessageCount: len(sourceMessages),
-		sourceRole:        llm.Role("conversation"),
+		sourceRole:        core.Role("conversation"),
 		autoSend:          strings.TrimSpace(rawMessage),
 		skipExpectedState: active,
 	}
@@ -311,10 +312,10 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.branchTreeChoices = make(map[string]conversationBranchPoint)
-	toolCalls := make(map[string]*llm.ToolCall)
+	toolCalls := make(map[string]*core.ToolCall)
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+			if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
 				toolCalls[part.ToolCall.ID] = part.ToolCall
 			}
 		}
@@ -330,29 +331,29 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 	previousContinuationID := int64(0)
 	currentUserTurnID := ""
 	for _, message := range messages {
-		if hiddenBranchTreeMessage(message) || message.Role == llm.RoleSystem || message.Role == llm.RoleDeveloper || message.Role == llm.RoleEvent {
+		if hiddenBranchTreeMessage(message) || message.Role == core.RoleSystem || message.Role == core.RoleDeveloper || message.Role == core.RoleEvent {
 			continue
 		}
 		anchorID := message.ID
 		prefill := ""
 		roleLabel := string(message.Role)
 		switch message.Role {
-		case llm.RoleUser:
+		case core.RoleUser:
 			anchorID = previousContinuationID
 			prefill = message.TextContent
 			roleLabel = "user"
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			if !visibleAssistantBranchRow(message) {
 				continue
 			}
 			roleLabel = "assistant"
-		case llm.RoleTool:
+		case core.RoleTool:
 			roleLabel = "branch after tool"
 		default:
 			continue
 		}
 		choiceID := fmt.Sprintf("fork:%d:%d", anchorID, message.ID)
-		if message.Role == llm.RoleUser {
+		if message.Role == core.RoleUser {
 			currentUserTurnID = choiceID
 		}
 		preview := branchMessagePreview(message, toolCalls)
@@ -380,17 +381,17 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 		if anchorID > 0 {
 			choice.laterMessageCount = after[anchorID]
 		}
-		if message.Role == llm.RoleUser && choice.laterMessageCount > 0 {
+		if message.Role == core.RoleUser && choice.laterMessageCount > 0 {
 			choice.laterMessageCount--
 		}
 		m.branchTreeChoices[choiceID] = choice
 		items = append(items, DialogItem{
 			ID: choiceID, Label: roleLabel + ": " + preview,
 			Description: fmt.Sprintf("message %d", message.Sequence+1), Category: "Branch points",
-			TreeUserTurn: message.Role == llm.RoleUser, TreeTool: message.Role == llm.RoleTool,
+			TreeUserTurn: message.Role == core.RoleUser, TreeTool: message.Role == core.RoleTool,
 			TreeTurnID: currentUserTurnID, TreeRole: message.Role, TreeRoleLabel: roleLabel, TreePreview: preview,
 		})
-		if message.Role == llm.RoleUser || message.Role == llm.RoleAssistant {
+		if message.Role == core.RoleUser || message.Role == core.RoleAssistant {
 			previousContinuationID = message.ID
 		}
 	}
@@ -482,7 +483,7 @@ type conversationBranchCreatedMsg struct {
 type conversationBranchNotesDoneMsg struct {
 	request BranchPathNotesRequest
 	note    *session.Message
-	usage   llm.Usage
+	usage   core.Usage
 	err     error
 }
 
@@ -509,7 +510,7 @@ func (m *Model) startPendingBranchPathNotes() tea.Cmd {
 		return nil
 	}
 	request := *m.branchPathNotesRequest
-	request.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
+	request.SourceMessages = append([]core.Message(nil), request.SourceMessages...)
 	operation, ok := m.runtimeOperations.reserve()
 	if !ok {
 		return nil
@@ -528,7 +529,7 @@ func (m *Model) startPendingBranchPathNotes() tea.Cmd {
 			return conversationBranchNotesDoneMsg{request: request, err: context.Canceled}
 		}
 		defer operation.finish()
-		notes, err := llm.GeneratePathNotes(ctx, provider, model, request.SourceMessages, llm.PathNotesConfig{Focus: request.Focus})
+		notes, err := engine.GeneratePathNotes(ctx, provider, model, request.SourceMessages, engine.PathNotesConfig{Focus: request.Focus})
 		msg := conversationBranchNotesDoneMsg{request: request, err: err}
 		if notes != nil {
 			msg.usage = notes.Usage
@@ -540,7 +541,7 @@ func (m *Model) startPendingBranchPathNotes() tea.Cmd {
 			msg.err = errors.New("model returned no notes")
 			return msg
 		}
-		provenance := llm.PathNoteProvenance{
+		provenance := core.PathNoteProvenance{
 			SourceSessionID: request.SourceSessionID,
 			AnchorMessageID: request.AnchorMessageID,
 			SourceMessages:  notes.SourceMessages,
@@ -738,7 +739,7 @@ func (m *Model) startConversationBranchCreation(point conversationBranchPoint, i
 	if len(focusRunes) > 2_000 {
 		focus = string(focusRunes[:2_000])
 	}
-	point.sourceMessages = append([]llm.Message(nil), point.sourceMessages...)
+	point.sourceMessages = append([]core.Message(nil), point.sourceMessages...)
 	branchOptions := session.CreateBranchOptions{
 		AnchorMessageID: point.anchorMessageID,
 		IdempotencyKey:  point.idempotencyKey,
@@ -804,7 +805,7 @@ func (m *Model) startConversationBranchCreation(point conversationBranchPoint, i
 				ChildSessionID:  result.Session.ID,
 				SourceSessionID: point.sourceSessionID,
 				AnchorMessageID: point.anchorMessageID,
-				SourceMessages:  append([]llm.Message(nil), sourceMessages...),
+				SourceMessages:  append([]core.Message(nil), sourceMessages...),
 				Focus:           focus,
 			}
 		}

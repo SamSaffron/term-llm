@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -154,7 +156,7 @@ func TestValidateResponseReasoningModeUsesFinalProviderModel(t *testing.T) {
 }
 
 func TestResponsesFinalResponseUsesProviderRawInputTokens(t *testing.T) {
-	result := serveRunResult{Usage: llm.Usage{
+	result := serveRunResult{Usage: core.Usage{
 		InputTokens:            150,
 		CachedInputTokens:      600,
 		CacheWriteTokens:       250,
@@ -486,7 +488,7 @@ func TestArbitraryUploadsPreserveFallbackAndReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			part := msg.Parts[0]
-			if part.Type != llm.PartFile || part.FileData == nil || part.FileData.Filename != tc.name || part.FileData.SizeBytes != int64(len(tc.raw)) {
+			if part.Type != core.PartFile || part.FileData == nil || part.FileData.Filename != tc.name || part.FileData.SizeBytes != int64(len(tc.raw)) {
 				t.Fatalf("part = %+v", part)
 			}
 			if !pathWithinDir(part.FilePath, serveUploadsDir()) {
@@ -520,8 +522,8 @@ func TestArbitraryUploadsPreserveFallbackAndReplay(t *testing.T) {
 			if replay.Parts[0].Text != part.Text || replay.Parts[0].FilePath != part.FilePath || replay.Parts[0].FileData.Base64 != part.FileData.Base64 {
 				t.Fatal("lost file on replay")
 			}
-			for _, policy := range []llm.FileUploadPolicy{llm.DefaultOpenAIResponsesFileUploadPolicy(), llm.DefaultPortableTextFileUploadPolicy()} {
-				input := llm.BuildResponsesInputWithFilePolicy([]llm.Message{{Role: llm.RoleUser, Parts: replay.Parts}}, &policy)
+			for _, policy := range []responses.FileUploadPolicy{llm.DefaultOpenAIResponsesFileUploadPolicy(), llm.DefaultPortableTextFileUploadPolicy()} {
+				input := responses.BuildResponsesInputWithFilePolicy([]core.Message{{Role: core.RoleUser, Parts: replay.Parts}}, &policy)
 				if len(input) != 1 || input[0].Content != part.Text {
 					t.Fatalf("provider payload = %#v", input)
 				}
@@ -593,7 +595,7 @@ func TestParseUserMessageContent_CanonicalizesUploadMediaType(t *testing.T) {
 		t.Fatalf("parts = %#v, want one file part", msg.Parts)
 	}
 	part := msg.Parts[0]
-	if part.Type != llm.PartFile || part.FileData == nil {
+	if part.Type != core.PartFile || part.FileData == nil {
 		t.Fatalf("part = %+v", part)
 	}
 	if part.FileData.Filename != "common_helper.rb" {
@@ -609,7 +611,7 @@ func TestParseUserMessageContent_CanonicalizesUploadMediaType(t *testing.T) {
 	// The stored part must also survive a Responses replay, which is where the
 	// original 400 surfaced.
 	policy := llm.DefaultOpenAIResponsesFileUploadPolicy()
-	input := llm.BuildResponsesInputWithFilePolicy([]llm.Message{{Role: llm.RoleUser, Parts: msg.Parts}}, &policy)
+	input := responses.BuildResponsesInputWithFilePolicy([]core.Message{{Role: core.RoleUser, Parts: msg.Parts}}, &policy)
 	if len(input) != 1 {
 		t.Fatalf("input = %#v, want one input item", input)
 	}
@@ -696,7 +698,7 @@ func TestParseUploadedFilePart_TextEvidenceGatesExtensionRepair(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if part.Type != llm.PartFile || part.FileData == nil {
+			if part.Type != core.PartFile || part.FileData == nil {
 				t.Fatalf("part = %+v", part)
 			}
 			if part.FileData.MediaType != tc.wantMediaType {

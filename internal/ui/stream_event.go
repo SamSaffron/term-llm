@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -47,7 +47,7 @@ type StreamEvent struct {
 
 	// Steering metadata (for StreamEventSteering)
 	SteeringID string
-	Message    llm.Message
+	Message    core.Message
 
 	// Tool events (for StreamEventToolStart, StreamEventToolEnd)
 	ToolCallID  string
@@ -80,7 +80,7 @@ type StreamEvent struct {
 
 	// Image/media presentation.
 	ImagePath string
-	Media     llm.MediaArtifact
+	Media     core.MediaArtifact
 
 	// Diff (for StreamEventDiff)
 	DiffPath      string
@@ -91,13 +91,13 @@ type StreamEvent struct {
 
 	// File change metadata (for StreamEventFileChange). Contents are never
 	// carried on events; viewers fetch diffs from the session endpoints.
-	FileChange            llm.FileChange
-	FilesystemObservation llm.FilesystemObservationSummary
-	OutputClaimDiagnostic llm.OutputClaimDiagnostic
+	FileChange            core.FileChange
+	FilesystemObservation core.FilesystemObservationSummary
+	OutputClaimDiagnostic core.OutputClaimDiagnostic
 
 	// Reasoning (for StreamEventReasoning). Encrypted replay payloads are never
 	// included here; surfaces decide display policy from the classified text.
-	ReasoningKind        llm.ReasoningKind
+	ReasoningKind        core.ReasoningKind
 	ReasoningText        string
 	ReasoningTitle       string
 	ReasoningItemID      string
@@ -122,10 +122,10 @@ func GenerationActivityEvent() StreamEvent {
 }
 
 // ReasoningEvent creates a classified, non-encrypted reasoning stream event.
-func ReasoningEvent(kind llm.ReasoningKind, text, title, itemID string, final bool, displayable bool) StreamEvent {
+func ReasoningEvent(kind core.ReasoningKind, text, title, itemID string, final bool, displayable bool) StreamEvent {
 	return StreamEvent{
 		Type:                 StreamEventReasoning,
-		ReasoningKind:        llm.NormalizeReasoningKind(kind),
+		ReasoningKind:        core.NormalizeReasoningKind(kind),
 		ReasoningText:        text,
 		ReasoningTitle:       title,
 		ReasoningItemID:      itemID,
@@ -244,7 +244,7 @@ func ImageEvent(path string) StreamEvent {
 }
 
 // MediaEvent creates an ordered image/video/audio presentation event.
-func MediaEvent(media llm.MediaArtifact) StreamEvent {
+func MediaEvent(media core.MediaArtifact) StreamEvent {
 	return StreamEvent{Type: StreamEventMedia, Media: media}
 }
 
@@ -266,15 +266,15 @@ func DiffEventWithOperation(path, old, new string, line int, operation string) S
 }
 
 // FileChangeEvent creates a file-change metadata event (file tracking).
-func FileChangeEvent(fc llm.FileChange) StreamEvent {
+func FileChangeEvent(fc core.FileChange) StreamEvent {
 	return StreamEvent{Type: StreamEventFileChange, FileChange: fc}
 }
 
-func FilesystemObservationEvent(obs llm.FilesystemObservationSummary) StreamEvent {
+func FilesystemObservationEvent(obs core.FilesystemObservationSummary) StreamEvent {
 	return StreamEvent{Type: StreamEventFilesystemObservation, FilesystemObservation: obs}
 }
 
-func OutputClaimDiagnosticEvent(diagnostic llm.OutputClaimDiagnostic) StreamEvent {
+func OutputClaimDiagnosticEvent(diagnostic core.OutputClaimDiagnostic) StreamEvent {
 	return StreamEvent{Type: StreamEventOutputClaimDiagnostic, OutputClaimDiagnostic: diagnostic}
 }
 
@@ -289,11 +289,11 @@ func ModelSwitchEvent(model, reasoningEffort string) StreamEvent {
 
 // SteeringEvent creates an steering event (user message injected mid-stream).
 func SteeringEvent(text, steeringID string) StreamEvent {
-	return SteeringEventWithMessage(text, steeringID, llm.Message{})
+	return SteeringEventWithMessage(text, steeringID, core.Message{})
 }
 
 // SteeringEventWithMessage creates an steering event with structured content.
-func SteeringEventWithMessage(text, steeringID string, msg llm.Message) StreamEvent {
+func SteeringEventWithMessage(text, steeringID string, msg core.Message) StreamEvent {
 	return StreamEvent{
 		Type:       StreamEventSteering,
 		Text:       text,

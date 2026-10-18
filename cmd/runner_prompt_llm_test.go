@@ -9,7 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 )
 
@@ -63,7 +63,7 @@ func TestCmdRunnerPreparePromptUsesSelectedProviderAndModel(t *testing.T) {
 				AgentName:        agentName,
 				Provider:         tc.provider,
 				Model:            tc.model,
-				ProviderInstance: llm.NewMockProvider("mock"),
+				ProviderInstance: mockprovider.NewMockProvider("mock"),
 				Cwd:              t.TempDir(),
 				DeferSession:     true,
 			}, nil)

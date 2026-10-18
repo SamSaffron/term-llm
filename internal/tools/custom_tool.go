@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -34,8 +34,8 @@ type CustomScriptTool struct {
 // scriptToolErrorOutput preserves the structured diagnostic text while marking
 // every validation/setup failure as a failed tool call; no script ran to a
 // successful completion in these paths.
-func scriptToolErrorOutput(err *ToolError) llm.ToolOutput {
-	output := llm.TextOutput(formatToolError(err))
+func scriptToolErrorOutput(err *ToolError) core.ToolOutput {
+	output := core.TextOutput(formatToolError(err))
 	output.IsError = true
 	return output
 }
@@ -51,7 +51,7 @@ func newCustomScriptTool(def agents.CustomToolDef, agentDir string, limits Outpu
 }
 
 // Spec returns the tool spec for the LLM.
-func (t *CustomScriptTool) Spec() llm.ToolSpec {
+func (t *CustomScriptTool) Spec() core.ToolSpec {
 	schema := t.def.Input
 	if schema == nil {
 		schema = map[string]interface{}{
@@ -60,7 +60,7 @@ func (t *CustomScriptTool) Spec() llm.ToolSpec {
 			"additionalProperties": false,
 		}
 	}
-	return llm.ToolSpec{
+	return core.ToolSpec{
 		Name:        t.def.Name,
 		Description: t.def.Description,
 		Schema:      schema,
@@ -81,7 +81,7 @@ func (t *CustomScriptTool) Preview(args json.RawMessage) string {
 }
 
 // Execute runs the custom script with the LLM's args as JSON on stdin.
-func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	// Validate agentDir is set
 	if t.agentDir == "" {
 		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "no agent directory configured")), nil
@@ -178,7 +178,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 		timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 		result.TimedOut = timedOut
 		result.Canceled = !timedOut
-		return llm.ToolOutput{Content: formatShellResult(result, t.limits), IsError: true, TimedOut: timedOut}, nil
+		return core.ToolOutput{Content: formatShellResult(result, t.limits), IsError: true, TimedOut: timedOut}, nil
 	}
 
 	if execErr != nil {
@@ -192,7 +192,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	// Script-backed tools intentionally follow shell semantics: every nonzero exit
 	// is a failed tool call. Scripts that use exit codes as signals must translate
 	// successful signal cases to zero before returning to term-llm.
-	output := llm.TextOutput(formatShellResult(result, t.limits))
+	output := core.TextOutput(formatShellResult(result, t.limits))
 	output.IsError = result.ExitCode != 0
 	return output, nil
 }

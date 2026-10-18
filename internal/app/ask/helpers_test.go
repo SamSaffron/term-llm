@@ -14,7 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/filemime"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -83,12 +84,12 @@ func init() {
 			return cfg.Width, cfg.Height
 		},
 		NormalizeMediaType: func(filename, mediaType string, raw []byte) string {
-			mediaType = llm.NormalizeMediaType(mediaType)
+			mediaType = filemime.NormalizeMediaType(mediaType)
 			if mediaType == "" || mediaType == "application/octet-stream" {
-				mediaType = llm.NormalizeMediaType(http.DetectContentType(raw))
+				mediaType = filemime.NormalizeMediaType(http.DetectContentType(raw))
 			}
 			if !strings.HasPrefix(mediaType, "image/") {
-				mediaType = llm.CanonicalUploadMediaType(filename, mediaType)
+				mediaType = filemime.CanonicalUploadMediaType(filename, mediaType)
 			}
 			return mediaType
 		},
@@ -98,12 +99,12 @@ func init() {
 
 type progressiveTestTool struct{}
 
-func (t *progressiveTestTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "progressive_test_tool", Description: "test tool", Schema: map[string]any{"type": "object"}}
+func (t *progressiveTestTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "progressive_test_tool", Description: "test tool", Schema: map[string]any{"type": "object"}}
 }
 
-func (t *progressiveTestTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("tool ok"), nil
+func (t *progressiveTestTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("tool ok"), nil
 }
 
 func (t *progressiveTestTool) Preview(args json.RawMessage) string { return "" }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -108,7 +109,7 @@ func (s *unversionedTranscriptStore) TranscriptRev(context.Context, string) (int
 
 func TestHandleSessionTranscriptAdaptsUnversionedStoreToSingleProtocol(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
-	message := session.NewMessage(sess.ID, llm.UserText("legacy"), -1)
+	message := session.NewMessage(sess.ID, core.UserText("legacy"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, message); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -151,7 +152,7 @@ type capabilitylessTranscriptStore struct{ session.Store }
 
 func TestHandleSessionTranscriptAdaptsStoreWithoutIndexerAndObservesAttachedCLIWrite(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
-	message := session.NewMessage(sess.ID, llm.UserText("fallback"), -1)
+	message := session.NewMessage(sess.ID, core.UserText("fallback"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, message); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +188,7 @@ func TestHandleSessionTranscriptAdaptsStoreWithoutIndexerAndObservesAttachedCLIW
 
 	// Model a CLI/TUI writer mutating the same store while the browser remains
 	// attached. The adapter must expose a newer revision through the same route.
-	external := session.NewMessage(sess.ID, llm.AssistantText("external write"), -1)
+	external := session.NewMessage(sess.ID, core.AssistantText("external write"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, external); err != nil {
 		t.Fatal(err)
 	}
@@ -226,10 +227,10 @@ func TestHandleSessionTranscriptReturnsCompleteCompactIdentityIndex(t *testing.T
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()
 	messages := []*session.Message{
-		session.NewMessage(sess.ID, llm.SystemText("secret"), -1),
-		session.NewMessage(sess.ID, llm.UserText("hello"), -1),
-		session.NewMessage(sess.ID, llm.AssistantText("answer"), -1),
-		session.NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent}, -1),
+		session.NewMessage(sess.ID, core.SystemText("secret"), -1),
+		session.NewMessage(sess.ID, core.UserText("hello"), -1),
+		session.NewMessage(sess.ID, core.AssistantText("answer"), -1),
+		session.NewMessage(sess.ID, core.Message{Role: core.RoleEvent}, -1),
 	}
 	for _, msg := range messages {
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
@@ -296,7 +297,7 @@ func TestHandleSessionTranscriptDoesNotTruncateIdentityIndex(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()
 	for i := 0; i < sessionMessagesPageSize+17; i++ {
-		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(fmt.Sprintf("row-%d", i)), -1)); err != nil {
+		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText(fmt.Sprintf("row-%d", i)), -1)); err != nil {
 			t.Fatalf("AddMessage %d: %v", i, err)
 		}
 	}
@@ -321,11 +322,11 @@ func TestHandleSessionTranscriptBodiesExpandsWholeTurnAndMarksToolError(t *testi
 	ctx := context.Background()
 	callID := "call-broken"
 	messages := []*session.Message{
-		session.NewMessage(sess.ID, llm.UserText("do it"), -1),
-		session.NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: callID, Name: "shell"}}}}, -1),
-		session.NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: callID, Name: "shell", IsError: true}}}}, -1),
-		session.NewMessage(sess.ID, llm.AssistantText("failed"), -1),
-		session.NewMessage(sess.ID, llm.UserText("next turn"), -1),
+		session.NewMessage(sess.ID, core.UserText("do it"), -1),
+		session.NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: callID, Name: "shell"}}}}, -1),
+		session.NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: callID, Name: "shell", IsError: true}}}}, -1),
+		session.NewMessage(sess.ID, core.AssistantText("failed"), -1),
+		session.NewMessage(sess.ID, core.UserText("next turn"), -1),
 	}
 	for _, msg := range messages {
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
@@ -367,27 +368,27 @@ func TestHandleSessionTranscriptBodiesLoadsLargeTurnAtomicallyWithFarEndToolCont
 	const toolRows = 700
 	const toolCalls = toolRows / 2
 	messages := make([]*session.Message, 0, toolRows+2)
-	messages = append(messages, session.NewMessage(sess.ID, llm.UserText("large tool turn"), -1))
+	messages = append(messages, session.NewMessage(sess.ID, core.UserText("large tool turn"), -1))
 	for i := 0; i < toolCalls; i++ {
 		callID := fmt.Sprintf("call-%03d", i)
 		name := "read_file"
 		if i == toolCalls-1 {
 			name = "update_plan"
 		}
-		messages = append(messages, session.NewMessage(sess.ID, llm.Message{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+		messages = append(messages, session.NewMessage(sess.ID, core.Message{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{
 				ID: callID, Name: name,
 			}}},
 		}, -1))
-		messages = append(messages, session.NewMessage(sess.ID, llm.Message{
-			Role: llm.RoleTool,
-			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+		messages = append(messages, session.NewMessage(sess.ID, core.Message{
+			Role: core.RoleTool,
+			Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
 				ID: callID, Name: name, IsError: i == toolCalls-1,
 			}}},
 		}, -1))
 	}
-	messages = append(messages, session.NewMessage(sess.ID, llm.UserText("next turn"), -1))
+	messages = append(messages, session.NewMessage(sess.ID, core.UserText("next turn"), -1))
 	for i, msg := range messages {
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage %d: %v", i, err)
@@ -429,7 +430,7 @@ func TestHandleSessionsSelectedTranscriptSideloadMatchesTranscriptEndpointsAndIs
 	ctx := context.Background()
 	const totalTurns = 20
 	for i := 0; i < totalTurns; i++ {
-		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(fmt.Sprintf("turn-%02d", i)), -1)); err != nil {
+		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText(fmt.Sprintf("turn-%02d", i)), -1)); err != nil {
 			t.Fatalf("AddMessage %d: %v", i, err)
 		}
 	}
@@ -516,37 +517,37 @@ func TestHandleSessionsMessageCountMatchesConversationAcrossSelectedTranscriptRe
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()
 	messages := []*session.Message{
-		session.NewMessage(sess.ID, llm.SystemText("internal system prompt"), -1),
-		session.NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "internal developer prompt"}}}, -1),
-		session.NewMessage(sess.ID, llm.UserText("run the tools"), -1),
+		session.NewMessage(sess.ID, core.SystemText("internal system prompt"), -1),
+		session.NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "internal developer prompt"}}}, -1),
+		session.NewMessage(sess.ID, core.UserText("run the tools"), -1),
 	}
 	for i := 0; i < 12; i++ {
 		callID := fmt.Sprintf("call-count-%02d", i)
 		messages = append(messages,
-			session.NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-				Type: llm.PartToolCall,
-				ToolCall: &llm.ToolCall{
+			session.NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+				Type: core.PartToolCall,
+				ToolCall: &core.ToolCall{
 					ID: callID, Name: "read_file",
 				},
 			}}}, -1),
-			session.NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
-				Type: llm.PartToolResult,
-				ToolResult: &llm.ToolResult{
+			session.NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{
+				Type: core.PartToolResult,
+				ToolResult: &core.ToolResult{
 					ID: callID, Name: "read_file", Content: "internal result",
 				},
 			}}}, -1),
-			session.NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent}, -1),
+			session.NewMessage(sess.ID, core.Message{Role: core.RoleEvent}, -1),
 		)
 	}
 	messages = append(messages,
-		session.NewMessage(sess.ID, llm.AssistantText("tools complete"), -1),
-		session.NewMessage(sess.ID, llm.UserText("[Context Compaction] internal summary"), -1),
+		session.NewMessage(sess.ID, core.AssistantText("tools complete"), -1),
+		session.NewMessage(sess.ID, core.UserText("[Context Compaction] internal summary"), -1),
 	)
-	compactionTail := session.NewMessage(sess.ID, llm.AssistantText("retained internal tail"), -1)
+	compactionTail := session.NewMessage(sess.ID, core.AssistantText("retained internal tail"), -1)
 	compactionTail.CompactionTail = true
 	messages = append(messages, compactionTail,
-		session.NewMessage(sess.ID, llm.UserText("what happened?"), -1),
-		session.NewMessage(sess.ID, llm.AssistantText("all done"), -1),
+		session.NewMessage(sess.ID, core.UserText("what happened?"), -1),
+		session.NewMessage(sess.ID, core.AssistantText("all done"), -1),
 	)
 	for i, message := range messages {
 		if err := store.AddMessage(ctx, sess.ID, message); err != nil {
@@ -709,7 +710,7 @@ func TestHandleSessionTranscriptBodiesCapsTurnAnchorsAndMalformedQuerySize(t *te
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(fmt.Sprintf("turn-%d", i)), -1)); err != nil {
+		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText(fmt.Sprintf("turn-%d", i)), -1)); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/pflag"
 )
 
@@ -116,7 +117,7 @@ func runAgyUsageCommand(ctx context.Context, binary string) ([]byte, error) {
 		return nil, agyUsageCommandFailure("check agy version", err, versionStderr)
 	}
 	version := strings.TrimSpace(string(versionOutput))
-	if !llm.AgyVersionAtLeast(version, 1, 1, 11) {
+	if !clibin.AgyVersionAtLeast(version, 1, 1, 11) {
 		if version == "" {
 			version = "unknown"
 		}
@@ -190,24 +191,24 @@ func parseAgyBinUsageOutput(output []byte) (json.RawMessage, agyBinUsageReport, 
 	return raw, report, nil
 }
 
-func writeAgyBinUsageWithOptions(out io.Writer, report agyBinUsageReport, now time.Time, opts llm.ProviderUsageFormatOptions) error {
+func writeAgyBinUsageWithOptions(out io.Writer, report agyBinUsageReport, now time.Time, opts providerusage.FormatOptions) error {
 	providerReport, err := normalizeAgyBinUsage(report)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(out, llm.FormatProviderUsageWithOptions(providerReport, now, opts))
+	_, err = fmt.Fprintln(out, providerusage.FormatWithOptions(providerReport, now, opts))
 	return err
 }
 
-func normalizeAgyBinUsage(report agyBinUsageReport) (*llm.ProviderUsage, error) {
-	providerReport := &llm.ProviderUsage{Provider: "antigravity", Source: "Live from agy"}
+func normalizeAgyBinUsage(report agyBinUsageReport) (*providerusage.Report, error) {
+	providerReport := &providerusage.Report{Provider: "antigravity", Source: "Live from agy"}
 	for groupIndex, group := range report.Groups {
-		limit := llm.ProviderUsageLimit{
+		limit := providerusage.Limit{
 			ID:      agyUsageID(group.Name, groupIndex),
 			Name:    strings.TrimSpace(group.Name),
 			Allowed: true,
 		}
-		var extras []llm.ProviderUsageLimit
+		var extras []providerusage.Limit
 		for bucketIndex, bucket := range group.Buckets {
 			window, err := agyUsageWindow(bucket)
 			if err != nil {
@@ -242,7 +243,7 @@ func normalizeAgyBinUsage(report agyBinUsageReport) (*llm.ProviderUsage, error) 
 					continue
 				}
 			}
-			extras = append(extras, llm.ProviderUsageLimit{
+			extras = append(extras, providerusage.Limit{
 				ID:            agyUsageID(bucket.ID, bucketIndex),
 				Name:          strings.TrimSpace(bucket.Name),
 				Allowed:       !reached,
@@ -264,12 +265,12 @@ func normalizeAgyBinUsage(report agyBinUsageReport) (*llm.ProviderUsage, error) 
 	return providerReport, nil
 }
 
-func agyUsageWindow(bucket agyBinUsageBucket) (*llm.ProviderUsageWindow, error) {
+func agyUsageWindow(bucket agyBinUsageBucket) (*providerusage.Window, error) {
 	if bucket.RemainingFraction == nil {
 		return nil, nil
 	}
 	remaining := min(1, max(0, *bucket.RemainingFraction))
-	window := &llm.ProviderUsageWindow{
+	window := &providerusage.Window{
 		Label:           agyUsageWindowLabel(bucket),
 		UsedPercent:     (1 - remaining) * 100,
 		DurationMinutes: agyUsageWindowDuration(bucket.Window),

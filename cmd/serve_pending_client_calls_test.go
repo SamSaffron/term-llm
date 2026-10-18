@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
-func pendingClientCallIDs(calls []llm.ToolCall) []string {
+func pendingClientCallIDs(calls []core.ToolCall) []string {
 	ids := make([]string, 0, len(calls))
 	for _, call := range calls {
 		ids = append(ids, call.ID)
@@ -19,22 +21,22 @@ func pendingClientCallIDs(calls []llm.ToolCall) []string {
 	return ids
 }
 
-func runPendingClientCallScenario(t *testing.T, turns ...llm.MockTurn) serveRunResult {
+func runPendingClientCallScenario(t *testing.T, turns ...mockprovider.MockTurn) serveRunResult {
 	t.Helper()
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	for _, turn := range turns {
 		provider.AddTurn(turn)
 	}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: engine, defaultModel: "mock-model"}
-	clientTool := llm.ToolSpec{Name: "webmcp__ping", Description: "client tool", Schema: map[string]any{"type": "object"}}
-	result, err := rt.Run(context.Background(), false, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "go")}, llm.Request{
+	clientTool := core.ToolSpec{Name: "webmcp__ping", Description: "client tool", Schema: map[string]any{"type": "object"}}
+	result, err := rt.Run(context.Background(), false, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "go")}, core.Request{
 		Model:      "mock-model",
-		Tools:      []llm.ToolSpec{tool.Spec(), clientTool},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{tool.Spec(), clientTool},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:   6,
 	})
 	if err != nil {
@@ -48,12 +50,12 @@ func runPendingClientCallScenario(t *testing.T, turns ...llm.MockTurn) serveRunR
 // provider turn, asks for a passthrough client call.
 type inlineThenPassthroughProvider struct{ calls int }
 
-type pendingTestStream struct{ events chan llm.Event }
+type pendingTestStream struct{ events chan core.Event }
 
-func (s *pendingTestStream) Recv() (llm.Event, error) {
+func (s *pendingTestStream) Recv() (core.Event, error) {
 	event, ok := <-s.events
 	if !ok {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	return event, nil
 }
@@ -61,16 +63,16 @@ func (s *pendingTestStream) Close() error { return nil }
 
 func (p *inlineThenPassthroughProvider) Name() string       { return "inline-then-passthrough" }
 func (p *inlineThenPassthroughProvider) Credential() string { return "test" }
-func (p *inlineThenPassthroughProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *inlineThenPassthroughProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
-func (p *inlineThenPassthroughProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *inlineThenPassthroughProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.calls++
-	stream := &pendingTestStream{events: make(chan llm.Event)}
+	stream := &pendingTestStream{events: make(chan core.Event)}
 	first := p.calls == 1
 	go func() {
 		defer close(stream.events)
-		send := func(event llm.Event) bool {
+		send := func(event core.Event) bool {
 			select {
 			case stream.events <- event:
 				return true
@@ -79,12 +81,12 @@ func (p *inlineThenPassthroughProvider) Stream(ctx context.Context, req llm.Requ
 			}
 		}
 		if !first {
-			_ = send(llm.Event{Type: llm.EventTextDelta, Text: "unexpected extra turn"})
+			_ = send(core.Event{Type: core.EventTextDelta, Text: "unexpected extra turn"})
 			return
 		}
-		response := make(chan llm.ToolExecutionResponse, 1)
+		response := make(chan core.ToolExecutionResponse, 1)
 		server := pendingTestCall("call_inline", "serve_runtime_test_tool")
-		if !send(llm.Event{Type: llm.EventToolCall, ToolCallID: server.ID, ToolName: server.Name, Tool: &server, ToolResponse: response}) {
+		if !send(core.Event{Type: core.EventToolCall, ToolCallID: server.ID, ToolName: server.Name, Tool: &server, ToolResponse: response}) {
 			return
 		}
 		select {
@@ -93,10 +95,10 @@ func (p *inlineThenPassthroughProvider) Stream(ctx context.Context, req llm.Requ
 			return
 		}
 		client := pendingTestCall("call_c1", "webmcp__ping")
-		if !send(llm.Event{Type: llm.EventToolCall, ToolCallID: client.ID, ToolName: client.Name, Tool: &client}) {
+		if !send(core.Event{Type: core.EventToolCall, ToolCallID: client.ID, ToolName: client.Name, Tool: &client}) {
 			return
 		}
-		_ = send(llm.Event{Type: llm.EventDone})
+		_ = send(core.Event{Type: core.EventDone})
 	}()
 	return stream, nil
 }
@@ -106,15 +108,15 @@ func (p *inlineThenPassthroughProvider) Stream(ctx context.Context, req llm.Requ
 func TestPendingClientCallsSurviveInlineServerToolInSameTurn(t *testing.T) {
 	provider := &inlineThenPassthroughProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model"}
-	clientTool := llm.ToolSpec{Name: "webmcp__ping", Description: "client tool", Schema: map[string]any{"type": "object"}}
-	result, err := rt.Run(context.Background(), false, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "go")}, llm.Request{
+	clientTool := core.ToolSpec{Name: "webmcp__ping", Description: "client tool", Schema: map[string]any{"type": "object"}}
+	result, err := rt.Run(context.Background(), false, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "go")}, core.Request{
 		Model:      "mock-model",
-		Tools:      []llm.ToolSpec{tool.Spec(), clientTool},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{tool.Spec(), clientTool},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:   4,
 	})
 	if err != nil {
@@ -128,17 +130,17 @@ func TestPendingClientCallsSurviveInlineServerToolInSameTurn(t *testing.T) {
 	}
 }
 
-func pendingTestCall(id, name string) llm.ToolCall {
-	return llm.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(`{"message":"hi"}`)}
+func pendingTestCall(id, name string) core.ToolCall {
+	return core.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(`{"message":"hi"}`)}
 }
 
 // Session 5319: tool-only server turns followed by client calls must still
 // report the client calls, even though no text separates the turns.
 func TestPendingClientCallsFollowToolOnlyServerTurns(t *testing.T) {
 	result := runPendingClientCallScenario(t,
-		llm.MockTurn{ToolCalls: []llm.ToolCall{pendingTestCall("call_s1", "serve_runtime_test_tool")}},
-		llm.MockTurn{ToolCalls: []llm.ToolCall{pendingTestCall("call_s2", "serve_runtime_test_tool")}},
-		llm.MockTurn{ToolCalls: []llm.ToolCall{pendingTestCall("call_c1", "webmcp__ping"), pendingTestCall("call_c2", "webmcp__ping")}},
+		mockprovider.MockTurn{ToolCalls: []core.ToolCall{pendingTestCall("call_s1", "serve_runtime_test_tool")}},
+		mockprovider.MockTurn{ToolCalls: []core.ToolCall{pendingTestCall("call_s2", "serve_runtime_test_tool")}},
+		mockprovider.MockTurn{ToolCalls: []core.ToolCall{pendingTestCall("call_c1", "webmcp__ping"), pendingTestCall("call_c2", "webmcp__ping")}},
 	)
 	if got, want := pendingClientCallIDs(result.PendingClientCalls()), []string{"call_c1", "call_c2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("pending client calls = %v, want %v", got, want)
@@ -153,8 +155,8 @@ func TestPendingClientCallsFollowToolOnlyServerTurns(t *testing.T) {
 // they must not be reported once the run moves on.
 func TestPendingClientCallsExcludeCallsDroppedWithServerTools(t *testing.T) {
 	result := runPendingClientCallScenario(t,
-		llm.MockTurn{ToolCalls: []llm.ToolCall{pendingTestCall("call_s1", "serve_runtime_test_tool"), pendingTestCall("call_c1", "webmcp__ping")}},
-		llm.MockTurn{Text: "done"},
+		mockprovider.MockTurn{ToolCalls: []core.ToolCall{pendingTestCall("call_s1", "serve_runtime_test_tool"), pendingTestCall("call_c1", "webmcp__ping")}},
+		mockprovider.MockTurn{Text: "done"},
 	)
 	if got := result.PendingClientCalls(); got == nil || len(got) != 0 {
 		t.Fatalf("pending client calls = %#v, want empty non-nil list", got)
@@ -163,32 +165,32 @@ func TestPendingClientCallsExcludeCallsDroppedWithServerTools(t *testing.T) {
 
 func TestPendingClientCallTrackerTurnBoundaries(t *testing.T) {
 	isServer := func(name string) bool { return name == "shell" }
-	call := func(turn int, id, name string) llm.Event {
-		tool := llm.ToolCall{ID: id, Name: name}
-		return llm.Event{Type: llm.EventToolCall, Tool: &tool, ProviderTurnIndex: turn, ProviderTurnIndexSet: true}
+	call := func(turn int, id, name string) core.Event {
+		tool := core.ToolCall{ID: id, Name: name}
+		return core.Event{Type: core.EventToolCall, Tool: &tool, ProviderTurnIndex: turn, ProviderTurnIndexSet: true}
 	}
-	inline := func(turn int, id, name string) llm.Event {
+	inline := func(turn int, id, name string) core.Event {
 		event := call(turn, id, name)
 		event.ToolInline = true
 		return event
 	}
-	text := func(turn int) llm.Event {
-		return llm.Event{Type: llm.EventTextDelta, Text: "x", ProviderTurnIndex: turn, ProviderTurnIndexSet: true}
+	text := func(turn int) core.Event {
+		return core.Event{Type: core.EventTextDelta, Text: "x", ProviderTurnIndex: turn, ProviderTurnIndexSet: true}
 	}
 
 	cases := []struct {
 		name   string
-		events []llm.Event
+		events []core.Event
 		want   []string
 	}{
-		{"client calls in final turn", []llm.Event{call(0, "s", "shell"), call(1, "c1", "ping"), call(1, "c1", "ping"), call(1, "c2", "ping")}, []string{"c1", "c2"}},
-		{"inline server tool does not drop same-turn calls", []llm.Event{inline(0, "s", "shell"), call(0, "c1", "ping")}, []string{"c1"}},
-		{"server tool in final turn", []llm.Event{call(0, "c1", "ping"), call(0, "s", "shell")}, []string{}},
-		{"later text-only turn clears", []llm.Event{call(0, "c1", "ping"), text(1)}, []string{}},
-		{"text in same turn keeps calls", []llm.Event{text(0), call(0, "c1", "ping"), text(0)}, []string{"c1"}},
-		{"discarded attempt clears its calls", []llm.Event{
+		{"client calls in final turn", []core.Event{call(0, "s", "shell"), call(1, "c1", "ping"), call(1, "c1", "ping"), call(1, "c2", "ping")}, []string{"c1", "c2"}},
+		{"inline server tool does not drop same-turn calls", []core.Event{inline(0, "s", "shell"), call(0, "c1", "ping")}, []string{"c1"}},
+		{"server tool in final turn", []core.Event{call(0, "c1", "ping"), call(0, "s", "shell")}, []string{}},
+		{"later text-only turn clears", []core.Event{call(0, "c1", "ping"), text(1)}, []string{}},
+		{"text in same turn keeps calls", []core.Event{text(0), call(0, "c1", "ping"), text(0)}, []string{"c1"}},
+		{"discarded attempt clears its calls", []core.Event{
 			call(1, "c1", "ping"),
-			{Type: llm.EventAttemptDiscard, ProviderTurnIndex: 1, ProviderTurnIndexSet: true},
+			{Type: core.EventAttemptDiscard, ProviderTurnIndex: 1, ProviderTurnIndexSet: true},
 			call(1, "c2", "ping"),
 		}, []string{"c2"}},
 	}
@@ -208,8 +210,8 @@ func TestPendingClientCallTrackerTurnBoundaries(t *testing.T) {
 func TestResponseRunSnapshotCarriesPendingClientCalls(t *testing.T) {
 	run := newResponseRun("resp-pending-client", "sess-pending-client", "", "test", time.Now().Unix(), nil)
 	run.finalRevReader = func() (int64, error) { return 1, nil }
-	calls := pendingClientCallsPayload([]llm.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
-	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id, "pending_client_calls": calls}}, llm.Usage{}, llm.Usage{}); err != nil {
+	calls := pendingClientCallsPayload([]core.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id, "pending_client_calls": calls}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	snapshot := run.snapshot()
@@ -222,7 +224,7 @@ func TestResponseRunSnapshotCarriesPendingClientCalls(t *testing.T) {
 }
 
 func TestPendingClientCallsValueAcceptsDecodedJSON(t *testing.T) {
-	native := pendingClientCallsPayload([]llm.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
+	native := pendingClientCallsPayload([]core.ToolCall{pendingTestCall("call_c1", "webmcp__ping")})
 	encoded, err := json.Marshal(native)
 	if err != nil {
 		t.Fatal(err)

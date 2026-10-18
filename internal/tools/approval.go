@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -309,7 +309,7 @@ type PolicyDecision struct {
 	UserAuthorization string
 	Rationale         string
 	Model             string
-	Usage             llm.Usage
+	Usage             core.Usage
 	// Escalated reports that the classify backend denied or failed and the LLM
 	// fallback reviewer produced this verdict.
 	Escalated bool
@@ -359,7 +359,7 @@ type GuardianEvent struct {
 	Message    string
 	Outcome    GuardianOutcome
 	Model      string
-	Usage      llm.Usage
+	Usage      core.Usage
 }
 
 // WorkspaceApprovalResult is the direct human decision for a proposed primary
@@ -1742,7 +1742,7 @@ func (m *ApprovalManager) checkPathGuardianApproval(ctx context.Context, toolNam
 		IsDirectory:     isDirectory,
 		Transcript:      approvalTranscriptFromContext(ctx),
 		ApprovalContext: m.guardianPathApprovalContext(toolName, path, isWrite),
-		ScopeID:         llm.SessionIDFromContext(ctx),
+		ScopeID:         core.SessionIDFromContext(ctx),
 	})
 	if err != nil {
 		m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
@@ -1789,7 +1789,7 @@ func (m *ApprovalManager) checkShellGuardianApprovalScoped(ctx context.Context, 
 	}
 	decision, err := reviewFunc(ctx, PolicyReviewRequest{
 		Command: command, WorkDir: reviewWorkDir, Transcript: entries,
-		ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx), ApprovalScope: scope,
+		ApprovalContext: approvalContext, ScopeID: core.SessionIDFromContext(ctx), ApprovalScope: scope,
 	})
 	if err != nil {
 		m.emitGuardianEventForContext(ctx, m.guardianDecisionEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
@@ -1845,12 +1845,12 @@ func guardianActionMessage(prefix, detail string) string {
 	return prefix + ": " + detail + separator + guardianSafeNextStep
 }
 
-func pathApprovalErrorOutput(prefix string, err error) llm.ToolOutput {
+func pathApprovalErrorOutput(prefix string, err error) core.ToolOutput {
 	var toolErr *ToolError
 	if !errors.As(err, &toolErr) {
 		toolErr = NewToolError(ErrPermissionDenied, err.Error())
 	}
-	output := llm.TextOutput(prefix + formatToolError(toolErr))
+	output := core.TextOutput(prefix + formatToolError(toolErr))
 	output.IsError = toolErr.Type == ErrPermissionDenied
 	return output
 }
@@ -1928,7 +1928,7 @@ func (m *ApprovalManager) guardianPathDecisionEvent(ctx context.Context, toolNam
 
 func (m *ApprovalManager) guardianPathEvent(ctx context.Context, toolName, path string, isWrite bool, outcome GuardianOutcome, message string) GuardianEvent {
 	return GuardianEvent{
-		ToolCallID: llm.CallIDFromContext(ctx),
+		ToolCallID: core.CallIDFromContext(ctx),
 		ToolName:   toolName,
 		Path:       path,
 		IsWrite:    isWrite,
@@ -1948,7 +1948,7 @@ func (m *ApprovalManager) guardianDecisionEvent(ctx context.Context, command, wo
 
 func (m *ApprovalManager) guardianEvent(ctx context.Context, command, workDir string, outcome GuardianOutcome, message string) GuardianEvent {
 	return GuardianEvent{
-		ToolCallID: llm.CallIDFromContext(ctx),
+		ToolCallID: core.CallIDFromContext(ctx),
 		ToolName:   ShellToolName,
 		Command:    command,
 		WorkDir:    normalizeGuardianWorkDir(workDir),
@@ -1959,7 +1959,7 @@ func (m *ApprovalManager) guardianEvent(ctx context.Context, command, workDir st
 
 func (m *ApprovalManager) emitGuardianEventForContext(ctx context.Context, event GuardianEvent) {
 	if strings.TrimSpace(event.ToolCallID) != "" {
-		llm.RecordGuardianReview(ctx, llm.GuardianReview{
+		core.RecordGuardianReview(ctx, core.GuardianReview{
 			Outcome: string(event.Outcome), Message: event.Message, Model: event.Model,
 			Tool: event.ToolName, Command: event.Command, Path: event.Path,
 			IsWrite: event.IsWrite, WorkDir: event.WorkDir, DurationMS: event.DurationMS, StateBytes: event.StateBytes,

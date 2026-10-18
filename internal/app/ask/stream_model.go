@@ -13,7 +13,7 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
@@ -39,7 +39,7 @@ type askStreamModel struct {
 
 	// Tool and segment tracking (shared component)
 	tracker          *ui.ToolTracker
-	mediaByReference map[string]llm.MediaArtifact
+	mediaByReference map[string]core.MediaArtifact
 
 	// Smooth text buffer for word-by-word rendering (shared with chat)
 	smoothBuffer       *ui.SmoothBuffer
@@ -562,7 +562,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askPhaseMsg:
 		m.phase = string(msg)
 		// Display WARNING phases as visible text in the conversation
-		if strings.HasPrefix(string(msg), llm.WarningPhasePrefix) {
+		if strings.HasPrefix(string(msg), core.WarningPhasePrefix) {
 			m.tracker.AddTextSegment(string(msg)+"\n", m.width)
 			m.contentDirty = true
 		}
@@ -731,7 +731,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, media := range msg.Event.Media {
 				if reference := strings.ToLower(strings.TrimSpace(media.Reference)); reference != "" {
 					if m.mediaByReference == nil {
-						m.mediaByReference = make(map[string]llm.MediaArtifact)
+						m.mediaByReference = make(map[string]core.MediaArtifact)
 					}
 					m.mediaByReference[reference] = media
 				}

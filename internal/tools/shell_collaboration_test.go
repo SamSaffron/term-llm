@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 type shellCollaborationTestController struct {
@@ -28,10 +29,10 @@ func (c *shellCollaborationTestController) Execute(ctx context.Context, _ string
 	c.contextErr = ctx.Err()
 	return c.result, c.err
 }
-func (c *shellCollaborationTestController) PrepareRequestContext(_ context.Context, _ string, messages []llm.Message) ([]llm.Message, error) {
+func (c *shellCollaborationTestController) PrepareRequestContext(_ context.Context, _ string, messages []core.Message) ([]core.Message, error) {
 	return messages, nil
 }
-func (c *shellCollaborationTestController) PrepareCompactionContext(context.Context, string, *llm.CompactionResult) error {
+func (c *shellCollaborationTestController) PrepareCompactionContext(context.Context, string, *engine.CompactionResult) error {
 	return nil
 }
 
@@ -84,8 +85,8 @@ func TestShellToolSharedDispatchNeverFallsBackLocal(t *testing.T) {
 	controller := &shellCollaborationTestController{err: NewCollaborativeShellError("stale_shell", "generation changed")}
 	tool := NewShellTool(nil, nil, DefaultOutputLimits())
 	tool.setCollaborativeShell(controller, ShellRoutingControllerRequired)
-	ctx := llm.ContextWithSessionID(context.Background(), "session")
-	ctx = llm.ContextWithCallID(ctx, "call")
+	ctx := core.ContextWithSessionID(context.Background(), "session")
+	ctx = core.ContextWithCallID(ctx, "call")
 	ctx = ContextWithCollaborativeShellRunBinding(ctx, CollaborativeShellRunBinding{Required: true, ShellID: "sh_old"})
 	output, err := tool.Execute(ctx, json.RawMessage(`{"command":"printf should-never-run > /definitely/not/a/path"}`))
 	if err != nil {
@@ -163,8 +164,8 @@ func TestShellToolSharedDispatchPassesCancellationAndNeedsNoLocalDirectory(t *te
 	tool.setCollaborativeShell(controller, ShellRoutingControllerRequired)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	ctx = llm.ContextWithSessionID(ctx, "session")
-	ctx = llm.ContextWithCallID(ctx, "call")
+	ctx = core.ContextWithSessionID(ctx, "session")
+	ctx = core.ContextWithCallID(ctx, "call")
 	ctx = ContextWithCollaborativeShellRunBinding(ctx, CollaborativeShellRunBinding{Required: true, ShellID: "sh_remote"})
 	output, err := tool.Execute(ctx, json.RawMessage(`{"command":"pwd","timeout_seconds":9}`))
 	if err != nil || output.IsError || !strings.Contains(output.Content, "remote") || !errors.Is(controller.contextErr, context.Canceled) {

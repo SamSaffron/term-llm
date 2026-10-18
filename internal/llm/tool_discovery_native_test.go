@@ -5,6 +5,10 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestChatGPTNativeToolDiscoveryCapabilityIsExact(t *testing.T) {
@@ -26,7 +30,7 @@ func TestChatGPTNativeToolDiscoveryCapabilityIsExact(t *testing.T) {
 		{name: "older websocket", model: "gpt-5.5-medium", websocket: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := NewChatGPTProviderWithCredsAndOptions(creds, tc.model, ChatGPTProviderOptions{UseWebSocket: tc.websocket})
+			provider := rp.NewChatGPTProviderWithCredsAndOptions(creds, tc.model, rp.ChatGPTProviderOptions{UseWebSocket: tc.websocket})
 			if got := provider.NativeToolDiscoverySupport(tc.model).Supported; got != tc.want {
 				t.Fatalf("supported = %v, want %v", got, tc.want)
 			}
@@ -35,20 +39,20 @@ func TestChatGPTNativeToolDiscoveryCapabilityIsExact(t *testing.T) {
 }
 
 func TestNamespaceMetadataDoesNotChangePortableFunctionName(t *testing.T) {
-	spec := ToolSpec{
+	spec := core.ToolSpec{
 		Name:      "federation__lookup",
 		Schema:    map[string]any{"type": "object"},
-		Namespace: &ToolNamespaceIdentity{Name: "federation", ChildName: "lookup"},
+		Namespace: &core.ToolNamespaceIdentity{Name: "federation", ChildName: "lookup"},
 	}
-	compat, err := buildCompatTools([]ToolSpec{spec})
+	compat, err := opencompat.BuildCompatTools([]core.ToolSpec{spec})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(compat) != 1 || compat[0].Function.Name != "federation__lookup" {
 		t.Fatalf("portable tools = %#v", compat)
 	}
-	responses := BuildResponsesTools([]ToolSpec{spec})
-	if len(responses) != 1 || responses[0].(ResponsesTool).Name != "federation__lookup" {
-		t.Fatalf("ordinary Responses tools = %#v", responses)
+	builtTools := responses.BuildResponsesTools([]core.ToolSpec{spec})
+	if len(builtTools) != 1 || builtTools[0].(responses.ResponsesTool).Name != "federation__lookup" {
+		t.Fatalf("ordinary Responses tools = %#v", builtTools)
 	}
 }

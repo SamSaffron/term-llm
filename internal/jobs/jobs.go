@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -188,7 +189,7 @@ type ExecResult struct {
 	Progressive any
 }
 
-type Executor func(ctx context.Context, cfg LLMConfig, onEvent func(llm.Event)) (ExecResult, error)
+type Executor func(ctx context.Context, cfg LLMConfig, onEvent func(core.Event)) (ExecResult, error)
 
 type NotifyOrigin struct {
 	Origin         string `json:"origin,omitempty"`
@@ -269,7 +270,7 @@ func ClassifyRunError(err error, result RunResult) (exitReason string, truncated
 		if errors.Is(err, context.Canceled) {
 			return ExitReasonCancelled, truncated
 		}
-		if llm.IsMaxTurnsExceeded(err) || strings.Contains(err.Error(), "max turns") {
+		if engine.IsMaxTurnsExceeded(err) || strings.Contains(err.Error(), "max turns") {
 			return ExitReasonMaxTurns, true
 		}
 		if result.ExitReason == ExitReasonWorkerLost {

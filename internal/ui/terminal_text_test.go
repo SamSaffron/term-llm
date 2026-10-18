@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -57,7 +57,7 @@ func TestHistoricalAndExpandedShellDetailsNeutralizeControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := &llm.ToolCall{
+	call := &core.ToolCall{
 		Name:      "shell",
 		ToolInfo:  "preview\rFAKE ROW\x1b[31m",
 		Arguments: args,

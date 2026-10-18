@@ -13,6 +13,8 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/subagentview"
@@ -72,7 +74,7 @@ type MessageBlockRenderer struct {
 	reasoningRenderedCount int
 	reasoningLineOffsets   []int
 	persistedSubagents     map[string]subagentview.CompletedRun
-	mediaByReference       map[string]llm.MediaArtifact
+	mediaByReference       map[string]core.MediaArtifact
 	firstSegmentType       ui.SegmentType
 	lastSegmentType        ui.SegmentType
 	hasSegmentTypes        bool
@@ -110,11 +112,11 @@ func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, 
 	}
 }
 
-func collectReferencedMedia(messages []session.Message) map[string]llm.MediaArtifact {
-	media := make(map[string]llm.MediaArtifact)
+func collectReferencedMedia(messages []session.Message) map[string]core.MediaArtifact {
+	media := make(map[string]core.MediaArtifact)
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
 				continue
 			}
 			for _, item := range part.ToolResult.Media {
@@ -130,7 +132,7 @@ func collectReferencedMedia(messages []session.Message) map[string]llm.MediaArti
 func (r *MessageBlockRenderer) SetPersistedSubagents(runs map[string]subagentview.CompletedRun) {
 	r.persistedSubagents = runs
 	if r.mediaByReference == nil {
-		r.mediaByReference = make(map[string]llm.MediaArtifact)
+		r.mediaByReference = make(map[string]core.MediaArtifact)
 	}
 	for _, run := range runs {
 		for _, item := range run.Media {
@@ -169,7 +171,7 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 	var userPreview string
 
 	switch msg.Role {
-	case llm.RoleUser:
+	case core.RoleUser:
 		if isInternalCompactionSummarySessionMessage(msg) {
 			content = r.renderCompactionSummaryPlaceholder(msg)
 		} else {
@@ -181,19 +183,19 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 		if strings.TrimSpace(content) != "" {
 			r.noteRenderedSegment(ui.SegmentText)
 		}
-	case llm.RoleAssistant:
+	case core.RoleAssistant:
 		content = r.renderAssistantMessage(msg)
-	case llm.RoleEvent:
+	case core.RoleEvent:
 		content = r.renderEventMessage(msg)
 		if strings.TrimSpace(content) != "" {
 			r.noteRenderedSegment(ui.SegmentText)
 		}
-	case llm.RoleDeveloper:
+	case core.RoleDeveloper:
 		if _, ok := msg.PathNoteProvenance(); ok {
 			content = r.renderPathNotePlaceholder()
 			r.noteRenderedSegment(ui.SegmentTool)
 		}
-	case llm.RoleSystem:
+	case core.RoleSystem:
 		// Skip system messages - users can view them via Ctrl+O inspector
 		content = ""
 	default:
@@ -272,7 +274,7 @@ func (r *MessageBlockRenderer) renderUserMessage(msg *session.Message) string {
 
 func (r *MessageBlockRenderer) renderEventMessage(msg *session.Message) string {
 	text := strings.TrimSpace(msg.TextContent)
-	if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+	if marker, ok := core.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
 		text = marker.DisplayText
 	} else if marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage()); ok {
 		text = marker.Message
@@ -292,7 +294,7 @@ func (r *MessageBlockRenderer) renderPathNotePlaceholder() string {
 
 func (r *MessageBlockRenderer) renderCompactionSummaryPlaceholder(msg *session.Message) string {
 	text := internalCompactionSummaryText(msg)
-	displayText := llm.CompactionSummaryDisplayText(text)
+	displayText := engine.CompactionSummaryDisplayText(text)
 	lineCount := 0
 	if displayText != "" {
 		lineCount = strings.Count(displayText, "\n") + 1
@@ -311,18 +313,18 @@ func (r *MessageBlockRenderer) renderCompactionSummaryPlaceholder(msg *session.M
 }
 
 func isInternalCompactionSummarySessionMessage(msg *session.Message) bool {
-	return llm.IsInternalCompactionSummaryText(internalCompactionSummaryText(msg))
+	return engine.IsInternalCompactionSummaryText(internalCompactionSummaryText(msg))
 }
 
 func internalCompactionSummaryText(msg *session.Message) string {
 	if msg == nil {
 		return ""
 	}
-	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
+	if engine.IsInternalCompactionSummaryText(msg.TextContent) {
 		return msg.TextContent
 	}
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+		if part.Type == core.PartText && engine.IsInternalCompactionSummaryText(part.Text) {
 			return part.Text
 		}
 	}
@@ -350,7 +352,7 @@ func (r *MessageBlockRenderer) userDisplayParts(msg *session.Message) (string, s
 		seenFiles[name] = true
 	}
 	for _, part := range msg.Parts {
-		if part.Type != llm.PartFile || part.FileData == nil {
+		if part.Type != core.PartFile || part.FileData == nil {
 			continue
 		}
 		name := llm.EmbeddedFileDisplayName(part.FileData.Filename)
@@ -366,7 +368,7 @@ func (r *MessageBlockRenderer) userDisplayParts(msg *session.Message) (string, s
 
 	imageCount := 0
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartImage {
+		if part.Type == core.PartImage {
 			imageCount++
 		}
 	}
@@ -402,10 +404,10 @@ func (r *MessageBlockRenderer) userDisplayParts(msg *session.Message) (string, s
 	return displayContent, fmt.Sprintf("[with: %s]", strings.Join(attachmentNames, ", "))
 }
 
-func extractTextParts(parts []llm.Part) string {
+func extractTextParts(parts []core.Part) string {
 	var texts []string
 	for _, part := range parts {
-		if (part.Type == llm.PartText || part.Type == llm.PartFile) && part.Text != "" {
+		if (part.Type == core.PartText || part.Type == core.PartFile) && part.Text != "" {
 			texts = append(texts, part.Text)
 		}
 	}
@@ -418,7 +420,7 @@ func (r *MessageBlockRenderer) userMessageBackground() color.Color {
 
 // findToolResult looks for a tool result matching the given tool call ID in subsequent messages.
 // Tool results are typically stored in tool messages following the assistant message.
-func (r *MessageBlockRenderer) findToolResult(toolCallID string) *llm.ToolResult {
+func (r *MessageBlockRenderer) findToolResult(toolCallID string) *core.ToolResult {
 	if r.messages == nil || toolCallID == "" {
 		return nil
 	}
@@ -428,12 +430,12 @@ func (r *MessageBlockRenderer) findToolResult(toolCallID string) *llm.ToolResult
 		msg := &r.messages[i]
 
 		// Stop looking if we hit another assistant message
-		if msg.Role == llm.RoleAssistant {
+		if msg.Role == core.RoleAssistant {
 			break
 		}
 
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolResult && part.ToolResult != nil {
+			if part.Type == core.PartToolResult && part.ToolResult != nil {
 				if part.ToolResult.ID == toolCallID {
 					return part.ToolResult
 				}
@@ -441,10 +443,10 @@ func (r *MessageBlockRenderer) findToolResult(toolCallID string) *llm.ToolResult
 		}
 
 		// If we hit a user message that has no tool results, we've likely passed the tool turn
-		if msg.Role == llm.RoleUser && len(msg.Parts) > 0 {
+		if msg.Role == core.RoleUser && len(msg.Parts) > 0 {
 			hasToolResult := false
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartToolResult {
+				if part.Type == core.PartToolResult {
 					hasToolResult = true
 					break
 				}
@@ -461,9 +463,9 @@ func (r *MessageBlockRenderer) findToolResult(toolCallID string) *llm.ToolResult
 func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) string {
 	var b strings.Builder
 	hasContent := false
-	var activities []*llm.ToolActivity
+	var activities []*core.ToolActivity
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartToolActivity && part.ToolActivity != nil {
+		if part.Type == core.PartToolActivity && part.ToolActivity != nil {
 			activities = append(activities, part.ToolActivity)
 		}
 	}
@@ -475,10 +477,10 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 		activitiesRendered = true
 		for _, activity := range activities {
 			status := ui.ToolSuccess
-			if activity.Status == llm.ToolActivityFailed {
+			if activity.Status == core.ToolActivityFailed {
 				status = ui.ToolError
 			}
-			call := &llm.ToolCall{ID: activity.ID, Name: activity.Name, ToolInfo: activity.Info, Arguments: activity.Arguments}
+			call := &core.ToolCall{ID: activity.ID, Name: activity.Name, ToolInfo: activity.Info, Arguments: activity.Arguments}
 			b.WriteString(ui.RenderToolCallFromPartWithStatus(call, r.width, r.toolsExpanded, status))
 			b.WriteString("\n")
 			r.noteRenderedSegment(ui.SegmentTool)
@@ -488,7 +490,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 
 	for _, part := range msg.Parts {
 		switch part.Type {
-		case llm.PartText:
+		case core.PartText:
 			globalOrdinal := r.reasoningOrdinalBase + r.reasoningRenderedCount
 			if reasoningRendered := r.renderReasoningForPart(part, globalOrdinal); reasoningRendered != "" {
 				r.reasoningLineOffsets = append(r.reasoningLineOffsets, reasoningAppendHeaderLineOffset(b.String()))
@@ -505,11 +507,11 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				r.noteRenderedSegment(ui.SegmentText)
 				hasContent = true
 			}
-		case llm.PartImage:
+		case core.PartImage:
 			b.WriteString("[Image]\n\n")
 			r.noteRenderedSegment(ui.SegmentImage)
 			hasContent = true
-		case llm.PartToolCall:
+		case core.PartToolCall:
 			if part.ToolCall != nil {
 				if run, ok := r.persistedSubagents[part.ToolCall.ID]; ok && part.ToolCall.Name == tools.SpawnAgentToolName {
 					segment := completedSubagentSegment(part.ToolCall, run)
@@ -521,7 +523,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 						b.WriteString("\n")
 					}
 					if len(run.Images) > 0 {
-						b.WriteString(r.renderToolMedia(llm.NormalizeMedia(nil, run.Images)))
+						b.WriteString(r.renderToolMedia(core.NormalizeMedia(nil, run.Images)))
 						r.noteRenderedSegment(ui.SegmentImage)
 					}
 					r.noteRenderedSegment(ui.SegmentTool)
@@ -539,7 +541,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				hasContent = true
 
 				if result != nil && len(result.Images) > 0 {
-					b.WriteString(r.renderToolMedia(llm.NormalizeMedia(nil, result.Images)))
+					b.WriteString(r.renderToolMedia(core.NormalizeMedia(nil, result.Images)))
 					r.noteRenderedSegment(ui.SegmentImage)
 				}
 
@@ -598,7 +600,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 	return b.String()
 }
 
-func completedSubagentSegment(call *llm.ToolCall, run subagentview.CompletedRun) ui.Segment {
+func completedSubagentSegment(call *core.ToolCall, run subagentview.CompletedRun) ui.Segment {
 	status := ui.ToolSuccess
 	if run.Error != "" || run.Status == session.StatusError || run.Status == session.StatusInterrupted {
 		status = ui.ToolError
@@ -707,7 +709,7 @@ func writeWithBlankLineBefore(b *strings.Builder, content string) {
 	b.WriteString(strings.TrimLeft(content, "\n"))
 }
 
-func (r *MessageBlockRenderer) renderToolMedia(media []llm.MediaArtifact) string {
+func (r *MessageBlockRenderer) renderToolMedia(media []core.MediaArtifact) string {
 	var b strings.Builder
 	for _, item := range media {
 		mediaPath := item.Path()
@@ -733,7 +735,7 @@ func (r *MessageBlockRenderer) renderToolMedia(media []llm.MediaArtifact) string
 	return b.String()
 }
 
-func reasoningDisplayContent(part llm.Part) string {
+func reasoningDisplayContent(part core.Part) string {
 	if len(part.ReasoningSummaryParts) == 0 {
 		return part.ReasoningContent
 	}
@@ -749,10 +751,10 @@ func reasoningDisplayContent(part llm.Part) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func (r *MessageBlockRenderer) renderReasoningForPart(part llm.Part, ordinal int) string {
+func (r *MessageBlockRenderer) renderReasoningForPart(part core.Part, ordinal int) string {
 	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	kind := llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
-	if !hasReasoningContent || kind == llm.ReasoningKindEncrypted || kind == llm.ReasoningKindUnknown {
+	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
+	if !hasReasoningContent || kind == core.ReasoningKindEncrypted || kind == core.ReasoningKindUnknown {
 		return ""
 	}
 	cfg := r.reasoningConfig
@@ -773,7 +775,7 @@ func (r *MessageBlockRenderer) renderReasoningForPart(part llm.Part, ordinal int
 	}
 	expanded := internalreasoning.HistoryExpanded(string(kind), cfg)
 	title := strings.TrimSpace(part.ReasoningSummaryTitle)
-	if title == "" && kind == llm.ReasoningKindSummary {
+	if title == "" && kind == core.ReasoningKindSummary {
 		title = internalreasoning.SummaryTitle(content, cfg)
 	}
 	label := strings.TrimSpace(cfg.HiddenLabel)
@@ -786,7 +788,7 @@ func (r *MessageBlockRenderer) renderReasoningForPart(part llm.Part, ordinal int
 
 	headerStyle := lipgloss.NewStyle().Foreground(r.theme.ReasoningHeader).Italic(true)
 	bodyStyle := lipgloss.NewStyle().Foreground(r.theme.ReasoningSummary).Italic(true)
-	if kind == llm.ReasoningKindRaw {
+	if kind == core.ReasoningKindRaw {
 		bodyStyle = lipgloss.NewStyle().Foreground(r.theme.ReasoningRaw).Italic(true)
 	}
 	arrow := "▸"
@@ -803,7 +805,7 @@ func (r *MessageBlockRenderer) renderReasoningForPart(part llm.Part, ordinal int
 	b.WriteString("\n")
 	if expanded {
 		body := content
-		if kind == llm.ReasoningKindSummary {
+		if kind == core.ReasoningKindSummary {
 			body = internalreasoning.SummaryBody(content, cfg)
 		}
 		body = strings.TrimRight(body, "\n")

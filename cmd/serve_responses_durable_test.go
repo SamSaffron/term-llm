@@ -3,23 +3,23 @@ package cmd
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestValidateDurableContinuationInput(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []llm.Message
+		messages []core.Message
 		wantErr  bool
 	}{
-		{name: "one user", messages: []llm.Message{{Role: llm.RoleUser}}},
-		{name: "one tool", messages: []llm.Message{{Role: llm.RoleTool}}},
-		{name: "multiple tools", messages: []llm.Message{{Role: llm.RoleTool}, {Role: llm.RoleTool}}},
+		{name: "one user", messages: []core.Message{{Role: core.RoleUser}}},
+		{name: "one tool", messages: []core.Message{{Role: core.RoleTool}}},
+		{name: "multiple tools", messages: []core.Message{{Role: core.RoleTool}, {Role: core.RoleTool}}},
 		{name: "empty", wantErr: true},
-		{name: "multiple users", messages: []llm.Message{{Role: llm.RoleUser}, {Role: llm.RoleUser}}, wantErr: true},
-		{name: "mixed user and tool", messages: []llm.Message{{Role: llm.RoleUser}, {Role: llm.RoleTool}}, wantErr: true},
-		{name: "unsupported role", messages: []llm.Message{{Role: llm.RoleAssistant}}, wantErr: true},
-		{name: "tools and unsupported role", messages: []llm.Message{{Role: llm.RoleTool}, {Role: llm.RoleDeveloper}}, wantErr: true},
+		{name: "multiple users", messages: []core.Message{{Role: core.RoleUser}, {Role: core.RoleUser}}, wantErr: true},
+		{name: "mixed user and tool", messages: []core.Message{{Role: core.RoleUser}, {Role: core.RoleTool}}, wantErr: true},
+		{name: "unsupported role", messages: []core.Message{{Role: core.RoleAssistant}}, wantErr: true},
+		{name: "tools and unsupported role", messages: []core.Message{{Role: core.RoleTool}, {Role: core.RoleDeveloper}}, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -36,9 +36,9 @@ func TestValidateDurableContinuationInput(t *testing.T) {
 }
 
 func TestValidateDurableContinuationInput_AllowsExplicitIdentifiedUserBatch(t *testing.T) {
-	messages := []llm.Message{
-		{Role: llm.RoleUser, ClientMessageID: "msg-first"},
-		{Role: llm.RoleUser, ClientMessageID: "msg-second"},
+	messages := []core.Message{
+		{Role: core.RoleUser, ClientMessageID: "msg-first"},
+		{Role: core.RoleUser, ClientMessageID: "msg-second"},
 	}
 	if err := validateDurableContinuationInput(messages, true); err != nil {
 		t.Fatalf("identified batch rejected: %v", err)

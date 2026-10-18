@@ -26,6 +26,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/live"
 	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -309,7 +311,7 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 	runtime := env.runtime
 	runtime.toolMap = opts.toolMap
 	runtime.platform = "web"
-	runtime.sideProviderFactory = func(providerKey, model string) (llm.Provider, error) {
+	runtime.sideProviderFactory = func(providerKey, model string) (core.Provider, error) {
 		if err := runtime.modelPolicy.CheckWithConfig(opts.cfg, runtime.agentName, providerKey, model); err != nil {
 			return nil, err
 		}
@@ -985,7 +987,7 @@ func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings ser
 // function registers the activate_skill tool on the engine but does NOT inject
 // <available_skills> metadata into the system prompt — the caller must do that
 // before constructing serveRuntime/serveSettings so the mutation is not lost.
-func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, yoloMode bool, autoMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
+func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider core.Provider, providerName, modelName string, yoloMode bool, autoMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*engine.Engine, *tools.ToolManager, error) {
 	mode := tools.ModePrompt
 	if yoloMode {
 		mode = tools.ModeYolo
@@ -995,7 +997,7 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 	return newServeEngineWithToolsMode(cfg, settings, provider, providerName, modelName, resolvedApprovalMode{Mode: mode, Source: approvalModeSourceCLI}, approvalRuntimeOptions{Headless: true}, wireSpawn, skillsSetup)
 }
 
-func newServeEngineWithToolsMode(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, resolved resolvedApprovalMode, runtimeOpts approvalRuntimeOptions, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
+func newServeEngineWithToolsMode(cfg *config.Config, settings SessionSettings, provider core.Provider, providerName, modelName string, resolved resolvedApprovalMode, runtimeOpts approvalRuntimeOptions, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*engine.Engine, *tools.ToolManager, error) {
 	engine := newEngine(provider, cfg)
 	settings.Provider = providerName
 	settings.Model = modelName
@@ -1398,7 +1400,7 @@ type serveServer struct {
 	shutdownCh               chan struct{}
 	shutdownOnce             sync.Once
 	modelsMu                 sync.Mutex
-	modelsProviders          map[string]llm.Provider // keyed by provider name
+	modelsProviders          map[string]core.Provider // keyed by provider name
 	modelsCache              map[string]serveModelsCacheEntry
 	responseToSession        sync.Map // response_id (string) → session_id (string)
 	sessionToResponse        sync.Map // session_id (string) → latest response_id (string)
@@ -1445,12 +1447,12 @@ type serveServer struct {
 	skillChildRunnerFactory  func(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error)
 	runtimeFactory           func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error)
 	agentRuntimeFactory      func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error)
-	titleProviderFactory     func(*config.Config) (llm.Provider, error)
-	autoTitleProviderFactory func(string) (llm.Provider, error)
+	titleProviderFactory     func(*config.Config) (core.Provider, error)
+	autoTitleProviderFactory func(string) (core.Provider, error)
 
 	// liveControlProviderFactory is the test seam for the session assistant's
 	// provider; nil resolves it through the shared fast-provider conventions.
-	liveControlProviderFactory func(providerKey string) (llm.Provider, error)
+	liveControlProviderFactory func(providerKey string) (core.Provider, error)
 	liveClassifier             liveDecisionClassifier
 	liveDecisionStore          *liveclassify.DecisionStore
 
@@ -1462,7 +1464,7 @@ type serveServer struct {
 	autoTitleCancel          context.CancelFunc
 	autoTitleWG              sync.WaitGroup
 	autoTitleStopping        bool
-	pathNotesProviderFactory func(providerName, model string) (llm.Provider, error)
+	pathNotesProviderFactory func(providerName, model string) (core.Provider, error)
 	widgetsMgr               *widgets.Manager
 	extensions               *serveExtensions
 	indexHTMLMu              sync.Mutex

@@ -87,7 +87,7 @@ func BuildList(cfg *config.Config) []Info {
 // BuildListWith builds the provider list, using hasLocalCredentials to
 // detect local login state for built-ins (so callers can cache the probes).
 // Whether a built-in counts as configured follows provider_discovery; see
-// llm.ProviderConfiguredVia.
+// config.Config.ProviderConfiguredVia.
 func BuildListWith(cfg *config.Config, hasLocalCredentials func(string) bool) []Info {
 	var providers []Info
 	for _, spec := range config.BuiltinProviders() {
@@ -134,7 +134,7 @@ func newInfo(cfg *config.Config, name string, spec config.ProviderSpec, hasLocal
 		RequiresKey:        spec.RequiresAPIKey(),
 		SupportsListModels: spec.ListModels,
 		Disabled:           cfg.ProviderDisabled(name),
-		ConfiguredVia:      llm.ProviderConfiguredVia(cfg, name, hasLocalCredentials),
+		ConfiguredVia:      cfg.ProviderConfiguredVia(name, hasLocalCredentials),
 	}
 	info.Configured = info.ConfiguredVia != ""
 	return info
@@ -332,14 +332,14 @@ func writeProvidersText(w io.Writer, providers []Info, defaultProvider, mode str
 // providerSourceLabel describes, in user terms, why a provider is configured.
 func providerSourceLabel(p Info) string {
 	switch p.ConfiguredVia {
-	case llm.ConfiguredViaConfig:
+	case config.ConfiguredViaConfig:
 		return "config.yaml"
-	case llm.ConfiguredViaDefault:
+	case config.ConfiguredViaDefault:
 		return "default"
-	case llm.ConfiguredViaEnv:
+	case config.ConfiguredViaEnv:
 		spec, _ := config.BuiltinProvider(p.Name)
 		return "$" + spec.EnabledByEnv()
-	case llm.ConfiguredViaLogin:
+	case config.ConfiguredViaLogin:
 		// A provider without credentials of its own (claude-bin) is detected
 		// by its installed CLI, not by a sign-in.
 		if p.Credential == string(config.CredentialNone) {

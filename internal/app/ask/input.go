@@ -21,20 +21,21 @@ import (
 	"unicode/utf8"
 
 	"github.com/dustin/go-humanize"
-	"github.com/spf13/cobra"
-	"golang.org/x/term"
-
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/filemime"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
 	_ "golang.org/x/image/webp"
+	"golang.org/x/term"
 )
 
 type PreparedInput struct {
-	Message     llm.Message
+	Message     core.Message
 	StagedPaths []string
 	Question    string
 }
@@ -61,7 +62,7 @@ func askReaderHasStdin(reader io.Reader) bool {
 
 type askPreparedFile struct {
 	inline *input.FileContent
-	part   *llm.Part
+	part   *core.Part
 }
 
 type askFileSource struct {
@@ -72,7 +73,7 @@ type askFileSource struct {
 
 type askPreparedSource struct {
 	inline     *string
-	part       *llm.Part
+	part       *core.Part
 	stagedPath string
 }
 
@@ -93,7 +94,7 @@ func PrepareInput(question string, paths []string, reader io.Reader, hasStdin bo
 	}
 
 	var stdinInline *string
-	var stdinPart *llm.Part
+	var stdinPart *core.Part
 	if hasStdin {
 		raw, readErr := readBoundedAskStdin(reader, askCfg.StdinMaxBytes)
 		if readErr != nil {
@@ -242,21 +243,21 @@ func prepareAskSource(filename, sourceName string, raw []byte, askCfg config.Ask
 	return askPreparedSource{part: &part, stagedPath: stagedPath}, nil
 }
 
-func prepareAskStructuredBytes(filename, sourceName string, raw []byte, maxBytes int64) (llm.Part, string, error) {
+func prepareAskStructuredBytes(filename, sourceName string, raw []byte, maxBytes int64) (core.Part, string, error) {
 	filename = sanitizeAskSourceFilename(filename)
 	if mediaType, extension, width, height, ok := classifyAskImage(raw); ok {
 		filename = askFilenameForMediaType(filename, mediaType, extension)
 		path, err := Uploads.SaveBytes(filename, raw, maxBytes)
 		if err != nil {
-			return llm.Part{}, "", fmt.Errorf("stage %s image: %w", sourceName, err)
+			return core.Part{}, "", fmt.Errorf("stage %s image: %w", sourceName, err)
 		}
 		sendBytes, sendMediaType := Uploads.ResizeImage(raw, mediaType)
 		if sendWidth, sendHeight := Uploads.ImageDimensions(sendBytes); sendWidth > 0 && sendHeight > 0 {
 			width, height = sendWidth, sendHeight
 		}
-		return llm.Part{
-			Type: llm.PartImage,
-			ImageData: &llm.ToolImageData{
+		return core.Part{
+			Type: core.PartImage,
+			ImageData: &core.ToolImageData{
 				MediaType: sendMediaType,
 				Base64:    base64.StdEncoding.EncodeToString(sendBytes),
 				Width:     width,
@@ -279,12 +280,12 @@ func prepareAskStructuredBytes(filename, sourceName string, raw []byte, maxBytes
 	}
 	path, err := Uploads.SaveBytes(filename, raw, maxBytes)
 	if err != nil {
-		return llm.Part{}, "", fmt.Errorf("stage %s file: %w", sourceName, err)
+		return core.Part{}, "", fmt.Errorf("stage %s file: %w", sourceName, err)
 	}
-	return llm.Part{
-		Type: llm.PartFile,
+	return core.Part{
+		Type: core.PartFile,
 		Text: llm.FormatUploadedFileNotice(filename, mediaType, path, int64(len(raw))),
-		FileData: &llm.ToolFileData{
+		FileData: &core.ToolFileData{
 			Filename:  filename,
 			MediaType: mediaType,
 			SizeBytes: int64(len(raw)),
@@ -293,14 +294,14 @@ func prepareAskStructuredBytes(filename, sourceName string, raw []byte, maxBytes
 	}, path, nil
 }
 
-func buildAskInputMessage(question string, files []askPreparedFile, stdinInline *string, stdinPart *llm.Part) llm.Message {
-	parts := make([]llm.Part, 0, len(files)+2)
+func buildAskInputMessage(question string, files []askPreparedFile, stdinInline *string, stdinPart *core.Part) core.Message {
+	parts := make([]core.Part, 0, len(files)+2)
 	pending := make([]input.FileContent, 0, len(files))
 	flushPending := func() {
 		if len(pending) == 0 {
 			return
 		}
-		parts = append(parts, llm.Part{Type: llm.PartText, Text: prompt.AskUserPrompt("", pending, "")})
+		parts = append(parts, core.Part{Type: core.PartText, Text: prompt.AskUserPrompt("", pending, "")})
 		pending = pending[:0]
 	}
 
@@ -319,7 +320,7 @@ func buildAskInputMessage(question string, files []askPreparedFile, stdinInline 
 		flushPending()
 		parts = append(parts, *stdinPart)
 		if question != "" {
-			parts = append(parts, llm.Part{Type: llm.PartText, Text: question})
+			parts = append(parts, core.Part{Type: core.PartText, Text: question})
 		}
 	} else {
 		stdin := ""
@@ -328,10 +329,10 @@ func buildAskInputMessage(question string, files []askPreparedFile, stdinInline 
 		}
 		text := prompt.AskUserPrompt(question, pending, stdin)
 		if text != "" || len(parts) == 0 {
-			parts = append(parts, llm.Part{Type: llm.PartText, Text: text})
+			parts = append(parts, core.Part{Type: core.PartText, Text: text})
 		}
 	}
-	return llm.Message{Role: llm.RoleUser, Parts: parts}
+	return core.Message{Role: core.RoleUser, Parts: parts}
 }
 
 func isAskInlineSourceText(raw []byte, inlineMaxBytes int64) bool {
@@ -467,9 +468,9 @@ func sanitizeAskSourceFilename(filename string) string {
 }
 
 func askFilenameForMediaType(filename, mediaType, extension string) string {
-	mediaType = llm.NormalizeMediaType(mediaType)
+	mediaType = filemime.NormalizeMediaType(mediaType)
 	currentExtension := filepath.Ext(filename)
-	if currentExtension != "" && llm.NormalizeMediaType(mime.TypeByExtension(strings.ToLower(currentExtension))) == mediaType {
+	if currentExtension != "" && filemime.NormalizeMediaType(mime.TypeByExtension(strings.ToLower(currentExtension))) == mediaType {
 		return filename
 	}
 	if extension == "" {
@@ -535,7 +536,7 @@ func classifyAskImage(raw []byte) (mediaType, extension string, width, height in
 }
 
 func askUploadExtension(mediaType string) string {
-	mediaType = llm.NormalizeMediaType(mediaType)
+	mediaType = filemime.NormalizeMediaType(mediaType)
 	switch mediaType {
 	case "application/pdf":
 		return ".pdf"
@@ -561,15 +562,15 @@ func askUploadExtension(mediaType string) string {
 	return ".bin"
 }
 
-func askInputSummary(question string, message llm.Message) string {
+func askInputSummary(question string, message core.Message) string {
 	if question = strings.TrimSpace(question); question != "" {
 		return question
 	}
 	for _, part := range message.Parts {
 		switch part.Type {
-		case llm.PartImage:
+		case core.PartImage:
 			return "stdin image"
-		case llm.PartFile:
+		case core.PartFile:
 			if part.FileData != nil && strings.TrimSpace(part.FileData.Filename) != "" {
 				return "stdin: " + part.FileData.Filename
 			}
@@ -587,16 +588,16 @@ func CleanupPreparedInput(prepared PreparedInput) {
 
 // AddAutoTools returns autoTools extended with the transient tools required to
 // read the structured file and image parts of user messages.
-func AddAutoTools(autoTools []string, messages []llm.Message) []string {
+func AddAutoTools(autoTools []string, messages []core.Message) []string {
 	for _, message := range messages {
-		if message.Role != llm.RoleUser {
+		if message.Role != core.RoleUser {
 			continue
 		}
 		for _, part := range message.Parts {
 			switch part.Type {
-			case llm.PartFile:
+			case core.PartFile:
 				autoTools = appendUniqueString(autoTools, tools.ReadFileToolName)
-			case llm.PartImage:
+			case core.PartImage:
 				autoTools = appendUniqueString(autoTools, tools.ReadFileToolName)
 				autoTools = appendUniqueString(autoTools, tools.ViewImageToolName)
 			}
@@ -623,7 +624,7 @@ func pathWithinDir(path, dir string) bool {
 
 // GrantUploadedFileReads grants only existing regular files referenced by
 // structured user parts and canonically contained by the app-owned uploads dir.
-func GrantUploadedFileReads(toolMgr *tools.ToolManager, messages []llm.Message) {
+func GrantUploadedFileReads(toolMgr *tools.ToolManager, messages []core.Message) {
 	if toolMgr == nil || toolMgr.ApprovalMgr == nil {
 		return
 	}
@@ -636,15 +637,15 @@ func GrantUploadedFileReads(toolMgr *tools.ToolManager, messages []llm.Message) 
 		return
 	}
 	for _, message := range messages {
-		if message.Role != llm.RoleUser {
+		if message.Role != core.RoleUser {
 			continue
 		}
 		for _, part := range message.Parts {
 			path := ""
 			switch part.Type {
-			case llm.PartFile:
+			case core.PartFile:
 				path = part.FilePath
-			case llm.PartImage:
+			case core.PartImage:
 				path = part.ImagePath
 			}
 			if path == "" {

@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 type undoRedoResetProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	resets int
 }
 
@@ -32,11 +34,11 @@ func newServeUndoRedoTest(t *testing.T) (*serveServer, *session.SQLiteStore, *se
 	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Provider: "mock", ProviderKey: "mock", Model: "mock", Mode: session.ModeChat}); err != nil {
 		t.Fatal(err)
 	}
-	provider := &undoRedoResetProvider{MockProvider: llm.NewMockProvider("mock")}
+	provider := &undoRedoResetProvider{MockProvider: mockprovider.NewMockProvider("mock")}
 	rt := &serveRuntime{
 		provider:         provider,
 		providerKey:      "mock",
-		engine:           llm.NewEngine(provider, nil),
+		engine:           engine.NewEngine(provider, nil),
 		store:            store,
 		historyPersisted: true,
 	}
@@ -51,7 +53,7 @@ func newServeUndoRedoTest(t *testing.T) (*serveServer, *session.SQLiteStore, *se
 	return srv, store, rt, provider, sessionID
 }
 
-func addServeUndoRedoMessage(t *testing.T, store *session.SQLiteStore, sessionID string, msg llm.Message) session.Message {
+func addServeUndoRedoMessage(t *testing.T, store *session.SQLiteStore, sessionID string, msg core.Message) session.Message {
 	t.Helper()
 	stored := session.NewMessage(sessionID, msg, -1)
 	if err := store.AddMessage(context.Background(), sessionID, stored); err != nil {
@@ -72,11 +74,11 @@ func requestServeUndoRedo(t *testing.T, srv *serveServer, sessionID, operation s
 
 func TestServeUndoRedoShrinksRestoresAndResetsRuntime(t *testing.T) {
 	srv, store, rt, provider, sessionID := newServeUndoRedoTest(t)
-	first := addServeUndoRedoMessage(t, store, sessionID, llm.UserText("first"))
-	second := addServeUndoRedoMessage(t, store, sessionID, llm.AssistantText("answer"))
-	third := addServeUndoRedoMessage(t, store, sessionID, llm.UserText("restore me"))
-	fourth := addServeUndoRedoMessage(t, store, sessionID, llm.AssistantText("latest answer"))
-	rt.history = []llm.Message{first.ToLLMMessage(), second.ToLLMMessage(), third.ToLLMMessage(), fourth.ToLLMMessage()}
+	first := addServeUndoRedoMessage(t, store, sessionID, core.UserText("first"))
+	second := addServeUndoRedoMessage(t, store, sessionID, core.AssistantText("answer"))
+	third := addServeUndoRedoMessage(t, store, sessionID, core.UserText("restore me"))
+	fourth := addServeUndoRedoMessage(t, store, sessionID, core.AssistantText("latest answer"))
+	rt.history = []core.Message{first.ToLLMMessage(), second.ToLLMMessage(), third.ToLLMMessage(), fourth.ToLLMMessage()}
 	if err := store.SaveProviderState(context.Background(), sessionID, "mock", []byte(`{"continuation":true}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -129,11 +131,11 @@ func TestServeUndoRedoShrinksRestoresAndResetsRuntime(t *testing.T) {
 
 func TestServeUndoRedoSequentialCommandsRestoreTurnsInLIFOOrder(t *testing.T) {
 	srv, store, rt, provider, sessionID := newServeUndoRedoTest(t)
-	turnB := addServeUndoRedoMessage(t, store, sessionID, llm.UserText("turn B"))
-	answerB := addServeUndoRedoMessage(t, store, sessionID, llm.AssistantText("answer B"))
-	turnA := addServeUndoRedoMessage(t, store, sessionID, llm.UserText("turn A"))
-	answerA := addServeUndoRedoMessage(t, store, sessionID, llm.AssistantText("answer A"))
-	rt.history = []llm.Message{turnB.ToLLMMessage(), answerB.ToLLMMessage(), turnA.ToLLMMessage(), answerA.ToLLMMessage()}
+	turnB := addServeUndoRedoMessage(t, store, sessionID, core.UserText("turn B"))
+	answerB := addServeUndoRedoMessage(t, store, sessionID, core.AssistantText("answer B"))
+	turnA := addServeUndoRedoMessage(t, store, sessionID, core.UserText("turn A"))
+	answerA := addServeUndoRedoMessage(t, store, sessionID, core.AssistantText("answer A"))
+	rt.history = []core.Message{turnB.ToLLMMessage(), answerB.ToLLMMessage(), turnA.ToLLMMessage(), answerA.ToLLMMessage()}
 	state, err := store.TranscriptMutationState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +182,7 @@ func TestServeUndoRedoSequentialCommandsRestoreTurnsInLIFOOrder(t *testing.T) {
 
 func TestServeUndoRejectsActiveWorkAndStaleClient(t *testing.T) {
 	srv, store, _, _, sessionID := newServeUndoRedoTest(t)
-	addServeUndoRedoMessage(t, store, sessionID, llm.UserText("prompt"))
+	addServeUndoRedoMessage(t, store, sessionID, core.UserText("prompt"))
 	state, err := store.TranscriptMutationState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +208,7 @@ func TestServeUndoRejectsActiveWorkAndStaleClient(t *testing.T) {
 
 func TestServeUndoRejectsForeignProcessTurn(t *testing.T) {
 	srv, store, _, _, sessionID := newServeUndoRedoTest(t)
-	addServeUndoRedoMessage(t, store, sessionID, llm.UserText("prompt"))
+	addServeUndoRedoMessage(t, store, sessionID, core.UserText("prompt"))
 	state, err := store.TranscriptMutationState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +240,7 @@ func TestServeUndoRejectsForeignProcessTurn(t *testing.T) {
 
 func TestServeUndoWorksWithoutCachedRuntimeOrRuntimeFactory(t *testing.T) {
 	srv, store, _, _, sessionID := newServeUndoRedoTest(t)
-	addServeUndoRedoMessage(t, store, sessionID, llm.UserText("storage only"))
+	addServeUndoRedoMessage(t, store, sessionID, core.UserText("storage only"))
 	state, err := store.TranscriptMutationState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -267,8 +269,8 @@ func TestServeUndoWorksWithoutCachedRuntimeOrRuntimeFactory(t *testing.T) {
 
 func TestServeUndoReportsAttachmentsOmitted(t *testing.T) {
 	srv, store, _, _, sessionID := newServeUndoRedoTest(t)
-	message := llm.UserText("describe this")
-	message.Parts = append(message.Parts, llm.Part{Type: llm.PartFile, Text: "file contents"})
+	message := core.UserText("describe this")
+	message.Parts = append(message.Parts, core.Part{Type: core.PartFile, Text: "file contents"})
 	addServeUndoRedoMessage(t, store, sessionID, message)
 	state, err := store.TranscriptMutationState(context.Background(), sessionID)
 	if err != nil {

@@ -5,7 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -16,7 +17,7 @@ func TestCompactionUsageCollectorMergesWithoutSession(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			collector.add(&llm.CompactionResult{Model: "  gpt-5.6-sol  ", Usage: llm.Usage{
+			collector.add(&engine.CompactionResult{Model: "  gpt-5.6-sol  ", Usage: core.Usage{
 				InputTokens: 7, OutputTokens: 3, CachedInputTokens: 11, CacheWriteTokens: 2,
 			}})
 		}()

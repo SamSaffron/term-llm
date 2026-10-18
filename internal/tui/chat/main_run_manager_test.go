@@ -8,7 +8,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -256,7 +257,7 @@ func TestMainRunManagerRoutesSteeringToOwningSession(t *testing.T) {
 	manager := NewMainRunManager(context.Background())
 	defer manager.Close(time.Second)
 	block := make(chan struct{})
-	queued := make(chan llm.QueuedSteering, 1)
+	queued := make(chan engine.QueuedSteering, 1)
 	cancelled := make(chan string, 1)
 	discarded := make(chan struct{}, 1)
 	if _, err := manager.Start("steered", MainRunExecution{
@@ -268,17 +269,17 @@ func TestMainRunManagerRoutesSteeringToOwningSession(t *testing.T) {
 				return ctx.Err()
 			}
 		},
-		QueueSteering: func(entry llm.QueuedSteering) llm.SteeringQueueStatus {
+		QueueSteering: func(entry engine.QueuedSteering) engine.SteeringQueueStatus {
 			queued <- entry
-			return llm.SteeringQueueQueued
+			return engine.SteeringQueueQueued
 		},
 		CancelSteering:  func(id string) bool { cancelled <- id; return true },
 		DiscardSteering: func() { discarded <- struct{}{} },
 	}); err != nil {
 		t.Fatal(err)
 	}
-	entry := llm.QueuedSteering{ID: "steer-1", Message: llm.UserText("change course")}
-	if status := manager.QueueSteering("steered", entry); status != llm.SteeringQueueQueued {
+	entry := engine.QueuedSteering{ID: "steer-1", Message: core.UserText("change course")}
+	if status := manager.QueueSteering("steered", entry); status != engine.SteeringQueueQueued {
 		t.Fatalf("queue status = %q", status)
 	}
 	if got := <-queued; got.ID != entry.ID {

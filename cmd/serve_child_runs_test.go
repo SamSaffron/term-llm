@@ -14,13 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
 )
 
 type childRunFixture struct {
@@ -95,7 +94,7 @@ func newChildRunFixture(t *testing.T, withObserver bool) *childRunFixture {
 	srv.sessionMgr = &serveSessionManager{sessions: map[string]*serveRuntime{parent.ID: env.runtime}}
 	return &childRunFixture{
 		srv: srv, store: store, parent: parent, env: env, spawn: spawn,
-		ctx: llm.ContextWithCallID(llm.ContextWithSessionID(ctx, parent.ID), "spawn-drill"),
+		ctx: core.ContextWithCallID(core.ContextWithSessionID(ctx, parent.ID), "spawn-drill"),
 	}
 }
 
@@ -204,7 +203,7 @@ func TestServeRuntimeFactoryRegistersChildBeforeResult(t *testing.T) {
 	}
 	var tagged bool
 	for _, message := range messages {
-		if message.Role != llm.RoleUser && message.ResponseID == childResponseID {
+		if message.Role != core.RoleUser && message.ResponseID == childResponseID {
 			tagged = true
 			break
 		}
@@ -466,7 +465,7 @@ func TestChildTranscriptWriteEmitsStoreChange(t *testing.T) {
 	for _, change := range before {
 		cursor = change.Sequence
 	}
-	if err := store.AddMessage(ctx, child.ID, session.NewMessage(child.ID, llm.UserText("child turn"), -1)); err != nil {
+	if err := store.AddMessage(ctx, child.ID, session.NewMessage(child.ID, core.UserText("child turn"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	changes, err := store.ListStoreChanges(ctx, cursor, 100)
@@ -521,7 +520,7 @@ func TestChildAskUserRoutesToParentSurface(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		answers, err := handle.AskUser(llm.ContextWithCallID(runCtx, "call-ask"), []tools.AskUserQuestion{{
+		answers, err := handle.AskUser(core.ContextWithCallID(runCtx, "call-ask"), []tools.AskUserQuestion{{
 			Header: "Target", Question: "Which schema?",
 			Options: []tools.AskUserOption{{Label: "v2", Description: "the new one"}},
 		}})
@@ -624,7 +623,7 @@ func TestHostedChildContinuesCompletedSession(t *testing.T) {
 	closed := 0
 	serveRuntimeClosedHook = func(*serveRuntime) { closedMu.Lock(); closed++; closedMu.Unlock() }
 	t.Cleanup(func() { serveRuntimeClosedHook = nil })
-	ctx := llm.ContextWithCallID(f.ctx, "continue-drill")
+	ctx := core.ContextWithCallID(f.ctx, "continue-drill")
 	output, err := continueTool.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"instructions":"Say hello again","wait":5}`, first.SessionID)))
 	var continued tools.SpawnAgentResult
 	if err != nil || json.Unmarshal([]byte(output.Content), &continued) != nil || continued.Status != "completed" || continued.AgentID != first.SessionID {
@@ -636,7 +635,7 @@ func TestHostedChildContinuesCompletedSession(t *testing.T) {
 	}
 	var followup bool
 	for _, msg := range messages {
-		if msg.Role == llm.RoleUser && strings.Contains(msg.TextContent, "Say hello again") {
+		if msg.Role == core.RoleUser && strings.Contains(msg.TextContent, "Say hello again") {
 			followup = true
 		}
 	}

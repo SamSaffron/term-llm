@@ -3,15 +3,17 @@ package llm
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestBuildResponsesAssistantItemsUsesOnlyOpaqueReplayWhenPresent(t *testing.T) {
 	raw := json.RawMessage(`{"type":"reasoning","id":"rs_1","summary":[]}`)
-	items := buildResponsesAssistantItems([]Part{
-		{Type: PartText, Text: "derived text"},
-		{Type: PartToolActivity, ToolActivity: &ToolActivity{ID: "ws_1", Name: WebSearchToolName, Status: ToolActivityCompleted}},
-		{Type: PartToolCall, ToolCall: &ToolCall{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{}`)}},
-		{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: raw}},
+	items := buildResponsesAssistantItems([]core.Part{
+		{Type: core.PartText, Text: "derived text"},
+		{Type: core.PartToolActivity, ToolActivity: &core.ToolActivity{ID: "ws_1", Name: core.WebSearchToolName, Status: core.ToolActivityCompleted}},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{}`)}},
+		{Type: core.PartProviderReplay, ProviderReplay: &core.ProviderReplayItem{Raw: raw}},
 	})
 	if len(items) != 1 {
 		t.Fatalf("items = %#v, want only opaque replay item", items)

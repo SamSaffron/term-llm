@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -94,7 +95,7 @@ func responseRequestFingerprint(req responsesCreateRequest) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
+func parseResponsesInput(input json.RawMessage) ([]core.Message, bool, error) {
 	trimmed := strings.TrimSpace(string(input))
 	if trimmed == "" || trimmed == "null" {
 		return nil, false, fmt.Errorf("input is required")
@@ -106,7 +107,7 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 		if strings.TrimSpace(inputText) == "" {
 			return nil, false, fmt.Errorf("input is empty")
 		}
-		return []llm.Message{llm.UserText(inputText)}, false, nil
+		return []core.Message{core.UserText(inputText)}, false, nil
 	}
 
 	var items []map[string]json.RawMessage
@@ -114,7 +115,7 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 		return nil, false, fmt.Errorf("invalid input format")
 	}
 
-	var messages []llm.Message
+	var messages []core.Message
 	callNameByID := map[string]string{}
 	allToolItems := len(items) > 0
 	for _, item := range items {
@@ -134,13 +135,13 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 			role := strings.ToLower(strings.TrimSpace(jsonString(item["role"])))
 			switch role {
 			case "developer":
-				messages = append(messages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: extractItemContent(item["content"])}}})
+				messages = append(messages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: extractItemContent(item["content"])}}})
 				replaceHistory = true
 			case "system":
-				messages = append(messages, llm.SystemText(extractItemContent(item["content"])))
+				messages = append(messages, core.SystemText(extractItemContent(item["content"])))
 				replaceHistory = true
 			case "assistant":
-				messages = append(messages, llm.AssistantText(extractItemContent(item["content"])))
+				messages = append(messages, core.AssistantText(extractItemContent(item["content"])))
 				replaceHistory = true
 			default:
 				msg, err := parseUserMessageContent(item["content"])
@@ -159,14 +160,14 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 				args = "{}"
 			}
 			callNameByID[id] = name
-			messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-				Type:     llm.PartToolCall,
-				ToolCall: &llm.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)},
+			messages = append(messages, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+				Type:     core.PartToolCall,
+				ToolCall: &core.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)},
 			}}})
 		case "function_call_output":
 			id := jsonString(item["call_id"])
 			out := jsonString(item["output"])
-			messages = append(messages, llm.ToolResultMessage(id, callNameByID[id], out, nil))
+			messages = append(messages, core.ToolResultMessage(id, callNameByID[id], out, nil))
 		}
 	}
 
@@ -219,11 +220,11 @@ func normalizeProviderModelEffort(provider, model, effort string) (string, strin
 	return base, effort
 }
 
-func parseRequestedTools(raw []json.RawMessage) (bool, bool, map[string]bool, []llm.ToolSpec) {
+func parseRequestedTools(raw []json.RawMessage) (bool, bool, map[string]bool, []core.ToolSpec) {
 	search := false
 	ptc := false
 	toolNames := map[string]bool{}
-	passthrough := make([]llm.ToolSpec, 0, len(raw))
+	passthrough := make([]core.ToolSpec, 0, len(raw))
 
 	for _, item := range raw {
 		var generic map[string]json.RawMessage
@@ -249,8 +250,8 @@ func parseRequestedTools(raw []json.RawMessage) (bool, bool, map[string]bool, []
 	return search, ptc, toolNames, passthrough
 }
 
-func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpec, bool) {
-	spec := llm.ToolSpec{
+func parseRequestedFunctionTool(generic map[string]json.RawMessage) (core.ToolSpec, bool) {
+	spec := core.ToolSpec{
 		Name:        strings.TrimSpace(jsonString(generic["name"])),
 		Description: strings.TrimSpace(jsonString(generic["description"])),
 	}
@@ -302,7 +303,7 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 	}
 
 	if spec.Name == "" {
-		return llm.ToolSpec{}, false
+		return core.ToolSpec{}, false
 	}
 	if spec.Schema == nil {
 		spec.Schema = map[string]interface{}{
@@ -313,7 +314,7 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 	return spec, true
 }
 
-func responsesUsagePayload(usage llm.Usage) map[string]any {
+func responsesUsagePayload(usage core.Usage) map[string]any {
 	inputTokens := usage.ProviderRawInputTokens
 	if inputTokens <= 0 {
 		inputTokens = usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens

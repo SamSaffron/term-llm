@@ -13,6 +13,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 )
 
@@ -95,7 +97,7 @@ func Promote(opts PromoteOptions) error {
 	return err
 }
 
-func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engine *llm.Engine, store *memorydb.Store, opts memoryPromoteOptions) (int, error) {
+func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engine *engine.Engine, store *memorydb.Store, opts memoryPromoteOptions) (int, error) {
 	agentName := strings.TrimSpace(opts.Agent)
 	if agentName == "" {
 		agentName = env.ResolveAgent("")
@@ -303,14 +305,14 @@ func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) stri
 	return b.String()
 }
 
-func runMemoryPromoteRequest(ctx context.Context, engine *llm.Engine, model, prompt string, maxWords int, debugRaw bool) (string, error) {
+func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, prompt string, maxWords int, debugRaw bool) (string, error) {
 	sysInstruction := fmt.Sprintf(memoryPromoteSystemInstructionTemplate, maxWords)
-	req := llm.Request{
+	req := core.Request{
 		Model:     strings.TrimSpace(model),
 		Ephemeral: true,
-		Messages: []llm.Message{
-			llm.SystemText(sysInstruction),
-			llm.UserText(prompt),
+		Messages: []core.Message{
+			core.SystemText(sysInstruction),
+			core.UserText(prompt),
 		},
 		MaxTurns: 1,
 		DebugRaw: debugRaw,
@@ -332,9 +334,9 @@ func runMemoryPromoteRequest(ctx context.Context, engine *llm.Engine, model, pro
 			return "", err
 		}
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			b.WriteString(ev.Text)
-		case llm.EventError:
+		case core.EventError:
 			if ev.Err != nil {
 				return "", ev.Err
 			}

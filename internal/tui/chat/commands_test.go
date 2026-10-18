@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"net/http"
 	"net/http/httptest"
@@ -63,17 +66,17 @@ func TestCmdUndoRedoShrinksRestoresAndManagesComposer(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	persist := func(msg llm.Message) session.Message {
+	persist := func(msg core.Message) session.Message {
 		stored := session.NewMessage(sess.ID, msg, -1)
 		if err := store.AddMessage(ctx, sess.ID, stored); err != nil {
 			t.Fatal(err)
 		}
 		return *stored
 	}
-	first := persist(llm.UserText("first"))
-	second := persist(llm.AssistantText("answer"))
-	third := persist(llm.UserText("edit this prompt"))
-	fourth := persist(llm.AssistantText("remove this answer"))
+	first := persist(core.UserText("first"))
+	second := persist(core.AssistantText("answer"))
+	third := persist(core.UserText("edit this prompt"))
+	fourth := persist(core.AssistantText("remove this answer"))
 	m := newCmdTestModel(store)
 	m.sess = sess
 	m.messages = []session.Message{first, second, third, fourth}
@@ -133,17 +136,17 @@ func TestCmdUndoRedoSequentialCommandsRestoreTurnsInLIFOOrder(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	persist := func(msg llm.Message) session.Message {
+	persist := func(msg core.Message) session.Message {
 		stored := session.NewMessage(sess.ID, msg, -1)
 		if err := store.AddMessage(ctx, sess.ID, stored); err != nil {
 			t.Fatal(err)
 		}
 		return *stored
 	}
-	turnB := persist(llm.UserText("turn B"))
-	answerB := persist(llm.AssistantText("answer B"))
-	turnA := persist(llm.UserText("turn A"))
-	answerA := persist(llm.AssistantText("answer A"))
+	turnB := persist(core.UserText("turn B"))
+	answerB := persist(core.AssistantText("answer B"))
+	turnA := persist(core.UserText("turn A"))
+	answerA := persist(core.AssistantText("answer A"))
 	m := newCmdTestModel(store)
 	m.sess = sess
 	m.messages = []session.Message{turnB, answerB, turnA, answerA}
@@ -754,8 +757,8 @@ func TestCmdStatsOpensModalWithTotalsAndCompactions(t *testing.T) {
 	m.stats.SeedTotals(1000, 500, 100, 50, 4, 3)
 	m.stats.AddCompactionUsage(484, 1200, 200000, 0)
 	m.messages = []session.Message{
-		{Role: llm.RoleUser, TextContent: "hello"},
-		{Role: llm.RoleAssistant, TextContent: "hi"},
+		{Role: core.RoleUser, TextContent: "hello"},
+		{Role: core.RoleAssistant, TextContent: "hi"},
 	}
 
 	result, cmd := m.cmdStats()
@@ -786,10 +789,10 @@ func TestCmdStatsUsesActiveContextAfterCompaction(t *testing.T) {
 	m.sess = &session.Session{ID: "s1", CompactionCount: 2, CompactionSeq: 10}
 	m.stats = ui.NewSessionStats()
 	m.messages = []session.Message{
-		{Role: llm.RoleUser, TextContent: strings.Repeat("old ", 200)},
-		{Role: llm.RoleAssistant, TextContent: strings.Repeat("old reply ", 200)},
-		{Role: llm.RoleUser, TextContent: "summary"},
-		{Role: llm.RoleAssistant, TextContent: "ack"},
+		{Role: core.RoleUser, TextContent: strings.Repeat("old ", 200)},
+		{Role: core.RoleAssistant, TextContent: strings.Repeat("old reply ", 200)},
+		{Role: core.RoleUser, TextContent: "summary"},
+		{Role: core.RoleAssistant, TextContent: "ack"},
 	}
 	m.compactionIdx = 2
 
@@ -837,8 +840,8 @@ func TestStatsModalUsesEngineThresholdsAndClearCacheDenominator(t *testing.T) {
 	t.Cleanup(func() { statsCostEstimator = oldEstimator })
 
 	m := newCmdTestModel(&mockStore{})
-	m.engine = llm.NewEngine(nil, nil)
-	m.engine.SetCompaction(1000, llm.CompactionConfig{
+	m.engine = engine.NewEngine(nil, nil)
+	m.engine.SetCompaction(1000, engine.CompactionConfig{
 		SoftThresholdRatio: 0.70,
 		HardThresholdRatio: 0.85,
 	})
@@ -874,8 +877,8 @@ func TestStatsModalUsesEngineThresholdsAndClearCacheDenominator(t *testing.T) {
 
 func TestStatsModalCollapsesEqualCompactionThresholds(t *testing.T) {
 	m := newCmdTestModel(&mockStore{})
-	m.engine = llm.NewEngine(nil, nil)
-	m.engine.SetCompaction(1000, llm.CompactionConfig{ThresholdRatio: 0.8})
+	m.engine = engine.NewEngine(nil, nil)
+	m.engine.SetCompaction(1000, engine.CompactionConfig{ThresholdRatio: 0.8})
 	m.engine.SetContextEstimateBaseline(1, 0)
 	content := m.renderStatsModal()
 	if strings.Count(content, "compact at:") != 1 || !strings.Contains(content, "Soft compact at:") {
@@ -1005,10 +1008,10 @@ func TestCmdAutotitleForcesGenerationDespiteExistingTitleAndAttempts(t *testing.
 		GeneratedLongTitle:  "Old long title",
 		TitleSource:         session.TitleSourceGenerated,
 	}
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fresh Forced Title","long_title":"Fresh forced title from command","confidence":0.95}`)
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fresh Forced Title","long_title":"Fresh forced title from command","confidence":0.95}`)
 	m.messages = []session.Message{
-		{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Please investigate the flaky websocket reconnection tests.", Sequence: 0},
-		{SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "I'll trace the reconnect loop and add coverage.", Sequence: 1},
+		{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Please investigate the flaky websocket reconnection tests.", Sequence: 0},
+		{SessionID: m.sess.ID, Role: core.RoleAssistant, TextContent: "I'll trace the reconnect loop and add coverage.", Sequence: 1},
 	}
 	m.titleGenerationSessionID = m.sess.ID
 	m.titleGenerationAttempts = liveTitleGenerationMaxTries
@@ -1039,8 +1042,8 @@ func TestCmdAutotitleForcesGenerationDespiteExistingTitleAndAttempts(t *testing.
 func TestCmdAutotitleWhileInFlightShowsFooterError(t *testing.T) {
 	m := newCmdTestModel(&mockStore{})
 	m.sess = &session.Session{ID: "autotitle-inflight", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	m.fastProvider = llm.NewMockProvider("fast")
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Name this later", Sequence: 0}}
+	m.fastProvider = mockprovider.NewMockProvider("fast")
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Name this later", Sequence: 0}}
 	m.titleGenerationSessionID = m.sess.ID
 	m.titleGenerationInFlight = true
 
@@ -1060,7 +1063,7 @@ func TestCmdAutotitleWhileInFlightShowsFooterError(t *testing.T) {
 func TestCmdAutotitleWithoutFastProviderShowsFooterError(t *testing.T) {
 	m := newCmdTestModel(&mockStore{})
 	m.sess = &session.Session{ID: "autotitle-no-fast", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Name this later", Sequence: 0}}
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Name this later", Sequence: 0}}
 
 	result, cmd := m.ExecuteCommand("/autotitle")
 	m = result.(*Model)
@@ -1088,8 +1091,8 @@ func TestCmdAutotitleClearsManualNameOnSuccess(t *testing.T) {
 		GeneratedLongTitle:  "Old automatic title",
 		TitleSource:         session.TitleSourceUser,
 	}
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Regenerated Auto Title","long_title":"Regenerated automatic title after manual name","confidence":0.94}`)
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Regenerated Auto Title","long_title":"Regenerated automatic title after manual name","confidence":0.94}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
 
 	result, cmd := m.ExecuteCommand("/autotitle")
 	m = result.(*Model)
@@ -1125,8 +1128,8 @@ func TestCmdAutotitlePreservesManualNameOnFailure(t *testing.T) {
 		GeneratedShortTitle: "Old Auto Title",
 		TitleSource:         session.TitleSourceUser,
 	}
-	m.fastProvider = llm.NewMockProvider("fast").AddError(errors.New("provider down"))
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddError(errors.New("provider down"))
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
 
 	result, cmd := m.ExecuteCommand("/autotitle")
 	m = result.(*Model)
@@ -1161,8 +1164,8 @@ func TestCmdAutotitleResultDoesNotClobberLaterManualTitle(t *testing.T) {
 		GeneratedShortTitle: "Old Auto Title",
 		TitleSource:         session.TitleSourceGenerated,
 	}
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Late Auto Title","long_title":"Late automatic title result","confidence":0.94}`)
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Late Auto Title","long_title":"Late automatic title result","confidence":0.94}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Retitle this session from the actual task.", Sequence: 0}}
 
 	result, cmd := m.ExecuteCommand("/autotitle")
 	m = result.(*Model)
@@ -1199,7 +1202,7 @@ func newEffortCmdTestModel(provider, model string) (*Model, *mockStore) {
 	m.providerName = provider
 	m.providerKey = provider
 	m.modelName = model
-	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
+	m.engine = engine.NewEngine(mockprovider.NewMockProvider("old"), nil)
 	return m, store
 }
 
@@ -1220,7 +1223,7 @@ func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
 		}},
 	}
 	prepareEffortShortcutTestModel(m)
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("previous"), 0)}
 	m.setTextareaValue("half-written prompt")
 	activeEngine := m.engine
 
@@ -1257,10 +1260,10 @@ func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
 		t.Fatalf("messages len = %d, want previous + marker + user", len(rm.messages))
 	}
 	markerMsg := rm.messages[1]
-	if markerMsg.Role != llm.RoleEvent {
+	if markerMsg.Role != core.RoleEvent {
 		t.Fatalf("deferred marker role = %q, want event", markerMsg.Role)
 	}
-	marker, ok := llm.ParseModelSwapMarker(markerMsg.ToLLMMessage())
+	marker, ok := core.ParseModelSwapMarker(markerMsg.ToLLMMessage())
 	if !ok {
 		t.Fatalf("failed to parse deferred marker: %#v", markerMsg)
 	}
@@ -1275,7 +1278,7 @@ func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
 func TestCycleEffortShortcutHandlesBaseModelEndingInMax(t *testing.T) {
 	m, _ := newEffortCmdTestModel("opencode-go", "qwen3.8-max")
 	prepareEffortShortcutTestModel(m)
-	m.modelMetadata = []llm.ModelInfo{{
+	m.modelMetadata = []core.ModelInfo{{
 		ID:               "qwen3.8-max",
 		ReasoningEfforts: []string{"high", "max"},
 	}}
@@ -1563,8 +1566,8 @@ func TestPendingStreamingEffortPreservesQueuedSteeringOnStreamDone(t *testing.T)
 	m.streaming = true
 	firstID := m.nextPendingSteeringID()
 	secondID := m.nextPendingSteeringID()
-	m.applyInterruptAction(firstID, "first note", llm.InterruptSteer)
-	m.applyInterruptAction(secondID, "second note", llm.InterruptSteer)
+	m.applyInterruptAction(firstID, "first note", engine.InterruptSteer)
+	m.applyInterruptAction(secondID, "second note", engine.InterruptSteer)
 	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-high"}
 	oldEngine := m.engine
 
@@ -1587,7 +1590,7 @@ func TestPendingStreamingEffortPreservesQueuedSteeringOnStreamDone(t *testing.T)
 func TestPendingStreamingEffortAppliesOnStreamDone(t *testing.T) {
 	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
 	store.messages = map[string][]session.Message{
-		m.sess.ID: {*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)},
+		m.sess.ID: {*session.NewMessage(m.sess.ID, core.UserText("previous"), 0)},
 	}
 	m.streaming = true
 	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
@@ -1625,14 +1628,14 @@ func TestPendingStreamingEffortAppliesOnStreamDone(t *testing.T) {
 	if len(rm.messages) < 3 {
 		t.Fatalf("messages len = %d, want previous + marker + user", len(rm.messages))
 	}
-	marker, ok := llm.ParseModelSwapMarker(rm.messages[1].ToLLMMessage())
+	marker, ok := core.ParseModelSwapMarker(rm.messages[1].ToLLMMessage())
 	if !ok {
 		t.Fatalf("expected deferred model-swap marker before next user turn, got %#v", rm.messages[1])
 	}
 	if marker.FromModel != "gpt-5.4-high" || marker.ToModel != "gpt-5.4-medium" {
 		t.Fatalf("unexpected marker: %#v", marker)
 	}
-	if rm.messages[2].Role != llm.RoleUser || rm.messages[2].TextContent != "next prompt" {
+	if rm.messages[2].Role != core.RoleUser || rm.messages[2].TextContent != "next prompt" {
 		t.Fatalf("expected user message after marker, got %#v", rm.messages[2])
 	}
 	if rm.pendingModelSwitch != nil {
@@ -1642,7 +1645,7 @@ func TestPendingStreamingEffortAppliesOnStreamDone(t *testing.T) {
 
 func TestPendingStreamingEffortAppliesOnStreamError(t *testing.T) {
 	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("previous"), 0)}
 	m.streaming = true
 	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
 	activeEngine := m.engine
@@ -1669,7 +1672,7 @@ func TestPendingStreamingEffortAppliesOnStreamError(t *testing.T) {
 func TestManualModelSwitchClearsStaleQueuedStreamingEffort(t *testing.T) {
 	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-high")
 	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
-	m.pendingModelSwitch = &llm.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5.4-high", ToProvider: "openai", ToModel: "gpt-5.4-medium", Status: "started"}
+	m.pendingModelSwitch = &core.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5.4-high", ToProvider: "openai", ToModel: "gpt-5.4-medium", Status: "started"}
 
 	result, _ := m.cmdEffort([]string{"low"})
 	rm := result.(*Model)
@@ -1686,7 +1689,7 @@ func TestManualModelSwitchClearsStaleQueuedStreamingEffort(t *testing.T) {
 
 func TestPendingStreamingEffortAppliesBeforeNextSendIfStillPending(t *testing.T) {
 	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("previous"), 0)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("previous"), 0)}
 	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-medium"}
 	activeEngine := m.engine
 
@@ -1710,10 +1713,10 @@ func TestPendingStreamingEffortAppliesBeforeNextSendIfStillPending(t *testing.T)
 	if len(rm.messages) < 3 {
 		t.Fatalf("messages len = %d, want previous + marker + user", len(rm.messages))
 	}
-	if _, ok := llm.ParseModelSwapMarker(rm.messages[1].ToLLMMessage()); !ok {
+	if _, ok := core.ParseModelSwapMarker(rm.messages[1].ToLLMMessage()); !ok {
 		t.Fatalf("expected model marker before user message, got %#v", rm.messages[1])
 	}
-	if rm.messages[2].Role != llm.RoleUser || rm.messages[2].TextContent != "next prompt" {
+	if rm.messages[2].Role != core.RoleUser || rm.messages[2].TextContent != "next prompt" {
 		t.Fatalf("expected user message after marker, got %#v", rm.messages[2])
 	}
 }
@@ -1828,7 +1831,7 @@ func TestCmdEffortSwitchesConfigEnabledVLLM(t *testing.T) {
 	m.providerName = "cdck_qwen"
 	m.providerKey = "cdck_qwen"
 	m.modelName = "Qwen/Qwen3.5-122B-A10B"
-	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
+	m.engine = engine.NewEngine(mockprovider.NewMockProvider("old"), nil)
 
 	result, _ := m.cmdEffort([]string{"max"})
 	rm := result.(*Model)
@@ -2284,15 +2287,15 @@ func TestCmdCompress_StartDoesNotPrintStatusLine(t *testing.T) {
 	m.messages = []session.Message{
 		{
 			SessionID:   m.sess.ID,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "hello"}},
 			TextContent: "hello",
 			CreatedAt:   time.Now(),
 		},
 		{
 			SessionID:   m.sess.ID,
-			Role:        llm.RoleAssistant,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "hi"}},
+			Role:        core.RoleAssistant,
+			Parts:       []core.Part{{Type: core.PartText, Text: "hi"}},
 			TextContent: "hi",
 			CreatedAt:   time.Now(),
 		},
@@ -2304,8 +2307,8 @@ func TestCmdCompress_StartDoesNotPrintStatusLine(t *testing.T) {
 	if !rm.streaming {
 		t.Fatal("expected compaction to enter streaming mode")
 	}
-	if got := rm.phase; got != llm.PhaseCompacting {
-		t.Fatalf("phase = %q, want %q", got, llm.PhaseCompacting)
+	if got := rm.phase; got != engine.PhaseCompacting {
+		t.Fatalf("phase = %q, want %q", got, engine.PhaseCompacting)
 	}
 	if cmd == nil {
 		t.Fatal("expected compaction start command")
@@ -2320,13 +2323,13 @@ func TestCmdCompress_StartDoesNotPrintStatusLine(t *testing.T) {
 }
 
 func TestCmdCompressSoftDefaultUsesBriefPrompt(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("soft brief")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("soft brief")
 	m := newTestChatModel(false)
 	m.provider = provider
-	m.engine = llm.NewEngine(provider, nil)
+	m.engine = engine.NewEngine(provider, nil)
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.UserText("please continue"), 0),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("working"), 1),
+		*session.NewMessage(m.sess.ID, core.UserText("please continue"), 0),
+		*session.NewMessage(m.sess.ID, core.AssistantText("working"), 1),
 	}
 
 	result, cmd := m.ExecuteCommand("/compact")
@@ -2334,7 +2337,7 @@ func TestCmdCompressSoftDefaultUsesBriefPrompt(t *testing.T) {
 	if !rm.streaming {
 		t.Fatal("expected /compact to start streaming soft compaction")
 	}
-	if got := rm.phase; got != llm.PhaseCompacting {
+	if got := rm.phase; got != engine.PhaseCompacting {
 		t.Fatalf("phase = %q, want compacting phase", got)
 	}
 	batch := commandBatch(t, cmd)
@@ -2349,7 +2352,7 @@ func TestCmdCompressSoftDefaultUsesBriefPrompt(t *testing.T) {
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
 	}
-	last := llm.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
+	last := core.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
 	if !strings.Contains(last, "compact continuation brief") {
 		t.Fatalf("/compact default did not use soft brief prompt: %q", last)
 	}
@@ -2362,13 +2365,13 @@ func TestCmdCompressSoftDefaultUsesBriefPrompt(t *testing.T) {
 }
 
 func TestCmdCompressHardUsesFullCompactionPrompt(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("hard summary")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("hard summary")
 	m := newTestChatModel(false)
 	m.provider = provider
-	m.engine = llm.NewEngine(provider, nil)
+	m.engine = engine.NewEngine(provider, nil)
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.UserText("please continue"), 0),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("working"), 1),
+		*session.NewMessage(m.sess.ID, core.UserText("please continue"), 0),
+		*session.NewMessage(m.sess.ID, core.AssistantText("working"), 1),
 	}
 
 	result, cmd := m.ExecuteCommand("/compact hard")
@@ -2376,7 +2379,7 @@ func TestCmdCompressHardUsesFullCompactionPrompt(t *testing.T) {
 	if !rm.streaming {
 		t.Fatal("expected /compact hard to start streaming hard compaction")
 	}
-	if got := rm.phase; got != llm.PhaseCompactingSummarizeHistory {
+	if got := rm.phase; got != engine.PhaseCompactingSummarizeHistory {
 		t.Fatalf("phase = %q, want hard summary phase", got)
 	}
 	batch := commandBatch(t, cmd)
@@ -2391,7 +2394,7 @@ func TestCmdCompressHardUsesFullCompactionPrompt(t *testing.T) {
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
 	}
-	last := llm.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
+	last := core.MessageText(provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1])
 	if !strings.Contains(last, "Create a compact continuation brief") || !strings.Contains(last, "## Objective") {
 		t.Fatalf("/compact hard did not use structured hard compaction prompt: %q", last)
 	}
@@ -2403,8 +2406,8 @@ func TestCmdCompressHardUsesFullCompactionPrompt(t *testing.T) {
 func TestCmdCompressInvalidArgShowsUsage(t *testing.T) {
 	m := newTestChatModel(false)
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.UserText("please continue"), 0),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("working"), 1),
+		*session.NewMessage(m.sess.ID, core.UserText("please continue"), 0),
+		*session.NewMessage(m.sess.ID, core.AssistantText("working"), 1),
 	}
 
 	result, cmd := m.ExecuteCommand("/compact banana")
@@ -2458,7 +2461,7 @@ func TestUpdate_CompactDone_SuccessUsesFooterMessage(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 
-	result, cmd := m.Update(compactDoneMsg{result: &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("summary")}}})
+	result, cmd := m.Update(compactDoneMsg{result: &engine.CompactionResult{NewMessages: []core.Message{core.UserText("summary")}}})
 	rm := result.(*Model)
 
 	if got := rm.footerMessage; got != "Conversation compacted." {
@@ -2476,12 +2479,12 @@ func TestUpdate_CompactDone_PersistErrorDoesNotMutateMemory(t *testing.T) {
 	m.sess = &session.Session{ID: "sess-compact-fail"}
 	m.streaming = true
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.UserText("old user"), 0),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("old assistant"), 1),
+		*session.NewMessage(m.sess.ID, core.UserText("old user"), 0),
+		*session.NewMessage(m.sess.ID, core.AssistantText("old assistant"), 1),
 	}
 	oldMessages := append([]session.Message(nil), m.messages...)
 
-	result, cmd := m.Update(compactDoneMsg{result: &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("summary")}}})
+	result, cmd := m.Update(compactDoneMsg{result: &engine.CompactionResult{NewMessages: []core.Message{core.UserText("summary")}}})
 	rm := result.(*Model)
 
 	if got := rm.footerMessage; got != "Compaction finished, but saving failed: disk full" {
@@ -2506,11 +2509,11 @@ func TestUpdate_CompactDone_PersistErrorDoesNotMutateMemory(t *testing.T) {
 func TestSnapshotHelperConversationUsesActiveCompactionBoundary(t *testing.T) {
 	m := newTestChatModel(false)
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.SystemText("system policy"), 0),
-		*session.NewMessage(m.sess.ID, llm.UserText("hidden user"), 1),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("hidden assistant"), 2),
-		*session.NewMessage(m.sess.ID, llm.UserText("active summary"), 3),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("active acknowledgement"), 4),
+		*session.NewMessage(m.sess.ID, core.SystemText("system policy"), 0),
+		*session.NewMessage(m.sess.ID, core.UserText("hidden user"), 1),
+		*session.NewMessage(m.sess.ID, core.AssistantText("hidden assistant"), 2),
+		*session.NewMessage(m.sess.ID, core.UserText("active summary"), 3),
+		*session.NewMessage(m.sess.ID, core.AssistantText("active acknowledgement"), 4),
 	}
 	m.compactionIdx = 3
 
@@ -2518,7 +2521,7 @@ func TestSnapshotHelperConversationUsesActiveCompactionBoundary(t *testing.T) {
 	if systemPrompt != "system policy" {
 		t.Fatalf("system prompt = %q, want system policy", systemPrompt)
 	}
-	if len(messages) != 2 || llm.MessageText(messages[0]) != "active summary" || llm.MessageText(messages[1]) != "active acknowledgement" {
+	if len(messages) != 2 || core.MessageText(messages[0]) != "active summary" || core.MessageText(messages[1]) != "active acknowledgement" {
 		t.Fatalf("active helper messages = %#v", messages)
 	}
 }
@@ -2530,10 +2533,10 @@ func TestUpdateHandoverDoneRecordsHelperUsage(t *testing.T) {
 	m.sess = &session.Session{ID: "source-session"}
 
 	_, _ = m.Update(handoverDoneMsg{
-		result: &llm.HandoverResult{
+		result: &engine.HandoverResult{
 			Document: "brief",
 			Model:    "helper-model",
-			Usage:    llm.Usage{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 50},
+			Usage:    core.Usage{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 50},
 		},
 		agentName: "target",
 	})
@@ -2558,15 +2561,15 @@ func TestCmdHandover_StartDoesNotPrintStatusLine(t *testing.T) {
 	m.messages = []session.Message{
 		{
 			SessionID:   m.sess.ID,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "please continue"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "please continue"}},
 			TextContent: "please continue",
 			CreatedAt:   time.Now(),
 		},
 		{
 			SessionID:   m.sess.ID,
-			Role:        llm.RoleAssistant,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Working on it."}},
+			Role:        core.RoleAssistant,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Working on it."}},
 			TextContent: "Working on it.",
 			CreatedAt:   time.Now(),
 		},
@@ -2603,8 +2606,8 @@ func TestCmdHandover_LightModeResultCarriesContextOnly(t *testing.T) {
 	m.agentName = "source"
 	m.currentAgent = &agents.Agent{Name: "source", HandoverMode: "light"}
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.UserText("what next?"), 0),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("handover this update"), 1),
+		*session.NewMessage(m.sess.ID, core.UserText("what next?"), 0),
+		*session.NewMessage(m.sess.ID, core.AssistantText("handover this update"), 1),
 	}
 	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target."}
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
@@ -2622,10 +2625,10 @@ func TestCmdHandover_LightModeResultCarriesContextOnly(t *testing.T) {
 	if msg.result == nil || len(msg.result.NewMessages) == 0 {
 		t.Fatalf("expected handover result messages, got %#v", msg.result)
 	}
-	if msg.result.NewMessages[0].Role == llm.RoleSystem {
+	if msg.result.NewMessages[0].Role == core.RoleSystem {
 		t.Fatalf("intermediate handover result should not carry target system prompt: %#v", msg.result.NewMessages[0])
 	}
-	if msg.result.NewMessages[0].Role != llm.RoleUser || !strings.Contains(llm.MessageText(msg.result.NewMessages[0]), "handover this update") {
+	if msg.result.NewMessages[0].Role != core.RoleUser || !strings.Contains(core.MessageText(msg.result.NewMessages[0]), "handover this update") {
 		t.Fatalf("first handover result message should be user context, got %#v", msg.result.NewMessages[0])
 	}
 }
@@ -2713,7 +2716,7 @@ func TestExecuteHandover_CreateErrorUsesFooterMessage(t *testing.T) {
 	m.config = &config.Config{}
 	m.sess = &session.Session{ID: "sess-handover-persist"}
 	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target."}
-	expectedResult := llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name)
+	expectedResult := engine.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name)
 	m.pendingHandover = &handoverDoneMsg{
 		agentName: "target",
 		result:    expectedResult,
@@ -2768,8 +2771,8 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 	m.providerKey = "old-provider"
 	m.modelName = "old-model"
 	m.messages = []session.Message{
-		*session.NewMessage(oldSess.ID, llm.UserText("old user content"), 0),
-		*session.NewMessage(oldSess.ID, llm.AssistantText("old assistant content"), 1),
+		*session.NewMessage(oldSess.ID, core.UserText("old user content"), 0),
+		*session.NewMessage(oldSess.ID, core.AssistantText("old assistant content"), 1),
 	}
 	oldMessages := append([]session.Message(nil), m.messages...)
 
@@ -2784,7 +2787,7 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 		Tools:         agents.ToolsConfig{Enabled: []string{"read_file", "edit_file"}},
 		MCP:           []agents.MCPConfig{{Name: "server-a"}, {Name: "server-b"}},
 	}
-	expectedResult := llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name)
+	expectedResult := engine.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name)
 	m.pendingHandover = &handoverDoneMsg{
 		agentName: "target",
 		result:    expectedResult,
@@ -2868,10 +2871,10 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 			t.Fatalf("added message %d session ID = %q, want %q", i, msg.SessionID, newSess.ID)
 		}
 	}
-	if added[0].Role != llm.RoleSystem || added[0].TextContent != targetAgent.SystemPrompt {
+	if added[0].Role != core.RoleSystem || added[0].TextContent != targetAgent.SystemPrompt {
 		t.Fatalf("first added message = role %q text %q, want target system prompt", added[0].Role, added[0].TextContent)
 	}
-	marker, ok := llm.ParseModelSwapMarker(added[1].ToLLMMessage())
+	marker, ok := core.ParseModelSwapMarker(added[1].ToLLMMessage())
 	if !ok || marker.FromProvider != "old-provider" || marker.FromModel != "old-model" || marker.FromAgent != "source" || marker.ToProvider != "gemini" || marker.ToModel != "gemini-2.5-pro" || marker.ToAgent != "target" || marker.Strategy != "handover" || marker.Status != "succeeded" {
 		t.Fatalf("persisted handover model change = %+v, parsed %v", marker, ok)
 	}
@@ -2918,7 +2921,7 @@ func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *
 		t.Fatal("test target agent should request AGENTS.md/project instruction loading")
 	}
 
-	expectedResult := llm.HandoverFromFile("handover doc", "stale raw prompt from handover result", "source", targetAgent.Name)
+	expectedResult := engine.HandoverFromFile("handover doc", "stale raw prompt from handover result", "source", targetAgent.Name)
 	m.pendingHandover = &handoverDoneMsg{
 		agentName: "target",
 		result:    expectedResult,
@@ -2961,7 +2964,7 @@ func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *
 		t.Fatalf("expected %d handover context messages to be persisted, got %d", expectedCount, len(added))
 	}
 
-	if added[0].Role != llm.RoleSystem {
+	if added[0].Role != core.RoleSystem {
 		t.Fatalf("first persisted message role = %q, want system", added[0].Role)
 	}
 	if added[0].TextContent != wantPrompt {
@@ -2973,7 +2976,7 @@ func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *
 	if added[0].Sequence != 0 {
 		t.Fatalf("first persisted system sequence = %d, want 0", added[0].Sequence)
 	}
-	if len(added) < 3 || added[2].Role != llm.RoleUser || !strings.Contains(added[2].TextContent, "handover doc") {
+	if len(added) < 3 || added[2].Role != core.RoleUser || !strings.Contains(added[2].TextContent, "handover doc") {
 		t.Fatalf("expected handover document immediately after model change, got %#v", added)
 	}
 
@@ -2981,12 +2984,12 @@ func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *
 	if len(active) != len(added)-1 {
 		t.Fatalf("active message count = %d, want %d", len(active), len(added)-1)
 	}
-	if active[0].Role != llm.RoleSystem || llm.MessageText(active[0]) != wantPrompt {
-		t.Fatalf("active first message = role %q text %q, want resolved target system prompt", active[0].Role, llm.MessageText(active[0]))
+	if active[0].Role != core.RoleSystem || core.MessageText(active[0]) != wantPrompt {
+		t.Fatalf("active first message = role %q text %q, want resolved target system prompt", active[0].Role, core.MessageText(active[0]))
 	}
 	systemCount := 0
 	for _, msg := range active {
-		if msg.Role == llm.RoleSystem {
+		if msg.Role == core.RoleSystem {
 			systemCount++
 		}
 	}
@@ -3015,7 +3018,7 @@ func TestExecuteHandover_PersistsAgentsMdSystemPromptWhenTargetPromptEmpty(t *te
 	}
 	m.pendingHandover = &handoverDoneMsg{
 		agentName: "target",
-		result:    llm.HandoverFromFile("handover doc", "", "source", targetAgent.Name),
+		result:    engine.HandoverFromFile("handover doc", "", "source", targetAgent.Name),
 	}
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
 		if name != "target" {
@@ -3039,13 +3042,13 @@ func TestExecuteHandover_PersistsAgentsMdSystemPromptWhenTargetPromptEmpty(t *te
 	if len(added) != 4 {
 		t.Fatalf("expected system + model change + handover user + ack to be persisted, got %d messages: %#v", len(added), added)
 	}
-	if added[0].Role != llm.RoleSystem || added[0].TextContent != "AGENTS-only instructions" {
+	if added[0].Role != core.RoleSystem || added[0].TextContent != "AGENTS-only instructions" {
 		t.Fatalf("first persisted message = role %q text %q, want AGENTS.md-only system prompt", added[0].Role, added[0].TextContent)
 	}
 	if added[0].Sequence != 0 {
 		t.Fatalf("first persisted system sequence = %d, want 0", added[0].Sequence)
 	}
-	if added[2].Role != llm.RoleUser || !strings.Contains(added[2].TextContent, "handover doc") {
+	if added[2].Role != core.RoleUser || !strings.Contains(added[2].TextContent, "handover doc") {
 		t.Fatalf("expected handover document immediately after model change, got %#v", added[2])
 	}
 }
@@ -3062,7 +3065,7 @@ func TestExecuteHandover_ProviderOverrideStoredOnNewSession(t *testing.T) {
 	m.pendingHandover = &handoverDoneMsg{
 		agentName:   "target",
 		providerStr: "openai:gpt-5",
-		result:      llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
+		result:      engine.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
 	}
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
 		return targetAgent, nil
@@ -3094,7 +3097,7 @@ func TestExecuteHandover_AddMessageErrorUsesFooterMessage(t *testing.T) {
 	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target."}
 	m.pendingHandover = &handoverDoneMsg{
 		agentName: "target",
-		result:    llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
+		result:    engine.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
 	}
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
 		return targetAgent, nil
@@ -3132,31 +3135,31 @@ func TestExecuteHandover_AddMessageErrorUsesFooterMessage(t *testing.T) {
 func TestMCPDiscoveryDiagnosticsStaleUsesCatalogueIdentityNotRefreshGeneration(t *testing.T) {
 	tests := []struct {
 		name        string
-		diagnostics llm.ToolDiscoveryDiagnostics
+		diagnostics core.ToolDiscoveryDiagnostics
 		snapshot    *mcp.CatalogueSnapshot
 		want        bool
 	}{
 		{
 			name:        "same catalogue after refresh",
-			diagnostics: llm.ToolDiscoveryDiagnostics{CatalogueHash: "same", CatalogueGen: 1},
+			diagnostics: core.ToolDiscoveryDiagnostics{CatalogueHash: "same", CatalogueGen: 1},
 			snapshot:    &mcp.CatalogueSnapshot{Hash: "same", Generation: 9, Tools: []mcp.CatalogTool{{Name: "server__tool"}}},
 			want:        false,
 		},
 		{
 			name:        "changed catalogue",
-			diagnostics: llm.ToolDiscoveryDiagnostics{CatalogueHash: "old", CatalogueGen: 8},
+			diagnostics: core.ToolDiscoveryDiagnostics{CatalogueHash: "old", CatalogueGen: 8},
 			snapshot:    &mcp.CatalogueSnapshot{Hash: "new", Generation: 9, Tools: []mcp.CatalogTool{{Name: "server__tool"}}},
 			want:        true,
 		},
 		{
 			name:        "catalogue not consumed yet",
-			diagnostics: llm.ToolDiscoveryDiagnostics{},
+			diagnostics: core.ToolDiscoveryDiagnostics{},
 			snapshot:    &mcp.CatalogueSnapshot{Hash: "new", Generation: 1, Tools: []mcp.CatalogTool{{Name: "server__tool"}}},
 			want:        true,
 		},
 		{
 			name:        "empty catalogue",
-			diagnostics: llm.ToolDiscoveryDiagnostics{},
+			diagnostics: core.ToolDiscoveryDiagnostics{},
 			snapshot:    &mcp.CatalogueSnapshot{Generation: 2},
 			want:        false,
 		},
@@ -3320,7 +3323,7 @@ func TestSwitchModel_UpdatesSessionMetadata(t *testing.T) {
 	}
 	m.providerName = "OpenAI (old-model)"
 	m.modelName = "old-model"
-	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
+	m.engine = engine.NewEngine(mockprovider.NewMockProvider("old"), nil)
 	m.setTextareaValue("/model debug:fast")
 
 	result, cmd := m.switchModel("debug:fast")
@@ -3354,7 +3357,7 @@ func TestSwitchModelRejectsAgentDisallowedModel(t *testing.T) {
 	m.SetModelPolicy(modelpolicy.Policy{}.With(m.agentName, []string{"debug:allowed"}))
 	m.sess = &session.Session{ID: "restricted", ProviderKey: "debug", Model: "allowed"}
 	m.providerKey, m.modelName = "debug", "allowed"
-	m.engine = llm.NewEngine(llm.NewMockProvider("debug"), nil)
+	m.engine = engine.NewEngine(mockprovider.NewMockProvider("debug"), nil)
 
 	result, _ := m.switchModel("debug:denied")
 	got := result.(*Model)
@@ -3374,8 +3377,8 @@ func TestSwitchModel_WithExistingHistoryPersistsModelSwapEventMarker(t *testing.
 	m.providerName = "old"
 	m.providerKey = "old"
 	m.modelName = "old-model"
-	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("hello"), 0)}
+	m.engine = engine.NewEngine(mockprovider.NewMockProvider("old"), nil)
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("hello"), 0)}
 	m.altScreen = true
 	m.viewCache.completedStream = "cached previous assistant"
 	m.viewCache.historyValid = true
@@ -3386,17 +3389,17 @@ func TestSwitchModel_WithExistingHistoryPersistsModelSwapEventMarker(t *testing.
 		t.Fatalf("messages len = %d, want user + event marker", len(rm.messages))
 	}
 	markerMsg := rm.messages[1]
-	if markerMsg.Role != llm.RoleEvent {
+	if markerMsg.Role != core.RoleEvent {
 		t.Fatalf("marker role = %q, want event", markerMsg.Role)
 	}
-	marker, ok := llm.ParseModelSwapMarker(markerMsg.ToLLMMessage())
+	marker, ok := core.ParseModelSwapMarker(markerMsg.ToLLMMessage())
 	if !ok {
 		t.Fatalf("failed to parse model-swap marker: %#v", markerMsg)
 	}
 	if marker.FromProvider != "old" || marker.FromModel != "old-model" || marker.ToProvider != "debug" || marker.ToModel != "fast" || marker.Status != "started" {
 		t.Fatalf("unexpected marker: %#v", marker)
 	}
-	if len(store.added) != 1 || store.added[0].Role != llm.RoleEvent {
+	if len(store.added) != 1 || store.added[0].Role != core.RoleEvent {
 		t.Fatalf("expected store AddMessage event marker, got %#v", store.added)
 	}
 	if rm.viewCache.completedStream != "" {
@@ -3407,7 +3410,7 @@ func TestSwitchModel_WithExistingHistoryPersistsModelSwapEventMarker(t *testing.
 	}
 	built := rm.buildMessages()
 	for _, msg := range built {
-		if msg.Role == llm.RoleEvent {
+		if msg.Role == core.RoleEvent {
 			t.Fatalf("buildMessages included event marker in provider context: %#v", built)
 		}
 	}
@@ -3508,7 +3511,7 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 	m.yolo = true
 	m.SetHandoverApprovalManager(mgr)
 	m.pendingHandover = &handoverDoneMsg{
-		result:    llm.HandoverFromFile("placeholder", targetAgent.SystemPrompt, "source", targetAgent.Name),
+		result:    engine.HandoverFromFile("placeholder", targetAgent.SystemPrompt, "source", targetAgent.Name),
 		agentName: targetAgent.Name,
 	}
 
@@ -3737,10 +3740,10 @@ func TestStreamDoneReloadRespectsCompactionSeq(t *testing.T) {
 		},
 		messages: map[string][]session.Message{
 			sessionID: {
-				*session.NewMessage(sessionID, llm.UserText("old user"), 0),
-				*session.NewMessage(sessionID, llm.AssistantText("old assistant"), 1),
-				*session.NewMessage(sessionID, llm.SystemText("post compact system"), 2),
-				*session.NewMessage(sessionID, llm.UserText("post compact summary"), 3),
+				*session.NewMessage(sessionID, core.UserText("old user"), 0),
+				*session.NewMessage(sessionID, core.AssistantText("old assistant"), 1),
+				*session.NewMessage(sessionID, core.SystemText("post compact system"), 2),
+				*session.NewMessage(sessionID, core.UserText("post compact summary"), 3),
 			},
 		},
 	}
@@ -3778,10 +3781,10 @@ func TestStreamDoneRefreshFailureDoesNotReloadFullCompactedHistory(t *testing.T)
 		},
 		messages: map[string][]session.Message{
 			sessionID: {
-				*session.NewMessage(sessionID, llm.UserText("old user"), 0),
-				*session.NewMessage(sessionID, llm.AssistantText("old assistant"), 1),
-				*session.NewMessage(sessionID, llm.SystemText("post compact system"), 2),
-				*session.NewMessage(sessionID, llm.UserText("post compact summary"), 3),
+				*session.NewMessage(sessionID, core.UserText("old user"), 0),
+				*session.NewMessage(sessionID, core.AssistantText("old assistant"), 1),
+				*session.NewMessage(sessionID, core.SystemText("post compact system"), 2),
+				*session.NewMessage(sessionID, core.UserText("post compact summary"), 3),
 			},
 		},
 	}
@@ -3815,9 +3818,9 @@ func TestFastCommandTogglesWhenMetadataSupportsModel(t *testing.T) {
 	m.providerKey = "chatgpt"
 	m.modelName = "gpt-5.5-medium"
 	m.fastMetadataLoaded = true
-	m.modelMetadata = []llm.ModelInfo{{
+	m.modelMetadata = []core.ModelInfo{{
 		ID:           "gpt-5.5",
-		ServiceTiers: []llm.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
+		ServiceTiers: []core.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
 	}}
 	m.setTextareaValue("/fast")
 
@@ -3846,7 +3849,7 @@ func TestFastCommandRejectsUnsupportedModel(t *testing.T) {
 	m.providerKey = "chatgpt"
 	m.modelName = "gpt-5.5-medium"
 	m.fastMetadataLoaded = true
-	m.modelMetadata = []llm.ModelInfo{{ID: "gpt-5.5"}}
+	m.modelMetadata = []core.ModelInfo{{ID: "gpt-5.5"}}
 
 	_, _ = m.ExecuteCommand("/fast")
 	if m.fastMode {
@@ -3880,8 +3883,8 @@ func TestFastCommandWhileMetadataLoadingKeepsPendingToggle(t *testing.T) {
 
 			const draft = "Keep this new draft\nwhile metadata loads"
 			m.setTextareaValue(draft)
-			_, _ = m.applyChatGPTModelsLoaded(chatGPTModelsLoadedMsg{fresh: true, models: []llm.ModelInfo{{
-				ID: "gpt-5.5", ServiceTiers: []llm.ModelServiceTier{{ID: llm.ServiceTierFast}},
+			_, _ = m.applyChatGPTModelsLoaded(chatGPTModelsLoadedMsg{fresh: true, models: []core.ModelInfo{{
+				ID: "gpt-5.5", ServiceTiers: []core.ModelServiceTier{{ID: llm.ServiceTierFast}},
 			}}})
 			if !m.fastMode || m.pendingFastToggle || m.streaming != streaming {
 				t.Fatalf("fast=%v pending=%v streaming=%v, want true/false/%v", m.fastMode, m.pendingFastToggle, m.streaming, streaming)
@@ -3901,9 +3904,9 @@ func TestFastCommandSupportsChatGPTProviderAlias(t *testing.T) {
 	m.providerKey = "work"
 	m.modelName = "gpt-5.5-medium"
 	m.fastMetadataLoaded = true
-	m.modelMetadata = []llm.ModelInfo{{
+	m.modelMetadata = []core.ModelInfo{{
 		ID:           "gpt-5.5",
-		ServiceTiers: []llm.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
+		ServiceTiers: []core.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
 	}}
 
 	_, _ = m.ExecuteCommand("/fast")
@@ -5220,7 +5223,7 @@ func TestApplyRuntimeDirectoryRefreshesExistingSystemMessage(t *testing.T) {
 	store := &mockStore{messages: map[string][]session.Message{}}
 	m := newCmdTestModel(store)
 	m.sess = &session.Session{ID: "runtime-dir", CWD: "/old"}
-	m.messages = []session.Message{{ID: 42, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old"}}, TextContent: "old", Sequence: 0}}
+	m.messages = []session.Message{{ID: 42, SessionID: m.sess.ID, Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "old"}}, TextContent: "old", Sequence: 0}}
 	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
 	m.viewCache.historyValid = true
 	m.contextEstimateCachedValid = true
@@ -5258,7 +5261,7 @@ func TestApplyRuntimeDirectoryClearsStaleSystemMessageWhenPromptResolvesEmpty(t 
 	m := newCmdTestModel(store)
 	m.config = &config.Config{}
 	m.sess = &session.Session{ID: "empty-prompt", CWD: "/old"}
-	m.messages = []session.Message{{ID: 6, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old cwd"}}, TextContent: "old cwd", Sequence: 0}}
+	m.messages = []session.Message{{ID: 6, SessionID: m.sess.ID, Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "old cwd"}}, TextContent: "old cwd", Sequence: 0}}
 	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
 	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
 		return RuntimeSystemContext{}, nil
@@ -5299,7 +5302,7 @@ func TestApplyRuntimeDirectoryPreservesExplicitSystemOverride(t *testing.T) {
 	m := newCmdTestModel(store)
 	m.config = &config.Config{}
 	m.sess = &session.Session{ID: "override", CWD: "/old"}
-	m.messages = []session.Message{{ID: 7, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old default"}}, TextContent: "old default", Sequence: 0}}
+	m.messages = []session.Message{{ID: 7, SessionID: m.sess.ID, Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "old default"}}, TextContent: "old default", Sequence: 0}}
 	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
 	_, _ = m.cmdSystem([]string{"custom"})
 	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
@@ -5323,7 +5326,7 @@ func TestApplyRuntimeDirectoryPreservesExplicitSystemOverride(t *testing.T) {
 func TestApplyRuntimeDirectoryResolutionFailureLeavesStateUntouched(t *testing.T) {
 	m := newCmdTestModel(&mockStore{})
 	m.sess = &session.Session{ID: "failure", CWD: "/old"}
-	m.messages = []session.Message{{ID: 1, Role: llm.RoleSystem, TextContent: "old"}}
+	m.messages = []session.Message{{ID: 1, Role: core.RoleSystem, TextContent: "old"}}
 	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
 		return RuntimeSystemContext{}, errors.New("boom")
 	}
@@ -5339,7 +5342,7 @@ func TestApplyRuntimeDirectoryMessageFailureRollsBackBindingAndPrompt(t *testing
 	store := &mockStore{messages: map[string][]session.Message{}, updateMessageErr: errors.New("write failed")}
 	m := newCmdTestModel(store)
 	m.sess = &session.Session{ID: "rollback", CWD: "/old"}
-	m.messages = []session.Message{{ID: 9, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old"}}, TextContent: "old", Sequence: 0}}
+	m.messages = []session.Message{{ID: 9, SessionID: m.sess.ID, Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "old"}}, TextContent: "old", Sequence: 0}}
 	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
 	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
 		return RuntimeSystemContext{SystemPrompt: "new"}, nil
@@ -5601,7 +5604,7 @@ func TestShareRawReasoningRequiresExplicitRawArgument(t *testing.T) {
 			caps := defaultShareCapabilities()
 			publisher := &recordingSharePublisher{caps: caps, result: sharepkg.Result{Provider: "test", ID: "opaque", URL: "https://example.test/share", Visibility: sharepkg.VisibilityUnlisted, Ready: true}}
 			sess := &session.Session{ID: "share-raw", Name: "Raw privacy"}
-			message := session.Message{SessionID: sess.ID, Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "Final answer.", ReasoningContent: "private raw chain", ReasoningKind: llm.ReasoningKindRaw}}, TextContent: "Final answer."}
+			message := session.Message{SessionID: sess.ID, Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "Final answer.", ReasoningContent: "private raw chain", ReasoningKind: core.ReasoningKindRaw}}, TextContent: "Final answer."}
 			store := &mockStore{sessions: map[string]*session.Session{sess.ID: sess}, messages: map[string][]session.Message{sess.ID: {message}}}
 			m := newCmdTestModel(store)
 			m.sess = sess
@@ -5643,7 +5646,7 @@ func TestStartShareCopiesLinkExactlyOnceForCreateAndUpdate(t *testing.T) {
 			}
 			store := &mockStore{
 				sessions: map[string]*session.Session{sess.ID: sess},
-				messages: map[string][]session.Message{sess.ID: {*session.NewMessage(sess.ID, llm.UserText("hello"), -1)}},
+				messages: map[string][]session.Message{sess.ID: {*session.NewMessage(sess.ID, core.UserText("hello"), -1)}},
 			}
 			m := newCmdTestModel(store)
 			m.sess = sess
@@ -5741,7 +5744,7 @@ func TestSwitchModelEffortVariantAndHook(t *testing.T) {
 	m.agentName = "boss"
 	m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"debug:gpt-6-sol"}))
 	m.providerKey, m.modelName = "debug", "gpt-6-sol"
-	m.engine = llm.NewEngine(llm.NewMockProvider("debug"), nil)
+	m.engine = engine.NewEngine(mockprovider.NewMockProvider("debug"), nil)
 	called := 0
 	m.SetModelSwitchHook(func(provider, model string) {
 		called++
@@ -5762,7 +5765,7 @@ func TestHandoverDenialBeforeSessionCreation(t *testing.T) {
 	m.sess = &session.Session{ID: "old", ProviderKey: "debug", Model: "allowed", ModelPolicy: modelpolicy.Policy{}.With("ancestor", []string{"debug:*"})}
 	m.providerKey, m.modelName = "debug", "allowed"
 	target := &agents.Agent{Name: "target", Provider: "other", Model: "denied", AllowedModels: []string{"other:denied"}}
-	m.pendingHandover = &handoverDoneMsg{agentName: target.Name, result: llm.HandoverFromFile("doc", "target", "source", target.Name)}
+	m.pendingHandover = &handoverDoneMsg{agentName: target.Name, result: engine.HandoverFromFile("doc", "target", "source", target.Name)}
 	m.agentResolver = func(string, *config.Config) (*agents.Agent, error) { return target, nil }
 	result, _ := m.executeHandover()
 	if len(store.created) != 0 || !strings.Contains(result.(*Model).footerMessage, "ancestor") {
@@ -5776,8 +5779,8 @@ func TestEffortPolicyRejectsBeforeIdleOrStreamSwitch(t *testing.T) {
 			m, store := newEffortCmdTestModel("claude-bin", "opus-high")
 			m.agentName = "boss"
 			m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"claude-bin:opus-high"}))
-			provider := llm.NewMockProvider("claude-bin").AddTextResponse("ok")
-			m.engine = llm.NewEngine(provider, nil)
+			provider := mockprovider.NewMockProvider("claude-bin").AddTextResponse("ok")
+			m.engine = engine.NewEngine(provider, nil)
 			m.streaming = streaming
 			hookCalls := 0
 			m.SetModelSwitchHook(func(string, string) { hookCalls++ })
@@ -5788,7 +5791,7 @@ func TestEffortPolicyRejectsBeforeIdleOrStreamSwitch(t *testing.T) {
 			}
 			// A rejected streaming request must also leave the engine queue empty.
 			if streaming {
-				stream, err := got.engine.Stream(context.Background(), llm.Request{Model: "opus-high", Messages: []llm.Message{llm.UserText("hi")}})
+				stream, err := got.engine.Stream(context.Background(), core.Request{Model: "opus-high", Messages: []core.Message{core.UserText("hi")}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -5812,7 +5815,9 @@ func TestEffortPolicyBaseAllowsVariantAndNotifiesLiveModel(t *testing.T) {
 	m.SetModelPolicy(modelpolicy.Policy{}.With("boss", []string{"claude-bin:opus"}))
 	var selected string
 	m.SetModelSwitchHook(func(provider, model string) { selected = provider + ":" + model })
-	m.SetFastProviderResolver(func(provider, model string) (llm.Provider, error) { return llm.NewMockProvider(provider), nil })
+	m.SetFastProviderResolver(func(provider, model string) (core.Provider, error) {
+		return mockprovider.NewMockProvider(provider), nil
+	})
 	result, _ := m.cmdEffort([]string{"high"})
 	if got := result.(*Model); got.modelName != "opus-high" || selected != "claude-bin:opus-high" || got.fastProvider == nil {
 		t.Fatalf("variant=%s hook=%s fast=%v", got.modelName, selected, got.fastProvider)
@@ -5821,12 +5826,12 @@ func TestEffortPolicyBaseAllowsVariantAndNotifiesLiveModel(t *testing.T) {
 
 func TestUnrestrictedModelSwitchKeepsInitialFastProviderAndNotifiesHook(t *testing.T) {
 	m, _ := newEffortCmdTestModel("debug", "old")
-	initial := llm.NewMockProvider("initial-fast")
+	initial := mockprovider.NewMockProvider("initial-fast")
 	m.fastProvider = initial
 	resolverCalls := 0
-	m.SetFastProviderResolver(func(string, string) (llm.Provider, error) {
+	m.SetFastProviderResolver(func(string, string) (core.Provider, error) {
 		resolverCalls++
-		return llm.NewMockProvider("different"), nil
+		return mockprovider.NewMockProvider("different"), nil
 	})
 	var selected string
 	m.SetModelSwitchHook(func(provider, model string) { selected = provider + ":" + model })

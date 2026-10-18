@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -235,7 +235,7 @@ func (rt *serveRuntime) prepareAskUserFromToolArgs(callID string, raw json.RawMe
 }
 
 func (rt *serveRuntime) awaitAskUser(ctx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
-	callID := llm.CallIDFromContext(ctx)
+	callID := core.CallIDFromContext(ctx)
 	if callID == "" {
 		return nil, fmt.Errorf("ask_user missing tool call id")
 	}

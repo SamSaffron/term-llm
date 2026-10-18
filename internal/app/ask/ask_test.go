@@ -11,7 +11,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -199,7 +201,7 @@ func TestAskReasoningDoesNotPanicAfterModelCopy(t *testing.T) {
 	model := newAskStreamModel()
 	model.width = 80
 
-	model = updateAskModelForReasoningCopyTest(model, ui.ReasoningEvent(llm.ReasoningKindSummary, "first", "Reading context", "", false, true))
+	model = updateAskModelForReasoningCopyTest(model, ui.ReasoningEvent(core.ReasoningKindSummary, "first", "Reading context", "", false, true))
 
 	if got := model.currentReasoningString(); got != "first" {
 		t.Fatalf("expected first reasoning chunk to be accumulated, got %q", got)
@@ -211,7 +213,7 @@ func TestAskReasoningDoesNotPanicAfterModelCopy(t *testing.T) {
 		}
 	}()
 
-	model = updateAskModelForReasoningCopyTest(model, ui.ReasoningEvent(llm.ReasoningKindSummary, " second", "Reading context", "", false, true))
+	model = updateAskModelForReasoningCopyTest(model, ui.ReasoningEvent(core.ReasoningKindSummary, " second", "Reading context", "", false, true))
 
 	if got := model.phase; got != "Reading context" {
 		t.Fatalf("expected reasoning to keep/update status phase, got %q", got)
@@ -228,7 +230,7 @@ type askFailOnceMessageStore struct {
 }
 
 func (s *askFailOnceMessageStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
-	if msg.Role == llm.RoleAssistant {
+	if msg.Role == core.RoleAssistant {
 		s.assistantAttempts++
 		if s.assistantFailuresRemaining > 0 {
 			s.assistantFailuresRemaining--
@@ -237,7 +239,7 @@ func (s *askFailOnceMessageStore) AddMessage(ctx context.Context, sessionID stri
 	}
 
 	copied := *msg
-	copied.Parts = append([]llm.Part(nil), msg.Parts...)
+	copied.Parts = append([]core.Part(nil), msg.Parts...)
 	s.messages = append(s.messages, copied)
 	return nil
 }
@@ -255,7 +257,7 @@ func (s *askMemoryMessageStore) AddMessage(ctx context.Context, sessionID string
 	s.nextID++
 	msg.ID = s.nextID
 	copied := *msg
-	copied.Parts = append([]llm.Part(nil), msg.Parts...)
+	copied.Parts = append([]core.Part(nil), msg.Parts...)
 	s.messages = append(s.messages, copied)
 	return nil
 }
@@ -264,7 +266,7 @@ func (s *askMemoryMessageStore) UpdateMessage(ctx context.Context, sessionID str
 	for i := range s.messages {
 		if s.messages[i].ID == msg.ID {
 			copied := *msg
-			copied.Parts = append([]llm.Part(nil), msg.Parts...)
+			copied.Parts = append([]core.Part(nil), msg.Parts...)
 			s.messages[i] = copied
 			return nil
 		}
@@ -287,10 +289,10 @@ func TestAskAssistantPersistenceUpsertsSnapshotsAndFinalText(t *testing.T) {
 	sess := &session.Session{ID: "ask-upsert-test"}
 	p := &AssistantPersistence{store: store, sess: sess, reasoningCfg: config.DefaultReasoningConfig()}
 
-	if err := p.persist(context.Background(), llm.AssistantText("partial"), 10, false); err != nil {
+	if err := p.persist(context.Background(), core.AssistantText("partial"), 10, false); err != nil {
 		t.Fatalf("persist snapshot: %v", err)
 	}
-	if err := p.persist(context.Background(), llm.AssistantText("partial plus more"), 20, true); err != nil {
+	if err := p.persist(context.Background(), core.AssistantText("partial plus more"), 20, true); err != nil {
 		t.Fatalf("persist final: %v", err)
 	}
 
@@ -310,7 +312,7 @@ func TestAskAssistantPersistenceInterruptedPrefersPendingSnapshotOverCumulativeC
 	sess := &session.Session{ID: "ask-interrupted-tool-test"}
 	p := &AssistantPersistence{store: store, sess: sess, reasoningCfg: config.DefaultReasoningConfig()}
 
-	if err := p.persist(context.Background(), llm.AssistantText("second turn partial"), 10, false); err != nil {
+	if err := p.persist(context.Background(), core.AssistantText("second turn partial"), 10, false); err != nil {
 		t.Fatalf("persist snapshot: %v", err)
 	}
 	if err := p.PersistInterrupted(context.Background(), "first turn already persisted\nsecond turn partial", 20); err != nil {
@@ -362,28 +364,28 @@ func TestAskResponsePersistenceErrorRedeliversAssistantToTurnCallback(t *testing
 
 	tool := &progressiveTestTool{}
 	toolSpec := tool.Spec()
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
 
-	provider := llm.NewMockProvider("mock")
-	provider.AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("mock")
+	provider.AddTurn(mockprovider.MockTurn{
 		Text: "I'll count.",
-		ToolCalls: []llm.ToolCall{{
+		ToolCalls: []core.ToolCall{{
 			ID:        "call-1",
 			Name:      toolSpec.Name,
 			Arguments: json.RawMessage(`{}`),
 		}},
 	})
 
-	engine := llm.NewEngine(provider, registry)
-	engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+	eng := engine.NewEngine(provider, registry)
+	eng.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg core.Message, metrics core.TurnMetrics) error {
 		durationMs := time.Since(turnStartTime).Milliseconds()
 		return persistAskAssistantResponse(ctx, store, sess, assistantMsg, durationMs, reasoningPersistenceCfg)
 	})
-	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+	eng.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []core.Message, metrics core.TurnMetrics) error {
 		for _, msg := range turnMessages {
 			sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, msg, -1, reasoningPersistenceCfg)
-			if msg.Role == llm.RoleAssistant {
+			if msg.Role == core.RoleAssistant {
 				sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
 			}
 			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
@@ -391,9 +393,9 @@ func TestAskResponsePersistenceErrorRedeliversAssistantToTurnCallback(t *testing
 		return nil
 	})
 
-	stream, err := engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("test")},
-		Tools:    []llm.ToolSpec{toolSpec},
+	stream, err := eng.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("test")},
+		Tools:    []core.ToolSpec{toolSpec},
 	})
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -418,11 +420,11 @@ func TestAskResponsePersistenceErrorRedeliversAssistantToTurnCallback(t *testing
 	var gotToolResult bool
 	for _, msg := range store.messages {
 		switch msg.Role {
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			if msg.TextContent == "I'll count." {
 				gotAssistant = true
 			}
-		case llm.RoleTool:
+		case core.RoleTool:
 			gotToolResult = true
 		}
 	}
@@ -835,10 +837,10 @@ func TestProgressiveCollectorCapturesBridgeTextWhenDrained(t *testing.T) {
 		}
 	}()
 
-	if err := bridge.HandleEvent(llm.Event{Type: llm.EventTextDelta, Text: "hello "}); err != nil {
+	if err := bridge.HandleEvent(core.Event{Type: core.EventTextDelta, Text: "hello "}); err != nil {
 		t.Fatalf("HandleEvent() error = %v", err)
 	}
-	if err := bridge.HandleEvent(llm.Event{Type: llm.EventTextDelta, Text: "world"}); err != nil {
+	if err := bridge.HandleEvent(core.Event{Type: core.EventTextDelta, Text: "world"}); err != nil {
 		t.Fatalf("HandleEvent() error = %v", err)
 	}
 	bridge.CloseSuccess()
@@ -858,13 +860,13 @@ type nonProgressiveBlockingStream struct {
 	closed chan struct{}
 }
 
-func (s *nonProgressiveBlockingStream) Recv() (llm.Event, error) {
+func (s *nonProgressiveBlockingStream) Recv() (core.Event, error) {
 	if s.sent < s.total {
 		s.sent++
-		return llm.Event{Type: llm.EventTextDelta, Text: "chunk"}, nil
+		return core.Event{Type: core.EventTextDelta, Text: "chunk"}, nil
 	}
 	<-s.ctx.Done()
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 
 func (s *nonProgressiveBlockingStream) Close() error {

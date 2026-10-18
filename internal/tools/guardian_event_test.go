@@ -4,19 +4,19 @@ import (
 	"context"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestGuardianEventRetainsShellCorrelation(t *testing.T) {
 	mgr := NewApprovalManager(nil)
 	mgr.SetAutoHeadless(true)
-	wantUsage := llm.Usage{InputTokens: 31, OutputTokens: 7, CachedInputTokens: 20, CacheWriteTokens: 4}
+	wantUsage := core.Usage{InputTokens: 31, OutputTokens: 7, CachedInputTokens: 20, CacheWriteTokens: 4}
 	mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high", Model: "guardian-model", Usage: wantUsage, StateBytes: 456}, nil
 	}, nil)
 	var got GuardianEvent
 	mgr.GuardianEventFunc = func(event GuardianEvent) { got = event }
-	ctx := llm.ContextWithCallID(context.Background(), "shell-call")
+	ctx := core.ContextWithCallID(context.Background(), "shell-call")
 
 	outcome, handled, err := mgr.checkShellGuardianApproval(ctx, "echo hello", "/tmp/work", nil)
 	if err != nil || !handled || outcome != ProceedAlways {
@@ -52,7 +52,7 @@ func TestGuardianTimingOnErrorAndInheritedCallback(t *testing.T) {
 	if event.DurationMS != d.DurationMS || event.StateBytes != 123 || event.Path != "/workspace" {
 		t.Fatalf("%+v", event)
 	}
-	ctx, reviews := llm.ContextWithGuardianReviewCapture(llm.ContextWithCallID(context.Background(), "workspace-call"))
+	ctx, reviews := core.ContextWithGuardianReviewCapture(core.ContextWithCallID(context.Background(), "workspace-call"))
 	event.ToolCallID = "workspace-call"
 	child.emitGuardianEventForContext(ctx, event)
 	if len(reviews()) != 1 || reviews()[0].DurationMS != d.DurationMS || reviews()[0].StateBytes != 123 {

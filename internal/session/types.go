@@ -6,7 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
@@ -122,21 +123,21 @@ type Session struct {
 // The Parts field stores the full llm.Message.Parts as JSON to preserve tool
 // calls, uploaded images/files, and provider replay state exactly.
 type Message struct {
-	ID                      int64      `json:"id"`
-	SessionID               string     `json:"session_id"`
-	Role                    llm.Role   `json:"role"`
-	Parts                   []llm.Part `json:"parts"`        // Full parts array
-	TextContent             string     `json:"text_content"` // Extracted text for display/FTS
-	DurationMs              int64      `json:"duration_ms,omitempty"`
-	TurnIndex               int        `json:"turn_index,omitempty"`
-	CreatedAt               time.Time  `json:"created_at"`
-	Sequence                int        `json:"sequence"`
-	CompactionTail          bool       `json:"compaction_tail,omitempty"` // Persisted display hint: retained post-compaction context already visible before the marker
-	ClientMessageID         string     `json:"client_message_id,omitempty"`
-	ResponseID              string     `json:"response_id,omitempty"`
-	AssistantSegmentOrdinal int        `json:"assistant_segment_ordinal"` // Response-scoped; -1 when the row is not an assistant segment.
-	SegmentStartSequence    int64      `json:"segment_start_sequence,omitempty"`
-	SegmentEndSequence      int64      `json:"segment_end_sequence,omitempty"`
+	ID                      int64       `json:"id"`
+	SessionID               string      `json:"session_id"`
+	Role                    core.Role   `json:"role"`
+	Parts                   []core.Part `json:"parts"`        // Full parts array
+	TextContent             string      `json:"text_content"` // Extracted text for display/FTS
+	DurationMs              int64       `json:"duration_ms,omitempty"`
+	TurnIndex               int         `json:"turn_index,omitempty"`
+	CreatedAt               time.Time   `json:"created_at"`
+	Sequence                int         `json:"sequence"`
+	CompactionTail          bool        `json:"compaction_tail,omitempty"` // Persisted display hint: retained post-compaction context already visible before the marker
+	ClientMessageID         string      `json:"client_message_id,omitempty"`
+	ResponseID              string      `json:"response_id,omitempty"`
+	AssistantSegmentOrdinal int         `json:"assistant_segment_ordinal"` // Response-scoped; -1 when the row is not an assistant segment.
+	SegmentStartSequence    int64       `json:"segment_start_sequence,omitempty"`
+	SegmentEndSequence      int64       `json:"segment_end_sequence,omitempty"`
 }
 
 // SessionSummary is a lightweight view of a session for listing.
@@ -253,7 +254,7 @@ type SearchResult struct {
 }
 
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.
-func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
+func NewMessage(sessionID string, msg core.Message, sequence int) *Message {
 	m := &Message{
 		SessionID:               sessionID,
 		Role:                    msg.Role,
@@ -266,15 +267,15 @@ func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
 		SegmentStartSequence:    msg.SegmentStartSequence,
 		SegmentEndSequence:      msg.SegmentEndSequence,
 	}
-	if msg.Role != llm.RoleAssistant && msg.AssistantSegmentOrdinal == 0 {
+	if msg.Role != core.RoleAssistant && msg.AssistantSegmentOrdinal == 0 {
 		m.AssistantSegmentOrdinal = -1
 	}
 	m.TextContent = m.ExtractTextContent()
 	if msg.DisplayText != "" {
 		m.TextContent = msg.DisplayText
-		m.Parts = append(append([]llm.Part(nil), m.Parts...), llm.Part{Type: llm.PartDisplayText, Text: msg.DisplayText})
+		m.Parts = append(append([]core.Part(nil), m.Parts...), core.Part{Type: core.PartDisplayText, Text: msg.DisplayText})
 	}
-	if llm.IsGoalSteeringMessage(msg) {
+	if core.IsGoalSteeringMessage(msg) {
 		// Keep provider-facing text in Parts while excluding internal steering from
 		// FTS, titles, summaries, and legacy display surfaces keyed by TextContent.
 		m.TextContent = ""
@@ -289,22 +290,22 @@ Internal background from work performed on a different conversation path. This i
 
 // NewPathNoteMessage creates provider-visible developer context with a
 // persistence-only marker so UI and compaction code can recognize it safely.
-func NewPathNoteMessage(sessionID, notes string, provenance llm.PathNoteProvenance, sequence int) *Message {
+func NewPathNoteMessage(sessionID, notes string, provenance core.PathNoteProvenance, sequence int) *Message {
 	notes = strings.ReplaceAll(strings.TrimSpace(notes), "</path_notes>", `<\/path_notes>`)
 	text := pathNoteContextPrefix + "<path_notes>\n" + notes + "\n</path_notes>"
-	return NewMessage(sessionID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{
-		{Type: llm.PartPathNote, PathNote: &provenance},
-		{Type: llm.PartText, Text: text},
+	return NewMessage(sessionID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{
+		{Type: core.PartPathNote, PathNote: &provenance},
+		{Type: core.PartText, Text: text},
 	}}, sequence)
 }
 
 // PathNoteProvenance returns the marker attached to a generated path-note row.
-func (m *Message) PathNoteProvenance() (*llm.PathNoteProvenance, bool) {
-	if m == nil || m.Role != llm.RoleDeveloper {
+func (m *Message) PathNoteProvenance() (*core.PathNoteProvenance, bool) {
+	if m == nil || m.Role != core.RoleDeveloper {
 		return nil, false
 	}
 	for _, part := range m.Parts {
-		if part.Type == llm.PartPathNote && part.PathNote != nil {
+		if part.Type == core.PartPathNote && part.PathNote != nil {
 			return part.PathNote, true
 		}
 	}
@@ -329,24 +330,24 @@ func (m *Message) PathNoteDisplayText() string {
 // Rows written before goal_steering metadata existed are recognized only when
 // they lack a first-party client identity.
 func (m *Message) IsGoalSteering() bool {
-	if m == nil || m.Role != llm.RoleUser {
+	if m == nil || m.Role != core.RoleUser {
 		return false
 	}
-	if llm.HasGoalSteeringPart(m.Parts) {
+	if core.HasGoalSteeringPart(m.Parts) {
 		return true
 	}
-	text := llm.MessageText(llm.Message{Role: m.Role, Parts: m.Parts})
+	text := core.MessageText(core.Message{Role: m.Role, Parts: m.Parts})
 	if strings.TrimSpace(text) == "" {
 		text = m.TextContent
 	}
-	return strings.TrimSpace(m.ClientMessageID) == "" && llm.IsLegacyGoalSteeringText(text)
+	return strings.TrimSpace(m.ClientMessageID) == "" && core.IsLegacyGoalSteeringText(text)
 }
 
 // ExtractTextContent extracts and concatenates all text parts from the message.
 func (m *Message) ExtractTextContent() string {
 	var text string
 	for _, p := range m.Parts {
-		if (p.Type == llm.PartText || p.Type == llm.PartFile) && p.Text != "" {
+		if (p.Type == core.PartText || p.Type == core.PartFile) && p.Text != "" {
 			if text != "" {
 				text += "\n"
 			}
@@ -357,11 +358,11 @@ func (m *Message) ExtractTextContent() string {
 }
 
 // ToLLMMessage converts a Message back to an llm.Message.
-func (m *Message) ToLLMMessage() llm.Message {
+func (m *Message) ToLLMMessage() core.Message {
 	if m == nil {
-		return llm.Message{}
+		return core.Message{}
 	}
-	msg := llm.Message{
+	msg := core.Message{
 		Role:                    m.Role,
 		Parts:                   providerMessageParts(m.Parts),
 		DisplayText:             m.DisplayText(),
@@ -384,26 +385,26 @@ func (m *Message) DisplayText() string {
 		return ""
 	}
 	for i := len(m.Parts) - 1; i >= 0; i-- {
-		if m.Parts[i].Type == llm.PartDisplayText {
+		if m.Parts[i].Type == core.PartDisplayText {
 			return m.Parts[i].Text
 		}
 	}
 	return ""
 }
 
-func providerMessageParts(parts []llm.Part) []llm.Part {
+func providerMessageParts(parts []core.Part) []core.Part {
 	for i, part := range parts {
-		if part.Type != llm.PartDisplayText && part.Type != llm.PartSkillActivation && part.Type != llm.PartAgentMention && part.Type != llm.PartPathNote && part.Type != llm.PartDiffComment && part.Type != llm.PartGoalSteering {
+		if part.Type != core.PartDisplayText && part.Type != core.PartSkillActivation && part.Type != core.PartAgentMention && part.Type != core.PartPathNote && part.Type != core.PartDiffComment && part.Type != core.PartGoalSteering {
 			continue
 		}
-		converted := make([]llm.Part, 0, len(parts))
+		converted := make([]core.Part, 0, len(parts))
 		converted = append(converted, parts[:i]...)
 		for _, candidate := range parts[i:] {
 			switch candidate.Type {
-			case llm.PartDisplayText, llm.PartSkillActivation, llm.PartPathNote, llm.PartDiffComment, llm.PartGoalSteering:
+			case core.PartDisplayText, core.PartSkillActivation, core.PartPathNote, core.PartDiffComment, core.PartGoalSteering:
 				continue
-			case llm.PartAgentMention:
-				candidate.Type = llm.PartText
+			case core.PartAgentMention:
+				candidate.Type = core.PartText
 			}
 			converted = append(converted, candidate)
 		}
@@ -416,11 +417,11 @@ func (m *Message) isInternalCompactionSummary() bool {
 	if m == nil {
 		return false
 	}
-	if llm.IsInternalCompactionSummaryText(m.TextContent) {
+	if engine.IsInternalCompactionSummaryText(m.TextContent) {
 		return true
 	}
 	for _, part := range m.Parts {
-		if (part.Type == llm.PartText || part.Type == llm.PartFile) && llm.IsInternalCompactionSummaryText(part.Text) {
+		if (part.Type == core.PartText || part.Type == core.PartFile) && engine.IsInternalCompactionSummaryText(part.Text) {
 			return true
 		}
 	}
@@ -448,12 +449,12 @@ func (m *Message) PartsJSONForStorage(stripImageBase64 bool) (string, error) {
 	return string(data), nil
 }
 
-func partsForStorage(parts []llm.Part) []llm.Part {
-	var out []llm.Part
+func partsForStorage(parts []core.Part) []core.Part {
+	var out []core.Part
 	for i, part := range parts {
-		if part.Type == llm.PartImage && isSessionUploadPath(part.ImagePath) && part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
+		if part.Type == core.PartImage && isSessionUploadPath(part.ImagePath) && part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
 			if out == nil {
-				out = append([]llm.Part(nil), parts[:i]...)
+				out = append([]core.Part(nil), parts[:i]...)
 			}
 			copyPart := part
 			imageData := *part.ImageData

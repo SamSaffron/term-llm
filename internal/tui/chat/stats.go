@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -132,7 +134,7 @@ func (m *Model) renderStatsModal() string {
 	m.renderCumulativeTokenStats(&b)
 	m.renderModelStats(&b)
 
-	var sideUsage llm.Usage
+	var sideUsage core.Usage
 	sideRequests := 0
 	if m.stats != nil {
 		calls, _ := m.stats.UsageCalls()
@@ -141,7 +143,7 @@ func (m *Model) renderStatsModal() string {
 				continue
 			}
 			sideRequests++
-			sideUsage.Add(llm.Usage{
+			sideUsage.Add(core.Usage{
 				InputTokens: call.InputTokens, OutputTokens: call.OutputTokens,
 				CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens,
 			})
@@ -176,7 +178,7 @@ func (m *Model) renderStatsModal() string {
 		b.WriteString(fmt.Sprintf("User turns:         %d\n", m.sess.UserTurns))
 		b.WriteString(fmt.Sprintf("Assistant turns:    %d\n", m.sess.LLMTurns))
 	}
-	b.WriteString(fmt.Sprintf("Active messages:    %d (user %d, assistant %d, tool %d)\n", len(activeMessages), roleCounts[string(llm.RoleUser)], roleCounts[string(llm.RoleAssistant)], roleCounts[string(llm.RoleTool)]))
+	b.WriteString(fmt.Sprintf("Active messages:    %d (user %d, assistant %d, tool %d)\n", len(activeMessages), roleCounts[string(core.RoleUser)], roleCounts[string(core.RoleAssistant)], roleCounts[string(core.RoleTool)]))
 
 	compactionCount := 0
 	compactionSeq := -1
@@ -301,7 +303,7 @@ func (m *Model) statsUsageModel() string {
 // session bucket, which mixes main turns with guardian, compaction, handover
 // and delegated work; without this row the session's own model is absent from
 // every recorded-history breakdown.
-func (m *Model) recordDurableModelUsage(ctx context.Context, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, llmTurns, toolCalls int) {
+func (m *Model) recordDurableModelUsage(ctx context.Context, sessionID, model string, kind session.ModelUsageKind, u core.Usage, llmTurns, toolCalls int) {
 	if m.store == nil || sessionID == "" || u.BillableCountersZero() {
 		return
 	}
@@ -322,7 +324,7 @@ func (m *Model) recordDurableModelUsage(ctx context.Context, sessionID, model st
 // is attributed to the session's own model. The per-model row is written only
 // when the aggregate update lands, so the breakdown never claims usage the
 // totals do not have.
-func (m *Model) recordDurableTurnUsage(ctx context.Context, sessionID string, u llm.Usage, toolCalls int) {
+func (m *Model) recordDurableTurnUsage(ctx context.Context, sessionID string, u core.Usage, toolCalls int) {
 	if m.store == nil {
 		return
 	}
@@ -339,10 +341,10 @@ type compactionAppliedMsg struct {
 	activeStart int
 	refreshed   *session.Session
 	model       string
-	usage       llm.Usage
+	usage       core.Usage
 }
 
-func (m *Model) recordGuardianUsage(ctx context.Context, model string, u llm.Usage) {
+func (m *Model) recordGuardianUsage(ctx context.Context, model string, u core.Usage) {
 	if u.BillableCountersZero() {
 		return
 	}
@@ -364,7 +366,7 @@ func (m *Model) recordGuardianUsage(ctx context.Context, model string, u llm.Usa
 	}
 }
 
-func (m *Model) recordHandoverUsage(ctx context.Context, sessionID, model string, u llm.Usage) {
+func (m *Model) recordHandoverUsage(ctx context.Context, sessionID, model string, u core.Usage) {
 	if u.BillableCountersZero() {
 		return
 	}
@@ -385,7 +387,7 @@ func (m *Model) recordHandoverUsage(ctx context.Context, sessionID, model string
 	}
 }
 
-func (m *Model) recordPathNoteUsage(ctx context.Context, sessionID string, u llm.Usage) {
+func (m *Model) recordPathNoteUsage(ctx context.Context, sessionID string, u core.Usage) {
 	if u.BillableCountersZero() {
 		return
 	}
@@ -404,7 +406,7 @@ func (m *Model) recordPathNoteUsage(ctx context.Context, sessionID string, u llm
 	}
 }
 
-func (m *Model) recordCompactionUsage(ctx context.Context, sessionID, model string, u llm.Usage) {
+func (m *Model) recordCompactionUsage(ctx context.Context, sessionID, model string, u core.Usage) {
 	if m.stats == nil {
 		m.stats = ui.NewSessionStats()
 	}
@@ -461,7 +463,7 @@ func (m *Model) statsPricingModel() string {
 		parts := strings.Split(model, ":")
 		model = parts[len(parts)-1]
 	}
-	if parsedModel, _ := llm.ParseModelEffort(model); strings.TrimSpace(parsedModel) != "" {
+	if parsedModel, _ := opencompat.ParseModelEffort(model); strings.TrimSpace(parsedModel) != "" {
 		model = strings.TrimSpace(parsedModel)
 	}
 	if model != "" {
@@ -496,7 +498,7 @@ func (m *Model) estimateMessagesTokens(messages []session.Message) int {
 		return 0
 	}
 	if m.engine != nil {
-		llmMessages := make([]llm.Message, 0, len(messages))
+		llmMessages := make([]core.Message, 0, len(messages))
 		for _, msg := range messages {
 			llmMessages = append(llmMessages, msg.ToLLMMessage())
 		}
@@ -628,7 +630,7 @@ func subagentStatsLegend(runCount int, running, partial, unavailable bool) strin
 // come from the retained request ledger, timing only from delegated runs.
 type modelStatsRow struct {
 	model          string
-	usage          llm.Usage
+	usage          core.Usage
 	calls          []ui.UsageCall
 	kinds          map[string]bool
 	elapsed, tools time.Duration
@@ -652,7 +654,7 @@ func collectModelStats(calls []ui.UsageCall, runs []ui.SubagentProgress, now tim
 	}
 	for _, call := range calls {
 		row := group(call.Model)
-		row.usage.Add(llm.Usage{
+		row.usage.Add(core.Usage{
 			InputTokens: call.InputTokens, OutputTokens: call.OutputTokens,
 			CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens,
 		})
@@ -762,7 +764,7 @@ func (m *Model) renderModelStats(b *strings.Builder) {
 	}
 }
 
-func (m *Model) recordSubagentUsage(ctx context.Context, model string, u llm.Usage) {
+func (m *Model) recordSubagentUsage(ctx context.Context, model string, u core.Usage) {
 	if u.BillableCountersZero() {
 		return
 	}
@@ -792,7 +794,7 @@ func (m *Model) recordChildEventUsage(callID string, event tools.SubagentEvent) 
 		if model == "" && m.subagentTracker != nil {
 			model = m.subagentTracker.ResolvedModel(callID)
 		}
-		m.recordSubagentUsage(context.Background(), model, llm.Usage{InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, CachedInputTokens: event.CachedInputTokens, CacheWriteTokens: event.CacheWriteTokens})
+		m.recordSubagentUsage(context.Background(), model, core.Usage{InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, CachedInputTokens: event.CachedInputTokens, CacheWriteTokens: event.CacheWriteTokens})
 	case tools.SubagentEventGuardian:
 		if event.Guardian != nil {
 			m.recordGuardianUsage(context.Background(), event.Guardian.Model, event.Guardian.Usage)

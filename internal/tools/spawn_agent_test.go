@@ -11,24 +11,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 type mediaEventMockRunner struct {
 	*mockRunner
-	media             llm.MediaArtifact
+	media             core.MediaArtifact
 	inheritedCallback bool
 }
 
 func (r *mediaEventMockRunner) RunAgentWithCallback(ctx context.Context, agentName, prompt string, depth int, callID string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
 	r.inheritedCallback = SubagentEventCallbackFromContext(ctx) != nil
-	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []llm.MediaArtifact{r.media}, Success: true})
+	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []core.MediaArtifact{r.media}, Success: true})
 	return r.mockRunner.RunAgent(ctx, agentName, prompt, depth)
 }
 
 func (r *mediaEventMockRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName, prompt string, depth int, callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
 	r.inheritedCallback = SubagentEventCallbackFromContext(ctx) != nil
-	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []llm.MediaArtifact{r.media}, Success: true})
+	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []core.MediaArtifact{r.media}, Success: true})
 	return r.mockRunner.RunAgentWithOptions(ctx, agentName, prompt, depth, opts)
 }
 
@@ -38,7 +40,7 @@ func TestSpawnAgentToolUsesExecutionScopedEventCallback(t *testing.T) {
 	tool.SetRunner(runner)
 	var event SubagentEvent
 	ctx := ContextWithSubagentEventCallback(context.Background(), func(_ string, observed SubagentEvent) { event = observed })
-	ctx = llm.ContextWithCallID(ctx, "parent-call")
+	ctx = core.ContextWithCallID(ctx, "parent-call")
 	if _, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 10)); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +57,7 @@ func TestSpawnAgentToolWaitBudgetDoesNotImposeChildDeadline(t *testing.T) {
 	tool.SetRunner(&mediaEventMockRunner{mockRunner: newMockRunner()})
 	var event SubagentEvent
 	tool.SetEventCallback(func(_ string, observed SubagentEvent) { event = observed })
-	ctx := llm.ContextWithCallID(context.Background(), "parent-call")
+	ctx := core.ContextWithCallID(context.Background(), "parent-call")
 	if _, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 10)); err != nil {
 		t.Fatal(err)
 	}
@@ -69,9 +71,9 @@ func TestSpawnAgentToolRetainsNestedMediaOnResult(t *testing.T) {
 	for _, mime := range []string{"image/png", "audio/mpeg"} {
 		t.Run(mime, func(t *testing.T) {
 			tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
-			artifact := llm.MediaArtifact{Reference: reference, SourcePath: "/tmp/result", MediaType: mime, Name: "result", Caption: "caption"}
+			artifact := core.MediaArtifact{Reference: reference, SourcePath: "/tmp/result", MediaType: mime, Name: "result", Caption: "caption"}
 			tool.SetRunner(&mediaEventMockRunner{mockRunner: newMockRunner(), media: artifact})
-			ctx := llm.ContextWithCallID(context.Background(), "parent-call")
+			ctx := core.ContextWithCallID(context.Background(), "parent-call")
 			out, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 0))
 			if err != nil || len(out.Media) != 1 || out.Media[0] != artifact {
 				t.Fatalf("nested media output = %#v, %v", out, err)
@@ -449,21 +451,21 @@ func TestSpawnAgentTool_PreservesPartialRunResultOnTimeoutError(t *testing.T) {
 func TestSpawnAgentStructuredFailureEmitsUnsuccessfulEngineTerminal(t *testing.T) {
 	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 5, MaxParallel: 1, DefaultTimeout: 300}, 0)
 	tool.SetRunner(newMockRunner().SetOutput("partial findings").SetSessionID("child-failed").SetError(errors.New("boom")))
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("spawn-failed", SpawnAgentToolName, SpawnAgentArgs{AgentName: "codebase", Prompt: "inspect"}).
 		AddTextResponse("recovered")
-	engine := llm.NewEngine(provider, nil)
-	engine.RegisterTool(tool)
-	stream, err := engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("inspect")},
-		Tools:    []llm.ToolSpec{tool.Spec()},
+	eng := engine.NewEngine(provider, nil)
+	eng.RegisterTool(tool)
+	stream, err := eng.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("inspect")},
+		Tools:    []core.ToolSpec{tool.Spec()},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stream.Close()
 
-	var terminal *llm.Event
+	var terminal *core.Event
 	for {
 		event, recvErr := stream.Recv()
 		if errors.Is(recvErr, io.EOF) {
@@ -472,7 +474,7 @@ func TestSpawnAgentStructuredFailureEmitsUnsuccessfulEngineTerminal(t *testing.T
 		if recvErr != nil {
 			t.Fatal(recvErr)
 		}
-		if event.Type == llm.EventToolExecEnd && event.ToolCallID == "spawn-failed" {
+		if event.Type == core.EventToolExecEnd && event.ToolCallID == "spawn-failed" {
 			copy := event
 			terminal = &copy
 		}
@@ -488,7 +490,7 @@ func TestSpawnAgentStructuredFailureEmitsUnsuccessfulEngineTerminal(t *testing.T
 func TestSpawnAgentTool_MaxTurnsClassifiedAsExecutionFailedEvenIfContextTimedOut(t *testing.T) {
 	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	err := &llm.MaxTurnsExceededError{MaxTurns: 3}
+	err := &engine.MaxTurnsExceededError{MaxTurns: 3}
 	if got := classifySpawnAgentError(err, parentCtx, parentCtx); got != ErrExecutionFailed {
 		t.Fatalf("expected max-turns error to be execution_failed, got %s", got)
 	}
@@ -832,14 +834,14 @@ func TestSpawnAgentToolCapabilityDoesNotExecuteUntilEngineReceivesModelToolCall(
 		t.Fatal("read-only capability launched an agent")
 	}
 
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("spawn-1", SpawnAgentToolName, SpawnAgentArgs{AgentName: "codebase", Prompt: "inspect the requested code"}).
 		AddTextResponse("done")
-	engine := llm.NewEngine(provider, nil)
-	engine.RegisterTool(tool)
-	stream, err := engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("inspect @agent:codebase")},
-		Tools:    []llm.ToolSpec{tool.Spec()},
+	eng := engine.NewEngine(provider, nil)
+	eng.RegisterTool(tool)
+	stream, err := eng.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("inspect @agent:codebase")},
+		Tools:    []core.ToolSpec{tool.Spec()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -856,24 +858,24 @@ func TestSpawnAgentToolCapabilityDoesNotExecuteUntilEngineReceivesModelToolCall(
 	}
 	calls := runner.GetCalls()
 	if len(calls) != 1 || calls[0].AgentName != "codebase" || calls[0].Prompt != "inspect the requested code" {
-		t.Fatalf("engine-routed calls = %#v", calls)
+		t.Fatalf("eng-routed calls = %#v", calls)
 	}
 }
 
 func TestSpawnAgentToolModelCallStillEnforcesPolicyAfterMentionValidation(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*llm.Engine, *SpawnAgentTool)
+		mutate func(*engine.Engine, *SpawnAgentTool)
 	}{
 		{
 			name: "engine filter changed",
-			mutate: func(engine *llm.Engine, _ *SpawnAgentTool) {
+			mutate: func(engine *engine.Engine, _ *SpawnAgentTool) {
 				engine.SetAllowedToolsFilter([]string{})
 			},
 		},
 		{
 			name: "depth exhausted",
-			mutate: func(_ *llm.Engine, tool *SpawnAgentTool) {
+			mutate: func(_ *engine.Engine, tool *SpawnAgentTool) {
 				tool.SetRemainingDepth(0)
 			},
 		},
@@ -887,16 +889,16 @@ func TestSpawnAgentToolModelCallStillEnforcesPolicyAfterMentionValidation(t *tes
 				t.Fatalf("mention-time validation = %v", err)
 			}
 
-			provider := llm.NewMockProvider("mock").
+			provider := mockprovider.NewMockProvider("mock").
 				AddToolCall("spawn-late", SpawnAgentToolName, SpawnAgentArgs{AgentName: "codebase", Prompt: "inspect"}).
 				AddTextResponse("done")
-			engine := llm.NewEngine(provider, nil)
-			engine.RegisterTool(tool)
-			tt.mutate(engine, tool)
+			eng := engine.NewEngine(provider, nil)
+			eng.RegisterTool(tool)
+			tt.mutate(eng, tool)
 
-			stream, err := engine.Stream(context.Background(), llm.Request{
-				Messages: []llm.Message{llm.UserText("inspect @agent:codebase")},
-				Tools:    []llm.ToolSpec{tool.Spec()},
+			stream, err := eng.Stream(context.Background(), core.Request{
+				Messages: []core.Message{core.UserText("inspect @agent:codebase")},
+				Tools:    []core.ToolSpec{tool.Spec()},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -1070,7 +1072,7 @@ func TestSpawnAgentTool_ContextCancellation(t *testing.T) {
 	tool.SetRunner(runner)
 
 	// Detaching needs a parent session: session-less spawns stay synchronous.
-	ctx, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), "parent"))
+	ctx, cancel := context.WithCancel(core.ContextWithSessionID(context.Background(), "parent"))
 	args := makeSpawnArgs("test-agent", "do something", 60)
 
 	// Cancel after a short delay
@@ -1106,7 +1108,7 @@ func TestSpawnAgentTool_ContextTimeout(t *testing.T) {
 	tool.SetRunner(runner)
 
 	// Detaching needs a parent session: session-less spawns stay synchronous.
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	// Use minimum timeout of 10 seconds, but we'll use a pre-expired context
 	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
@@ -1225,7 +1227,7 @@ func TestSpawnAgentTool_MaxTurnsErrorIsExplicit(t *testing.T) {
 	config := DefaultSpawnConfig()
 	tool := NewSpawnAgentTool(config, 0)
 
-	runner := newMockRunner().SetError(&llm.MaxTurnsExceededError{MaxTurns: 200})
+	runner := newMockRunner().SetError(&engine.MaxTurnsExceededError{MaxTurns: 200})
 	tool.SetRunner(runner)
 
 	ctx := context.Background()

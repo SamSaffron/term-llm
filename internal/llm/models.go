@@ -1,13 +1,15 @@
 package llm
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // ModelEntry describes a model available through a specific provider.
@@ -318,7 +320,7 @@ var ImageProviderModels = map[string][]string{
 // Venice uses a live catalog; other providers use their curated model lists.
 func GetImageModelIDs(provider string, cfg *config.Config) []string {
 	if provider == "venice" {
-		return GetVeniceImageModelIDs(cfg, "")
+		return opencompat.GetVeniceImageModelIDs(cfg, "")
 	}
 	return ImageProviderModels[provider]
 }
@@ -375,7 +377,7 @@ func resolveProviderModelEntries(provider string) []ModelEntry {
 		entries = ProviderModels[resolved]
 	}
 	if resolved == "chatgpt" {
-		if models, _, err := cachedChatGPTModelFacts(); err == nil {
+		if models, _, err := rp.CachedChatGPTModelFacts(); err == nil {
 			merged := make([]ModelEntry, 0, len(models)+len(entries))
 			seen := make(map[string]bool, len(models))
 			for _, model := range models {
@@ -398,7 +400,7 @@ func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {
 		return anthropic.ReasoningEfforts(baseModel) // live catalog before curated rows
 	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
-		if efforts, found := grokCachedReasoningEfforts(baseModel); found {
+		if efforts, found := rp.GrokCachedReasoningEfforts(baseModel); found {
 			return efforts
 		}
 	}
@@ -446,7 +448,7 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 			return cloneEfforts(defaultEffortVariants)
 		}
 	case "opencode-go":
-		return opencodeGoCachedReasoningEfforts(model)
+		return rp.OpenCodeGoCachedReasoningEfforts(model)
 	case "anthropic":
 		return anthropic.ReasoningEfforts(model)
 	case "bedrock":
@@ -457,10 +459,10 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 			return cloneEfforts(claudeBinSonnetEffortVariants)
 		}
 	case "grok":
-		if efforts, found := grokCachedReasoningEfforts(model); found {
+		if efforts, found := rp.GrokCachedReasoningEfforts(model); found {
 			return efforts
 		}
-		return staticGrokReasoningEfforts(nameLower)
+		return rp.StaticGrokReasoningEfforts(nameLower)
 	case "grok-bin":
 		if base, hasSuffix := trimKnownEffortSuffix(nameLower); strings.HasPrefix(base, "grok-4") && !hasSuffix {
 			return cloneEfforts(grokBinEffortVariants)
@@ -569,7 +571,7 @@ func reasoningEffortsForEntry(provider string, entry ModelEntry) []string {
 		return anthropic.ReasoningEfforts(entry.ID) // live catalog before curated rows
 	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
-		if efforts, found := grokCachedReasoningEfforts(entry.ID); found {
+		if efforts, found := rp.GrokCachedReasoningEfforts(entry.ID); found {
 			return efforts
 		}
 	}
@@ -797,18 +799,13 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 	return ""
 }
 
-// GetBuiltInProviderNames returns the built-in provider type names
-func GetBuiltInProviderNames() []string {
-	return config.GetBuiltInProviderNames()
-}
-
 // GetProviderNames returns valid provider names from config plus built-in types.
 // If cfg is nil, returns only built-in provider names.
 func GetProviderNames(cfg *config.Config) []string {
 	names := make(map[string]bool)
 
 	// Add built-in provider names
-	for _, name := range GetBuiltInProviderNames() {
+	for _, name := range config.GetBuiltInProviderNames() {
 		names[name] = true
 	}
 
@@ -952,7 +949,7 @@ func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *con
 	// primed. Prime once up front so candidate lookup, configured model
 	// lists, and effort expansion below all share the same metadata.
 	if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeOpenCodeGo {
-		primeOpenCodeGoCatalogScope(resolvedProviderAPIKey(cfg, provider), providerCfg.BaseURL)
+		rp.PrimeOpenCodeGoCatalogScope(resolvedProviderAPIKey(cfg, provider), providerCfg.BaseURL)
 	}
 	models, configured := configuredCompletionModels(provider, isImage, providerCfg)
 	if !configured {
@@ -983,7 +980,7 @@ func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *con
 		if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeChatGPT && strings.HasPrefix(modelPrefix, model) {
 			fast := model + "-fast"
 			if strings.HasPrefix(fast, modelPrefix) && !slices.Contains(models, fast) {
-				if _, tier := chatGPTModelServiceTier(fast); tier != "" {
+				if _, tier := rp.ChatGPTModelServiceTier(fast); tier != "" {
 					completions = append(completions, provider+":"+fast)
 				}
 			}
@@ -1051,21 +1048,21 @@ func completionModelCandidates(provider string, isImage bool, providerCfg config
 			return models, true
 		case providerType == "openrouter" || provider == "openrouter":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
-			if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
+			if cachedModels := opencompat.GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
 				return cachedModels, true
 			}
 			return getModelIDs("openrouter"), true
 		case providerType == "venice":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
-			models := GetCachedVeniceModels(apiKey)
+			models := opencompat.GetCachedVeniceModels(apiKey)
 			if len(models) == 0 && providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}
 			return models, true
 		case providerType == "zen":
-			models := GetCachedZenModels()
+			models := rp.GetCachedZenModels()
 			if len(models) > 0 {
-				models = ExpandCachedZenReasoningVariants(models)
+				models = rp.ExpandCachedZenReasoningVariants(models)
 			} else {
 				models = getModelIDs("zen")
 			}
@@ -1075,7 +1072,7 @@ func completionModelCandidates(provider string, isImage bool, providerCfg config
 			return models, true
 		case providerType == "opencode-go":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
-			models := getCachedOpenCodeGoModelsForScope(apiKey, providerCfg.BaseURL)
+			models := rp.GetCachedOpenCodeGoModelsForScope(apiKey, providerCfg.BaseURL)
 			if len(models) == 0 && providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}

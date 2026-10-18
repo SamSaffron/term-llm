@@ -7,7 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 )
 
@@ -324,7 +324,7 @@ func (m *Model) writeMCPModelAccessStatus(b *strings.Builder, catalogueCount int
 	}
 }
 
-func mcpDiscoveryDiagnosticsStale(diagnostics llm.ToolDiscoveryDiagnostics, snapshot *mcp.CatalogueSnapshot) bool {
+func mcpDiscoveryDiagnosticsStale(diagnostics core.ToolDiscoveryDiagnostics, snapshot *mcp.CatalogueSnapshot) bool {
 	if snapshot == nil || len(snapshot.Tools) == 0 {
 		return false
 	}

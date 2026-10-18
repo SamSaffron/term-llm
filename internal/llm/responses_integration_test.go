@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gorilla/websocket"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,14 +14,19 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/debug"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
 )
 
 func TestBuildResponsesInput_FilePolicyFallsBackToTextWhenNativeDisabled(t *testing.T) {
 	policy := DefaultPortableTextFileUploadPolicy()
-	messages := []Message{{Role: RoleUser, Parts: []Part{{
-		Type: PartFile,
+	messages := []core.Message{{Role: core.RoleUser, Parts: []core.Part{{
+		Type: core.PartFile,
 		Text: FormatEmbeddedFileText("data.csv", "text/csv", "a,b\n"),
-		FileData: &ToolFileData{
+		FileData: &core.ToolFileData{
 			MediaType: "text/csv",
 			Base64:    "YSxiCg==",
 			Filename:  "data.csv",
@@ -31,7 +34,7 @@ func TestBuildResponsesInput_FilePolicyFallsBackToTextWhenNativeDisabled(t *test
 		},
 	}}}}
 
-	input := BuildResponsesInputWithFilePolicy(messages, &policy)
+	input := responses.BuildResponsesInputWithFilePolicy(messages, &policy)
 	if len(input) != 1 {
 		t.Fatalf("len(input) = %d, want 1", len(input))
 	}
@@ -58,10 +61,10 @@ func TestBuildResponsesInput_EmbedsTextUploadsInsteadOfNativeFiles(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := "puts 'hello'\n"
-			part := Part{
-				Type: PartFile,
+			part := core.Part{
+				Type: core.PartFile,
 				Text: FormatEmbeddedFileText(tc.filename, tc.mediaType, body),
-				FileData: &ToolFileData{
+				FileData: &core.ToolFileData{
 					MediaType: tc.mediaType,
 					Base64:    base64.StdEncoding.EncodeToString([]byte(body)),
 					Filename:  tc.filename,
@@ -70,7 +73,7 @@ func TestBuildResponsesInput_EmbedsTextUploadsInsteadOfNativeFiles(t *testing.T)
 				FilePath: "/tmp/term-llm/" + tc.filename,
 			}
 
-			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			input := responses.BuildResponsesInput([]core.Message{{Role: core.RoleUser, Parts: []core.Part{part}}})
 			if len(input) != 1 {
 				t.Fatalf("len(input) = %d, want 1", len(input))
 			}
@@ -101,10 +104,10 @@ func TestBuildResponsesInput_KeepsSpreadsheetsOnNativeFilePath(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := "name,count\napples,3\n"
-			message := Message{Role: RoleUser, Parts: []Part{{
-				Type: PartFile,
+			message := core.Message{Role: core.RoleUser, Parts: []core.Part{{
+				Type: core.PartFile,
 				Text: FormatEmbeddedFileText(tc.filename, tc.mediaType, body),
-				FileData: &ToolFileData{
+				FileData: &core.ToolFileData{
 					MediaType: tc.mediaType,
 					Base64:    base64.StdEncoding.EncodeToString([]byte(body)),
 					Filename:  tc.filename,
@@ -113,11 +116,11 @@ func TestBuildResponsesInput_KeepsSpreadsheetsOnNativeFilePath(t *testing.T) {
 				FilePath: "/tmp/term-llm/" + tc.filename,
 			}}}
 
-			input := BuildResponsesInput([]Message{message})
+			input := responses.BuildResponsesInput([]core.Message{message})
 			if len(input) != 1 {
 				t.Fatalf("len(input) = %d, want 1", len(input))
 			}
-			parts, ok := input[0].Content.([]ResponsesContentPart)
+			parts, ok := input[0].Content.([]responses.ResponsesContentPart)
 			if !ok || len(parts) != 1 {
 				t.Fatalf("content = %#v, want one native file part", input[0].Content)
 			}
@@ -149,10 +152,10 @@ func TestBuildResponsesInput_CapsPreferredTextEmbedBySize(t *testing.T) {
 		{"body over the preferred cap travels natively", strings.Repeat("x", maxPreferredTextEmbedBytes+1), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			part := Part{
-				Type: PartFile,
+			part := core.Part{
+				Type: core.PartFile,
 				Text: FormatEmbeddedFileText("server.log", "text/plain", tc.body),
-				FileData: &ToolFileData{
+				FileData: &core.ToolFileData{
 					MediaType: "text/plain",
 					Base64:    base64.StdEncoding.EncodeToString([]byte(tc.body)),
 					Filename:  "server.log",
@@ -161,12 +164,12 @@ func TestBuildResponsesInput_CapsPreferredTextEmbedBySize(t *testing.T) {
 				FilePath: "/tmp/term-llm/server.log",
 			}
 
-			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			input := responses.BuildResponsesInput([]core.Message{{Role: core.RoleUser, Parts: []core.Part{part}}})
 			if len(input) != 1 {
 				t.Fatalf("len(input) = %d, want 1", len(input))
 			}
 			if tc.wantNative {
-				parts, ok := input[0].Content.([]ResponsesContentPart)
+				parts, ok := input[0].Content.([]responses.ResponsesContentPart)
 				if !ok || len(parts) != 1 || parts[0].Type != "input_file" {
 					t.Fatalf("content = %#v, want one native file part", input[0].Content)
 				}
@@ -191,8 +194,8 @@ func TestBuildResponsesInput_FileFallbackIncludesPathAndMetadata(t *testing.T) {
 	for _, mediaType := range []string{"application/zip", "application/x-unknown", "application/pdf"} {
 		t.Run(mediaType, func(t *testing.T) {
 			policy := DefaultPortableTextFileUploadPolicy()
-			part := Part{Type: PartFile, Text: "legacy fallback without a path", FilePath: "/tmp/uploads/user-file", FileData: &ToolFileData{Filename: "user-file", MediaType: mediaType, Base64: "AP8BgA==", SizeBytes: 4}}
-			input := BuildResponsesInputWithFilePolicy([]Message{{Role: RoleUser, Parts: []Part{part}}}, &policy)
+			part := core.Part{Type: core.PartFile, Text: "legacy fallback without a path", FilePath: "/tmp/uploads/user-file", FileData: &core.ToolFileData{Filename: "user-file", MediaType: mediaType, Base64: "AP8BgA==", SizeBytes: 4}}
+			input := responses.BuildResponsesInputWithFilePolicy([]core.Message{{Role: core.RoleUser, Parts: []core.Part{part}}}, &policy)
 			if len(input) != 1 {
 				t.Fatalf("input = %#v", input)
 			}
@@ -239,22 +242,22 @@ func TestResponsesClientWebSocketTimeoutLogsLastProtocolProgress(t *testing.T) {
 	defer server.Close()
 
 	logDir := t.TempDir()
-	logger, err := NewDebugLogger(logDir, "ws-stall")
+	logger, err := debug.NewLogger(logDir, "ws-stall")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(withDebugDiagnosticSink(context.Background(), logger), 120*time.Millisecond)
+	ctx, cancel := context.WithTimeout(debug.WithDiagnosticSink(context.Background(), logger), 120*time.Millisecond)
 	defer cancel()
-	client := &ResponsesClient{
+	client := &responses.ResponsesClient{
 		BaseURL:                    server.URL,
 		UseWebSocket:               true,
 		WebSocketIdleTimeout:       40 * time.Millisecond,
 		WebSocketFirstEventTimeout: 30 * time.Millisecond,
 	}
-	stream, err := client.Stream(ctx, ResponsesRequest{
+	stream, err := client.Stream(ctx, responses.ResponsesRequest{
 		Model:          "gpt-test",
 		SessionID:      "session-stalled",
-		Input:          []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Input:          []responses.ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
 		Stream:         true,
 		ForceWebSocket: true,
 	}, false)
@@ -269,7 +272,7 @@ func TestResponsesClientWebSocketTimeoutLogsLastProtocolProgress(t *testing.T) {
 			}
 			break
 		}
-		if event.Type == EventError {
+		if event.Type == core.EventError {
 			if !strings.Contains(event.Err.Error(), "response idle timeout") {
 				t.Fatalf("stream error = %v, want application idle timeout", event.Err)
 			}
@@ -340,7 +343,7 @@ func TestValidateResponsesOptionsGPT56ProviderGating(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := validateResponsesOptions(tt.provider, tt.model, &ResponsesOptions{ReasoningMode: "pro"}, nil)
+			_, err := responses.ValidateOptions(tt.provider, tt.model, &core.ResponsesOptions{ReasoningMode: "pro"}, nil)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("validateResponsesOptions(%q, %q) error = %v, wantErr %t", tt.provider, tt.model, err, tt.wantErr)
 			}
@@ -349,11 +352,11 @@ func TestValidateResponsesOptionsGPT56ProviderGating(t *testing.T) {
 }
 
 func TestValidateResponsesOptionsNormalizesAndDefaults(t *testing.T) {
-	opts, err := validateResponsesOptions("openai", "gpt-5.6-sol", &ResponsesOptions{
+	opts, err := responses.ValidateOptions("openai", "gpt-5.6-sol", &core.ResponsesOptions{
 		ReasoningMode:    " Pro ",
 		ReasoningContext: " ALL_TURNS ",
-		MultiAgent:       MultiAgentOptions{Enabled: true, EnabledSet: true},
-		PromptCache:      PromptCacheOptions{Mode: " EXPLICIT ", TTL: " 30M "},
+		MultiAgent:       core.MultiAgentOptions{Enabled: true, EnabledSet: true},
+		PromptCache:      core.PromptCacheOptions{Mode: " EXPLICIT ", TTL: " 30M "},
 	}, nil)
 	if err != nil {
 		t.Fatalf("validateResponsesOptions() error = %v", err)
@@ -370,10 +373,10 @@ func TestValidateResponsesOptionsNormalizesAndDefaults(t *testing.T) {
 }
 
 func TestBuildResponsesInput_FilePolicyAllowsNativePDF(t *testing.T) {
-	messages := []Message{{Role: RoleUser, Parts: []Part{{
-		Type: PartFile,
+	messages := []core.Message{{Role: core.RoleUser, Parts: []core.Part{{
+		Type: core.PartFile,
 		Text: "[User uploaded file: doc.pdf — saved locally]",
-		FileData: &ToolFileData{
+		FileData: &core.ToolFileData{
 			MediaType: "application/pdf",
 			Base64:    "aGVsbG8=",
 			Filename:  "doc.pdf",
@@ -382,11 +385,11 @@ func TestBuildResponsesInput_FilePolicyAllowsNativePDF(t *testing.T) {
 		FilePath: "/tmp/term-llm/doc.pdf",
 	}}}}
 
-	input := BuildResponsesInput(messages)
+	input := responses.BuildResponsesInput(messages)
 	if len(input) != 1 {
 		t.Fatalf("len(input) = %d, want 1", len(input))
 	}
-	parts, ok := input[0].Content.([]ResponsesContentPart)
+	parts, ok := input[0].Content.([]responses.ResponsesContentPart)
 	if !ok || len(parts) != 1 {
 		t.Fatalf("content = %#v, want one content part", input[0].Content)
 	}
@@ -416,11 +419,11 @@ func TestBuildResponsesInput_KeepsNativeFileWhenStoredTextIsOnlyANotice(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			base64Data := base64.StdEncoding.EncodeToString([]byte{0xff, 0xfe, 0x00, 0x41, 0x00, 0x42})
 			notice := formatUploadedFileNotice(tc.filename, tc.mediaType, "/tmp/term-llm/"+tc.filename, 6)
-			part := Part{
-				Type:     PartFile,
+			part := core.Part{
+				Type:     core.PartFile,
 				Text:     notice,
 				FilePath: "/tmp/term-llm/" + tc.filename,
-				FileData: &ToolFileData{
+				FileData: &core.ToolFileData{
 					MediaType: tc.mediaType,
 					Base64:    base64Data,
 					Filename:  tc.filename,
@@ -428,14 +431,14 @@ func TestBuildResponsesInput_KeepsNativeFileWhenStoredTextIsOnlyANotice(t *testi
 				},
 			}
 
-			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			input := responses.BuildResponsesInput([]core.Message{{Role: core.RoleUser, Parts: []core.Part{part}}})
 			if len(input) != 1 {
 				t.Fatalf("len(input) = %d, want 1", len(input))
 			}
 			if content, ok := input[0].Content.(string); ok {
 				t.Fatalf("content = %q, want a native input_file instead of the notice", content)
 			}
-			parts, ok := input[0].Content.([]ResponsesContentPart)
+			parts, ok := input[0].Content.([]responses.ResponsesContentPart)
 			if !ok || len(parts) != 1 {
 				t.Fatalf("content = %#v, want one native file part", input[0].Content)
 			}
@@ -458,11 +461,11 @@ func TestBuildResponsesInput_NeverRelabelsBinaryUploadsAsText(t *testing.T) {
 	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03}
 	for _, filename := range []string{"photo.md", "photo.txt"} {
 		t.Run(filename, func(t *testing.T) {
-			part := Part{
-				Type:     PartFile,
+			part := core.Part{
+				Type:     core.PartFile,
 				Text:     formatUploadedFileNotice(filename, "image/png", "/tmp/term-llm/"+filename, int64(len(png))),
 				FilePath: "/tmp/term-llm/" + filename,
-				FileData: &ToolFileData{
+				FileData: &core.ToolFileData{
 					MediaType: "image/png",
 					Base64:    base64.StdEncoding.EncodeToString(png),
 					Filename:  filename,
@@ -470,7 +473,7 @@ func TestBuildResponsesInput_NeverRelabelsBinaryUploadsAsText(t *testing.T) {
 				},
 			}
 
-			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			input := responses.BuildResponsesInput([]core.Message{{Role: core.RoleUser, Parts: []core.Part{part}}})
 			if len(input) != 1 {
 				t.Fatalf("len(input) = %d, want 1", len(input))
 			}
@@ -486,7 +489,7 @@ func TestBuildResponsesInput_NeverRelabelsBinaryUploadsAsText(t *testing.T) {
 }
 
 func TestBuildResponsesToolsStrictOptIn(t *testing.T) {
-	specs := []ToolSpec{
+	specs := []core.ToolSpec{
 		{
 			Name:   "get_weather",
 			Strict: true,
@@ -498,8 +501,8 @@ func TestBuildResponsesToolsStrictOptIn(t *testing.T) {
 			},
 		},
 	}
-	tools := BuildResponsesTools(specs)
-	tool := tools[0].(ResponsesTool)
+	tools := responses.BuildResponsesTools(specs)
+	tool := tools[0].(responses.ResponsesTool)
 	if !tool.Strict {
 		t.Error("expected Strict to be true when opted in")
 	}
@@ -524,11 +527,11 @@ func composeBetaHeader(existing, addition string) string {
 	return responses.ComposeBetaHeader(existing, addition)
 }
 
-func buildResponsesAssistantItems(parts []Part) []ResponsesInputItem {
+func buildResponsesAssistantItems(parts []core.Part) []responses.ResponsesInputItem {
 	return responses.BuildAssistantItems(parts)
 }
 
-func trimResponsesContinuationToDiscoveryOutput(input []ResponsesInputItem) []ResponsesInputItem {
+func trimResponsesContinuationToDiscoveryOutput(input []responses.ResponsesInputItem) []responses.ResponsesInputItem {
 	return responses.TrimContinuationToDiscoveryOutput(input)
 }
 
@@ -548,7 +551,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func drainStreamToDone(t *testing.T, stream Stream) {
+func drainStreamToDone(t *testing.T, stream core.Stream) {
 	t.Helper()
 	for {
 		event, recvErr := stream.Recv()
@@ -558,29 +561,29 @@ func drainStreamToDone(t *testing.T, stream Stream) {
 		if recvErr != nil {
 			t.Fatalf("stream recv failed: %v", recvErr)
 		}
-		if event.Type == EventError {
+		if event.Type == core.EventError {
 			t.Fatalf("stream returned error event: %v", event.Err)
 		}
-		if event.Type == EventDone {
+		if event.Type == core.EventDone {
 			return
 		}
 	}
 }
 
-func cumulativeReasoningEvents(t *testing.T) []Event {
+func cumulativeReasoningEvents(t *testing.T) []core.Event {
 	t.Helper()
-	return streamResponsesFixture(t, cumulativeReasoningSSEFixture(), ResponsesRequest{
+	return streamResponsesFixture(t, cumulativeReasoningSSEFixture(), responses.ResponsesRequest{
 		Model:  "gpt-test",
-		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Input:  []responses.ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
 		Stream: true,
-		StreamOptions: &ResponsesStreamOptions{
+		StreamOptions: &responses.ResponsesStreamOptions{
 			ReasoningSummaryDelivery: "sequential_cutoff",
 		},
 	})
 }
 
-func replayPart(raw string) Part {
-	return Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: json.RawMessage(raw)}}
+func replayPart(raw string) core.Part {
+	return core.Part{Type: core.PartProviderReplay, ProviderReplay: &core.ProviderReplayItem{Raw: json.RawMessage(raw)}}
 }
 
 func cumulativeReasoningSSEFixture() string {
@@ -628,7 +631,7 @@ func cumulativeReasoningSSEFixture() string {
 	}, "\n")
 }
 
-func streamResponsesFixture(t *testing.T, sse string, req ResponsesRequest) []Event {
+func streamResponsesFixture(t *testing.T, sse string, req responses.ResponsesRequest) []core.Event {
 	t.Helper()
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -638,7 +641,7 @@ func streamResponsesFixture(t *testing.T, sse string, req ResponsesRequest) []Ev
 			Body:       io.NopCloser(strings.NewReader(sse)),
 		}, nil
 	})}
-	client := &ResponsesClient{
+	client := &responses.ResponsesClient{
 		BaseURL:    "https://example.test/v1/responses",
 		HTTPClient: httpClient,
 	}
@@ -648,7 +651,7 @@ func streamResponsesFixture(t *testing.T, sse string, req ResponsesRequest) []Ev
 	}
 	defer stream.Close()
 
-	var events []Event
+	var events []core.Event
 	for {
 		event, recvErr := stream.Recv()
 		if recvErr == io.EOF {
@@ -658,7 +661,7 @@ func streamResponsesFixture(t *testing.T, sse string, req ResponsesRequest) []Ev
 			t.Fatalf("stream recv failed: %v", recvErr)
 		}
 		events = append(events, event)
-		if event.Type == EventDone {
+		if event.Type == core.EventDone {
 			return events
 		}
 	}

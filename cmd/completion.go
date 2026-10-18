@@ -10,7 +10,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
@@ -28,10 +30,10 @@ const (
 )
 
 var (
-	refreshAgyBinModelsForCompletion    = llm.RefreshAgyBinModelsIfStale
-	refreshGrokBinModelsForCompletion   = llm.RefreshGrokBinModelsIfStale
+	refreshAgyBinModelsForCompletion    = clibin.RefreshAgyBinModelsIfStale
+	refreshGrokBinModelsForCompletion   = clibin.RefreshGrokBinModelsIfStale
 	refreshOllamaModelsForCompletion    = ollama.RefreshOllamaModelsIfStale
-	refreshZenModelsForCompletion       = llm.RefreshZenModelsIfStale
+	refreshZenModelsForCompletion       = responsesproviders.RefreshZenModelsIfStale
 	refreshEndpointModelsForCompletion  = llm.RefreshEndpointModelsIfStale
 	refreshAnthropicModelsForCompletion = anthropic.RefreshAnthropicModelsIfStale
 	claimAnthropicCatalogRefresh        = anthropic.ClaimAnthropicCatalogRefresh

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -18,12 +18,12 @@ type telegramEventAccumulator struct {
 	activePhase                                                    string
 	toolsRan                                                       bool
 	images                                                         []string
-	media                                                          []llm.MediaArtifact
+	media                                                          []core.MediaArtifact
 	textDeltas, reasoningDeltas                                    int
 	toolStarts, toolEnds, toolCalls                                int
 	phaseEvents, usageEvents, doneEvents, retryEvents, errorEvents int
 	otherEvents                                                    int
-	otherTypes                                                     map[llm.EventType]int
+	otherTypes                                                     map[core.EventType]int
 }
 
 type telegramEventSnapshot struct {
@@ -32,16 +32,16 @@ type telegramEventSnapshot struct {
 	Phase                                                          string
 	ToolsRan                                                       bool
 	Images                                                         []string
-	Media                                                          []llm.MediaArtifact
+	Media                                                          []core.MediaArtifact
 	TextDeltas, ReasoningDeltas                                    int
 	ToolStarts, ToolEnds, ToolCalls                                int
 	PhaseEvents, UsageEvents, DoneEvents, RetryEvents, ErrorEvents int
 	OtherEvents                                                    int
-	OtherTypes                                                     map[llm.EventType]int
+	OtherTypes                                                     map[core.EventType]int
 }
 
 func newTelegramEventAccumulator(resume *telegramContinuation) *telegramEventAccumulator {
-	a := &telegramEventAccumulator{activeTools: make(map[string]string), otherTypes: make(map[llm.EventType]int)}
+	a := &telegramEventAccumulator{activeTools: make(map[string]string), otherTypes: make(map[core.EventType]int)}
 	if resume != nil {
 		a.text.WriteString(resume.Text)
 		a.images = append(a.images, resume.Images...)
@@ -51,40 +51,40 @@ func newTelegramEventAccumulator(resume *telegramContinuation) *telegramEventAcc
 }
 
 // Apply reduces one event and returns the accumulated prose byte length.
-func (a *telegramEventAccumulator) Apply(ev llm.Event) int {
+func (a *telegramEventAccumulator) Apply(ev core.Event) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	switch ev.Type {
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		a.text.WriteString(ev.Text)
 		a.textDeltas++
-	case llm.EventReasoningDelta:
+	case core.EventReasoningDelta:
 		a.reasoningDeltas++
-	case llm.EventToolExecStart:
+	case core.EventToolExecStart:
 		a.activeTools[ev.ToolCallID] = ev.ToolName
 		a.toolsRan = true
 		a.toolStarts++
-	case llm.EventToolExecEnd:
+	case core.EventToolExecEnd:
 		delete(a.activeTools, ev.ToolCallID)
 		a.toolEnds++
 		a.images = append(a.images, ev.ToolImages...)
 		a.media = append(a.media, ev.ToolMedia...)
-	case llm.EventHeartbeat:
-	case llm.EventPhase:
+	case core.EventHeartbeat:
+	case core.EventPhase:
 		a.activePhase = ev.Text
 		a.phaseEvents++
-	case llm.EventToolCall:
+	case core.EventToolCall:
 		a.toolCalls++
-	case llm.EventUsage:
+	case core.EventUsage:
 		a.usageEvents++
-	case llm.EventDone:
+	case core.EventDone:
 		a.doneEvents++
-	case llm.EventRetry:
+	case core.EventRetry:
 		a.retryEvents++
 		a.activePhase = ui.FormatRetryStatus("Retrying", ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs, 0, "")
-	case llm.EventSteering:
+	case core.EventSteering:
 		a.activePhase = "📝 Considering: " + tailRunes(strings.TrimSpace(ev.Text), 80)
-	case llm.EventError:
+	case core.EventError:
 		a.errorEvents++
 	default:
 		a.otherEvents++
@@ -96,13 +96,13 @@ func (a *telegramEventAccumulator) Apply(ev llm.Event) int {
 func (a *telegramEventAccumulator) Snapshot() telegramEventSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	other := make(map[llm.EventType]int, len(a.otherTypes))
+	other := make(map[core.EventType]int, len(a.otherTypes))
 	for k, v := range a.otherTypes {
 		other[k] = v
 	}
 	return telegramEventSnapshot{
 		Text: a.text.String(), ToolDisplay: activeToolDisplay(a.activeTools), Phase: a.activePhase, ToolsRan: a.toolsRan,
-		Images: append([]string(nil), a.images...), Media: append([]llm.MediaArtifact(nil), a.media...),
+		Images: append([]string(nil), a.images...), Media: append([]core.MediaArtifact(nil), a.media...),
 		TextDeltas: a.textDeltas, ReasoningDeltas: a.reasoningDeltas, ToolStarts: a.toolStarts, ToolEnds: a.toolEnds, ToolCalls: a.toolCalls,
 		PhaseEvents: a.phaseEvents, UsageEvents: a.usageEvents, DoneEvents: a.doneEvents, RetryEvents: a.retryEvents, ErrorEvents: a.errorEvents,
 		OtherEvents: a.otherEvents, OtherTypes: other,

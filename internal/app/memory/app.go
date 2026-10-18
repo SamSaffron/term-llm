@@ -13,7 +13,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -24,7 +25,7 @@ type Deps struct {
 	LoadConfig func() (*config.Config, error)
 	// ApplyAskProviderOverrides applies the configured ask provider/model to cfg.
 	ApplyAskProviderOverrides func(cfg *config.Config) error
-	NewEngine                 func(provider llm.Provider, cfg *config.Config) *llm.Engine
+	NewEngine                 func(provider core.Provider, cfg *config.Config) *engine.Engine
 	SessionStoreConfig        func(cfg *config.Config) session.Config
 	ParseTags                 func(tags string) []string
 	FormatRelativeTime        func(t time.Time) string

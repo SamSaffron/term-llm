@@ -17,6 +17,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -142,10 +144,10 @@ func (s *serveServer) runLiveRoute(ctx context.Context, record *liveSession, ses
 	// from acquiring capabilities this lane never grants. Unlike a side question, the
 	// router is expected to call tools, so the tool surface and the turn budget stay
 	// populated.
-	llmRequest := llm.Request{
-		Messages: []llm.Message{
-			llm.SystemText(liveControlSystemPrompt),
-			llm.UserText(s.liveControlUserMessage(ctx, sessionID, request)),
+	llmRequest := core.Request{
+		Messages: []core.Message{
+			core.SystemText(liveControlSystemPrompt),
+			core.UserText(s.liveControlUserMessage(ctx, sessionID, request)),
 		},
 		Ephemeral:               true,
 		SessionID:               sessionID,
@@ -177,10 +179,10 @@ func (s *serveServer) runLiveRoute(ctx context.Context, record *liveSession, ses
 			// tool, which is the evidence that outranks it (see liveRouteResult).
 			return liveRouteResult(handoff, acted, "", fmt.Errorf("live router turn: %w", err))
 		}
-		if event.Type == llm.EventTextDelta {
+		if event.Type == core.EventTextDelta {
 			answer.WriteString(event.Text)
 		}
-		if event.Type == llm.EventError && event.Err != nil {
+		if event.Type == core.EventError && event.Err != nil {
 			return liveRouteResult(handoff, acted, "", fmt.Errorf("live router turn: %w", event.Err))
 		}
 	}
@@ -216,14 +218,14 @@ func (s *serveServer) resolveLiveSwitch(ctx context.Context, record *liveSession
 	turnCtx, cancel := context.WithTimeout(s.withLiveControlAuthority(ctx, record, sessionID), liveControlTurnTimeout)
 	defer cancel()
 	activity := &liveSwitchResolverActivity{}
-	engine, specs := newLiveToolEngine(provider, []llm.Tool{
+	engine, specs := newLiveToolEngine(provider, []core.Tool{
 		&liveSwitchResolverTool{Tool: &tools.SessionDirectoryTool{}, activity: activity},
 		&liveSwitchResolverTool{Tool: &tools.LiveSwitchSessionTool{}, activity: activity},
 	})
-	stream, err := engine.Stream(turnCtx, llm.Request{
-		Messages: []llm.Message{
-			llm.SystemText(liveSwitchResolverSystemPrompt),
-			llm.UserText(s.liveControlUserMessage(ctx, sessionID, request)),
+	stream, err := engine.Stream(turnCtx, core.Request{
+		Messages: []core.Message{
+			core.SystemText(liveSwitchResolverSystemPrompt),
+			core.UserText(s.liveControlUserMessage(ctx, sessionID, request)),
 		},
 		Ephemeral: true, SessionID: sessionID, Tools: specs,
 		MaxTurns: liveControlMaxTurns, DisableExternalWebFetch: true,
@@ -244,7 +246,7 @@ func (s *serveServer) resolveLiveSwitch(ctx context.Context, record *liveSession
 			}
 			return liveSwitchResolverOutcome{Kind: liveSwitchResolverError}, fmt.Errorf("live switch resolver turn: %w", recvErr)
 		}
-		if event.Type == llm.EventError && event.Err != nil {
+		if event.Type == core.EventError && event.Err != nil {
 			outcome := activity.outcome()
 			if outcome.Kind != liveSwitchResolverFailOpen {
 				return outcome, nil
@@ -263,11 +265,11 @@ type liveSwitchResolverActivity struct {
 }
 
 type liveSwitchResolverTool struct {
-	llm.Tool
+	core.Tool
 	activity *liveSwitchResolverActivity
 }
 
-func (t *liveSwitchResolverTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *liveSwitchResolverTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	output, err := t.Tool.Execute(ctx, args)
 	t.activity.mu.Lock()
 	defer t.activity.mu.Unlock()
@@ -440,8 +442,8 @@ type passToWorkspaceTool struct {
 // this call instead of paying for a second provider request.
 func (*passToWorkspaceTool) IsFinishingTool() bool { return true }
 
-func (*passToWorkspaceTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (*passToWorkspaceTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: livePassToWorkspaceToolName,
 		Description: "Hand this request to the workspace agent, which has the files, shell, and project context. Use it for everything that is not " +
 			"about the user's sessions, this call, or its voice. Pass the user's request through unchanged, or cleaned up when speech recognition " +
@@ -460,20 +462,20 @@ func (*passToWorkspaceTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *passToWorkspaceTool) Execute(_ context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *passToWorkspaceTool) Execute(_ context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	params := struct {
 		Request string `json:"request"`
 	}{}
 	decoder := json.NewDecoder(bytes.NewReader(args))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&params); err != nil {
-		return llm.ToolOutput{}, tools.NewToolErrorf(tools.ErrInvalidParams, "invalid handoff: %v", err)
+		return core.ToolOutput{}, tools.NewToolErrorf(tools.ErrInvalidParams, "invalid handoff: %v", err)
 	}
 	if strings.TrimSpace(params.Request) == "" {
-		return llm.ToolOutput{}, tools.NewToolError(tools.ErrInvalidParams, "a request for the workspace agent is required")
+		return core.ToolOutput{}, tools.NewToolError(tools.ErrInvalidParams, "a request for the workspace agent is required")
 	}
 	t.handoff.record(params.Request)
-	return llm.TextOutput("Handed to the workspace agent."), nil
+	return core.TextOutput("Handed to the workspace agent."), nil
 }
 
 func (*passToWorkspaceTool) Preview(args json.RawMessage) string {
@@ -504,8 +506,8 @@ func liveControlPreviewText(text string) string {
 // liveControlScopedTools are the call-scoped tools: they act on the call and the
 // user's sessions, and each one requires the host-built authority context, so a
 // schema in a registry grants nothing.
-func liveControlScopedTools() []llm.Tool {
-	return []llm.Tool{
+func liveControlScopedTools() []core.Tool {
+	return []core.Tool{
 		&tools.SessionDirectoryTool{},
 		&tools.LiveSwitchSessionTool{},
 		&tools.LiveNewSessionTool{},
@@ -517,8 +519,8 @@ func liveControlScopedTools() []llm.Tool {
 // call-scoped tools and the host-local handoff. Registration grants nothing on its
 // own — each control tool still requires the host-built context — and no other tool
 // is registered or allowed.
-func liveControlTools(handoff *workspaceHandoff, acted *controlActivity) []llm.Tool {
-	tools := make([]llm.Tool, 0, 5)
+func liveControlTools(handoff *workspaceHandoff, acted *controlActivity) []core.Tool {
+	tools := make([]core.Tool, 0, 5)
 	for _, tool := range liveControlScopedTools() {
 		tools = append(tools, &controlActivityTool{Tool: tool, acted: acted})
 	}
@@ -553,11 +555,11 @@ func (a *controlActivity) did() bool { return a != nil && a.acted.Load() }
 // model failing to make a request; everything else, including every domain error,
 // is the model having made one.
 type controlActivityTool struct {
-	llm.Tool
+	core.Tool
 	acted *controlActivity
 }
 
-func (t *controlActivityTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *controlActivityTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	output, err := t.Tool.Execute(ctx, args)
 	if !controlAttemptRejected(err) {
 		t.acted.acted.Store(true)
@@ -579,13 +581,13 @@ func controlAttemptRejected(err error) bool {
 // newLiveControlEngine builds the general router's throwaway engine. The engine
 // helper takes the complete tool set explicitly so registration, request schemas,
 // and the allowlist can never drift apart.
-func newLiveControlEngine(provider llm.Provider, handoff *workspaceHandoff, acted *controlActivity) (*llm.Engine, []llm.ToolSpec) {
+func newLiveControlEngine(provider core.Provider, handoff *workspaceHandoff, acted *controlActivity) (*engine.Engine, []core.ToolSpec) {
 	return newLiveToolEngine(provider, liveControlTools(handoff, acted))
 }
 
-func newLiveToolEngine(provider llm.Provider, registered []llm.Tool) (*llm.Engine, []llm.ToolSpec) {
-	engine := llm.NewEngine(provider, nil)
-	specs := make([]llm.ToolSpec, 0, len(registered))
+func newLiveToolEngine(provider core.Provider, registered []core.Tool) (*engine.Engine, []core.ToolSpec) {
+	engine := engine.NewEngine(provider, nil)
+	specs := make([]core.ToolSpec, 0, len(registered))
 	allowed := make([]string, 0, len(registered))
 	for _, tool := range registered {
 		engine.RegisterTool(tool)
@@ -601,7 +603,7 @@ func newLiveToolEngine(provider llm.Provider, registered []llm.Tool) (*llm.Engin
 // automatic-title convention rather than adding configuration: the bound session's
 // own durable provider first, the configured default second, and the injectable
 // factory for tests.
-func (s *serveServer) newLiveControlProvider(ctx context.Context, sessionID string) (llm.Provider, error) {
+func (s *serveServer) newLiveControlProvider(ctx context.Context, sessionID string) (core.Provider, error) {
 	providerKey, _ := s.persistedRuntimeIdentity(ctx, sessionID)
 	defaultProvider := ""
 	if s.cfgRef != nil {
@@ -763,7 +765,7 @@ func liveControlClipAnswer(text string) string {
 // than of which call sites exist today: without it the three session-control tools
 // cannot be installed by any caller.
 func (s *serveServer) withLiveControlAuthority(ctx context.Context, record *liveSession, sessionID string) context.Context {
-	ctx = s.withLiveSettingsContext(llm.ContextWithSessionID(ctx, sessionID), record, sessionID)
+	ctx = s.withLiveSettingsContext(core.ContextWithSessionID(ctx, sessionID), record, sessionID)
 	if record == nil || sessionID == "" || !s.liveConfig().ControlAuthorityAllowed() {
 		return ctx
 	}

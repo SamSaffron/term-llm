@@ -7,14 +7,14 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 )
 
-var fetchProviderUsage = llm.FetchProviderUsageWithAPIKey
+var fetchProviderUsage = providerusage.FetchWithAPIKey
 
 type providerUsageDoneMsg struct {
 	provider string
-	report   *llm.ProviderUsage
+	report   *providerusage.Report
 	err      error
 }
 
@@ -64,7 +64,7 @@ func (m *Model) handleProviderUsageDone(msg providerUsageDoneMsg) (tea.Model, te
 	if m.dialog != nil {
 		width = m.dialog.contentWidth() - 4
 	}
-	content := llm.FormatProviderUsageWithOptions(msg.report, time.Now(), llm.ProviderUsageFormatOptions{Width: width})
+	content := providerusage.FormatWithOptions(msg.report, time.Now(), providerusage.FormatOptions{Width: width})
 	if strings.TrimSpace(content) == "" {
 		return m.showFooterError("Provider returned an empty usage report.")
 	}

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/filemime"
 )
 
 // sortedKeys returns the keys of a MIME set in deterministic order.
@@ -102,7 +104,7 @@ func TestCanonicalUploadMediaType(t *testing.T) {
 		{"uppercase accepted", "data.csv", "APPLICATION/OCTET-STREAM", "text/csv"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := CanonicalUploadMediaType(tc.filename, tc.mediaType); got != tc.want {
+			if got := filemime.CanonicalUploadMediaType(tc.filename, tc.mediaType); got != tc.want {
 				t.Fatalf("CanonicalUploadMediaType(%q, %q) = %q, want %q", tc.filename, tc.mediaType, got, tc.want)
 			}
 		})
@@ -135,7 +137,7 @@ func TestCanonicalTextUploadMediaType(t *testing.T) {
 		{"empty everything", "", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := CanonicalTextUploadMediaType(tc.filename, tc.mediaType); got != tc.want {
+			if got := filemime.CanonicalTextUploadMediaType(tc.filename, tc.mediaType); got != tc.want {
 				t.Fatalf("CanonicalTextUploadMediaType(%q, %q) = %q, want %q", tc.filename, tc.mediaType, got, tc.want)
 			}
 		})
@@ -180,7 +182,7 @@ func TestIsTextLikeMediaType(t *testing.T) {
 		{"image/svg+xml", false},
 		{"video/mp4", false},
 	} {
-		if got := IsTextLikeMediaType(tc.mediaType); got != tc.want {
+		if got := filemime.IsTextLikeMediaType(tc.mediaType); got != tc.want {
 			t.Errorf("IsTextLikeMediaType(%q) = %v, want %v", tc.mediaType, got, tc.want)
 		}
 	}
@@ -207,8 +209,8 @@ func TestOpenAIResponsesAcceptedFileMIMETypesAreCanonical(t *testing.T) {
 			t.Errorf("accepted MIME type %q is a wildcard; the API only matches exact tokens", mediaType)
 		case !strings.Contains(mediaType, "/"):
 			t.Errorf("accepted MIME type %q is not a type/subtype pair", mediaType)
-		case NormalizeMediaType(mediaType) != mediaType:
-			t.Errorf("accepted MIME type %q is not normalized (%q)", mediaType, NormalizeMediaType(mediaType))
+		case filemime.NormalizeMediaType(mediaType) != mediaType:
+			t.Errorf("accepted MIME type %q is not normalized (%q)", mediaType, filemime.NormalizeMediaType(mediaType))
 		case seen[mediaType]:
 			t.Errorf("accepted MIME type %q is duplicated", mediaType)
 		}
@@ -221,7 +223,7 @@ func TestUploadMediaTypeAliasesResolveToAcceptedTokens(t *testing.T) {
 		t.Fatal("alias table is empty")
 	}
 	for alias, canonical := range uploadMediaTypeAliases {
-		if alias != NormalizeMediaType(alias) {
+		if alias != filemime.NormalizeMediaType(alias) {
 			t.Errorf("alias key %q is not a normalized MIME type", alias)
 		}
 		if alias == canonical {
@@ -230,7 +232,7 @@ func TestUploadMediaTypeAliasesResolveToAcceptedTokens(t *testing.T) {
 		if !acceptedFileMIMEType(canonical) {
 			t.Errorf("alias %q targets %q, which the Responses API does not accept", alias, canonical)
 		}
-		if got := CanonicalUploadMediaType("", canonical); got != canonical {
+		if got := filemime.CanonicalUploadMediaType("", canonical); got != canonical {
 			t.Errorf("alias target %q is not canonical (got %q)", canonical, got)
 		}
 	}
@@ -250,7 +252,7 @@ func TestExtensionCanonicalMediaTypesResolveToAcceptedTokens(t *testing.T) {
 		if !acceptedFileMIMEType(canonical) {
 			t.Errorf("extension %q targets %q, which the Responses API does not accept", extension, canonical)
 		}
-		if got := CanonicalUploadMediaType("upload"+extension, canonical); got != canonical {
+		if got := filemime.CanonicalUploadMediaType("upload"+extension, canonical); got != canonical {
 			t.Errorf("extension target %q is not canonical (got %q)", canonical, got)
 		}
 	}
@@ -289,15 +291,15 @@ func TestCanonicalUploadMediaTypeRepairsKnownSourceLabels(t *testing.T) {
 		{".rb", ""},
 	} {
 		filename := "upload" + tc.extension
-		canonical := CanonicalTextUploadMediaType(filename, tc.label)
+		canonical := filemime.CanonicalTextUploadMediaType(filename, tc.label)
 		if !acceptedFileMIMEType(canonical) {
 			t.Errorf("%s: CanonicalTextUploadMediaType(%q, %q) = %q, which the Responses API does not accept", tc.extension, filename, tc.label, canonical)
 		}
-		if !IsTextLikeMediaType(canonical) {
+		if !filemime.IsTextLikeMediaType(canonical) {
 			t.Errorf("%s: CanonicalTextUploadMediaType(%q, %q) = %q, which is not text-like", tc.extension, filename, tc.label, canonical)
 		}
 		// Diagnostic only: the host database is not part of the contract.
-		t.Logf("%s: host mime.TypeByExtension = %q", tc.extension, NormalizeMediaType(mime.TypeByExtension(tc.extension)))
+		t.Logf("%s: host mime.TypeByExtension = %q", tc.extension, filemime.NormalizeMediaType(mime.TypeByExtension(tc.extension)))
 	}
 }
 
@@ -314,7 +316,7 @@ func TestDefaultOpenAIResponsesFileUploadPolicyAcceptsOnlyExactTokens(t *testing
 			t.Errorf("default native MIME type %q is not in the accepted list", mediaType)
 		}
 	}
-	if got := CanonicalUploadMediaType("common_helper.rb", "text/x-ruby-script"); !policy.AllowsNative(got, 1024) {
+	if got := filemime.CanonicalUploadMediaType("common_helper.rb", "text/x-ruby-script"); !policy.AllowsNative(got, 1024) {
 		t.Error("default native policy should allow the canonical .rb token")
 	}
 	if policy.AllowsNative("text/x-ruby-script", 1024) {
@@ -343,7 +345,7 @@ func TestPortableTextEmbedTypesAreDerivedFromTheTextLikeSet(t *testing.T) {
 	// Alias keys resolve before the lookup, so the portable list must not carry
 	// them as unreachable entries.
 	for alias := range uploadMediaTypeAliases {
-		if allowed := mimeSet(portable.TextEmbedMimeTypes)[alias]; allowed {
+		if allowed := filemime.MimeSet(portable.TextEmbedMimeTypes)[alias]; allowed {
 			t.Errorf("portable text embed types contain the alias key %q", alias)
 		}
 	}

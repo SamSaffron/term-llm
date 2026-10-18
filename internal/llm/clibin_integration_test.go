@@ -11,14 +11,18 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/factory"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 )
 
 func TestCreateProviderFromConfigAgyBin(t *testing.T) {
-	provider, err := createProviderFromConfig("agy-bin", &config.ProviderConfig{Model: "gemini-3.6-flash-high"})
+	provider, err := factory.Create("agy-bin", &config.ProviderConfig{Model: "gemini-3.6-flash-high"}, factoryOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := provider.(*AgyBinProvider); !ok {
+	if _, ok := provider.(*clibin.AgyBinProvider); !ok {
 		t.Fatalf("provider = %T", provider)
 	}
 }
@@ -26,14 +30,14 @@ func TestCreateProviderFromConfigAgyBin(t *testing.T) {
 func TestProviderModelIDsPrefersAgyBinCache(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	want := []string{"gemini-3.8-flash-high", "claude-sonnet-4-6"}
-	RefreshAgyBinCacheSync([]core.ModelInfo{{ID: want[0]}, {ID: want[1]}})
+	clibin.RefreshAgyBinCacheSync([]core.ModelInfo{{ID: want[0]}, {ID: want[1]}})
 	if got := ProviderModelIDs("agy-bin"); !equalSlice(got, want) {
 		t.Fatalf("ProviderModelIDs = %v, want %v", got, want)
 	}
 }
 
 func TestRetryProviderForwardsBoundaryFork(t *testing.T) {
-	wrapped := WrapWithRetry(NewClaudeBinProvider("opus-max", nil), DefaultRetryConfig())
+	wrapped := WrapWithRetry(clibin.NewClaudeBinProvider("opus-max", nil), DefaultRetryConfig())
 	if !SupportsHelperBoundaryFork(wrapped) {
 		t.Fatal("RetryProvider does not advertise the boundary fork seam")
 	}
@@ -49,18 +53,18 @@ func TestRetryProviderForwardsBoundaryFork(t *testing.T) {
 // A provider without the seam must refuse rather than silently degrade to a
 // suffix-only fork, which would deliver no conversation history at all.
 func TestForkHelperAtBoundaryRefusesProvidersWithoutTheSeam(t *testing.T) {
-	if _, ok := ForkHelperAtBoundary(NewMockProvider("mock"), []byte(`{"session_id":"s"}`), []core.Message{core.UserText("q")}); ok {
+	if _, ok := ForkHelperAtBoundary(mockprovider.NewMockProvider("mock"), []byte(`{"session_id":"s"}`), []core.Message{core.UserText("q")}); ok {
 		t.Fatal("expected refusal for a provider that does not implement the boundary fork seam")
 	}
 }
 
 func TestRetryProvider_SupportsInlineFlushOnlyWhenInnerDoes(t *testing.T) {
 	for _, provider := range []core.Provider{
-		NewMockProvider("mock"),
-		&disabledInlineFlusher{Provider: NewMockProvider("disabled-inline-flusher")},
+		mockprovider.NewMockProvider("mock"),
+		&disabledInlineFlusher{Provider: mockprovider.NewMockProvider("disabled-inline-flusher")},
 	} {
 		wrapped := WrapWithRetry(provider, DefaultRetryConfig())
-		flusher, ok := wrapped.(InlineFlusher)
+		flusher, ok := wrapped.(engine.InlineFlusher)
 		if !ok {
 			t.Fatal("RetryProvider should implement InlineFlusher")
 		}
@@ -73,11 +77,11 @@ func TestRetryProvider_SupportsInlineFlushOnlyWhenInnerDoes(t *testing.T) {
 func TestRetryProvider_ForwardsToolExecutorSetter(t *testing.T) {
 	// ClaudeBinProvider is wrapped with WrapWithRetry in the factory.
 	// The RetryProvider must forward SetToolExecutor to the inner provider.
-	provider := NewClaudeBinProvider("sonnet", nil)
+	provider := clibin.NewClaudeBinProvider("sonnet", nil)
 	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
 
 	// The wrapped provider must also implement ToolExecutorSetter
-	if _, ok := wrapped.(ToolExecutorSetter); !ok {
+	if _, ok := wrapped.(engine.ToolExecutorSetter); !ok {
 		t.Fatal("RetryProvider does not implement ToolExecutorSetter interface - tools will not work with wrapped providers")
 	}
 }
@@ -85,26 +89,26 @@ func TestRetryProvider_ForwardsToolExecutorSetter(t *testing.T) {
 func TestRetryProvider_ForwardsProviderCleaner(t *testing.T) {
 	// ClaudeBinProvider is wrapped with WrapWithRetry in the factory.
 	// The RetryProvider must forward CleanupMCP to the inner provider.
-	provider := NewClaudeBinProvider("sonnet", nil)
+	provider := clibin.NewClaudeBinProvider("sonnet", nil)
 	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
 
 	// The wrapped provider must also implement ProviderCleaner
-	if _, ok := wrapped.(ProviderCleaner); !ok {
+	if _, ok := wrapped.(engine.ProviderCleaner); !ok {
 		t.Fatal("RetryProvider does not implement ProviderCleaner interface - MCP cleanup will not work with wrapped providers")
 	}
 }
 
 func TestRetryProvider_ForwardsProviderTurnCleaner(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet", nil)
+	provider := clibin.NewClaudeBinProvider("sonnet", nil)
 	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
 
-	if _, ok := wrapped.(ProviderTurnCleaner); !ok {
+	if _, ok := wrapped.(engine.ProviderTurnCleaner); !ok {
 		t.Fatal("RetryProvider does not implement ProviderTurnCleaner - per-turn cleanup will not work with wrapped providers")
 	}
 }
 
 func TestRetryProvider_ForwardsProviderState(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet", nil)
+	provider := clibin.NewClaudeBinProvider("sonnet", nil)
 	if err := provider.ImportProviderState([]byte(`{"session_id":"session-1","messages_sent":4}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +123,7 @@ func TestRetryProvider_ForwardsProviderState(t *testing.T) {
 		t.Fatal("RetryProvider did not export inner provider state")
 	}
 
-	restored := NewClaudeBinProvider("sonnet", nil)
+	restored := clibin.NewClaudeBinProvider("sonnet", nil)
 	restoredWrapped := WrapWithRetry(restored, DefaultRetryConfig())
 	importer, ok := restoredWrapped.(core.ProviderStateImporter)
 	if !ok {
@@ -145,8 +149,8 @@ func TestRetryProvider_ForwardsProviderState(t *testing.T) {
 }
 
 func TestClaudeBinProvider_ToolExecutorIsWired(t *testing.T) {
-	provider := NewClaudeBinProvider("sonnet", nil)
-	registry := NewToolRegistry()
+	provider := clibin.NewClaudeBinProvider("sonnet", nil)
+	registry := engine.NewToolRegistry()
 
 	// Register a test tool
 	executorCalled := false
@@ -159,7 +163,7 @@ func TestClaudeBinProvider_ToolExecutorIsWired(t *testing.T) {
 	})
 
 	// Create engine which should wire up the tool executor
-	_ = NewEngine(provider, registry)
+	_ = engine.NewEngine(provider, registry)
 
 	// The tool executor should now be set (not nil).
 	// We verify this by checking that a Request with tools does not trigger the warning.
@@ -182,7 +186,7 @@ func TestProviderModelIDsPrefersCursorBinCache(t *testing.T) {
 		t.Fatalf("expected curated cursor-bin fallback, got %v", curated)
 	}
 
-	RefreshCursorBinCacheSync([]core.ModelInfo{
+	clibin.RefreshCursorBinCacheSync([]core.ModelInfo{
 		{ID: "auto", DisplayName: "Auto (default)"},
 		{ID: "cursor-grok-4.5-high", DisplayName: "Cursor Grok 4.5"},
 		{ID: "composer-2.5-fast", DisplayName: "Composer 2.5 Fast"},
@@ -204,12 +208,12 @@ func TestGrokBinProviderACPRealMultiReviewOrchestrationSmoke(t *testing.T) {
 		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
 	}
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	p := NewGrokBinProvider("grok-4.6-low", nil)
+	p := clibin.NewGrokBinProvider("grok-4.6-low", nil)
 	defer p.CleanupMCP()
 	tool := &grokACPReviewProbeTool{}
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := NewEngine(p, registry)
+	engine := engine.NewEngine(p, registry)
 	stream, err := engine.Stream(context.Background(), core.Request{
 		Messages: []core.Message{
 			core.SystemText("Use only the supplied term-llm tools. Do not activate skills or read workflow files. When multiple reviews are requested, call spawn_agent once for each requested model before replying."),
@@ -248,13 +252,13 @@ func TestGrokBinProviderACPRealDynamicToolSmoke(t *testing.T) {
 		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP dynamic-tool smoke test")
 	}
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	provider := NewGrokBinProvider("grok-4.6-low", nil)
+	provider := clibin.NewGrokBinProvider("grok-4.6-low", nil)
 	defer provider.CleanupMCP()
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	late := &grokDynamicResultProbeTool{}
 	activation := &grokDynamicActivationProbeTool{late: late}
 	registry.Register(activation)
-	engine := NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	activation.engine = engine
 
 	stream, err := engine.Stream(context.Background(), core.Request{
@@ -288,7 +292,7 @@ func TestProviderModelIDsPrefersGrokBinCache(t *testing.T) {
 		t.Fatalf("expected curated grok-bin fallback including grok-4.6, got %v", curated)
 	}
 
-	RefreshGrokBinCacheSync([]core.ModelInfo{
+	clibin.RefreshGrokBinCacheSync([]core.ModelInfo{
 		{ID: "grok-4.6"},
 		{ID: "grok-4.5"},
 	})
@@ -307,12 +311,12 @@ func TestProviderModelIDsPrefersGrokBinCache(t *testing.T) {
 }
 
 func TestGrokBinProviderPublishesDynamicToolsThroughRetryWrapper(t *testing.T) {
-	provider := NewGrokBinProvider("grok-4.6", nil)
-	if _, ok := any(provider).(DynamicToolPublisher); !ok {
+	provider := clibin.NewGrokBinProvider("grok-4.6", nil)
+	if _, ok := any(provider).(engine.DynamicToolPublisher); !ok {
 		t.Fatal("grok-bin does not implement DynamicToolPublisher")
 	}
 	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
-	publisher, ok := wrapped.(DynamicToolPublisher)
+	publisher, ok := wrapped.(engine.DynamicToolPublisher)
 	if !ok {
 		t.Fatal("retry wrapper does not preserve DynamicToolPublisher")
 	}
@@ -342,7 +346,7 @@ func (t *grokDynamicResultProbeTool) Preview(json.RawMessage) string { return "d
 type grokDynamicActivationProbeTool struct {
 	mu     sync.Mutex
 	calls  int
-	engine *Engine
+	engine *engine.Engine
 	late   core.Tool
 }
 

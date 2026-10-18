@@ -14,10 +14,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
-
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -34,7 +35,7 @@ func liveControlToolNames() []string {
 	return append(controlToolNames(), livePassToWorkspaceToolName)
 }
 
-func assertNoControlToolSchemas(t *testing.T, requests []llm.Request) {
+func assertNoControlToolSchemas(t *testing.T, requests []core.Request) {
 	t.Helper()
 	if len(requests) == 0 {
 		t.Fatal("no provider requests recorded")
@@ -144,7 +145,7 @@ func TestLiveSwitchResolverOutcomeMatrixAndRestrictedTools(t *testing.T) {
 		},
 		{
 			name:  "timeout",
-			setup: func(h *controlLaneHarness) { h.agent.AddTurn(llm.MockTurn{Delay: time.Second, Text: "late"}) },
+			setup: func(h *controlLaneHarness) { h.agent.AddTurn(mockprovider.MockTurn{Delay: time.Second, Text: "late"}) },
 			want:  liveSwitchResolverError,
 		},
 	} {
@@ -184,14 +185,14 @@ func TestLiveDelegatedTurnCarriesNoControlToolSchemas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.provider.(*llm.MockProvider).AddTextResponse("the work is done")
+	runtime.provider.(*mockprovider.MockProvider).AddTextResponse("the work is done")
 	record := newLiveSession("call-no-control-tools", "no-control-tools")
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
 	delegator := &serveLiveDelegator{server: s, live: record}
 	if err := delegator.Run(ctx, live.DelegationRequest{Input: "list the files"}, func(live.DelegationChunk) {}); err != nil {
 		t.Fatal(err)
 	}
-	assertNoControlToolSchemas(t, runtime.provider.(*llm.MockProvider).RecordedRequests())
+	assertNoControlToolSchemas(t, runtime.provider.(*mockprovider.MockProvider).RecordedRequests())
 	for _, name := range controlToolNames() {
 		if _, registered := runtime.engine.Tools().Get(name); registered {
 			t.Fatalf("%s stayed executable in a delegated turn", name)
@@ -200,7 +201,7 @@ func TestLiveDelegatedTurnCarriesNoControlToolSchemas(t *testing.T) {
 	// A registered schema was never what granted authority, so the absence of the
 	// schema is not by itself proof: an ordinary turn's session id must still be
 	// refused by the tool itself.
-	forged := llm.ContextWithSessionID(context.Background(), "no-control-tools")
+	forged := core.ContextWithSessionID(context.Background(), "no-control-tools")
 	if _, err := (&tools.SessionDirectoryTool{}).Execute(forged, json.RawMessage(`{}`)); err == nil {
 		t.Fatal("a delegated turn could execute session_directory")
 	}
@@ -217,8 +218,8 @@ func TestLiveResumedRunCarriesNoControlToolSchemas(t *testing.T) {
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 	srv.sessionMgr = newServeSessionManager(time.Hour, 10, nil)
 	srv.runtimeFactory = func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
-		mock := llm.NewMockProvider(request.Provider)
-		runtime := &serveRuntime{provider: mock, providerKey: request.Provider, engine: llm.NewEngine(mock, nil), defaultModel: "mock-model"}
+		mock := mockprovider.NewMockProvider(request.Provider)
+		runtime := &serveRuntime{provider: mock, providerKey: request.Provider, engine: engine.NewEngine(mock, nil), defaultModel: "mock-model"}
 		runtime.Touch()
 		return runtime, nil
 	}
@@ -228,7 +229,7 @@ func TestLiveResumedRunCarriesNoControlToolSchemas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.provider.(*llm.MockProvider).AddTextResponse("resumed answer")
+	runtime.provider.(*mockprovider.MockProvider).AddTextResponse("resumed answer")
 	record := newLiveSession("call-resume-control", saved.View.SessionID)
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
 	if err := srv.registerLiveSession(record); err != nil {
@@ -244,7 +245,7 @@ func TestLiveResumedRunCarriesNoControlToolSchemas(t *testing.T) {
 	request := saved.Engine.Request
 	request.Resume = saved.Engine
 	options := startResponseRunOptions{resume: &saved, uiSession: true, live: record, previousResponseID: saved.View.PreviousResponseID}
-	options.runtimeSetup = func(req *llm.Request) error {
+	options.runtimeSetup = func(req *core.Request) error {
 		runtime.liveContext = record.executionContextFor(saved.View.SessionID)
 		return nil
 	}
@@ -257,7 +258,7 @@ func TestLiveResumedRunCarriesNoControlToolSchemas(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("resumed run did not settle")
 	}
-	assertNoControlToolSchemas(t, runtime.provider.(*llm.MockProvider).RecordedRequests())
+	assertNoControlToolSchemas(t, runtime.provider.(*mockprovider.MockProvider).RecordedRequests())
 	for _, name := range controlToolNames() {
 		if _, registered := runtime.engine.Tools().Get(name); registered {
 			t.Fatalf("%s was re-registered by a resumed live run", name)
@@ -277,7 +278,7 @@ type controlLaneHarness struct {
 	delegator  *recordingLiveDelegator
 	// agent is the provider the router's throwaway engine runs against. Every
 	// assertion about what the router was asked and told reads its recorded requests.
-	agent *llm.MockProvider
+	agent *mockprovider.MockProvider
 }
 
 // recordingLiveDelegator proves the session lane was used only when it should be:
@@ -343,8 +344,8 @@ func newControlLaneHarness(t *testing.T, sourceID string) *controlLaneHarness {
 	// The directory and the transcript assertions read the same store the host
 	// server uses, so a message the routing lane wrote would be visible here.
 	srv.store = store
-	agent := llm.NewMockProvider("mock-agent")
-	srv.liveControlProviderFactory = func(string) (llm.Provider, error) { return agent, nil }
+	agent := mockprovider.NewMockProvider("mock-agent")
+	srv.liveControlProviderFactory = func(string) (core.Provider, error) { return agent, nil }
 	provider := &stubLiveSession{events: make(chan live.Event, 8), closed: make(chan struct{})}
 	record := newLiveSession("call-control-lane", sourceID)
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
@@ -474,7 +475,7 @@ func (h *controlLaneHarness) voice() string {
 }
 
 // toolSpecNames lists the tool schemas one recorded request was offered.
-func toolSpecNames(request llm.Request) []string {
+func toolSpecNames(request core.Request) []string {
 	names := make([]string, 0, len(request.Tools))
 	for _, spec := range request.Tools {
 		names = append(names, spec.Name)
@@ -484,7 +485,7 @@ func toolSpecNames(request llm.Request) []string {
 
 // toolResultText returns the content of the named tool's result in a recorded
 // request, which is what the router saw when it called that tool.
-func toolResultText(request llm.Request, name string) string {
+func toolResultText(request core.Request, name string) string {
 	for _, message := range request.Messages {
 		for _, part := range message.Parts {
 			if part.ToolResult != nil && part.ToolResult.Name == name {
@@ -496,14 +497,14 @@ func toolResultText(request llm.Request, name string) string {
 }
 
 // firstSystemText returns the system/developer text of a recorded request.
-func firstSystemText(request llm.Request) string {
+func firstSystemText(request core.Request) string {
 	var b strings.Builder
 	for _, message := range request.Messages {
-		if message.Role != llm.RoleSystem && message.Role != llm.RoleDeveloper {
+		if message.Role != core.RoleSystem && message.Role != core.RoleDeveloper {
 			continue
 		}
 		for _, part := range message.Parts {
-			if part.Type == llm.PartText {
+			if part.Type == core.PartText {
 				b.WriteString(part.Text)
 			}
 		}
@@ -516,8 +517,8 @@ func firstSystemText(request llm.Request) string {
 // host-built context — but the surface itself is part of the lane's contract, so both
 // the registry and the engine's allowlist are asserted to hold nothing else.
 func TestLiveRouterEngineExposesExactlyTheControlTools(t *testing.T) {
-	engine, specs := newLiveControlEngine(llm.NewMockProvider("mock"), &workspaceHandoff{cancel: func() {}}, &controlActivity{})
-	if names := toolSpecNames(llm.Request{Tools: specs}); !slices.Equal(names, liveControlToolNames()) {
+	engine, specs := newLiveControlEngine(mockprovider.NewMockProvider("mock"), &workspaceHandoff{cancel: func() {}}, &controlActivity{})
+	if names := toolSpecNames(core.Request{Tools: specs}); !slices.Equal(names, liveControlToolNames()) {
 		t.Fatalf("router tools = %v, want %v", names, liveControlToolNames())
 	}
 	allowed, present := engine.AllowedToolsFilter()
@@ -1070,7 +1071,7 @@ func TestLiveRouterCannotForgeItsOwnAuthority(t *testing.T) {
 	// implementations behind them: the registered surface is what a model can call, so
 	// that is where the denial has to hold.
 	probe := &controlAuthorityProbe{inner: h.agent, sessionID: "authority-source", probed: controlRegisteredTools(t, h.agent)}
-	h.server.liveControlProviderFactory = func(string) (llm.Provider, error) { return probe, nil }
+	h.server.liveControlProviderFactory = func(string) (core.Provider, error) { return probe, nil }
 	// The turn has to reach for a session tool, because that is what now proves the
 	// request was session management: a router that only talks is not treated as
 	// having handled anything.
@@ -1113,9 +1114,9 @@ func TestLiveRouterCannotForgeItsOwnAuthority(t *testing.T) {
 // registered surface — the wrappers and whatever else the engine puts in front of them
 // — outside the claim, and that is the surface a model calls.
 type controlAuthorityProbe struct {
-	inner     llm.Provider
+	inner     core.Provider
 	sessionID string
-	probed    []llm.Tool
+	probed    []core.Tool
 
 	mu         sync.Mutex
 	hostErrs   []error
@@ -1124,10 +1125,10 @@ type controlAuthorityProbe struct {
 
 // controlRegisteredTools returns one routing turn's call-scoped tools exactly as the
 // engine registers them.
-func controlRegisteredTools(t *testing.T, provider llm.Provider) []llm.Tool {
+func controlRegisteredTools(t *testing.T, provider core.Provider) []core.Tool {
 	t.Helper()
 	engine, _ := newLiveControlEngine(provider, &workspaceHandoff{cancel: func() {}}, &controlActivity{})
-	tools := make([]llm.Tool, 0, len(controlToolNames()))
+	tools := make([]core.Tool, 0, len(controlToolNames()))
 	for _, name := range controlToolNames() {
 		tool, ok := engine.Tools().Get(name)
 		if !ok {
@@ -1138,16 +1139,16 @@ func controlRegisteredTools(t *testing.T, provider llm.Provider) []llm.Tool {
 	return tools
 }
 
-func (p *controlAuthorityProbe) Name() string                   { return p.inner.Name() }
-func (p *controlAuthorityProbe) Credential() string             { return p.inner.Credential() }
-func (p *controlAuthorityProbe) Capabilities() llm.Capabilities { return p.inner.Capabilities() }
-func (p *controlAuthorityProbe) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *controlAuthorityProbe) Name() string                    { return p.inner.Name() }
+func (p *controlAuthorityProbe) Credential() string              { return p.inner.Credential() }
+func (p *controlAuthorityProbe) Capabilities() core.Capabilities { return p.inner.Capabilities() }
+func (p *controlAuthorityProbe) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	hostErrs := make([]error, 0, len(p.probed))
 	forgedErrs := make([]error, 0, len(p.probed))
 	for _, tool := range p.probed {
 		args := controlAuthorityProbeArgs(tool.Spec().Name, p.sessionID)
 		_, hostErr := tool.Execute(ctx, args)
-		forged := llm.ContextWithSessionID(context.Background(), p.sessionID)
+		forged := core.ContextWithSessionID(context.Background(), p.sessionID)
 		_, forgedErr := tool.Execute(forged, args)
 		hostErrs = append(hostErrs, hostErr)
 		forgedErrs = append(forgedErrs, forgedErr)
@@ -1181,9 +1182,9 @@ func TestLiveSessionLaneInstallsNoSessionControlBindings(t *testing.T) {
 	record := newLiveSession("call-bindings", "bindings-session")
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
 	record.voiceSession = &liveVoiceControlStub{voice: "cove"}
-	ctx := s.withLiveSettingsContext(llm.ContextWithSessionID(context.Background(), "bindings-session"), record, "bindings-session")
+	ctx := s.withLiveSettingsContext(core.ContextWithSessionID(context.Background(), "bindings-session"), record, "bindings-session")
 
-	for name, tool := range map[string]llm.Tool{
+	for name, tool := range map[string]core.Tool{
 		tools.SessionDirectoryToolName:  &tools.SessionDirectoryTool{},
 		tools.LiveNewSessionToolName:    &tools.LiveNewSessionTool{},
 		tools.LiveSwitchSessionToolName: &tools.LiveSwitchSessionTool{},
@@ -1236,7 +1237,7 @@ func TestLiveControlAuthorityIsInstalledOnlyWithTheControlPlane(t *testing.T) {
 			if !isPermissionDenied(err) {
 				t.Fatalf("control authority was installed with live.control_plane off: %v", err)
 			}
-			for toolName, tool := range map[string]llm.Tool{
+			for toolName, tool := range map[string]core.Tool{
 				tools.LiveNewSessionToolName:    &tools.LiveNewSessionTool{},
 				tools.LiveSwitchSessionToolName: &tools.LiveSwitchSessionTool{},
 			} {
@@ -1294,9 +1295,9 @@ func isPermissionDenied(err error) bool {
 // not refuse or lose the user's request. Both cases run the ORIGINAL text in the bound
 // session, exactly as they would have before any routing existed.
 func TestLiveRequestWithoutARouterRunsInTheSessionLane(t *testing.T) {
-	for name, factory := range map[string]func(string) (llm.Provider, error){
-		"unresolved": func(string) (llm.Provider, error) { return nil, nil },
-		"error":      func(string) (llm.Provider, error) { return nil, errors.New("no fast model configured") },
+	for name, factory := range map[string]func(string) (core.Provider, error){
+		"unresolved": func(string) (core.Provider, error) { return nil, nil },
+		"error":      func(string) (core.Provider, error) { return nil, errors.New("no fast model configured") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newControlLaneHarness(t, "no-router-"+name)
@@ -1433,8 +1434,8 @@ func TestStartLiveControllerInstallsAgentRouterForSelectorAndLegacyTrue(t *testi
 			srv.store = newSessionDirectoryTestStore(t)
 			createDirectorySession(t, srv.store, &session.Session{ID: "controller-agent", GeneratedShortTitle: "Controller agent"})
 			called := make(chan struct{}, 1)
-			agent := llm.NewMockProvider("router-agent").AddToolCall("handoff", livePassToWorkspaceToolName, map[string]any{"request": "ordinary work"})
-			srv.liveControlProviderFactory = func(string) (llm.Provider, error) {
+			agent := mockprovider.NewMockProvider("router-agent").AddToolCall("handoff", livePassToWorkspaceToolName, map[string]any{"request": "ordinary work"})
+			srv.liveControlProviderFactory = func(string) (core.Provider, error) {
 				select {
 				case called <- struct{}{}:
 				default:
@@ -1475,8 +1476,8 @@ func TestLiveHandledDelegationIsAnsweredWithoutAChatTurn(t *testing.T) {
 	stopLiveHarnessLifecycle(t, harness.server)
 	createDirectorySession(t, store, &session.Session{ID: "control-e2e", GeneratedShortTitle: "Reflow decisions"})
 	addDirectoryMessage(t, store, "control-e2e", "the reflow decision was to keep the pane resizable")
-	agent := llm.NewMockProvider("mock-agent")
-	harness.server.liveControlProviderFactory = func(string) (llm.Provider, error) { return agent, nil }
+	agent := mockprovider.NewMockProvider("mock-agent")
+	harness.server.liveControlProviderFactory = func(string) (core.Provider, error) { return agent, nil }
 	agent.
 		AddToolCall("call_dir", tools.SessionDirectoryToolName, map[string]any{"query": "reflow"}).
 		AddTextResponse("The Reflow decisions session has that.")
@@ -1533,7 +1534,7 @@ func TestLiveControlPlaneOffRunsEverythingInTheSessionLane(t *testing.T) {
 	}
 	// A router that fails the test if it is ever consulted: "off" has to mean no
 	// fast-model turn at all, not a turn whose answer is discarded.
-	harness.server.liveControlProviderFactory = func(string) (llm.Provider, error) {
+	harness.server.liveControlProviderFactory = func(string) (core.Provider, error) {
 		t.Error("the control plane was consulted while it was switched off")
 		return nil, errors.New("must not be called")
 	}

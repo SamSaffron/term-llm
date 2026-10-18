@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func newApprovalAutoTestManager(perms *ToolPermissions) *ApprovalManager {
@@ -50,9 +50,9 @@ func TestApprovalManagerAutoReviewerHandlesUnmatchedRead(t *testing.T) {
 	}
 	var event GuardianEvent
 	mgr.GuardianEventFunc = func(got GuardianEvent) { event = got }
-	ctx := llm.ContextWithCallID(context.Background(), "read-call")
-	ctx, guardianReviews := llm.ContextWithGuardianReviewCapture(ctx)
-	ctx = llm.ContextWithApprovalTranscript(ctx, []llm.Message{llm.UserText("inspect the generated report")})
+	ctx := core.ContextWithCallID(context.Background(), "read-call")
+	ctx, guardianReviews := core.ContextWithGuardianReviewCapture(ctx)
+	ctx = core.ContextWithApprovalTranscript(ctx, []core.Message{core.UserText("inspect the generated report")})
 
 	outcome, err := mgr.CheckPathApprovalWithContext(ctx, ReadFileToolName, path, path, false)
 	if err != nil || outcome != ProceedOnce {
@@ -534,10 +534,10 @@ func TestApprovalManagerNestedChildFindsRootGuardianCallbacks(t *testing.T) {
 }
 
 func TestApprovalTranscriptUsesCanonicalTrustedUserText(t *testing.T) {
-	msg := llm.ToolResultMessage("ask-1", AskUserToolName, `{"answers":[{"selected":"OK"}]}`, nil)
-	msg.ApprovalRole = string(llm.RoleUser)
+	msg := core.ToolResultMessage("ask-1", AskUserToolName, `{"answers":[{"selected":"OK"}]}`, nil)
+	msg.ApprovalRole = string(core.RoleUser)
 	msg.ApprovalText = "Question: Delete exactly /tmp/abc?\nUser answer: OK, go for it"
-	entries := approvalTranscriptFromContext(llm.ContextWithApprovalTranscript(context.Background(), []llm.Message{msg}))
+	entries := approvalTranscriptFromContext(core.ContextWithApprovalTranscript(context.Background(), []core.Message{msg}))
 	if len(entries) != 1 || entries[0].Role != "user" || entries[0].Text != msg.ApprovalText {
 		t.Fatalf("approval entries = %#v", entries)
 	}
@@ -548,12 +548,12 @@ func TestShellApprovalTranscriptIncludesToolCallsResultsAndApprovalRole(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	msgs := []llm.Message{
-		{Role: llm.RoleUser, ApprovalRole: "parent_agent_task", Parts: []llm.Part{{Type: llm.PartText, Text: "inspect env"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "shell", Arguments: args}}}},
-		llm.ToolResultMessage("call-1", "shell", "SECRET=value", nil),
+	msgs := []core.Message{
+		{Role: core.RoleUser, ApprovalRole: "parent_agent_task", Parts: []core.Part{{Type: core.PartText, Text: "inspect env"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "shell", Arguments: args}}}},
+		core.ToolResultMessage("call-1", "shell", "SECRET=value", nil),
 	}
-	entries := approvalTranscriptFromContext(llm.ContextWithApprovalTranscript(context.Background(), msgs))
+	entries := approvalTranscriptFromContext(core.ContextWithApprovalTranscript(context.Background(), msgs))
 	if len(entries) != 3 {
 		t.Fatalf("entries = %d, want 3: %#v", len(entries), entries)
 	}

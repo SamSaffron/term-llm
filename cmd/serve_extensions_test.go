@@ -15,7 +15,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/extensions"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"gopkg.in/yaml.v3"
 )
@@ -136,7 +137,7 @@ func TestExtensionBuilderEngineInstallsAndEnablesExtension(t *testing.T) {
 	e := extensionFixture(t)
 	dir := e.manager.Status().Directory
 	originalConfig, _ := os.ReadFile(e.configPath)
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("source", tools.UIGetSourceToolName, map[string]any{"target": "compiled", "operation": "read", "path": "compiled/index.html", "start_line": 1, "end_line": 3}).
 		AddToolCall("status", tools.UIExtensionsToolName, map[string]any{"operation": "status"}).
 		AddToolCall("manifest", tools.WriteFileToolName, map[string]any{"path": filepath.Join(dir, "moon", "extension.yaml"), "content": "title: Moon\nformat_version: 1\ncss: style.css\n"}).
@@ -160,7 +161,7 @@ func TestExtensionBuilderEngineInstallsAndEnablesExtension(t *testing.T) {
 	defer rt.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err = rt.Run(ctx, false, false, []llm.Message{llm.UserText("Create and enable a Dracula-like theme")}, llm.Request{Model: "mock-model", MaxTurns: 10, Tools: rt.toolMgr.GetSpecs()})
+	_, err = rt.Run(ctx, false, false, []core.Message{core.UserText("Create and enable a Dracula-like theme")}, core.Request{Model: "mock-model", MaxTurns: 10, Tools: rt.toolMgr.GetSpecs()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +229,7 @@ func TestExtensionLocalSettingsPrecedence(t *testing.T) {
 func TestExtensionBuilderNameAloneDoesNotAuthorizeFiles(t *testing.T) {
 	e := extensionFixture(t)
 	settings := SessionSettings{Tools: "write_file", BaseDir: filepath.Dir(e.configPath), PrimaryWorkspace: filepath.Dir(e.configPath)}
-	engine, mgr, err := newServeEngineWithTools(&config.Config{}, settings, llm.NewMockProvider("mock"), "mock", "mock-model", false, false, nil, nil)
+	engine, mgr, err := newServeEngineWithTools(&config.Config{}, settings, mockprovider.NewMockProvider("mock"), "mock", "mock-model", false, false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

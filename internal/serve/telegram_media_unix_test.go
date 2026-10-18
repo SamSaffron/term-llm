@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
 )
 
-func assertTelegramRejectsFIFO(t *testing.T, fifo string, p *telegramPresentation, media llm.MediaArtifact) {
+func assertTelegramRejectsFIFO(t *testing.T, fifo string, p *telegramPresentation, media core.MediaArtifact) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() {
@@ -40,7 +40,7 @@ func TestTelegramRejectsFIFOBeforeOpen(t *testing.T) {
 	}
 	bot := &mediaBotSender{fakeBotSender: &fakeBotSender{}}
 	p := &telegramPresentation{bot: bot}
-	assertTelegramRejectsFIFO(t, fifo, p, llm.MediaArtifact{SourcePath: fifo, MediaType: "audio/mpeg"})
+	assertTelegramRejectsFIFO(t, fifo, p, core.MediaArtifact{SourcePath: fifo, MediaType: "audio/mpeg"})
 	if len(bot.uploads) != 0 {
 		t.Fatal("FIFO uploaded")
 	}
@@ -62,7 +62,7 @@ func TestTelegramFallbackRejectsFIFO(t *testing.T) {
 		},
 	}
 	p := &telegramPresentation{bot: bot}
-	assertTelegramRejectsFIFO(t, path, p, llm.MediaArtifact{SourcePath: path, MediaType: "audio/mpeg"})
+	assertTelegramRejectsFIFO(t, path, p, core.MediaArtifact{SourcePath: path, MediaType: "audio/mpeg"})
 	if replaceErr != nil {
 		t.Fatal(replaceErr)
 	}

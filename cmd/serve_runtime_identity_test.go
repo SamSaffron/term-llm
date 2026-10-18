@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -44,7 +44,7 @@ func TestRuntimeWarmingBindsPersistedSessionProvider(t *testing.T) {
 		runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store}).(*cmdRunner)
 		env, err := runner.prepare(ctx, runpkg.Request{
 			SessionID: request.SessionID, Platform: runpkg.PlatformWeb, Cwd: request.RuntimeDir,
-			DeferSession: true, ProviderInstance: llm.NewMockProvider("mock"),
+			DeferSession: true, ProviderInstance: mockprovider.NewMockProvider("mock"),
 		}, nil)
 		if err != nil {
 			return nil, err
@@ -163,7 +163,7 @@ func TestPrepareUIRuntimeRejectsForeignProviderRuntime(t *testing.T) {
 			// production, so the identity checks are exercised against a
 			// runtime built the ordinary way rather than a hand-set field.
 			Provider: request.Provider, Model: request.Model,
-			DeferSession: true, ProviderInstance: llm.NewMockProvider("mock"),
+			DeferSession: true, ProviderInstance: mockprovider.NewMockProvider("mock"),
 		}, nil)
 		if err != nil {
 			return nil, err

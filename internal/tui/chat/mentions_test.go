@@ -13,6 +13,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -413,7 +416,7 @@ func TestManualMentionAttachesAtSubmitAndPreservesUserText(t *testing.T) {
 	if last.TextContent != content {
 		t.Fatalf("visible TextContent = %q, want %q", last.TextContent, content)
 	}
-	providerText := llm.MessageText(last.ToLLMMessage())
+	providerText := core.MessageText(last.ToLLMMessage())
 	if !strings.HasPrefix(providerText, content) || !strings.Contains(providerText, "manual body") {
 		t.Fatalf("provider text = %q", providerText)
 	}
@@ -446,7 +449,7 @@ func TestSuccessfulMentionPreservesExplicitFileTextContentConsumers(t *testing.T
 	if !strings.Contains(exported, "explicitsearchbody") || strings.Contains(exported, "mention-only-body") {
 		t.Fatalf("export did not preserve established /file representation: %q", exported)
 	}
-	providerText := llm.MessageText(last.ToLLMMessage())
+	providerText := core.MessageText(last.ToLLMMessage())
 	if !strings.Contains(providerText, "explicitsearchbody") || !strings.Contains(providerText, "mention-only-body") {
 		t.Fatalf("provider text lost attachment content: %q", providerText)
 	}
@@ -499,20 +502,20 @@ func TestAgentMentionSubmissionKeepsVisibleTextCleanAndOrdersProviderContext(t *
 	}
 	delegationParts := 0
 	for _, part := range last.Parts {
-		if part.Type == llm.PartAgentMention {
+		if part.Type == core.PartAgentMention {
 			delegationParts++
 			if !strings.Contains(part.Text, "term_llm_agent_mentions") {
 				t.Fatalf("typed delegation part lost provider instruction: %#v", part)
 			}
 		}
-		if part.Type == llm.PartText && strings.Contains(part.Text, "term_llm_agent_mentions") {
+		if part.Type == core.PartText && strings.Contains(part.Text, "term_llm_agent_mentions") {
 			t.Fatalf("delegation instruction stored as visible text part: %#v", last.Parts)
 		}
 	}
 	if delegationParts != 1 {
 		t.Fatalf("delegation parts = %d, want 1: %#v", delegationParts, last.Parts)
 	}
-	providerText := llm.MessageText(last.ToLLMMessage())
+	providerText := core.MessageText(last.ToLLMMessage())
 	visibleAt := strings.Index(providerText, content)
 	delegationAt := strings.Index(providerText, "<term_llm_agent_mentions>")
 	explicitAt := strings.Index(providerText, "explicit-file-body")
@@ -582,16 +585,16 @@ func TestCurrentAgentMentionEngineIsRaceSafeAcrossReplacements(t *testing.T) {
 		}()
 	}
 	for i := 0; i < replacements; i++ {
-		engine := llm.NewEngine(llm.NewMockProvider("replacement"), nil)
+		eng := engine.NewEngine(mockprovider.NewMockProvider("replacement"), nil)
 		if i%2 == 0 {
-			engine.SetAllowedToolsFilter([]string{})
+			eng.SetAllowedToolsFilter([]string{})
 		}
-		m.replaceEngine(engine)
+		m.replaceEngine(eng)
 	}
 	close(done)
 	wg.Wait()
 	if m.CurrentAgentMentionEngine() != m.engine {
-		t.Fatal("final mention engine differs from live model engine")
+		t.Fatal("final mention eng differs from live model eng")
 	}
 }
 
@@ -666,7 +669,7 @@ func TestDuplicateMentionsUseRawTextDeduplicationAndRemainVisible(t *testing.T) 
 	if last.TextContent != content || strings.Count(last.TextContent, "@same.txt") != 2 {
 		t.Fatalf("visible duplicate mentions changed: %q", last.TextContent)
 	}
-	if got := strings.Count(llm.MessageText(last.ToLLMMessage()), "unique attachment body"); got != 2 {
+	if got := strings.Count(core.MessageText(last.ToLLMMessage()), "unique attachment body"); got != 2 {
 		t.Fatalf("raw-deduplicated attachment body count = %d", got)
 	}
 }
@@ -818,7 +821,7 @@ func TestFailedMentionAttachmentStillSends(t *testing.T) {
 		t.Fatal("failed mention blocked submission")
 	}
 	last := m.messages[len(m.messages)-1]
-	if last.TextContent != content || llm.MessageText(last.ToLLMMessage()) != content {
+	if last.TextContent != content || core.MessageText(last.ToLLMMessage()) != content {
 		t.Fatalf("failed mention message = %#v", last)
 	}
 }
@@ -841,7 +844,7 @@ func TestDeniedMentionDoesNotPromptOrBlockSending(t *testing.T) {
 	_, _ = m.sendMessage(content)
 
 	last := m.messages[len(m.messages)-1]
-	if prompted || last.TextContent != content || strings.Contains(llm.MessageText(last.ToLLMMessage()), "do not attach") {
+	if prompted || last.TextContent != content || strings.Contains(core.MessageText(last.ToLLMMessage()), "do not attach") {
 		t.Fatalf("denied mention prompted=%v message=%#v", prompted, last)
 	}
 }
@@ -863,13 +866,13 @@ func TestStreamingSteeringGetsSubmitTimeMentionContext(t *testing.T) {
 		t.Fatalf("queued steering = %#v", queued)
 	}
 	parts := queued[0].Message.Parts
-	if len(parts) != 2 || parts[0].Type != llm.PartText || parts[1].Type != llm.PartFile {
+	if len(parts) != 2 || parts[0].Type != core.PartText || parts[1].Type != core.PartFile {
 		t.Fatalf("queued part order = %#v, want original text before mention context", parts)
 	}
 	if parts[0].Text != "also inspect @note.txt" || !strings.Contains(parts[1].Text, "steering attachment") {
 		t.Fatalf("queued mention parts = %#v", parts)
 	}
-	text := llm.MessageText(queued[0].Message)
+	text := core.MessageText(queued[0].Message)
 	if !strings.Contains(text, "also inspect @note.txt") || !strings.Contains(text, "steering attachment") {
 		t.Fatalf("queued mention context = %q", text)
 	}
@@ -894,7 +897,7 @@ func TestStreamingSteeringGetsAgentDelegationBeforeEagerFileContext(t *testing.T
 		t.Fatalf("queued steering = %#v", queued)
 	}
 	parts := queued[0].Message.Parts
-	if len(parts) != 3 || parts[0].Type != llm.PartText || parts[1].Type != llm.PartAgentMention || parts[2].Type != llm.PartFile {
+	if len(parts) != 3 || parts[0].Type != core.PartText || parts[1].Type != core.PartAgentMention || parts[2].Type != core.PartFile {
 		t.Fatalf("queued part order = %#v", parts)
 	}
 	if parts[0].Text != content || !strings.Contains(parts[1].Text, "term_llm_agent_mentions") || !strings.Contains(parts[2].Text, "steering eager body") {
@@ -907,10 +910,10 @@ func TestStreamingSteeringGetsAgentDelegationBeforeEagerFileContext(t *testing.T
 
 func TestSteeringSessionMessageKeepsDelegationProviderOnly(t *testing.T) {
 	visible := "ask @agent:reviewer"
-	message := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
-		{Type: llm.PartText, Text: visible},
-		{Type: llm.PartAgentMention, Text: "\n\n<term_llm_agent_mentions>hidden</term_llm_agent_mentions>"},
-		{Type: llm.PartFile, Text: "hidden eager body"},
+	message := core.Message{Role: core.RoleUser, Parts: []core.Part{
+		{Type: core.PartText, Text: visible},
+		{Type: core.PartAgentMention, Text: "\n\n<term_llm_agent_mentions>hidden</term_llm_agent_mentions>"},
+		{Type: core.PartFile, Text: "hidden eager body"},
 	}}
 	persisted := sessionMessageForSteering("session", visible, message)
 	if persisted.TextContent != visible {
@@ -919,7 +922,7 @@ func TestSteeringSessionMessageKeepsDelegationProviderOnly(t *testing.T) {
 	if history, ok := memoryPromptText(*persisted); !ok || history != visible {
 		t.Fatalf("prompt history = %q, %v", history, ok)
 	}
-	providerText := llm.MessageText(persisted.ToLLMMessage())
+	providerText := core.MessageText(persisted.ToLLMMessage())
 	if !strings.Contains(providerText, "term_llm_agent_mentions") || !strings.Contains(providerText, "hidden eager body") {
 		t.Fatalf("provider parts lost = %q", providerText)
 	}
@@ -964,7 +967,7 @@ func TestVisiblePastedAgentMentionPreservesDeliberateDelegation(t *testing.T) {
 	}
 	found := false
 	for _, part := range m.messages[0].Parts {
-		found = found || part.Type == llm.PartAgentMention
+		found = found || part.Type == core.PartAgentMention
 	}
 	if !found {
 		t.Fatalf("visible pasted mention lacks delegation part: %#v", m.messages[0].Parts)
@@ -986,7 +989,7 @@ func TestAtMentionsEnvironmentDisablesSubmitTimeFileAndAgentSemantics(t *testing
 	if !m.streaming || len(m.messages) != 1 || len(capability.validateCalls) != 0 {
 		t.Fatalf("disabled mentions still validated or blocked: streaming=%v messages=%d calls=%#v", m.streaming, len(m.messages), capability.validateCalls)
 	}
-	if got := llm.MessageText(m.messages[0].ToLLMMessage()); got != content || strings.Contains(got, "hidden-file-sentinel") || strings.Contains(got, "term_llm_agent_mentions") {
+	if got := core.MessageText(m.messages[0].ToLLMMessage()); got != content || strings.Contains(got, "hidden-file-sentinel") || strings.Contains(got, "term_llm_agent_mentions") {
 		t.Fatalf("disabled mentions augmented provider text: %q", got)
 	}
 }
@@ -1010,7 +1013,7 @@ func TestAgentMentionInsideCollapsedPasteIsOrdinaryVisiblePayload(t *testing.T) 
 		t.Fatalf("visible pasted content = %q", last.TextContent)
 	}
 	for _, part := range last.Parts {
-		if part.Type == llm.PartAgentMention {
+		if part.Type == core.PartAgentMention {
 			t.Fatalf("collapsed paste created hidden delegation part: %#v", last.Parts)
 		}
 	}
@@ -1035,13 +1038,13 @@ func TestAutoSendAgentMentionFailureTerminatesWithoutDroppingQueueHead(t *testin
 func TestRestoreQueuedAgentSteeringDoesNotExposeProviderContext(t *testing.T) {
 	m := newTestChatModel(false)
 	visible := "ask @agent:reviewer about @note.txt"
-	m.engine.QueueSteering(llm.QueuedSteering{
+	m.engine.QueueSteering(engine.QueuedSteering{
 		ID:          "agent-steering",
 		DisplayText: visible,
-		Message: llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
-			{Type: llm.PartText, Text: visible},
-			{Type: llm.PartAgentMention, Text: "\n\n<term_llm_agent_mentions>hidden delegation</term_llm_agent_mentions>"},
-			{Type: llm.PartFile, Text: "hidden eager file body"},
+		Message: core.Message{Role: core.RoleUser, Parts: []core.Part{
+			{Type: core.PartText, Text: visible},
+			{Type: core.PartAgentMention, Text: "\n\n<term_llm_agent_mentions>hidden delegation</term_llm_agent_mentions>"},
+			{Type: core.PartFile, Text: "hidden eager file body"},
 		}},
 	})
 

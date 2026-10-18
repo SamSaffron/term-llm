@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSessionInputRefreshTransactionContract(t *testing.T) {
@@ -35,11 +35,11 @@ func TestSessionInputRefreshTransactionContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.system {
-				if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.SystemText("old"), 0)); err != nil {
+				if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, core.SystemText("old"), 0)); err != nil {
 					t.Fatal(err)
 				}
 			}
-			for i, msg := range []llm.Message{llm.UserText("human"), llm.SystemText("later"), llm.AssistantText("reply")} {
+			for i, msg := range []core.Message{core.UserText("human"), core.SystemText("later"), core.AssistantText("reply")} {
 				if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, msg, i+1)); err != nil {
 					t.Fatal(err)
 				}
@@ -62,7 +62,7 @@ func TestSessionInputRefreshTransactionContract(t *testing.T) {
 			}
 			after, _ := store.GetMessages(ctx, sess.ID, 0, 0)
 			for i := range before {
-				if before[i].Role != llm.RoleSystem || before[i].Sequence != 0 {
+				if before[i].Role != core.RoleSystem || before[i].Sequence != 0 {
 					if !reflect.DeepEqual(before[i], after[i]) {
 						t.Fatalf("non-owned row changed: %d", i)
 					}
@@ -113,7 +113,7 @@ func TestSessionInputRefreshCompactionAndRollback(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	for i, msg := range []llm.Message{llm.SystemText("initial"), llm.UserText("preserved"), llm.SystemText("active"), llm.SystemText("later"), llm.UserText("tail")} {
+	for i, msg := range []core.Message{core.SystemText("initial"), core.UserText("preserved"), core.SystemText("active"), core.SystemText("later"), core.UserText("tail")} {
 		if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, msg, i)); err != nil {
 			t.Fatal(err)
 		}

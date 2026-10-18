@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -48,13 +50,13 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 	}
 
 	// Message with text + multiple tool calls (the case that was lossy before)
-	msg := session.NewMessage("sess-parts", llm.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: "Let me search for that"},
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "web_search", Arguments: json.RawMessage(`{"query":"go"}`)}},
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-2", Name: "read_url", Arguments: json.RawMessage(`{"url":"https://go.dev"}`)}},
-			{Type: llm.PartToolActivity, ToolActivity: &llm.ToolActivity{ID: "ws-native", Name: llm.WebSearchToolName, Info: "(discourse news)", Arguments: json.RawMessage(`{"query":"discourse news"}`), Status: llm.ToolActivityCompleted}},
+	msg := session.NewMessage("sess-parts", core.Message{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{
+			{Type: core.PartText, Text: "Let me search for that"},
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "web_search", Arguments: json.RawMessage(`{"query":"go"}`)}},
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-2", Name: "read_url", Arguments: json.RawMessage(`{"url":"https://go.dev"}`)}},
+			{Type: core.PartToolActivity, ToolActivity: &core.ToolActivity{ID: "ws-native", Name: core.WebSearchToolName, Info: "(discourse news)", Arguments: json.RawMessage(`{"query":"discourse news"}`), Status: core.ToolActivityCompleted}},
 		},
 	}, -1)
 	if err := store.AddMessage(ctx, "sess-parts", msg); err != nil {
@@ -118,7 +120,7 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 	}
 	// Provider-managed activity is display-only but must reach web history.
 	if m.Parts[3].Type != "tool_activity" || m.Parts[3].ToolName != "web_search" || m.Parts[3].ToolCallID != "ws-native" ||
-		m.Parts[3].ToolInfo != "(discourse news)" || m.Parts[3].ToolArgs != `{"query":"discourse news"}` || m.Parts[3].ToolStatus != llm.ToolActivityCompleted {
+		m.Parts[3].ToolInfo != "(discourse news)" || m.Parts[3].ToolArgs != `{"query":"discourse news"}` || m.Parts[3].ToolStatus != core.ToolActivityCompleted {
 		t.Fatalf("part[3] = %+v, want native web search activity", m.Parts[3])
 	}
 }
@@ -146,7 +148,7 @@ func TestHandleSessionMessages_DefaultPagination(t *testing.T) {
 	}
 	var latestVisibleID int64
 	for i := 0; i < sessionMessagesPageSize+5; i++ {
-		msg := session.NewMessage("sess-page", llm.UserText(fmt.Sprintf("msg-%03d", i)), -1)
+		msg := session.NewMessage("sess-page", core.UserText(fmt.Sprintf("msg-%03d", i)), -1)
 		if err := store.AddMessage(ctx, "sess-page", msg); err != nil {
 			t.Fatalf("AddMessage(%d): %v", i, err)
 		}
@@ -257,7 +259,7 @@ func TestHandleSessionMessages_TailPagination(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	for i := 0; i < sessionMessagesPageSize+5; i++ {
-		msg := session.NewMessage("sess-tail", llm.UserText(fmt.Sprintf("msg-%03d", i)), -1)
+		msg := session.NewMessage("sess-tail", core.UserText(fmt.Sprintf("msg-%03d", i)), -1)
 		if err := store.AddMessage(ctx, "sess-tail", msg); err != nil {
 			t.Fatalf("AddMessage(%d): %v", i, err)
 		}
@@ -357,13 +359,13 @@ func TestHandleSessionMessages_IncludesCompactionMetadata(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("old prompt"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText("old prompt"), -1)); err != nil {
 		t.Fatalf("AddMessage old: %v", err)
 	}
-	compactionTail := session.NewMessage(sess.ID, llm.AssistantText("recent answer"), -1)
+	compactionTail := session.NewMessage(sess.ID, core.AssistantText("recent answer"), -1)
 	compactionTail.CompactionTail = true
 	if err := store.CompactMessages(ctx, sess.ID, []session.Message{
-		*session.NewMessage(sess.ID, llm.UserText("[Context Compaction]\ninternal summary"), -1),
+		*session.NewMessage(sess.ID, core.UserText("[Context Compaction]\ninternal summary"), -1),
 		*compactionTail,
 	}); err != nil {
 		t.Fatalf("CompactMessages: %v", err)
@@ -426,7 +428,7 @@ func TestHandleSessionMessages_OmitsCompactionMetadataWhenUncompacted(t *testing
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText("hello"), -1)); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
@@ -555,10 +557,10 @@ func TestSessionMessageImageDimensionsPrefersInlineBase64AndAppliesEXIF(t *testi
 		t.Fatalf("write PNG fallback: %v", err)
 	}
 	rotated := makeOrientation6JPEG(t, 400, 200)
-	part := llm.Part{
-		Type:      llm.PartImage,
+	part := core.Part{
+		Type:      core.PartImage,
 		ImagePath: filepath.Join(t.TempDir(), "untrusted-session-path.jpg"),
-		ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Base64: base64.StdEncoding.EncodeToString(rotated)},
+		ImageData: &core.ToolImageData{MediaType: "image/jpeg", Base64: base64.StdEncoding.EncodeToString(rotated)},
 	}
 	width, height := sessionMessageImageDimensions(part, fallbackPath)
 	if width != 200 || height != 400 {
@@ -583,11 +585,11 @@ func TestHandleSessionMessages_OmitsToolResults(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := session.NewMessage("sess-tr", llm.Message{
-		Role: llm.RoleUser,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: "result msg"},
-			{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-1", Content: "verbose tool output"}},
+	msg := session.NewMessage("sess-tr", core.Message{
+		Role: core.RoleUser,
+		Parts: []core.Part{
+			{Type: core.PartText, Text: "result msg"},
+			{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-1", Content: "verbose tool output"}},
 		},
 	}, -1)
 	if err := store.AddMessage(ctx, "sess-tr", msg); err != nil {
@@ -647,11 +649,11 @@ func TestHandleSessionMessages_IncludesToolResultImages(t *testing.T) {
 		t.Fatalf("write image: %v", err)
 	}
 
-	assistant := session.NewMessage("sess-tool-image", llm.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartToolCall,
-			ToolCall: &llm.ToolCall{
+	assistant := session.NewMessage("sess-tool-image", core.Message{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type: core.PartToolCall,
+			ToolCall: &core.ToolCall{
 				ID:        "call-img",
 				Name:      "image_generate",
 				Arguments: json.RawMessage(`{"prompt":"a cat"}`),
@@ -661,7 +663,7 @@ func TestHandleSessionMessages_IncludesToolResultImages(t *testing.T) {
 	if err := store.AddMessage(ctx, "sess-tool-image", assistant); err != nil {
 		t.Fatalf("AddMessage assistant: %v", err)
 	}
-	toolResult := session.NewMessage("sess-tool-image", llm.ToolResultMessageFromOutput("call-img", "image_generate", llm.ToolOutput{
+	toolResult := session.NewMessage("sess-tool-image", core.ToolResultMessageFromOutput("call-img", "image_generate", core.ToolOutput{
 		Content: "Generated image successfully.",
 		Images:  []string{imgPath},
 	}, nil), -1)
@@ -729,27 +731,27 @@ func TestHandleSessionMessages_OmitsSystemAndDeveloperMessages(t *testing.T) {
 	}
 
 	// Add a system message (as persisted by TUI chat sessions)
-	sysMsg := session.NewMessage("sess-sys", llm.SystemText("You are a helpful assistant."), -1)
+	sysMsg := session.NewMessage("sess-sys", core.SystemText("You are a helpful assistant."), -1)
 	if err := store.AddMessage(ctx, "sess-sys", sysMsg); err != nil {
 		t.Fatalf("AddMessage(system): %v", err)
 	}
 	// Add a developer message (platform developer prompt, persisted with role=developer)
-	devMsg := session.NewMessage("sess-sys", llm.Message{
-		Role:  llm.RoleDeveloper,
-		Parts: []llm.Part{{Type: llm.PartText, Text: "You are Jarvis, a personal AI assistant."}},
+	devMsg := session.NewMessage("sess-sys", core.Message{
+		Role:  core.RoleDeveloper,
+		Parts: []core.Part{{Type: core.PartText, Text: "You are Jarvis, a personal AI assistant."}},
 	}, -1)
 	if err := store.AddMessage(ctx, "sess-sys", devMsg); err != nil {
 		t.Fatalf("AddMessage(developer): %v", err)
 	}
 	// Add a user message
-	userMsg := session.NewMessage("sess-sys", llm.UserText("hello"), -1)
+	userMsg := session.NewMessage("sess-sys", core.UserText("hello"), -1)
 	if err := store.AddMessage(ctx, "sess-sys", userMsg); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
 	// Add an assistant message
-	assistantMsg := session.NewMessage("sess-sys", llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartText, Text: "hi there"}},
+	assistantMsg := session.NewMessage("sess-sys", core.Message{
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartText, Text: "hi there"}},
 	}, -1)
 	if err := store.AddMessage(ctx, "sess-sys", assistantMsg); err != nil {
 		t.Fatalf("AddMessage(assistant): %v", err)
@@ -793,17 +795,17 @@ func TestRun_PersistsInjectedSystemPromptInHistoryAndStore(t *testing.T) {
 	}
 	defer store.Close()
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("hi there")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("hi there")
 	rt := &serveRuntime{
 		store:        store,
 		provider:     provider,
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 		systemPrompt: "server system prompt",
 	}
 
 	ctx := context.Background()
-	_, err = rt.Run(ctx, true, false, []llm.Message{llm.UserText("hello")}, llm.Request{SessionID: "persist-system"})
+	_, err = rt.Run(ctx, true, false, []core.Message{core.UserText("hello")}, core.Request{SessionID: "persist-system"})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -811,7 +813,7 @@ func TestRun_PersistsInjectedSystemPromptInHistoryAndStore(t *testing.T) {
 	if len(rt.history) != 3 {
 		t.Fatalf("history len = %d, want 3", len(rt.history))
 	}
-	if rt.history[0].Role != llm.RoleSystem || rt.history[0].Parts[0].Text != "server system prompt" {
+	if rt.history[0].Role != core.RoleSystem || rt.history[0].Parts[0].Text != "server system prompt" {
 		t.Fatalf("history[0] = %+v, want injected system prompt", rt.history[0])
 	}
 
@@ -822,7 +824,7 @@ func TestRun_PersistsInjectedSystemPromptInHistoryAndStore(t *testing.T) {
 	if len(msgs) != 3 {
 		t.Fatalf("stored message count = %d, want 3", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleSystem || msgs[0].TextContent != "server system prompt" {
+	if msgs[0].Role != core.RoleSystem || msgs[0].TextContent != "server system prompt" {
 		t.Fatalf("stored first message = %+v, want injected system prompt", msgs[0])
 	}
 }
@@ -850,10 +852,10 @@ func TestEnsurePersistedSession_RestoresHistory(t *testing.T) {
 	}
 
 	msgs := []session.Message{
-		*session.NewMessage("restore-test", llm.UserText("hello"), -1),
-		*session.NewMessage("restore-test", llm.Message{
-			Role:  llm.RoleAssistant,
-			Parts: []llm.Part{{Type: llm.PartText, Text: "hi there"}},
+		*session.NewMessage("restore-test", core.UserText("hello"), -1),
+		*session.NewMessage("restore-test", core.Message{
+			Role:  core.RoleAssistant,
+			Parts: []core.Part{{Type: core.PartText, Text: "hi there"}},
 		}, -1),
 	}
 	if err := store.ReplaceMessages(ctx, "restore-test", msgs); err != nil {
@@ -864,7 +866,7 @@ func TestEnsurePersistedSession_RestoresHistory(t *testing.T) {
 	rt := &serveRuntime{
 		store:        store,
 		defaultModel: "mock-model",
-		provider:     llm.NewMockProvider("mock"),
+		provider:     mockprovider.NewMockProvider("mock"),
 	}
 
 	ok := rt.ensurePersistedSession(ctx, "restore-test", nil)
@@ -874,10 +876,10 @@ func TestEnsurePersistedSession_RestoresHistory(t *testing.T) {
 	if len(rt.history) != 2 {
 		t.Fatalf("history len = %d, want 2", len(rt.history))
 	}
-	if rt.history[0].Role != llm.RoleUser {
+	if rt.history[0].Role != core.RoleUser {
 		t.Fatalf("history[0].role = %s, want user", rt.history[0].Role)
 	}
-	if rt.history[1].Role != llm.RoleAssistant {
+	if rt.history[1].Role != core.RoleAssistant {
 		t.Fatalf("history[1].role = %s, want assistant", rt.history[1].Role)
 	}
 	if rt.history[1].Parts[0].Text != "hi there" {
@@ -907,8 +909,8 @@ func TestEnsurePersistedSession_RestoresHistoryWhenMetadataAlreadyLoaded(t *test
 		t.Fatalf("Create: %v", err)
 	}
 	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
-		*session.NewMessage(sess.ID, llm.UserText("persisted question"), -1),
-		*session.NewMessage(sess.ID, llm.AssistantText("persisted answer"), -1),
+		*session.NewMessage(sess.ID, core.UserText("persisted question"), -1),
+		*session.NewMessage(sess.ID, core.AssistantText("persisted answer"), -1),
 	}); err != nil {
 		t.Fatalf("ReplaceMessages: %v", err)
 	}
@@ -917,7 +919,7 @@ func TestEnsurePersistedSession_RestoresHistoryWhenMetadataAlreadyLoaded(t *test
 	rt := &serveRuntime{
 		store:        store,
 		defaultModel: "mock-model",
-		provider:     llm.NewMockProvider("mock"),
+		provider:     mockprovider.NewMockProvider("mock"),
 		sessionMeta:  sess,
 	}
 	if ok := rt.ensurePersistedSession(ctx, sess.ID, nil); !ok {
@@ -952,17 +954,17 @@ func TestEnsurePersistedSession_SkipsRestoreWhenHistoryExists(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	dbMsg := session.NewMessage("skip-restore", llm.UserText("db message"), -1)
+	dbMsg := session.NewMessage("skip-restore", core.UserText("db message"), -1)
 	if err := store.ReplaceMessages(ctx, "skip-restore", []session.Message{*dbMsg}); err != nil {
 		t.Fatalf("ReplaceMessages: %v", err)
 	}
 
 	// Runtime already has history — should NOT overwrite
-	existing := []llm.Message{llm.UserText("existing")}
+	existing := []core.Message{core.UserText("existing")}
 	rt := &serveRuntime{
 		store:        store,
 		defaultModel: "mock-model",
-		provider:     llm.NewMockProvider("mock"),
+		provider:     mockprovider.NewMockProvider("mock"),
 		history:      existing,
 	}
 
@@ -982,17 +984,17 @@ type testServeDelayTool struct {
 	delay time.Duration
 }
 
-func (d *testServeDelayTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "slow_tool", Description: "delay for steering test"}
+func (d *testServeDelayTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "slow_tool", Description: "delay for steering test"}
 }
 
-func (d *testServeDelayTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (d *testServeDelayTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	select {
 	case <-ctx.Done():
-		return llm.ToolOutput{}, ctx.Err()
+		return core.ToolOutput{}, ctx.Err()
 	case <-time.After(d.delay):
 	}
-	return llm.ToolOutput{Content: "slept"}, nil
+	return core.ToolOutput{Content: "slept"}, nil
 }
 
 func (d *testServeDelayTool) Preview(args json.RawMessage) string {
@@ -1003,11 +1005,11 @@ func (d *testServeDelayTool) Preview(args json.RawMessage) string {
 // Each runtime gets its own mock provider with the given responses.
 func newTestServeServer(responses ...string) *serveServer {
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock")
+		provider := mockprovider.NewMockProvider("mock")
 		for _, r := range responses {
 			provider.AddTextResponse(r)
 		}
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1121,7 +1123,7 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 	}
 	defer store.Close()
 
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	provider.AddToolCall("call_ask_1", tools.AskUserToolName, map[string]any{
 		"questions": []map[string]any{{
 			"header":   "Theme",
@@ -1134,7 +1136,7 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 	})
 	provider.AddTextResponse("All set.")
 
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	engine.RegisterTool(tools.NewAskUserTool())
 
 	rt := &serveRuntime{
@@ -1201,11 +1203,11 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 			return false
 		}
 		for _, msg := range msgs {
-			if msg.Role != llm.RoleAssistant {
+			if msg.Role != core.RoleAssistant {
 				continue
 			}
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.Name == tools.AskUserToolName {
+				if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.Name == tools.AskUserToolName {
 					return true
 				}
 			}
@@ -1242,7 +1244,7 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 			return false
 		}
 		for _, msg := range msgs {
-			if msg.Role == llm.RoleAssistant && strings.Contains(msg.TextContent, "All set.") {
+			if msg.Role == core.RoleAssistant && strings.Contains(msg.TextContent, "All set.") {
 				return true
 			}
 		}
@@ -1327,7 +1329,7 @@ func TestHandleSessionState_ReturnsModelAndEffortFromRuntime(t *testing.T) {
 }
 
 func TestHandleSessionState_ExposesPendingSteering(t *testing.T) {
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	engine.Steer("hi there")
 
 	rt := &serveRuntime{engine: engine}
@@ -1693,8 +1695,8 @@ func TestHandleResponses_UnknownPreviousResponseIDDoesNotOverwriteHistory(t *tes
 	defer store.Close()
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
-		engine := llm.NewEngine(provider, nil)
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1917,10 +1919,10 @@ func TestHandleResponses_FreshConversationBusySessionDoesNotOverwritePersistedRu
 	defer store.Close()
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock")
+		provider := mockprovider.NewMockProvider("mock")
 		provider.AddTextResponse("reply1")
 		provider.AddTextResponse("reply2")
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -2023,12 +2025,12 @@ func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 }
 
 func TestHandleResponses_PreviousResponseIDFunctionCallOutputUsesPriorToolName(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("call_1", "read_file", map[string]any{"path": "a.txt"}).
 		AddTextResponse("done")
 
 	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -2068,14 +2070,14 @@ func TestHandleResponses_PreviousResponseIDFunctionCallOutputUsesPriorToolName(t
 	var sawToolCall bool
 	var toolResultName string
 	for _, msg := range provider.Requests[1].Messages {
-		if msg.Role == llm.RoleUser && len(msg.Parts) > 0 && msg.Parts[0].Type == llm.PartText && msg.Parts[0].Text == "hi" {
+		if msg.Role == core.RoleUser && len(msg.Parts) > 0 && msg.Parts[0].Type == core.PartText && msg.Parts[0].Text == "hi" {
 			sawUserHi = true
 		}
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID == "call_1" && part.ToolCall.Name == "read_file" {
+			if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.ID == "call_1" && part.ToolCall.Name == "read_file" {
 				sawToolCall = true
 			}
-			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call_1" {
+			if part.Type != core.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call_1" {
 				continue
 			}
 			toolResultName = part.ToolResult.Name
@@ -2101,18 +2103,18 @@ func TestHandleResponses_PreviousResponseIDFunctionCallOutputUsesPersistedToolNa
 	defer store.Close()
 
 	var created atomic.Int32
-	providers := map[int32]*llm.MockProvider{}
+	providers := map[int32]*mockprovider.MockProvider{}
 
 	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
 		createNum := created.Add(1)
-		provider := llm.NewMockProvider("mock")
+		provider := mockprovider.NewMockProvider("mock")
 		if createNum == 1 {
 			provider.AddToolCall("call_1", "read_file", map[string]any{"path": "a.txt"})
 		} else {
 			provider.AddTextResponse("done")
 		}
 		providers[createNum] = provider
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "mock",
@@ -2165,7 +2167,7 @@ func TestHandleResponses_PreviousResponseIDFunctionCallOutputUsesPersistedToolNa
 	var toolResultName string
 	for _, msg := range provider.Requests[0].Messages {
 		for _, part := range msg.Parts {
-			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call_1" {
+			if part.Type != core.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call_1" {
 				continue
 			}
 			toolResultName = part.ToolResult.Name
@@ -2188,8 +2190,8 @@ func TestHandleResponses_PreviousResponseIDRestoresPersistedProviderAfterRuntime
 	var otherCreates atomic.Int32
 
 	newRuntime := func(providerName, response string) *serveRuntime {
-		provider := llm.NewMockProvider(providerName).AddTextResponse(response)
-		engine := llm.NewEngine(provider, nil)
+		provider := mockprovider.NewMockProvider(providerName).AddTextResponse(response)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  providerName,
@@ -2287,17 +2289,17 @@ func TestHandleResponses_ChainedRequestWithoutModelSwapRemainsPinnedToPersistedR
 	defer store.Close()
 
 	var mu sync.Mutex
-	providers := map[string]*llm.MockProvider{}
+	providers := map[string]*mockprovider.MockProvider{}
 	creates := map[string]int{}
 	newRuntime := func(providerName, modelName string) *serveRuntime {
 		mu.Lock()
 		defer mu.Unlock()
 		creates[providerName]++
-		provider := llm.NewMockProvider(providerName)
+		provider := mockprovider.NewMockProvider(providerName)
 		provider.AddTextResponse(providerName + "-1")
 		provider.AddTextResponse(providerName + "-2")
 		providers[providerName] = provider
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{provider: provider, providerKey: providerName, engine: engine, defaultModel: providerName + "-default", store: store}
 		rt.Touch()
 		return rt
@@ -2357,11 +2359,11 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	defer store.Close()
 
 	var mu sync.Mutex
-	providers := map[string]*llm.MockProvider{}
+	providers := map[string]*mockprovider.MockProvider{}
 	newRuntime := func(providerName, modelName string) *serveRuntime {
 		mu.Lock()
 		defer mu.Unlock()
-		provider := llm.NewMockProvider(providerName)
+		provider := mockprovider.NewMockProvider(providerName)
 		switch providerName {
 		case "old":
 			provider.AddTextResponse("old-1")
@@ -2372,7 +2374,7 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 			provider.AddTextResponse(providerName + "-1")
 		}
 		providers[providerName] = provider
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		if modelName == "" {
 			modelName = providerName + "-default"
 		}
@@ -2427,9 +2429,9 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	if !ok || previousRuntime == nil {
 		t.Fatal("previous runtime missing before model swap")
 	}
-	previousRuntime.engine.QueueSteering(llm.QueuedSteering{
+	previousRuntime.engine.QueueSteering(engine.QueuedSteering{
 		ID:          "swap-follow-up",
-		Message:     llm.UserText("continue"),
+		Message:     core.UserText("continue"),
 		DisplayText: "continue",
 	})
 	code, resp2 := doResponsesFirstParty(t, srv, `{"input":"continue","client_message_id":"swap-follow-up","previous_response_id":"`+respID+`","provider":"new","model":"new-model","model_swap":{"mode":"auto","fallback":"handover"}}`)
@@ -2476,9 +2478,9 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	}
 	markerIndex := -1
 	for i, msg := range storedMessages {
-		if msg.Role == llm.RoleEvent {
+		if msg.Role == core.RoleEvent {
 			markerIndex = i
-			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); !ok || marker.Status != "succeeded" || marker.Strategy != "naive" {
+			if marker, ok := core.ParseModelSwapMarker(msg.ToLLMMessage()); !ok || marker.Status != "succeeded" || marker.Strategy != "naive" {
 				t.Fatalf("unexpected model-swap marker: ok=%v marker=%#v", ok, marker)
 			}
 		}
@@ -2486,7 +2488,7 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	if markerIndex < 0 {
 		t.Fatalf("expected persisted model-swap event marker, messages=%#v", storedMessages)
 	}
-	if markerIndex == 0 || markerIndex+1 >= len(storedMessages) || storedMessages[markerIndex-1].Role != llm.RoleUser || storedMessages[markerIndex-1].TextContent != "continue" || storedMessages[markerIndex+1].Role != llm.RoleAssistant {
+	if markerIndex == 0 || markerIndex+1 >= len(storedMessages) || storedMessages[markerIndex-1].Role != core.RoleUser || storedMessages[markerIndex-1].TextContent != "continue" || storedMessages[markerIndex+1].Role != core.RoleAssistant {
 		t.Fatalf("model-swap marker must remain between the triggering user message and its reply, marker index=%d messages=%#v", markerIndex, storedMessages)
 	}
 
@@ -2502,7 +2504,7 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 		t.Fatalf("new provider requests after third turn = %d, want 2", len(newProvider.Requests))
 	}
 	for _, msg := range newProvider.Requests[1].Messages {
-		if msg.Role == llm.RoleEvent {
+		if msg.Role == core.RoleEvent {
 			t.Fatalf("provider request included event marker: %#v", newProvider.Requests[1].Messages)
 		}
 	}
@@ -2517,18 +2519,18 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 	defer store.Close()
 
 	var mu sync.Mutex
-	providersByCreate := map[string][]*llm.MockProvider{}
+	providersByCreate := map[string][]*mockprovider.MockProvider{}
 	newRuntime := func(providerName, modelName string) *serveRuntime {
 		mu.Lock()
 		defer mu.Unlock()
-		provider := llm.NewMockProvider(providerName)
+		provider := mockprovider.NewMockProvider(providerName)
 		providersByCreate[providerName] = append(providersByCreate[providerName], provider)
 		switch providerName {
 		case "old":
 			if len(providersByCreate[providerName]) == 1 {
 				provider.AddTextResponse("old-1")
 			} else {
-				provider.AddTurn(llm.MockTurn{Text: "handover doc", Usage: llm.Usage{InputTokens: 11, OutputTokens: 3}})
+				provider.AddTurn(mockprovider.MockTurn{Text: "handover doc", Usage: core.Usage{InputTokens: 11, OutputTokens: 3}})
 			}
 		case "new":
 			provider.AddError(errors.New("400 invalid_request: messages contain incompatible reasoning"))
@@ -2536,7 +2538,7 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 		default:
 			provider.AddTextResponse(providerName + "-1")
 		}
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		if modelName == "" {
 			modelName = providerName + "-default"
 		}
@@ -2590,9 +2592,9 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 	}
 	current, ok := manager.Get("swap-handover")
 	if !ok || current.cumulativeUsage.InputTokens != 11 || current.cumulativeUsage.OutputTokens != 3 {
-		t.Fatalf("successful runtime handover usage = %+v ok=%v, want 11 input/3 output", func() llm.Usage {
+		t.Fatalf("successful runtime handover usage = %+v ok=%v, want 11 input/3 output", func() core.Usage {
 			if current == nil {
-				return llm.Usage{}
+				return core.Usage{}
 			}
 			return current.cumulativeUsage
 		}(), ok)
@@ -2604,14 +2606,14 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 	}
 	markerIndex := -1
 	for i, msg := range storedMessages {
-		if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+		if marker, ok := core.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
 			if marker.Status != "succeeded" || marker.Strategy != "handover" {
 				t.Fatalf("unexpected handover model-swap marker: %#v", marker)
 			}
 			markerIndex = i
 		}
 	}
-	if markerIndex < 0 || markerIndex == 0 || markerIndex+1 >= len(storedMessages) || storedMessages[markerIndex-1].Role != llm.RoleUser || storedMessages[markerIndex-1].TextContent != "continue" || storedMessages[markerIndex+1].Role != llm.RoleAssistant {
+	if markerIndex < 0 || markerIndex == 0 || markerIndex+1 >= len(storedMessages) || storedMessages[markerIndex-1].Role != core.RoleUser || storedMessages[markerIndex-1].TextContent != "continue" || storedMessages[markerIndex+1].Role != core.RoleAssistant {
 		t.Fatalf("handover model-swap marker must remain between the triggering user message and its reply, marker index=%d messages=%#v", markerIndex, storedMessages)
 	}
 }
@@ -2625,11 +2627,11 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 	defer store.Close()
 
 	var mu sync.Mutex
-	providersByCreate := map[string][]*llm.MockProvider{}
+	providersByCreate := map[string][]*mockprovider.MockProvider{}
 	newRuntime := func(providerName, modelName string) *serveRuntime {
 		mu.Lock()
 		defer mu.Unlock()
-		provider := llm.NewMockProvider(providerName)
+		provider := mockprovider.NewMockProvider(providerName)
 		providersByCreate[providerName] = append(providersByCreate[providerName], provider)
 		switch providerName {
 		case "old":
@@ -2637,7 +2639,7 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 				provider.AddTextResponse("old-1")
 				provider.AddTextResponse("old-2")
 			} else {
-				provider.AddTurn(llm.MockTurn{Text: "handover doc", Usage: llm.Usage{InputTokens: 11, OutputTokens: 3}})
+				provider.AddTurn(mockprovider.MockTurn{Text: "handover doc", Usage: core.Usage{InputTokens: 11, OutputTokens: 3}})
 			}
 		case "new":
 			provider.AddError(errors.New("400 invalid_request: messages contain incompatible reasoning"))
@@ -2645,7 +2647,7 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 		default:
 			provider.AddTextResponse(providerName + "-1")
 		}
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		if modelName == "" {
 			modelName = providerName + "-default"
 		}
@@ -2711,8 +2713,8 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 	}
 	foundFailedMarker := false
 	for _, msg := range storedMessages {
-		if msg.Role == llm.RoleEvent {
-			marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage())
+		if msg.Role == core.RoleEvent {
+			marker, ok := core.ParseModelSwapMarker(msg.ToLLMMessage())
 			if ok && marker.Status == "failed" {
 				foundFailedMarker = true
 			}
@@ -2745,7 +2747,7 @@ func sessionMessagesContainText(messages []session.Message, needle string) bool 
 	return false
 }
 
-func requestContainsText(req llm.Request, needle string) bool {
+func requestContainsText(req core.Request, needle string) bool {
 	for _, msg := range req.Messages {
 		for _, part := range msg.Parts {
 			if strings.Contains(part.Text, needle) {
@@ -2772,8 +2774,8 @@ func TestHandleResponses_FreshConversationReusedSessionIDUpdatesPersistedProvide
 	var otherCreates atomic.Int32
 
 	newRuntime := func(providerName, response string) *serveRuntime {
-		provider := llm.NewMockProvider(providerName).AddTextResponse(response)
-		engine := llm.NewEngine(provider, nil)
+		provider := mockprovider.NewMockProvider(providerName).AddTextResponse(response)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  providerName,
@@ -2868,10 +2870,10 @@ func TestHandleResponses_FreshConversationWithoutProviderUsesDefaultNotPersisted
 	var otherCreates atomic.Int32
 
 	newRuntime := func(providerName string, createNum int32) *serveRuntime {
-		provider := llm.NewMockProvider(providerName)
+		provider := mockprovider.NewMockProvider(providerName)
 		provider.AddTextResponse(fmt.Sprintf("%s runtime %d response 1", providerName, createNum))
 		provider.AddTextResponse(fmt.Sprintf("%s runtime %d response 2", providerName, createNum))
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  providerName,
@@ -2967,8 +2969,8 @@ func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 	defer store.Close()
 
 	newRuntime := func(providerName string) *serveRuntime {
-		provider := llm.NewMockProvider(providerName).AddTextResponse(providerName + " reply")
-		engine := llm.NewEngine(provider, nil)
+		provider := mockprovider.NewMockProvider(providerName).AddTextResponse(providerName + " reply")
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  providerName,
@@ -3091,14 +3093,14 @@ func TestHandleResponses_NoPreviousResponseIDStartsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	provider := rt.provider.(*llm.MockProvider)
+	provider := rt.provider.(*mockprovider.MockProvider)
 	if len(provider.Requests) != 1 {
 		t.Fatalf("expected 1 provider request on the fresh runtime, got %d", len(provider.Requests))
 	}
 	freshReq := provider.Requests[0]
 	userMsgCount := 0
 	for _, msg := range freshReq.Messages {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			userMsgCount++
 		}
 	}
@@ -3200,7 +3202,7 @@ func TestStreamResponses_FailedRunDoesNotBecomeLatestResponseID(t *testing.T) {
 	provider := newStagedProvider("hello ", "world")
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -3355,7 +3357,7 @@ firstStreamBusy:
 }
 
 func TestStreamResponses_AskUserRoundTrip(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	provider.AddToolCall("call-ask", tools.AskUserToolName, map[string]any{
 		"questions": []map[string]any{{
 			"header":   "Color",
@@ -3369,7 +3371,7 @@ func TestStreamResponses_AskUserRoundTrip(t *testing.T) {
 	provider.AddTextResponse("Thanks for answering")
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		engine.RegisterTool(tools.NewAskUserTool())
 		rt := &serveRuntime{
 			provider:     provider,
@@ -3498,7 +3500,7 @@ func TestStreamResponses_AskUserRoundTrip(t *testing.T) {
 	var toolResult *tools.AskUserResult
 	for _, msg := range provider.Requests[1].Messages {
 		for _, part := range msg.Parts {
-			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.Name != tools.AskUserToolName {
+			if part.Type != core.PartToolResult || part.ToolResult == nil || part.ToolResult.Name != tools.AskUserToolName {
 				continue
 			}
 			var parsed tools.AskUserResult

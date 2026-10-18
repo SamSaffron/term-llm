@@ -9,18 +9,18 @@ import (
 	"strings"
 	"time"
 
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
-
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 )
 
 // MCPOptions contains options for enabling MCP servers.
 type MCPOptions struct {
-	Provider      llm.Provider
+	Provider      core.Provider
 	Model         string
 	YoloMode      bool
 	ToolDiscovery config.ToolDiscoveryConfig
@@ -28,7 +28,7 @@ type MCPOptions struct {
 
 // EnableMCPServersWithFeedback initializes MCP servers with user feedback.
 // Returns the manager (caller must call StopAll) or error if setup failed.
-func EnableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *llm.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
+func EnableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *engine.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
 	serverNames := ParseServerList(mcpFlag)
 	if len(serverNames) == 0 {
 		return nil, nil

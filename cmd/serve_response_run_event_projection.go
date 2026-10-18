@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func (s *serveServer) appendResponseTextDelta(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseTextDelta(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	segmentOrdinal := state.assistantSegmentOrdinal
 	if ev.ProviderTurnIndexSet && ev.ProviderTurnIndex > segmentOrdinal {
 		// Durable assistant rows are keyed by the engine's provider turn index.
@@ -37,14 +37,14 @@ func (s *serveServer) appendResponseTextDelta(runtime *serveRuntime, run *respon
 	return run.appendTextDeltaSegmentEvent(state.outputIndex, state.assistantSegmentOrdinal, ev.Text)
 }
 
-func (s *serveServer) appendResponseAttemptDiscard(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseAttemptDiscard(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	state.toolsSeen = false
 	return run.appendEvent("response.attempt.discard", map[string]any{
 		"output_index": state.outputIndex,
 	})
 }
 
-func (s *serveServer) appendResponseToolCall(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseToolCall(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	if ev.Tool == nil {
 		return nil
 	}
@@ -101,7 +101,7 @@ func (s *serveServer) appendResponseToolCall(runtime *serveRuntime, run *respons
 	return nil
 }
 
-func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	if runtime != nil {
 		runtime.beginSubagentProgress(ev.ToolCallID, ev.ToolName)
 	}
@@ -141,7 +141,7 @@ func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *re
 	})
 }
 
-func (s *serveServer) appendResponseToolExecEnd(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseToolExecEnd(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	runtime.finishSubagentProgress(ev.ToolCallID, ev.ToolSuccess)
 	if ev.ToolName == tools.AskUserToolName && runtime != nil {
 		runtime.clearPendingAskUser(ev.ToolCallID)
@@ -234,14 +234,14 @@ func (s *serveServer) appendResponseToolExecEnd(runtime *serveRuntime, run *resp
 	return nil
 }
 
-func (s *serveServer) appendResponseHeartbeat(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseHeartbeat(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	return run.appendEvent("response.heartbeat", map[string]any{
 		"call_id":   ev.ToolCallID,
 		"tool_name": ev.ToolName,
 	})
 }
 
-func (s *serveServer) appendResponsePhase(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponsePhase(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	if ev.Text == "" {
 		return nil
 	}
@@ -250,7 +250,7 @@ func (s *serveServer) appendResponsePhase(runtime *serveRuntime, run *responseRu
 	})
 }
 
-func (s *serveServer) appendResponseCompaction(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseCompaction(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	payload := map[string]any{}
 	if sequence, count, ok := runtime.takePendingCompactionIdentity(); ok {
 		// The durable sequence is the stable identity shared by the persisted
@@ -262,7 +262,7 @@ func (s *serveServer) appendResponseCompaction(runtime *serveRuntime, run *respo
 	return run.appendEvent("response.compaction", payload)
 }
 
-func (s *serveServer) appendResponseRetry(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseRetry(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	payload := map[string]any{
 		"attempt":      ev.RetryAttempt,
 		"max_attempts": ev.RetryMaxAttempts,
@@ -279,7 +279,7 @@ func (s *serveServer) appendResponseRetry(runtime *serveRuntime, run *responseRu
 	return run.appendEvent("response.retry", payload)
 }
 
-func (s *serveServer) appendResponseSteering(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseSteering(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	if strings.TrimSpace(ev.SteeringID) == "" {
 		return errors.New("steering event is missing client_message_id")
 	}
@@ -300,7 +300,7 @@ func (s *serveServer) appendResponseSteering(runtime *serveRuntime, run *respons
 	return run.appendEvent("response.steering", payload)
 }
 
-func (s *serveServer) appendResponseModelSwitch(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseModelSwitch(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	fromModel := strings.TrimSpace(ev.PreviousModel)
 	toModel := strings.TrimSpace(ev.Model)
 	if toModel == "" {
@@ -313,7 +313,7 @@ func (s *serveServer) appendResponseModelSwitch(runtime *serveRuntime, run *resp
 	fromEffort := strings.TrimSpace(ev.PreviousReasoningEffort)
 	toEffort := strings.TrimSpace(ev.ReasoningEffort)
 	provider := runtimeProviderKey(runtime)
-	marker := llm.ModelSwapMarker{
+	marker := core.ModelSwapMarker{
 		FromProvider: provider,
 		FromModel:    fromModel,
 		FromEffort:   fromEffort,
@@ -323,7 +323,7 @@ func (s *serveServer) appendResponseModelSwitch(runtime *serveRuntime, run *resp
 		BoundaryID:   boundaryID,
 		Status:       "succeeded",
 	}
-	message := llm.FormatModelSwapMarker(marker)
+	message := core.FormatModelSwapMarker(marker)
 	if state != nil {
 		state.model = toModel
 		state.reasoningEffort = toEffort

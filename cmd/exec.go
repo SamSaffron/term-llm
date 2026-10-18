@@ -9,6 +9,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -171,11 +173,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if execSystemMessage != "" {
 		instructions = execSystemMessage
 	}
-	forceTool := llm.SuggestCommandsToolName
+	forceTool := core.SuggestCommandsToolName
 	lastTurnForceTool := ""
 	if strings.TrimSpace(execTools) != "" {
 		forceTool = ""
-		lastTurnForceTool = llm.SuggestCommandsToolName
+		lastTurnForceTool = core.SuggestCommandsToolName
 	}
 
 	runner := newCmdRunner(cfg, cmdRunnerOptions{
@@ -217,7 +219,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		DebugRaw:                debugRaw,
 		ForceExternalSearch:     execBoolPtr(resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch)),
 		DisableExternalWebFetch: execNoWebFetch,
-		ExtraTools:              []llm.ToolSpec{llm.SuggestCommandsToolSpec(numSuggestions)},
+		ExtraTools:              []core.ToolSpec{llm.SuggestCommandsToolSpec(numSuggestions)},
 		ForceToolName:           forceTool,
 		LastTurnForceToolName:   lastTurnForceTool,
 	}, nil)
@@ -250,7 +252,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 			llmReq := execEnv.llmReq
 			stats.SetModel(statsModel)
 			stats.RequestStart()
-			_, runErr := execEnv.runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.SystemText(systemPrompt), llm.UserText(userPrompt)}, llmReq, func(ev llm.Event) error {
+			_, runErr := execEnv.runtime.RunWithEvents(ctx, false, false, []core.Message{core.SystemText(systemPrompt), core.UserText(userPrompt)}, llmReq, func(ev core.Event) error {
 				sink.Event(ev)
 				return nil
 			})
@@ -339,8 +341,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 }
 
 type execSuggestionsResult struct {
-	suggestions []llm.CommandSuggestion
-	engine      *llm.Engine
+	suggestions []core.CommandSuggestion
+	engine      *engine.Engine
 }
 
 type execRunSink struct {
@@ -349,7 +351,7 @@ type execRunSink struct {
 	debug      bool
 	debugRaw   bool
 
-	suggestions []llm.CommandSuggestion
+	suggestions []core.CommandSuggestion
 	err         error
 	sentFirst   bool
 
@@ -376,12 +378,12 @@ func (s *execRunSink) GuardianEvent(event tools.GuardianEvent) {
 	}
 }
 
-func (s *execRunSink) Event(event llm.Event) {
+func (s *execRunSink) Event(event core.Event) {
 	if s == nil {
 		return
 	}
 	// Handle tool execution events
-	if event.Type == llm.EventToolExecStart {
+	if event.Type == core.EventToolExecStart {
 		if event.ToolName != "" {
 			if s.stats != nil {
 				s.stats.ToolStart()
@@ -404,7 +406,7 @@ func (s *execRunSink) Event(event llm.Event) {
 		return
 	}
 
-	if event.Type == llm.EventToolExecEnd {
+	if event.Type == core.EventToolExecEnd {
 		if s.stats != nil {
 			s.stats.ToolEnd()
 		}
@@ -419,7 +421,7 @@ func (s *execRunSink) Event(event llm.Event) {
 		}
 	}
 
-	if event.Type == llm.EventRetry {
+	if event.Type == core.EventRetry {
 		if s.stats != nil {
 			s.stats.ScheduleRetryStart(event.RetryWaitSecs)
 		}
@@ -428,7 +430,7 @@ func (s *execRunSink) Event(event llm.Event) {
 		return
 	}
 
-	if event.Type == llm.EventAttemptDiscard {
+	if event.Type == core.EventAttemptDiscard {
 		if s.stats != nil {
 			s.stats.DiscardUsage(s.attemptInput, s.attemptOutput, s.attemptCached, s.attemptCacheWrite, s.attemptUsageCalls)
 		}
@@ -437,7 +439,7 @@ func (s *execRunSink) Event(event llm.Event) {
 		return
 	}
 
-	if event.Type == llm.EventModelSwitch {
+	if event.Type == core.EventModelSwitch {
 		model := event.Model
 		if model == "" {
 			model = event.Text
@@ -448,7 +450,7 @@ func (s *execRunSink) Event(event llm.Event) {
 		return
 	}
 
-	if event.Type == llm.EventUsage && event.Use != nil {
+	if event.Type == core.EventUsage && event.Use != nil {
 		if s.stats != nil {
 			s.stats.GenerationEnd()
 			s.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
@@ -463,7 +465,7 @@ func (s *execRunSink) Event(event llm.Event) {
 		return
 	}
 
-	if s.stats != nil && (event.Type == llm.EventTextDelta && event.Text != "" || event.Type == llm.EventReasoningDelta && (event.Text != "" || llm.IsEncryptedReasoningDelta(event))) {
+	if s.stats != nil && (event.Type == core.EventTextDelta && event.Text != "" || event.Type == core.EventReasoningDelta && (event.Text != "" || core.IsEncryptedReasoningDelta(event))) {
 		s.stats.ObserveOutput()
 	}
 
@@ -472,16 +474,16 @@ func (s *execRunSink) Event(event llm.Event) {
 		s.sendProgress(ui.ProgressUpdate{Phase: "Responding"})
 	}
 
-	if event.Type == llm.EventError && event.Err != nil {
+	if event.Type == core.EventError && event.Err != nil {
 		s.err = event.Err
 		return
 	}
-	if event.Type == llm.EventToolCall {
+	if event.Type == core.EventToolCall {
 		// Tool calls are durable boundaries; a later retry must not discard the
 		// provider request that produced the tool.
 		s.resetAttemptUsage()
 	}
-	if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.SuggestCommandsToolName {
+	if event.Type == core.EventToolCall && event.Tool != nil && event.Tool.Name == core.SuggestCommandsToolName {
 		llm.DebugToolCall(s.debug, *event.Tool)
 		parsed, err := llm.ParseCommandSuggestions(*event.Tool)
 		if err != nil {
@@ -508,11 +510,11 @@ func (s *execRunSink) sendProgress(update ui.ProgressUpdate) {
 	}
 }
 
-func (s *execRunSink) Suggestions() []llm.CommandSuggestion {
+func (s *execRunSink) Suggestions() []core.CommandSuggestion {
 	if s == nil || len(s.suggestions) == 0 {
 		return nil
 	}
-	return append([]llm.CommandSuggestion(nil), s.suggestions...)
+	return append([]core.CommandSuggestion(nil), s.suggestions...)
 }
 
 func envEnabled(name string) bool {

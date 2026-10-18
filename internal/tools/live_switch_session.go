@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // LiveSwitchSessionToolName rebinds the current live call to another chat
@@ -47,8 +47,8 @@ func ContextWithLiveSwitchSession(ctx context.Context, sessionID string, activat
 // LiveSwitchSessionTool rebinds the live call to another existing chat session.
 type LiveSwitchSessionTool struct{}
 
-func (*LiveSwitchSessionTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (*LiveSwitchSessionTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: LiveSwitchSessionToolName,
 		Description: "Bind the current live voice call to a different existing chat session. Supply a session number or session id from " +
 			"session_directory; titles, descriptions, and partial ids are not accepted. The switch takes effect immediately: it runs in the host, " +
@@ -65,10 +65,10 @@ func (*LiveSwitchSessionTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (*LiveSwitchSessionTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (*LiveSwitchSessionTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	binding, ok := ctx.Value(liveSwitchSessionKey{}).(liveSwitchSessionBinding)
-	if !ok || binding.activate == nil || binding.sessionID == "" || binding.sessionID != llm.SessionIDFromContext(ctx) {
-		return llm.ToolOutput{}, NewToolError(ErrPermissionDenied, "switching sessions is available only to the originating live chat turn")
+	if !ok || binding.activate == nil || binding.sessionID == "" || binding.sessionID != core.SessionIDFromContext(ctx) {
+		return core.ToolOutput{}, NewToolError(ErrPermissionDenied, "switching sessions is available only to the originating live chat turn")
 	}
 	params := struct {
 		Session json.RawMessage `json:"session"`
@@ -76,15 +76,15 @@ func (*LiveSwitchSessionTool) Execute(ctx context.Context, args json.RawMessage)
 	decoder := json.NewDecoder(bytes.NewReader(args))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&params); err != nil {
-		return llm.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid live switch: %v", err)
+		return core.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid live switch: %v", err)
 	}
 	selector, ok := liveSwitchSelector(params.Session)
 	if !ok {
-		return llm.ToolOutput{}, NewToolError(ErrInvalidParams, "a session number or session id is required")
+		return core.ToolOutput{}, NewToolError(ErrInvalidParams, "a session number or session id is required")
 	}
 	result, err := binding.activate(ctx, selector)
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("live switch: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("live switch: %w", err)
 	}
 	// The running task's request is speech material, not a transcript dump.
 	result.RunningTask = truncateRunes(strings.TrimSpace(result.RunningTask), sessionDirectoryMaxSnippetRunes)
@@ -96,9 +96,9 @@ func (*LiveSwitchSessionTool) Execute(ctx context.Context, args json.RawMessage)
 		LiveSessionSwitchResult: result, Activity: activity, Note: liveSwitchNote(result),
 	})
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("encode live switch: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("encode live switch: %w", err)
 	}
-	return llm.TextOutput(string(encoded)), nil
+	return core.TextOutput(string(encoded)), nil
 }
 
 func (*LiveSwitchSessionTool) Preview(args json.RawMessage) string {

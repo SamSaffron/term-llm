@@ -3,7 +3,7 @@ package runtime
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
 
@@ -20,7 +20,7 @@ type RunnerOutput struct {
 	thinkingItemStart string
 }
 
-func (o *RunnerOutput) Event(ev llm.Event) {
+func (o *RunnerOutput) Event(ev core.Event) {
 	// Agentic model events carry a turn index; simple streams and engine-generated
 	// retry discards may not. An untagged discard always refers to the current turn.
 	if ev.ProviderTurnIndexSet && ev.ProviderTurnIndex > o.turn {
@@ -30,11 +30,11 @@ func (o *RunnerOutput) Event(ev llm.Event) {
 		o.thinkingItemStart = o.thinkingItemID
 	}
 	switch ev.Type {
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		o.response.WriteString(ev.Text)
-	case llm.EventReasoningDelta:
+	case core.EventReasoningDelta:
 		internalreasoning.AppendStreamItemText(&o.thinking, &o.thinkingItemID, ev.Text, ev.ReasoningItemID)
-	case llm.EventAttemptDiscard:
+	case core.EventAttemptDiscard:
 		restoreOutputPrefix(&o.response, o.responseStart)
 		restoreOutputPrefix(&o.thinking, o.thinkingStart)
 		o.thinkingItemID = o.thinkingItemStart

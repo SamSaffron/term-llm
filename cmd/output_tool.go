@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func registerAgentOutputTool(cfg agents.OutputToolConfig, toolMgr *tools.ToolManager, engine *llm.Engine) *tools.SetOutputTool {
+func registerAgentOutputTool(cfg agents.OutputToolConfig, toolMgr *tools.ToolManager, engine *engine.Engine) *tools.SetOutputTool {
 	outputTool := tools.NewSetOutputTool(cfg.Name, cfg.Param, cfg.Description, cfg.Schema)
 	if toolMgr == nil {
 		engine.RegisterTool(outputTool)

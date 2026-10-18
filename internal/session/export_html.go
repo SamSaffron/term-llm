@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yuin/goldmark"
-
 	"github.com/samsaffron/term-llm/internal/htmlesc"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/yuin/goldmark"
 )
 
 const maxHTMLExportInlineImageBytes = 2 << 20
@@ -109,7 +108,7 @@ type htmlExportFile struct {
 }
 
 type pendingHTMLTool struct {
-	call       *llm.ToolCall
+	call       *core.ToolCall
 	messageIdx int
 }
 
@@ -204,8 +203,8 @@ func htmlProviderModelLabel(provider, model string) string {
 
 var htmlMediaReferencePattern = regexp.MustCompile(`!\[([^\]\n]*)\]\(term-llm-media://([A-Fa-f0-9]{32})\)`)
 
-func htmlMediaReferences(messages []Message, extra []llm.MediaArtifact) map[string]llm.MediaArtifact {
-	media := make(map[string]llm.MediaArtifact)
+func htmlMediaReferences(messages []Message, extra []core.MediaArtifact) map[string]core.MediaArtifact {
+	media := make(map[string]core.MediaArtifact)
 	for _, item := range extra {
 		if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
 			media[reference] = item
@@ -213,7 +212,7 @@ func htmlMediaReferences(messages []Message, extra []llm.MediaArtifact) map[stri
 	}
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
 				continue
 			}
 			for _, item := range part.ToolResult.Media {
@@ -232,7 +231,7 @@ func htmlMediaReferences(messages []Message, extra []llm.MediaArtifact) map[stri
 // images pointing at a data: URI or bundle asset; everything else becomes a
 // textual placeholder because the private media URL is meaningless outside
 // the originating server.
-func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact, images *exportImages) string {
+func replaceHTMLMediaReferences(value string, media map[string]core.MediaArtifact, images *exportImages) string {
 	return rewriteExportMediaText(value, func(token string) string {
 		match := htmlMediaReferencePattern.FindStringSubmatch(token)
 		if len(match) != 3 {
@@ -284,7 +283,7 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 
 	for _, msg := range messages {
 		compaction := IsInternalCompactionSummaryMessage(msg)
-		if msg.Role == llm.RoleSystem && !opts.IncludeSystem && !compaction {
+		if msg.Role == core.RoleSystem && !opts.IncludeSystem && !compaction {
 			continue
 		}
 		view := htmlExportMessage{
@@ -294,11 +293,11 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 		messageIdx := len(views)
 		parts := msg.Parts
 		if len(parts) == 0 && msg.TextContent != "" {
-			parts = []llm.Part{{Type: llm.PartText, Text: msg.TextContent}}
+			parts = []core.Part{{Type: core.PartText, Text: msg.TextContent}}
 		}
 		for _, part := range parts {
 			switch part.Type {
-			case llm.PartText:
+			case core.PartText:
 				if reasoning, ok := htmlReasoningBlock(part, opts, markdown); ok {
 					view.Blocks = append(view.Blocks, reasoning)
 					detailCount++
@@ -306,16 +305,16 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 				if part.Text != "" {
 					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, part.Text)})
 				}
-			case llm.PartImage:
+			case core.PartImage:
 				alt := "Attached image"
-				if msg.Role == llm.RoleAssistant {
+				if msg.Role == core.RoleAssistant {
 					alt = "Image"
 				}
 				image := buildHTMLImage(images, partImageSource(part, alt))
 				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "image", Image: &image})
-			case llm.PartFile:
+			case core.PartFile:
 				view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "file", File: buildHTMLFile(part)})
-			case llm.PartToolCall:
+			case core.PartToolCall:
 				if part.ToolCall == nil {
 					continue
 				}
@@ -325,11 +324,11 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions, images *exp
 				} else {
 					pending[part.ToolCall.ID] = pendingHTMLTool{call: part.ToolCall, messageIdx: messageIdx}
 				}
-			case llm.PartToolResult:
+			case core.PartToolResult:
 				if part.ToolResult == nil {
 					continue
 				}
-				var call *llm.ToolCall
+				var call *core.ToolCall
 				if match, ok := pending[part.ToolResult.ID]; ok {
 					call = match.call
 					delete(pending, part.ToolResult.ID)
@@ -393,7 +392,7 @@ func groupHTMLExportTools(messages []htmlExportMessage) []htmlExportMessage {
 }
 
 func isHTMLExportToolMessage(message htmlExportMessage) bool {
-	if message.Role != string(llm.RoleTool) || len(message.Blocks) == 0 {
+	if message.Role != string(core.RoleTool) || len(message.Blocks) == 0 {
 		return false
 	}
 	for _, block := range message.Blocks {
@@ -404,9 +403,9 @@ func isHTMLExportToolMessage(message htmlExportMessage) bool {
 	return true
 }
 
-func htmlReasoningBlock(part llm.Part, opts ExportOptions, markdown goldmark.Markdown) (htmlExportBlock, bool) {
+func htmlReasoningBlock(part core.Part, opts ExportOptions, markdown goldmark.Markdown) (htmlExportBlock, bool) {
 	hasReasoning := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	kind := llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoning)
+	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoning)
 	content := strings.TrimSpace(part.ReasoningContent)
 	if content == "" {
 		content = strings.TrimSpace(strings.Join(part.ReasoningSummaryParts, "\n\n"))
@@ -415,7 +414,7 @@ func htmlReasoningBlock(part llm.Part, opts ExportOptions, markdown goldmark.Mar
 		return htmlExportBlock{}, false
 	}
 	switch kind {
-	case llm.ReasoningKindSummary:
+	case core.ReasoningKindSummary:
 		if !opts.IncludeReasoningSummaries {
 			return htmlExportBlock{}, false
 		}
@@ -429,7 +428,7 @@ func htmlReasoningBlock(part llm.Part, opts ExportOptions, markdown goldmark.Mar
 			body = content
 		}
 		return htmlExportBlock{Kind: "reasoning", Title: title, HTML: renderSafeMarkdown(markdown, body)}, true
-	case llm.ReasoningKindRaw:
+	case core.ReasoningKindRaw:
 		if !opts.IncludeRawReasoning {
 			return htmlExportBlock{}, false
 		}
@@ -449,7 +448,7 @@ func renderSafeMarkdown(markdown goldmark.Markdown, source string) string {
 	return out.String()
 }
 
-func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, images *exportImages) *htmlExportTool {
+func buildHTMLTool(call *core.ToolCall, result *core.ToolResult, images *exportImages) *htmlExportTool {
 	tool := &htmlExportTool{}
 	if call != nil {
 		tool.HasCall = true
@@ -472,11 +471,11 @@ func buildHTMLTool(call *llm.ToolCall, result *llm.ToolResult, images *exportIma
 		}
 		for _, part := range result.ContentParts {
 			switch part.Type {
-			case llm.ToolContentPartText:
+			case core.ToolContentPartText:
 				if part.Text != "" && part.Text != result.Content {
 					tool.ExtraTexts = append(tool.ExtraTexts, part.Text)
 				}
-			case llm.ToolContentPartImageData:
+			case core.ToolContentPartImageData:
 				if part.ImageData != nil {
 					tool.Images = append(tool.Images, buildHTMLImage(images, exportImageSource{Base64: part.ImageData.Base64, MediaType: part.ImageData.MediaType, Alt: "Tool image"}))
 				} else {
@@ -520,7 +519,7 @@ func buildHTMLImage(images *exportImages, source exportImageSource) htmlExportIm
 	return image
 }
 
-func buildHTMLFile(part llm.Part) *htmlExportFile {
+func buildHTMLFile(part core.Part) *htmlExportFile {
 	file := &htmlExportFile{Filename: "File attachment"}
 	if part.FileData == nil {
 		return file
@@ -535,19 +534,19 @@ func buildHTMLFile(part llm.Part) *htmlExportFile {
 	return file
 }
 
-func htmlRoleLabel(role llm.Role) string {
+func htmlRoleLabel(role core.Role) string {
 	switch role {
-	case llm.RoleUser:
+	case core.RoleUser:
 		return "User"
-	case llm.RoleAssistant:
+	case core.RoleAssistant:
 		return "Assistant"
-	case llm.RoleSystem:
+	case core.RoleSystem:
 		return "System"
-	case llm.RoleTool:
+	case core.RoleTool:
 		return "Tool"
-	case llm.RoleDeveloper:
+	case core.RoleDeveloper:
 		return "Developer"
-	case llm.RoleEvent:
+	case core.RoleEvent:
 		return "Event"
 	default:
 		if role == "" {

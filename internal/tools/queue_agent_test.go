@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
@@ -557,7 +557,7 @@ func TestWaitForJobsEmitsSanitizedCursorProgress(t *testing.T) {
 	tool := NewWaitForJobsToolWithClient(client)
 	tool.pollIntervalOverride = time.Millisecond
 	var events []SubagentEvent
-	ctx := ContextWithSubagentEventCallback(llm.ContextWithCallID(context.Background(), "wait-call"), func(callID string, event SubagentEvent) {
+	ctx := ContextWithSubagentEventCallback(core.ContextWithCallID(context.Background(), "wait-call"), func(callID string, event SubagentEvent) {
 		if callID != "wait-call/run_progress" {
 			t.Errorf("callID = %q", callID)
 		}

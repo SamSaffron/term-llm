@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -63,7 +63,7 @@ func TestResponseToolCallStartsDelegationWhenExecStartIsLost(t *testing.T) {
 			state := newResponseRunStreamState("mock", "")
 			callID := toolName + "-lossy-start"
 
-			if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: callID, Name: toolName}}); err != nil {
+			if err := server.appendResponseRunEvent(runtime, run, state, core.Event{Type: core.EventToolCall, Tool: &core.ToolCall{ID: callID, Name: toolName}}); err != nil {
 				t.Fatal(err)
 			}
 			if progress.roots[callID] == nil {
@@ -79,7 +79,7 @@ func TestResponseToolCallStartsDelegationWhenExecStartIsLost(t *testing.T) {
 			if ctx.Err() != nil {
 				t.Fatalf("lost exec-start also lost delegation hold: %v", context.Cause(ctx))
 			}
-			if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolExecEnd, ToolCallID: callID, ToolName: toolName, ToolSuccess: true}); err != nil {
+			if err := server.appendResponseRunEvent(runtime, run, state, core.Event{Type: core.EventToolExecEnd, ToolCallID: callID, ToolName: toolName, ToolSuccess: true}); err != nil {
 				t.Fatal(err)
 			}
 			if progress.roots[callID] != nil {
@@ -150,10 +150,10 @@ func TestSpawnAgentFailedTerminalMatchesLiveAndRecoveryState(t *testing.T) {
 	runtime := &serveRuntime{subagentProgress: progress, approvalCtx: context.Background()}
 	server := &serveServer{}
 	state := newResponseRunStreamState("mock", "")
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "spawn-failed", Name: tools.SpawnAgentToolName}}); err != nil {
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "spawn-failed", Name: tools.SpawnAgentToolName}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolExecEnd, ToolCallID: "spawn-failed", ToolName: tools.SpawnAgentToolName, ToolSuccess: false}); err != nil {
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{Type: core.EventToolExecEnd, ToolCallID: "spawn-failed", ToolName: tools.SpawnAgentToolName, ToolSuccess: false}); err != nil {
 		t.Fatal(err)
 	}
 

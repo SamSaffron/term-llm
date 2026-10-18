@@ -3,7 +3,7 @@ package ask
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -36,9 +36,9 @@ var SubagentProgressCallback func(send func(callID string, event tools.SubagentE
 // UsageRecorder persists per-session model usage owned by the command layer.
 type UsageRecorder struct {
 	// RecordTurn records a main-model turn with its tool-call count.
-	RecordTurn func(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, toolCalls int)
+	RecordTurn func(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u core.Usage, toolCalls int)
 	// RecordHelper records helper work (guardian, compaction) against a session.
-	RecordHelper func(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u llm.Usage)
+	RecordHelper func(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u core.Usage)
 }
 
 // Usage holds the installed recorder. It must be set by the command layer.

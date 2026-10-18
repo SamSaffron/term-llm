@@ -7,7 +7,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -106,11 +106,11 @@ func (s *serveServer) deliverAgentWake(parent string) bool {
 	}
 	// Reuse the durable synthetic-prompt marker: provider-visible user content,
 	// never user-authored speech and never developer authority for child data.
-	msg := llm.GoalSteeringText(text)
+	msg := core.GoalSteeringText(text)
 	request := responsesCreateRequest{Model: rt.defaultModel}
 	s.prepareResponseRuntimePlan(ctx, &request, parent, false)
 	llmRequest := s.buildResponsesLLMRequest(request, rt, parent, true)
-	run, err := s.startResponseRun(rt, true, false, []llm.Message{msg}, llmRequest, parent, startResponseRunOptions{
+	run, err := s.startResponseRun(rt, true, false, []core.Message{msg}, llmRequest, parent, startResponseRunOptions{
 		previousResponseID: previous, uiSession: true, agentCompletion: true, agentEvents: pending,
 		admissionCheck: func() bool { return s.agentEventsStillPending(ctx, parent, pending) },
 	})

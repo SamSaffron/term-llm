@@ -8,6 +8,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 	"github.com/samsaffron/term-llm/internal/providerspec"
 )
 
@@ -15,14 +16,6 @@ import (
 // UI, `term-llm providers`, chat /model): is this provider configured? The
 // policy, including provider_discovery, lives in config.ProviderConfiguredVia;
 // this file supplies the local login probes it may consult.
-
-// Reasons returned by ProviderConfiguredVia.
-const (
-	ConfiguredViaConfig  = config.ConfiguredViaConfig
-	ConfiguredViaDefault = config.ConfiguredViaDefault
-	ConfiguredViaEnv     = config.ConfiguredViaEnv
-	ConfiguredViaLogin   = config.ConfiguredViaLogin
-)
 
 // ProviderHasLocalCredentials reports whether a built-in provider has local
 // login state: term-llm OAuth credentials on disk or a signed-in companion
@@ -50,21 +43,12 @@ var availabilityProbes = map[providerspec.Availability]func() bool{
 	providerspec.AvailabilityGrok:    credentials.GrokCredentialsExist,
 	providerspec.AvailabilityCopilot: credentials.CopilotCredentialsExist,
 	providerspec.AvailabilityGrokBin: func() bool {
-		path := grokBinAuthPath(os.Getenv("GROK_AUTH_PATH"))
+		path := clibin.GrokBinAuthPath(os.Getenv("GROK_AUTH_PATH"))
 		_, err := os.Stat(path)
 		return path != "" && err == nil
 	},
-	providerspec.AvailabilityCursorBin: CursorBinHasCredentials,
-	providerspec.AvailabilityAgyBin:    AgyBinHasCredentials,
-}
-
-// ProviderConfiguredVia reports why provider name is configured (one of the
-// ConfiguredVia* constants), or "" when it is not configured or is disabled.
-// hasLocalCredentials detects local login state for built-ins; pass a cached
-// detector such as ProviderCredentialCache.Has. It is only consulted under
-// provider_discovery: auto.
-func ProviderConfiguredVia(cfg *config.Config, name string, hasLocalCredentials func(string) bool) string {
-	return cfg.ProviderConfiguredVia(name, hasLocalCredentials)
+	providerspec.AvailabilityCursorBin: clibin.CursorBinHasCredentials,
+	providerspec.AvailabilityAgyBin:    clibin.AgyBinHasCredentials,
 }
 
 // ProviderSelectable reports whether name may be offered for selection (for
@@ -112,7 +96,7 @@ func (c *ProviderCredentialCache) snapshot() map[string]bool {
 		detect = ProviderHasLocalCredentials
 	}
 	values := make(map[string]bool)
-	for _, name := range GetBuiltInProviderNames() {
+	for _, name := range config.GetBuiltInProviderNames() {
 		values[name] = detect(name)
 	}
 	c.values = values

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -30,8 +30,8 @@ func NewManageWorkspaceTool(approval *ApprovalManager, configs ...*ToolConfig) *
 	return &ManageWorkspaceTool{approval: approval, config: optionalToolConfig(configs)}
 }
 
-func (t *ManageWorkspaceTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *ManageWorkspaceTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        ManageWorkspaceToolName,
 		Description: "Manage session-scoped local workspaces. Use grant with read access for reference/comparison/source repositories (the default), and request write only when the user's task requires mutation. Additional grants receive one Guardian review in auto mode; write elevation is reviewed separately. Use list to inspect current capabilities and revoke to remove an additional grant. Never treat a workspace as shell-command permission, and do not repeat a denied request unless the user provides new explicit authorization.",
 		Schema: map[string]interface{}{
@@ -68,7 +68,7 @@ func (t *ManageWorkspaceTool) Preview(args json.RawMessage) string {
 	return action + " " + selector
 }
 
-func (t *ManageWorkspaceTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ManageWorkspaceTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	if t == nil || t.approval == nil {
 		return workspaceToolError(NewToolError(ErrPermissionDenied, "workspace approval manager is unavailable")), nil
 	}
@@ -78,7 +78,7 @@ func (t *ManageWorkspaceTool) Execute(ctx context.Context, args json.RawMessage)
 	}
 	switch strings.ToLower(strings.TrimSpace(input.Action)) {
 	case "list":
-		return llm.ToolOutput{Content: formatWorkspaceCapabilities(t.approval.WorkspaceCapabilities())}, nil
+		return core.ToolOutput{Content: formatWorkspaceCapabilities(t.approval.WorkspaceCapabilities())}, nil
 	case "grant":
 		access := session.WorkspaceAccess(strings.ToLower(strings.TrimSpace(input.Access)))
 		if access == "" {
@@ -107,7 +107,7 @@ func (t *ManageWorkspaceTool) Execute(ctx context.Context, args json.RawMessage)
 		if result.Persisted {
 			durability = "persisted with this session"
 		}
-		return llm.ToolOutput{Content: fmt.Sprintf("Workspace %s: id=%s path=%s access=%s provenance=%s (%s)", status, result.Capability.ID, result.Capability.Path, result.Capability.Access, result.Capability.Provenance, durability)}, nil
+		return core.ToolOutput{Content: fmt.Sprintf("Workspace %s: id=%s path=%s access=%s provenance=%s (%s)", status, result.Capability.ID, result.Capability.Path, result.Capability.Access, result.Capability.Provenance, durability)}, nil
 	case "revoke":
 		selector := strings.TrimSpace(input.GrantID)
 		if selector == "" {
@@ -118,19 +118,19 @@ func (t *ManageWorkspaceTool) Execute(ctx context.Context, args json.RawMessage)
 			return workspaceToolError(err), nil
 		}
 		if !changed {
-			return llm.ToolOutput{Content: "No matching additional workspace grant."}, nil
+			return core.ToolOutput{Content: "No matching additional workspace grant."}, nil
 		}
-		return llm.ToolOutput{Content: fmt.Sprintf("Revoked workspace grant: id=%s path=%s access=%s", capability.ID, capability.Path, capability.Access)}, nil
+		return core.ToolOutput{Content: fmt.Sprintf("Revoked workspace grant: id=%s path=%s access=%s", capability.ID, capability.Path, capability.Access)}, nil
 	default:
 		return workspaceToolError(NewToolError(ErrInvalidParams, "action must be grant, revoke, or list")), nil
 	}
 }
 
-func workspaceToolError(err error) llm.ToolOutput {
+func workspaceToolError(err error) core.ToolOutput {
 	if err == nil {
-		return llm.ToolOutput{}
+		return core.ToolOutput{}
 	}
-	return llm.ToolOutput{Content: err.Error(), IsError: true}
+	return core.ToolOutput{Content: err.Error(), IsError: true}
 }
 
 func formatWorkspaceCapabilities(capabilities []WorkspaceCapability) string {

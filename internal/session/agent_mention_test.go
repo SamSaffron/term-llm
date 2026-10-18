@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestAgentMentionPartRoundTripKeepsProviderContextOffVisibleSurfaces(t *testing.T) {
 	const visible = "ask @agent:codebase to inspect this"
 	const hidden = "<term_llm_agent_mentions>hidden-delegation-sentinel</term_llm_agent_mentions>"
-	input := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
-		{Type: llm.PartText, Text: visible},
-		{Type: llm.PartAgentMention, Text: hidden},
+	input := core.Message{Role: core.RoleUser, Parts: []core.Part{
+		{Type: core.PartText, Text: visible},
+		{Type: core.PartAgentMention, Text: hidden},
 	}}
 	stored := NewMessage("session", input, 0)
 	if stored.TextContent != visible || strings.Contains(stored.ExtractTextContent(), "hidden-delegation-sentinel") {
@@ -29,14 +29,14 @@ func TestAgentMentionPartRoundTripKeepsProviderContextOffVisibleSurfaces(t *test
 		t.Fatal(err)
 	}
 	roundTrip.TextContent = roundTrip.ExtractTextContent()
-	if roundTrip.TextContent != visible || len(roundTrip.Parts) != 2 || roundTrip.Parts[1].Type != llm.PartAgentMention {
+	if roundTrip.TextContent != visible || len(roundTrip.Parts) != 2 || roundTrip.Parts[1].Type != core.PartAgentMention {
 		t.Fatalf("session round trip = %#v", roundTrip)
 	}
 	providerMessage := roundTrip.ToLLMMessage()
-	if got := llm.MessageText(providerMessage); !strings.Contains(got, visible) || !strings.Contains(got, hidden) {
+	if got := core.MessageText(providerMessage); !strings.Contains(got, visible) || !strings.Contains(got, hidden) {
 		t.Fatalf("provider conversion lost delegation context: %q", got)
 	}
-	if providerMessage.Parts[1].Type != llm.PartText || roundTrip.Parts[1].Type != llm.PartAgentMention {
+	if providerMessage.Parts[1].Type != core.PartText || roundTrip.Parts[1].Type != core.PartAgentMention {
 		t.Fatalf("provider conversion mutated structural storage: provider=%#v stored=%#v", providerMessage.Parts, roundTrip.Parts)
 	}
 
@@ -55,7 +55,7 @@ func TestAgentMentionPartRoundTripKeepsProviderContextOffVisibleSurfaces(t *test
 		t.Fatal(err)
 	}
 	loaded, err := store.GetMessages(ctx, sess.ID, 0, 0)
-	if err != nil || len(loaded) != 1 || loaded[0].TextContent != visible || loaded[0].Parts[1].Type != llm.PartAgentMention {
+	if err != nil || len(loaded) != 1 || loaded[0].TextContent != visible || loaded[0].Parts[1].Type != core.PartAgentMention {
 		t.Fatalf("SQLite round trip = %#v, err=%v", loaded, err)
 	}
 	if results, err := store.Search(ctx, SearchOptions{Query: "hidden-delegation-sentinel", Limit: 10}); err != nil || len(results) != 0 {

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestLocalFileURIForOS(t *testing.T) {
@@ -32,7 +32,7 @@ func TestLocalFileURIForOS(t *testing.T) {
 
 func TestMediaMarkdownStreamHoldsSplitReference(t *testing.T) {
 	const reference = "0123456789abcdef0123456789abcdef"
-	media := map[string]llm.MediaArtifact{reference: {
+	media := map[string]core.MediaArtifact{reference: {
 		Reference: reference, SourcePath: "/tmp/chart.mp4", MediaType: "video/mp4", Name: "chart.mp4",
 	}}
 	var stream MediaMarkdownStream
@@ -50,10 +50,10 @@ func TestMediaMarkdownStreamHoldsSplitReference(t *testing.T) {
 
 func TestRenderMediaMarkdownPlacesRegisteredArtifact(t *testing.T) {
 	reference := "0123456789abcdef0123456789abcdef"
-	artifact := llm.MediaArtifact{Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png", Name: "chart.png"}
+	artifact := core.MediaArtifact{Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png", Name: "chart.png"}
 	got := RenderMediaMarkdown(
 		"Before\n\n![Sales chart](term-llm-media://"+reference+")\n\nAfter",
-		map[string]llm.MediaArtifact{reference: artifact},
+		map[string]core.MediaArtifact{reference: artifact},
 		func(value string) string { return "MD{" + value + "}" },
 		func(path string) ImageArtifact { return ImageArtifact{Display: "IMAGE{" + path + "}"} },
 	)
@@ -76,7 +76,7 @@ func TestReplaceMediaMarkdownMarksUnknownReferenceUnavailable(t *testing.T) {
 
 func TestRenderMediaLinkIncludesClickableAndVisibleFallback(t *testing.T) {
 	path := "/tmp/demo clip.mp4"
-	got := RenderMediaLink(llm.MediaArtifact{SourcePath: path, MediaType: "video/mp4", Name: "demo.mp4", Caption: "Result"})
+	got := RenderMediaLink(core.MediaArtifact{SourcePath: path, MediaType: "video/mp4", Name: "demo.mp4", Caption: "Result"})
 	uri := "file:///tmp/demo%20clip.mp4"
 	for _, want := range []string{"Video:", "Open demo.mp4", uri, "Result", "\x1b]8;;" + uri} {
 		if !strings.Contains(got, want) {
@@ -96,7 +96,7 @@ func TestRenderMediaMarkdownScreenshotOutputBecomesFileLink(t *testing.T) {
 
 	got := RenderMediaMarkdown(
 		content,
-		map[string]llm.MediaArtifact{reference: {
+		map[string]core.MediaArtifact{reference: {
 			Reference: reference, SourcePath: path, MediaType: "image/png", Name: "ball.png",
 		}},
 		func(value string) string { return strings.TrimSpace(value) },
@@ -125,7 +125,7 @@ func TestRenderMediaMarkdownDoesNotResolveInlineCodeFenceReference(t *testing.T)
 	content := "```markdown\nText ![Chart](term-llm-media://" + reference + ")\n```"
 	got := RenderMediaMarkdown(
 		content,
-		map[string]llm.MediaArtifact{reference: {Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png"}},
+		map[string]core.MediaArtifact{reference: {Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png"}},
 		func(value string) string { return value },
 		func(string) ImageArtifact { return ImageArtifact{Display: "<image>"} },
 	)
@@ -138,7 +138,7 @@ func TestRenderMediaMarkdownKeepsSuppliedFreshLine(t *testing.T) {
 	const reference = "0123456789abcdef0123456789abcdef"
 	got := RenderMediaMarkdown(
 		"Before\n![Chart](term-llm-media://"+reference+")",
-		map[string]llm.MediaArtifact{reference: {
+		map[string]core.MediaArtifact{reference: {
 			Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png",
 		}},
 		func(value string) string { return value },
@@ -153,7 +153,7 @@ func TestRenderMediaMarkdownAcceptsCaseAndAngleDestination(t *testing.T) {
 	const reference = "ABCDEF0123456789ABCDEF0123456789"
 	got := ReplaceMediaMarkdown(
 		"![Preview](<TERM-LLM-MEDIA://"+reference+">)",
-		map[string]llm.MediaArtifact{strings.ToLower(reference): {
+		map[string]core.MediaArtifact{strings.ToLower(reference): {
 			Reference: strings.ToLower(reference), SourcePath: "/tmp/preview.webm", MediaType: "video/webm",
 		}},
 	)
@@ -164,8 +164,8 @@ func TestRenderMediaMarkdownAcceptsCaseAndAngleDestination(t *testing.T) {
 
 func TestAudioMediaLinkPreservesNameAndNeverRendersImage(t *testing.T) {
 	const ref = "0123456789abcdef0123456789abcdef"
-	item := llm.MediaArtifact{Reference: ref, SourcePath: "/tmp/narration track.mp3", MediaType: "audio/mpeg", Name: "narration track.mp3", Caption: "Listen to the summary"}
-	media := map[string]llm.MediaArtifact{ref: item}
+	item := core.MediaArtifact{Reference: ref, SourcePath: "/tmp/narration track.mp3", MediaType: "audio/mpeg", Name: "narration track.mp3", Caption: "Listen to the summary"}
+	media := map[string]core.MediaArtifact{ref: item}
 	content := "Before\n![Listen to the summary](term-llm-media://" + ref + ")\nAfter"
 	rendered := RenderMediaMarkdown(content, media, func(s string) string { return s }, func(string) ImageArtifact { t.Fatal("audio reached image renderer"); return ImageArtifact{} })
 	plain := ansi.Strip(rendered)

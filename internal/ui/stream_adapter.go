@@ -9,7 +9,8 @@ import (
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/diff"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -153,7 +154,7 @@ func (a *StreamAdapter) Stats() *SessionStats {
 // Call this in a goroutine:
 //
 //	go adapter.ProcessStream(ctx, stream)
-func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
+func (a *StreamAdapter) ProcessStream(ctx context.Context, stream core.Stream) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -187,13 +188,13 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 		}
 
 		switch event.Type {
-		case llm.EventError:
+		case core.EventError:
 			if event.Err != nil {
 				emit(ErrorEvent(event.Err))
 				return
 			}
 
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			a.attemptUsageCommitted = false
 			if event.Text != "" {
 				a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
@@ -202,12 +203,12 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				}
 			}
 
-		case llm.EventReasoningDelta:
+		case core.EventReasoningDelta:
 			if !a.processReasoningDelta(ctx, event) {
 				return
 			}
 
-		case llm.EventDiscoveryCall:
+		case core.EventDiscoveryCall:
 			if event.DiscoveryCall == nil {
 				continue
 			}
@@ -221,7 +222,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 			a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
 
-		case llm.EventDiscoveryOutput:
+		case core.EventDiscoveryOutput:
 			if event.DiscoveryOutput == nil {
 				continue
 			}
@@ -245,12 +246,12 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.updateStats(func(stats *SessionStats) { stats.ToolEnd() })
 			a.resetAttemptUsage()
 
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			if !a.processToolCall(ctx, event) {
 				return
 			}
 
-		case llm.EventToolExecStart:
+		case core.EventToolExecStart:
 			// Tool execution is also durable/replayed from the engine journal.
 			a.markAttemptCommitted()
 			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
@@ -266,18 +267,18 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 			a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
 
-		case llm.EventToolExecEnd:
+		case core.EventToolExecEnd:
 			if !a.processToolExecEnd(ctx, event) {
 				return
 			}
 
-		case llm.EventRetry:
+		case core.EventRetry:
 			a.updateStats(func(stats *SessionStats) { stats.ScheduleRetryStart(event.RetryWaitSecs) })
 			if !emit(RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)) {
 				return
 			}
 
-		case llm.EventAttemptDiscard:
+		case core.EventAttemptDiscard:
 			a.updateStats(func(stats *SessionStats) {
 				stats.DiscardUsage(a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls)
 			})
@@ -286,7 +287,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				return
 			}
 
-		case llm.EventUsage:
+		case core.EventUsage:
 			a.updateStats(func(stats *SessionStats) { stats.GenerationEnd() })
 			if event.Use != nil {
 				totalTokens = event.Use.OutputTokens
@@ -306,14 +307,14 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				}
 			}
 
-		case llm.EventPhase:
+		case core.EventPhase:
 			if event.Text != "" {
 				if !emit(PhaseEvent(event.Text)) {
 					return
 				}
 			}
 
-		case llm.EventModelSwitch:
+		case core.EventModelSwitch:
 			model := event.Model
 			if model == "" {
 				model = event.Text
@@ -325,7 +326,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				}
 			}
 
-		case llm.EventSteering:
+		case core.EventSteering:
 			if event.Text != "" {
 				if !emit(SteeringEventWithMessage(event.Text, event.SteeringID, event.Message)) {
 					return
@@ -335,10 +336,10 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 	}
 }
 
-func (a *StreamAdapter) processReasoningDelta(ctx context.Context, event llm.Event) bool {
+func (a *StreamAdapter) processReasoningDelta(ctx context.Context, event core.Event) bool {
 	a.attemptUsageCommitted = false
-	kind := llm.NormalizeReasoningKind(event.ReasoningKind)
-	if llm.IsEncryptedReasoningDelta(event) {
+	kind := core.NormalizeReasoningKind(event.ReasoningKind)
+	if core.IsEncryptedReasoningDelta(event) {
 		a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
 		// Preserve generation timing without exposing encrypted replay data.
 		if !a.emit(ctx, GenerationActivityEvent()) {
@@ -353,8 +354,8 @@ func (a *StreamAdapter) processReasoningDelta(ctx context.Context, event llm.Eve
 		a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
 	}
 	title := ""
-	displayable := kind == llm.ReasoningKindSummary
-	if kind == llm.ReasoningKindSummary && event.Text != "" {
+	displayable := kind == core.ReasoningKindSummary
+	if kind == core.ReasoningKindSummary && event.Text != "" {
 		title = internalreasoning.ParseReasoningSummary(event.Text).Title
 	}
 	if !a.emit(ctx, ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable)) {
@@ -363,7 +364,7 @@ func (a *StreamAdapter) processReasoningDelta(ctx context.Context, event llm.Eve
 	return true
 }
 
-func (a *StreamAdapter) processToolCall(ctx context.Context, event llm.Event) bool {
+func (a *StreamAdapter) processToolCall(ctx context.Context, event core.Event) bool {
 	// A tool call is a durable boundary. Usage from the provider attempt that
 	// produced it must not be rolled back by a later provisional retry discard.
 	a.markAttemptCommitted()
@@ -385,7 +386,7 @@ func (a *StreamAdapter) processToolCall(ctx context.Context, event llm.Event) bo
 	}
 	toolInfo := event.ToolInfo
 	if toolInfo == "" {
-		toolInfo = llm.ExtractToolInfo(*event.Tool)
+		toolInfo = engine.ExtractToolInfo(*event.Tool)
 	}
 	toolArgs := event.ToolArgs
 	if len(toolArgs) == 0 {
@@ -399,7 +400,7 @@ func (a *StreamAdapter) processToolCall(ctx context.Context, event llm.Event) bo
 	return true
 }
 
-func (a *StreamAdapter) processToolExecEnd(ctx context.Context, event llm.Event) bool {
+func (a *StreamAdapter) processToolExecEnd(ctx context.Context, event core.Event) bool {
 	// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
 	if event.ToolCallID != "" {
 		if _, ok := a.seenToolEnds[event.ToolCallID]; ok {
@@ -451,7 +452,7 @@ func (a *StreamAdapter) processToolExecEnd(ctx context.Context, event llm.Event)
 }
 
 // DiffData is an alias for llm.DiffData for backward compatibility.
-type DiffData = llm.DiffData
+type DiffData = core.DiffData
 
 // ParseDiffMarkers extracts diff data from tool output that contain __DIFF__: markers.
 // Used for backward compatibility when rendering old sessions that have markers in Display/Content.

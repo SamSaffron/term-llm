@@ -6,7 +6,8 @@ import (
 
 	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -48,9 +49,9 @@ func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) 
 				t.Fatal(err)
 			}
 			manager.GetSpawnAgentTool().SetRunner(runner)
-			engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
-			manager.SetupEngine(engine)
-			capability := appchat.RuntimeAgentMentionCapability{Engine: func() *llm.Engine { return engine }, Manager: manager}
+			eng := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
+			manager.SetupEngine(eng)
+			capability := appchat.RuntimeAgentMentionCapability{Engine: func() *engine.Engine { return eng }, Manager: manager}
 
 			got, err := capability.PermittedAgentNames()
 			if err != nil {

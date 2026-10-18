@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -59,16 +59,16 @@ type CompletedRun struct {
 
 	Activities  []Activity
 	TextPreview []string
-	Diffs       []llm.DiffData
+	Diffs       []core.DiffData
 	Images      []string // Legacy image-only projection retained for callers.
-	Media       []llm.MediaArtifact
+	Media       []core.MediaArtifact
 	Fingerprint uint64
 }
 
 // Build reconstructs a completed run from already-loaded durable values. child
 // and childMessages may be absent; the parent result still provides a useful
 // fallback card in that case.
-func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentResult, child *session.Session, childMessages []session.Message) CompletedRun {
+func Build(call *core.ToolCall, result *core.ToolResult, parsed tools.SpawnAgentResult, child *session.Session, childMessages []session.Message) CompletedRun {
 	run := CompletedRun{
 		AgentName:      strings.TrimSpace(parsed.AgentName),
 		Output:         parsed.Output,
@@ -91,7 +91,7 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 	if result != nil {
 		run.Diffs = appendBounded(run.Diffs, result.Diffs, MaxArtifacts)
 		run.Images = appendBounded(run.Images, result.Images, MaxArtifacts)
-		run.Media = appendBounded(run.Media, llm.NormalizeMedia(result.Media, result.Images), MaxArtifacts)
+		run.Media = appendBounded(run.Media, core.NormalizeMedia(result.Media, result.Images), MaxArtifacts)
 		if result.IsError && run.Error == "" {
 			run.Error = "spawn_agent failed"
 		}
@@ -116,7 +116,7 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 	for _, message := range childMessages {
 		for _, part := range message.Parts {
 			switch part.Type {
-			case llm.PartToolCall:
+			case core.PartToolCall:
 				if part.ToolCall == nil {
 					continue
 				}
@@ -126,7 +126,7 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 					activityByID[call.ID] = len(run.Activities)
 					run.Activities = append(run.Activities, activity)
 				}
-			case llm.PartToolActivity:
+			case core.PartToolActivity:
 				if part.ToolActivity == nil || len(run.Activities) >= MaxExpandedActivities {
 					continue
 				}
@@ -140,9 +140,9 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 				run.Activities = append(run.Activities, Activity{
 					CallID: activity.ID, Name: activity.Name, Info: activity.Info,
 					Args: append(json.RawMessage(nil), activity.Arguments...), Done: true,
-					Success: activity.Status != llm.ToolActivityFailed,
+					Success: activity.Status != core.ToolActivityFailed,
 				})
-			case llm.PartToolResult:
+			case core.PartToolResult:
 				if part.ToolResult == nil {
 					continue
 				}
@@ -153,7 +153,7 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 				}
 				run.Diffs = appendBounded(run.Diffs, toolResult.Diffs, MaxArtifacts)
 				run.Images = appendBounded(run.Images, toolResult.Images, MaxArtifacts)
-				run.Media = appendBounded(run.Media, llm.NormalizeMedia(toolResult.Media, toolResult.Images), MaxArtifacts)
+				run.Media = appendBounded(run.Media, core.NormalizeMedia(toolResult.Media, toolResult.Images), MaxArtifacts)
 			}
 		}
 	}
@@ -224,7 +224,7 @@ func dedupeStrings(values []string) []string {
 	return out
 }
 
-func dedupeMedia(values []llm.MediaArtifact) []llm.MediaArtifact {
+func dedupeMedia(values []core.MediaArtifact) []core.MediaArtifact {
 	seen := make(map[string]struct{}, len(values))
 	out := values[:0]
 	for _, value := range values {
@@ -241,7 +241,7 @@ func dedupeMedia(values []llm.MediaArtifact) []llm.MediaArtifact {
 	return out
 }
 
-func dedupeDiffs(values []llm.DiffData) []llm.DiffData {
+func dedupeDiffs(values []core.DiffData) []core.DiffData {
 	seen := make(map[string]struct{}, len(values))
 	out := values[:0]
 	for _, value := range values {

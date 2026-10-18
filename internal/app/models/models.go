@@ -11,8 +11,12 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/samsaffron/term-llm/internal/providerspec"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +31,7 @@ type Options struct {
 
 // ModelLister is an interface for providers that can list available models
 type ModelLister interface {
-	ListModels(ctx context.Context) ([]llm.ModelInfo, error)
+	ListModels(ctx context.Context) ([]core.ModelInfo, error)
 }
 
 // supportsModelListing reports whether providerType can list models upstream:
@@ -110,13 +114,13 @@ func (o *Options) Run(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), modelListTimeout(providerType))
 	defer cancel()
 
-	var models []llm.ModelInfo
+	var models []core.ModelInfo
 	if o.Refresh {
 		models, err = lister.(interface {
-			RefreshModelsForProvider(context.Context, string) ([]llm.ModelInfo, error)
+			RefreshModelsForProvider(context.Context, string) ([]core.ModelInfo, error)
 		}).RefreshModelsForProvider(ctx, providerName)
 	} else if scoped, ok := lister.(interface {
-		ListModelsForProvider(context.Context, string) ([]llm.ModelInfo, error)
+		ListModelsForProvider(context.Context, string) ([]core.ModelInfo, error)
 	}); ok {
 		models, err = scoped.ListModelsForProvider(ctx, providerName)
 	} else {
@@ -182,13 +186,13 @@ var modelListerConstructors = map[providerspec.ModelListing]modelListerConstruct
 		return newCopilotModelLister(providerCfg.Model, configured)
 	},
 	providerspec.ModelListingCursorBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return llm.NewCursorBinProvider(providerCfg.Model, providerCfg.Env), nil
+		return clibin.NewCursorBinProvider(providerCfg.Model, providerCfg.Env), nil
 	},
 	providerspec.ModelListingGrokBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return llm.NewGrokBinProvider(providerCfg.Model, providerCfg.Env), nil
+		return clibin.NewGrokBinProvider(providerCfg.Model, providerCfg.Env), nil
 	},
 	providerspec.ModelListingAgyBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return llm.NewAgyBinProvider(providerCfg.Model, providerCfg.Env), nil
+		return clibin.NewAgyBinProvider(providerCfg.Model, providerCfg.Env), nil
 	},
 	providerspec.ModelListingCompatible: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newOpenAICompatibleModelLister(providerName, providerCfg)
@@ -197,20 +201,20 @@ var modelListerConstructors = map[providerspec.ModelListing]modelListerConstruct
 		return ollama.New(providerCfg.BaseURL, providerCfg.Model, ollama.Options{}), nil
 	},
 	providerspec.ModelListingZen: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
-		return llm.NewZenProvider(providerCfg.ResolvedAPIKey, ""), nil
+		return responsesproviders.NewZenProvider(providerCfg.ResolvedAPIKey, ""), nil
 	},
 	providerspec.ModelListingOpenCodeGo: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "OPENCODE_API_KEY")
 		// The Go model and metadata endpoints are public; a key is required only
 		// when the returned provider is used for inference.
-		return llm.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL), nil
+		return responsesproviders.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL), nil
 	},
 	providerspec.ModelListingGrok: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newGrokModelLister(providerCfg.Model)
 	},
 	providerspec.ModelListingNearAI: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "NEARAI_API_KEY")
-		return llm.NewNearAIProvider(apiKey, providerCfg.Model), nil
+		return opencompat.NewNearAIProvider(apiKey, providerCfg.Model), nil
 	},
 }
 
@@ -235,7 +239,7 @@ func newAnthropicModelLister(providerCfg config.ProviderConfig) (ModelLister, er
 }
 
 func newChatGPTModelLister(model string) (ModelLister, error) {
-	provider, err := llm.NewChatGPTProvider(model)
+	provider, err := responsesproviders.NewChatGPTProvider(model)
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt provider: %w", err)
 	}
@@ -248,7 +252,7 @@ func newCopilotModelLister(configuredModel string, configured bool) (ModelLister
 	if configured {
 		model = configuredModel
 	}
-	provider, err := llm.NewCopilotProvider(model)
+	provider, err := responsesproviders.NewCopilotProvider(model)
 	if err != nil {
 		return nil, fmt.Errorf("copilot provider: %w", err)
 	}
@@ -259,11 +263,11 @@ func newOpenAICompatibleModelLister(providerName string, providerCfg config.Prov
 	if providerCfg.BaseURL == "" {
 		return nil, fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
 	}
-	return llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName), nil
+	return opencompat.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName), nil
 }
 
 func newGrokModelLister(model string) (ModelLister, error) {
-	provider, err := llm.NewGrokProvider(model)
+	provider, err := responsesproviders.NewGrokProvider(model)
 	if err != nil {
 		return nil, fmt.Errorf("grok provider: %w", err)
 	}
@@ -277,35 +281,35 @@ var apiKeyModelListers = map[config.ProviderType]func(config.ProviderConfig) (Mo
 		if err != nil {
 			return nil, err
 		}
-		return llm.NewOpenAIProviderWithOptions(apiKey, providerCfg.Model, llm.OpenAIProviderOptions{Endpoint: providerCfg.OpenAIEndpoint()}), nil
+		return responsesproviders.NewOpenAIProviderWithOptions(apiKey, providerCfg.Model, responsesproviders.OpenAIProviderOptions{Endpoint: providerCfg.OpenAIEndpoint()}), nil
 	},
 	config.ProviderTypeOpenRouter: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "OPENROUTER_API_KEY", "openrouter")
 		if err != nil {
 			return nil, err
 		}
-		return llm.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle), nil
+		return opencompat.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle), nil
 	},
 	config.ProviderTypeXAI: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "XAI_API_KEY", "xAI")
 		if err != nil {
 			return nil, err
 		}
-		return llm.NewXAIProvider(apiKey, providerCfg.Model), nil
+		return opencompat.NewXAIProvider(apiKey, providerCfg.Model), nil
 	},
 	config.ProviderTypeVenice: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "VENICE_API_KEY", "Venice")
 		if err != nil {
 			return nil, err
 		}
-		return llm.NewVeniceProvider(apiKey, providerCfg.Model), nil
+		return opencompat.NewVeniceProvider(apiKey, providerCfg.Model), nil
 	},
 	config.ProviderTypeSambaNova: func(providerCfg config.ProviderConfig) (ModelLister, error) {
 		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "SAMBANOVA_API_KEY", "SambaNova")
 		if err != nil {
 			return nil, err
 		}
-		return llm.NewSambaNovaProvider(apiKey, providerCfg.Model), nil
+		return opencompat.NewSambaNovaProvider(apiKey, providerCfg.Model), nil
 	},
 }
 
@@ -339,17 +343,17 @@ func modelListTimeout(providerType config.ProviderType) time.Duration {
 	return 10 * time.Second
 }
 
-func refreshModelListCaches(providerName string, providerCfg config.ProviderConfig, models []llm.ModelInfo) {
+func refreshModelListCaches(providerName string, providerCfg config.ProviderConfig, models []core.ModelInfo) {
 	providerType := config.InferProviderType(providerName, providerCfg.Type)
 	switch providerType {
 	case config.ProviderTypeOpenRouter:
-		llm.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
+		opencompat.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
 	case config.ProviderTypeCursorBin:
-		llm.RefreshCursorBinCacheSync(models)
+		clibin.RefreshCursorBinCacheSync(models)
 	case config.ProviderTypeGrokBin:
-		llm.RefreshGrokBinCacheSync(models)
+		clibin.RefreshGrokBinCacheSync(models)
 	case config.ProviderTypeAgyBin:
-		llm.RefreshAgyBinCacheSync(models)
+		clibin.RefreshAgyBinCacheSync(models)
 	default:
 		// Endpoint-defined catalogs (custom OpenAI base URLs, generic
 		// OpenAI-compatible servers) are cached per endpoint+credential
@@ -360,7 +364,7 @@ func refreshModelListCaches(providerName string, providerCfg config.ProviderConf
 	}
 }
 
-func printModelList(providerName string, providerType config.ProviderType, models []llm.ModelInfo) error {
+func printModelList(providerName string, providerType config.ProviderType, models []core.ModelInfo) error {
 	// Pretty print
 	fmt.Printf("Available models from %s:\n\n", providerName)
 
@@ -445,7 +449,7 @@ func printStaticModels(providerName string, models []string, jsonOutput bool) er
 	return nil
 }
 
-func chatGPTContextSummary(model llm.ModelInfo) string {
+func chatGPTContextSummary(model core.ModelInfo) string {
 	count := func(n int) string {
 		if s := llm.FormatTokenCount(n); s != "" {
 			return s
@@ -455,7 +459,7 @@ func chatGPTContextSummary(model llm.ModelInfo) string {
 	return fmt.Sprintf("[context: %s selected, %s recommended, %s max]", count(model.ConfiguredContext), count(model.RecommendedContext), count(model.MaxContext))
 }
 
-func chatGPTContextReserveSummary(model llm.ModelInfo) string {
+func chatGPTContextReserveSummary(model core.ModelInfo) string {
 	if model.InputLimit <= 0 || model.ConfiguredContext <= model.InputLimit {
 		return ""
 	}

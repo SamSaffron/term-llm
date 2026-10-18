@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -35,7 +35,7 @@ func createDirectorySession(t *testing.T, store session.Store, sess *session.Ses
 
 func addDirectoryMessage(t *testing.T, store session.Store, sessionID, text string) {
 	t.Helper()
-	if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, llm.UserText(text), -1)); err != nil {
+	if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, core.UserText(text), -1)); err != nil {
 		t.Fatalf("add message to %s: %v", sessionID, err)
 	}
 }

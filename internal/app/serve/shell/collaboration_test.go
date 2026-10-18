@@ -14,7 +14,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/app/serve/protocol"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -696,7 +697,7 @@ func TestCollaborativeShellPinnedBindingFailsClosedAfterExitOrReplacement(t *tes
 				t.Fatal("shell tool missing")
 			}
 			test.mutate(manager, oldShell)
-			ctx := llm.ContextWithSessionID(context.Background(), "session")
+			ctx := core.ContextWithSessionID(context.Background(), "session")
 			ctx = tools.ContextWithCollaborativeShellRunBinding(ctx, tools.CollaborativeShellRunBinding{Required: true, ShellID: oldShell.id})
 			output, err := tool.Execute(ctx, []byte(`{"command":"printf local-fallback >/definitely/not/a/path"}`))
 			if err != nil || !output.IsError || oldProcess.writes != 0 {
@@ -733,11 +734,11 @@ func TestCollaborativeShellStableContextOrderingAndCompaction(t *testing.T) {
 	manager.mu.Unlock()
 	controller := &Controller{Manager: func() (*Manager, error) { return manager, nil }}
 	ctx := tools.ContextWithCollaborativeShellRunBinding(context.Background(), tools.CollaborativeShellRunBinding{Required: true, ShellID: shell.id})
-	activity := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: `<collaborative_shell_activity id="sha256:one" shell_id="` + shell.id + `">prompt</collaborative_shell_activity>`}}}
-	messages := []llm.Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
+	activity := core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: `<collaborative_shell_activity id="sha256:one" shell_id="` + shell.id + `">prompt</collaborative_shell_activity>`}}}
+	messages := []core.Message{
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "platform"}}},
 		activity,
-		llm.UserText("hello"),
+		core.UserText("hello"),
 	}
 	prepared, err := controller.PrepareRequestContext(ctx, "session", messages)
 	if err != nil {
@@ -750,16 +751,16 @@ func TestCollaborativeShellStableContextOrderingAndCompaction(t *testing.T) {
 	if err != nil || len(again) != len(prepared) {
 		t.Fatalf("dedup prepared len=%d err=%v", len(again), err)
 	}
-	compaction := &llm.CompactionResult{}
+	compaction := &engine.CompactionResult{}
 	if err := controller.PrepareCompactionContext(ctx, "session", compaction); err != nil || len(compaction.EphemeralMessages) != 1 || CollectLLMText(compaction.EphemeralMessages[0]) != CollaborativeShellInstruction {
 		t.Fatalf("compaction = %#v, err=%v", compaction, err)
 	}
 	shell.invalidate(-1)
-	afterLoss, err := controller.PrepareRequestContext(ctx, "session", []llm.Message{llm.UserText("no longer shared")})
+	afterLoss, err := controller.PrepareRequestContext(ctx, "session", []core.Message{core.UserText("no longer shared")})
 	if err != nil || len(afterLoss) != 1 || CollectLLMText(afterLoss[0]) != "no longer shared" {
 		t.Fatalf("context after shell loss = %#v, %v", afterLoss, err)
 	}
-	compaction = &llm.CompactionResult{}
+	compaction = &engine.CompactionResult{}
 	if err := controller.PrepareCompactionContext(ctx, "session", compaction); err != nil || len(compaction.EphemeralMessages) != 0 {
 		t.Fatalf("compaction after shell loss = %#v, err=%v", compaction, err)
 	}

@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/clipboard"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -59,10 +59,10 @@ func resolveCompletedAssistantResponse(messages []session.Message, ordinal int) 
 			for i < len(messages) && messages[i].ResponseID == responseID {
 				i++
 			}
-		} else if messages[i].Role == llm.RoleAssistant || messages[i].Role == llm.RoleTool {
+		} else if messages[i].Role == core.RoleAssistant || messages[i].Role == core.RoleTool {
 			i++
 			for i < len(messages) && messages[i].ResponseID == "" &&
-				(messages[i].Role == llm.RoleAssistant || messages[i].Role == llm.RoleTool) {
+				(messages[i].Role == core.RoleAssistant || messages[i].Role == core.RoleTool) {
 				i++
 			}
 		} else {
@@ -88,14 +88,14 @@ func resolveCompletedAssistantResponse(messages []session.Message, ordinal int) 
 func assistantResponseSourceText(messages []session.Message) string {
 	var contributions []string
 	for _, message := range messages {
-		if message.Role != llm.RoleAssistant ||
+		if message.Role != core.RoleAssistant ||
 			session.IsSyntheticCompactionAckMessage(message) ||
 			session.IsInternalCompactionSummaryMessage(message) {
 			continue
 		}
 
 		for _, part := range message.Parts {
-			if part.Type == llm.PartText && part.Text != "" {
+			if part.Type == core.PartText && part.Text != "" {
 				contributions = append(contributions, part.Text)
 			}
 		}

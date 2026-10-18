@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestMCPPickerRendersStatusIndicatorsWithMetadata(t *testing.T) {
@@ -141,7 +141,7 @@ func TestContentDialogScrollUsesWrappedLines(t *testing.T) {
 func TestBranchContextDialogIdentifiesOriginAndUsesNeutralContextWording(t *testing.T) {
 	d := NewDialogModel(nil)
 	d.SetSize(80, 24)
-	d.ShowBranchContext(4, llm.RoleUser, 1, "I think we can give more information")
+	d.ShowBranchContext(4, core.RoleUser, 1, "I think we can give more information")
 
 	view := d.View()
 	for _, want := range []string{

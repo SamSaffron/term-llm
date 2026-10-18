@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/pflag"
 )
 
@@ -187,10 +187,10 @@ func withoutEnvironmentVariable(environment []string, name string) []string {
 }
 
 func writeClaudeBinUsage(out io.Writer, report claudeBinUsageReport, now time.Time) error {
-	return writeClaudeBinUsageWithOptions(out, report, now, llm.ProviderUsageFormatOptions{})
+	return writeClaudeBinUsageWithOptions(out, report, now, providerusage.FormatOptions{})
 }
 
-func writeClaudeBinUsageWithOptions(out io.Writer, report claudeBinUsageReport, now time.Time, opts llm.ProviderUsageFormatOptions) error {
+func writeClaudeBinUsageWithOptions(out io.Writer, report claudeBinUsageReport, now time.Time, opts providerusage.FormatOptions) error {
 	if !report.RateLimitsAvailable || report.RateLimits == nil {
 		fmt.Fprintln(out, "Claude")
 		if report.SubscriptionType != nil && strings.TrimSpace(*report.SubscriptionType) != "" {
@@ -215,20 +215,20 @@ func writeClaudeBinUsageWithOptions(out io.Writer, report claudeBinUsageReport, 
 		return nil
 	}
 
-	providerReport := &llm.ProviderUsage{Provider: "claude", Source: "Live from Claude Code"}
+	providerReport := &providerusage.Report{Provider: "claude", Source: "Live from Claude Code"}
 	if report.SubscriptionType != nil {
 		providerReport.Plan = strings.TrimSpace(*report.SubscriptionType)
 	}
-	providerReport.Limits = make([]llm.ProviderUsageLimit, 0, len(rows))
+	providerReport.Limits = make([]providerusage.Limit, 0, len(rows))
 	for _, row := range rows {
 		providerReport.Limits = append(providerReport.Limits, claudeBinProviderUsageLimit(row))
 	}
-	_, err := fmt.Fprintln(out, llm.FormatProviderUsageWithOptions(providerReport, now, opts))
+	_, err := fmt.Fprintln(out, providerusage.FormatWithOptions(providerReport, now, opts))
 	return err
 }
 
-func claudeBinProviderUsageLimit(row claudeBinUsageRow) llm.ProviderUsageLimit {
-	window := &llm.ProviderUsageWindow{
+func claudeBinProviderUsageLimit(row claudeBinUsageRow) providerusage.Limit {
+	window := &providerusage.Window{
 		Label:           row.WindowLabel,
 		DurationMinutes: row.DurationMinutes,
 		Detail:          row.Detail,
@@ -248,7 +248,7 @@ func claudeBinProviderUsageLimit(row claudeBinUsageRow) llm.ProviderUsageLimit {
 			}
 		}
 	}
-	return llm.ProviderUsageLimit{ID: strings.ToLower(strings.ReplaceAll(row.Label, " ", "_")), Name: row.Label, PrimaryWindow: window}
+	return providerusage.Limit{ID: strings.ToLower(strings.ReplaceAll(row.Label, " ", "_")), Name: row.Label, PrimaryWindow: window}
 }
 
 func claudeBinUsageRows(limits claudeBinRateLimits) []claudeBinUsageRow {

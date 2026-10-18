@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -154,7 +155,7 @@ func (rt *serveRuntime) ensureMCPManagerLocked() error {
 	return nil
 }
 
-func buildServeMCPState(manager *mcp.Manager, engine *llm.Engine, mcpSetting, sessionID string) serveMCPSessionResponse {
+func buildServeMCPState(manager *mcp.Manager, engine *engine.Engine, mcpSetting, sessionID string) serveMCPSessionResponse {
 	resp := serveMCPSessionResponse{
 		Servers: []serveMCPServerView{},
 		Enabled: []string{},
@@ -179,8 +180,8 @@ func buildServeMCPState(manager *mcp.Manager, engine *llm.Engine, mcpSetting, se
 			toolCounts[server]++
 		}
 	}
-	var discovery *llm.ToolDiscoveryDiagnostics
-	discoveryServers := make(map[string]llm.ToolDiscoveryServerDiagnostic)
+	var discovery *core.ToolDiscoveryDiagnostics
+	discoveryServers := make(map[string]core.ToolDiscoveryServerDiagnostic)
 	if engine != nil {
 		if diagnostics, ok := engine.ToolDiscoveryDiagnostics(sessionID); ok {
 			discovery = &diagnostics

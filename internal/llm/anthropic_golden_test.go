@@ -34,9 +34,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	llmstream "github.com/samsaffron/term-llm/internal/llm/core/stream"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
 	"hash/crc32"
 	"io"
 	"net/http"
@@ -49,6 +46,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	llmstream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/bedrock"
 )
 
 // The fixtures are shared with the anthropic leaf package, whose golden test
@@ -801,7 +803,7 @@ func (rt goldenRedirectTransport) RoundTrip(r *http.Request) (*http.Response, er
 	return rt.base.RoundTrip(clone)
 }
 
-func newGoldenBedrockProvider(t *testing.T, baseURL string, sc anthropicGoldenScenario) Provider {
+func newGoldenBedrockProvider(t *testing.T, baseURL string, sc anthropicGoldenScenario) core.Provider {
 	t.Helper()
 	target, err := url.Parse(baseURL)
 	if err != nil {
@@ -810,7 +812,7 @@ func newGoldenBedrockProvider(t *testing.T, baseURL string, sc anthropicGoldenSc
 	original := http.DefaultTransport
 	http.DefaultTransport = goldenRedirectTransport{target: target, base: original.(*http.Transport).Clone()}
 	t.Cleanup(func() { http.DefaultTransport = original })
-	p, err := NewBedrockProvider(sc.model, "us-west-2", "", "AKIDGOLDENEXAMPLE", "golden-secret", "golden-session", nil, nil)
+	p, err := bedrock.New(sc.model, "us-west-2", "", "AKIDGOLDENEXAMPLE", "golden-secret", "golden-session", nil, nil)
 	if err != nil {
 		t.Fatalf("NewBedrockProvider: %v", err)
 	}
@@ -873,7 +875,7 @@ func bedrockOnlyGoldenScenarios() []anthropicGoldenScenario {
 		if name == "bedrock_arn_model" {
 			model = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abc123"
 		}
-		out = append(out, anthropicGoldenScenario{name: name, model: model, bedrockOnly: true, turns: goldenSingleTurn(Request{Messages: goldenUser("edge")})})
+		out = append(out, anthropicGoldenScenario{name: name, model: model, bedrockOnly: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("edge")})})
 	}
 	return out
 }

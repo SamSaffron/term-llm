@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // FileChangeRecorder records file changes made by tools so sessions can expose
@@ -21,11 +21,11 @@ type AttributedPathChecker interface {
 }
 
 type AttributedFileRecorder interface {
-	RecordAttributedChange(ctx context.Context, rec filetrack.ChangeRecord) (*llm.FileChange, error)
+	RecordAttributedChange(ctx context.Context, rec filetrack.ChangeRecord) (*core.FileChange, error)
 }
 
 type FilesystemObservationRecorder interface {
-	RecordFilesystemObservation(ctx context.Context, obs filetrack.FilesystemObservation) (*llm.FilesystemObservationSummary, error)
+	RecordFilesystemObservation(ctx context.Context, obs filetrack.FilesystemObservation) (*core.FilesystemObservationSummary, error)
 }
 
 type RunFileRecorder interface {
@@ -37,7 +37,7 @@ type RunFileRecorder interface {
 // tools require/use the explicit classified interfaces above and never route a
 // shell detection through RecordChange.
 type FileChangeRecorder interface {
-	RecordChange(ctx context.Context, rec filetrack.ChangeRecord) *llm.FileChange
+	RecordChange(ctx context.Context, rec filetrack.ChangeRecord) *core.FileChange
 	// SessionPaths returns absolute paths already recorded for a session.
 	SessionPaths(ctx context.Context, sessionID string) []string
 	// MaxFileBytes is the per-file content cap; callers can use it to bound
@@ -72,15 +72,15 @@ const fileRecordTimeout = 5 * time.Second
 // recordFileChange is the shared helper edit/write tools call after a
 // successful write (while still holding the per-path lock). Returns nil when
 // recording is disabled or no session is active.
-func recordFileChange(ctx context.Context, recorder FileChangeRecorder, toolName, path string, before, after []byte, beforeMissing, afterMissing bool) (*llm.FileChange, *llm.OutputClaimDiagnostic) {
+func recordFileChange(ctx context.Context, recorder FileChangeRecorder, toolName, path string, before, after []byte, beforeMissing, afterMissing bool) (*core.FileChange, *core.OutputClaimDiagnostic) {
 	if recorder == nil {
 		return nil, nil
 	}
-	sessionID := llm.SessionIDFromContext(ctx)
+	sessionID := core.SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return nil, nil
 	}
-	callID := llm.CallIDFromContext(ctx)
+	callID := core.CallIDFromContext(ctx)
 	// The filesystem mutation has already happened when callers reach this
 	// helper. Keep the best-effort DB write alive even if the surrounding request
 	// is cancelled at the same moment, but keep a short timeout so tracking can
@@ -93,7 +93,7 @@ func recordFileChange(ctx context.Context, recorder FileChangeRecorder, toolName
 	}
 	rec := filetrack.ChangeRecord{
 		SessionID:     sessionID,
-		RunID:         llm.ToolRunIDFromContext(ctx),
+		RunID:         core.ToolRunIDFromContext(ctx),
 		ToolName:      toolName,
 		ToolCallID:    callID,
 		Path:          path,
@@ -108,7 +108,7 @@ func recordFileChange(ctx context.Context, recorder FileChangeRecorder, toolName
 	if explicit, ok := recorder.(AttributedFileRecorder); ok {
 		change, err := explicit.RecordAttributedChange(recordCtx, rec)
 		if err != nil {
-			return nil, &llm.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()}
+			return nil, &core.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()}
 		}
 		return change, nil
 	}

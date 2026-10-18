@@ -11,12 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // No special Rush capability: wrappers and native adapters use ordinary Stream.
-type rushContinuationProvider struct{ llm.Provider }
+type rushContinuationProvider struct{ core.Provider }
 
 func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 	for _, wrapped := range []bool{false, true} {
@@ -63,13 +65,13 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 			if err := store.Create(context.Background(), sess); err != nil {
 				t.Fatal(err)
 			}
-			var provider llm.Provider = llm.NewOpenAICompatProvider(model.URL, "", "test", "compat")
+			var provider core.Provider = opencompat.NewOpenAICompatProvider(model.URL, "", "test", "compat")
 			if wrapped {
 				provider = rushContinuationProvider{provider}
 			}
-			registry := llm.NewToolRegistry()
+			registry := engine.NewToolRegistry()
 			registry.Register(responseTimeoutDelayTool{})
-			rt := &serveRuntime{provider: provider, providerKey: "compat", engine: llm.NewEngine(provider, registry), defaultModel: "test", store: store}
+			rt := &serveRuntime{provider: provider, providerKey: "compat", engine: engine.NewEngine(provider, registry), defaultModel: "test", store: store}
 			rt.Touch()
 			manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) { return rt, nil })
 			defer manager.Close()
@@ -82,7 +84,7 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 					srv.responseLifecycleWG.Wait()
 				}
 			}()
-			run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("source")}, llm.Request{SessionID: sess.ID, Tools: []llm.ToolSpec{responseTimeoutDelayTool{}.Spec()}}, sess.ID, startResponseRunOptions{uiSession: true})
+			run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("source")}, core.Request{SessionID: sess.ID, Tools: []core.ToolSpec{responseTimeoutDelayTool{}.Spec()}}, sess.ID, startResponseRunOptions{uiSession: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -92,7 +94,7 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 				t.Fatal("provider not started")
 			}
 			for _, id := range []string{"z", "a"} {
-				_, _, err := rt.InterruptMessage(context.Background(), llm.UserText("guidance "+id), "guidance "+id, id, nil, interruptDeliverySteer)
+				_, _, err := rt.InterruptMessage(context.Background(), core.UserText("guidance "+id), "guidance "+id, id, nil, interruptDeliverySteer)
 				if err != nil {
 					t.Fatal(err)
 				}

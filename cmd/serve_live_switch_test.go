@@ -16,6 +16,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -522,7 +524,7 @@ func TestLiveDelegationAfterRebindUsesTheNewSessionRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second.provider.(*llm.MockProvider).AddTextResponse("answer from b")
+	second.provider.(*mockprovider.MockProvider).AddTextResponse("answer from b")
 	record := newLiveSession("call-rebind-run", "rebind-a")
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
 	if err := s.registerLiveSession(record); err != nil {
@@ -535,10 +537,10 @@ func TestLiveDelegationAfterRebindUsesTheNewSessionRuntime(t *testing.T) {
 	if err := d.Run(ctx, live.DelegationRequest{Input: "do it in b"}, func(live.DelegationChunk) {}); err != nil {
 		t.Fatal(err)
 	}
-	if len(second.provider.(*llm.MockProvider).RecordedRequests()) != 1 {
+	if len(second.provider.(*mockprovider.MockProvider).RecordedRequests()) != 1 {
 		t.Fatal("the rebound session's runtime did not receive the delegation")
 	}
-	if len(first.provider.(*llm.MockProvider).RecordedRequests()) != 0 {
+	if len(first.provider.(*mockprovider.MockProvider).RecordedRequests()) != 0 {
 		t.Fatal("the abandoned session's runtime received the delegation")
 	}
 	if run := s.ensureResponseRuns().latestRun("rebind-b"); run == nil {
@@ -552,7 +554,7 @@ type inFlightLiveDelegation struct {
 	record    *liveSession
 	delegator *serveLiveDelegator
 	started   *serveRuntime
-	elsewhere *llm.MockProvider
+	elsewhere *mockprovider.MockProvider
 	gate      *liveSteeringGateTool
 	done      chan error
 }
@@ -573,7 +575,7 @@ func startInFlightLiveDelegation(t *testing.T, s *serveServer, sessionID string)
 	}
 	gate := &liveSteeringGateTool{entered: make(chan struct{}), release: make(chan struct{})}
 	started.engine.RegisterTool(gate)
-	started.provider.(*llm.MockProvider).
+	started.provider.(*mockprovider.MockProvider).
 		AddToolCall("gate", "live_gate", map[string]any{}).
 		AddTextResponse("done in a")
 	record := newLiveSession("call-inflight", sessionID)
@@ -606,7 +608,7 @@ func startInFlightLiveDelegation(t *testing.T, s *serveServer, sessionID string)
 	}
 	return &inFlightLiveDelegation{
 		record: record, delegator: delegator, started: started,
-		elsewhere: elsewhere.provider.(*llm.MockProvider), gate: gate, done: done,
+		elsewhere: elsewhere.provider.(*mockprovider.MockProvider), gate: gate, done: done,
 	}
 }
 
@@ -624,7 +626,7 @@ func TestLiveInFlightDelegationKeepsItsBindingAcrossRebind(t *testing.T) {
 	if inFlight.record.boundSession() != "inflight-b" {
 		t.Fatalf("binding = %q", inFlight.record.boundSession())
 	}
-	requests := inFlight.started.provider.(*llm.MockProvider).RecordedRequests()
+	requests := inFlight.started.provider.(*mockprovider.MockProvider).RecordedRequests()
 	if len(requests) != 2 {
 		t.Fatalf("the in-flight run's provider turns = %d, want 2 in the session it started in", len(requests))
 	}
@@ -678,7 +680,7 @@ func TestLiveRebindResetsAbandonedSessionPlatformContext(t *testing.T) {
 	}
 	runtime.platform = "web"
 	runtime.platformMessages.Web = "web presentation rules"
-	runtime.provider.(*llm.MockProvider).AddTextResponse("delegated answer")
+	runtime.provider.(*mockprovider.MockProvider).AddTextResponse("delegated answer")
 	record := newLiveSession("call-abandoned", "abandoned-a")
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
 	if err := s.registerLiveSession(record); err != nil {
@@ -696,10 +698,10 @@ func TestLiveRebindResetsAbandonedSessionPlatformContext(t *testing.T) {
 	if _, err := s.rebindLiveSession(record, liveSwitchTarget{SessionID: "abandoned-b", Number: 2, Title: "Elsewhere"}); err != nil {
 		t.Fatal(err)
 	}
-	typed := func() llm.Message {
+	typed := func() core.Message {
 		t.Helper()
-		runtime.provider.(*llm.MockProvider).AddTextResponse("typed answer")
-		if _, err := runtime.Run(ctx, true, false, []llm.Message{llm.UserText("typed request")}, llm.Request{SessionID: "abandoned-a"}); err != nil {
+		runtime.provider.(*mockprovider.MockProvider).AddTextResponse("typed answer")
+		if _, err := runtime.Run(ctx, true, false, []core.Message{core.UserText("typed request")}, core.Request{SessionID: "abandoned-a"}); err != nil {
 			t.Fatal(err)
 		}
 		message, ok := llm.PlatformContextFrom(runtime.history)
@@ -712,8 +714,8 @@ func TestLiveRebindResetsAbandonedSessionPlatformContext(t *testing.T) {
 	// Byte-identical to the liveContext == nil reset branch of
 	// preparePlatformContext (covered by TestLiveModeContextTransitionsAndRestart),
 	// which is why an abandoned session recovers with no extra code.
-	if llm.MessageText(reset) != "web presentation rules\n\n"+liveTextModeContext || llm.PlatformContextMode(reset) != "text" {
-		t.Fatalf("abandoned session context = %q, mode = %q", llm.MessageText(reset), llm.PlatformContextMode(reset))
+	if core.MessageText(reset) != "web presentation rules\n\n"+liveTextModeContext || llm.PlatformContextMode(reset) != "text" {
+		t.Fatalf("abandoned session context = %q, mode = %q", core.MessageText(reset), llm.PlatformContextMode(reset))
 	}
 	// The session the call left behind is inactive; the one it moved to is not.
 	if text, active := record.executionContextFor("abandoned-a")(); active {

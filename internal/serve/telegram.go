@@ -23,6 +23,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mediatype"
 	memorystore "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -608,8 +610,8 @@ type telegramSession struct {
 	mu                         sync.Mutex
 	activityMu                 sync.Mutex // protects lastActivity without blocking behind an active stream
 	runtime                    *SessionRuntime
-	history                    []llm.Message // full transcript for persistence/reconciliation
-	activeHistory              []llm.Message // non-nil after compaction; provider context only
+	history                    []core.Message // full transcript for persistence/reconciliation
+	activeHistory              []core.Message // non-nil after compaction; provider context only
 	systemPromptPersisted      bool
 	conversationStartPersisted bool
 	runtimeStale               atomic.Bool // a detached runner may still own runtime; reset before reuse
@@ -622,7 +624,7 @@ type telegramSession struct {
 
 	cancelMu      sync.Mutex         // protects active stream state and task/tool tracking
 	streamCancel  context.CancelFunc // cancels the active stream's context
-	streamEngine  *llm.Engine        // active runner engine for mid-stream steering
+	streamEngine  *engine.Engine     // active runner engine for mid-stream steering
 	streamToken   chan struct{}      // identifies callbacks owned by the active stream
 	runnerDone    <-chan struct{}    // closes when a detached runner no longer owns runtime
 	replyDone     chan struct{}      // closed when streamReply exits
@@ -661,10 +663,10 @@ type telegramSessionMgr struct {
 	// before declaring the stream dead. 0 means use defaultStreamEventTimeout.
 	streamEventTimeout time.Duration
 
-	fastProviderFactory func() llm.Provider // test seam; nil uses configured fast provider
+	fastProviderFactory func() core.Provider // test seam; nil uses configured fast provider
 }
 
-func (m *telegramSessionMgr) newFastProvider() llm.Provider {
+func (m *telegramSessionMgr) newFastProvider() core.Provider {
 	if m != nil && m.fastProviderFactory != nil {
 		return m.fastProviderFactory()
 	}
@@ -679,8 +681,8 @@ func (m *telegramSessionMgr) newFastProvider() llm.Provider {
 	return fastProvider
 }
 
-func (m *telegramSessionMgr) classifyInterrupt(ctx context.Context, text string, activity llm.InterruptActivity) llm.InterruptAction {
-	return llm.ClassifyInterrupt(ctx, m.newFastProvider(), text, activity)
+func (m *telegramSessionMgr) classifyInterrupt(ctx context.Context, text string, activity engine.InterruptActivity) engine.InterruptAction {
+	return engine.ClassifyInterrupt(ctx, m.newFastProvider(), text, activity)
 }
 
 func (m *telegramSessionMgr) isAllowed(userID int64, username string) bool {
@@ -811,7 +813,7 @@ func (m *telegramSessionMgr) restoreHistoryFromDB(ctx context.Context, chatID in
 	}
 }
 
-func (m *telegramSessionMgr) loadCarryoverHistory(ctx context.Context, sessionID string, maxChars int) ([]llm.Message, int, error) {
+func (m *telegramSessionMgr) loadCarryoverHistory(ctx context.Context, sessionID string, maxChars int) ([]core.Message, int, error) {
 	if m.store == nil || maxChars <= 0 {
 		return nil, 0, nil
 	}
@@ -822,7 +824,7 @@ func (m *telegramSessionMgr) loadCarryoverHistory(ctx context.Context, sessionID
 		if err != nil {
 			return nil, 0, err
 		}
-		all := make([]llm.Message, 0, len(msgs))
+		all := make([]core.Message, 0, len(msgs))
 		for _, msg := range msgs {
 			all = append(all, msg.ToLLMMessage())
 		}
@@ -831,7 +833,7 @@ func (m *telegramSessionMgr) loadCarryoverHistory(ctx context.Context, sessionID
 
 	const initialBatchSize = 32
 
-	selectedRev := make([]llm.Message, 0, initialBatchSize)
+	selectedRev := make([]core.Message, 0, initialBatchSize)
 	totalChars := 0
 	loadedRows := 0
 	beforeSeq := 0
@@ -870,12 +872,12 @@ func (m *telegramSessionMgr) loadCarryoverHistory(ctx context.Context, sessionID
 	return reverseMessages(selectedRev), loadedRows, nil
 }
 
-func reverseMessages(msgs []llm.Message) []llm.Message {
+func reverseMessages(msgs []core.Message) []core.Message {
 	if len(msgs) == 0 {
 		return nil
 	}
 
-	reversed := make([]llm.Message, len(msgs))
+	reversed := make([]core.Message, len(msgs))
 	for i := range msgs {
 		reversed[len(msgs)-1-i] = msgs[i]
 	}
@@ -885,7 +887,7 @@ func reverseMessages(msgs []llm.Message) []llm.Message {
 // tailMessages returns the largest suffix of msgs whose combined text fits
 // within maxChars. It never splits a message — whole messages are included
 // or excluded.
-func tailMessages(msgs []llm.Message, maxChars int) []llm.Message {
+func tailMessages(msgs []core.Message, maxChars int) []core.Message {
 	if maxChars <= 0 || len(msgs) == 0 {
 		return nil
 	}
@@ -905,30 +907,30 @@ func tailMessages(msgs []llm.Message, maxChars int) []llm.Message {
 	return msgs[start:]
 }
 
-func sanitizeCarryoverMessages(msgs []llm.Message) []llm.Message {
+func sanitizeCarryoverMessages(msgs []core.Message) []core.Message {
 	if len(msgs) == 0 {
 		return nil
 	}
 
-	sanitized := make([]llm.Message, 0, len(msgs))
+	sanitized := make([]core.Message, 0, len(msgs))
 	for _, msg := range msgs {
 		sanitized = append(sanitized, sanitizeCarryoverMessage(msg))
 	}
 	return sanitized
 }
 
-func sanitizeCarryoverMessage(msg llm.Message) llm.Message {
-	sanitized := llm.Message{
+func sanitizeCarryoverMessage(msg core.Message) core.Message {
+	sanitized := core.Message{
 		Role:        msg.Role,
 		CacheAnchor: msg.CacheAnchor,
-		Parts:       make([]llm.Part, 0, len(msg.Parts)),
+		Parts:       make([]core.Part, 0, len(msg.Parts)),
 	}
 
 	for _, part := range msg.Parts {
 		switch part.Type {
-		case llm.PartImage:
-			sanitized.Parts = append(sanitized.Parts, llm.Part{Type: llm.PartText, Text: "[image uploaded]"})
-		case llm.PartToolCall:
+		case core.PartImage:
+			sanitized.Parts = append(sanitized.Parts, core.Part{Type: core.PartText, Text: "[image uploaded]"})
+		case core.PartToolCall:
 			if part.ToolCall == nil {
 				continue
 			}
@@ -939,12 +941,12 @@ func sanitizeCarryoverMessage(msg llm.Message) llm.Message {
 			if len(call.ThoughtSig) > 0 {
 				call.ThoughtSig = append([]byte(nil), call.ThoughtSig...)
 			}
-			sanitized.Parts = append(sanitized.Parts, llm.Part{Type: llm.PartToolCall, ToolCall: &call})
-		case llm.PartToolResult:
+			sanitized.Parts = append(sanitized.Parts, core.Part{Type: core.PartToolCall, ToolCall: &call})
+		case core.PartToolResult:
 			if part.ToolResult == nil {
 				continue
 			}
-			result := &llm.ToolResult{
+			result := &core.ToolResult{
 				ID:      part.ToolResult.ID,
 				Name:    part.ToolResult.Name,
 				Content: extractToolResultTextWithPlaceholders(part.ToolResult),
@@ -953,7 +955,7 @@ func sanitizeCarryoverMessage(msg llm.Message) llm.Message {
 			if len(part.ToolResult.ThoughtSig) > 0 {
 				result.ThoughtSig = append([]byte(nil), part.ToolResult.ThoughtSig...)
 			}
-			sanitized.Parts = append(sanitized.Parts, llm.Part{Type: llm.PartToolResult, ToolResult: result})
+			sanitized.Parts = append(sanitized.Parts, core.Part{Type: core.PartToolResult, ToolResult: result})
 		default:
 			sanitized.Parts = append(sanitized.Parts, part)
 		}
@@ -1285,7 +1287,7 @@ func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) bool {
 	}
 }
 
-func (m *telegramSessionMgr) reconcileTelegramTranscript(ctx context.Context, sess *telegramSession, history []llm.Message, includeSystemPrompt bool, op string) bool {
+func (m *telegramSessionMgr) reconcileTelegramTranscript(ctx context.Context, sess *telegramSession, history []core.Message, includeSystemPrompt bool, op string) bool {
 	if m.store == nil || sess == nil || sess.meta == nil {
 		return false
 	}
@@ -1294,12 +1296,12 @@ func (m *telegramSessionMgr) reconcileTelegramTranscript(ctx context.Context, se
 		start = 0
 	}
 	currentHistory := history[start:]
-	replacementHistory := make([]llm.Message, 0, len(currentHistory)+1)
+	replacementHistory := make([]core.Message, 0, len(currentHistory)+1)
 	// Carryover can contain an old system message, but those messages are
 	// excluded from this session's durable snapshot. Check only the slice that
 	// will actually be persisted before deciding whether to prepend it.
 	if m.settings.SystemPrompt != "" && includeSystemPrompt && !containsSystemMsg(currentHistory) {
-		replacementHistory = append(replacementHistory, llm.SystemText(m.settings.SystemPrompt))
+		replacementHistory = append(replacementHistory, core.SystemText(m.settings.SystemPrompt))
 	}
 	replacementHistory = append(replacementHistory, currentHistory...)
 	snapshot := make([]session.Message, 0, len(replacementHistory))
@@ -1320,10 +1322,10 @@ func (m *telegramSessionMgr) reconcileTelegramTranscript(ctx context.Context, se
 	return true
 }
 
-func telegramMessageVisibleText(msg llm.Message) string {
+func telegramMessageVisibleText(msg core.Message) string {
 	var b strings.Builder
 	for _, part := range msg.Parts {
-		if part.Type != llm.PartText || part.Text == "" {
+		if part.Type != core.PartText || part.Text == "" {
 			continue
 		}
 		if b.Len() > 0 {
@@ -1334,13 +1336,13 @@ func telegramMessageVisibleText(msg llm.Message) string {
 	return b.String()
 }
 
-func telegramAssistantTextCaptured(messages []llm.Message, partial string) bool {
+func telegramAssistantTextCaptured(messages []core.Message, partial string) bool {
 	partial = strings.TrimSpace(partial)
 	if partial == "" {
 		return false
 	}
 	for _, msg := range messages {
-		if msg.Role != llm.RoleAssistant {
+		if msg.Role != core.RoleAssistant {
 			continue
 		}
 		if strings.TrimSpace(telegramMessageVisibleText(msg)) == partial {
@@ -1366,7 +1368,7 @@ func (m *telegramSessionMgr) persistedAssistantTextMatches(ctx context.Context, 
 	}
 	want := strings.TrimSpace(partial)
 	for _, msg := range msgs {
-		if msg.Role == llm.RoleAssistant && strings.TrimSpace(msg.TextContent) == want {
+		if msg.Role == core.RoleAssistant && strings.TrimSpace(msg.TextContent) == want {
 			return true
 		}
 	}
@@ -1399,7 +1401,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 
 	// Build the user message: photo or text.
 	var (
-		userMsg         llm.Message
+		userMsg         core.Message
 		tempImagePath   string // non-empty when we wrote a temp file for this message
 		uploadMediaType string
 		uploadCaption   string
@@ -1414,7 +1416,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		tempImagePath = imgPath
 		uploadMediaType = mediaType
 		uploadCaption = strings.TrimSpace(msg.Caption)
-		userMsg = llm.UserImageMessageWithPath(mediaType, base64Data, imgPath, uploadCaption)
+		userMsg = core.UserImageMessageWithPath(mediaType, base64Data, imgPath, uploadCaption)
 	} else if msg.Voice != nil {
 		voicePath, err := downloadTelegramVoice(bot, msg.Voice)
 		if err != nil {
@@ -1442,13 +1444,13 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 			return
 		}
 
-		userMsg = llm.UserText("🎤 " + transcript)
+		userMsg = core.UserText("🎤 " + transcript)
 	} else {
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return
 		}
-		userMsg = llm.UserText(text)
+		userMsg = core.UserText(text)
 	}
 	// Clean up the temp image file once the reply is fully delivered.
 	// We defer here so it covers all return paths below (error exits, interrupts, etc.).
@@ -1502,7 +1504,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 			// Stream finished naturally within the grace period.
 		case <-time.After(m.interruptGrace()):
 			sess.cancelMu.Lock()
-			activity := llm.InterruptActivity{
+			activity := engine.InterruptActivity{
 				CurrentTask: strings.TrimSpace(sess.currentTask),
 				ToolsRun:    append([]string(nil), sess.toolsRanNames...),
 				ProseLen:    int(sess.streamProseLen.Load()),
@@ -1518,12 +1520,12 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 			// Steering carry text only, so a photo would lose both its image
 			// content and this handler's temporary path. Process photos as replacement
 			// turns so the structured message remains available to the provider.
-			action := llm.InterruptCancel
+			action := engine.InterruptCancel
 			if tempImagePath == "" {
 				action = m.classifyInterrupt(ctx, newMsgText, activity)
 			}
 			switch action {
-			case llm.InterruptCancel:
+			case engine.InterruptCancel:
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ Stopping current work and switching to your new request."))
 				cancelFn()
 				stopWait := max(5*time.Second, telegramCleanupTimeout()+time.Second)
@@ -1539,7 +1541,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 				case <-ctx.Done():
 					return
 				}
-			case llm.InterruptSteer:
+			case engine.InterruptSteer:
 				sess.cancelMu.Lock()
 				activeEngine := sess.streamEngine
 				if activeEngine == nil && m.settings.Runner == nil && sess.runtime != nil {
@@ -1552,20 +1554,20 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 					cancelFn()
 					return
 				}
-				steeringID, queueStatus := activeEngine.QueueSteeringWithStatus(llm.QueuedSteering{
-					Message:     llm.UserText(newMsgText),
+				steeringID, queueStatus := activeEngine.QueueSteeringWithStatus(engine.QueuedSteering{
+					Message:     core.UserText(newMsgText),
 					DisplayText: newMsgText,
 				})
 				switch queueStatus {
-				case llm.SteeringQueueQueued, llm.SteeringQueueAlreadyQueued:
+				case engine.SteeringQueueQueued, engine.SteeringQueueAlreadyQueued:
 					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📝 Noted. I will incorporate that while I continue."))
 					// Do not persist here: the engine persists the steering exactly once
 					// when it drains it into the conversation via TurnCompletedCallback.
 					return
-				case llm.SteeringQueueTransitioning, llm.SteeringQueueRushOwned:
+				case engine.SteeringQueueTransitioning, engine.SteeringQueueRushOwned:
 					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "The conversation is transitioning. Your message was not sent; please retry it after the transition."))
 					return
-				case llm.SteeringQueueRunFinished:
+				case engine.SteeringQueueRunFinished:
 					log.Printf("[telegram] stream for chat %d reached its final boundary before steering %s; handling message as a new turn", chatID, steeringID)
 					break activeWait
 				default:
@@ -1669,11 +1671,11 @@ func telegramCleanupTimeout() time.Duration {
 	return runpkg.DefaultRunnerCleanupTimeout
 }
 
-func startTelegramStreamClose(stream llm.Stream, done chan struct{}, once *sync.Once) {
+func startTelegramStreamClose(stream core.Stream, done chan struct{}, once *sync.Once) {
 	startTelegramStreamCloseWithCoordinator(restart.Default, stream, done, once)
 }
 
-func startTelegramStreamCloseWithCoordinator(coordinator *restart.Coordinator, stream llm.Stream, done chan struct{}, once *sync.Once) {
+func startTelegramStreamCloseWithCoordinator(coordinator *restart.Coordinator, stream core.Stream, done chan struct{}, once *sync.Once) {
 	once.Do(func() {
 		if stream == nil {
 			close(done)
@@ -1729,7 +1731,7 @@ func startTelegramStreamWatchdog(ctx context.Context, cancel context.CancelFunc,
 	}()
 }
 
-func startTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinator, ctx context.Context, stream llm.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
+func startTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinator, ctx context.Context, stream core.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
 	return coordinator.Go(ctx, func(context.Context) {
 		defer close(consumerDone)
 		for {
@@ -1755,11 +1757,11 @@ func startTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinator
 	})
 }
 
-func launchTelegramStreamConsumer(ctx context.Context, stream llm.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
+func launchTelegramStreamConsumer(ctx context.Context, stream core.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
 	return launchTelegramStreamConsumerWithCoordinator(restart.Default, ctx, stream, events, sess, ping, done, doneOnce, consumerDone)
 }
 
-func launchTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinator, ctx context.Context, stream llm.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
+func launchTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinator, ctx context.Context, stream core.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
 	err := startTelegramStreamConsumerWithCoordinator(coordinator, ctx, stream, events, sess, ping, done, doneOnce, consumerDone)
 	if err != nil {
 		close(consumerDone)
@@ -1768,39 +1770,39 @@ func launchTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinato
 	return err
 }
 
-func applyTelegramStreamActivity(sess *telegramSession, event llm.Event, proseLen int) bool {
+func applyTelegramStreamActivity(sess *telegramSession, event core.Event, proseLen int) bool {
 	switch event.Type {
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		sess.streamProseLen.Store(int64(proseLen))
-	case llm.EventToolExecStart:
+	case core.EventToolExecStart:
 		sess.streamToolCnt.Add(1)
 		sess.streamToolName.Store(event.ToolName)
 		sess.cancelMu.Lock()
 		sess.toolsRanNames = append(sess.toolsRanNames, event.ToolName)
 		sess.cancelMu.Unlock()
-	case llm.EventToolExecEnd:
+	case core.EventToolExecEnd:
 		if sess.streamToolCnt.Load() > 0 {
 			sess.streamToolCnt.Add(-1)
 		}
 		if sess.streamToolCnt.Load() <= 0 {
 			sess.streamToolName.Store("")
 		}
-	case llm.EventError:
+	case core.EventError:
 		return event.Err != nil
 	}
 	return false
 }
 
 // streamReply streams an LLM response back to the chat via live message editing.
-func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message) error {
+func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg core.Message) error {
 	return m.streamReplyWithAdmission(ctx, bot, sess, chatID, userMsg, nil)
 }
 
-func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message, releaseAdmission func()) error {
+func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg core.Message, releaseAdmission func()) error {
 	return m.streamReplyContinuation(ctx, bot, sess, chatID, userMsg, releaseAdmission, nil)
 }
 
-func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message, releaseAdmission func(), resume *telegramContinuation) error {
+func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg core.Message, releaseAdmission func(), resume *telegramContinuation) error {
 	ctx, closeTask := restart.Default.NewTask(ctx)
 	defer closeTask()
 	// We acquire the session lock for the entire streaming call so that
@@ -1866,9 +1868,9 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	// execution, or the final assistant message when no tools are used.
 	var (
 		producedMu                 sync.Mutex
-		produced                   []llm.Message
+		produced                   []core.Message
 		assistantCapturedForTurnCB bool
-		turnMetrics                llm.TurnMetrics
+		turnMetrics                core.TurnMetrics
 		turnCount                  int
 	)
 	// Keep all produced messages for the transcript, but only append messages
@@ -1876,13 +1878,13 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	activeHistory := initialTelegramActiveHistory(sess, userMsg, resume)
 	activeProducedStart := 0
 
-	compactionCB := func(_ context.Context, result *llm.CompactionResult) error {
+	compactionCB := func(_ context.Context, result *engine.CompactionResult) error {
 		if result == nil {
 			return nil
 		}
 		producedMu.Lock()
 		defer producedMu.Unlock()
-		activeHistory = append([]llm.Message{}, result.NewMessages...)
+		activeHistory = append([]core.Message{}, result.NewMessages...)
 		activeProducedStart = len(produced)
 		return nil
 	}
@@ -1892,9 +1894,9 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		if activeHistory == nil {
 			return
 		}
-		sess.activeHistory = append(append([]llm.Message{}, activeHistory...), produced[activeProducedStart:]...)
+		sess.activeHistory = append(append([]core.Message{}, activeHistory...), produced[activeProducedStart:]...)
 		if fallback != "" {
-			sess.activeHistory = append(sess.activeHistory, llm.AssistantText(fallback))
+			sess.activeHistory = append(sess.activeHistory, core.AssistantText(fallback))
 		}
 	}
 	if resume != nil {
@@ -1924,7 +1926,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		log.Printf("[telegram] callback persistence queue did not drain for %s; skipping concurrent transcript reconciliation", callbackStoreQueue.sessionID)
 		return false
 	}
-	responseCompletedCB := func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+	responseCompletedCB := func(cbCtx context.Context, _ int, assistantMsg core.Message, _ core.TurnMetrics) error {
 		producedMu.Lock()
 		produced = append(produced, assistantMsg)
 		assistantCapturedForTurnCB = true
@@ -1937,10 +1939,10 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		}
 		return nil
 	}
-	turnCompletedCB := func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+	turnCompletedCB := func(cbCtx context.Context, _ int, msgs []core.Message, metrics core.TurnMetrics) error {
 		appendStart := 0
 		producedMu.Lock()
-		if assistantCapturedForTurnCB && len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
+		if assistantCapturedForTurnCB && len(msgs) > 0 && msgs[0].Role == core.RoleAssistant {
 			appendStart = 1
 		}
 		if appendStart < len(msgs) {
@@ -1976,7 +1978,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	streamDone := make(chan error, 1)
 	var streamDoneOnce sync.Once
 
-	var stream llm.Stream
+	var stream core.Stream
 	var runnerDone <-chan struct{}
 	var streamConsumerDone chan struct{}
 	streamCloseDone := make(chan struct{})
@@ -2022,7 +2024,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		_ = startTelegramRunnerWithCoordinator(restart.Default, streamCtx, pipe, done, func(streamCtx context.Context) error {
 			_, runErr := m.settings.Runner.Run(streamCtx, runpkg.Request{
 				Platform: runpkg.PlatformTelegram,
-				Continuation: func() *llm.Continuation {
+				Continuation: func() *core.Continuation {
 					if resume != nil {
 						return resume.Engine
 					}
@@ -2046,14 +2048,14 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 				OnResponseCompleted:       responseCompletedCB,
 				OnTurnCompleted:           turnCompletedCB,
 				OnCompaction:              compactionCB,
-				OnEngineReady: func(engine *llm.Engine) {
+				OnEngineReady: func(engine *engine.Engine) {
 					sess.cancelMu.Lock()
 					if sess.streamToken == streamToken {
 						sess.streamEngine = engine
 					}
 					sess.cancelMu.Unlock()
 				},
-				OnEngineDone: func(engine *llm.Engine) {
+				OnEngineDone: func(engine *engine.Engine) {
 					sess.cancelMu.Lock()
 					if sess.streamToken == streamToken && sess.streamEngine == engine {
 						sess.streamEngine = nil
@@ -2064,8 +2066,8 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 			return runErr
 		})
 	} else {
-		req := llm.Request{
-			Resume: func() *llm.Continuation {
+		req := core.Request{
+			Resume: func() *core.Continuation {
 				if resume != nil {
 					return resume.Engine
 				}
@@ -2083,7 +2085,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		// Populate tools so the engine enters the agentic tool loop.
 		if specs := llm.ToolSpecsForRequest(sess.runtime.Engine.Tools(), m.settings.Search); len(specs) > 0 {
 			req.Tools = specs
-			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+			req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
 		}
 
 		var err error
@@ -2167,7 +2169,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	salvagePartialHistory := func(persistCtx context.Context, fallbackOp string) {
 		partial := events.Text()
 		producedMu.Lock()
-		producedSnapshot := append([]llm.Message(nil), produced...)
+		producedSnapshot := append([]core.Message(nil), produced...)
 		producedMu.Unlock()
 
 		// Stop all queued AddMessage operations before checking degradation or
@@ -2179,7 +2181,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		// Even without assistant output, the accepted user message must enter
 		// live history so a retry sees it and later reconciliation retains it.
 		assistantTextCaptured := telegramAssistantTextCaptured(producedSnapshot, partial)
-		newHistory := make([]llm.Message, 0, len(sess.history)+2+len(producedSnapshot))
+		newHistory := make([]core.Message, 0, len(sess.history)+2+len(producedSnapshot))
 		newHistory = append(newHistory, sess.history...)
 		if resume == nil {
 			newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
@@ -2187,7 +2189,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		newHistory = append(newHistory, producedSnapshot...)
 		fallbackPersistenceDegraded := false
 		if partial != "" {
-			assistantMsg := llm.AssistantText(partial)
+			assistantMsg := core.AssistantText(partial)
 			if queueDrained && m.store != nil && sess.meta != nil && !m.persistedAssistantTextMatches(persistCtx, sess.meta.ID, partial) {
 				storeMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
 				if !m.runStoreOpWithoutCancel(persistCtx, sess.meta.ID, fallbackOp, func(storeCtx context.Context) error {
@@ -2290,7 +2292,7 @@ loop:
 		salvagePartialHistory: salvagePartialHistory, stopStreamWithCleanupTimeout: stopStreamWithCleanupTimeout,
 		turnPersistenceDegraded: &turnPersistenceDegraded, includeSystemPromptOnReconcile: includeSystemPromptOnReconcile,
 	}
-	var suspended *llm.SuspendedError
+	var suspended *engine.SuspendedError
 	if errors.As(streamErr, &suspended) {
 		return finalizer.finishSuspension(ctx, suspended)
 	}
@@ -2303,9 +2305,9 @@ loop:
 	return finalizer.finishSuccess(ctx)
 }
 
-func containsSystemMsg(msgs []llm.Message) bool {
+func containsSystemMsg(msgs []core.Message) bool {
 	for _, m := range msgs {
-		if m.Role == llm.RoleSystem {
+		if m.Role == core.RoleSystem {
 			return true
 		}
 	}
@@ -2327,25 +2329,25 @@ func extractPlainTextFromMsg(msg *tgbotapi.Message) string {
 }
 
 // collectUserText extracts the text content from a user message for persistence.
-func collectUserText(msg llm.Message) string {
+func collectUserText(msg core.Message) string {
 	var parts []string
 	for _, p := range msg.Parts {
-		if p.Type == llm.PartText && p.Text != "" {
+		if p.Type == core.PartText && p.Text != "" {
 			parts = append(parts, p.Text)
 		}
 	}
 	return strings.Join(parts, "\n")
 }
 
-func normalizeUserMessageForHistory(msg llm.Message) llm.Message {
+func normalizeUserMessageForHistory(msg core.Message) core.Message {
 	text := extractMessageTextWithPlaceholders(msg)
 	if text == "" {
-		return llm.UserText("")
+		return core.UserText("")
 	}
-	return llm.UserText(text)
+	return core.UserText(text)
 }
 
-func buildHistoryContextTail(history []llm.Message, maxChars int) string {
+func buildHistoryContextTail(history []core.Message, maxChars int) string {
 	if maxChars <= 0 || len(history) == 0 {
 		return ""
 	}
@@ -2363,15 +2365,15 @@ func buildHistoryContextTail(history []llm.Message, maxChars int) string {
 	return tailRunes(strings.Join(lines, "\n"), maxChars)
 }
 
-func referencedTelegramMedia(text string, media []llm.MediaArtifact) []llm.MediaArtifact {
-	byReference := make(map[string]llm.MediaArtifact, len(media))
+func referencedTelegramMedia(text string, media []core.MediaArtifact) []core.MediaArtifact {
+	byReference := make(map[string]core.MediaArtifact, len(media))
 	for _, item := range media {
 		if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
 			byReference[reference] = item
 		}
 	}
 	seen := make(map[string]struct{})
-	var result []llm.MediaArtifact
+	var result []core.MediaArtifact
 	for _, match := range telegramMediaMarkdownPattern.FindAllStringSubmatch(text, -1) {
 		if len(match) != 3 {
 			continue
@@ -2394,7 +2396,7 @@ func telegramMediaFilename(mediaType string) string {
 	return "media.mp4"
 }
 
-func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
+func extractToolResultTextWithPlaceholders(result *core.ToolResult) string {
 	if result == nil {
 		return ""
 	}
@@ -2407,11 +2409,11 @@ func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
 	if len(result.ContentParts) > 0 {
 		for _, p := range result.ContentParts {
 			switch p.Type {
-			case llm.ToolContentPartText:
+			case core.ToolContentPartText:
 				if strings.TrimSpace(p.Text) != "" {
 					parts = append(parts, p.Text)
 				}
-			case llm.ToolContentPartImageData:
+			case core.ToolContentPartImageData:
 				parts = append(parts, "[image uploaded]")
 			}
 		}
@@ -2433,17 +2435,17 @@ func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
 	return strings.Join(parts, "\n")
 }
 
-func extractMessageTextWithPlaceholders(msg llm.Message) string {
+func extractMessageTextWithPlaceholders(msg core.Message) string {
 	var parts []string
 	for _, part := range msg.Parts {
 		switch part.Type {
-		case llm.PartText:
+		case core.PartText:
 			if strings.TrimSpace(part.Text) != "" {
 				parts = append(parts, part.Text)
 			}
-		case llm.PartImage:
+		case core.PartImage:
 			parts = append(parts, "[image uploaded]")
-		case llm.PartToolResult:
+		case core.PartToolResult:
 			if text := extractToolResultTextWithPlaceholders(part.ToolResult); strings.TrimSpace(text) != "" {
 				parts = append(parts, text)
 			}

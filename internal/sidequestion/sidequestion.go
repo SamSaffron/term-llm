@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 const (
@@ -37,21 +39,21 @@ Do not promise future action.`
 )
 
 type Entry struct {
-	Question  string    `json:"question"`
-	Response  string    `json:"response"`
-	CreatedAt time.Time `json:"created_at"`
-	Usage     llm.Usage `json:"usage"`
+	Question  string     `json:"question"`
+	Response  string     `json:"response"`
+	CreatedAt time.Time  `json:"created_at"`
+	Usage     core.Usage `json:"usage"`
 }
 
 type Result struct {
-	Response  string    `json:"response"`
-	Usage     llm.Usage `json:"usage"`
-	Synthetic bool      `json:"synthetic"`
+	Response  string     `json:"response"`
+	Usage     core.Usage `json:"usage"`
+	Synthetic bool       `json:"synthetic"`
 }
 
 // PrepareContextSnapshot returns a provider-safe point-in-time deep copy. It
 // preserves cache anchors while removing incomplete tool protocol fragments.
-func PrepareContextSnapshot(messages []llm.Message) []llm.Message {
+func PrepareContextSnapshot(messages []core.Message) []core.Message {
 	copied := deepCopyMessages(messages)
 	type position struct{ message, part int }
 	pending := make(map[string]position)
@@ -83,13 +85,13 @@ func PrepareContextSnapshot(messages []llm.Message) []llm.Message {
 			}
 		}
 	}
-	out := make([]llm.Message, 0, len(copied))
+	out := make([]core.Message, 0, len(copied))
 	for messageIndex, msg := range copied {
-		if msg.Role == llm.RoleEvent {
+		if msg.Role == core.RoleEvent {
 			continue
 		}
 		partial := false
-		parts := make([]llm.Part, 0, len(msg.Parts))
+		parts := make([]core.Part, 0, len(msg.Parts))
 		for partIndex, part := range msg.Parts {
 			if part.ToolCall != nil || part.ToolResult != nil {
 				if _, ok := complete[position{messageIndex, partIndex}]; !ok {
@@ -102,7 +104,7 @@ func PrepareContextSnapshot(messages []llm.Message) []llm.Message {
 		if partial {
 			filtered := parts[:0]
 			for _, part := range parts {
-				if part.Type != llm.PartProviderReplay {
+				if part.Type != core.PartProviderReplay {
 					filtered = append(filtered, part)
 				}
 			}
@@ -119,15 +121,15 @@ func PrepareContextSnapshot(messages []llm.Message) []llm.Message {
 // CloneMessages returns a point-in-time deep copy without changing provider
 // protocol metadata. Request construction performs sanitization once after all
 // context fragments have been assembled.
-func CloneMessages(messages []llm.Message) []llm.Message {
+func CloneMessages(messages []core.Message) []core.Message {
 	return deepCopyMessages(messages)
 }
 
-func deepCopyMessages(messages []llm.Message) []llm.Message {
-	out := make([]llm.Message, len(messages))
+func deepCopyMessages(messages []core.Message) []core.Message {
+	out := make([]core.Message, len(messages))
 	for i, msg := range messages {
 		out[i] = msg
-		out[i].Parts = append([]llm.Part(nil), msg.Parts...)
+		out[i].Parts = append([]core.Part(nil), msg.Parts...)
 		for j := range out[i].Parts {
 			part := &out[i].Parts[j]
 			part.ReasoningSummaryParts = append([]string(nil), part.ReasoningSummaryParts...)
@@ -152,16 +154,16 @@ func deepCopyMessages(messages []llm.Message) []llm.Message {
 			}
 			if part.ToolResult != nil {
 				result := *part.ToolResult
-				result.ContentParts = append([]llm.ToolContentPart(nil), result.ContentParts...)
+				result.ContentParts = append([]core.ToolContentPart(nil), result.ContentParts...)
 				for k := range result.ContentParts {
 					if result.ContentParts[k].ImageData != nil {
 						image := *result.ContentParts[k].ImageData
 						result.ContentParts[k].ImageData = &image
 					}
 				}
-				result.Diffs = append([]llm.DiffData(nil), result.Diffs...)
+				result.Diffs = append([]core.DiffData(nil), result.Diffs...)
 				result.Images = append([]string(nil), result.Images...)
-				result.Media = append([]llm.MediaArtifact(nil), result.Media...)
+				result.Media = append([]core.MediaArtifact(nil), result.Media...)
 				result.ThoughtSig = append([]byte(nil), result.ThoughtSig...)
 				part.ToolResult = &result
 			}
@@ -173,7 +175,7 @@ func deepCopyMessages(messages []llm.Message) []llm.Message {
 // BuildMessages constructs a bounded provider request. It preserves the exact
 // main-session prefix whenever possible for prompt-cache reuse, then drops old
 // side history before trimming main history at complete user-turn boundaries.
-func BuildMessages(snapshot []llm.Message, history []Entry, question, providerName, model string, runtimeInputLimit int) ([]llm.Message, error) {
+func BuildMessages(snapshot []core.Message, history []Entry, question, providerName, model string, runtimeInputLimit int) ([]core.Message, error) {
 	inputLimit := runtimeInputLimit
 	if inputLimit <= 0 {
 		// Providers that manage their own context report no runtime input limit
@@ -189,7 +191,7 @@ func BuildMessages(snapshot []llm.Message, history []Entry, question, providerNa
 	return buildMessagesWithinBudget(snapshot, history, question, budget)
 }
 
-func buildMessagesWithinBudget(snapshot []llm.Message, history []Entry, question string, budget int) ([]llm.Message, error) {
+func buildMessagesWithinBudget(snapshot []core.Message, history []Entry, question string, budget int) ([]core.Message, error) {
 	if budget <= 0 {
 		return nil, errors.New("cannot safely build side question: input token budget is unavailable")
 	}
@@ -198,23 +200,23 @@ func buildMessagesWithinBudget(snapshot []llm.Message, history []Entry, question
 	if len(history) > HistoryLimit {
 		history = history[len(history)-HistoryLimit:]
 	}
-	policy := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}}
-	questionMessage := llm.UserText(strings.TrimSpace(question))
-	required := []llm.Message{policy, questionMessage}
+	policy := core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}}
+	questionMessage := core.UserText(strings.TrimSpace(question))
+	required := []core.Message{policy, questionMessage}
 	if estimateSideMessageTokens(required) > budget {
-		questionMessage = llm.UserText("")
+		questionMessage = core.UserText("")
 		required[1] = questionMessage
 		available := budget - estimateSideMessageTokens(required)
 		if available <= 0 {
 			return nil, fmt.Errorf("cannot safely build side question: policy and request framing exceed the %d-token budget", budget)
 		}
-		questionMessage = llm.UserText(truncateTextToTokens(strings.TrimSpace(question), available))
+		questionMessage = core.UserText(truncateTextToTokens(strings.TrimSpace(question), available))
 		required[1] = questionMessage
 	}
 
-	sideMessages := make([]llm.Message, 0, len(history)*2)
+	sideMessages := make([]core.Message, 0, len(history)*2)
 	for _, entry := range history {
-		sideMessages = append(sideMessages, llm.UserText(entry.Question), llm.AssistantText(entry.Response))
+		sideMessages = append(sideMessages, core.UserText(entry.Question), core.AssistantText(entry.Response))
 	}
 
 	snapshotTokens := estimateSideMessageTokens(snapshot)
@@ -250,7 +252,7 @@ func buildMessagesWithinBudget(snapshot []llm.Message, history []Entry, question
 	}
 	prefixTokens := suffixTokens[0] - suffixTokens[prefixEnd]
 	for start := prefixEnd; start < len(snapshot); start++ {
-		if snapshot[start].Role != llm.RoleUser || prefixTokens+suffixTokens[start]+requiredTokens > budget {
+		if snapshot[start].Role != core.RoleUser || prefixTokens+suffixTokens[start]+requiredTokens > budget {
 			continue
 		}
 		if candidate, ok := fitTrimCandidate(joinMessages(prefix, snapshot[start:]), required, budget); ok {
@@ -272,7 +274,7 @@ func buildMessagesWithinBudget(snapshot []llm.Message, history []Entry, question
 	// failing the provider request. This is the only path that sacrifices all
 	// parent-prefix cache reuse.
 	for start := 0; start < len(snapshot); start++ {
-		if snapshot[start].Role != llm.RoleUser || suffixTokens[start]+requiredTokens > budget {
+		if snapshot[start].Role != core.RoleUser || suffixTokens[start]+requiredTokens > budget {
 			continue
 		}
 		if candidate, ok := fitTrimCandidate(snapshot[start:], required, budget); ok {
@@ -290,22 +292,22 @@ func buildMessagesWithinBudget(snapshot []llm.Message, history []Entry, question
 	return required, nil
 }
 
-func fitTrimCandidate(main, required []llm.Message, budget int) ([]llm.Message, bool) {
+func fitTrimCandidate(main, required []core.Message, budget int) ([]core.Message, bool) {
 	main = PrepareContextSnapshot(main)
 	candidate := joinMessages(main, required)
 	return candidate, estimateSideMessageTokens(candidate) <= budget
 }
 
-func lastUserMessageIndex(messages []llm.Message, start int) int {
+func lastUserMessageIndex(messages []core.Message, start int) int {
 	for i := len(messages) - 1; i >= start; i-- {
-		if messages[i].Role == llm.RoleUser {
+		if messages[i].Role == core.RoleUser {
 			return i
 		}
 	}
 	return -1
 }
 
-func truncateMainCandidate(main, required []llm.Message, budget int) ([]llm.Message, bool) {
+func truncateMainCandidate(main, required []core.Message, budget int) ([]core.Message, bool) {
 	main = PrepareContextSnapshot(main)
 	if len(main) == 0 || estimateSideMessageTokens(required) >= budget {
 		return nil, false
@@ -320,13 +322,13 @@ func truncateMainCandidate(main, required []llm.Message, budget int) ([]llm.Mess
 	return nil, false
 }
 
-func truncateConversationPayloads(messages []llm.Message, maxChars int) []llm.Message {
+func truncateConversationPayloads(messages []core.Message, maxChars int) []core.Message {
 	messages = CloneMessages(messages)
-	out := make([]llm.Message, 0, len(messages))
+	out := make([]core.Message, 0, len(messages))
 	for _, message := range messages {
-		parts := make([]llm.Part, 0, len(message.Parts))
+		parts := make([]core.Part, 0, len(message.Parts))
 		for _, part := range message.Parts {
-			if part.ProviderReplay != nil || part.Type == llm.PartProviderReplay {
+			if part.ProviderReplay != nil || part.Type == core.PartProviderReplay {
 				continue
 			}
 			part.Text = truncateTextToChars(part.Text, maxChars)
@@ -342,7 +344,7 @@ func truncateConversationPayloads(messages []llm.Message, maxChars int) []llm.Me
 				result.Content = truncateTextToChars(result.Content, maxChars)
 				result.Images = nil
 				result.Media = nil
-				result.ContentParts = append([]llm.ToolContentPart(nil), result.ContentParts...)
+				result.ContentParts = append([]core.ToolContentPart(nil), result.ContentParts...)
 				for i := range result.ContentParts {
 					result.ContentParts[i].Text = truncateTextToChars(result.ContentParts[i].Text, maxChars)
 					result.ContentParts[i].ImageData = nil
@@ -370,52 +372,52 @@ func truncateTextToChars(text string, maxChars int) string {
 	return strings.TrimSpace(text[:cut])
 }
 
-func stableMainPrefixEnd(messages []llm.Message) int {
+func stableMainPrefixEnd(messages []core.Message) int {
 	end := 0
-	for end < len(messages) && (messages[end].Role == llm.RoleSystem || messages[end].Role == llm.RoleDeveloper) {
+	for end < len(messages) && (messages[end].Role == core.RoleSystem || messages[end].Role == core.RoleDeveloper) {
 		end++
 	}
 	if end < len(messages) && messages[end].CacheAnchor {
 		end++
-		if end < len(messages) && messages[end].Role == llm.RoleAssistant {
+		if end < len(messages) && messages[end].Role == core.RoleAssistant {
 			end++
 		}
 	}
 	return end
 }
 
-func joinMessages(groups ...[]llm.Message) []llm.Message {
+func joinMessages(groups ...[]core.Message) []core.Message {
 	total := 0
 	for _, group := range groups {
 		total += len(group)
 	}
-	messages := make([]llm.Message, 0, total)
+	messages := make([]core.Message, 0, total)
 	for _, group := range groups {
 		messages = append(messages, group...)
 	}
 	return messages
 }
 
-func estimateSideMessageTokens(messages []llm.Message) int {
+func estimateSideMessageTokens(messages []core.Message) int {
 	// The shared estimator covers model-visible text/reasoning/tool payloads.
 	// Side snapshots can also contain opaque provider replay and multimodal data;
 	// count their serialized bytes conservatively so they cannot bypass fitting.
-	total := llm.EstimateMessageTokens(messages)
+	total := engine.EstimateMessageTokens(messages)
 	for _, message := range messages {
 		total += 4 // role and message envelope
 		for _, part := range message.Parts {
 			total += 4 // content-part envelope
 			if part.ProviderReplay != nil {
-				total += llm.EstimateTokens(string(part.ProviderReplay.Raw))
+				total += engine.EstimateTokens(string(part.ProviderReplay.Raw))
 			}
 			if part.ImageData != nil {
-				total += llm.EstimateTokens(part.ImageData.Base64)
+				total += engine.EstimateTokens(part.ImageData.Base64)
 			}
 			if part.ImagePath != "" {
 				total += estimateFilePathTokens(part.ImagePath, 4)
 			}
 			if part.FileData != nil {
-				total += llm.EstimateTokens(part.FileData.Base64)
+				total += engine.EstimateTokens(part.FileData.Base64)
 				if part.FileData.Base64 == "" && part.FileData.SizeBytes > 0 {
 					total += int(part.FileData.SizeBytes+2) / 3
 				}
@@ -425,9 +427,9 @@ func estimateSideMessageTokens(messages []llm.Message) int {
 			}
 			if part.ToolResult != nil {
 				for _, contentPart := range part.ToolResult.ContentParts {
-					total += llm.EstimateTokens(contentPart.Text)
+					total += engine.EstimateTokens(contentPart.Text)
 					if contentPart.ImageData != nil {
-						total += llm.EstimateTokens(contentPart.ImageData.Base64)
+						total += engine.EstimateTokens(contentPart.ImageData.Base64)
 					}
 				}
 			}
@@ -475,24 +477,24 @@ func AppendHistory(history []Entry, entry Entry) []Entry {
 // what stops a helper turn from chaining onto the live conversation, so only a
 // turn whose provider came from the boundary fork seam may pass false. Every
 // other restriction below is unconditional.
-func runRequest(ctx context.Context, provider llm.Provider, req llm.Request, ephemeral bool, emit func(llm.Event)) (Result, error) {
+func runRequest(ctx context.Context, provider core.Provider, req core.Request, ephemeral bool, emit func(core.Event)) (Result, error) {
 	req.Ephemeral = ephemeral
 	if ephemeral {
 		req.SessionID = ""
 	}
 	req.Tools = nil
 	req.ToolMap = nil
-	req.ToolChoice = llm.ToolChoice{}
+	req.ToolChoice = core.ToolChoice{}
 	req.LastTurnToolChoice = nil
 	req.ParallelToolCalls = false
 	req.Search = false
 	req.ForceExternalSearch = false
 	req.DisableExternalWebFetch = true
 	req.MaxTurns = 1
-	req.Responses = &llm.ResponsesOptions{
+	req.Responses = &core.ResponsesOptions{
 		ReasoningMode:           reqReasoningMode(req),
-		MultiAgent:              llm.MultiAgentOptions{Enabled: false, EnabledSet: true},
-		ProgrammaticToolCalling: llm.ProgrammaticToolCallingOptions{Enabled: false, EnabledSet: true},
+		MultiAgent:              core.MultiAgentOptions{Enabled: false, EnabledSet: true},
+		ProgrammaticToolCalling: core.ProgrammaticToolCallingOptions{Enabled: false, EnabledSet: true},
 	}
 	stream, err := provider.Stream(ctx, req)
 	if err != nil {
@@ -501,11 +503,11 @@ func runRequest(ctx context.Context, provider llm.Provider, req llm.Request, eph
 	defer stream.Close()
 
 	errToolAttempt := errors.New("side question attempted tool use")
-	collected, err := llm.CollectTextStream(stream, func(event llm.Event) error {
+	collected, err := core.CollectTextStream(stream, func(event core.Event) error {
 		switch event.Type {
-		case llm.EventToolCall, llm.EventToolExecStart, llm.EventToolExecEnd:
+		case core.EventToolCall, core.EventToolExecStart, core.EventToolExecEnd:
 			if emit != nil {
-				emit(llm.Event{Type: llm.EventTextDelta, Text: ToolAttemptResponse})
+				emit(core.Event{Type: core.EventTextDelta, Text: ToolAttemptResponse})
 			}
 			return errToolAttempt
 		default:
@@ -524,7 +526,7 @@ func runRequest(ctx context.Context, provider llm.Provider, req llm.Request, eph
 	return Result{Response: strings.TrimSpace(collected.Text), Usage: collected.Usage}, nil
 }
 
-func reqReasoningMode(req llm.Request) string {
+func reqReasoningMode(req core.Request) string {
 	if req.Responses != nil {
 		return req.Responses.ReasoningMode
 	}

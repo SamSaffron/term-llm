@@ -7,13 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // claimUIFollowUp claims only first-party client messages that this runtime
 // owns. The returned lease explicitly owns release until transferred to a run.
-func (s *serveServer) claimUIFollowUp(ctx context.Context, rFirstParty bool, rt *serveRuntime, ownsSession bool, sessionID string, inputMessages []llm.Message) (*followUpClaimLease, error) {
+func (s *serveServer) claimUIFollowUp(ctx context.Context, rFirstParty bool, rt *serveRuntime, ownsSession bool, sessionID string, inputMessages []core.Message) (*followUpClaimLease, error) {
 	ids := responseClientMessageIDs(inputMessages)
 	if !ownsSession || len(ids) == 0 || !rFirstParty || rt == nil {
 		return nil, nil
@@ -26,7 +27,7 @@ func (s *serveServer) claimUIFollowUp(ctx context.Context, rFirstParty bool, rt 
 	history := copyLLMMessageSlice(rt.history)
 	rt.mu.Unlock()
 	trailing := len(history)
-	for trailing > 0 && history[trailing-1].Role == llm.RoleUser {
+	for trailing > 0 && history[trailing-1].Role == core.RoleUser {
 		trailing--
 	}
 	found := make(map[string]bool, len(ids))
@@ -55,17 +56,17 @@ func (s *serveServer) claimUIFollowUp(ctx context.Context, rFirstParty bool, rt 
 			return nil, fmt.Errorf("%w: %q", errResponseClientMessageAlreadyCommitted, id)
 		}
 	}
-	claims := make([]llm.SteeringClaimStatus, len(ids))
+	claims := make([]engine.SteeringClaimStatus, len(ids))
 	for i := range claims {
-		claims[i] = llm.SteeringClaimNotFound
+		claims[i] = engine.SteeringClaimNotFound
 	}
 	if rt.engine != nil {
 		claims = rt.claimSteering(ids)
 	}
 	newClaim, existing := false, false
 	for _, claim := range claims {
-		newClaim = newClaim || claim == llm.SteeringClaimed
-		existing = existing || claim == llm.SteeringClaimFollowUpOwned
+		newClaim = newClaim || claim == engine.SteeringClaimed
+		existing = existing || claim == engine.SteeringClaimFollowUpOwned
 	}
 	if newClaim && existing {
 		return nil, errServeSessionBusy
@@ -73,13 +74,13 @@ func (s *serveServer) claimUIFollowUp(ctx context.Context, rFirstParty bool, rt 
 	claimed := make([]string, 0, len(ids))
 	for i, claim := range claims {
 		switch claim {
-		case llm.SteeringClaimed:
+		case engine.SteeringClaimed:
 			claimed = append(claimed, ids[i])
-		case llm.SteeringClaimRushOwned:
+		case engine.SteeringClaimRushOwned:
 			return nil, errServeSessionBusy
-		case llm.SteeringClaimCommitted:
+		case engine.SteeringClaimCommitted:
 			return nil, fmt.Errorf("%w: %q", errResponseClientMessageAlreadyCommitted, ids[i])
-		case llm.SteeringClaimFollowUpOwned:
+		case engine.SteeringClaimFollowUpOwned:
 			if !unanswered[ids[i]] {
 				return nil, errServeSessionBusy
 			}

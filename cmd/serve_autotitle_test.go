@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -26,9 +27,9 @@ func newServeAutoTitleTestStore(t *testing.T, id string) *session.SQLiteStore {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
-	for _, message := range []llm.Message{
-		llm.UserText("Investigate why the GitHub Actions dependency cache is stale"),
-		llm.AssistantText("The cache key omits the lockfile hash, so dependency changes reuse an old cache."),
+	for _, message := range []core.Message{
+		core.UserText("Investigate why the GitHub Actions dependency cache is stale"),
+		core.AssistantText("The cache key omits the lockfile hash, so dependency changes reuse an old cache."),
 	} {
 		if err := store.AddMessage(context.Background(), id, session.NewMessage(id, message, -1)); err != nil {
 			t.Fatal(err)
@@ -40,11 +41,11 @@ func newServeAutoTitleTestStore(t *testing.T, id string) *session.SQLiteStore {
 func TestServeAutoTitleGeneratesAndPersists(t *testing.T) {
 	const sessionID = "web-auto-title"
 	store := newServeAutoTitleTestStore(t, sessionID)
-	provider := llm.NewMockProvider("title").AddTextResponse(`{"short_title":"Fix Actions Cache Key","long_title":"Fix stale GitHub Actions dependency caching","confidence":0.95}`)
+	provider := mockprovider.NewMockProvider("title").AddTextResponse(`{"short_title":"Fix Actions Cache Key","long_title":"Fix stale GitHub Actions dependency caching","confidence":0.95}`)
 	server := &serveServer{
 		cfgRef: &config.Config{Serve: config.ServeConfig{AutoTitle: true}},
 		store:  store,
-		autoTitleProviderFactory: func(providerKey string) (llm.Provider, error) {
+		autoTitleProviderFactory: func(providerKey string) (core.Provider, error) {
 			if providerKey != "mock" {
 				t.Fatalf("provider key = %q, want mock", providerKey)
 			}
@@ -90,11 +91,11 @@ func TestServeAutoTitleDisabledOrManualNameSkipsProvider(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			provider := llm.NewMockProvider("title").AddTextResponse(`{"short_title":"Should Not Run","long_title":"This title should never be generated","confidence":0.9}`)
+			provider := mockprovider.NewMockProvider("title").AddTextResponse(`{"short_title":"Should Not Run","long_title":"This title should never be generated","confidence":0.9}`)
 			server := &serveServer{
 				cfgRef:                   &config.Config{Serve: config.ServeConfig{AutoTitle: test.enabled}},
 				store:                    store,
-				autoTitleProviderFactory: func(string) (llm.Provider, error) { return provider, nil },
+				autoTitleProviderFactory: func(string) (core.Provider, error) { return provider, nil },
 			}
 
 			server.scheduleAutoTitle(sessionID, "mock")
@@ -109,15 +110,15 @@ func TestServeAutoTitleDisabledOrManualNameSkipsProvider(t *testing.T) {
 func TestServeAutoTitleDeduplicatesConcurrentSchedules(t *testing.T) {
 	const sessionID = "web-auto-title-dedupe"
 	store := newServeAutoTitleTestStore(t, sessionID)
-	provider := llm.NewMockProvider("title")
-	provider.AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("title")
+	provider.AddTurn(mockprovider.MockTurn{
 		Text:  `{"short_title":"Fix Actions Cache Key","long_title":"Fix stale GitHub Actions dependency caching","confidence":0.95}`,
 		Delay: 50 * time.Millisecond,
 	})
 	server := &serveServer{
 		cfgRef:                   &config.Config{Serve: config.ServeConfig{AutoTitle: true}},
 		store:                    store,
-		autoTitleProviderFactory: func(string) (llm.Provider, error) { return provider, nil },
+		autoTitleProviderFactory: func(string) (core.Provider, error) { return provider, nil },
 	}
 
 	server.scheduleAutoTitle(sessionID, "mock")
@@ -131,16 +132,16 @@ func TestServeAutoTitleDeduplicatesConcurrentSchedules(t *testing.T) {
 func TestServeAutoTitleCapsFailedAttempts(t *testing.T) {
 	const sessionID = "web-auto-title-attempt-cap"
 	store := newServeAutoTitleTestStore(t, sessionID)
-	provider := llm.NewMockProvider("title").AddTextResponse("not json").AddTextResponse("still not json")
+	provider := mockprovider.NewMockProvider("title").AddTextResponse("not json").AddTextResponse("still not json")
 	server := &serveServer{
 		cfgRef:                   &config.Config{Serve: config.ServeConfig{AutoTitle: true}},
 		store:                    store,
-		autoTitleProviderFactory: func(string) (llm.Provider, error) { return provider, nil },
+		autoTitleProviderFactory: func(string) (core.Provider, error) { return provider, nil },
 	}
 
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			message := session.NewMessage(sessionID, llm.UserText("more context for the title"), -1)
+			message := session.NewMessage(sessionID, core.UserText("more context for the title"), -1)
 			if err := store.AddMessage(context.Background(), sessionID, message); err != nil {
 				t.Fatal(err)
 			}
@@ -156,12 +157,12 @@ func TestServeAutoTitleCapsFailedAttempts(t *testing.T) {
 func TestServeAutoTitleStopCancelsAndDrainsWorker(t *testing.T) {
 	const sessionID = "web-auto-title-stop"
 	store := newServeAutoTitleTestStore(t, sessionID)
-	provider := llm.NewMockProvider("title")
-	provider.AddTurn(llm.MockTurn{Text: `{"short_title":"Late Generated Title","long_title":"A title that should be cancelled during shutdown","confidence":0.95}`, Delay: 5 * time.Second})
+	provider := mockprovider.NewMockProvider("title")
+	provider.AddTurn(mockprovider.MockTurn{Text: `{"short_title":"Late Generated Title","long_title":"A title that should be cancelled during shutdown","confidence":0.95}`, Delay: 5 * time.Second})
 	server := &serveServer{
 		cfgRef:                   &config.Config{Serve: config.ServeConfig{AutoTitle: true}},
 		store:                    store,
-		autoTitleProviderFactory: func(string) (llm.Provider, error) { return provider, nil },
+		autoTitleProviderFactory: func(string) (core.Provider, error) { return provider, nil },
 	}
 
 	server.scheduleAutoTitle(sessionID, "mock")
@@ -183,15 +184,15 @@ func TestServeAutoTitleStopCancelsAndDrainsWorker(t *testing.T) {
 func TestServeAutoTitleManualRenameWinsInFlight(t *testing.T) {
 	const sessionID = "web-auto-title-race"
 	store := newServeAutoTitleTestStore(t, sessionID)
-	provider := llm.NewMockProvider("title")
-	provider.AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("title")
+	provider.AddTurn(mockprovider.MockTurn{
 		Text:  `{"short_title":"Generated Cache Title","long_title":"Generated detail about stale dependency caching","confidence":0.95}`,
 		Delay: 100 * time.Millisecond,
 	})
 	server := &serveServer{
 		cfgRef:                   &config.Config{Serve: config.ServeConfig{AutoTitle: true}},
 		store:                    store,
-		autoTitleProviderFactory: func(string) (llm.Provider, error) { return provider, nil },
+		autoTitleProviderFactory: func(string) (core.Provider, error) { return provider, nil },
 	}
 
 	server.scheduleAutoTitle(sessionID, "mock")

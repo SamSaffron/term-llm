@@ -10,7 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -125,34 +126,34 @@ func (s *fakeMemoryAgentFragmentStore) GetFragment(ctx context.Context, agent, p
 
 func TestBuildInsightTranscriptWeightsUserTextOverAssistantAndSummarizesTools(t *testing.T) {
 	messages := []session.Message{
-		{Role: llm.RoleSystem, TextContent: strings.Repeat("system ", 100)},
-		{Role: llm.RoleUser, TextContent: "fix it"},
+		{Role: core.RoleSystem, TextContent: strings.Repeat("system ", 100)},
+		{Role: core.RoleUser, TextContent: "fix it"},
 		{
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: strings.Repeat("assistant explanation with lots of irrelevant details ", 200),
-			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+			Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{
 				Name:     "read_file",
 				ToolInfo: "(memory_mine.go)",
 			}}},
 		},
 		{
-			Role:        llm.RoleTool,
+			Role:        core.RoleTool,
 			TextContent: strings.Repeat("TOOL_SENTINEL should never appear ", 200),
-			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+			Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
 				Name:    "read_file",
 				Content: strings.Repeat("TOOL_SENTINEL should never appear ", 200),
 			}}},
 		},
-		{Role: llm.RoleAssistant, TextContent: strings.Repeat("second assistant dump ", 200)},
-		{Role: llm.RoleUser, TextContent: "no, mine the user discussion, not the bulky execution transcript"},
-		{Role: llm.RoleAssistant, TextContent: strings.Repeat("third assistant dump ", 200)},
+		{Role: core.RoleAssistant, TextContent: strings.Repeat("second assistant dump ", 200)},
+		{Role: core.RoleUser, TextContent: "no, mine the user discussion, not the bulky execution transcript"},
+		{Role: core.RoleAssistant, TextContent: strings.Repeat("third assistant dump ", 200)},
 	}
 
 	got := buildInsightTranscript(messages)
 	var userTokens, nonUserTokens int
 	var sawToolCall, sawToolResult bool
 	for _, msg := range got {
-		if msg.Role == string(llm.RoleSystem) {
+		if msg.Role == string(core.RoleSystem) {
 			t.Fatalf("transcript included system message: %+v", msg)
 		}
 		if strings.Contains(msg.Text, "TOOL_SENTINEL") {
@@ -165,10 +166,10 @@ func TestBuildInsightTranscriptWeightsUserTextOverAssistantAndSummarizesTools(t 
 			sawToolResult = true
 		}
 		switch msg.Role {
-		case string(llm.RoleUser):
-			userTokens += llm.EstimateTokens(msg.Text)
+		case string(core.RoleUser):
+			userTokens += engine.EstimateTokens(msg.Text)
 		default:
-			nonUserTokens += llm.EstimateTokens(msg.Text)
+			nonUserTokens += engine.EstimateTokens(msg.Text)
 		}
 	}
 
@@ -576,7 +577,7 @@ func TestBuildTaxonomyMap_RespectsBudget(t *testing.T) {
 		})
 	}
 	got := buildTaxonomyMap(fragments, 60)
-	if tokens := llm.EstimateTokens(got); tokens > 60 {
+	if tokens := engine.EstimateTokens(got); tokens > 60 {
 		t.Fatalf("taxonomy tokens = %d, want <= 60\n%s", tokens, got)
 	}
 	if !strings.Contains(got, "total_fragments") {
@@ -605,7 +606,7 @@ func TestLoadMessagesForMining_RespectsPromptBudget(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	for i := 0; i < 6; i++ {
-		msg := session.NewMessage(sess.ID, llm.UserText(strings.Repeat("long durable text ", 80)), -1)
+		msg := session.NewMessage(sess.ID, core.UserText(strings.Repeat("long durable text ", 80)), -1)
 		if err := sessStore.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage(%d): %v", i, err)
 		}
@@ -643,10 +644,10 @@ func TestLoadMessagesForMining_UsesSequencePagination(t *testing.T) {
 	store := &trackingMemoryMineStore{
 		messages: map[string][]session.Message{
 			"sess-1": {
-				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-0", Sequence: 0},
-				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-1", Sequence: 1},
-				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-2", Sequence: 2},
-				{SessionID: "sess-1", Role: llm.RoleUser, TextContent: "msg-3", Sequence: 3},
+				{SessionID: "sess-1", Role: core.RoleUser, TextContent: "msg-0", Sequence: 0},
+				{SessionID: "sess-1", Role: core.RoleUser, TextContent: "msg-1", Sequence: 1},
+				{SessionID: "sess-1", Role: core.RoleUser, TextContent: "msg-2", Sequence: 2},
+				{SessionID: "sess-1", Role: core.RoleUser, TextContent: "msg-3", Sequence: 3},
 			},
 		},
 	}
@@ -692,8 +693,8 @@ func TestLoadMessagesForMiningPersistsNextSequenceWithGaps(t *testing.T) {
 	store := &trackingMemoryMineStore{
 		messages: map[string][]session.Message{
 			"sess-gap": {
-				{SessionID: "sess-gap", Role: llm.RoleUser, TextContent: "msg-10", Sequence: 10},
-				{SessionID: "sess-gap", Role: llm.RoleUser, TextContent: "msg-20", Sequence: 20},
+				{SessionID: "sess-gap", Role: core.RoleUser, TextContent: "msg-10", Sequence: 10},
+				{SessionID: "sess-gap", Role: core.RoleUser, TextContent: "msg-20", Sequence: 20},
 			},
 		},
 	}
@@ -725,8 +726,8 @@ func TestLoadMessagesForMiningIgnoresMessageCountWhenUsingSequenceCursor(t *test
 	store := &trackingMemoryMineStore{
 		messages: map[string][]session.Message{
 			"sess-sparse": {
-				{SessionID: "sess-sparse", Role: llm.RoleUser, TextContent: "old", Sequence: 10},
-				{SessionID: "sess-sparse", Role: llm.RoleUser, TextContent: "new", Sequence: 21},
+				{SessionID: "sess-sparse", Role: core.RoleUser, TextContent: "old", Sequence: 10},
+				{SessionID: "sess-sparse", Role: core.RoleUser, TextContent: "new", Sequence: 21},
 			},
 		},
 	}
@@ -755,9 +756,9 @@ func TestFitMessagesForPromptBudget_PrefersUserAndDurableAssistantText(t *testin
 		Agent:   "jarvis",
 	}
 	messages := []session.Message{
-		{Role: llm.RoleUser, TextContent: strings.Repeat("user durable preference ", 18)},
-		{Role: llm.RoleAssistant, TextContent: strings.Repeat("ok sure maybe maybe ", 45)},
-		{Role: llm.RoleAssistant, TextContent: strings.Repeat("Changed config path /etc/service and updated model budget summary. ", 18)},
+		{Role: core.RoleUser, TextContent: strings.Repeat("user durable preference ", 18)},
+		{Role: core.RoleAssistant, TextContent: strings.Repeat("ok sure maybe maybe ", 45)},
+		{Role: core.RoleAssistant, TextContent: strings.Repeat("Changed config path /etc/service and updated model budget summary. ", 18)},
 	}
 
 	fit, ok := opts.fitMessagesForPromptBudget(candidate, 0, len(messages), messages, "Memory fragment map:\n- total_fragments: 0")

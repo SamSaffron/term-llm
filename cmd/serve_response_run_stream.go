@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -92,7 +93,7 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 		Message:    errMessage,
 	})
 	msg.ResponseID = respID
-	_, err := runResponseRunPersistence(ctx, []llm.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
+	_, err := runResponseRunPersistence(ctx, []core.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
 		return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), runtime.store, sessionID, session.NewMessage(sessionID, msg, -1))
 	})
 	if err != nil {
@@ -100,29 +101,29 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 	}
 }
 
-func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
 	switch ev.Type {
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		return s.appendResponseTextDelta(runtime, run, state, ev)
-	case llm.EventAttemptDiscard:
+	case core.EventAttemptDiscard:
 		return s.appendResponseAttemptDiscard(runtime, run, state, ev)
-	case llm.EventToolCall:
+	case core.EventToolCall:
 		return s.appendResponseToolCall(runtime, run, state, ev)
-	case llm.EventToolExecStart:
+	case core.EventToolExecStart:
 		return s.appendResponseToolExecStart(runtime, run, state, ev)
-	case llm.EventToolExecEnd:
+	case core.EventToolExecEnd:
 		return s.appendResponseToolExecEnd(runtime, run, state, ev)
-	case llm.EventHeartbeat:
+	case core.EventHeartbeat:
 		return s.appendResponseHeartbeat(runtime, run, state, ev)
-	case llm.EventPhase:
+	case core.EventPhase:
 		return s.appendResponsePhase(runtime, run, state, ev)
-	case llm.EventCompaction:
+	case core.EventCompaction:
 		return s.appendResponseCompaction(runtime, run, state, ev)
-	case llm.EventRetry:
+	case core.EventRetry:
 		return s.appendResponseRetry(runtime, run, state, ev)
-	case llm.EventSteering:
+	case core.EventSteering:
 		return s.appendResponseSteering(runtime, run, state, ev)
-	case llm.EventModelSwitch:
+	case core.EventModelSwitch:
 		return s.appendResponseModelSwitch(runtime, run, state, ev)
 	default:
 		return nil
@@ -151,11 +152,11 @@ func attachmentsFromPayload(v any) []map[string]any {
 	}
 }
 
-func (s *serveServer) steeringAttachmentsForEvent(msg llm.Message) []map[string]any {
+func (s *serveServer) steeringAttachmentsForEvent(msg core.Message) []map[string]any {
 	var out []map[string]any
 	imageCount := 0
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartFile {
+		if part.Type == core.PartFile {
 			file := s.sessionMessageFilePart(part)
 			attachment := map[string]any{
 				"name": file.Text,
@@ -176,7 +177,7 @@ func (s *serveServer) steeringAttachmentsForEvent(msg llm.Message) []map[string]
 			out = append(out, attachment)
 			continue
 		}
-		if part.Type != llm.PartImage {
+		if part.Type != core.PartImage {
 			continue
 		}
 		imageURL, serveablePath := s.sessionMessageImageURL(part)
@@ -595,8 +596,8 @@ func latestResponseRunDurableBoundary(items []session.TranscriptIndexItem) int64
 		if item.ID <= 0 || item.Flags&session.TranscriptFlagCompactionTail != 0 {
 			continue
 		}
-		switch llm.Role(item.Role) {
-		case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+		switch core.Role(item.Role) {
+		case core.RoleUser, core.RoleAssistant, core.RoleTool:
 			return item.ID
 		}
 	}
@@ -683,7 +684,7 @@ func admitResponseRunError(err error) error {
 	return fmt.Errorf("admit durable response run: %w", err)
 }
 
-func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
+func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
 	// Borrowed child runtimes are already pinned by attachBorrowedRuntime for
 	// the entire response. Pinning again would reject a stateful continuation
 	// because that existing reservation holds the session operation lock.
@@ -784,7 +785,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 	s.configureResponseRunNotification(run, options.notificationSubscriptionID)
 	for i := len(inputMessages) - 1; i >= 0; i-- {
-		if inputMessages[i].Role == llm.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
+		if inputMessages[i].Role == core.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
 			run.clientMessageID = strings.TrimSpace(inputMessages[i].ClientMessageID)
 			break
 		}

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestMdToTelegramHTML(t *testing.T) {
@@ -123,7 +123,7 @@ func TestTelegramProseChunkDoesNotSplitMediaReference(t *testing.T) {
 func TestReferencedTelegramMediaFollowsAssistantOrder(t *testing.T) {
 	const first = "0123456789abcdef0123456789abcdef"
 	const second = "fedcba9876543210fedcba9876543210"
-	media := []llm.MediaArtifact{
+	media := []core.MediaArtifact{
 		{Reference: first, Name: "first.png"},
 		{Reference: second, Name: "second.mp4"},
 		{Reference: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "unused.png"},

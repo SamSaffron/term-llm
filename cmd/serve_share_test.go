@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/share"
 )
@@ -85,10 +85,10 @@ func newServeShareFixture(t *testing.T) (*serveServer, int64) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
-	for _, message := range []llm.Message{
-		llm.UserText("private prompt"),
-		llm.AssistantText("shareable answer"),
-		llm.UserText("later prompt"),
+	for _, message := range []core.Message{
+		core.UserText("private prompt"),
+		core.AssistantText("shareable answer"),
+		core.UserText("later prompt"),
 	} {
 		if err := store.AddMessage(context.Background(), sess.ID, session.NewMessage(sess.ID, message, -1)); err != nil {
 			t.Fatal(err)

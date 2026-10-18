@@ -6,7 +6,10 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/debug"
 	"github.com/samsaffron/term-llm/internal/llm/factory"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 )
 
 func removedProviderError(name string) error {
@@ -58,7 +61,7 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 		}
 		// Exact built-in names win over effort-prefix interpretation. This avoids
 		// a configured provider such as "claude" shadowing "claude-bin".
-		for _, name := range GetBuiltInProviderNames() {
+		for _, name := range config.GetBuiltInProviderNames() {
 			if provider == name {
 				return provider, model, nil
 			}
@@ -70,10 +73,10 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 				}
 				return baseProvider, baseModel + "-" + effort, nil
 			}
-			baseProvider, effort := ParseModelEffort(provider)
+			baseProvider, effort := opencompat.ParseModelEffort(provider)
 			if effort != "" {
 				if providerCfg, ok := cfg.Providers[baseProvider]; ok {
-					baseModel, _ := ParseModelEffort(strings.TrimSpace(providerCfg.Model))
+					baseModel, _ := opencompat.ParseModelEffort(strings.TrimSpace(providerCfg.Model))
 					if baseModel == "" {
 						return "", "", fmt.Errorf("provider %q has no configured model for effort suffix %q", baseProvider, effort)
 					}
@@ -84,7 +87,7 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 	}
 
 	// Also accept built-in provider type names
-	for _, name := range GetBuiltInProviderNames() {
+	for _, name := range config.GetBuiltInProviderNames() {
 		if provider == name {
 			return provider, model, nil
 		}
@@ -157,14 +160,14 @@ func trimDeclaredModelEffort(model string, entry config.ProviderModelConfig) str
 
 // NewProvider creates a new LLM provider based on the config.
 // Providers are wrapped with automatic retry for rate limits (429) and transient errors.
-func NewProvider(cfg *config.Config) (Provider, error) {
+func NewProvider(cfg *config.Config) (core.Provider, error) {
 	return NewProviderByName(cfg, cfg.DefaultProvider, "")
 }
 
 // NewProviderByName creates a provider by name from the config, with an optional model override.
 // This is useful for per-command provider overrides.
 // A built-in provider without a providers.<name> block runs with an empty one.
-func NewProviderByName(cfg *config.Config, name string, model string) (Provider, error) {
+func NewProviderByName(cfg *config.Config, name string, model string) (core.Provider, error) {
 	provider, err := newNamedProvider(cfg, name, model)
 	if err != nil {
 		return nil, err
@@ -173,7 +176,7 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 }
 
 // newNamedProvider creates provider name without the retry wrapper.
-func newNamedProvider(cfg *config.Config, name string, model string) (Provider, error) {
+func newNamedProvider(cfg *config.Config, name string, model string) (core.Provider, error) {
 	if err := ProviderUnavailableError(cfg, name); err != nil {
 		return nil, err
 	}
@@ -181,7 +184,7 @@ func newNamedProvider(cfg *config.Config, name string, model string) (Provider, 
 		if model == "" {
 			model = cfg.Providers["debug"].Model
 		}
-		return NewDebugProvider(model), nil
+		return debug.NewDebugProvider(model), nil
 	}
 	providerCfg, err := resolvedProviderConfig(cfg, name)
 	if err != nil {
@@ -190,7 +193,7 @@ func newNamedProvider(cfg *config.Config, name string, model string) (Provider, 
 	if model != "" {
 		providerCfg.Model = model
 	}
-	return createProviderFromConfig(name, &providerCfg)
+	return factory.Create(name, &providerCfg, factoryOptions())
 }
 
 // resolvedProviderConfig returns provider name's config with credentials
@@ -214,18 +217,11 @@ func resolvedProviderConfig(cfg *config.Config, name string) (config.ProviderCon
 	return providerCfg, nil
 }
 
-// newBinProvider validates model overrides before creating a CLI-backed provider.
-//
-// Deprecated: use factory.NewBinProvider.
-func newBinProvider(providerType config.ProviderType, model string, env map[string]string, enableHooks bool) (Provider, error) {
-	return factory.NewBinProvider(providerType, model, env, enableHooks)
-}
-
 // NewProviderByNameNoRetry creates the same provider as NewProviderByName but
 // returns the underlying adapter without the production retry wrapper. It is
 // intended for controlled callers such as benchmarks where an implicit retry
 // would hide attempt boundaries and could reuse a now-cacheable payload.
-func NewProviderByNameNoRetry(cfg *config.Config, name string, model string) (Provider, error) {
+func NewProviderByNameNoRetry(cfg *config.Config, name string, model string) (core.Provider, error) {
 	return newNamedProvider(cfg, name, model)
 }
 
@@ -308,7 +304,7 @@ func BuiltinFastModel(cfg *config.Config, name string) string {
 
 // NewFastProvider creates the provider chosen by ResolveFastTarget.
 // Returns nil, nil if no fast model can be resolved.
-func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
+func NewFastProvider(cfg *config.Config, name string) (core.Provider, error) {
 	target, model, ok := ResolveFastTarget(cfg, name)
 	if !ok {
 		return nil, nil
@@ -324,22 +320,4 @@ func factoryOptions() factory.Options {
 		HTTPClient:               defaultHTTPClient,
 		ClampOutputTokens:        ClampOutputTokens,
 	}
-}
-
-// createProviderFromConfig creates a provider from a ProviderConfig.
-//
-// Deprecated: thin wrapper over factory.Create.
-func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider, error) {
-	return factory.Create(name, cfg, factoryOptions())
-}
-
-// newAPIKeyProvider creates a built-in API-key provider.
-//
-// Deprecated: thin wrapper over factory.NewAPIKeyProvider.
-func newAPIKeyProvider(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
-	return factory.NewAPIKeyProvider(name, providerType, cfg, factoryOptions())
-}
-
-func openAICompatReasoningParserOptions(cfg *config.ProviderConfig) (parseReasoning, includeReasoning *bool, thinkingParam string) {
-	return factory.OpenAICompatReasoningParserOptions(cfg)
 }

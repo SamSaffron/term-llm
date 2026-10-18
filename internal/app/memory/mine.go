@@ -15,6 +15,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/embedding"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -425,7 +427,7 @@ func Mine(opts MineOptions) error {
 	return nil
 }
 
-func (opts MineOptions) newMemoryMineProvider(cfg *config.Config) (llm.Provider, string, error) {
+func (opts MineOptions) newMemoryMineProvider(cfg *config.Config) (core.Provider, string, error) {
 	if opts.UseFastModel && strings.TrimSpace(opts.Model) != "" {
 		return nil, "", fmt.Errorf("--fast-model and --model are mutually exclusive")
 	}
@@ -722,7 +724,7 @@ func buildTranscript(messages []session.Message) []transcriptMessage {
 	for _, msg := range messages {
 		entry := transcriptMessage{Role: string(msg.Role)}
 
-		if msg.Role != llm.RoleTool {
+		if msg.Role != core.RoleTool {
 			if text := strings.TrimSpace(msg.TextContent); text != "" {
 				entry.Text = text
 			}
@@ -733,7 +735,7 @@ func buildTranscript(messages []session.Message) []transcriptMessage {
 			entry.ToolCalls = calls
 		}
 
-		if entry.Text == "" && len(entry.ToolCalls) == 0 && msg.Role == llm.RoleTool {
+		if entry.Text == "" && len(entry.ToolCalls) == 0 && msg.Role == core.RoleTool {
 			// Explicitly suppress raw tool output.
 			continue
 		}
@@ -748,7 +750,7 @@ func collectToolCallNames(msg session.Message) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	for _, part := range msg.Parts {
-		if part.Type != llm.PartToolCall || part.ToolCall == nil {
+		if part.Type != core.PartToolCall || part.ToolCall == nil {
 			continue
 		}
 		name := strings.TrimSpace(part.ToolCall.Name)
@@ -764,7 +766,7 @@ func collectToolCallNames(msg session.Message) []string {
 	return out
 }
 
-func (opts MineOptions) runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memorydb.Store, agent, prompt string, stats *memoryExtractionStats) (memoryExtractionResult, error) {
+func (opts MineOptions) runExtractionRequest(ctx context.Context, engine *engine.Engine, store *memorydb.Store, agent, prompt string, stats *memoryExtractionStats) (memoryExtractionResult, error) {
 	collector := newMemoryExtractionCollector()
 	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent, collector, opts.ReadBytes, opts.DryRun)
 	defer cleanup()
@@ -775,11 +777,11 @@ func (opts MineOptions) runExtractionRequest(ctx context.Context, engine *llm.En
 	return collector.result(finalText), nil
 }
 
-func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...llm.ToolSpec) (string, error) {
-	req := llm.Request{
+func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engine *engine.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...core.ToolSpec) (string, error) {
+	req := core.Request{
 		Model:           strings.TrimSpace(opts.Model),
 		Ephemeral:       true,
-		Messages:        []llm.Message{llm.SystemText(systemPrompt), llm.UserText(prompt)},
+		Messages:        []core.Message{core.SystemText(systemPrompt), core.UserText(prompt)},
 		MaxTurns:        1,
 		MaxOutputTokens: opts.MaxOutputTokens,
 		Debug:           false,
@@ -787,7 +789,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 	}
 	if len(tools) > 0 {
 		req.Tools = tools
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
 		req.ParallelToolCalls = true
 		req.MaxTurns = opts.ToolMaxTurns
 	}
@@ -808,17 +810,17 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 			return "", err
 		}
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			b.WriteString(ev.Text)
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			if stats != nil && ev.Tool != nil {
 				stats.noteToolCall(strings.TrimSpace(ev.Tool.Name))
 			}
-		case llm.EventUsage:
+		case core.EventUsage:
 			if stats != nil {
 				stats.noteUsage(ev.Use)
 			}
-		case llm.EventError:
+		case core.EventError:
 			if ev.Err != nil {
 				return "", ev.Err
 			}
@@ -1186,23 +1188,23 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 	pending := make([]pendingMessage, 0, len(messages))
 	userTokenBudget := 0
 	for _, msg := range messages {
-		if msg.Role == llm.RoleSystem {
+		if msg.Role == core.RoleSystem {
 			continue
 		}
-		if msg.Role == llm.RoleTool {
+		if msg.Role == core.RoleTool {
 			for _, summary := range summarizeInsightToolResults(msg) {
-				pending = append(pending, pendingMessage{role: string(llm.RoleTool), text: summary})
+				pending = append(pending, pendingMessage{role: string(core.RoleTool), text: summary})
 			}
 			continue
 		}
 
 		text := strings.TrimSpace(msg.TextContent)
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			if text == "" {
 				continue
 			}
 			text = truncateForInsightTranscript(text, maxUserChars)
-			userTokenBudget += llm.EstimateTokens(text)
+			userTokenBudget += engine.EstimateTokens(text)
 			pending = append(pending, pendingMessage{role: string(msg.Role), text: text})
 			continue
 		}
@@ -1211,17 +1213,17 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 			pending = append(pending, pendingMessage{role: string(msg.Role), text: text})
 		}
 		for _, summary := range summarizeInsightToolCalls(msg) {
-			pending = append(pending, pendingMessage{role: string(llm.RoleTool), text: summary})
+			pending = append(pending, pendingMessage{role: string(core.RoleTool), text: summary})
 		}
 	}
 
 	toolBudget := 0
 	for _, msg := range pending {
-		if msg.role != string(llm.RoleTool) {
+		if msg.role != string(core.RoleTool) {
 			continue
 		}
 		toolText := truncateForInsightTranscript(msg.text, maxToolEventChars)
-		toolBudget += llm.EstimateTokens(toolText)
+		toolBudget += engine.EstimateTokens(toolText)
 		if toolBudget >= userTokenBudget {
 			toolBudget = userTokenBudget
 			break
@@ -1232,9 +1234,9 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 	for _, msg := range pending {
 		text := msg.text
 		switch msg.role {
-		case string(llm.RoleUser):
+		case string(core.RoleUser):
 			// User text defines the signal; include it outside the non-user budget.
-		case string(llm.RoleTool):
+		case string(core.RoleTool):
 			if toolBudget <= 0 {
 				continue
 			}
@@ -1243,7 +1245,7 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 			if strings.TrimSpace(text) == "" {
 				continue
 			}
-			toolBudget -= llm.EstimateTokens(text)
+			toolBudget -= engine.EstimateTokens(text)
 		default:
 			if assistantBudget <= 0 {
 				continue
@@ -1253,7 +1255,7 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 			if strings.TrimSpace(text) == "" {
 				continue
 			}
-			assistantBudget -= llm.EstimateTokens(text)
+			assistantBudget -= engine.EstimateTokens(text)
 		}
 		out = append(out, transcriptMessage{Role: msg.role, Text: text})
 	}
@@ -1264,7 +1266,7 @@ func summarizeInsightToolCalls(msg session.Message) []string {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, part := range msg.Parts {
-		if part.Type != llm.PartToolCall || part.ToolCall == nil {
+		if part.Type != core.PartToolCall || part.ToolCall == nil {
 			continue
 		}
 		name := strings.TrimSpace(part.ToolCall.Name)
@@ -1286,7 +1288,7 @@ func summarizeInsightToolResults(msg session.Message) []string {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, part := range msg.Parts {
-		if part.Type != llm.PartToolResult || part.ToolResult == nil {
+		if part.Type != core.PartToolResult || part.ToolResult == nil {
 			continue
 		}
 		name := strings.TrimSpace(part.ToolResult.Name)
@@ -1314,7 +1316,7 @@ func trimTextToTokenBudget(text string, budget int) string {
 	if budget <= 0 || strings.TrimSpace(text) == "" {
 		return ""
 	}
-	if llm.EstimateTokens(text) <= budget {
+	if engine.EstimateTokens(text) <= budget {
 		return text
 	}
 
@@ -1326,7 +1328,7 @@ func trimTextToTokenBudget(text string, budget int) string {
 		if candidate != "" {
 			candidate += "..."
 		}
-		if candidate != "" && llm.EstimateTokens(candidate) <= budget {
+		if candidate != "" && engine.EstimateTokens(candidate) <= budget {
 			best = candidate
 			lo = mid + 1
 		} else {
@@ -1386,7 +1388,7 @@ If no new insights are found, return {"insights": []}.`,
 func (opts MineOptions) runInsightExtractionPass(
 	ctx context.Context,
 	cfg *config.Config,
-	engine *llm.Engine,
+	engine *engine.Engine,
 	sessStore session.Store,
 	memStore *memorydb.Store,
 	candidates []memoryMineCandidate,

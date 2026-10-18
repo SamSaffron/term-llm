@@ -8,7 +8,7 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
@@ -49,7 +49,7 @@ func TestRunWithSpinnerDrainsProgressWhenSkipped(t *testing.T) {
 
 func TestSelectCommandRequiresExplicitNonInteractiveMode(t *testing.T) {
 	t.Setenv("CI", "1")
-	suggestions := []llm.CommandSuggestion{{Command: "echo safe"}}
+	suggestions := []core.CommandSuggestion{{Command: "echo safe"}}
 
 	if _, _, err := SelectCommand(suggestions, "sh", nil, false); err == nil || !strings.Contains(err.Error(), "--print-only or --auto-pick") {
 		t.Fatalf("SelectCommand() error = %v, want explicit-mode guidance", err)

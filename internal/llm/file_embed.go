@@ -5,6 +5,8 @@ import (
 	"path"
 	"strings"
 	"unicode"
+
+	"github.com/samsaffron/term-llm/internal/llm/filemime"
 )
 
 // EmbeddedFileIntro introduces one or more file bodies embedded directly in a
@@ -47,7 +49,7 @@ func EmbeddedFileDisplayName(filename string) string {
 // are fenced as markdown, using a fence longer than any backtick run in the file.
 func FormatEmbeddedFileText(filename, mediaType, text string) string {
 	name := EmbeddedFileDisplayName(filename)
-	mediaType = NormalizeMediaType(mediaType)
+	mediaType = filemime.NormalizeMediaType(mediaType)
 
 	header := fmt.Sprintf("%s %s", embeddedFileBeginMarker, name)
 	if mediaType != "" {
@@ -83,7 +85,7 @@ func embeddedFileFenceLanguage(filename, mediaType string) string {
 	case ".go", ".js", ".jsx", ".ts", ".tsx", ".py", ".rb", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".sh", ".bash", ".zsh", ".fish", ".sql", ".css", ".scss", ".toml", ".ini", ".conf":
 		return strings.TrimPrefix(strings.ToLower(path.Ext(strings.ReplaceAll(filename, "\\", "/"))), ".")
 	}
-	switch NormalizeMediaType(mediaType) {
+	switch filemime.NormalizeMediaType(mediaType) {
 	case "application/json", "application/x-ndjson":
 		return "json"
 	case "text/csv":
@@ -165,7 +167,7 @@ func IsEmbeddedFileText(text string) bool {
 // FormatUploadedFileNotice describes an upload without embedding its contents.
 // The local path lets tools inspect files the model cannot consume natively.
 func FormatUploadedFileNotice(filename, mediaType, localPath string, sizeBytes int64) string {
-	mediaType = NormalizeMediaType(mediaType)
+	mediaType = filemime.NormalizeMediaType(mediaType)
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}

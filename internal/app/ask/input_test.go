@@ -12,14 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
-
 	"github.com/samsaffron/term-llm/internal/config"
 	inputpkg "github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
 )
 
 func testAskConfig() config.AskConfig {
@@ -42,7 +42,7 @@ func TestPrepareAskInputUsesCobraInputAndKeepsSmallTextInline(t *testing.T) {
 		t.Fatalf("staged paths = %v, want none", got.StagedPaths)
 	}
 	want := prompt.AskUserPrompt("question", nil, "small text")
-	if len(got.Message.Parts) != 1 || got.Message.Parts[0].Type != llm.PartText || got.Message.Parts[0].Text != want {
+	if len(got.Message.Parts) != 1 || got.Message.Parts[0].Type != core.PartText || got.Message.Parts[0].Text != want {
 		t.Fatalf("message = %#v, want exact legacy prompt %q", got.Message, want)
 	}
 }
@@ -100,11 +100,11 @@ func TestPrepareAskInputStagesLargeTextAfterFileContext(t *testing.T) {
 	if len(got.Message.Parts) != 3 {
 		t.Fatalf("parts = %#v, want context, file, question", got.Message.Parts)
 	}
-	if got.Message.Parts[0].Type != llm.PartText || !strings.Contains(got.Message.Parts[0].Text, "ctx") {
+	if got.Message.Parts[0].Type != core.PartText || !strings.Contains(got.Message.Parts[0].Text, "ctx") {
 		t.Fatalf("first part = %#v, want embedded -f context", got.Message.Parts[0])
 	}
 	part := got.Message.Parts[1]
-	if part.Type != llm.PartFile || part.FileData == nil {
+	if part.Type != core.PartFile || part.FileData == nil {
 		t.Fatalf("attachment = %#v, want file part", part)
 	}
 	if part.FileData.Filename != "stdin.txt" || part.FileData.MediaType != "text/plain" || part.FileData.SizeBytes != int64(len(input)) {
@@ -116,7 +116,7 @@ func TestPrepareAskInputStagesLargeTextAfterFileContext(t *testing.T) {
 	if part.Text != llm.FormatUploadedFileNotice("stdin.txt", "text/plain", part.FilePath, int64(len(input))) {
 		t.Fatalf("file notice = %q", part.Text)
 	}
-	if got.Message.Parts[2].Type != llm.PartText || got.Message.Parts[2].Text != "question" {
+	if got.Message.Parts[2].Type != core.PartText || got.Message.Parts[2].Text != "question" {
 		t.Fatalf("question part = %#v", got.Message.Parts[2])
 	}
 	raw, err := os.ReadFile(part.FilePath)
@@ -140,7 +140,7 @@ func TestPrepareAskInputClassifiesTinyPNGAndPreservesOriginal(t *testing.T) {
 		t.Fatalf("PrepareInput: %v", err)
 	}
 	t.Cleanup(func() { CleanupPreparedInput(got) })
-	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != llm.PartImage {
+	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != core.PartImage {
 		t.Fatalf("message parts = %#v", got.Message.Parts)
 	}
 	part := got.Message.Parts[0]
@@ -158,7 +158,7 @@ func TestPrepareAskInputClassifiesTinyPNGAndPreservesOriginal(t *testing.T) {
 	if err != nil || !bytes.Equal(saved, raw) {
 		t.Fatalf("saved original differs: err=%v", err)
 	}
-	autoTools := AddAutoTools(nil, []llm.Message{got.Message})
+	autoTools := AddAutoTools(nil, []core.Message{got.Message})
 	if strings.Join(autoTools, ",") != tools.ReadFileToolName+","+tools.ViewImageToolName {
 		t.Fatalf("AutoTools = %v", autoTools)
 	}
@@ -212,7 +212,7 @@ func TestPrepareAskInputDetectsBinaryMIMEAndExtension(t *testing.T) {
 	}
 	t.Cleanup(func() { CleanupPreparedInput(got) })
 	part := got.Message.Parts[0]
-	if part.Type != llm.PartFile || part.FileData == nil {
+	if part.Type != core.PartFile || part.FileData == nil {
 		t.Fatalf("part = %#v", part)
 	}
 	if part.FileData.MediaType != "application/pdf" || part.FileData.Filename != "stdin.pdf" || filepath.Ext(part.FilePath) != ".pdf" {
@@ -263,7 +263,7 @@ func TestPrepareAskInputKeepsSmallFilesLegacyCompatible(t *testing.T) {
 		{Path: first, Content: "alpha"},
 		{Path: second, Content: "beta\n"},
 	}, "")
-	if len(got.Message.Parts) != 1 || got.Message.Parts[0].Type != llm.PartText || got.Message.Parts[0].Text != want {
+	if len(got.Message.Parts) != 1 || got.Message.Parts[0].Type != core.PartText || got.Message.Parts[0].Text != want {
 		t.Fatalf("message = %#v, want exact legacy prompt %q", got.Message, want)
 	}
 }
@@ -281,7 +281,7 @@ func TestPrepareAskInputStagesLargeFileSource(t *testing.T) {
 		t.Fatalf("PrepareInput: %v", err)
 	}
 	t.Cleanup(func() { CleanupPreparedInput(got) })
-	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != llm.PartFile || got.Message.Parts[1].Text != "question" {
+	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != core.PartFile || got.Message.Parts[1].Text != "question" {
 		t.Fatalf("parts = %#v, want staged file then question", got.Message.Parts)
 	}
 	part := got.Message.Parts[0]
@@ -313,7 +313,7 @@ func TestPrepareAskInputClassifiesPNGFileAndStagesOriginal(t *testing.T) {
 		t.Fatalf("PrepareInput: %v", err)
 	}
 	t.Cleanup(func() { CleanupPreparedInput(got) })
-	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != llm.PartImage {
+	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != core.PartImage {
 		t.Fatalf("parts = %#v, want image then question", got.Message.Parts)
 	}
 	part := got.Message.Parts[0]
@@ -349,7 +349,7 @@ func TestPrepareAskInputStagesBinaryFileSource(t *testing.T) {
 		t.Fatalf("PrepareInput: %v", err)
 	}
 	t.Cleanup(func() { CleanupPreparedInput(got) })
-	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != llm.PartFile {
+	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != core.PartFile {
 		t.Fatalf("parts = %#v, want binary file then question", got.Message.Parts)
 	}
 	part := got.Message.Parts[0]
@@ -387,13 +387,13 @@ func TestPrepareAskInputPreservesMixedFileStdinQuestionOrder(t *testing.T) {
 	}
 	wantFirst := prompt.AskUserPrompt("", []inputpkg.FileContent{{Path: smallA, Content: "a"}}, "")
 	wantLast := prompt.AskUserPrompt("question", []inputpkg.FileContent{{Path: smallC, Content: "c"}}, "pipe")
-	if got.Message.Parts[0].Type != llm.PartText || got.Message.Parts[0].Text != wantFirst {
+	if got.Message.Parts[0].Type != core.PartText || got.Message.Parts[0].Text != wantFirst {
 		t.Fatalf("first part = %#v, want %q", got.Message.Parts[0], wantFirst)
 	}
-	if got.Message.Parts[1].Type != llm.PartFile || got.Message.Parts[1].FileData == nil || got.Message.Parts[1].FileData.Filename != "large.txt" {
+	if got.Message.Parts[1].Type != core.PartFile || got.Message.Parts[1].FileData == nil || got.Message.Parts[1].FileData.Filename != "large.txt" {
 		t.Fatalf("second part = %#v, want large file", got.Message.Parts[1])
 	}
-	if got.Message.Parts[2].Type != llm.PartText || got.Message.Parts[2].Text != wantLast {
+	if got.Message.Parts[2].Type != core.PartText || got.Message.Parts[2].Text != wantLast {
 		t.Fatalf("last part = %#v, want %q", got.Message.Parts[2], wantLast)
 	}
 }
@@ -502,7 +502,7 @@ func TestPrepareAskInputLineRangesUseSelectedTextPolicy(t *testing.T) {
 			t.Fatalf("PrepareInput: %v", err)
 		}
 		t.Cleanup(func() { CleanupPreparedInput(got) })
-		if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != llm.PartImage || got.Message.Parts[0].ImageData == nil || got.Message.Parts[0].ImageData.MediaType != "image/png" {
+		if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != core.PartImage || got.Message.Parts[0].ImageData == nil || got.Message.Parts[0].ImageData.MediaType != "image/png" {
 			t.Fatalf("parts = %#v, want image part", got.Message.Parts)
 		}
 		part := got.Message.Parts[0]
@@ -628,9 +628,9 @@ func TestInitializeAskPersistencePreservesStructuredUserMessage(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	user := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
-		{Type: llm.PartFile, Text: "notice", FilePath: "/tmp/stdin.txt", FileData: &llm.ToolFileData{Filename: "stdin.txt", MediaType: "text/plain", SizeBytes: 12}},
-		{Type: llm.PartText, Text: "question"},
+	user := core.Message{Role: core.RoleUser, Parts: []core.Part{
+		{Type: core.PartFile, Text: "notice", FilePath: "/tmp/stdin.txt", FileData: &core.ToolFileData{Filename: "stdin.txt", MediaType: "text/plain", SizeBytes: 12}},
+		{Type: core.PartText, Text: "question"},
 	}}
 	persistence := initializeAskPersistence(ctx, nil, store, sess, "", false, false, nil, sess.CreatedAt, user, "question")
 	if persistence == nil || !persistence.InitialUserPersisted {
@@ -640,7 +640,7 @@ func TestInitializeAskPersistencePreservesStructuredUserMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || len(messages[0].Parts) != 2 || messages[0].Parts[0].Type != llm.PartFile || messages[0].Parts[0].FilePath != "/tmp/stdin.txt" {
+	if len(messages) != 1 || len(messages[0].Parts) != 2 || messages[0].Parts[0].Type != core.PartFile || messages[0].Parts[0].FilePath != "/tmp/stdin.txt" {
 		t.Fatalf("persisted messages = %#v", messages)
 	}
 }

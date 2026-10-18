@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -212,8 +212,8 @@ func TestFitUpdatedRecentWithinBudget_ReturnsUnchangedWhenUnderHighWater(t *test
 func TestFormatUpdateRecentSessionBlock_FiltersToolCalls(t *testing.T) {
 	sess := memoryUpdateRecentSession{ID: "s1", Number: 42, Status: session.StatusComplete}
 	messages := []session.Message{
-		{Role: llm.RoleUser, TextContent: "hello"},
-		{Role: llm.RoleAssistant, TextContent: "world"},
+		{Role: core.RoleUser, TextContent: "hello"},
+		{Role: core.RoleAssistant, TextContent: "world"},
 		{Role: "tool", TextContent: "should be skipped"},
 	}
 	block := formatUpdateRecentSessionBlock(sess, messages)
@@ -235,7 +235,7 @@ func TestFormatUpdateRecentSessionBlock_AssistantTruncated(t *testing.T) {
 		longText = longText[:i] + "x" + longText[i+1:]
 	}
 	messages := []session.Message{
-		{Role: llm.RoleAssistant, TextContent: longText},
+		{Role: core.RoleAssistant, TextContent: longText},
 	}
 	block := formatUpdateRecentSessionBlock(sess, messages)
 	if !contains(block, "...") {
@@ -257,7 +257,7 @@ func TestFormatUpdateRecentSessionBlock_EmptyWhenNoRelevantMessages(t *testing.T
 func TestFormatUpdateRecentSessionBlock_SessionHeader(t *testing.T) {
 	sess := memoryUpdateRecentSession{ID: "s1", Number: 7, Status: session.StatusActive}
 	messages := []session.Message{
-		{Role: llm.RoleUser, TextContent: "hi"},
+		{Role: core.RoleUser, TextContent: "hi"},
 	}
 	block := formatUpdateRecentSessionBlock(sess, messages)
 	if !contains(block, "Session #7") {
@@ -389,8 +389,8 @@ func TestCollectMemoryUpdateRecentInputOnlyLoadsUpdatedAgentSessions(t *testing.
 	sessStore := &updateRecentCountingStore{
 		summaries: summaries,
 		messages: map[string][]session.Message{
-			"recent-jarvis": {{Role: llm.RoleUser, TextContent: "new activity", Sequence: 0}},
-			"recent-other":  {{Role: llm.RoleUser, TextContent: "other activity", Sequence: 0}},
+			"recent-jarvis": {{Role: core.RoleUser, TextContent: "new activity", Sequence: 0}},
+			"recent-other":  {{Role: core.RoleUser, TextContent: "other activity", Sequence: 0}},
 		},
 		messageCalls: map[string]int{},
 	}
@@ -477,7 +477,7 @@ func TestCollectMemoryUpdateRecentInputExhaustedAtInputCap(t *testing.T) {
 					ID: id, Number: int64(i + 1), Agent: "jarvis", Status: session.StatusComplete,
 					UpdatedAt: time.Date(2026, 8, 23, 10, i, 0, 0, time.UTC),
 				})
-				messages[id] = []session.Message{{Role: llm.RoleUser, TextContent: "activity", Sequence: 0}}
+				messages[id] = []session.Message{{Role: core.RoleUser, TextContent: "activity", Sequence: 0}}
 			}
 			sessStore := &updateRecentCountingStore{
 				summaries: summaries, messages: messages, messageCalls: map[string]int{},
@@ -512,12 +512,12 @@ func TestCollectMemoryUpdateRecentInputPagesOversizedSession(t *testing.T) {
 	defer memStore.Close()
 	messages := make([]session.Message, 1000)
 	for i := range messages {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%3 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		if i%3 == 2 {
-			role = llm.RoleTool
+			role = core.RoleTool
 		}
 		messages[i] = session.Message{Role: role, TextContent: "message-" + strconv.Itoa(i) + ":" + strings.Repeat("x", 1800), Sequence: i * 2}
 	}
@@ -552,7 +552,7 @@ func TestCollectMemoryUpdateRecentInputPagesOversizedSession(t *testing.T) {
 		}
 		for _, msg := range messages {
 			marker := "message-" + strconv.Itoa(msg.Sequence/2) + ":"
-			want := msg.Sequence >= offset && msg.Sequence < next && msg.Role != llm.RoleTool
+			want := msg.Sequence >= offset && msg.Sequence < next && msg.Role != core.RoleTool
 			if strings.Contains(input.Text, marker) != want {
 				t.Fatalf("batch %d: incorrect inclusion of %s (offsets %d..%d)", batch, marker, offset, next)
 			}
@@ -590,7 +590,7 @@ func TestCollectMemoryUpdateRecentInputSingleMessageBudget(t *testing.T) {
 			defer memStore.Close()
 			sessStore := &updateRecentCountingStore{
 				summaries:    []session.SessionSummary{{ID: "long", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
-				messages:     map[string][]session.Message{"long": {{Role: llm.RoleAssistant, TextContent: strings.Repeat("界", 2000), Sequence: 7}}},
+				messages:     map[string][]session.Message{"long": {{Role: core.RoleAssistant, TextContent: strings.Repeat("界", 2000), Sequence: 7}}},
 				messageCalls: map[string]int{},
 			}
 			input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{}, maxInputChars)
@@ -627,11 +627,11 @@ func TestCollectMemoryUpdateRecentInputAcrossMessagePages(t *testing.T) {
 	defer memStore.Close()
 	messages := make([]session.Message, 301)
 	for i := range messages {
-		messages[i] = session.Message{Role: llm.RoleTool, Sequence: i}
+		messages[i] = session.Message{Role: core.RoleTool, Sequence: i}
 	}
-	messages[100].Role = llm.RoleUser
+	messages[100].Role = core.RoleUser
 	messages[100].TextContent = "first page boundary"
-	messages[200].Role = llm.RoleAssistant
+	messages[200].Role = core.RoleAssistant
 	messages[200].TextContent = "second page boundary"
 	sessStore := &updateRecentCountingStore{
 		summaries: []session.SessionSummary{{ID: "paged", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
@@ -783,7 +783,7 @@ func TestMemoryUpdateRecentRejectsEmptyOutputWithoutConsumingActivity(t *testing
 					t.Fatal(err)
 				}
 				for _, text := range []string{"already consumed", "new activity to remember"} {
-					if err := sessStore.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(text), -1)); err != nil {
+					if err := sessStore.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText(text), -1)); err != nil {
 						t.Fatal(err)
 					}
 				}

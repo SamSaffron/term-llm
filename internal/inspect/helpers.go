@@ -6,7 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -22,11 +23,11 @@ func CompactionTailEnd(messages []session.Message, summaryIdx int) int {
 
 // IsCompactionSummary detects both structured and legacy stored summary rows.
 func IsCompactionSummary(msg session.Message) bool {
-	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
+	if engine.IsInternalCompactionSummaryText(msg.TextContent) {
 		return true
 	}
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+		if part.Type == core.PartText && engine.IsInternalCompactionSummaryText(part.Text) {
 			return true
 		}
 	}
@@ -34,7 +35,7 @@ func IsCompactionSummary(msg session.Message) bool {
 }
 
 // FormatSkillActivationProvenance formats the same audit text as the CLI inspector.
-func FormatSkillActivationProvenance(provenance *llm.SkillActivationProvenance) string {
+func FormatSkillActivationProvenance(provenance *core.SkillActivationProvenance) string {
 	if provenance == nil {
 		return ""
 	}
@@ -68,7 +69,7 @@ func FormatSkillActivationProvenance(provenance *llm.SkillActivationProvenance) 
 }
 
 // ReasoningSummaryDisplayContent joins display-safe summary parts, preferring them to legacy text.
-func ReasoningSummaryDisplayContent(part llm.Part) string {
+func ReasoningSummaryDisplayContent(part core.Part) string {
 	if len(part.ReasoningSummaryParts) == 0 {
 		return part.ReasoningContent
 	}

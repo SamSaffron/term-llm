@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -32,8 +32,8 @@ func TestRenderStickyUserPromptIsExactlyOneDisplayLine(t *testing.T) {
 func TestViewAltScreenShowsStickyPromptForLongCurrentTurn(t *testing.T) {
 	m := newTestChatModel(true)
 	m.messages = []session.Message{
-		{ID: 1, Role: llm.RoleUser, TextContent: "the initiating prompt", Parts: []llm.Part{{Type: llm.PartText, Text: "the initiating prompt"}}},
-		{ID: 2, Role: llm.RoleAssistant, TextContent: strings.Repeat("answer line\n", 80), Parts: []llm.Part{{Type: llm.PartText, Text: strings.Repeat("answer line\n", 80)}}},
+		{ID: 1, Role: core.RoleUser, TextContent: "the initiating prompt", Parts: []core.Part{{Type: core.PartText, Text: "the initiating prompt"}}},
+		{ID: 2, Role: core.RoleAssistant, TextContent: strings.Repeat("answer line\n", 80), Parts: []core.Part{{Type: core.PartText, Text: strings.Repeat("answer line\n", 80)}}},
 	}
 
 	view := ui.StripANSI(m.viewAltScreen())

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/core/stream"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
@@ -41,12 +42,12 @@ func DefaultRetryConfig() RetryConfig {
 
 // RetryProvider wraps a provider with automatic retry on transient errors.
 type RetryProvider struct {
-	inner  Provider
+	inner  core.Provider
 	config RetryConfig
 }
 
 // WrapWithRetry wraps a provider with retry logic.
-func WrapWithRetry(p Provider, config RetryConfig) Provider {
+func WrapWithRetry(p core.Provider, config RetryConfig) core.Provider {
 	return &RetryProvider{inner: p, config: normalizeRetryConfig(config)}
 }
 
@@ -73,9 +74,6 @@ func normalizeRetryConfig(config RetryConfig) RetryConfig {
 	return config
 }
 
-// Deprecated: use core.RateLimitError across provider package boundaries.
-type RateLimitError = core.RateLimitError
-
 func (r *RetryProvider) Name() string {
 	return r.inner.Name()
 }
@@ -84,22 +82,22 @@ func (r *RetryProvider) Credential() string {
 	return r.inner.Credential()
 }
 
-func (r *RetryProvider) Capabilities() Capabilities {
+func (r *RetryProvider) Capabilities() core.Capabilities {
 	return r.inner.Capabilities()
 }
 
-func (r *RetryProvider) NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport {
-	if provider, ok := r.inner.(NativeToolDiscoveryProvider); ok {
+func (r *RetryProvider) NativeToolDiscoverySupport(model string) core.NativeToolDiscoverySupport {
+	if provider, ok := r.inner.(core.NativeToolDiscoveryProvider); ok {
 		return provider.NativeToolDiscoverySupport(model)
 	}
-	return NativeToolDiscoverySupport{Reason: fmt.Sprintf("provider %q has no native tool discovery adapter", r.inner.Name())}
+	return core.NativeToolDiscoverySupport{Reason: fmt.Sprintf("provider %q has no native tool discovery adapter", r.inner.Name())}
 }
 
-func (r *RetryProvider) isolateHelperConversation() Provider {
+func (r *RetryProvider) isolateHelperConversation() core.Provider {
 	return &RetryProvider{inner: isolatedConversationProvider(r.inner), config: r.config}
 }
 
-func (r *RetryProvider) forkHelperConversation() (Provider, bool) {
+func (r *RetryProvider) forkHelperConversation() (core.Provider, bool) {
 	forked, ok := forkConversationProvider(r.inner)
 	if !ok {
 		return nil, false
@@ -107,7 +105,7 @@ func (r *RetryProvider) forkHelperConversation() (Provider, bool) {
 	return &RetryProvider{inner: forked, config: r.config}, true
 }
 
-func (r *RetryProvider) ForkConversationAtBoundary(state []byte, requestMessages []Message) (Provider, bool) {
+func (r *RetryProvider) ForkConversationAtBoundary(state []byte, requestMessages []core.Message) (core.Provider, bool) {
 	forked, ok := ForkHelperAtBoundary(r.inner, state, requestMessages)
 	if !ok {
 		return nil, false
@@ -127,7 +125,7 @@ func (r *RetryProvider) ResetConversation() {
 // ExportProviderState forwards opaque conversation transport state when the
 // wrapped provider supports persistence.
 func (r *RetryProvider) ExportProviderState() ([]byte, bool) {
-	if exporter, ok := r.inner.(ProviderStateExporter); ok {
+	if exporter, ok := r.inner.(core.ProviderStateExporter); ok {
 		return exporter.ExportProviderState()
 	}
 	return nil, false
@@ -136,7 +134,7 @@ func (r *RetryProvider) ExportProviderState() ([]byte, bool) {
 // ImportProviderState restores opaque conversation transport state on the
 // wrapped provider.
 func (r *RetryProvider) ImportProviderState(data []byte) error {
-	if importer, ok := r.inner.(ProviderStateImporter); ok {
+	if importer, ok := r.inner.(core.ProviderStateImporter); ok {
 		return importer.ImportProviderState(data)
 	}
 	return fmt.Errorf("provider %q does not support provider state import", r.inner.Name())
@@ -145,16 +143,16 @@ func (r *RetryProvider) ImportProviderState(data []byte) error {
 // SetToolExecutor forwards to the inner provider if it implements ToolExecutorSetter.
 // This ensures CLI bridge providers can receive their tool executor
 // even when wrapped with retry logic.
-func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error)) {
-	if setter, ok := r.inner.(ToolExecutorSetter); ok {
+func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (core.ToolOutput, error)) {
+	if setter, ok := r.inner.(engine.ToolExecutorSetter); ok {
 		setter.SetToolExecutor(executor)
 	}
 }
 
 // PublishDynamicTools forwards dynamic tool-surface changes to inline-loop
 // providers through the retry wrapper.
-func (r *RetryProvider) PublishDynamicTools(tools []ToolSpec) error {
-	if publisher, ok := r.inner.(DynamicToolPublisher); ok {
+func (r *RetryProvider) PublishDynamicTools(tools []core.ToolSpec) error {
+	if publisher, ok := r.inner.(engine.DynamicToolPublisher); ok {
 		return publisher.PublishDynamicTools(tools)
 	}
 	return nil
@@ -162,7 +160,7 @@ func (r *RetryProvider) PublishDynamicTools(tools []ToolSpec) error {
 
 // RequestInlineFlush forwards an inline tool-result flush to the inner provider.
 func (r *RetryProvider) RequestInlineFlush() {
-	if flusher, ok := r.inner.(InlineFlusher); ok {
+	if flusher, ok := r.inner.(engine.InlineFlusher); ok {
 		flusher.RequestInlineFlush()
 	}
 }
@@ -170,14 +168,14 @@ func (r *RetryProvider) RequestInlineFlush() {
 // SupportsInlineFlush reports whether the wrapped provider can stop an inline
 // CLI prompt at the next tool-result boundary.
 func (r *RetryProvider) SupportsInlineFlush() bool {
-	flusher, ok := r.inner.(InlineFlusher)
+	flusher, ok := r.inner.(engine.InlineFlusher)
 	return ok && flusher.SupportsInlineFlush()
 }
 
 // SupportsImmediateInterruption reports whether the wrapped provider can end
 // model generation immediately rather than waiting for a tool result.
 func (r *RetryProvider) SupportsImmediateInterruption() bool {
-	interrupter, ok := r.inner.(ImmediateInterrupter)
+	interrupter, ok := r.inner.(engine.ImmediateInterrupter)
 	return ok && interrupter.SupportsImmediateInterruption()
 }
 
@@ -193,7 +191,7 @@ func (r *RetryProvider) ClearInlineFlush() {
 // This ensures stateful providers get cleaned up properly
 // even when wrapped with retry logic.
 func (r *RetryProvider) CleanupMCP() {
-	if cleaner, ok := r.inner.(ProviderCleaner); ok {
+	if cleaner, ok := r.inner.(engine.ProviderCleaner); ok {
 		cleaner.CleanupMCP()
 	}
 }
@@ -201,7 +199,7 @@ func (r *RetryProvider) CleanupMCP() {
 // CleanupTurn forwards to the inner provider if it implements
 // ProviderTurnCleaner so per-turn cleanup survives retry wrapping.
 func (r *RetryProvider) CleanupTurn() {
-	if cleaner, ok := r.inner.(ProviderTurnCleaner); ok {
+	if cleaner, ok := r.inner.(engine.ProviderTurnCleaner); ok {
 		cleaner.CleanupTurn()
 	}
 }
@@ -218,27 +216,27 @@ var ErrListModelsUnsupported = errors.New("provider does not support model listi
 // Without this forwarder, callers that type-assert on a ListModels interface
 // would silently miss it on any retry-wrapped provider — and every provider
 // built via NewProvider/NewProviderByName is retry-wrapped.
-func (r *RetryProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+func (r *RetryProvider) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	if lister, ok := r.inner.(interface {
-		ListModels(context.Context) ([]ModelInfo, error)
+		ListModels(context.Context) ([]core.ModelInfo, error)
 	}); ok {
-		return retryCall(ctx, r.config, func() ([]ModelInfo, error) {
+		return retryCall(ctx, r.config, func() ([]core.ModelInfo, error) {
 			return lister.ListModels(ctx)
 		}, nil)
 	}
 	return nil, ErrListModelsUnsupported
 }
 
-func (r *RetryProvider) ListModelsWithFreshness(ctx context.Context) ([]ModelInfo, bool, error) {
+func (r *RetryProvider) ListModelsWithFreshness(ctx context.Context) ([]core.ModelInfo, bool, error) {
 	lister, ok := r.inner.(interface {
-		ListModelsWithFreshness(context.Context) ([]ModelInfo, bool, error)
+		ListModelsWithFreshness(context.Context) ([]core.ModelInfo, bool, error)
 	})
 	if !ok {
 		models, err := r.ListModels(ctx)
 		return models, err == nil, err
 	}
 	type result struct {
-		models []ModelInfo
+		models []core.ModelInfo
 		fresh  bool
 	}
 	loaded, err := retryCall(ctx, r.config, func() (result, error) {
@@ -261,7 +259,7 @@ func (r *RetryProvider) RefreshModelMetadata(ctx context.Context) error {
 	return err
 }
 
-func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (r *RetryProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	config := normalizeRetryConfig(r.config)
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		_, err := retryCall(ctx, config, func() (struct{}, error) {
@@ -273,8 +271,8 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 		}, func(info retryInfo) error {
 			// Emit retry event so UI can show progress. RetryMaxAttempts==0 means
 			// time-budgeted retry with no fixed attempt ceiling.
-			return send.Send(Event{
-				Type:             EventRetry,
+			return send.Send(core.Event{
+				Type:             core.EventRetry,
 				RetryAttempt:     info.Attempt,
 				RetryMaxAttempts: info.MaxAttempts,
 				RetryWaitSecs:    info.Wait.Seconds(),
@@ -383,10 +381,10 @@ func (e *committedError) Unwrap() error { return e.err }
 // After that point the attempt has already escaped, so retrying would duplicate
 // visible output or side effects. Any subsequent error is wrapped in
 // committedError so the retry loop will not retry.
-func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, send eventSender) error {
+func (r *RetryProvider) forwardAttempt(ctx context.Context, stream core.Stream, send eventSender) error {
 	defer stream.Close()
 
-	var buffered []Event
+	var buffered []core.Event
 	live := false
 
 	for {
@@ -411,7 +409,7 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, send 
 		}
 
 		// Check for error events from the stream (e.g., 429 during streaming)
-		if event.Type == EventError && event.Err != nil {
+		if event.Type == core.EventError && event.Err != nil {
 			if live {
 				return &committedError{event.Err}
 			}
@@ -437,21 +435,21 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, send 
 	}
 }
 
-func eventRequiresImmediateForwarding(event Event) bool {
+func eventRequiresImmediateForwarding(event core.Event) bool {
 	switch event.Type {
-	case EventTextDelta, EventSteering, EventReasoningDelta,
-		EventToolExecStart, EventToolExecEnd:
+	case core.EventTextDelta, core.EventSteering, core.EventReasoningDelta,
+		core.EventToolExecStart, core.EventToolExecEnd:
 		return true
-	case EventPhase:
-		return strings.HasPrefix(event.Text, WarningPhasePrefix)
-	case EventToolCall:
+	case core.EventPhase:
+		return strings.HasPrefix(event.Text, core.WarningPhasePrefix)
+	case core.EventToolCall:
 		return true
 	default:
 		return false
 	}
 }
 
-func flushEvents(send eventSender, buffered []Event) error {
+func flushEvents(send eventSender, buffered []core.Event) error {
 	for _, event := range buffered {
 		if err := send.Send(event); err != nil {
 			return err
@@ -484,7 +482,7 @@ func isRetryable(err error) bool {
 	}
 
 	// Stream framing / terminal marker failures are transient transport failures.
-	var incomplete *StreamIncompleteError
+	var incomplete *stream.StreamIncompleteError
 	if errors.As(err, &incomplete) {
 		return true
 	}
@@ -497,7 +495,7 @@ func isRetryable(err error) bool {
 
 	// Check for structured rate-limit errors. Long waits are handled by the
 	// elapsed-time budget in the retry loop rather than by retryability.
-	var rle *RateLimitError
+	var rle *core.RateLimitError
 	if errors.As(err, &rle) {
 		return true
 	}

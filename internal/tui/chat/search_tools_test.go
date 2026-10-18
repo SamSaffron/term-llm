@@ -3,13 +3,13 @@ package chat
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestFilterSearchToolSpecsWhenSearchDisabled(t *testing.T) {
-	specs := []llm.ToolSpec{
-		{Name: llm.WebSearchToolName},
-		{Name: llm.ReadURLToolName},
+	specs := []core.ToolSpec{
+		{Name: core.WebSearchToolName},
+		{Name: core.ReadURLToolName},
 		{Name: "read_file"},
 	}
 
@@ -21,9 +21,9 @@ func TestFilterSearchToolSpecsWhenSearchDisabled(t *testing.T) {
 }
 
 func TestFilterSearchToolSpecsWhenSearchEnabled(t *testing.T) {
-	specs := []llm.ToolSpec{
-		{Name: llm.WebSearchToolName},
-		{Name: llm.ReadURLToolName},
+	specs := []core.ToolSpec{
+		{Name: core.WebSearchToolName},
+		{Name: core.ReadURLToolName},
 		{Name: "read_file"},
 	}
 

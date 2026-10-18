@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -22,7 +22,7 @@ func TestGistPreviewURL(t *testing.T) {
 
 func TestBuildSessionGistFiles(t *testing.T) {
 	sess := &session.Session{ID: "abcdef", Name: "Export", Provider: "test", Model: "model", CreatedAt: time.Now()}
-	messages := []session.Message{{Role: llm.RoleUser, TextContent: "hello", Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}}}
+	messages := []session.Message{{Role: core.RoleUser, TextContent: "hello", Parts: []core.Part{{Type: core.PartText, Text: "hello"}}}}
 	files, err := session.GistFiles(sess, messages, session.ExportOptions{})
 	if err != nil {
 		t.Fatal(err)

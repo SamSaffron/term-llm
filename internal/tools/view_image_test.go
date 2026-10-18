@@ -15,7 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 func writeTestPNG(t *testing.T, path string) {
@@ -62,16 +63,16 @@ func TestViewImageToolExecute_ReturnsStructuredImageData(t *testing.T) {
 	}
 
 	textPart := out.ContentParts[0]
-	if textPart.Type != llm.ToolContentPartText {
-		t.Fatalf("expected first content part type %q, got %q", llm.ToolContentPartText, textPart.Type)
+	if textPart.Type != core.ToolContentPartText {
+		t.Fatalf("expected first content part type %q, got %q", core.ToolContentPartText, textPart.Type)
 	}
 	if textPart.Text != out.Content {
 		t.Fatalf("expected first content part text to match Content")
 	}
 
 	imagePart := out.ContentParts[1]
-	if imagePart.Type != llm.ToolContentPartImageData {
-		t.Fatalf("expected second content part type %q, got %q", llm.ToolContentPartImageData, imagePart.Type)
+	if imagePart.Type != core.ToolContentPartImageData {
+		t.Fatalf("expected second content part type %q, got %q", core.ToolContentPartImageData, imagePart.Type)
 	}
 	if imagePart.ImageData == nil {
 		t.Fatal("expected second content part image_data to be non-nil")
@@ -92,7 +93,7 @@ func TestViewImageToolExecute_RoutedVisionReturnsTextOnly(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "sample.png")
 	writeTestPNG(t, filePath)
 
-	vision := llm.NewMockProvider("vision").AddTextResponse("The image contains colored pixels.")
+	vision := mockprovider.NewMockProvider("vision").AddTextResponse("The image contains colored pixels.")
 	tool := NewViewImageToolWithVision(nil, vision, "vision-model")
 	args, err := json.Marshal(ViewImageArgs{FilePath: filePath, Detail: "high", Question: "What is shown?"})
 	if err != nil {
@@ -119,7 +120,7 @@ func TestViewImageToolExecute_RoutedVisionReturnsTextOnly(t *testing.T) {
 	if len(req.Messages) != 1 || len(req.Messages[0].Parts) != 2 {
 		t.Fatalf("vision request messages = %#v, want text + image", req.Messages)
 	}
-	if req.Messages[0].Parts[1].Type != llm.PartImage || req.Messages[0].Parts[1].ImageData == nil {
+	if req.Messages[0].Parts[1].Type != core.PartImage || req.Messages[0].Parts[1].ImageData == nil {
 		t.Fatalf("vision request second part = %#v, want image data", req.Messages[0].Parts[1])
 	}
 }

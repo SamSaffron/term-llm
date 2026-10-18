@@ -10,7 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/clipboard"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -128,20 +128,20 @@ func (m *Model) handleImageAttachmentKeys(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	}
 }
 
-func (m *Model) imagePartList() []llm.Part {
+func (m *Model) imagePartList() []core.Part {
 	if len(m.images) == 0 {
 		return nil
 	}
 	indirectVision := m.engine != nil && m.engine.IndirectVision()
-	parts := make([]llm.Part, 0, len(m.images))
+	parts := make([]core.Part, 0, len(m.images))
 	for i := range m.images {
 		img := &m.images[i]
 		if indirectVision && img.Path == "" {
 			img.Path = saveChatImageAttachment(img.Data, img.MediaType)
 		}
-		part := llm.Part{
-			Type:      llm.PartImage,
-			ImageData: &llm.ToolImageData{MediaType: img.MediaType, Base64: base64.StdEncoding.EncodeToString(img.Data)},
+		part := core.Part{
+			Type:      core.PartImage,
+			ImageData: &core.ToolImageData{MediaType: img.MediaType, Base64: base64.StdEncoding.EncodeToString(img.Data)},
 		}
 		if indirectVision {
 			part.ImagePath = img.Path

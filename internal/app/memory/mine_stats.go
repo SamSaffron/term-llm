@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -31,7 +32,7 @@ type memoryMineLoadResult struct {
 
 type extractionRequestStats interface {
 	noteToolCall(name string)
-	noteUsage(use *llm.Usage)
+	noteUsage(use *core.Usage)
 }
 
 type memoryExtractionStats struct {
@@ -133,14 +134,14 @@ func (opts MineOptions) newMemoryExtractionStats(candidate memoryMineCandidate, 
 		ExistingFragments:         existingFragments,
 		TranscriptMessages:        len(load.Messages),
 		PromptMaxTokens:           opts.PromptMaxTokens,
-		PromptEstimatedTokens:     llm.EstimateTokens(memoryExtractionSystemPrompt) + llm.EstimateTokens(parts.Prompt),
-		SystemTokens:              llm.EstimateTokens(memoryExtractionSystemPrompt),
-		MetadataTokens:            llm.EstimateTokens(parts.Metadata),
-		TaxonomyTokens:            llm.EstimateTokens(parts.TaxonomyMap),
-		TranscriptTokens:          llm.EstimateTokens(parts.Transcript),
+		PromptEstimatedTokens:     engine.EstimateTokens(memoryExtractionSystemPrompt) + engine.EstimateTokens(parts.Prompt),
+		SystemTokens:              engine.EstimateTokens(memoryExtractionSystemPrompt),
+		MetadataTokens:            engine.EstimateTokens(parts.Metadata),
+		TaxonomyTokens:            engine.EstimateTokens(parts.TaxonomyMap),
+		TranscriptTokens:          engine.EstimateTokens(parts.Transcript),
 		TranscriptUserTokens:      userTokens,
 		TranscriptAssistantTokens: assistantTokens,
-		InstructionsTokens:        llm.EstimateTokens(parts.Instructions),
+		InstructionsTokens:        engine.EstimateTokens(parts.Instructions),
 		TruncatedMessages:         load.TruncatedMessages,
 		AssistantMessagesCut:      load.AssistantMessagesCut,
 		UserMessagesCut:           load.UserMessagesCut,
@@ -155,11 +156,11 @@ func transcriptRoleTokenBreakdown(messages []session.Message) (userTokens, assis
 		if text == "" {
 			continue
 		}
-		tokens := llm.EstimateTokens(text)
+		tokens := engine.EstimateTokens(text)
 		switch msg.Role {
-		case llm.RoleUser:
+		case core.RoleUser:
 			userTokens += tokens
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			assistantTokens += tokens
 		}
 	}
@@ -177,7 +178,7 @@ func (s *memoryExtractionStats) noteToolCall(name string) {
 	sort.Strings(s.ToolNames)
 }
 
-func (s *memoryExtractionStats) noteUsage(use *llm.Usage) {
+func (s *memoryExtractionStats) noteUsage(use *core.Usage) {
 	if use == nil {
 		return
 	}
@@ -322,8 +323,8 @@ func newInsightExtractionStats(candidate memoryMineCandidate, messages []session
 		SessionID:             candidate.Session.ID,
 		SessionNumber:         candidate.Summary.Number,
 		Agent:                 candidate.Agent,
-		PromptEstimatedTokens: llm.EstimateTokens(insightExtractionSystemPrompt) + llm.EstimateTokens(prompt),
-		SystemTokens:          llm.EstimateTokens(insightExtractionSystemPrompt),
+		PromptEstimatedTokens: engine.EstimateTokens(insightExtractionSystemPrompt) + engine.EstimateTokens(prompt),
+		SystemTokens:          engine.EstimateTokens(insightExtractionSystemPrompt),
 		ExistingInsights:      existingInsights,
 		Transcript:            transcriptStats,
 	}
@@ -334,27 +335,27 @@ func summarizeInsightTranscriptStats(messages []session.Message, transcript []tr
 	for _, msg := range messages {
 		text := strings.TrimSpace(msg.TextContent)
 		switch msg.Role {
-		case llm.RoleSystem:
+		case core.RoleSystem:
 			stats.DroppedSystem++
-		case llm.RoleUser:
-			stats.RawUserTokens += llm.EstimateTokens(text)
-		case llm.RoleAssistant:
-			stats.RawAssistantTokens += llm.EstimateTokens(text)
+		case core.RoleUser:
+			stats.RawUserTokens += engine.EstimateTokens(text)
+		case core.RoleAssistant:
+			stats.RawAssistantTokens += engine.EstimateTokens(text)
 			for _, summary := range summarizeInsightToolCalls(msg) {
-				stats.RawToolTokens += llm.EstimateTokens(summary)
+				stats.RawToolTokens += engine.EstimateTokens(summary)
 			}
-		case llm.RoleTool:
+		case core.RoleTool:
 			for _, summary := range summarizeInsightToolResults(msg) {
-				stats.RawToolTokens += llm.EstimateTokens(summary)
+				stats.RawToolTokens += engine.EstimateTokens(summary)
 			}
 		}
 	}
 	for _, msg := range transcript {
-		tokens := llm.EstimateTokens(strings.TrimSpace(msg.Text))
+		tokens := engine.EstimateTokens(strings.TrimSpace(msg.Text))
 		switch msg.Role {
-		case string(llm.RoleUser):
+		case string(core.RoleUser):
 			stats.UserTokens += tokens
-		case string(llm.RoleTool):
+		case string(core.RoleTool):
 			stats.ToolTokens += tokens
 		default:
 			stats.AssistantTokens += tokens
@@ -372,7 +373,7 @@ func summarizeInsightTranscriptStats(messages []session.Message, transcript []tr
 
 func (s *insightExtractionStats) noteToolCall(name string) {}
 
-func (s *insightExtractionStats) noteUsage(use *llm.Usage) {
+func (s *insightExtractionStats) noteUsage(use *core.Usage) {
 	if use == nil {
 		return
 	}

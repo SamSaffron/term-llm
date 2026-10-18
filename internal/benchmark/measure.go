@@ -7,7 +7,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/core/stream"
 )
 
 type measureSpec struct {
@@ -62,11 +63,11 @@ func (r Runner) measure(ctx context.Context, target Target, opts Options, spec m
 		record.Temperature = &value
 	}
 
-	req := llm.Request{
+	req := core.Request{
 		Model:           target.RequestedModel,
 		SessionID:       "benchmark-" + payload.SHA256,
 		Ephemeral:       true,
-		Messages:        []llm.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: payload.Text}}}},
+		Messages:        []core.Message{{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: payload.Text}}}},
 		ReasoningEffort: opts.ReasoningEffort,
 		ServiceTier:     target.ServiceTier,
 		ServiceTierSet:  target.ServiceTier != "",
@@ -124,7 +125,7 @@ func (r Runner) measure(ctx context.Context, target Target, opts Options, spec m
 		}
 
 		switch event.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			if event.Text != "" {
 				record.ActivityEvents++
 				record.VisibleTextEvents++
@@ -136,26 +137,26 @@ func (r Runner) measure(ctx context.Context, target Target, opts Options, spec m
 				lastActivity = timePtr(now)
 				lastText = timePtr(now)
 			}
-		case llm.EventReasoningDelta:
+		case core.EventReasoningDelta:
 			if event.Text != "" || event.ReasoningEncryptedContent != "" {
 				record.ActivityEvents++
 				record.ReasoningObserved = true
 				setFirst(&firstActivity, now)
 				lastActivity = timePtr(now)
 			}
-		case llm.EventUsage:
+		case core.EventUsage:
 			if event.Use != nil {
 				record.UsageReceived = true
 				record.Usage = normalizeUsage(*event.Use, target.Capabilities)
 			}
-		case llm.EventRetry:
+		case core.EventRetry:
 			record.RetryEvents++
 			record.RetryWaitSeconds += event.RetryWaitSecs
-		case llm.EventAttemptDiscard:
+		case core.EventAttemptDiscard:
 			record.AttemptDiscards++
-		case llm.EventModelSwitch:
+		case core.EventModelSwitch:
 			record.ObservedModels = append(record.ObservedModels, ModelSwitch{Model: event.Model, ReasoningEffort: event.ReasoningEffort})
-		case llm.EventError:
+		case core.EventError:
 			if intentionalOutputLimitStop(event.Err, record) {
 				record.OutputLimitReached = true
 				record.OutputLimitStatus = "reached_intentionally"
@@ -166,7 +167,7 @@ func (r Runner) measure(ctx context.Context, target Target, opts Options, spec m
 				record.Error = "provider stream error"
 			}
 			terminalTime = &now
-		case llm.EventDone:
+		case core.EventDone:
 			record.TerminalReceived = true
 			terminalTime = &now
 		}
@@ -198,7 +199,7 @@ func (r Runner) measure(ctx context.Context, target Target, opts Options, spec m
 	return record
 }
 
-func normalizeUsage(usage llm.Usage, capabilities AdapterCapabilities) UsageRecord {
+func normalizeUsage(usage core.Usage, capabilities AdapterCapabilities) UsageRecord {
 	total := usage.ProviderRawInputTokens
 	source := "provider_raw"
 	if total <= 0 {
@@ -332,7 +333,7 @@ func finalizeEligibility(record *RunRecord, target Target, opts Options, phase s
 }
 
 func intentionalOutputLimitStop(err error, record RunRecord) bool {
-	var incomplete *llm.ResponsesIncompleteError
+	var incomplete *stream.ResponsesIncompleteError
 	return errors.As(err, &incomplete) && incomplete.Reason == "max_output_tokens" &&
 		record.UsageReceived && record.RequestedOutput > 0 &&
 		record.Usage.OutputTokens == record.RequestedOutput

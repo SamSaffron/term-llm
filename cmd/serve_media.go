@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mediatype"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -25,7 +25,7 @@ type webMediaEntry struct {
 	Caption   string `json:"caption,omitempty"`
 }
 
-func (s *serveServer) toolMediaEntries(media []llm.MediaArtifact) []webMediaEntry {
+func (s *serveServer) toolMediaEntries(media []core.MediaArtifact) []webMediaEntry {
 	entries := make([]webMediaEntry, 0, len(media))
 	for _, item := range media {
 		mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))

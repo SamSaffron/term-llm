@@ -10,7 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -281,10 +281,10 @@ func (m *Model) persistSkillRunInvocation(state *skillRunState) {
 	provenance.StartedAt = state.StartedAt.UTC().Format(time.RFC3339Nano)
 	message := &session.Message{
 		SessionID: stateSessionID(m),
-		Role:      llm.RoleEvent,
-		Parts: []llm.Part{
-			{Type: llm.PartSkillActivation, SkillActivation: provenance},
-			{Type: llm.PartText, Text: state.DisplayInvocation},
+		Role:      core.RoleEvent,
+		Parts: []core.Part{
+			{Type: core.PartSkillActivation, SkillActivation: provenance},
+			{Type: core.PartText, Text: state.DisplayInvocation},
 		},
 		TextContent: "↳ Skill invocation " + state.DisplayInvocation + " · isolated · " + state.ID,
 		CreatedAt:   state.StartedAt,
@@ -317,10 +317,10 @@ func (m *Model) persistCompletedSkillRun(done skillRunDoneMsg) {
 	resultText := m.skillRunResultText(state, done.Err)
 	visible := &session.Message{
 		SessionID: m.sess.ID,
-		Role:      llm.RoleEvent,
-		Parts: []llm.Part{
-			{Type: llm.PartSkillActivation, SkillActivation: provenance},
-			{Type: llm.PartText, Text: resultText},
+		Role:      core.RoleEvent,
+		Parts: []core.Part{
+			{Type: core.PartSkillActivation, SkillActivation: provenance},
+			{Type: core.PartText, Text: resultText},
 		},
 		TextContent: resultText,
 		CreatedAt:   state.CompletedAt,
@@ -332,10 +332,10 @@ func (m *Model) persistCompletedSkillRun(done skillRunDoneMsg) {
 		contextText := fmt.Sprintf("<isolated_skill_result name=%q run_id=%q child_session_id=%q status=%q>\n%s\n</isolated_skill_result>", state.Name, state.ID, state.ChildSessionID, state.Status, state.Output)
 		developer := &session.Message{
 			SessionID: m.sess.ID,
-			Role:      llm.RoleDeveloper,
-			Parts: []llm.Part{
-				{Type: llm.PartSkillActivation, SkillActivation: provenance},
-				{Type: llm.PartText, Text: contextText},
+			Role:      core.RoleDeveloper,
+			Parts: []core.Part{
+				{Type: core.PartSkillActivation, SkillActivation: provenance},
+				{Type: core.PartText, Text: contextText},
 			},
 			TextContent: contextText,
 			CreatedAt:   state.CompletedAt,

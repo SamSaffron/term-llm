@@ -12,26 +12,28 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type deadlineCapturingProvider struct {
-	delegate *llm.MockProvider
+	delegate *mockprovider.MockProvider
 	deadline time.Time
 	ok       bool
 }
 
 type delayedGuardianProvider struct {
-	delegate *llm.MockProvider
+	delegate *mockprovider.MockProvider
 	started  chan<- struct{}
 	release  <-chan struct{}
 	cleaned  *atomic.Int32
 }
 
-func (p *delayedGuardianProvider) Name() string                   { return "delayed-guardian" }
-func (p *delayedGuardianProvider) Credential() string             { return "mock" }
-func (p *delayedGuardianProvider) Capabilities() llm.Capabilities { return p.delegate.Capabilities() }
-func (p *delayedGuardianProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *delayedGuardianProvider) Name() string                    { return "delayed-guardian" }
+func (p *delayedGuardianProvider) Credential() string              { return "mock" }
+func (p *delayedGuardianProvider) Capabilities() core.Capabilities { return p.delegate.Capabilities() }
+func (p *delayedGuardianProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	select {
 	case p.started <- struct{}{}:
 	case <-ctx.Done():
@@ -50,7 +52,7 @@ func (p *delayedGuardianProvider) CleanupMCP() {
 	}
 }
 
-func withGuardianProviderFactory(t *testing.T, fn func(*config.Config, string, string) (llm.Provider, error)) {
+func withGuardianProviderFactory(t *testing.T, fn func(*config.Config, string, string) (core.Provider, error)) {
 	t.Helper()
 	orig := newGuardianProviderByName
 	newGuardianProviderByName = fn
@@ -61,17 +63,17 @@ func (p *deadlineCapturingProvider) Name() string { return "deadline-capturing" 
 func (p *deadlineCapturingProvider) Credential() string {
 	return "mock"
 }
-func (p *deadlineCapturingProvider) Capabilities() llm.Capabilities {
+func (p *deadlineCapturingProvider) Capabilities() core.Capabilities {
 	return p.delegate.Capabilities()
 }
-func (p *deadlineCapturingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *deadlineCapturingProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.deadline, p.ok = ctx.Deadline()
 	return p.delegate.Stream(ctx, req)
 }
 
 func TestPreflightHeadlessApproval(t *testing.T) {
 	calls := 0
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 		calls++
 		return nil, errors.New("guardian unavailable")
 	})
@@ -92,7 +94,7 @@ func TestPreflightHeadlessApproval(t *testing.T) {
 
 func TestApplyResolvedApprovalModeInteractiveFailureWarnsOnceAndFallsBack(t *testing.T) {
 	calls := 0
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 		calls++
 		return nil, errors.New("guardian unavailable")
 	})
@@ -115,7 +117,7 @@ func TestApplyResolvedApprovalModeInteractiveFailureWarnsOnceAndFallsBack(t *tes
 }
 
 func TestApplyResolvedApprovalModePromptPreparationFailureWarnsOnce(t *testing.T) {
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 		return nil, errors.New("guardian unavailable")
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
@@ -134,7 +136,7 @@ func TestApplyResolvedApprovalModePromptPreparationFailureWarnsOnce(t *testing.T
 }
 
 func TestApplyResolvedApprovalModeHeadlessFailureIsStartupError(t *testing.T) {
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 		return nil, errors.New("guardian unavailable")
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
@@ -150,8 +152,8 @@ func TestApplyResolvedApprovalModeHeadlessFailureIsStartupError(t *testing.T) {
 }
 
 func TestInstallGuardianReviewerCallbacksDoesNotActivateModeButSupportsLaterAutoToggle(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"high","user_authorization":"low","outcome":"deny","rationale":"credential probing"}`)
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse(`{"risk_level":"high","user_authorization":"low","outcome":"deny","rationale":"credential probing"}`)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model", FastModel: "mock-fast"}}}
 
@@ -176,8 +178,8 @@ func TestInstallGuardianReviewerCallbacksDoesNotActivateModeButSupportsLaterAuto
 }
 
 func TestInstallGuardianReviewerCallbacksAppliesConfiguredTimeout(t *testing.T) {
-	provider := &deadlineCapturingProvider{delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)}
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := &deadlineCapturingProvider{delegate: mockprovider.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)}
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	cfg := &config.Config{
 		DefaultProvider: "mock",
@@ -195,8 +197,8 @@ func TestInstallGuardianReviewerCallbacksAppliesConfiguredTimeout(t *testing.T) 
 }
 
 func TestInstallGuardianReviewerCallbacksUsesDefaultTimeoutWhenUnset(t *testing.T) {
-	provider := &deadlineCapturingProvider{delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)}
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := &deadlineCapturingProvider{delegate: mockprovider.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)}
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model", FastModel: "mock-fast"}}}
 
@@ -218,7 +220,7 @@ func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *test
 	var activeFactoryCalls atomic.Int32
 	var maxActiveFactoryCalls atomic.Int32
 	var cleaned atomic.Int32
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 		call := factoryCalls.Add(1)
 		active := activeFactoryCalls.Add(1)
 		defer activeFactoryCalls.Add(-1)
@@ -235,7 +237,7 @@ func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *test
 			close(peerFactoryEntered)
 		}
 		return &delayedGuardianProvider{
-			delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`),
+			delegate: mockprovider.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`),
 			started:  started,
 			release:  release,
 			cleaned:  &cleaned,
@@ -289,9 +291,9 @@ func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *test
 
 func TestInstallGuardianReviewerCallbacksCleansReplacedPool(t *testing.T) {
 	var cleaned atomic.Int32
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 		return &delayedGuardianProvider{
-			delegate: llm.NewMockProvider("mock").AddTextResponse(`{"outcome":"allow"}`),
+			delegate: mockprovider.NewMockProvider("mock").AddTextResponse(`{"outcome":"allow"}`),
 			started:  make(chan struct{}, 1),
 			release:  closedChannel(),
 			cleaned:  &cleaned,
@@ -321,9 +323,9 @@ func closedChannel() <-chan struct{} {
 }
 
 func TestInstallGuardianReviewerCallbacksUsesDefaultProviderFastModelWhenGuardianUnset(t *testing.T) {
-	guardianProvider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	guardianProvider := mockprovider.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
 	var gotName, gotModel string
-	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (core.Provider, error) {
 		gotName = name
 		gotModel = model
 		return guardianProvider, nil
@@ -346,10 +348,10 @@ func TestInstallGuardianReviewerCallbacksUsesDefaultProviderFastModelWhenGuardia
 }
 
 func TestInstallGuardianReviewerCallbacksUsesDedicatedProviderInstance(t *testing.T) {
-	mainProvider := llm.NewMockProvider("main")
-	guardianProvider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	mainProvider := mockprovider.NewMockProvider("main")
+	guardianProvider := mockprovider.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
 	var gotName, gotModel string
-	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (core.Provider, error) {
 		gotName = name
 		gotModel = model
 		return guardianProvider, nil
@@ -389,8 +391,8 @@ func assertDeadlineNear(t *testing.T, deadline time.Time, ok bool, want time.Dur
 }
 
 func TestApplyResolvedApprovalModeWiresClassifyAllShell(t *testing.T) {
-	provider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	perms := tools.NewToolPermissions()
 	if err := perms.AddShellPattern("git status"); err != nil {
 		t.Fatal(err)
@@ -413,9 +415,9 @@ func TestApplyResolvedApprovalModeWiresClassifyAllShell(t *testing.T) {
 }
 
 func TestInstallGuardianReviewerCallbacksExplicitProviderDoesNotHopToFastProvider(t *testing.T) {
-	provider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	provider := mockprovider.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
 	var gotName, gotModel string
-	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (core.Provider, error) {
 		gotName, gotModel = name, model
 		return provider, nil
 	})
@@ -561,11 +563,11 @@ func TestResolveGuardianTargetIgnoresRuntimeProviderOverride(t *testing.T) {
 }
 
 func TestSubagentApprovalTranscriptPrefixMarksParentEvidence(t *testing.T) {
-	parent := []llm.Message{
-		llm.UserText("please run tests"),
-		llm.AssistantText("I will delegate"),
+	parent := []core.Message{
+		core.UserText("please run tests"),
+		core.AssistantText("I will delegate"),
 	}
-	prefix := subagentApprovalTranscriptPrefix(llm.ContextWithApprovalTranscript(context.Background(), parent))
+	prefix := subagentApprovalTranscriptPrefix(core.ContextWithApprovalTranscript(context.Background(), parent))
 	if len(prefix) != 2 {
 		t.Fatalf("prefix len = %d, want 2", len(prefix))
 	}

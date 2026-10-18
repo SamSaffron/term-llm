@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -794,7 +794,7 @@ func TestHubDelegationIDFromJobLabels(t *testing.T) {
 
 func TestJobsV2LLMRunnerHubDelegationContext(t *testing.T) {
 	got := "unset"
-	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		got = tools.HubDelegationIDFromContext(ctx)
 		return serveJobsExecResult{}, nil
 	}}

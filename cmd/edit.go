@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -304,7 +305,7 @@ func getActiveModel(cfg *config.Config) string {
 }
 
 // runStreamEdit runs the streaming edit flow (one-shot, no tools)
-func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provider, request string, files []input.FileContent, specs []input.FileSpec, contextFiles []input.FileContent, stdinContent string) error {
+func runStreamEdit(ctx context.Context, cfg *config.Config, provider core.Provider, request string, files []input.FileContent, specs []input.FileSpec, contextFiles []input.FileContent, stdinContent string) error {
 	// Build file contents map
 	fileContents := make(map[string]string)
 	for _, f := range files {
@@ -466,9 +467,9 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 		userPrompt = prompt.StreamEditUserPrompt(request, files, promptSpecs, contextFiles, stdinContent, useUnifiedDiff)
 	}
 
-	messages := []llm.Message{
-		llm.SystemText(systemPrompt),
-		llm.UserText(userPrompt),
+	messages := []core.Message{
+		core.SystemText(systemPrompt),
+		core.UserText(userPrompt),
 	}
 
 	// Execute with spinner (with progress updates)

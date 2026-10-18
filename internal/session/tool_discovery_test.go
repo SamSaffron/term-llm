@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestToolDiscoveryReplayPartsRoundTripForSessionResume(t *testing.T) {
@@ -19,18 +19,18 @@ func TestToolDiscoveryReplayPartsRoundTripForSessionResume(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	message := NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"query":"eta"}`)}},
-		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: &llm.ToolDiscoveryOutput{
+	message := NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"query":"eta"}`)}},
+		{Type: core.PartDiscoveryOutput, DiscoveryOutput: &core.ToolDiscoveryOutput{
 			CallID: "search-1", CatalogueHash: "catalogue", CatalogueGen: 7,
-			Tools: []llm.DiscoveredTool{{Spec: llm.ToolSpec{
+			Tools: []core.DiscoveredTool{{Spec: core.ToolSpec{
 				Name:        "federation__eta",
 				Description: "ETA",
 				Schema:      map[string]any{"type": "object"},
-				Namespace:   &llm.ToolNamespaceIdentity{Name: "federation", ChildName: "eta", Description: "Federation tools."},
+				Namespace:   &core.ToolNamespaceIdentity{Name: "federation", ChildName: "eta", Description: "Federation tools."},
 			}, SchemaHash: "schema"}},
 		}},
-		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "federation__eta", Namespace: "federation", ChildName: "eta", Arguments: json.RawMessage(`{"id":"42"}`)}},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "federation__eta", Namespace: "federation", ChildName: "eta", Arguments: json.RawMessage(`{"id":"42"}`)}},
 	}}, 0)
 	if err := store.AddMessage(ctx, sess.ID, message); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestToolDiscoveryReplayPartsRoundTripForSessionResume(t *testing.T) {
 }
 
 func TestPersistedDiscoverySpecWithoutNamespaceMetadataRemainsReadable(t *testing.T) {
-	var output llm.ToolDiscoveryOutput
+	var output core.ToolDiscoveryOutput
 	legacy := []byte(`{"call_id":"search-old","tools":[{"spec":{"Name":"legacy__eta","Description":"ETA","Schema":{"type":"object"}},"schema_hash":"old"}]}`)
 	if err := json.Unmarshal(legacy, &output); err != nil {
 		t.Fatal(err)

@@ -8,27 +8,27 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/cobra"
 )
 
 func TestRunDirectProviderUsageWritesChatGPTPlanLimits(t *testing.T) {
 	originalFetch := fetchDirectProviderUsage
 	defer func() { fetchDirectProviderUsage = originalFetch }()
-	fetchDirectProviderUsage = func(_ context.Context, provider, apiKey string) (*llm.ProviderUsage, error) {
+	fetchDirectProviderUsage = func(_ context.Context, provider, apiKey string) (*providerusage.Report, error) {
 		if provider != "chatgpt" {
 			t.Fatalf("provider = %q", provider)
 		}
 		if apiKey != "" {
 			t.Fatalf("apiKey = %q, want empty for chatgpt", apiKey)
 		}
-		return &llm.ProviderUsage{
+		return &providerusage.Report{
 			Provider: "chatgpt",
 			Plan:     "plus",
-			Limits: []llm.ProviderUsageLimit{{
+			Limits: []providerusage.Limit{{
 				ID:   "codex",
 				Name: "Codex",
-				PrimaryWindow: &llm.ProviderUsageWindow{
+				PrimaryWindow: &providerusage.Window{
 					UsedPercent:     25,
 					DurationMinutes: 300,
 					ResetsAt:        time.Now().Add(time.Hour),
@@ -54,15 +54,15 @@ func TestRunDirectProviderUsageWritesChatGPTPlanLimits(t *testing.T) {
 func TestRunUsageRoutesGrokToOAuthUsageFetcher(t *testing.T) {
 	originalFetch := fetchDirectProviderUsage
 	defer func() { fetchDirectProviderUsage = originalFetch }()
-	fetchDirectProviderUsage = func(_ context.Context, provider, apiKey string) (*llm.ProviderUsage, error) {
+	fetchDirectProviderUsage = func(_ context.Context, provider, apiKey string) (*providerusage.Report, error) {
 		if provider != "grok" || apiKey != "" {
 			t.Fatalf("fetch args = provider %q, apiKey %q", provider, apiKey)
 		}
-		return &llm.ProviderUsage{
+		return &providerusage.Report{
 			Provider: "grok",
-			Limits: []llm.ProviderUsageLimit{{
+			Limits: []providerusage.Limit{{
 				Name: "Weekly limit",
-				PrimaryWindow: &llm.ProviderUsageWindow{
+				PrimaryWindow: &providerusage.Window{
 					Label:       "1 week window",
 					UsedPercent: 42,
 				},
@@ -107,15 +107,15 @@ func TestRunDirectProviderUsageOpenCodeGoUsesConfiguredKey(t *testing.T) {
 			"opencode-go": {Type: config.ProviderTypeOpenCodeGo, ResolvedAPIKey: "configured-key"},
 		}}, nil
 	}
-	fetchDirectProviderUsage = func(_ context.Context, provider, apiKey string) (*llm.ProviderUsage, error) {
+	fetchDirectProviderUsage = func(_ context.Context, provider, apiKey string) (*providerusage.Report, error) {
 		if provider != "opencode-go" || apiKey != "configured-key" {
 			t.Fatalf("fetch args = provider %q, apiKey %q", provider, apiKey)
 		}
-		return &llm.ProviderUsage{
+		return &providerusage.Report{
 			Provider: "opencode-go",
-			Limits: []llm.ProviderUsageLimit{{
+			Limits: []providerusage.Limit{{
 				Name: "Rolling usage",
-				PrimaryWindow: &llm.ProviderUsageWindow{
+				PrimaryWindow: &providerusage.Window{
 					Label:       "5 hour window",
 					UsedPercent: 42,
 				},

@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -27,7 +27,7 @@ type Candidate struct {
 // title candidate that is specific and complete enough to use.
 var ErrRejected = errors.New("generated titles rejected")
 
-func Generate(ctx context.Context, provider llm.Provider, sess *session.Session, messages []session.Message) (Candidate, error) {
+func Generate(ctx context.Context, provider core.Provider, sess *session.Session, messages []session.Message) (Candidate, error) {
 	if provider == nil {
 		return Candidate{}, fmt.Errorf("provider is nil")
 	}
@@ -101,7 +101,7 @@ func BuildConversationSlice(messages []session.Message) string {
 		}
 		words := len(strings.Fields(text))
 		switch m.Role {
-		case llm.RoleUser:
+		case core.RoleUser:
 			if userWords >= 650 {
 				return false
 			}
@@ -112,7 +112,7 @@ func BuildConversationSlice(messages []session.Message) string {
 			userWords += words
 			lines = append(lines, "User: "+text)
 			return true
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			if assistantWords >= 300 {
 				return false
 			}
@@ -134,13 +134,13 @@ func BuildConversationSlice(messages []session.Message) string {
 	openingUser := 0
 	openingAssistant := 0
 	for _, m := range messages {
-		if m.Role == llm.RoleUser && openingUser < 3 {
+		if m.Role == core.RoleUser && openingUser < 3 {
 			if appendMsg(m) {
 				openingUser++
 			}
 			continue
 		}
-		if m.Role == llm.RoleAssistant && openingAssistant < 1 && openingUser > 0 {
+		if m.Role == core.RoleAssistant && openingAssistant < 1 && openingUser > 0 {
 			if appendMsg(m) {
 				openingAssistant++
 			}
@@ -156,13 +156,13 @@ func BuildConversationSlice(messages []session.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		switch m.Role {
-		case llm.RoleUser:
+		case core.RoleUser:
 			if recentUser >= 3 {
 				continue
 			}
 			recentUser++
 			tail = append(tail, m)
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			if recentAssistant >= 2 {
 				continue
 			}
@@ -230,17 +230,17 @@ func Acceptable(c Candidate) bool {
 	return true
 }
 
-func completeText(ctx context.Context, provider llm.Provider, prompt string, timeout time.Duration) (string, error) {
+func completeText(ctx context.Context, provider core.Provider, prompt string, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	stream, err := provider.Stream(ctx, llm.Request{
+	stream, err := provider.Stream(ctx, core.Request{
 		Ephemeral: true,
-		Messages: []llm.Message{
-			llm.SystemText("You generate concise, specific titles and reply exactly as requested."),
-			llm.UserText(prompt),
+		Messages: []core.Message{
+			core.SystemText("You generate concise, specific titles and reply exactly as requested."),
+			core.UserText(prompt),
 		},
 		MaxTurns: 1,
 	})
@@ -258,9 +258,9 @@ func completeText(ctx context.Context, provider llm.Provider, prompt string, tim
 			return "", err
 		}
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			b.WriteString(ev.Text)
-		case llm.EventError:
+		case core.EventError:
 			if ev.Err != nil {
 				return "", ev.Err
 			}

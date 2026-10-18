@@ -5,7 +5,8 @@ import (
 	"time"
 
 	serveshell "github.com/samsaffron/term-llm/internal/app/serve/shell"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -28,7 +29,7 @@ func newServeShellManager(ttl time.Duration, exists func(string) bool) *serveShe
 
 func platformServeShellSupported() bool { return serveshell.Supported() }
 
-func collectLLMText(message llm.Message) string { return serveshell.CollectLLMText(message) }
+func collectLLMText(message core.Message) string { return serveshell.CollectLLMText(message) }
 
 // serveCollaborativeShellController adapts the extracted controller to the
 // serve runtime, which supplies the manager lazily.
@@ -47,11 +48,11 @@ func (c *serveCollaborativeShellController) Mode(ctx context.Context, sessionID 
 	return c.inner().Mode(ctx, sessionID)
 }
 
-func (c *serveCollaborativeShellController) PrepareRequestContext(ctx context.Context, sessionID string, messages []llm.Message) ([]llm.Message, error) {
+func (c *serveCollaborativeShellController) PrepareRequestContext(ctx context.Context, sessionID string, messages []core.Message) ([]core.Message, error) {
 	return c.inner().PrepareRequestContext(ctx, sessionID, messages)
 }
 
-func (c *serveCollaborativeShellController) PrepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error {
+func (c *serveCollaborativeShellController) PrepareCompactionContext(ctx context.Context, sessionID string, result *engine.CompactionResult) error {
 	return c.inner().PrepareCompactionContext(ctx, sessionID, result)
 }
 

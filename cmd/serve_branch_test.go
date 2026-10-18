@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -27,10 +29,10 @@ func TestResponsesBranchCreatesChildAndContinuesWithoutChangingSource(t *testing
 		t.Fatal(err)
 	}
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("first"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("first answer"), -1),
-		*session.NewMessage(sourceID, llm.UserText("second"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("second answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("first"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("first answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("second"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("second answer"), -1),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -42,11 +44,11 @@ func TestResponsesBranchCreatesChildAndContinuesWithoutChangingSource(t *testing
 		t.Fatal(err)
 	}
 
-	provider := llm.NewMockProvider("mock").
-		AddTurn(llm.MockTurn{Text: "- The second attempt discovered a parser edge case.", Usage: llm.Usage{InputTokens: 19, OutputTokens: 7}}).
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{Text: "- The second attempt discovered a parser edge case.", Usage: core.Usage{InputTokens: 19, OutputTokens: 7}}).
 		AddTextResponse("alternate answer")
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{provider: provider, engine: engine, store: store, defaultModel: "mock-model"}
 		rt.Touch()
 		return rt, nil
@@ -101,7 +103,7 @@ func TestResponsesBranchCreatesChildAndContinuesWithoutChangingSource(t *testing
 	}
 	providerTexts := make([]string, 0, len(provider.Requests[1].Messages))
 	for _, message := range provider.Requests[1].Messages {
-		if text := strings.TrimSpace(llm.MessageText(message)); text != "" {
+		if text := strings.TrimSpace(core.MessageText(message)); text != "" {
 			providerTexts = append(providerTexts, text)
 		}
 	}
@@ -164,19 +166,19 @@ func TestPrepareBranchPathNoteOnceSurvivesCancellationAndDeduplicates(t *testing
 		t.Fatal(err)
 	}
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("anchor"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("important later finding"), -1),
+		*session.NewMessage(sourceID, core.UserText("anchor"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("important later finding"), -1),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	messages, _ := store.GetMessages(ctx, sourceID, 0, 0)
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{
 		Text: "- Keep the later finding.", Delay: 100 * time.Millisecond,
-		Usage: llm.Usage{InputTokens: 11, OutputTokens: 4},
+		Usage: core.Usage{InputTokens: 11, OutputTokens: 4},
 	})
 	srv := &serveServer{
 		store: store,
-		pathNotesProviderFactory: func(_, _ string) (llm.Provider, error) {
+		pathNotesProviderFactory: func(_, _ string) (core.Provider, error) {
 			return provider, nil
 		},
 	}
@@ -230,9 +232,9 @@ func TestResponsesBranchKeepsStaleAndHeaderConflictSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("one"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("one answer"), -1),
-		*session.NewMessage(sourceID, llm.UserText("two"), -1),
+		*session.NewMessage(sourceID, core.UserText("one"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("one answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("two"), -1),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -271,13 +273,13 @@ func TestResponsesBranchSupportsEmptyAnchorAndRequiresAnchorField(t *testing.T) 
 	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, llm.UserText("source stays here"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, core.UserText("source stays here"), -1)); err != nil {
 		t.Fatal(err)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("fresh answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("fresh answer")
 	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
-		runtime := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), store: store, defaultModel: "mock-model"}
+		runtime := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), store: store, defaultModel: "mock-model"}
 		runtime.Touch()
 		return runtime, nil
 	})
@@ -332,7 +334,7 @@ func TestResponsesBranchRejectsActiveSourceBeforeCopy(t *testing.T) {
 	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", Model: "mock", Status: session.StatusActive}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, llm.AssistantText("durable answer"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, core.AssistantText("durable answer"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	messages, _ := store.GetMessages(ctx, sourceID, 0, 0)
@@ -391,10 +393,10 @@ func TestBranchStreamingModeIsFirstPartyOnly(t *testing.T) {
 }
 
 func TestSessionMessageEntriesExposeOnlyMarkedDeveloperPathNotes(t *testing.T) {
-	marked := session.NewPathNoteMessage("child", "- Useful finding.", llm.PathNoteProvenance{SourceSessionID: "source", AnchorMessageID: 4}, 2)
+	marked := session.NewPathNoteMessage("child", "- Useful finding.", core.PathNoteProvenance{SourceSessionID: "source", AnchorMessageID: 4}, 2)
 	marked.ID = 9
 	entries := (&serveServer{}).sessionMessageEntries([]session.Message{
-		*session.NewMessage("child", llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "secret platform prompt"}}}, 1),
+		*session.NewMessage("child", core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "secret platform prompt"}}}, 1),
 		*marked,
 	})
 	if len(entries) != 1 || entries[0].Role != "path-note" || len(entries[0].Parts) != 1 {

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/share"
 )
 
@@ -158,20 +158,20 @@ func imageShareFixture(t *testing.T) (*Session, []Message, string) {
 	upload := base64.StdEncoding.EncodeToString(testPNG(t, 3, 3, true))
 	sess := &Session{ID: "sess", Provider: "p", Model: "m", CreatedAt: time.Now()}
 	messages := []Message{
-		{ID: 1, Sequence: 1, Role: llm.RoleUser, TextContent: "draw it", Parts: []llm.Part{
-			{Type: llm.PartText, Text: "draw it"},
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: upload}},
+		{ID: 1, Sequence: 1, Role: core.RoleUser, TextContent: "draw it", Parts: []core.Part{
+			{Type: core.PartText, Text: "draw it"},
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: upload}},
 		}},
-		{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "image_generate", Arguments: []byte(`{}`)}}}},
-		{ID: 3, Sequence: 3, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+		{ID: 2, Sequence: 2, Role: core.RoleAssistant, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c1", Name: "image_generate", Arguments: []byte(`{}`)}}}},
+		{ID: 3, Sequence: 3, Role: core.RoleTool, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
 			ID: "c1", Name: "image_generate", Content: "Generated image successfully.", Images: []string{generated, notImage},
 		}}}},
-		{ID: 4, Sequence: 4, Role: llm.RoleAssistant, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c2", Name: "show_media", Arguments: []byte(`{}`)}}}},
-		{ID: 5, Sequence: 5, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
-			ID: "c2", Name: "show_media", Content: "Media ready.", Media: []llm.MediaArtifact{{Reference: reference, StoredPath: shown, SourcePath: "/nonexistent", MediaType: "image/png", Name: "shown.png"}},
+		{ID: 4, Sequence: 4, Role: core.RoleAssistant, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c2", Name: "show_media", Arguments: []byte(`{}`)}}}},
+		{ID: 5, Sequence: 5, Role: core.RoleTool, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+			ID: "c2", Name: "show_media", Content: "Media ready.", Media: []core.MediaArtifact{{Reference: reference, StoredPath: shown, SourcePath: "/nonexistent", MediaType: "image/png", Name: "shown.png"}},
 		}}}},
-		{ID: 6, Sequence: 6, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Here:\n\n![A chart](term-llm-media://" + reference + ")",
-			Parts: []llm.Part{{Type: llm.PartText, Text: "Here:\n\n![A chart](term-llm-media://" + reference + ")"}}},
+		{ID: 6, Sequence: 6, Role: core.RoleAssistant, ResponseID: "r1", TextContent: "Here:\n\n![A chart](term-llm-media://" + reference + ")",
+			Parts: []core.Part{{Type: core.PartText, Text: "Here:\n\n![A chart](term-llm-media://" + reference + ")"}}},
 	}
 	return sess, messages, dir
 }
@@ -308,11 +308,11 @@ func TestSelectShareResponseKeepsDisplayedImages(t *testing.T) {
 	var images, texts int
 	for _, part := range selection.Messages[0].Parts {
 		switch part.Type {
-		case llm.PartImage:
+		case core.PartImage:
 			images++
-		case llm.PartText:
+		case core.PartText:
 			texts++
-		case llm.PartToolCall, llm.PartToolResult:
+		case core.PartToolCall, core.PartToolResult:
 			t.Fatal("response share exposed tool activity")
 		}
 	}
@@ -373,14 +373,14 @@ func TestShareIncludesToolResultsPersistedAfterAnchor(t *testing.T) {
 	text := fixture[5].Parts[0].Text
 	messages := []Message{
 		fixture[0],
-		{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: text, Parts: []llm.Part{
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "image_generate", Arguments: []byte(`{}`)}},
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c2", Name: "show_media", Arguments: []byte(`{}`)}},
-			{Type: llm.PartText, Text: text},
+		{ID: 2, Sequence: 2, Role: core.RoleAssistant, ResponseID: "r1", TextContent: text, Parts: []core.Part{
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c1", Name: "image_generate", Arguments: []byte(`{}`)}},
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c2", Name: "show_media", Arguments: []byte(`{}`)}},
+			{Type: core.PartText, Text: text},
 		}},
-		{ID: 3, Sequence: 3, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: generated}}},
-		{ID: 4, Sequence: 4, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: shown}}},
-		{ID: 5, Sequence: 5, Role: llm.RoleUser, TextContent: "later prompt", Parts: []llm.Part{{Type: llm.PartText, Text: "later prompt"}}},
+		{ID: 3, Sequence: 3, Role: core.RoleTool, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolResult, ToolResult: generated}}},
+		{ID: 4, Sequence: 4, Role: core.RoleTool, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolResult, ToolResult: shown}}},
+		{ID: 5, Sequence: 5, Role: core.RoleUser, TextContent: "later prompt", Parts: []core.Part{{Type: core.PartText, Text: "later prompt"}}},
 	}
 	sess := &Session{ID: "sess", CreatedAt: time.Now()}
 	for _, scope := range []ShareScope{ShareScopeResponse, ShareScopeConversation} {
@@ -420,12 +420,12 @@ func TestShareIncludesToolResultsPersistedAfterAnchor(t *testing.T) {
 
 func TestStripToolActivityKeepsConversationAndDisplayedImages(t *testing.T) {
 	_, fixture, dir := imageShareFixture(t)
-	secretCall := Message{ID: 10, Sequence: 10, Role: llm.RoleAssistant, ResponseID: "r1", Parts: []llm.Part{
-		{Type: llm.PartText, Text: "Checking the config."},
-		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "s1", Name: "shell", Arguments: []byte(`{"command":"cat ~/.secret-token"}`)}},
+	secretCall := Message{ID: 10, Sequence: 10, Role: core.RoleAssistant, ResponseID: "r1", Parts: []core.Part{
+		{Type: core.PartText, Text: "Checking the config."},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "s1", Name: "shell", Arguments: []byte(`{"command":"cat ~/.secret-token"}`)}},
 	}}
-	secretResult := Message{ID: 11, Sequence: 11, Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
-		ID: "s1", Name: "shell", Content: "TOKEN=sk-live-SECRET", Diffs: []llm.DiffData{{File: "config.yaml", Old: "a", New: "SECRET-DIFF"}},
+	secretResult := Message{ID: 11, Sequence: 11, Role: core.RoleTool, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+		ID: "s1", Name: "shell", Content: "TOKEN=sk-live-SECRET", Diffs: []core.DiffData{{File: "config.yaml", Old: "a", New: "SECRET-DIFF"}},
 	}}}}
 	messages := append([]Message{fixture[0], secretCall, secretResult}, fixture[1:]...)
 
@@ -434,17 +434,17 @@ func TestStripToolActivityKeepsConversationAndDisplayedImages(t *testing.T) {
 		t.Fatalf("media = %d, want the shown artifact", len(media))
 	}
 	for _, msg := range stripped {
-		if msg.Role == llm.RoleTool {
+		if msg.Role == core.RoleTool {
 			t.Fatal("tool row survived")
 		}
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolCall || part.Type == llm.PartToolResult {
+			if part.Type == core.PartToolCall || part.Type == core.PartToolResult {
 				t.Fatal("tool part survived")
 			}
 		}
 	}
 	// One user prompt plus one merged assistant message for response r1.
-	if len(stripped) != 2 || stripped[1].Role != llm.RoleAssistant {
+	if len(stripped) != 2 || stripped[1].Role != core.RoleAssistant {
 		t.Fatalf("stripped = %+v", stripped)
 	}
 	if !strings.Contains(stripped[1].TextContent, "Checking the config.") || !strings.Contains(stripped[1].TextContent, "Here:") {
@@ -540,19 +540,19 @@ func TestResponseShareKeepsOnlyTextAfterLastToolCall(t *testing.T) {
 	_, fixture, _ := imageShareFixture(t)
 	generated := fixture[2].Parts[0].ToolResult
 	shown := fixture[4].Parts[0].ToolResult
-	call := func(id, name string) llm.Part {
-		return llm.Part{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: id, Name: name, Arguments: []byte(`{}`)}}
+	call := func(id, name string) core.Part {
+		return core.Part{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: id, Name: name, Arguments: []byte(`{}`)}}
 	}
-	text := func(value string) llm.Part { return llm.Part{Type: llm.PartText, Text: value} }
-	toolRow := func(id, seq int64, result *llm.ToolResult) Message {
-		return Message{ID: id, Sequence: int(seq), Role: llm.RoleTool, ResponseID: "r1", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: result}}}
+	text := func(value string) core.Part { return core.Part{Type: core.PartText, Text: value} }
+	toolRow := func(id, seq int64, result *core.ToolResult) Message {
+		return Message{ID: id, Sequence: int(seq), Role: core.RoleTool, ResponseID: "r1", Parts: []core.Part{{Type: core.PartToolResult, ToolResult: result}}}
 	}
 	final := "Final answer:\n\n![A chart](term-llm-media://0123456789abcdef0123456789abcdef)"
 
 	t.Run("claude cli single row", func(t *testing.T) {
 		messages := []Message{
 			fixture[0],
-			{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Interim A\n\nInterim B\n\n" + final, Parts: []llm.Part{
+			{ID: 2, Sequence: 2, Role: core.RoleAssistant, ResponseID: "r1", TextContent: "Interim A\n\nInterim B\n\n" + final, Parts: []core.Part{
 				text("Interim A"), call("c1", "image_generate"), text("Interim B"), call("c2", "show_media"), text(final),
 			}},
 			toolRow(3, 3, generated),
@@ -563,7 +563,7 @@ func TestResponseShareKeepsOnlyTextAfterLastToolCall(t *testing.T) {
 			t.Fatalf("text = %q, want only the final answer", got)
 		}
 		parts := selection.Messages[0].Parts
-		if len(parts) != 3 || parts[0].Type != llm.PartImage || parts[1].Type != llm.PartImage || parts[2].Type != llm.PartText {
+		if len(parts) != 3 || parts[0].Type != core.PartImage || parts[1].Type != core.PartImage || parts[2].Type != core.PartText {
 			t.Fatalf("parts = %+v, want displayed images then the final text", parts)
 		}
 		if len(selection.Media) != 1 {
@@ -574,9 +574,9 @@ func TestResponseShareKeepsOnlyTextAfterLastToolCall(t *testing.T) {
 	t.Run("separate rows", func(t *testing.T) {
 		messages := []Message{
 			fixture[0],
-			{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Let me look.", Parts: []llm.Part{text("Let me look."), call("c1", "image_generate")}},
+			{ID: 2, Sequence: 2, Role: core.RoleAssistant, ResponseID: "r1", TextContent: "Let me look.", Parts: []core.Part{text("Let me look."), call("c1", "image_generate")}},
 			toolRow(3, 3, generated),
-			{ID: 4, Sequence: 4, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Here it is.", Parts: []llm.Part{text("Here it is.")}},
+			{ID: 4, Sequence: 4, Role: core.RoleAssistant, ResponseID: "r1", TextContent: "Here it is.", Parts: []core.Part{text("Here it is.")}},
 		}
 		if _, got := responseShareText(t, messages, 4); got != "Here it is." {
 			t.Fatalf("text = %q", got)
@@ -586,7 +586,7 @@ func TestResponseShareKeepsOnlyTextAfterLastToolCall(t *testing.T) {
 	t.Run("ends with a tool call", func(t *testing.T) {
 		messages := []Message{
 			fixture[0],
-			{ID: 2, Sequence: 2, Role: llm.RoleAssistant, ResponseID: "r1", TextContent: "Early\n\nThe answer.", Parts: []llm.Part{
+			{ID: 2, Sequence: 2, Role: core.RoleAssistant, ResponseID: "r1", TextContent: "Early\n\nThe answer.", Parts: []core.Part{
 				text("Early"), call("c1", "shell"), text("The answer."), call("c2", "shell"),
 			}},
 		}

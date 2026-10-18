@@ -3,10 +3,10 @@ package cmd
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
-func (p *serveRunPersistence) assistantSnapshot(ctx context.Context, turnIndex int, assistant llm.Message) error {
+func (p *serveRunPersistence) assistantSnapshot(ctx context.Context, turnIndex int, assistant core.Message) error {
 	assistant = tagResponseRunMessage(ctx, assistant, turnIndex)
 	if run := responseRunFromContext(ctx); run != nil && run.boundary != nil {
 		run.boundary.UpdateAssistant(run.id, assistant)
@@ -20,7 +20,7 @@ func (p *serveRunPersistence) assistantSnapshot(ctx context.Context, turnIndex i
 	return nil
 }
 
-func (p *serveRunPersistence) responseCompleted(ctx context.Context, turnIndex int, assistant llm.Message, metrics llm.TurnMetrics) error {
+func (p *serveRunPersistence) responseCompleted(ctx context.Context, turnIndex int, assistant core.Message, metrics core.TurnMetrics) error {
 	p.rt.refreshResponseDeadline()
 	assistant = tagResponseRunMessage(ctx, assistant, turnIndex)
 	if run := responseRunFromContext(ctx); run != nil && run.boundary != nil {
@@ -35,8 +35,8 @@ func (p *serveRunPersistence) responseCompleted(ctx context.Context, turnIndex i
 	return nil
 }
 
-func (p *serveRunPersistence) turnCompleted(ctx context.Context, turnIndex int, messages []llm.Message, metrics llm.TurnMetrics) error {
-	if len(messages) > 0 && messages[0].Role == llm.RoleAssistant {
+func (p *serveRunPersistence) turnCompleted(ctx context.Context, turnIndex int, messages []core.Message, metrics core.TurnMetrics) error {
+	if len(messages) > 0 && messages[0].Role == core.RoleAssistant {
 		p.rt.refreshResponseDeadline()
 	}
 	for i := range messages {
@@ -50,12 +50,12 @@ func (p *serveRunPersistence) turnCompleted(ctx context.Context, turnIndex int, 
 	return nil
 }
 
-func (p *serveRunPersistence) commitCompletedTurn(ctx context.Context, turnIndex int, messages []llm.Message) {
+func (p *serveRunPersistence) commitCompletedTurn(ctx context.Context, turnIndex int, messages []core.Message) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lastAppendResult = appendMessagesResult{}
 	appendStart := 0
-	if len(messages) > 0 && messages[0].Role == llm.RoleAssistant {
+	if len(messages) > 0 && messages[0].Role == core.RoleAssistant {
 		p.upsertAssistantLocked(ctx, messages[0], !p.pendingAssistantTextPersisted)
 		appendStart = 1
 	}

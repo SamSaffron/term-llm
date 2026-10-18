@@ -5,13 +5,15 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/search"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func defaultToolRegistry(cfg *config.Config) *llm.ToolRegistry {
-	registry := llm.NewToolRegistry()
+func defaultToolRegistry(cfg *config.Config) *engine.ToolRegistry {
+	registry := engine.NewToolRegistry()
 	var searcher search.Searcher = search.NewLazySearcher(cfg)
 	if err := search.Available(cfg); err != nil {
 		// Preserve the existing fallback for absent configuration, but never
@@ -53,8 +55,8 @@ func newReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
 // newEngine creates an Engine with the default tool registry and global config
 // applied (e.g., tool output truncation). All command entry points should use
 // this instead of calling llm.NewEngine directly.
-func newEngine(provider llm.Provider, cfg *config.Config) *llm.Engine {
-	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+func newEngine(provider core.Provider, cfg *config.Config) *engine.Engine {
+	engine := engine.NewEngine(provider, defaultToolRegistry(cfg))
 	engine.SetMaxToolOutputChars(cfg.Tools.MaxToolOutputChars)
 	return engine
 }

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"golang.org/x/oauth2"
@@ -117,7 +117,7 @@ func runServeMCPOAuthTestIsolated(t *testing.T) bool {
 	return false
 }
 
-func waitForServeMCPTool(t *testing.T, rt *serveRuntime, name string) llm.Tool {
+func waitForServeMCPTool(t *testing.T, rt *serveRuntime, name string) core.Tool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestPromptHistoryCrossSessionTraversal(t *testing.T) {
@@ -42,7 +43,7 @@ func TestPromptHistoryCrossSessionTraversal(t *testing.T) {
 
 	addPrompt := func(sess *Session, text string) int64 {
 		t.Helper()
-		msg := NewMessage(sess.ID, llm.UserText(text), -1)
+		msg := NewMessage(sess.ID, core.UserText(text), -1)
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage(%q): %v", text, err)
 		}
@@ -116,7 +117,7 @@ func TestPromptHistoryOutsideSessionTraversalByDateAcrossAgents(t *testing.T) {
 	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	addPrompt := func(sess *Session, text string, at time.Time) int64 {
 		t.Helper()
-		msg := NewMessage(sess.ID, llm.UserText(text), -1)
+		msg := NewMessage(sess.ID, core.UserText(text), -1)
 		msg.CreatedAt = at
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage(%q): %v", text, err)
@@ -184,7 +185,7 @@ func TestPromptHistoryOutsideSessionExcludesSubagentPrompts(t *testing.T) {
 	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	addPrompt := func(sess *Session, text string, at time.Time) int64 {
 		t.Helper()
-		msg := NewMessage(sess.ID, llm.UserText(text), -1)
+		msg := NewMessage(sess.ID, core.UserText(text), -1)
 		msg.CreatedAt = at
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage(%q): %v", text, err)
@@ -240,7 +241,7 @@ func TestPromptHistoryOutsideSessionNextSkipsCursorWithRealStoredTimestamps(t *t
 
 	addPrompt := func(text string) int64 {
 		t.Helper()
-		msg := NewMessage(other.ID, llm.UserText(text), -1)
+		msg := NewMessage(other.ID, core.UserText(text), -1)
 		// Do not overwrite CreatedAt. This preserves time.Now's monotonic clock
 		// suffix in the value sent to SQLite, matching real AddMessage callers and
 		// guarding against the cursor row being returned by Next again.
@@ -300,7 +301,7 @@ func TestSessionPreferredTitlePrecedence(t *testing.T) {
 }
 
 func TestInternalCompactionSummarySQLPrefixMatchesLLM(t *testing.T) {
-	if !llm.IsInternalCompactionSummaryText(internalCompactionSummarySQLPrefix + "\nsummary") {
+	if !engine.IsInternalCompactionSummaryText(internalCompactionSummarySQLPrefix + "\nsummary") {
 		t.Fatalf("internalCompactionSummarySQLPrefix %q no longer matches llm compaction summaries", internalCompactionSummarySQLPrefix)
 	}
 	if strings.Contains(internalCompactionSummarySQLPrefix, "'") {
@@ -412,7 +413,7 @@ func TestSQLiteStoreTranscriptReadDoesNotOccupyWriterConnection(t *testing.T) {
 
 	writeCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	if err := store.AddMessage(writeCtx, sess.ID, NewMessage(sess.ID, llm.UserText("concurrent write"), -1)); err != nil {
+	if err := store.AddMessage(writeCtx, sess.ID, NewMessage(sess.ID, core.UserText("concurrent write"), -1)); err != nil {
 		t.Fatalf("AddMessage while transcript read is open: %v", err)
 	}
 }
@@ -462,7 +463,7 @@ func TestSQLiteStoreReadsDoNotQueueBehindWriterConnection(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, core.UserText("hello"), -1)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -831,7 +832,7 @@ func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		msg := NewMessage(sess.ID, llm.UserText(fmt.Sprintf("msg-%d", i)), i)
+		msg := NewMessage(sess.ID, core.UserText(fmt.Sprintf("msg-%d", i)), i)
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage(%d): %v", i, err)
 		}
@@ -874,7 +875,7 @@ func TestSQLiteStoreMaxMessageSequencesBatchesSessions(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText("latest"), 7)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, core.UserText("latest"), 7)); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
@@ -912,10 +913,10 @@ func TestSQLiteStoreGetMessagesPageDescendingHonorsBeforeSeqAndLimit(t *testing.
 	}
 
 	seed := []Message{
-		*NewMessage(sess.ID, llm.UserText("msg-0"), 0),
-		*NewMessage(sess.ID, llm.AssistantText("msg-1"), 1),
-		*NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "tool-2"}}}, 2),
-		*NewMessage(sess.ID, llm.AssistantText("msg-3"), 3),
+		*NewMessage(sess.ID, core.UserText("msg-0"), 0),
+		*NewMessage(sess.ID, core.AssistantText("msg-1"), 1),
+		*NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartText, Text: "tool-2"}}}, 2),
+		*NewMessage(sess.ID, core.AssistantText("msg-3"), 3),
 	}
 	for i := range seed {
 		if err := store.AddMessage(ctx, sess.ID, &seed[i]); err != nil {
@@ -960,20 +961,20 @@ func TestSQLiteStoreGetLatestVisibleMessageIDSkipsInvisibleTail(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	user := NewMessage(sess.ID, llm.UserText("hello"), 0)
+	user := NewMessage(sess.ID, core.UserText("hello"), 0)
 	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
-	assistant := NewMessage(sess.ID, llm.AssistantText("hi"), 1)
+	assistant := NewMessage(sess.ID, core.AssistantText("hi"), 1)
 	if err := store.AddMessage(ctx, sess.ID, assistant); err != nil {
 		t.Fatalf("AddMessage(assistant): %v", err)
 	}
-	tool := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "invisible tail"}}}, 2)
+	tool := NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartText, Text: "invisible tail"}}}, 2)
 	if err := store.AddMessage(ctx, sess.ID, tool); err != nil {
 		t.Fatalf("AddMessage(tool): %v", err)
 	}
 
-	compactionTail := NewMessage(sess.ID, llm.AssistantText("hidden retained tail"), 3)
+	compactionTail := NewMessage(sess.ID, core.AssistantText("hidden retained tail"), 3)
 	compactionTail.CompactionTail = true
 	if err := store.AddMessage(ctx, sess.ID, compactionTail); err != nil {
 		t.Fatalf("AddMessage(compaction tail): %v", err)
@@ -1003,11 +1004,11 @@ func TestSQLiteStorePersistsCompactionTailFlag(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	visible := NewMessage(sess.ID, llm.UserText("visible prompt"), -1)
+	visible := NewMessage(sess.ID, core.UserText("visible prompt"), -1)
 	if err := store.AddMessage(ctx, sess.ID, visible); err != nil {
 		t.Fatalf("AddMessage(visible): %v", err)
 	}
-	hidden := NewMessage(sess.ID, llm.AssistantText("hidden retained tail"), -1)
+	hidden := NewMessage(sess.ID, core.AssistantText("hidden retained tail"), -1)
 	hidden.CompactionTail = true
 	if err := store.AddMessage(ctx, sess.ID, hidden); err != nil {
 		t.Fatalf("AddMessage(hidden): %v", err)
@@ -1067,12 +1068,12 @@ func TestSQLiteStoreMessageCountExcludesNonChatBubbleRowsOnAdd(t *testing.T) {
 	}
 
 	messages := []*Message{
-		NewMessage(sess.ID, llm.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), -1),
-		NewMessage(sess.ID, llm.UserText("please inspect the repo"), -1),
-		NewMessage(sess.ID, llm.AssistantText("   \n\t"), -1),
+		NewMessage(sess.ID, core.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), -1),
+		NewMessage(sess.ID, core.UserText("please inspect the repo"), -1),
+		NewMessage(sess.ID, core.AssistantText("   \n\t"), -1),
 		assistantToolCallOnlyMessage(sess.ID, -1),
 		toolResultMessage(sess.ID, -1),
-		NewMessage(sess.ID, llm.AssistantText("I found the answer."), -1),
+		NewMessage(sess.ID, core.AssistantText("I found the answer."), -1),
 	}
 	for _, msg := range messages {
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
@@ -1099,12 +1100,12 @@ func TestSQLiteStoreMessageCountExcludesNonChatBubbleRowsOnReplaceMessages(t *te
 	}
 
 	messages := []Message{
-		*NewMessage(sess.ID, llm.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), 0),
-		*NewMessage(sess.ID, llm.UserText("please inspect the repo"), 1),
-		*NewMessage(sess.ID, llm.AssistantText("   \n\t"), 2),
+		*NewMessage(sess.ID, core.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), 0),
+		*NewMessage(sess.ID, core.UserText("please inspect the repo"), 1),
+		*NewMessage(sess.ID, core.AssistantText("   \n\t"), 2),
 		*assistantToolCallOnlyMessage(sess.ID, 3),
 		*toolResultMessage(sess.ID, 4),
-		*NewMessage(sess.ID, llm.AssistantText("I found the answer."), 5),
+		*NewMessage(sess.ID, core.AssistantText("I found the answer."), 5),
 	}
 	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
 		t.Fatalf("ReplaceMessages: %v", err)
@@ -1133,12 +1134,12 @@ func TestSQLiteStoreMigration27BackfillsChatBubbleMessageCount(t *testing.T) {
 		t.Fatalf("seed session: %v", err)
 	}
 	seedMessages := []*Message{
-		NewMessage("sess1", llm.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), 0),
-		NewMessage("sess1", llm.UserText("please inspect the repo"), 1),
-		NewMessage("sess1", llm.AssistantText("   \n\t"), 2),
+		NewMessage("sess1", core.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), 0),
+		NewMessage("sess1", core.UserText("please inspect the repo"), 1),
+		NewMessage("sess1", core.AssistantText("   \n\t"), 2),
 		assistantToolCallOnlyMessage("sess1", 3),
 		toolResultMessage("sess1", 4),
-		NewMessage("sess1", llm.AssistantText("I found the answer."), 5),
+		NewMessage("sess1", core.AssistantText("I found the answer."), 5),
 	}
 	for _, msg := range seedMessages {
 		partsJSON, err := msg.PartsJSON()
@@ -1180,7 +1181,7 @@ func TestSQLiteStoreMessageCountTriggersHandleDeleteAndCompactionTailUpdates(t *
 		t.Fatalf("Create: %v", err)
 	}
 
-	user := NewMessage(sess.ID, llm.UserText("visible user"), -1)
+	user := NewMessage(sess.ID, core.UserText("visible user"), -1)
 	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
@@ -1188,7 +1189,7 @@ func TestSQLiteStoreMessageCountTriggersHandleDeleteAndCompactionTailUpdates(t *
 	if err := store.AddMessage(ctx, sess.ID, toolOnly); err != nil {
 		t.Fatalf("AddMessage(tool-only assistant): %v", err)
 	}
-	assistant := NewMessage(sess.ID, llm.AssistantText("visible assistant"), -1)
+	assistant := NewMessage(sess.ID, core.AssistantText("visible assistant"), -1)
 	if err := store.AddMessage(ctx, sess.ID, assistant); err != nil {
 		t.Fatalf("AddMessage(assistant): %v", err)
 	}
@@ -1211,11 +1212,11 @@ func TestSQLiteStoreMessageCountTriggersHandleDeleteAndCompactionTailUpdates(t *
 }
 
 func assistantToolCallOnlyMessage(sessionID string, sequence int) *Message {
-	return NewMessage(sessionID, llm.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartToolCall,
-			ToolCall: &llm.ToolCall{
+	return NewMessage(sessionID, core.Message{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type: core.PartToolCall,
+			ToolCall: &core.ToolCall{
 				ID:        "call-1",
 				Name:      "read_file",
 				Arguments: []byte(`{"path":"README.md"}`),
@@ -1225,11 +1226,11 @@ func assistantToolCallOnlyMessage(sessionID string, sequence int) *Message {
 }
 
 func toolResultMessage(sessionID string, sequence int) *Message {
-	return NewMessage(sessionID, llm.Message{
-		Role: llm.RoleTool,
-		Parts: []llm.Part{{
-			Type: llm.PartToolResult,
-			ToolResult: &llm.ToolResult{
+	return NewMessage(sessionID, core.Message{
+		Role: core.RoleTool,
+		Parts: []core.Part{{
+			Type: core.PartToolResult,
+			ToolResult: &core.ToolResult{
 				ID:      "call-1",
 				Name:    "read_file",
 				Content: "README contents",
@@ -1270,9 +1271,9 @@ func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	messages := []Message{
-		*NewMessage(sess.ID, llm.UserText("stable user"), 0),
-		*NewMessage(sess.ID, llm.AssistantText("stable assistant"), 1),
-		*NewMessage(sess.ID, llm.UserText("old suffix"), 2),
+		*NewMessage(sess.ID, core.UserText("stable user"), 0),
+		*NewMessage(sess.ID, core.AssistantText("stable assistant"), 1),
+		*NewMessage(sess.ID, core.UserText("old suffix"), 2),
 	}
 	for i := range messages {
 		messages[i].CreatedAt = base.Add(time.Duration(i) * time.Second)
@@ -1290,10 +1291,10 @@ func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 	}
 
 	replacement := []Message{
-		*NewMessage(sess.ID, llm.UserText("stable user"), 0),
-		*NewMessage(sess.ID, llm.AssistantText("stable assistant"), 1),
-		*NewMessage(sess.ID, llm.UserText("new suffix"), 2),
-		*NewMessage(sess.ID, llm.AssistantText("new tail"), 3),
+		*NewMessage(sess.ID, core.UserText("stable user"), 0),
+		*NewMessage(sess.ID, core.AssistantText("stable assistant"), 1),
+		*NewMessage(sess.ID, core.UserText("new suffix"), 2),
+		*NewMessage(sess.ID, core.AssistantText("new tail"), 3),
 	}
 	for i := range replacement {
 		// Simulate serve/web rebuilding a fresh snapshot for unchanged history: the
@@ -1373,10 +1374,10 @@ func TestSQLiteStoreReplaceMessagesRecomputesActivityMetadata(t *testing.T) {
 
 	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
 	messages := []Message{
-		*NewMessage(sess.ID, llm.UserText("first user"), 0),
-		*NewMessage(sess.ID, llm.AssistantText("first assistant"), 1),
-		*NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "tool output"}}}, 2),
-		*NewMessage(sess.ID, llm.UserText("second user"), 3),
+		*NewMessage(sess.ID, core.UserText("first user"), 0),
+		*NewMessage(sess.ID, core.AssistantText("first assistant"), 1),
+		*NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartText, Text: "tool output"}}}, 2),
+		*NewMessage(sess.ID, core.UserText("second user"), 3),
 	}
 	for i := range messages {
 		messages[i].CreatedAt = base.Add(time.Duration(i+1) * time.Second)
@@ -1444,7 +1445,7 @@ func TestSQLiteStoreReplaceMessagesFallsBackForDuplicateSequences(t *testing.T) 
 		t.Fatalf("Create: %v", err)
 	}
 
-	desired := []Message{*NewMessage(sess.ID, llm.UserText("kept message"), 0)}
+	desired := []Message{*NewMessage(sess.ID, core.UserText("kept message"), 0)}
 	if err := store.ReplaceMessages(ctx, sess.ID, desired); err != nil {
 		t.Fatalf("initial ReplaceMessages: %v", err)
 	}
@@ -1501,8 +1502,8 @@ func TestSQLiteStoreReplaceMessagesPreservesTurnIndex(t *testing.T) {
 	}
 
 	messages := []Message{
-		*NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}}, 0),
-		*NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}}, 1),
+		*NewMessage(sess.ID, core.Message{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "hello"}}}, 0),
+		*NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "hi"}}}, 1),
 	}
 	messages[0].TurnIndex = 11
 	messages[1].TurnIndex = 12
@@ -1541,7 +1542,7 @@ func TestSQLiteStoreReplaceMessagesClearsCompactionBoundary(t *testing.T) {
 		t.Fatalf("seed compaction boundary: %v", err)
 	}
 
-	messages := []Message{*NewMessage(sess.ID, llm.UserText("replacement"), 0)}
+	messages := []Message{*NewMessage(sess.ID, core.UserText("replacement"), 0)}
 	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
 		t.Fatalf("ReplaceMessages: %v", err)
 	}
@@ -1569,7 +1570,7 @@ func TestLoadActiveMessagesClearsStaleCompactionBoundary(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText("hello"), 0)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, core.UserText("hello"), 0)); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET compaction_seq = 99, compaction_count = 1 WHERE id = ?", sess.ID); err != nil {
@@ -1611,7 +1612,7 @@ func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "term-llm memory search"}}}, 0)
+	msg := NewMessage(sess.ID, core.Message{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "term-llm memory search"}}}, 0)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -1696,14 +1697,14 @@ func TestSQLiteStoreSearchReturnsDistinctFilteredSessionMatches(t *testing.T) {
 		}
 	}
 	for i := 0; i < 3; i++ {
-		if err := store.AddMessage(ctx, "chat-session", NewMessage("chat-session", llm.UserText(fmt.Sprintf("shared needle duplicate %d", i)), i)); err != nil {
+		if err := store.AddMessage(ctx, "chat-session", NewMessage("chat-session", core.UserText(fmt.Sprintf("shared needle duplicate %d", i)), i)); err != nil {
 			t.Fatalf("AddMessage(chat %d): %v", i, err)
 		}
 	}
-	if err := store.AddMessage(ctx, "web-session", NewMessage("web-session", llm.UserText("shared needle web match"), 0)); err != nil {
+	if err := store.AddMessage(ctx, "web-session", NewMessage("web-session", core.UserText("shared needle web match"), 0)); err != nil {
 		t.Fatalf("AddMessage(web): %v", err)
 	}
-	if err := store.AddMessage(ctx, "archived-web-session", NewMessage("archived-web-session", llm.UserText("shared needle archived match"), 0)); err != nil {
+	if err := store.AddMessage(ctx, "archived-web-session", NewMessage("archived-web-session", core.UserText("shared needle archived match"), 0)); err != nil {
 		t.Fatalf("AddMessage(archived): %v", err)
 	}
 
@@ -1765,7 +1766,7 @@ func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "Be concise"}}}, -1)
+	msg := NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "Be concise"}}}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage developer: %v", err)
 	}
@@ -1777,8 +1778,8 @@ func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleDeveloper {
-		t.Fatalf("message role = %q, want %q", msgs[0].Role, llm.RoleDeveloper)
+	if msgs[0].Role != core.RoleDeveloper {
+		t.Fatalf("message role = %q, want %q", msgs[0].Role, core.RoleDeveloper)
 	}
 }
 
@@ -1797,7 +1798,7 @@ func TestSQLiteStorePersistsEventMessages(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	marker := llm.ModelSwapEventMessage(llm.ModelSwapMarker{FromProvider: "old", FromModel: "a", ToProvider: "new", ToModel: "b", Status: "succeeded", Strategy: "naive"})
+	marker := core.ModelSwapEventMessage(core.ModelSwapMarker{FromProvider: "old", FromModel: "a", ToProvider: "new", ToModel: "b", Status: "succeeded", Strategy: "naive"})
 	msg := NewMessage(sess.ID, marker, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage event: %v", err)
@@ -1810,10 +1811,10 @@ func TestSQLiteStorePersistsEventMessages(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleEvent {
-		t.Fatalf("message role = %q, want %q", msgs[0].Role, llm.RoleEvent)
+	if msgs[0].Role != core.RoleEvent {
+		t.Fatalf("message role = %q, want %q", msgs[0].Role, core.RoleEvent)
 	}
-	if parsed, ok := llm.ParseModelSwapMarker(msgs[0].ToLLMMessage()); !ok || parsed.Status != "succeeded" {
+	if parsed, ok := core.ParseModelSwapMarker(msgs[0].ToLLMMessage()); !ok || parsed.Status != "succeeded" {
 		t.Fatalf("failed to parse persisted model-swap marker: ok=%v parsed=%#v", ok, parsed)
 	}
 }
@@ -1834,7 +1835,7 @@ func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 	}
 
 	userTime := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second)
-	userMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}}, -1)
+	userMsg := NewMessage(sess.ID, core.Message{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "hi"}}}, -1)
 	userMsg.CreatedAt = userTime
 	if err := store.AddMessage(ctx, sess.ID, userMsg); err != nil {
 		t.Fatalf("AddMessage user: %v", err)
@@ -1855,7 +1856,7 @@ func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 	}
 
 	assistantTime := userTime.Add(10 * time.Second)
-	assistantMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}}, -1)
+	assistantMsg := NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "hello"}}}, -1)
 	assistantMsg.CreatedAt = assistantTime
 	if err := store.AddMessage(ctx, sess.ID, assistantMsg); err != nil {
 		t.Fatalf("AddMessage assistant: %v", err)
@@ -1875,17 +1876,17 @@ func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 	// Tool/developer/system messages must not bump last_message_at; user and
 	// assistant role rows retain the historical activity-sort behavior.
 	nonVisibleTime := assistantTime.Add(1 * time.Hour)
-	toolMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "ignored"}}}, -1)
+	toolMsg := NewMessage(sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartText, Text: "ignored"}}}, -1)
 	toolMsg.CreatedAt = nonVisibleTime
 	if err := store.AddMessage(ctx, sess.ID, toolMsg); err != nil {
 		t.Fatalf("AddMessage tool: %v", err)
 	}
-	devMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "ignored"}}}, -1)
+	devMsg := NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "ignored"}}}, -1)
 	devMsg.CreatedAt = nonVisibleTime.Add(1 * time.Second)
 	if err := store.AddMessage(ctx, sess.ID, devMsg); err != nil {
 		t.Fatalf("AddMessage developer: %v", err)
 	}
-	systemMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "ignored"}}}, -1)
+	systemMsg := NewMessage(sess.ID, core.Message{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "ignored"}}}, -1)
 	systemMsg.CreatedAt = nonVisibleTime.Add(2 * time.Second)
 	if err := store.AddMessage(ctx, sess.ID, systemMsg); err != nil {
 		t.Fatalf("AddMessage system: %v", err)
@@ -2110,7 +2111,7 @@ func TestSQLiteStoreMigratesMessagesTableToAllowDeveloperRole(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "Be concise"}}}, -1)
+	msg := NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "Be concise"}}}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage developer after migration: %v", err)
 	}
@@ -2965,11 +2966,11 @@ func TestSQLiteStoreCompactMessagesIncrementsCompactionCount(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, &Message{Role: llm.RoleUser, TextContent: "hello"}); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, &Message{Role: core.RoleUser, TextContent: "hello"}); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
-	if err := store.CompactMessages(ctx, sess.ID, []Message{{Role: llm.RoleAssistant, TextContent: "summary one"}}); err != nil {
+	if err := store.CompactMessages(ctx, sess.ID, []Message{{Role: core.RoleAssistant, TextContent: "summary one"}}); err != nil {
 		t.Fatalf("CompactMessages #1: %v", err)
 	}
 	got, err := store.Get(ctx, sess.ID)
@@ -2980,7 +2981,7 @@ func TestSQLiteStoreCompactMessagesIncrementsCompactionCount(t *testing.T) {
 		t.Fatalf("after #1 count/seq = %d/%d, want 1/1", got.CompactionCount, got.CompactionSeq)
 	}
 
-	if err := store.CompactMessages(ctx, sess.ID, []Message{{Role: llm.RoleAssistant, TextContent: "summary two"}}); err != nil {
+	if err := store.CompactMessages(ctx, sess.ID, []Message{{Role: core.RoleAssistant, TextContent: "summary two"}}); err != nil {
 		t.Fatalf("CompactMessages #2: %v", err)
 	}
 	got, err = store.Get(ctx, sess.ID)
@@ -3092,7 +3093,7 @@ func TestSQLiteStoreAddMessageConcurrentAutoSequence(t *testing.T) {
 		i := i
 		go func() {
 			<-start
-			msg := NewMessage(sess.ID, llm.UserText(fmt.Sprintf("msg-%02d", i)), -1)
+			msg := NewMessage(sess.ID, core.UserText(fmt.Sprintf("msg-%02d", i)), -1)
 			errCh <- store.AddMessage(ctx, sess.ID, msg)
 		}()
 	}
@@ -3191,7 +3192,7 @@ func TestSQLiteStoreMigratesLegacyMessagesToResponseSegmentIdentity(t *testing.T
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.AssistantText("legacy row"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, core.AssistantText("legacy row"), -1)); err != nil {
 		t.Fatalf("seed legacy row: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -3228,7 +3229,7 @@ func TestSQLiteStoreMigratesLegacyMessagesToResponseSegmentIdentity(t *testing.T
 	if len(messages) != 1 || messages[0].ResponseID != "" || messages[0].AssistantSegmentOrdinal != -1 {
 		t.Fatalf("migrated legacy row = %+v", messages)
 	}
-	identified := llm.AssistantText("identified row")
+	identified := core.AssistantText("identified row")
 	identified.ResponseID = "resp_migrated"
 	identified.AssistantSegmentOrdinal = 1
 	identified.SegmentStartSequence = 7
@@ -3257,8 +3258,8 @@ func TestSQLiteAudioMediaRoundTripAndTranscriptVisibility(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	audio := llm.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
-	message := NewMessage(sess.ID, llm.ToolResultMessageFromOutput("audio-call", "show_media", llm.ToolOutput{Media: []llm.MediaArtifact{audio}}, nil), 0)
+	audio := core.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
+	message := NewMessage(sess.ID, core.ToolResultMessageFromOutput("audio-call", "show_media", core.ToolOutput{Media: []core.MediaArtifact{audio}}, nil), 0)
 	if err := store.AddMessage(ctx, sess.ID, message); err != nil {
 		t.Fatal(err)
 	}

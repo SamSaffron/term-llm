@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
 
@@ -58,8 +58,8 @@ func (t *ActivateSkillTool) SetOnToolsActivated(cb SkillToolsRegisteredCallback)
 }
 
 // Spec returns the tool specification.
-func (t *ActivateSkillTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *ActivateSkillTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: ActivateSkillToolName,
 		Description: `Activate a skill to load its specialized instructions and capabilities.
 Skills provide domain-specific knowledge and guidelines for completing tasks.
@@ -88,15 +88,15 @@ Usage:
 }
 
 // Execute runs the activate_skill tool.
-func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a ActivateSkillArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return core.TextOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 
 	// Validate skill name
 	if a.Name == "" {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, "skill name is required")), nil
+		return core.TextOutput(t.formatError(ErrInvalidParams, "skill name is required")), nil
 	}
 
 	activation, err := skills.NewActivator(t.registry).Activate(skills.ActivationRequest{
@@ -108,14 +108,14 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 		if errors.As(err, &activationErr) {
 			switch activationErr.Kind {
 			case skills.ActivationNotFound:
-				return llm.TextOutput(t.formatError(ErrFileNotFound, activationErr.Error())), nil
+				return core.TextOutput(t.formatError(ErrFileNotFound, activationErr.Error())), nil
 			case skills.ActivationDisabledForOrigin:
-				return llm.TextOutput(t.formatError(ErrPermissionDenied, activationErr.Error())), nil
+				return core.TextOutput(t.formatError(ErrPermissionDenied, activationErr.Error())), nil
 			default:
-				return llm.TextOutput(t.formatError(ErrInvalidParams, activationErr.Error())), nil
+				return core.TextOutput(t.formatError(ErrInvalidParams, activationErr.Error())), nil
 			}
 		}
-		return llm.TextOutput(t.formatError(ErrExecutionFailed, err.Error())), nil
+		return core.TextOutput(t.formatError(ErrExecutionFailed, err.Error())), nil
 	}
 
 	// Register skill-declared tools first so a present allowed-tools filter can
@@ -132,7 +132,7 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	response := skills.GenerateActivationResponse(activation.Skill, a.Prompt)
 
-	return llm.TextOutput(response), nil
+	return core.TextOutput(response), nil
 }
 
 // Preview returns a short description of the tool call.

@@ -7,7 +7,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -19,7 +20,7 @@ func (m *Model) finalizeStreamStats() {
 }
 
 func (m *Model) handleStreamError(msg streamEventMsg, ev ui.StreamEvent, state *streamCommandBuffer, streamEventStart time.Time) (tea.Model, tea.Cmd, bool, []tea.Cmd, []tea.Cmd) {
-	var suspended *llm.SuspendedError
+	var suspended *engine.SuspendedError
 	if errors.As(ev.Err, &suspended) {
 		model, command := m.suspendForReload(suspended.Continuation)
 		return model, command, true, nil, nil
@@ -243,7 +244,7 @@ func (m *Model) handleStreamDone(msg streamEventMsg, ev ui.StreamEvent, state *s
 		// No store - append locally for in-memory only sessions
 		responseContent := m.currentResponse.String()
 		if responseContent != "" {
-			part := llm.Part{Type: llm.PartText, Text: responseContent}
+			part := core.Part{Type: core.PartText, Text: responseContent}
 			if reasoningContent, reasoningKind, reasoningTitle := m.currentReasoningPartMetadata(); reasoningContent != "" {
 				part.ReasoningContent = reasoningContent
 				part.ReasoningKind = reasoningKind
@@ -251,8 +252,8 @@ func (m *Model) handleStreamDone(msg streamEventMsg, ev ui.StreamEvent, state *s
 			}
 			assistantMsg := session.Message{
 				SessionID:   m.sess.ID,
-				Role:        llm.RoleAssistant,
-				Parts:       []llm.Part{part},
+				Role:        core.RoleAssistant,
+				Parts:       []core.Part{part},
 				TextContent: responseContent,
 				CreatedAt:   time.Now(),
 				Sequence:    len(m.messages),

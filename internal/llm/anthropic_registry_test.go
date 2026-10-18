@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/cache"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
 )
 
@@ -20,7 +21,7 @@ func TestAnthropicStaticModelsMatchRecordedCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var live []ModelInfo
+	var live []core.ModelInfo
 	if err := json.Unmarshal(data, &live); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestAnthropicStaticModelsMatchRecordedCatalog(t *testing.T) {
 	}
 }
 
-func withAnthropicCache(t *testing.T, models []ModelInfo) {
+func withAnthropicCache(t *testing.T, models []core.ModelInfo) {
 	t.Helper()
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	if models != nil {
@@ -62,7 +63,7 @@ func isAdaptiveModel(model string) bool {
 }
 
 func TestAnthropicLiveCatalogTakesPrecedence(t *testing.T) {
-	withAnthropicCache(t, []ModelInfo{
+	withAnthropicCache(t, []core.ModelInfo{
 		{ID: "claude-next-1", InputLimit: 480_000, OutputLimit: 96_000, ReasoningEfforts: []string{"low", "high"}, ReasoningModes: []string{"adaptive"}},
 		{ID: "claude-old-1-20240101", ReasoningModes: []string{"enabled"}},
 	})
@@ -104,7 +105,7 @@ func TestAnthropicFallbackWithoutCache(t *testing.T) {
 }
 
 func TestAnthropicOneMillionKeepsBudgetWithWarmCache(t *testing.T) {
-	withAnthropicCache(t, []ModelInfo{{ID: "claude-sonnet-4-5-20250929", InputLimit: 180_000, ReasoningModes: []string{"enabled"}}})
+	withAnthropicCache(t, []core.ModelInfo{{ID: "claude-sonnet-4-5-20250929", InputLimit: 180_000, ReasoningModes: []string{"enabled"}}})
 	if got := InputLimitForProviderModel("anthropic", "claude-sonnet-4-5"); got != 180_000 {
 		t.Fatalf("base model limit = %d, want cached 180000", got)
 	}
@@ -117,7 +118,7 @@ func TestAnthropicOneMillionKeepsBudgetWithWarmCache(t *testing.T) {
 
 // Curated rows mirror the API but must not shadow a newer live catalog.
 func TestAnthropicLiveCatalogOverridesCuratedRows(t *testing.T) {
-	withAnthropicCache(t, []ModelInfo{{ID: "claude-sonnet-4-6", InputLimit: 400_000, OutputLimit: 32_000, ReasoningEfforts: []string{"low", "xhigh"}, ReasoningModes: []string{"adaptive"}}})
+	withAnthropicCache(t, []core.ModelInfo{{ID: "claude-sonnet-4-6", InputLimit: 400_000, OutputLimit: 32_000, ReasoningEfforts: []string{"low", "xhigh"}, ReasoningModes: []string{"adaptive"}}})
 	if got := InputLimitForProviderModel("anthropic", "claude-sonnet-4-6"); got != 400_000 {
 		t.Errorf("input limit = %d, want cached 400000", got)
 	}
@@ -136,14 +137,14 @@ func TestAnthropicLiveCatalogOverridesCuratedRows(t *testing.T) {
 }
 
 func TestAnthropicOneMillionWithEffortSuffix(t *testing.T) {
-	withAnthropicCache(t, []ModelInfo{{ID: "claude-sonnet-4-5-20250929", InputLimit: 180_000}})
+	withAnthropicCache(t, []core.ModelInfo{{ID: "claude-sonnet-4-5-20250929", InputLimit: 180_000}})
 	if got := InputLimitForProviderModel("anthropic", "claude-sonnet-4-5-1m-high"); got != 980_000 {
 		t.Fatalf("-1m with effort suffix = %d, want 980000", got)
 	}
 }
 
 func TestAnthropicCachedIDsOnlyForBuiltInProvider(t *testing.T) {
-	withAnthropicCache(t, []ModelInfo{{ID: "claude-live-only"}})
+	withAnthropicCache(t, []core.ModelInfo{{ID: "claude-live-only"}})
 	RegisterProviderAliases(map[string]string{"my-gateway": "anthropic"})
 	defer RegisterProviderAliases(nil)
 	if got := ProviderModelIDs("anthropic"); !equalSlice(got, []string{"claude-live-only"}) {

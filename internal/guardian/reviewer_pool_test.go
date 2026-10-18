@@ -7,20 +7,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 type blockingReviewerProvider struct {
-	delegate *llm.MockProvider
+	delegate *mockprovider.MockProvider
 	started  chan<- struct{}
 	release  <-chan struct{}
 	cleaned  *atomic.Int32
 }
 
-func (p *blockingReviewerProvider) Name() string                   { return "blocking-reviewer" }
-func (p *blockingReviewerProvider) Credential() string             { return "test" }
-func (p *blockingReviewerProvider) Capabilities() llm.Capabilities { return p.delegate.Capabilities() }
-func (p *blockingReviewerProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *blockingReviewerProvider) Name() string                    { return "blocking-reviewer" }
+func (p *blockingReviewerProvider) Credential() string              { return "test" }
+func (p *blockingReviewerProvider) Capabilities() core.Capabilities { return p.delegate.Capabilities() }
+func (p *blockingReviewerProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	select {
 	case p.started <- struct{}{}:
 	case <-ctx.Done():
@@ -46,7 +47,7 @@ func TestReviewerPoolBoundsConcurrencyAndLazilyExpands(t *testing.T) {
 	pool, err := NewReviewerPool(3, func() (*Reviewer, error) {
 		factoryCalls.Add(1)
 		provider := &blockingReviewerProvider{
-			delegate: llm.NewMockProvider("guardian").
+			delegate: mockprovider.NewMockProvider("guardian").
 				AddTextResponse(`{"outcome":"allow"}`).
 				AddTextResponse(`{"outcome":"allow"}`),
 			started: started,
@@ -106,7 +107,7 @@ func TestReviewerPoolWaiterCancellationAndCloseCleanup(t *testing.T) {
 	var cleaned atomic.Int32
 	pool, err := NewReviewerPool(1, func() (*Reviewer, error) {
 		return &Reviewer{Provider: &blockingReviewerProvider{
-			delegate: llm.NewMockProvider("guardian").AddTextResponse(`{"outcome":"allow"}`),
+			delegate: mockprovider.NewMockProvider("guardian").AddTextResponse(`{"outcome":"allow"}`),
 			started:  started,
 			release:  release,
 			cleaned:  &cleaned,

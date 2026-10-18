@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	appconfig "github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -20,8 +20,8 @@ type CloseMsg struct{}
 type Config struct {
 	ProviderName  string
 	ModelName     string
-	ToolSpecs     []llm.ToolSpec
-	ToolDiscovery *llm.ToolDiscoveryDiagnostics
+	ToolSpecs     []core.ToolSpec
+	ToolDiscovery *core.ToolDiscoveryDiagnostics
 
 	// Compaction boundary metadata lets the inspector mark where the active
 	// compacted context begins while still showing the full preserved scrollback.
@@ -62,8 +62,8 @@ type Model struct {
 	// Optional configuration
 	providerName    string
 	modelName       string
-	toolSpecs       []llm.ToolSpec
-	toolDiscovery   *llm.ToolDiscoveryDiagnostics
+	toolSpecs       []core.ToolSpec
+	toolDiscovery   *core.ToolDiscoveryDiagnostics
 	reasoningConfig appconfig.ReasoningConfig
 
 	// Compaction boundary metadata for rendering debug markers in Ctrl+O.
@@ -108,9 +108,9 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 		m.toolSpecs = cfg.ToolSpecs
 		if cfg.ToolDiscovery != nil {
 			diagnostics := *cfg.ToolDiscovery
-			diagnostics.Recent = append([]llm.ToolActivationDiagnostic(nil), cfg.ToolDiscovery.Recent...)
-			diagnostics.RecentEvictions = append([]llm.ToolEvictionDiagnostic(nil), cfg.ToolDiscovery.RecentEvictions...)
-			diagnostics.Servers = append([]llm.ToolDiscoveryServerDiagnostic(nil), cfg.ToolDiscovery.Servers...)
+			diagnostics.Recent = append([]core.ToolActivationDiagnostic(nil), cfg.ToolDiscovery.Recent...)
+			diagnostics.RecentEvictions = append([]core.ToolEvictionDiagnostic(nil), cfg.ToolDiscovery.RecentEvictions...)
+			diagnostics.Servers = append([]core.ToolDiscoveryServerDiagnostic(nil), cfg.ToolDiscovery.Servers...)
 			m.toolDiscovery = &diagnostics
 		}
 		m.reasoningConfig = cfg.ReasoningConfig

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSessionInputRefreshWrappedSQLite(t *testing.T) {
@@ -24,7 +24,7 @@ func TestSessionInputRefreshWrappedSQLite(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	for i, msg := range []llm.Message{llm.SystemText("old prompt"), llm.UserText("preserve me"), llm.SystemText("later client system")} {
+	for i, msg := range []core.Message{core.SystemText("old prompt"), core.UserText("preserve me"), core.SystemText("later client system")} {
 		if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, msg, i)); err != nil {
 			t.Fatal(err)
 		}

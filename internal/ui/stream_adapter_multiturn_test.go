@@ -6,36 +6,37 @@ import (
 	"io"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 type multiTurnIDProvider struct {
-	requests []llm.Request
+	requests []core.Request
 }
 
 func (p *multiTurnIDProvider) Name() string       { return "multi-turn-id-test" }
 func (p *multiTurnIDProvider) Credential() string { return "test" }
-func (p *multiTurnIDProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *multiTurnIDProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 
-func (p *multiTurnIDProvider) Stream(_ context.Context, req llm.Request) (llm.Stream, error) {
+func (p *multiTurnIDProvider) Stream(_ context.Context, req core.Request) (core.Stream, error) {
 	turn := len(p.requests)
 	p.requests = append(p.requests, req)
 
-	var events []llm.Event
+	var events []core.Event
 	switch turn {
 	case 0, 1:
-		events = []llm.Event{
-			{Type: llm.EventToolCall, Tool: &llm.ToolCall{Name: "first_tool", Arguments: json.RawMessage(`{"turn":1}`)}},
-			{Type: llm.EventToolCall, Tool: &llm.ToolCall{Name: "second_tool", Arguments: json.RawMessage(`{"turn":2}`)}},
-			{Type: llm.EventDone},
+		events = []core.Event{
+			{Type: core.EventToolCall, Tool: &core.ToolCall{Name: "first_tool", Arguments: json.RawMessage(`{"turn":1}`)}},
+			{Type: core.EventToolCall, Tool: &core.ToolCall{Name: "second_tool", Arguments: json.RawMessage(`{"turn":2}`)}},
+			{Type: core.EventDone},
 		}
 	default:
-		events = []llm.Event{
-			{Type: llm.EventTextDelta, Text: "reply one. "},
-			{Type: llm.EventTextDelta, Text: "reply two."},
-			{Type: llm.EventDone},
+		events = []core.Event{
+			{Type: core.EventTextDelta, Text: "reply one. "},
+			{Type: core.EventTextDelta, Text: "reply two."},
+			{Type: core.EventDone},
 		}
 	}
 	return &testStream{events: events}, nil
@@ -45,24 +46,24 @@ type multiTurnIDTool struct {
 	name string
 }
 
-func (t multiTurnIDTool) Spec() llm.ToolSpec { return llm.ToolSpec{Name: t.name} }
-func (t multiTurnIDTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("ok"), nil
+func (t multiTurnIDTool) Spec() core.ToolSpec { return core.ToolSpec{Name: t.name} }
+func (t multiTurnIDTool) Execute(context.Context, json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("ok"), nil
 }
 func (t multiTurnIDTool) Preview(json.RawMessage) string { return t.name }
 
 func TestStreamAdapterPreservesRepeatedAutomaticToolTurns(t *testing.T) {
 	provider := &multiTurnIDProvider{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	first := multiTurnIDTool{name: "first_tool"}
 	second := multiTurnIDTool{name: "second_tool"}
 	registry.Register(first)
 	registry.Register(second)
-	engine := llm.NewEngine(provider, registry)
+	eng := engine.NewEngine(provider, registry)
 
-	stream, err := engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("run two tool turns, then reply")},
-		Tools:    []llm.ToolSpec{first.Spec(), second.Spec()},
+	stream, err := eng.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("run two tool turns, then reply")},
+		Tools:    []core.ToolSpec{first.Spec(), second.Spec()},
 		MaxTurns: 5,
 	})
 	if err != nil {
@@ -125,7 +126,7 @@ func TestStreamAdapterPreservesRepeatedAutomaticToolTurns(t *testing.T) {
 	persistedIDs := make(map[string]struct{})
 	for _, message := range provider.requests[2].Messages {
 		for _, part := range message.Parts {
-			if part.Type != llm.PartToolCall || part.ToolCall == nil {
+			if part.Type != core.PartToolCall || part.ToolCall == nil {
 				continue
 			}
 			if _, exists := persistedIDs[part.ToolCall.ID]; exists {

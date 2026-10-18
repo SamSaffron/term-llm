@@ -1,6 +1,10 @@
 package llm
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+)
 
 const (
 	// ServiceTierFast is Codex/ChatGPT's API value for user-facing "fast" mode.
@@ -23,7 +27,7 @@ func NormalizeServiceTier(value string) string {
 }
 
 // ModelSupportsServiceTier reports whether model metadata advertises tier.
-func ModelSupportsServiceTier(model ModelInfo, tier string) bool {
+func ModelSupportsServiceTier(model core.ModelInfo, tier string) bool {
 	tier = NormalizeServiceTier(tier)
 	if tier == "" {
 		return false
@@ -37,7 +41,7 @@ func ModelSupportsServiceTier(model ModelInfo, tier string) bool {
 }
 
 // ModelSupportsFast reports whether model metadata advertises fast mode.
-func ModelSupportsFast(model ModelInfo) bool {
+func ModelSupportsFast(model core.ModelInfo) bool {
 	if ModelSupportsServiceTier(model, ServiceTierFast) {
 		return true
 	}

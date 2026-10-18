@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	sessionsapp "github.com/samsaffron/term-llm/internal/app/sessions"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	sessionsapp "github.com/samsaffron/term-llm/internal/app/sessions"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
@@ -69,7 +69,7 @@ func TestSessionsShareCreatesThenUpdatesAndPersistsWholeSession(t *testing.T) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(context.Background(), sess.ID, session.NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+	if err := store.AddMessage(context.Background(), sess.ID, session.NewMessage(sess.ID, core.UserText("hello"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

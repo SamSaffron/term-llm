@@ -4,38 +4,40 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSanitizeToolHistory_ReusesValidHistory(t *testing.T) {
 	t.Parallel()
 
-	toolCall := &ToolCall{
+	toolCall := &core.ToolCall{
 		ID:         "call-1",
 		Name:       "read_file",
 		Arguments:  json.RawMessage(`{"path":"main.go"}`),
 		ThoughtSig: []byte("call-thought"),
 	}
-	toolResult := &ToolResult{
+	toolResult := &core.ToolResult{
 		ID:      "call-1",
 		Name:    "read_file",
 		Content: "package main",
-		ContentParts: []ToolContentPart{
-			{Type: ToolContentPartText, Text: "package main"},
-			{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: "abc"}},
+		ContentParts: []core.ToolContentPart{
+			{Type: core.ToolContentPartText, Text: "package main"},
+			{Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "abc"}},
 		},
-		Diffs:      []DiffData{{File: "main.go", Old: "old", New: "new", Line: 1}},
+		Diffs:      []core.DiffData{{File: "main.go", Old: "old", New: "new", Line: 1}},
 		Images:     []string{"/tmp/main.png"},
 		ThoughtSig: []byte("result-thought"),
 	}
 
-	messages := []Message{
-		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Inspect main.go"}}},
-		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "Checking"}, {Type: PartToolCall, ToolCall: toolCall}}},
-		{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: toolResult}}},
-		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "Done"}}},
+	messages := []core.Message{
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "Inspect main.go"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "Checking"}, {Type: core.PartToolCall, ToolCall: toolCall}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: toolResult}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "Done"}}},
 	}
 
-	sanitized := sanitizeToolHistory(messages)
+	sanitized := core.SanitizeToolHistory(messages)
 	if len(sanitized) != len(messages) {
 		t.Fatalf("expected %d messages, got %d", len(messages), len(sanitized))
 	}
@@ -54,15 +56,15 @@ func TestSanitizeToolHistory_ReusesValidHistory(t *testing.T) {
 func TestSanitizeToolHistory_RepairsOrphanedToolCalls(t *testing.T) {
 	t.Parallel()
 
-	messages := []Message{
-		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Run a tool"}}},
+	messages := []core.Message{
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "Run a tool"}}},
 		{
-			Role: RoleAssistant,
-			Parts: []Part{
-				{Type: PartText, Text: "Working on it"},
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
+				{Type: core.PartText, Text: "Working on it"},
 				{
-					Type: PartToolCall,
-					ToolCall: &ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        "call-1",
 						Name:      "shell",
 						Arguments: json.RawMessage(`{"command":"sleep 10"}`),
@@ -70,10 +72,10 @@ func TestSanitizeToolHistory_RepairsOrphanedToolCalls(t *testing.T) {
 				},
 			},
 		},
-		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "new request"}}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "new request"}}},
 	}
 
-	sanitized := sanitizeToolHistory(messages)
+	sanitized := core.SanitizeToolHistory(messages)
 	if len(sanitized) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(sanitized))
 	}
@@ -82,7 +84,7 @@ func TestSanitizeToolHistory_RepairsOrphanedToolCalls(t *testing.T) {
 	if len(assistant.Parts) != 2 {
 		t.Fatalf("expected assistant message to contain preserved text and interruption stub, got %d parts", len(assistant.Parts))
 	}
-	if assistant.Parts[1].Type != PartText {
+	if assistant.Parts[1].Type != core.PartText {
 		t.Fatalf("expected orphaned tool call to become text, got %q", assistant.Parts[1].Type)
 	}
 	if !strings.Contains(assistant.Parts[1].Text, "[tool call interrupted") {

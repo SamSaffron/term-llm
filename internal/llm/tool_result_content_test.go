@@ -3,26 +3,28 @@ package llm
 import (
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestTruncateToolOutputStructuredContent(t *testing.T) {
-	image := &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}
-	original := ToolOutput{
+	image := &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}
+	original := core.ToolOutput{
 		Content: strings.Repeat("unbounded fallback", 20),
-		ContentParts: []ToolContentPart{
-			{Type: ToolContentPartText, Text: "abcdefghij"},
-			{Type: ToolContentPartImageData, ImageData: image},
-			{Type: ToolContentPartText, Text: "klmnopqrst"},
+		ContentParts: []core.ToolContentPart{
+			{Type: core.ToolContentPartText, Text: "abcdefghij"},
+			{Type: core.ToolContentPartImageData, ImageData: image},
+			{Type: core.ToolContentPartText, Text: "klmnopqrst"},
 		},
 	}
 
-	got := truncateToolOutput(original, 10)
+	got := core.TruncateToolOutput(original, 10)
 	if len(got.ContentParts) != 3 {
 		t.Fatalf("ContentParts length = %d, want 3", len(got.ContentParts))
 	}
-	if got.ContentParts[0].Type != ToolContentPartText ||
-		got.ContentParts[1].Type != ToolContentPartImageData ||
-		got.ContentParts[2].Type != ToolContentPartText {
+	if got.ContentParts[0].Type != core.ToolContentPartText ||
+		got.ContentParts[1].Type != core.ToolContentPartImageData ||
+		got.ContentParts[2].Type != core.ToolContentPartText {
 		t.Fatalf("ContentParts order changed: %#v", got.ContentParts)
 	}
 	if got.ContentParts[1].ImageData == nil || got.ContentParts[1].ImageData.Base64 != image.Base64 {
@@ -50,15 +52,15 @@ func TestTruncateToolOutputStructuredContent(t *testing.T) {
 }
 
 func TestTruncateToolOutputImageOnlyFallback(t *testing.T) {
-	got := truncateToolOutput(ToolOutput{
+	got := core.TruncateToolOutput(core.ToolOutput{
 		Content: strings.Repeat("x", 100),
-		ContentParts: []ToolContentPart{{
-			Type:      ToolContentPartImageData,
-			ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+		ContentParts: []core.ToolContentPart{{
+			Type:      core.ToolContentPartImageData,
+			ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
 		}},
 	}, 20)
 
-	if len(got.ContentParts) != 1 || got.ContentParts[0].Type != ToolContentPartImageData {
+	if len(got.ContentParts) != 1 || got.ContentParts[0].Type != core.ToolContentPartImageData {
 		t.Fatalf("image-only parts changed: %#v", got.ContentParts)
 	}
 	if !strings.Contains(got.Content, "80 chars truncated") {

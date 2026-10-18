@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/cobra"
 )
 
@@ -156,7 +156,7 @@ func TestFetchCursorBinUsageAndWrite(t *testing.T) {
 
 	var out bytes.Buffer
 	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
-	if err := writeCursorBinUsageWithOptions(&out, report, now, llm.ProviderUsageFormatOptions{ASCII: true}); err != nil {
+	if err := writeCursorBinUsageWithOptions(&out, report, now, providerusage.FormatOptions{ASCII: true}); err != nil {
 		t.Fatalf("writeCursorBinUsageWithOptions: %v", err)
 	}
 	for _, want := range []string{

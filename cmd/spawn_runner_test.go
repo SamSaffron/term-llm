@@ -13,7 +13,9 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -212,7 +214,7 @@ func TestCompleteChildAgentUsesOutputToolAndRunsHookInChildDirectory(t *testing.
 	if _, err := outputTool.Execute(context.Background(), args); err != nil {
 		t.Fatal(err)
 	}
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	engine.RegisterTool(outputTool)
 	agent := &agents.Agent{
 		OutputTool: agents.OutputToolConfig{Name: "set_commit_message", Param: "message"},
@@ -267,7 +269,7 @@ func TestSpawnRunnerBuildRunRequestUsesCurrentParentContext(t *testing.T) {
 	runner.SetBaseDirFunc(func() string { return baseDir })
 
 	baseDir = "/tmp/current-worktree"
-	ctx := llm.ContextWithSessionID(context.Background(), "current-parent")
+	ctx := core.ContextWithSessionID(context.Background(), "current-parent")
 	req := runner.buildRunRequest(ctx, "reviewer", "review this", "child-session", 1, false, tools.SpawnAgentRunOptions{})
 	if req.Cwd != "/tmp/current-worktree" {
 		t.Fatalf("Cwd = %q, want current parent BaseDir", req.Cwd)
@@ -322,7 +324,7 @@ func TestSpawnRunnerSetupAgentToolsUsesCurrentBaseDir(t *testing.T) {
 	runner := &SpawnAgentRunner{cfg: &config.Config{}}
 	runner.SetBaseDir(first)
 	runner.SetBaseDirFunc(func() string { return current })
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	agent := &agents.Agent{
 		Name:  "parent",
 		Tools: agents.ToolsConfig{Enabled: []string{tools.SpawnAgentToolName}},
@@ -340,7 +342,7 @@ func TestSpawnRunnerSetupAgentToolsUsesCurrentBaseDir(t *testing.T) {
 func TestSpawnRunnerNestedDeveloperCanDelegateWithinParentBudget(t *testing.T) {
 	cfg := &config.Config{}
 	runner := &SpawnAgentRunner{cfg: cfg}
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	developer := &agents.Agent{
 		Name:  "developer",
 		Tools: agents.ToolsConfig{Enabled: []string{tools.SpawnAgentToolName}},
@@ -381,7 +383,7 @@ func TestSpawnRunnerCarriesBudgetThroughChildRequest(t *testing.T) {
 func TestSpawnRunnerSetupAgentToolsPropagatesAgentModels(t *testing.T) {
 	cfg := &config.Config{}
 	runner := &SpawnAgentRunner{cfg: cfg}
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	agent := &agents.Agent{
 		Name: "parent",
 		Tools: agents.ToolsConfig{
@@ -415,7 +417,7 @@ func TestSpawnRunnerSetupAgentToolsPropagatesAgentModels(t *testing.T) {
 }
 
 func TestSubagentUsageEventRetainsCacheCounters(t *testing.T) {
-	event := subagentEventFromLLM(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 11, OutputTokens: 7, CachedInputTokens: 13, CacheWriteTokens: 5}})
+	event := subagentEventFromLLM(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 11, OutputTokens: 7, CachedInputTokens: 13, CacheWriteTokens: 5}})
 	if event.Type != tools.SubagentEventUsage || event.InputTokens != 11 || event.OutputTokens != 7 || event.CachedInputTokens != 13 || event.CacheWriteTokens != 5 {
 		t.Fatalf("child usage event = %+v", event)
 	}

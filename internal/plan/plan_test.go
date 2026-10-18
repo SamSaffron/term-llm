@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestParseAndValidateSnapshot(t *testing.T) {
@@ -87,13 +87,13 @@ func TestSnapshotSummaryAndContext(t *testing.T) {
 }
 
 func TestLatestSuccessfulSnapshot(t *testing.T) {
-	call := func(id, args string) llm.Message {
-		return llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: id, Name: ToolName, Arguments: json.RawMessage(args)}}}}
+	call := func(id, args string) core.Message {
+		return core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: id, Name: ToolName, Arguments: json.RawMessage(args)}}}}
 	}
-	result := func(id string, failed bool) llm.Message {
-		return llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: id, Name: ToolName, Content: "Plan updated", IsError: failed}}}}
+	result := func(id string, failed bool) core.Message {
+		return core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: id, Name: ToolName, Content: "Plan updated", IsError: failed}}}}
 	}
-	messages := []llm.Message{
+	messages := []core.Message{
 		call("one", `{"plan":[{"step":"old","status":"pending"}]}`), result("one", false),
 		call("two", `{"plan":[{"step":"failed","status":"pending"}]}`), result("two", true),
 	}

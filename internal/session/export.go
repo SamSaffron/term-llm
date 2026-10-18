@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/formatutil"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
 
@@ -27,7 +27,7 @@ type ExportOptions struct {
 	// Media supplies additional term-llm-media:// artifacts for resolving
 	// references when the selected messages omit the producing tool results,
 	// as in response-only shares.
-	Media []llm.MediaArtifact
+	Media []core.MediaArtifact
 }
 
 // escapeTableCell escapes special characters for markdown table cells.
@@ -154,12 +154,12 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 
 	// Track tool calls to pair with their results
 	// We buffer tool calls and only render when we have the result
-	toolCalls := make(map[string]*llm.ToolCall)
+	toolCalls := make(map[string]*core.ToolCall)
 
 	// Buffer for pending content within an assistant turn
 	// Tool calls are rendered inline when their results arrive
 	var pendingText strings.Builder
-	var pendingToolCalls []*llm.ToolCall
+	var pendingToolCalls []*core.ToolCall
 	inAssistantTurn := false
 
 	flushAssistant := func() {
@@ -185,7 +185,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 
 	for _, msg := range VisibleExportMessages(messages) {
 		// Skip system messages unless explicitly included
-		if msg.Role == llm.RoleSystem {
+		if msg.Role == core.RoleSystem {
 			if opts.IncludeSystem {
 				flushAssistant()
 				b.WriteString("### System\n\n")
@@ -196,14 +196,14 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 		}
 
 		// Handle user messages
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			flushAssistant()
 			b.WriteString("### User\n\n")
 			b.WriteString(replaceMarkdownAudioReferences(msg.TextContent, mediaReferences))
 			b.WriteString("\n\n")
 			if assets {
 				for _, part := range msg.Parts {
-					if part.Type == llm.PartImage {
+					if part.Type == core.PartImage {
 						writeImage(&b, partImageSource(part, "Attached image"))
 					}
 				}
@@ -213,13 +213,13 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 		}
 
 		// Handle assistant messages
-		if msg.Role == llm.RoleAssistant {
+		if msg.Role == core.RoleAssistant {
 			flushAssistant()
 			inAssistantTurn = true
 			b.WriteString("### Assistant\n\n")
 
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartText {
+				if part.Type == core.PartText {
 					if rendered := RenderExportReasoning(part, opts); rendered != "" {
 						pendingText.WriteString(rendered)
 					}
@@ -228,10 +228,10 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 						pendingText.WriteString("\n\n")
 					}
 				}
-				if part.Type == llm.PartImage && assets {
+				if part.Type == core.PartImage && assets {
 					writeImage(&pendingText, partImageSource(part, "Image"))
 				}
-				if part.Type == llm.PartToolCall && part.ToolCall != nil {
+				if part.Type == core.PartToolCall && part.ToolCall != nil {
 					pendingToolCalls = append(pendingToolCalls, part.ToolCall)
 					toolCalls[part.ToolCall.ID] = part.ToolCall
 				}
@@ -240,7 +240,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 		}
 
 		// Handle tool results - render tool call with result inline
-		if msg.Role == llm.RoleTool {
+		if msg.Role == core.RoleTool {
 			// First flush any pending text before tool results
 			if pendingText.Len() > 0 {
 				b.WriteString(pendingText.String())
@@ -248,7 +248,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 			}
 
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartToolResult && part.ToolResult != nil {
+				if part.Type == core.PartToolResult && part.ToolResult != nil {
 					// Find the matching tool call
 					tc := toolCalls[part.ToolResult.ID]
 					if tc != nil {
@@ -281,14 +281,14 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 
 // RenderExportReasoning renders non-encrypted reasoning metadata according to
 // explicit export options. Raw reasoning is never included unless requested.
-func RenderExportReasoning(part llm.Part, opts ExportOptions) string {
+func RenderExportReasoning(part core.Part, opts ExportOptions) string {
 	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	kind := llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
+	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
 	if part.ReasoningContent == "" {
 		return ""
 	}
 	switch kind {
-	case llm.ReasoningKindSummary:
+	case core.ReasoningKindSummary:
 		if !opts.IncludeReasoningSummaries {
 			return ""
 		}
@@ -305,7 +305,7 @@ func RenderExportReasoning(part llm.Part, opts ExportOptions) string {
 			return fmt.Sprintf("_Reasoning summary: %s_\n\n%s\n\n", title, strings.TrimSpace(body))
 		}
 		return fmt.Sprintf("_Reasoning summary:_\n\n%s\n\n", strings.TrimSpace(body))
-	case llm.ReasoningKindRaw:
+	case core.ReasoningKindRaw:
 		if !opts.IncludeRawReasoning {
 			return ""
 		}
@@ -316,7 +316,7 @@ func RenderExportReasoning(part llm.Part, opts ExportOptions) string {
 }
 
 // writeToolCall writes a tool call with optional result in a collapsible block.
-func writeToolCall(b *strings.Builder, tc *llm.ToolCall, result *llm.ToolResult) {
+func writeToolCall(b *strings.Builder, tc *core.ToolCall, result *core.ToolResult) {
 	b.WriteString("<details>\n")
 	b.WriteString(fmt.Sprintf("<summary>%s</summary>\n\n", tc.Name))
 

@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core/stream"
 )
 
 type testSSEEvent struct {
@@ -91,7 +93,7 @@ func TestSSEDecoderNext(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			decoder := newSSEDecoder(strings.NewReader(tt.input), sseDecoderOptions{
+			decoder := stream.NewDecoder(strings.NewReader(tt.input), stream.DecoderOptions{
 				RequireDone: tt.requireDone,
 				Transport:   "test SSE",
 			})
@@ -116,7 +118,7 @@ func TestSSEDecoderNext(t *testing.T) {
 			}
 
 			if tt.wantIncomplete {
-				var incomplete *StreamIncompleteError
+				var incomplete *stream.StreamIncompleteError
 				if !errors.As(gotErr, &incomplete) {
 					t.Fatalf("error = %T %v, want StreamIncompleteError", gotErr, gotErr)
 				}

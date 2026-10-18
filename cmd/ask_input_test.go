@@ -9,14 +9,16 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestSetupToolManagerKeepsAutoToolsScopedAndMergesExplicitTools(t *testing.T) {
 	cfg := &config.Config{Tools: config.ToolsConfig{Enabled: []string{tools.GrepToolName}}}
-	defaultsEngine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	defaultsEngine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	defaults := SessionSettings{AutoTools: []string{tools.ReadFileToolName}}
 	defaultsMgr, err := defaults.SetupToolManager(cfg, defaultsEngine)
 	if err != nil {
@@ -30,7 +32,7 @@ func TestSetupToolManagerKeepsAutoToolsScopedAndMergesExplicitTools(t *testing.T
 		t.Fatal("auto tools unexpectedly activated the global default tool set")
 	}
 
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	settings := SessionSettings{
 		Tools:     tools.ShellToolName,
 		AutoTools: []string{tools.ReadFileToolName, tools.ViewImageToolName},
@@ -64,8 +66,8 @@ func TestDeriveAskResumeAutoToolsFromMissingStructuredAttachment(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	message := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
-		Type: llm.PartImage, ImagePath: filepath.Join(t.TempDir(), "missing.png"), ImageData: &llm.ToolImageData{MediaType: "image/png"},
+	message := core.Message{Role: core.RoleUser, Parts: []core.Part{{
+		Type: core.PartImage, ImagePath: filepath.Join(t.TempDir(), "missing.png"), ImageData: &core.ToolImageData{MediaType: "image/png"},
 	}}}
 	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, message, -1)); err != nil {
 		t.Fatal(err)
@@ -100,20 +102,20 @@ func TestAskAttachmentGrantsAreExactAndStructured(t *testing.T) {
 	}
 
 	cfg := &config.Config{}
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	settings := SessionSettings{AutoTools: []string{tools.ReadFileToolName, tools.ViewImageToolName}}
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
 		t.Fatalf("SetupToolManager: %v", err)
 	}
 	defer toolMgr.ApprovalMgr.Close()
-	messages := []llm.Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{
-			{Type: llm.PartImage, ImagePath: attached},
-			{Type: llm.PartFile, FilePath: link},
-			{Type: llm.PartText, Text: sibling},
+	messages := []core.Message{
+		{Role: core.RoleUser, Parts: []core.Part{
+			{Type: core.PartImage, ImagePath: attached},
+			{Type: core.PartFile, FilePath: link},
+			{Type: core.PartText, Text: sibling},
 		}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartFile, FilePath: sibling}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartFile, FilePath: sibling}}},
 	}
 	ask.GrantUploadedFileReads(toolMgr, messages)
 

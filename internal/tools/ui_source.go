@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/samsaffron/term-llm/internal/buildinfo"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/uisource"
 )
@@ -34,11 +34,11 @@ type UIExtensionsTool struct {
 	control  UIExtensionControl
 }
 
-func (t *UIExtensionsTool) Spec() llm.ToolSpec {
+func (t *UIExtensionsTool) Spec() core.ToolSpec {
 	if t.activate {
-		return llm.ToolSpec{Name: UIActivateToolName, Description: "Activate completed web extension edits: rescan the configured enabled list and request automatic browser reload when responses finish and drafts are clear. No user activation step is needed. Affects connected HTTP browsers of this process; safe mode and boot flags remain authoritative. Does not edit the enabled list. Reports a requested activation, not proof the browser rendered it.", Schema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}
+		return core.ToolSpec{Name: UIActivateToolName, Description: "Activate completed web extension edits: rescan the configured enabled list and request automatic browser reload when responses finish and drafts are clear. No user activation step is needed. Affects connected HTTP browsers of this process; safe mode and boot flags remain authoritative. Does not edit the enabled list. Reports a requested activation, not proof the browser rendered it.", Schema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}
 	}
-	return llm.ToolSpec{
+	return core.ToolSpec{
 		Name: UIExtensionsToolName,
 		Description: "Inspect or reload the running web process's extension directory, enabled order and config/CLI provenance. " +
 			"Reload re-reads extension config and snapshots completed file edits; browser refresh applies them. " +
@@ -54,31 +54,31 @@ func (t *UIExtensionsTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *UIExtensionsTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *UIExtensionsTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a struct {
 		Operation string `json:"operation"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	if t.activate {
 		if a.Operation != "" {
-			return llm.ToolOutput{}, fmt.Errorf("activation takes no operation argument")
+			return core.ToolOutput{}, fmt.Errorf("activation takes no operation argument")
 		}
 		a.Operation = "activate"
 	}
 	if a.Operation != "status" && a.Operation != "reload" && !(t.activate && a.Operation == "activate") {
-		return llm.ToolOutput{}, fmt.Errorf("operation must be status or reload")
+		return core.ToolOutput{}, fmt.Errorf("operation must be status or reload")
 	}
 	t.mu.RLock()
 	f := t.control
 	t.mu.RUnlock()
 	if f == nil {
-		return llm.TextOutput("Extension control is available only in term-llm serve web. Use ui_get_source for stock references."), nil
+		return core.TextOutput("Extension control is available only in term-llm serve web. Use ui_get_source for stock references."), nil
 	}
 	v, err := f(ctx, a.Operation)
 	if err != nil {
-		return llm.TextOutput(err.Error()), nil
+		return core.TextOutput(err.Error()), nil
 	}
 	return jsonToolOutput(map[string]any{"process": v, "browser": t.browser.Load()})
 }
@@ -93,9 +93,9 @@ func (r *LocalToolRegistry) SetUIExtensionControl(f UIExtensionControl) {
 		}
 	}
 }
-func jsonToolOutput(v any) (llm.ToolOutput, error) {
+func jsonToolOutput(v any) (core.ToolOutput, error) {
 	b, err := json.MarshalIndent(v, "", "  ")
-	return llm.TextOutput(string(b)), err
+	return core.TextOutput(string(b)), err
 }
 
 type UIGetSourceTool struct {
@@ -104,8 +104,8 @@ type UIGetSourceTool struct {
 	browser  atomic.Pointer[UIBrowserContext]
 }
 
-func (t *UIGetSourceTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *UIGetSourceTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: UIGetSourceToolName,
 		Description: "Inspect stock web UI source on demand. List first, then bounded reads of relevant CSS/TSX. " +
 			"Prefers exact embedded readable source, falls back to published release source or current minified assets. " +
@@ -126,7 +126,7 @@ func (t *UIGetSourceTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a struct {
 		Operation string `json:"operation"`
 		Target    string `json:"target"`
@@ -135,7 +135,7 @@ func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		End       int    `json:"end_line"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	var ref *uisource.Reference
 	var err error
@@ -150,10 +150,10 @@ func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	} else if a.Target == "" || a.Target == "stock" {
 		ref, err = uisource.Resolve(ctx, buildinfo.Version, true)
 	} else {
-		return llm.ToolOutput{}, fmt.Errorf("target must be stock or compiled")
+		return core.ToolOutput{}, fmt.Errorf("target must be stock or compiled")
 	}
 	if err != nil {
-		return llm.TextOutput(err.Error()), nil
+		return core.TextOutput(err.Error()), nil
 	}
 	result := map[string]any{"source": ref, "requested_version": buildinfo.Version, "requested_asset_version": serveui.AssetVersion()}
 	if browser := t.browser.Load(); browser != nil {
@@ -173,7 +173,7 @@ func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	case "read":
 		b, ok := ref.Files[a.Path]
 		if !ok {
-			return llm.TextOutput("Source path not found. Use operation=list first."), nil
+			return core.TextOutput("Source path not found. Use operation=list first."), nil
 		}
 		lines := strings.Split(string(b), "\n")
 		start := a.Start
@@ -191,7 +191,7 @@ func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (ll
 			end = len(lines)
 		}
 		if start > len(lines) {
-			return llm.TextOutput("Start line exceeds source length"), nil
+			return core.TextOutput("Start line exceeds source length"), nil
 		}
 		var out strings.Builder
 		for i := start - 1; i < end; i++ {
@@ -209,49 +209,49 @@ func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		result["total_lines"] = len(lines)
 	case "extract":
 		if a.Path == "" {
-			return llm.ToolOutput{}, fmt.Errorf("extract requires a new workspace path")
+			return core.ToolOutput{}, fmt.Errorf("extract requires a new workspace path")
 		}
 		dest, err := resolveToolPathWithConfig(a.Path, true, t.config)
 		if err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
 		if t.approval == nil {
-			return llm.ToolOutput{}, fmt.Errorf("workspace approval is unavailable")
+			return core.ToolOutput{}, fmt.Errorf("workspace approval is unavailable")
 		}
 		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, UIGetSourceToolName, dest, a.Path, true)
 		if err != nil {
 			return pathApprovalErrorOutput("", err), nil
 		}
 		if outcome == Cancel {
-			return llm.TextOutput("Source extraction denied"), nil
+			return core.TextOutput("Source extraction denied"), nil
 		}
 		if _, err = os.Lstat(dest); !os.IsNotExist(err) {
-			return llm.TextOutput("Extraction requires a new directory; existing references are never overwritten"), nil
+			return core.TextOutput("Extraction requires a new directory; existing references are never overwritten"), nil
 		}
 		if err = os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
 		tmp, err := os.MkdirTemp(filepath.Dir(dest), ".ui-source-*")
 		if err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
 		defer os.RemoveAll(tmp)
 		for p, b := range ref.Files {
 			target := filepath.Join(tmp, filepath.FromSlash(p))
 			if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return llm.ToolOutput{}, err
+				return core.ToolOutput{}, err
 			}
 			if err = os.WriteFile(target, b, 0644); err != nil {
-				return llm.ToolOutput{}, err
+				return core.ToolOutput{}, err
 			}
 		}
 		if err = os.Rename(tmp, dest); err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
 		result["directory"] = dest
 		result["file_count"] = len(ref.Files)
 	default:
-		return llm.ToolOutput{}, fmt.Errorf("operation must be list, read or extract")
+		return core.ToolOutput{}, fmt.Errorf("operation must be list, read or extract")
 	}
 	return jsonToolOutput(result)
 }

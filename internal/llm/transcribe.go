@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/samsaffron/term-llm/internal/llm/providers/transcription"
 	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
@@ -33,7 +34,7 @@ func transcribeAndTruncate(ctx context.Context, filePath string, opts transcript
 }
 
 func transcribeChatGPTAndTruncate(ctx context.Context, filePath, language string) (string, error) {
-	transcript, err := TranscribeChatGPT(ctx, filePath, language)
+	transcript, err := rp.TranscribeChatGPT(ctx, filePath, language)
 	if err != nil {
 		return "", err
 	}

@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -40,20 +41,20 @@ func (s *webBranchSnapshotTestStore) GetBranchTree(ctx context.Context, sessionI
 }
 
 func TestWebBranchTreePointsIncludeEveryVisibleUserMessage(t *testing.T) {
-	message := func(id int64, sequence int, value llm.Message) session.Message {
+	message := func(id int64, sequence int, value core.Message) session.Message {
 		result := *session.NewMessage("source", value, sequence)
 		result.ID = id
 		return result
 	}
 	messages := []session.Message{
-		message(10, 0, llm.UserText("first request")),
-		message(20, 1, llm.AssistantText("first answer")),
-		message(30, 2, llm.ToolResultMessage("call-1", "read_file", "done", nil)),
-		message(40, 3, llm.UserText("second request")),
-		message(50, 4, llm.UserText("consecutive correction")),
-		message(60, 5, llm.AssistantText("second answer")),
-		message(70, 6, llm.UserText("third request")),
-		message(80, 7, llm.UserText("hidden compaction duplicate")),
+		message(10, 0, core.UserText("first request")),
+		message(20, 1, core.AssistantText("first answer")),
+		message(30, 2, core.ToolResultMessage("call-1", "read_file", "done", nil)),
+		message(40, 3, core.UserText("second request")),
+		message(50, 4, core.UserText("consecutive correction")),
+		message(60, 5, core.AssistantText("second answer")),
+		message(70, 6, core.UserText("third request")),
+		message(80, 7, core.UserText("hidden compaction duplicate")),
 	}
 	messages[len(messages)-1].CompactionTail = true
 
@@ -64,7 +65,7 @@ func TestWebBranchTreePointsIncludeEveryVisibleUserMessage(t *testing.T) {
 	wantIDs := []int64{10, 40, 50, 70}
 	wantAnchors := []int64{0, 20, 20, 60}
 	for i, point := range points {
-		if point.MessageID != wantIDs[i] || point.AnchorMessageID != wantAnchors[i] || point.Role != string(llm.RoleUser) || point.Prefill == "" {
+		if point.MessageID != wantIDs[i] || point.AnchorMessageID != wantAnchors[i] || point.Role != string(core.RoleUser) || point.Prefill == "" {
 			t.Fatalf("branch point %d = %#v, want message %d anchored at %d", i, point, wantIDs[i], wantAnchors[i])
 		}
 	}
@@ -73,10 +74,10 @@ func TestWebBranchTreePointsIncludeEveryVisibleUserMessage(t *testing.T) {
 func TestActiveWebBranchSafetyAcceptsPublishedCompletedToolBoundary(t *testing.T) {
 	const responseID = "resp-moving-boundary"
 	messages := []session.Message{
-		{ID: 1, Sequence: 0, Role: llm.RoleUser},
-		{ID: 2, Sequence: 1, Role: llm.RoleAssistant, ResponseID: responseID},
-		{ID: 3, Sequence: 2, Role: llm.RoleTool, ResponseID: responseID},
-		{ID: 4, Sequence: 3, Role: llm.RoleAssistant, ResponseID: responseID},
+		{ID: 1, Sequence: 0, Role: core.RoleUser},
+		{ID: 2, Sequence: 1, Role: core.RoleAssistant, ResponseID: responseID},
+		{ID: 3, Sequence: 2, Role: core.RoleTool, ResponseID: responseID},
+		{ID: 4, Sequence: 3, Role: core.RoleAssistant, ResponseID: responseID},
 	}
 	published := activeWebBranchRun{responseID: responseID, anchorRowID: 3}
 	if status := activeWebBranchAnchorSafety(messages, published, 3); status != activeWebBranchAnchorSafe {
@@ -85,7 +86,7 @@ func TestActiveWebBranchSafetyAcceptsPublishedCompletedToolBoundary(t *testing.T
 	if status := activeWebBranchAnchorSafety(messages, published, 4); status != activeWebBranchAnchorUnstable {
 		t.Fatalf("partial row status = %v, want unstable", status)
 	}
-	messages = append(messages, session.Message{ID: 5, Sequence: 4, Role: llm.RoleSystem})
+	messages = append(messages, session.Message{ID: 5, Sequence: 4, Role: core.RoleSystem})
 	if status := activeWebBranchAnchorSafety(messages, published, 5); status != activeWebBranchAnchorInvalid {
 		t.Fatalf("system row status = %v, want invalid", status)
 	}
@@ -110,8 +111,8 @@ func TestWebBranchContextSnapshotLimitedOnlyWhenRowsAreOmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("request"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("durable answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("durable answer"), -1),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestWebBranchContextSnapshotLimitedOnlyWhenRowsAreOmitted(t *testing.T) {
 		t.Fatalf("active snapshot without omitted rows = %#v, want full unlimited snapshot", snapshot)
 	}
 
-	partial := session.NewMessage(sourceID, llm.AssistantText("unsafe partial output"), -1)
+	partial := session.NewMessage(sourceID, core.AssistantText("unsafe partial output"), -1)
 	partial.ResponseID = responseID
 	if err := store.AddMessage(ctx, sourceID, partial); err != nil {
 		t.Fatal(err)
@@ -214,10 +215,10 @@ func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeSteering(t *testin
 		responseID = "resp-active-tree"
 	)
 	fallbackMessages := []session.Message{
-		{ID: 1, Role: llm.RoleAssistant},
-		{ID: 2, Role: llm.RoleUser},
-		{ID: 3, Role: llm.RoleUser},
-		{ID: 4, Role: llm.RoleAssistant, ResponseID: responseID},
+		{ID: 1, Role: core.RoleAssistant},
+		{ID: 2, Role: core.RoleUser},
+		{ID: 3, Role: core.RoleUser},
+		{ID: 4, Role: core.RoleAssistant, ResponseID: responseID},
 	}
 	for _, tc := range []struct {
 		name string
@@ -241,14 +242,14 @@ func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeSteering(t *testin
 	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
 		t.Fatal(err)
 	}
-	partialAssistant := *session.NewMessage(sourceID, llm.AssistantText("unfinished answer"), -1)
+	partialAssistant := *session.NewMessage(sourceID, core.AssistantText("unfinished answer"), -1)
 	partialAssistant.ResponseID = responseID
-	partialTool := *session.NewMessage(sourceID, llm.ToolResultMessage("call-active", "read_file", "unfinished tool output", nil), -1)
+	partialTool := *session.NewMessage(sourceID, core.ToolResultMessage("call-active", "read_file", "unfinished tool output", nil), -1)
 	partialTool.ResponseID = responseID
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("completed request"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("completed answer"), -1),
-		*session.NewMessage(sourceID, llm.UserText("active request"), -1),
+		*session.NewMessage(sourceID, core.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("completed answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("active request"), -1),
 		partialAssistant,
 		partialTool,
 	}); err != nil {
@@ -289,7 +290,7 @@ func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeSteering(t *testin
 		t.Fatalf("active branch points = %#v, want active user anchored at completed answer with no partial suffix", points)
 	}
 
-	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, llm.UserText("mid-run steering"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, core.UserText("mid-run steering"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	points = loadPoints()
@@ -312,12 +313,12 @@ func TestSessionBranchEndpointAllowsActiveSourceAtStableAnchor(t *testing.T) {
 	if err := store.Create(ctx, &session.Session{ID: sourceID, Name: "Active parent", Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
 		t.Fatal(err)
 	}
-	partial := *session.NewMessage(sourceID, llm.AssistantText("still streaming"), -1)
+	partial := *session.NewMessage(sourceID, core.AssistantText("still streaming"), -1)
 	partial.ResponseID = responseID
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("completed request"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("stable answer"), -1),
-		*session.NewMessage(sourceID, llm.UserText("active request"), -1),
+		*session.NewMessage(sourceID, core.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("stable answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("active request"), -1),
 		partial,
 	}); err != nil {
 		t.Fatal(err)
@@ -371,7 +372,7 @@ func TestSessionBranchEndpointAllowsActiveSourceAtStableAnchor(t *testing.T) {
 		t.Fatalf("partial active anchor status/body = %d %s", rr.Code, rr.Body.String())
 	}
 
-	steering := session.NewMessage(sourceID, llm.UserText("mid-run steering"), -1)
+	steering := session.NewMessage(sourceID, core.UserText("mid-run steering"), -1)
 	if err := store.AddMessage(ctx, sourceID, steering); err != nil {
 		t.Fatal(err)
 	}
@@ -401,12 +402,12 @@ func TestSessionBranchEndpointAllowsPreRunAnchorWhileBoundaryUnavailable(t *test
 	}
 	// Mid-run snapshot rewrites and compaction rebuild run output from engine
 	// messages, so these rows carry no response ID.
-	tool := *session.NewMessage(sourceID, llm.ToolResultMessage("call-active", "shell", "done", nil), -1)
-	partial := *session.NewMessage(sourceID, llm.AssistantText("still streaming"), -1)
+	tool := *session.NewMessage(sourceID, core.ToolResultMessage("call-active", "shell", "done", nil), -1)
+	partial := *session.NewMessage(sourceID, core.AssistantText("still streaming"), -1)
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("completed request"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("stable answer"), -1),
-		*session.NewMessage(sourceID, llm.UserText("active request"), -1),
+		*session.NewMessage(sourceID, core.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("stable answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("active request"), -1),
 		tool,
 		partial,
 	}); err != nil {
@@ -508,8 +509,8 @@ func TestSessionBranchEndpointUsesAnchorDespiteLegacyExpectedRev(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("stable request"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("stable answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("stable request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("stable answer"), -1),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +519,7 @@ func TestSessionBranchEndpointUsesAnchorDespiteLegacyExpectedRev(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, llm.UserText("unrelated later suffix"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, core.UserText("unrelated later suffix"), -1)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -558,13 +559,13 @@ func TestSessionPathNotesUseLatestDurableActivePrefix(t *testing.T) {
 	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
 		t.Fatal(err)
 	}
-	partial := *session.NewMessage(sourceID, llm.AssistantText("unsafe partial output"), -1)
+	partial := *session.NewMessage(sourceID, core.AssistantText("unsafe partial output"), -1)
 	partial.ResponseID = responseID
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("first request"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("first answer"), -1),
-		*session.NewMessage(sourceID, llm.UserText("later durable finding"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("later durable answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("first request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("first answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("later durable finding"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("later durable answer"), -1),
 		partial,
 	}); err != nil {
 		t.Fatal(err)
@@ -579,11 +580,11 @@ func TestSessionPathNotesUseLatestDurableActivePrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.setActiveRun(sourceID, responseID)
-	provider := llm.NewMockProvider("mock").AddTextResponse("- Keep the durable finding.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- Keep the durable finding.")
 	srv := &serveServer{
 		store:                    store,
 		responseRuns:             manager,
-		pathNotesProviderFactory: func(_, _ string) (llm.Provider, error) { return provider, nil },
+		pathNotesProviderFactory: func(_, _ string) (core.Provider, error) { return provider, nil },
 	}
 
 	branchBody := fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-notes-branch"}`, messages[1].ID)
@@ -618,7 +619,7 @@ func TestSessionPathNotesUseLatestDurableActivePrefix(t *testing.T) {
 	}
 	requestText := ""
 	for _, message := range provider.Requests[0].Messages {
-		requestText += llm.MessageText(message)
+		requestText += core.MessageText(message)
 	}
 	if !strings.Contains(requestText, "later durable finding") || strings.Contains(requestText, "unsafe partial output") {
 		t.Fatalf("path notes source = %q", requestText)
@@ -644,9 +645,9 @@ func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
-		*session.NewMessage(sourceID, llm.UserText("first"), -1),
-		*session.NewMessage(sourceID, llm.AssistantText("first answer"), -1),
-		*session.NewMessage(sourceID, llm.UserText("later finding"), -1),
+		*session.NewMessage(sourceID, core.UserText("first"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("first answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("later finding"), -1),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -657,10 +658,10 @@ func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
 		t.Fatalf("web branch points = %#v", points)
 	}
 	state, _ := store.(session.TranscriptUndoRedoStore).TranscriptMutationState(ctx, sourceID)
-	provider := llm.NewMockProvider("mock").AddTextResponse("- Keep the later finding.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- Keep the later finding.")
 	srv := &serveServer{
 		store:                    store,
-		pathNotesProviderFactory: func(_, _ string) (llm.Provider, error) { return provider, nil },
+		pathNotesProviderFactory: func(_, _ string) (core.Provider, error) { return provider, nil },
 	}
 	treeReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sourceID+"/tree?include_branch_points=1", nil)
 	treeRR := httptest.NewRecorder()

@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 // MCPTool wraps an MCP server tool as an llm.Tool.
 type MCPTool struct {
 	manager      *Manager
-	toolSpec     llm.ToolSpec
+	toolSpec     core.ToolSpec
 	server       string
 	originalName string
 }
@@ -19,7 +20,7 @@ type MCPTool struct {
 func NewMCPTool(manager *Manager, spec ToolSpec) *MCPTool {
 	return &MCPTool{
 		manager: manager,
-		toolSpec: llm.ToolSpec{
+		toolSpec: core.ToolSpec{
 			Name:        spec.Name,
 			Description: spec.Description,
 			Schema:      spec.Schema,
@@ -38,7 +39,7 @@ func NewCatalogMCPTool(manager *Manager, tool CatalogTool) *MCPTool {
 }
 
 // Spec returns the tool specification for the LLM.
-func (t *MCPTool) Spec() llm.ToolSpec {
+func (t *MCPTool) Spec() core.ToolSpec {
 	return t.toolSpec
 }
 
@@ -48,7 +49,7 @@ func (t *MCPTool) Preview(args json.RawMessage) string {
 }
 
 // Execute invokes the tool on the MCP server.
-func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	if t.server != "" && t.originalName != "" {
 		return t.manager.CallCatalogTool(ctx, t.server, t.originalName, t.toolSpec.Name, args)
 	}
@@ -56,7 +57,7 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOu
 }
 
 // RegisterMCPTools registers all MCP tools from the manager into the tool registry.
-func RegisterMCPTools(manager *Manager, registry *llm.ToolRegistry) {
+func RegisterMCPTools(manager *Manager, registry *engine.ToolRegistry) {
 	for _, tool := range manager.CatalogueSnapshot().Tools {
 		registry.Register(NewCatalogMCPTool(manager, tool))
 	}
@@ -64,7 +65,7 @@ func RegisterMCPTools(manager *Manager, registry *llm.ToolRegistry) {
 
 // RegisterMCPToolsDeferred registers all MCP wrappers for execution while keeping
 // their schemas hidden until a discovery planner selects them.
-func RegisterMCPToolsDeferred(manager *Manager, registry *llm.ToolRegistry) {
+func RegisterMCPToolsDeferred(manager *Manager, registry *engine.ToolRegistry) {
 	if manager == nil || registry == nil {
 		return
 	}
@@ -78,11 +79,11 @@ func RegisterMCPToolsDeferred(manager *Manager, registry *llm.ToolRegistry) {
 }
 
 // GetMCPToolSpecs returns LLM tool specs for all running MCP tools.
-func GetMCPToolSpecs(manager *Manager) []llm.ToolSpec {
+func GetMCPToolSpecs(manager *Manager) []core.ToolSpec {
 	mcpTools := manager.AllTools()
-	specs := make([]llm.ToolSpec, 0, len(mcpTools))
+	specs := make([]core.ToolSpec, 0, len(mcpTools))
 	for _, t := range mcpTools {
-		specs = append(specs, llm.ToolSpec{
+		specs = append(specs, core.ToolSpec{
 			Name:        t.Name,
 			Description: t.Description,
 			Schema:      t.Schema,

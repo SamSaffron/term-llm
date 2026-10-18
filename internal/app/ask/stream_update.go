@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -37,7 +37,7 @@ func (m askStreamModel) handleStreamEventMessage(msg askStreamEventMsg) (tea.Mod
 	case ui.StreamEventMedia:
 		if reference := strings.ToLower(strings.TrimSpace(ev.Media.Reference)); reference != "" {
 			if m.mediaByReference == nil {
-				m.mediaByReference = make(map[string]llm.MediaArtifact)
+				m.mediaByReference = make(map[string]core.MediaArtifact)
 			}
 			m.mediaByReference[reference] = ev.Media
 		}
@@ -72,11 +72,11 @@ func (m askStreamModel) handleStreamEventMessage(msg askStreamEventMsg) (tea.Mod
 func (m askStreamModel) handleReasoningMessage(msg askReasoningMsg) (tea.Model, tea.Cmd) {
 	ev := ui.StreamEvent(msg)
 	cfg := m.reasoningConfig
-	kind := llm.NormalizeReasoningKind(ev.ReasoningKind)
+	kind := core.NormalizeReasoningKind(ev.ReasoningKind)
 	if internalreasoning.IsDisplayable(string(kind), cfg) && internalreasoning.StatusEnabled(cfg) {
 		internalreasoning.AppendStreamItemText(m.reasoningBuilder(), &m.currentReasoningItemID, ev.ReasoningText, ev.ReasoningItemID)
 		title := strings.TrimSpace(ev.ReasoningTitle)
-		if title == "" && kind == llm.ReasoningKindSummary {
+		if title == "" && kind == core.ReasoningKindSummary {
 			reasoningText := m.currentReasoningString()
 			reasoningText = internalreasoning.LimitReasoningText(string(kind), reasoningText, cfg)
 			title = internalreasoning.SummaryTitle(reasoningText, cfg)

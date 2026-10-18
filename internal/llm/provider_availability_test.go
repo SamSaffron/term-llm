@@ -37,12 +37,12 @@ func TestProviderConfiguredVia(t *testing.T) {
 	loggedIn := func(name string) bool { return name == "claude-bin" || name == "copilot" }
 
 	for name, want := range map[string]string{
-		"openai":     ConfiguredViaConfig,
-		"gemini":     ConfiguredViaConfig,
-		"corp-llm":   ConfiguredViaConfig,
-		"zen":        ConfiguredViaDefault,
-		"xai":        ConfiguredViaEnv,
-		"claude-bin": ConfiguredViaLogin,
+		"openai":     config.ConfiguredViaConfig,
+		"gemini":     config.ConfiguredViaConfig,
+		"corp-llm":   config.ConfiguredViaConfig,
+		"zen":        config.ConfiguredViaDefault,
+		"xai":        config.ConfiguredViaEnv,
+		"claude-bin": config.ConfiguredViaLogin,
 		"anthropic":  "", // only schema defaults
 		"copilot":    "", // signed in but disabled
 		"old-llm":    "",
@@ -51,7 +51,7 @@ func TestProviderConfiguredVia(t *testing.T) {
 		"grok":       "",
 		"unknown":    "",
 	} {
-		if got := ProviderConfiguredVia(cfg, name, loggedIn); got != want {
+		if got := cfg.ProviderConfiguredVia(name, loggedIn); got != want {
 			t.Errorf("ProviderConfiguredVia(%q) = %q, want %q", name, got, want)
 		}
 	}

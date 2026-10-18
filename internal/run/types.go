@@ -4,7 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -45,19 +46,19 @@ type ProgressiveResult struct {
 // capabilities) but not presentation details; presentation belongs to EventSink
 // implementations owned by each platform.
 type Request struct {
-	Continuation *llm.Continuation // Resume the same execution, without injecting user input.
+	Continuation *core.Continuation // Resume the same execution, without injecting user input.
 	Platform     string
 
 	AgentName string
 	Prompt    string
-	Messages  []llm.Message
+	Messages  []core.Message
 
 	// Engine/ProviderInstance let stateful callers (chat/telegram) run through
 	// the shared runner while reusing their session-scoped engine/provider/MCP
 	// resources instead of rebuilding them every turn. When supplied, the runner
 	// treats them as borrowed and does not close provider-owned resources.
-	Engine           *llm.Engine
-	ProviderInstance llm.Provider
+	Engine           *engine.Engine
+	ProviderInstance core.Provider
 
 	SessionID    string
 	SessionName  string
@@ -103,7 +104,7 @@ type Request struct {
 
 	ForceExternalSearch     *bool
 	DisableExternalWebFetch bool
-	ExtraTools              []llm.ToolSpec
+	ExtraTools              []core.ToolSpec
 	ForceToolName           string
 	LastTurnForceToolName   string
 	IncludeConfiguredTools  *bool
@@ -112,13 +113,13 @@ type Request struct {
 	// loading configured tools or opening another MCP connection.
 	EnableToolDiscovery bool
 
-	OnAssistantSnapshot    llm.AssistantSnapshotCallback
-	OnResponseCompleted    llm.ResponseCompletedCallback
-	OnTurnCompleted        llm.TurnCompletedCallback
-	OnCompaction           llm.CompactionCallback
-	OnSyntheticUserMessage func(context.Context, llm.Message) error
-	OnEngineReady          func(*llm.Engine)
-	OnEngineDone           func(*llm.Engine)
+	OnAssistantSnapshot    engine.AssistantSnapshotCallback
+	OnResponseCompleted    engine.ResponseCompletedCallback
+	OnTurnCompleted        engine.TurnCompletedCallback
+	OnCompaction           engine.CompactionCallback
+	OnSyntheticUserMessage func(context.Context, core.Message) error
+	OnEngineReady          func(*engine.Engine)
+	OnEngineDone           func(*engine.Engine)
 
 	Progressive *ProgressiveOptions
 
@@ -128,7 +129,7 @@ type Request struct {
 	Depth                    int
 	RemainingDepth           *int // Child budget cap; nil for top-level runs
 	ApprovalRole             string
-	ApprovalTranscriptPrefix []llm.Message
+	ApprovalTranscriptPrefix []core.Message
 
 	// ChildSkill configures an already-resolved direct skill on a fresh child
 	// engine. It is never interpreted as a request for model-driven activation.
@@ -142,13 +143,13 @@ type Request struct {
 // EventSink receives the raw llm.Event stream for a run. Implementations should
 // do rendering/translation only; they should not own runner wiring.
 type EventSink interface {
-	Event(ev llm.Event)
+	Event(ev core.Event)
 }
 
 // ErrorEventSink is an optional EventSink capability for sinks that need to
 // propagate consumer/backpressure failures to stop the producer.
 type ErrorEventSink interface {
-	EventWithError(ev llm.Event) error
+	EventWithError(ev core.Event) error
 }
 
 // ApprovalPrompter is an optional EventSink capability. Interactive platforms
@@ -201,8 +202,8 @@ type Result struct {
 	// Engine is exposed for legacy command UIs that provide post-run affordances
 	// (for example exec's command help). New platform code should prefer events
 	// and Result fields over reaching into the engine.
-	Engine           *llm.Engine
-	ProviderInstance llm.Provider
+	Engine           *engine.Engine
+	ProviderInstance core.Provider
 }
 
 // Runner executes one Request and streams events to a sink.

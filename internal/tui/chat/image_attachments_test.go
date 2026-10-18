@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -195,7 +196,7 @@ func TestHandleKeyMsg_SendAllowsImageOnlyMessage(t *testing.T) {
 		t.Fatal("expected a user message to be queued")
 	}
 	last := m.messages[len(m.messages)-1]
-	if len(last.Parts) == 0 || last.Parts[0].Type != llm.PartImage {
+	if len(last.Parts) == 0 || last.Parts[0].Type != core.PartImage {
 		t.Fatalf("expected first part to be image, got %+v", last.Parts)
 	}
 }
@@ -210,10 +211,10 @@ func TestSendMessage_IncludesImageParts(t *testing.T) {
 	if len(last.Parts) < 2 {
 		t.Fatalf("expected image + text parts, got %d", len(last.Parts))
 	}
-	if last.Parts[0].Type != llm.PartImage {
+	if last.Parts[0].Type != core.PartImage {
 		t.Fatalf("expected first part image, got %q", last.Parts[0].Type)
 	}
-	if last.Parts[1].Type != llm.PartText {
+	if last.Parts[1].Type != core.PartText {
 		t.Fatalf("expected second part text, got %q", last.Parts[1].Type)
 	}
 	if len(m.images) != 0 {
@@ -230,10 +231,10 @@ func TestSendMessage_InjectsPlatformDeveloperMessageOnFirstTurnEvenWithSystemIns
 	if len(m.messages) != 3 {
 		t.Fatalf("expected system + developer + user messages after first send, got %d", len(m.messages))
 	}
-	if m.messages[0].Role != llm.RoleSystem {
+	if m.messages[0].Role != core.RoleSystem {
 		t.Fatalf("expected first message role system, got %q", m.messages[0].Role)
 	}
-	if m.messages[1].Role != llm.RoleDeveloper {
+	if m.messages[1].Role != core.RoleDeveloper {
 		t.Fatalf("expected second message role developer, got %q", m.messages[1].Role)
 	}
 }
@@ -246,14 +247,14 @@ func TestSendMessage_InjectsPlatformDeveloperMessageOnlyOnFirstTurn(t *testing.T
 	if len(m.messages) != 2 {
 		t.Fatalf("expected developer + user messages after first send, got %d", len(m.messages))
 	}
-	if m.messages[0].Role != llm.RoleDeveloper {
+	if m.messages[0].Role != core.RoleDeveloper {
 		t.Fatalf("expected first message role developer, got %q", m.messages[0].Role)
 	}
 
 	_, _ = m.sendMessage("again")
 	devCount := 0
 	for _, msg := range m.messages {
-		if msg.Role == llm.RoleDeveloper {
+		if msg.Role == core.RoleDeveloper {
 			devCount++
 		}
 	}
@@ -268,8 +269,8 @@ func TestSendMessage_InjectsPlatformDeveloperMessageWhenOriginChanges(t *testing
 	m.sess.Origin = session.OriginWeb
 	m.messages = []session.Message{{
 		SessionID:   m.sess.ID,
-		Role:        llm.RoleUser,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "from web"}},
+		Role:        core.RoleUser,
+		Parts:       []core.Part{{Type: core.PartText, Text: "from web"}},
 		TextContent: "from web",
 	}}
 
@@ -277,7 +278,7 @@ func TestSendMessage_InjectsPlatformDeveloperMessageWhenOriginChanges(t *testing
 	if len(m.messages) < 3 {
 		t.Fatalf("expected at least 3 messages after origin change, got %d", len(m.messages))
 	}
-	if m.messages[len(m.messages)-2].Role != llm.RoleDeveloper || !llm.IsPlatformContextMessage(m.messages[len(m.messages)-2].ToLLMMessage()) {
+	if m.messages[len(m.messages)-2].Role != core.RoleDeveloper || !llm.IsPlatformContextMessage(m.messages[len(m.messages)-2].ToLLMMessage()) {
 		t.Fatalf("expected mode-transition developer message before new user, got %#v", m.messages)
 	}
 	if m.sess.Origin != session.OriginTUI {

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -18,8 +18,8 @@ import (
 type telegramReloadChat struct {
 	ChatID           int64
 	Meta             *session.Session
-	History          []llm.Message
-	ActiveHistory    []llm.Message
+	History          []core.Message
+	ActiveHistory    []core.Message
 	PromptPersisted  bool
 	CarryoverContext string
 	CarryoverLabel   string
@@ -27,14 +27,14 @@ type telegramReloadChat struct {
 	LastActivity     time.Time
 }
 type telegramContinuation struct {
-	Engine         *llm.Continuation
+	Engine         *core.Continuation
 	MessageID      int
 	Text           string
 	MessageStart   int
 	NeedNewMessage bool
 	Images         []string
-	Media          []llm.MediaArtifact
-	Metrics        llm.TurnMetrics
+	Media          []core.MediaArtifact
+	Metrics        core.TurnMetrics
 	Turns          int
 }
 type telegramReloadState struct {
@@ -194,7 +194,7 @@ func (m *telegramSessionMgr) resumeTelegramContinuations(ctx context.Context, bo
 			defer m.releaseMessageSlot()
 			sess, err := m.getOrCreate(ctx, id)
 			if err == nil {
-				err = m.streamReplyContinuation(ctx, bot, sess, id, llm.Message{}, nil, saved)
+				err = m.streamReplyContinuation(ctx, bot, sess, id, core.Message{}, nil, saved)
 			}
 			if err != nil {
 				log.Printf("[telegram] resume chat %d: %v", id, err)

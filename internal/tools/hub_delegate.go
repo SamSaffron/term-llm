@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
@@ -247,8 +247,8 @@ func (t *HubDelegateTool) SetModelPolicySource(source func() modelpolicy.Policy)
 	t.modelPolicySource = source
 }
 
-func (t *HubDelegateTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *HubDelegateTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        HubDelegateToolName,
 		Description: `Delegate a task to another term-llm node via the Hub. The Hub runs the prompt as a background agent job on the target node and returns a delegation_id; use hub_check_delegation to retrieve the result (or set wait=true to block).`,
 		Schema: map[string]any{
@@ -295,19 +295,19 @@ func (t *HubDelegateTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *HubDelegateTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *HubDelegateTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a HubDelegateArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 	if strings.TrimSpace(a.TargetNode) == "" {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "target_node is required")), nil
+		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, "target_node is required")), nil
 	}
 	if strings.TrimSpace(a.Prompt) == "" {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
+		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
 	}
 	if t.modelPolicySource != nil && t.modelPolicySource().Restricted() {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "hub delegation is unavailable to agents restricted by allowed_models")), nil
+		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, "hub delegation is unavailable to agents restricted by allowed_models")), nil
 	}
 	// A trusted delegation id on the context (set by the jobs-v2 runner from
 	// the hub-written job label) always wins over the model-provided argument:
@@ -317,21 +317,21 @@ func (t *HubDelegateTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	}
 	client, err := resolveHubDelegationClient(t.client)
 	if err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
+		return core.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
 	d, err := client.createDelegation(ctx, a)
 	if err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
+		return core.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
 	refreshErr := ""
 	if a.Wait {
 		d, refreshErr, err = client.waitForDelegation(ctx, d.ID, t.pollIntervalOverride)
 		if err != nil {
-			return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, fmt.Sprintf("delegation %s created but waiting failed: %v", d.ID, err))), nil
+			return core.TextOutput(formatQueuedAgentError(ErrExecutionFailed, fmt.Sprintf("delegation %s created but waiting failed: %v", d.ID, err))), nil
 		}
 	}
 	data, _ := json.Marshal(hubDelegationResultFrom(d, refreshErr))
-	return llm.TextOutput(string(data)), nil
+	return core.TextOutput(string(data)), nil
 }
 
 func (t *HubDelegateTool) Preview(args json.RawMessage) string {
@@ -356,8 +356,8 @@ func NewHubCheckDelegationToolWithClient(client *hubDelegationClient) *HubCheckD
 	return &HubCheckDelegationTool{client: client}
 }
 
-func (t *HubCheckDelegationTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *HubCheckDelegationTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        HubCheckDelegationToolName,
 		Description: `Check (and by default wait for) hub delegations started with hub_delegate, returning their status and final responses.`,
 		Schema: map[string]any{
@@ -385,17 +385,17 @@ func (t *HubCheckDelegationTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *HubCheckDelegationTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *HubCheckDelegationTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a HubCheckDelegationArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 	if len(a.DelegationIDs) == 0 {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "delegation_ids is required")), nil
+		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, "delegation_ids is required")), nil
 	}
 	client, err := resolveHubDelegationClient(t.client)
 	if err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
+		return core.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
 	wait := a.Wait == nil || *a.Wait
 	pollInterval := time.Duration(a.PollIntervalSeconds) * time.Second
@@ -425,7 +425,7 @@ func (t *HubCheckDelegationTool) Execute(ctx context.Context, args json.RawMessa
 		results = append(results, hubDelegationResultFrom(d, refreshErr))
 	}
 	data, _ := json.Marshal(map[string]any{"delegations": results})
-	return llm.TextOutput(string(data)), nil
+	return core.TextOutput(string(data)), nil
 }
 
 func (t *HubCheckDelegationTool) Preview(args json.RawMessage) string {

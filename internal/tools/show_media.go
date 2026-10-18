@@ -14,7 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mediatype"
 )
 
@@ -54,8 +54,8 @@ type ShowMediaArgs struct {
 	Caption string `json:"caption,omitempty"`
 }
 
-func (t *ShowMediaTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *ShowMediaTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: ShowMediaToolName,
 		Description: "Register an existing image, video, or audio so it can be placed in your response. The result returns an opaque " +
 			"term-llm-media URL; embed that exact URL on its own line with Markdown image syntax and choose context-appropriate alt text. " +
@@ -87,20 +87,20 @@ func (t *ShowMediaTool) Preview(args json.RawMessage) string {
 	return a.Path
 }
 
-func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a ShowMediaArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 	if strings.TrimSpace(a.Path) == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
 	}
 	resolved, err := resolveToolPathWithConfig(a.Path, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return llm.TextOutput(formatToolError(toolErr)), nil
+			return core.TextOutput(formatToolError(toolErr)), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 	if t.approval != nil {
 		outcome, approvalErr := t.approval.CheckPathApprovalWithContext(ctx, ShowMediaToolName, resolved, a.Path, false)
@@ -115,51 +115,51 @@ func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	f, err := os.Open(resolved)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.Path))), nil
+			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.Path))), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot open file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot open file: %v", err))), nil
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
 	}
 	if !info.Mode().IsRegular() {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "path must be a regular file"))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "path must be a regular file"))), nil
 	}
 
 	if err := ctx.Err(); err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	format, inspectErr := mediatype.Inspect(f, info.Size())
 	if inspectErr != nil {
 		if errors.Is(inspectErr, mediatype.ErrUnsupported) {
-			return llm.TextOutput(formatToolError(NewToolError(ErrUnsupportedFormat,
+			return core.TextOutput(formatToolError(NewToolError(ErrUnsupportedFormat,
 				"unsupported media format (supported: PNG, JPEG, GIF, WebP, BMP, MP4, WebM, MP3, WAV, Ogg Opus/Vorbis, FLAC, M4A, audio-only WebM)"))), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot inspect file: %v", inspectErr))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot inspect file: %v", inspectErr))), nil
 	}
 	if err := ctx.Err(); err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	mediaType := format.MIME
 	if info.Size() > format.MaxBytes {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams,
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams,
 			"%s is %.1f MiB; show_media supports %s files up to %d MiB", filepath.Base(a.Path), float64(info.Size())/(1<<20), format.Kind, format.MaxBytes>>20))), nil
 	}
 
 	reference, err := newMediaReference()
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot create media reference: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot create media reference: %v", err))), nil
 	}
 	storedPath := ""
 	if publisher := t.mediaPublisher(); publisher != nil {
 		storedPath, err = publisher.PublishMedia(ctx, resolved, mediaType)
 		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot publish media: %v", err))), nil
+			return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot publish media: %v", err))), nil
 		}
 		if strings.TrimSpace(storedPath) == "" {
-			return llm.TextOutput(formatToolError(NewToolError(ErrExecutionFailed, "media publisher returned no stored path"))), nil
+			return core.TextOutput(formatToolError(NewToolError(ErrExecutionFailed, "media publisher returned no stored path"))), nil
 		}
 	}
 
@@ -175,9 +175,9 @@ func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	if caption != "" {
 		fmt.Fprintf(&result, "Suggested alt text: %s\n", caption)
 	}
-	return llm.ToolOutput{
+	return core.ToolOutput{
 		Content: result.String(),
-		Media: []llm.MediaArtifact{{
+		Media: []core.MediaArtifact{{
 			Reference:  reference,
 			SourcePath: resolved,
 			StoredPath: storedPath,

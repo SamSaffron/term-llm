@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // ShowImageTool implements the show_image tool for displaying images to users.
@@ -41,7 +41,7 @@ var showImageSupportedFormats = map[string]bool{
 	".bmp":  true,
 }
 
-func (t *ShowImageTool) Spec() llm.ToolSpec {
+func (t *ShowImageTool) Spec() core.ToolSpec {
 	props := map[string]any{
 		"file_path": map[string]any{
 			"type":        "string",
@@ -56,7 +56,7 @@ func (t *ShowImageTool) Spec() llm.ToolSpec {
 	if t.serveMode {
 		desc = "Display an image to the user."
 	}
-	return llm.ToolSpec{
+	return core.ToolSpec{
 		Name:        ShowImageToolName,
 		Description: desc,
 		Schema: map[string]any{
@@ -76,22 +76,22 @@ func (t *ShowImageTool) Preview(args json.RawMessage) string {
 	return a.FilePath
 }
 
-func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a ShowImageArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.FilePath == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
+		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
 	resolvedPath, err := resolveToolPathWithConfig(a.FilePath, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return llm.TextOutput(formatToolError(toolErr)), nil
+			return core.TextOutput(formatToolError(toolErr)), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	// Check permissions via approval manager
@@ -109,15 +109,15 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
+			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
 	}
 
 	// Check format
 	ext := strings.ToLower(filepath.Ext(resolvedPath))
 	if !showImageSupportedFormats[ext] {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext))), nil
+		return core.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext))), nil
 	}
 
 	// Build result
@@ -129,7 +129,7 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		sb.WriteString(fmt.Sprintf("Focus: %s\n", a.Prompt))
 	}
 
-	return llm.ToolOutput{
+	return core.ToolOutput{
 		Content: sb.String(),
 		Images:  []string{a.FilePath},
 	}, nil

@@ -8,18 +8,20 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/jobs"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	toolpkg "github.com/samsaffron/term-llm/internal/tools"
 )
 
 type progressiveTestTool struct{}
 
-func (t *progressiveTestTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "progressive_test_tool", Description: "test tool", Schema: map[string]any{"type": "object"}}
+func (t *progressiveTestTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "progressive_test_tool", Description: "test tool", Schema: map[string]any{"type": "object"}}
 }
 
-func (t *progressiveTestTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("tool ok"), nil
+func (t *progressiveTestTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("tool ok"), nil
 }
 
 func (t *progressiveTestTool) Preview(args json.RawMessage) string { return "" }
@@ -109,7 +111,7 @@ func TestValidateProgressiveDefaultsStopWhenToDoneWithoutTimeout(t *testing.T) {
 }
 
 func TestRunProgressiveSessionFinalizesOnNaturalCompletion(t *testing.T) {
-	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{
+	provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{
 		ToolCalls:          true,
 		SupportsToolChoice: true,
 	})
@@ -128,12 +130,12 @@ func TestRunProgressiveSessionFinalizesOnNaturalCompletion(t *testing.T) {
 		"message": "final saved",
 	})
 
-	engine := llm.NewEngine(provider, nil)
-	result, err := RunSession(context.Background(), engine, llm.Request{
-		Messages: []llm.Message{llm.UserText("Investigate X")},
+	eng := engine.NewEngine(provider, nil)
+	result, err := RunSession(context.Background(), eng, core.Request{
+		Messages: []core.Message{core.UserText("Investigate X")},
 		MaxTurns: 8,
-		ToolChoice: llm.ToolChoice{
-			Mode: llm.ToolChoiceAuto,
+		ToolChoice: core.ToolChoice{
+			Mode: core.ToolChoiceAuto,
 		},
 	}, RunOptions{})
 	if err != nil {
@@ -155,16 +157,16 @@ func TestRunProgressiveSessionFinalizesOnNaturalCompletion(t *testing.T) {
 }
 
 func TestRunProgressiveSessionTimeoutDoesNotStartDetachedFinalizationAfterDeadline(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	provider.AddTurn(llm.MockTurn{Delay: 50 * time.Millisecond, Text: "too slow"})
+	provider := mockprovider.NewMockProvider("mock")
+	provider.AddTurn(mockprovider.MockTurn{Delay: 50 * time.Millisecond, Text: "too slow"})
 	provider.AddTextResponse("finalization should not run")
 
-	engine := llm.NewEngine(provider, nil)
+	eng := engine.NewEngine(provider, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
-	result, err := RunSession(ctx, engine, llm.Request{
-		Messages: []llm.Message{llm.UserText("Investigate X")},
+	result, err := RunSession(ctx, eng, core.Request{
+		Messages: []core.Message{core.UserText("Investigate X")},
 		MaxTurns: 2,
 	}, RunOptions{StopWhen: StopWhenTimeout})
 	if err != nil {
@@ -179,7 +181,7 @@ func TestRunProgressiveSessionTimeoutDoesNotStartDetachedFinalizationAfterDeadli
 }
 
 func TestRunProgressiveSessionSyntheticContinuationPersistenceHonorsContext(t *testing.T) {
-	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{
+	provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{
 		ToolCalls:          true,
 		SupportsToolChoice: true,
 	})
@@ -192,21 +194,21 @@ func TestRunProgressiveSessionSyntheticContinuationPersistenceHonorsContext(t *t
 	})
 	provider.AddTextResponse("draft answer")
 
-	engine := llm.NewEngine(provider, nil)
+	eng := engine.NewEngine(provider, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5050*time.Millisecond)
 	defer cancel()
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := RunSession(ctx, engine, llm.Request{
-			Messages: []llm.Message{llm.UserText("Investigate X")},
+		_, err := RunSession(ctx, eng, core.Request{
+			Messages: []core.Message{core.UserText("Investigate X")},
 			MaxTurns: 8,
-			ToolChoice: llm.ToolChoice{
-				Mode: llm.ToolChoiceAuto,
+			ToolChoice: core.ToolChoice{
+				Mode: core.ToolChoiceAuto,
 			},
 		}, RunOptions{
 			StopWhen: StopWhenTimeout,
-			OnSyntheticUserMessage: func(ctx context.Context, msg llm.Message) error {
+			OnSyntheticUserMessage: func(ctx context.Context, msg core.Message) error {
 				<-ctx.Done()
 				return ctx.Err()
 			},
@@ -225,17 +227,17 @@ func TestRunProgressiveSessionSyntheticContinuationPersistenceHonorsContext(t *t
 }
 
 func TestAttemptProgressiveFinalizationSyntheticPersistenceHonorsContext(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock")
+	eng := engine.NewEngine(provider, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		finalized, text := attemptProgressiveFinalization(ctx, engine, toolpkg.NewFinalizeProgressTool(), llm.Request{
-			Messages: []llm.Message{llm.UserText("Investigate X")},
+		finalized, text := attemptProgressiveFinalization(ctx, eng, toolpkg.NewFinalizeProgressTool(), core.Request{
+			Messages: []core.Message{core.UserText("Investigate X")},
 		}, nil, RunOptions{
-			OnSyntheticUserMessage: func(ctx context.Context, msg llm.Message) error {
+			OnSyntheticUserMessage: func(ctx context.Context, msg core.Message) error {
 				<-ctx.Done()
 				return ctx.Err()
 			},
@@ -322,20 +324,20 @@ func TestProgressiveFinalizationContextCancelledExitSkipsWhenParentAlreadyCancel
 }
 
 func TestRunProgressivePassDoesNotDuplicateProducedAssistantWhenResponseCallbackFails(t *testing.T) {
-	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true})
+	provider := mockprovider.NewMockProvider("mock").WithCapabilities(core.Capabilities{ToolCalls: true})
 	provider.AddToolCall("call-1", "progressive_test_tool", map[string]any{})
 	provider.AddTextResponse("done")
 
 	tool := &progressiveTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	eng := engine.NewEngine(provider, registry)
 
-	result, err := runProgressivePass(context.Background(), engine, llm.Request{
-		Messages: []llm.Message{llm.UserText("test")},
-		Tools:    []llm.ToolSpec{tool.Spec()},
+	result, err := runProgressivePass(context.Background(), eng, core.Request{
+		Messages: []core.Message{core.UserText("test")},
+		Tools:    []core.ToolSpec{tool.Spec()},
 	}, RunOptions{
-		OnResponseCompleted: func(context.Context, int, llm.Message, llm.TurnMetrics) error {
+		OnResponseCompleted: func(context.Context, int, core.Message, core.TurnMetrics) error {
 			return context.DeadlineExceeded
 		},
 	}, NewTracker())
@@ -346,10 +348,10 @@ func TestRunProgressivePassDoesNotDuplicateProducedAssistantWhenResponseCallback
 	if len(result.produced) != 2 {
 		t.Fatalf("produced messages = %d, want assistant + tool result exactly once", len(result.produced))
 	}
-	if result.produced[0].Role != llm.RoleAssistant {
+	if result.produced[0].Role != core.RoleAssistant {
 		t.Fatalf("produced[0].Role = %s, want assistant", result.produced[0].Role)
 	}
-	if result.produced[1].Role != llm.RoleTool {
+	if result.produced[1].Role != core.RoleTool {
 		t.Fatalf("produced[1].Role = %s, want tool", result.produced[1].Role)
 	}
 }
@@ -363,13 +365,13 @@ func TestNewProgressTrackerFromMessagesSeedsCommittedProgress(t *testing.T) {
 		t.Fatalf("marshal call args: %v", err)
 	}
 
-	tracker := newProgressTrackerFromMessages([]llm.Message{
+	tracker := newProgressTrackerFromMessages([]core.Message{
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        "progress-1",
 						Name:      "update_progress",
 						Arguments: callArgs,
@@ -378,11 +380,11 @@ func TestNewProgressTrackerFromMessagesSeedsCommittedProgress(t *testing.T) {
 			},
 		},
 		{
-			Role: llm.RoleTool,
-			Parts: []llm.Part{
+			Role: core.RoleTool,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolResult,
-					ToolResult: &llm.ToolResult{
+					Type: core.PartToolResult,
+					ToolResult: &core.ToolResult{
 						ID:      "progress-1",
 						Name:    "update_progress",
 						Content: "progress saved",
@@ -391,11 +393,11 @@ func TestNewProgressTrackerFromMessagesSeedsCommittedProgress(t *testing.T) {
 			},
 		},
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
 				{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        "orphaned",
 						Name:      "update_progress",
 						Arguments: callArgs,

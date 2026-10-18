@@ -7,7 +7,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -19,11 +20,11 @@ type askFinalization struct {
 	cmd               *cobra.Command
 	collector         *ask.TextCollector
 	outputTool        *tools.SetOutputTool
-	outputRequest     func() llm.Request
+	outputRequest     func() core.Request
 	progressive       bool
 	progressiveResult progressiveRunResult
-	provider          llm.Provider
-	engine            *llm.Engine
+	provider          core.Provider
+	engine            *engine.Engine
 	store             session.Store
 	session           *session.Session
 	agent             *agents.Agent

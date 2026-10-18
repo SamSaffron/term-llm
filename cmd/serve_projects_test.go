@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/worktree"
@@ -1042,27 +1044,27 @@ func TestEvictedProjectRuntimeRecreatesExactWorkspaceBeforeResponse(t *testing.T
 	if _, err := binder.BindSessionWorkspace(ctx, persisted.ID, session.SessionWorkspaceBinding{ProjectID: project.ID, CWD: managed.Dir, WorktreeDir: managed.Dir}); err != nil {
 		t.Fatal(err)
 	}
-	user := session.NewMessage(persisted.ID, llm.UserText("before eviction"), 0)
+	user := session.NewMessage(persisted.ID, core.UserText("before eviction"), 0)
 	if err := store.AddMessage(ctx, persisted.ID, user); err != nil {
 		t.Fatal(err)
 	}
-	assistant := session.NewMessage(persisted.ID, llm.AssistantText("durable anchor"), 1)
+	assistant := session.NewMessage(persisted.ID, core.AssistantText("durable anchor"), 1)
 	if err := store.AddMessage(ctx, persisted.ID, assistant); err != nil {
 		t.Fatal(err)
 	}
 	var manager *tools.ToolManager
-	var provider *llm.MockProvider
+	var provider *mockprovider.MockProvider
 	factoryCalls := 0
 	srv.sessionMgr = newServeSessionManager(time.Minute, 8, func(context.Context) (*serveRuntime, error) {
 		factoryCalls++
-		provider = llm.NewMockProvider("mock").AddTextResponse("after eviction")
+		provider = mockprovider.NewMockProvider("mock").AddTextResponse("after eviction")
 		toolCfg := tools.DefaultToolConfig()
 		var managerErr error
 		manager, managerErr = tools.NewToolManager(&toolCfg, &config.Config{})
 		if managerErr != nil {
 			return nil, managerErr
 		}
-		rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), toolMgr: manager, defaultModel: "mock-model"}
+		rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), toolMgr: manager, defaultModel: "mock-model"}
 		rt.Touch()
 		return rt, nil
 	})
@@ -1101,10 +1103,10 @@ func TestFirstPartyResponseBindsProjectAndManagedWorktreeBeforeProvider(t *testi
 	}
 	t.Cleanup(func() { _ = worktree.Remove(context.Background(), managed.Dir, worktree.RemoveOptions{Force: true}) })
 
-	var provider *llm.MockProvider
+	var provider *mockprovider.MockProvider
 	var manager *tools.ToolManager
 	srv.sessionMgr = newServeSessionManager(time.Minute, 8, func(context.Context) (*serveRuntime, error) {
-		provider = llm.NewMockProvider("mock")
+		provider = mockprovider.NewMockProvider("mock")
 		provider.AddTextResponse("bound")
 		toolCfg := tools.DefaultToolConfig()
 		var managerErr error
@@ -1112,7 +1114,7 @@ func TestFirstPartyResponseBindsProjectAndManagedWorktreeBeforeProvider(t *testi
 		if managerErr != nil {
 			return nil, managerErr
 		}
-		rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), toolMgr: manager, defaultModel: "mock-model"}
+		rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), toolMgr: manager, defaultModel: "mock-model"}
 		rt.Touch()
 		return rt, nil
 	})
@@ -1236,10 +1238,10 @@ func TestConcurrentFreshResponsesFirstBindingWinsAndLoserConflicts(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	provider := llm.NewMockProvider("mock")
-	provider.AddTurn(llm.MockTurn{Text: "winner", Delay: 150 * time.Millisecond})
+	provider := mockprovider.NewMockProvider("mock")
+	provider.AddTurn(mockprovider.MockTurn{Text: "winner", Delay: 150 * time.Millisecond})
 	srv.sessionMgr = newServeSessionManager(time.Minute, 8, func(context.Context) (*serveRuntime, error) {
-		rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), defaultModel: "mock-model"}
+		rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), defaultModel: "mock-model"}
 		rt.Touch()
 		return rt, nil
 	})
@@ -2030,7 +2032,7 @@ func TestUIResponseInputBindingConflictRejectsSend(t *testing.T) {
 	srv.handleResolvedResponses(rec, req, ctx, resolvedResponsesRequest{
 		firstParty: true, sessionID: sess.ID,
 		req:           responsesCreateRequest{Stream: true, ClientMessageID: "unsent"},
-		inputMessages: []llm.Message{llm.UserText("follow-up")},
+		inputMessages: []core.Message{core.UserText("follow-up")},
 	})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())

@@ -14,15 +14,20 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 	"github.com/samsaffron/term-llm/internal/llm/providers/gemini"
 	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestEngineStripsConversationStartMarkersAcrossRequest(t *testing.T) {
 	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
-	engine := NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	first := ConversationStartMessage(time.Date(2026, time.January, 2, 3, 4, 0, 0, time.UTC))
 	second := ConversationStartMessage(time.Date(2026, time.January, 2, 3, 5, 0, 0, time.UTC))
 	messages := []core.Message{first, core.UserText("hello"), second, core.UserText("again")}
@@ -75,9 +80,9 @@ func TestRunLoopPersistsDeduplicatedCumulativeReasoningSummary(t *testing.T) {
 		return events
 	}}
 	tool := &countingTool{}
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	var persisted core.Message
 	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []core.Message, metrics core.TurnMetrics) error {
@@ -132,7 +137,7 @@ func TestEngineResetConversationCallsWrappedProvider(t *testing.T) {
 
 	inner := &mockResettableProvider{MockProvider: mockprovider.NewMockProvider("test")}
 	provider := WrapWithRetry(inner, DefaultRetryConfig())
-	e := NewEngine(provider, nil)
+	e := engine.NewEngine(provider, nil)
 
 	e.ResetConversation()
 
@@ -144,14 +149,14 @@ func TestEngineResetConversationCallsWrappedProvider(t *testing.T) {
 func TestEngineRecoversToolCallAfterRetryWrappedStreamError(t *testing.T) {
 	t.Parallel()
 
-	streamErr := &NonRecoverableStreamError{Err: errors.New("websocket disconnected after tool call")}
+	streamErr := &responses.NonRecoverableStreamError{Err: errors.New("websocket disconnected after tool call")}
 	tool := &countingTool{}
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
 
 	inner := &recoverToolCallProvider{err: streamErr}
 	provider := WrapWithRetry(inner, RetryConfig{MaxAttempts: 1, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond})
-	engine := NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	stream, err := engine.Stream(context.Background(), core.Request{
 		Messages:   []core.Message{core.UserText("please write something")},
 		Tools:      []core.ToolSpec{tool.Spec()},
@@ -223,7 +228,7 @@ func TestConfigureContextManagementUsesOllamaRuntimeWindow(t *testing.T) {
 
 	provider := ollama.New(srv.URL, "qwen3.8:27b-thinking", ollama.Options{})
 	wrapped := WrapWithRetry(provider, RetryConfig{MaxAttempts: 1})
-	engine := NewEngine(wrapped, nil)
+	engine := engine.NewEngine(wrapped, nil)
 	engine.ConfigureContextManagement(wrapped, "chatgpt", "qwen3.8:27b-thinking-low", true)
 
 	if got := engine.InputLimit(); got != 49152 {
@@ -240,24 +245,24 @@ func TestConfigureContextManagementUsesOllamaRuntimeWindow(t *testing.T) {
 
 func TestRushUsesNormalContinuationAcrossProviders(t *testing.T) {
 	providers := map[string]core.Provider{
-		"openai": &OpenAIProvider{}, "openai-websocket": NewOpenAIProviderWithOptions("", "", OpenAIProviderOptions{UseWebSocket: true}),
-		"compat": &OpenAICompatProvider{}, "anthropic": &anthropic.AnthropicProvider{}, "gemini": &gemini.Provider{},
-		"claude-bin": &ClaudeBinProvider{}, "cursor-bin": &CursorBinProvider{},
-		"agy-bin": &AgyBinProvider{}, "grok-acp": &GrokBinProvider{},
+		"openai": &rp.OpenAIProvider{}, "openai-websocket": rp.NewOpenAIProviderWithOptions("", "", rp.OpenAIProviderOptions{UseWebSocket: true}),
+		"compat": &opencompat.OpenAICompatProvider{}, "anthropic": &anthropic.AnthropicProvider{}, "gemini": &gemini.Provider{},
+		"claude-bin": &clibin.ClaudeBinProvider{}, "cursor-bin": &clibin.CursorBinProvider{},
+		"agy-bin": &clibin.AgyBinProvider{}, "grok-acp": &clibin.GrokBinProvider{},
 		"custom": mockprovider.NewMockProvider("custom"), "retry": &RetryProvider{inner: mockprovider.NewMockProvider("custom")},
 	}
 	for name, provider := range providers {
 		t.Run(name, func(t *testing.T) {
-			e := NewEngine(provider, nil)
+			e := engine.NewEngine(provider, nil)
 			if e.SteeringAvailability().CanRush {
 				t.Fatal("idle run offered Rush")
 			}
 			e.BeginSteeringRunForTest(true)
-			e.QueueSteering(QueuedSteering{ID: "guidance", Message: core.UserText("continue here"), Origin: SteeringOriginUser})
+			e.QueueSteering(engine.QueuedSteering{ID: "guidance", Message: core.UserText("continue here"), Origin: engine.SteeringOriginUser})
 			if !e.SteeringAvailability().CanRush {
 				t.Fatal("provider type blocked normal stop-and-continue")
 			}
-			owner := SteeringTransition{OperationID: "rush", Fence: 1}
+			owner := engine.SteeringTransition{OperationID: "rush", Fence: 1}
 			entries, err := e.FreezeSteering(owner)
 			if err != nil || len(entries) != 1 {
 				t.Fatalf("admission: %v, %+v", err, entries)
@@ -268,12 +273,12 @@ func TestRushUsesNormalContinuationAcrossProviders(t *testing.T) {
 }
 
 type listingProvider struct {
-	*MockProvider
-	models []ModelInfo
+	*mockprovider.MockProvider
+	models []core.ModelInfo
 	calls  int
 }
 
-func (p *listingProvider) ListModels(context.Context) ([]ModelInfo, error) {
+func (p *listingProvider) ListModels(context.Context) ([]core.ModelInfo, error) {
 	p.calls++
 	return p.models, nil
 }
@@ -282,10 +287,10 @@ func TestConfigureContextManagementRefreshesCopilotModelMetadata(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	provider := &listingProvider{
-		MockProvider: NewMockProvider("copilot"),
-		models:       []ModelInfo{{ID: "live-copilot-model", InputLimit: 1234}},
+		MockProvider: mockprovider.NewMockProvider("copilot"),
+		models:       []core.ModelInfo{{ID: "live-copilot-model", InputLimit: 1234}},
 	}
-	e := NewEngine(provider, nil)
+	e := engine.NewEngine(provider, nil)
 
 	e.ConfigureContextManagement(provider, "copilot", "live-copilot-model-high", true)
 	if provider.calls != 1 {
@@ -447,10 +452,10 @@ func (p *recoverToolCallProvider) Stream(ctx context.Context, req core.Request) 
 
 // providerProjection returns the messages the engine hands the provider for
 // messages, observing the provider-facing projection through Stream.
-func providerProjection(t *testing.T, messages []Message) []Message {
+func providerProjection(t *testing.T, messages []core.Message) []core.Message {
 	t.Helper()
-	provider := NewMockProvider("projection").AddTextResponse("ok")
-	stream, err := NewEngine(provider, nil).Stream(context.Background(), Request{Messages: messages})
+	provider := mockprovider.NewMockProvider("projection").AddTextResponse("ok")
+	stream, err := engine.NewEngine(provider, nil).Stream(context.Background(), core.Request{Messages: messages})
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -161,7 +161,7 @@ func (r *responseRun) applyRecoveryResponseCompaction(event string, payload map[
 func (r *responseRun) applyRecoveryResponseModelSwitch(event string, payload map[string]any) {
 	r.closeToolGroupLocked()
 	r.currentAssistant = -1
-	marker := &llm.ModelSwapMarker{
+	marker := &core.ModelSwapMarker{
 		FromProvider: strings.TrimSpace(stringValue(payload["from_provider"])),
 		FromModel:    strings.TrimSpace(stringValue(payload["from_model"])),
 		FromEffort:   strings.TrimSpace(stringValue(payload["from_reasoning_effort"])),
@@ -177,7 +177,7 @@ func (r *responseRun) applyRecoveryResponseModelSwitch(event string, payload map
 	}
 	content := strings.TrimSpace(stringValue(payload["message"]))
 	if content == "" && marker.FromModel != "" && marker.ToModel != "" {
-		content = llm.FormatModelSwapMarker(*marker)
+		content = core.FormatModelSwapMarker(*marker)
 	}
 	if content != "" && marker.FromModel != "" && marker.ToModel != "" {
 		marker.DisplayText = content

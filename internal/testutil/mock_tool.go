@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // MockTool is a configurable tool for testing.
 type MockTool struct {
-	SpecData    llm.ToolSpec
-	ExecuteFn   func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error)
+	SpecData    core.ToolSpec
+	ExecuteFn   func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error)
 	PreviewFn   func(args json.RawMessage) string
 	Invocations []MockToolInvocation
 }
@@ -18,20 +18,20 @@ type MockTool struct {
 // MockToolInvocation records a single tool invocation.
 type MockToolInvocation struct {
 	Args   json.RawMessage
-	Output llm.ToolOutput
+	Output core.ToolOutput
 	Result string // Shortcut for Output.Content
 	Error  error
 }
 
 // Spec implements llm.Tool.
-func (m *MockTool) Spec() llm.ToolSpec {
+func (m *MockTool) Spec() core.ToolSpec {
 	return m.SpecData
 }
 
 // Execute implements llm.Tool.
-func (m *MockTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (m *MockTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	if m.ExecuteFn == nil {
-		return llm.ToolOutput{}, nil
+		return core.ToolOutput{}, nil
 	}
 	result, err := m.ExecuteFn(ctx, args)
 	m.Invocations = append(m.Invocations, MockToolInvocation{
@@ -54,7 +54,7 @@ func (m *MockTool) Preview(args json.RawMessage) string {
 // NewMockTool creates a mock tool with the given name that returns a fixed result.
 func NewMockTool(name string, result string) *MockTool {
 	return &MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        name,
 			Description: "Mock tool: " + name,
 			Schema: map[string]interface{}{
@@ -62,16 +62,16 @@ func NewMockTool(name string, result string) *MockTool {
 				"properties": map[string]interface{}{},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-			return llm.TextOutput(result), nil
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+			return core.TextOutput(result), nil
 		},
 	}
 }
 
 // NewMockToolWithSchema creates a mock tool with a custom schema.
-func NewMockToolWithSchema(name, description string, schema map[string]interface{}, executeFn func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error)) *MockTool {
+func NewMockToolWithSchema(name, description string, schema map[string]interface{}, executeFn func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error)) *MockTool {
 	return &MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        name,
 			Description: description,
 			Schema:      schema,

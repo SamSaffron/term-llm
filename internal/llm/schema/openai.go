@@ -5,7 +5,7 @@ import (
 )
 
 // JSON-schema lowering for OpenAI strict mode, shared by every
-// Responses/OpenAI-compatible provider. Root llm re-exposes it via schema_compat.go.
+// Responses/OpenAI-compatible provider. Root llm calls it directly.
 
 // NormalizeSchemaForOpenAI ensures schema meets OpenAI's requirements:
 // - 'required' must include every key in properties

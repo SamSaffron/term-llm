@@ -2,10 +2,6 @@ package llm
 
 import "github.com/samsaffron/term-llm/internal/llm/core"
 
-func collectTextParts(parts []Part) string { return core.CollectTextParts(parts) }
-
-func collectToolResultText(parts []Part) string { return core.CollectToolResultText(parts) }
-
-func flattenSystemUser(messages []Message) (string, string) {
-	return core.FlattenSystemUser(messages)
+func hasReasoningMetadata(part core.Part) bool {
+	return part.ReasoningContent != "" || part.ReasoningKind != "" || part.ReasoningSummaryTitle != "" || part.ReasoningItemID != "" || part.ReasoningEncryptedContent != ""
 }

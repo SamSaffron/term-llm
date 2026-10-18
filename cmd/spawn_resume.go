@@ -5,7 +5,8 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -24,21 +25,21 @@ func (r *SpawnAgentRunner) SteerAgent(id, instructions string) (string, string) 
 		return "", "undelivered"
 	}
 	r.enginesMu.Lock()
-	engine := r.engines[id]
+	eng := r.engines[id]
 	r.enginesMu.Unlock()
-	if engine == nil {
+	if eng == nil {
 		return "", "undelivered"
 	}
-	steeringID, status := engine.QueueSteeringWithStatus(llm.QueuedSteering{Message: llm.UserText(instructions)})
-	if status != llm.SteeringQueueQueued && status != llm.SteeringQueueAlreadyQueued && status != llm.SteeringQueueCommitted {
+	steeringID, status := eng.QueueSteeringWithStatus(engine.QueuedSteering{Message: core.UserText(instructions)})
+	if status != engine.SteeringQueueQueued && status != engine.SteeringQueueAlreadyQueued && status != engine.SteeringQueueCommitted {
 		return steeringID, "undelivered"
 	}
-	if status == llm.SteeringQueueCommitted {
+	if status == engine.SteeringQueueCommitted {
 		return steeringID, "consumed"
 	}
 	return steeringID, "queued"
 }
 
-func (r *SpawnAgentRunner) loadChildResumeHistory(ctx context.Context, id string) ([]llm.Message, error) {
+func (r *SpawnAgentRunner) loadChildResumeHistory(ctx context.Context, id string) ([]core.Message, error) {
 	return runtime.RepairChildResumeHistory(ctx, r.store, id)
 }

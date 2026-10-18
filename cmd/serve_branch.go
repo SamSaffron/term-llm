@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -60,7 +61,7 @@ func branchContextSourceMessage(message session.Message) bool {
 	if session.IsBranchableMessage(message) {
 		return true
 	}
-	if message.Role == llm.RoleDeveloper {
+	if message.Role == core.RoleDeveloper {
 		_, ok := message.PathNoteProvenance()
 		return ok
 	}
@@ -254,14 +255,14 @@ func webBranchTreePointsForActiveRun(messages []session.Message, activeAnchorRow
 	points := make([]webBranchTreePoint, 0, len(messages))
 	previousContinuationID := int64(0)
 	for _, message := range messages {
-		if message.CompactionTail || llm.IsInternalCompactionSummaryText(message.TextContent) {
+		if message.CompactionTail || engine.IsInternalCompactionSummaryText(message.TextContent) {
 			continue
 		}
-		if message.Role == llm.RoleAssistant {
+		if message.Role == core.RoleAssistant {
 			previousContinuationID = message.ID
 			continue
 		}
-		if message.Role != llm.RoleUser {
+		if message.Role != core.RoleUser {
 			continue
 		}
 		anchorID := previousContinuationID
@@ -278,7 +279,7 @@ func webBranchTreePointsForActiveRun(messages []session.Message, activeAnchorRow
 		}
 		points = append(points, webBranchTreePoint{
 			MessageID: message.ID, AnchorMessageID: anchorID, Sequence: message.Sequence,
-			Role: string(llm.RoleUser), Preview: preview, Prefill: message.TextContent, LaterMessageCount: laterCount,
+			Role: string(core.RoleUser), Preview: preview, Prefill: message.TextContent, LaterMessageCount: laterCount,
 		})
 	}
 	return points

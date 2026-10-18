@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestDisplayTextSurvivesPersistenceAndReconciliation(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
-	input := llm.UserText("<realtime_delegation>provider-only context</realtime_delegation>")
+	input := core.UserText("<realtime_delegation>provider-only context</realtime_delegation>")
 	input.DisplayText = "list the files"
 	stored := NewMessage(sess.ID, input, -1)
 	if len(input.Parts) != 1 {
@@ -26,14 +26,14 @@ func TestDisplayTextSurvivesPersistenceAndReconciliation(t *testing.T) {
 	if restored.DisplayText != input.DisplayText || messages[0].TextContent != input.DisplayText || messages[0].DisplayText() != input.DisplayText {
 		t.Fatalf("display lost: %+v / %+v", messages[0], restored)
 	}
-	if len(restored.Parts) != 1 || llm.MessageText(restored) != llm.MessageText(input) {
+	if len(restored.Parts) != 1 || core.MessageText(restored) != core.MessageText(input) {
 		t.Fatalf("provider context changed: %+v", restored)
 	}
 	reconciled := NewMessage(sess.ID, restored, -1)
 	if reconciled.TextContent != input.DisplayText || reconciled.DisplayText() != input.DisplayText {
 		t.Fatalf("reconciliation lost display: %+v", reconciled)
 	}
-	plain := NewMessage(sess.ID, llm.UserText("<realtime_delegation>typed literally</realtime_delegation>"), -1)
+	plain := NewMessage(sess.ID, core.UserText("<realtime_delegation>typed literally</realtime_delegation>"), -1)
 	if plain.DisplayText() != "" {
 		t.Fatal("display inferred from prompt text")
 	}

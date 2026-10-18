@@ -5,7 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -27,11 +28,11 @@ func (s ProgressiveRunnerSink) GuardianEvent(event tools.GuardianEvent) {
 	}
 }
 
-func (s ProgressiveRunnerSink) Event(ev llm.Event) {
+func (s ProgressiveRunnerSink) Event(ev core.Event) {
 	_ = s.EventWithError(ev)
 }
 
-func (s ProgressiveRunnerSink) EventWithError(ev llm.Event) error {
+func (s ProgressiveRunnerSink) EventWithError(ev core.Event) error {
 	if s.Bridge == nil {
 		return nil
 	}
@@ -115,27 +116,27 @@ func (b *ProgressiveBridge) HandleGuardianEvent(event tools.GuardianEvent) error
 	return b.send(ui.GuardianReviewEvent(event))
 }
 
-func (b *ProgressiveBridge) HandleEvent(event llm.Event) error {
+func (b *ProgressiveBridge) HandleEvent(event core.Event) error {
 	if b == nil {
 		return nil
 	}
 	b.eventMu.Lock()
 	defer b.eventMu.Unlock()
 	switch event.Type {
-	case llm.EventError:
+	case core.EventError:
 		if event.Err != nil {
 			return b.send(ui.ErrorEvent(event.Err))
 		}
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		b.attemptUsageCommitted = false
 		if event.Text != "" {
 			b.stats.ObserveOutput()
 			return b.send(ui.TextEvent(event.Text))
 		}
-	case llm.EventReasoningDelta:
+	case core.EventReasoningDelta:
 		b.attemptUsageCommitted = false
-		kind := llm.NormalizeReasoningKind(event.ReasoningKind)
-		if llm.IsEncryptedReasoningDelta(event) {
+		kind := core.NormalizeReasoningKind(event.ReasoningKind)
+		if core.IsEncryptedReasoningDelta(event) {
 			b.stats.ObserveOutput()
 			break
 		}
@@ -146,12 +147,12 @@ func (b *ProgressiveBridge) HandleEvent(event llm.Event) error {
 			b.stats.ObserveOutput()
 		}
 		title := ""
-		displayable := kind == llm.ReasoningKindSummary
-		if kind == llm.ReasoningKindSummary && event.Text != "" {
+		displayable := kind == core.ReasoningKindSummary
+		if kind == core.ReasoningKindSummary && event.Text != "" {
 			title = internalreasoning.ParseReasoningSummary(event.Text).Title
 		}
 		return b.send(ui.ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable))
-	case llm.EventToolCall:
+	case core.EventToolCall:
 		b.markAttemptCommitted()
 		if event.Tool == nil {
 			break
@@ -171,7 +172,7 @@ func (b *ProgressiveBridge) HandleEvent(event llm.Event) error {
 		}
 		toolInfo := event.ToolInfo
 		if toolInfo == "" {
-			toolInfo = llm.ExtractToolInfo(*event.Tool)
+			toolInfo = engine.ExtractToolInfo(*event.Tool)
 		}
 		toolArgs := event.ToolArgs
 		if len(toolArgs) == 0 {
@@ -179,7 +180,7 @@ func (b *ProgressiveBridge) HandleEvent(event llm.Event) error {
 		}
 		b.stats.ToolStart()
 		return b.send(ui.ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs))
-	case llm.EventToolExecStart:
+	case core.EventToolExecStart:
 		b.markAttemptCommitted()
 		if isProgressToolName(event.ToolName) {
 			break
@@ -192,7 +193,7 @@ func (b *ProgressiveBridge) HandleEvent(event llm.Event) error {
 		}
 		b.stats.ToolStart()
 		return b.send(ui.ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs))
-	case llm.EventToolExecEnd:
+	case core.EventToolExecEnd:
 		if isProgressToolName(event.ToolName) {
 			break
 		}
@@ -222,7 +223,7 @@ func (b *ProgressiveBridge) HandleEvent(event llm.Event) error {
 				return err
 			}
 		}
-	case llm.EventUsage:
+	case core.EventUsage:
 		b.stats.GenerationEnd()
 		if event.Use != nil {
 			b.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
@@ -235,24 +236,24 @@ func (b *ProgressiveBridge) HandleEvent(event llm.Event) error {
 			}
 			return b.send(ui.UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens))
 		}
-	case llm.EventPhase:
+	case core.EventPhase:
 		if event.Text != "" {
 			return b.send(ui.PhaseEvent(event.Text))
 		}
-	case llm.EventRetry:
+	case core.EventRetry:
 		b.stats.ScheduleRetryStart(event.RetryWaitSecs)
 		return b.send(ui.RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs))
-	case llm.EventAttemptDiscard:
+	case core.EventAttemptDiscard:
 		b.stats.DiscardUsage(b.attemptInput, b.attemptOutput, b.attemptCached, b.attemptCacheWrite, b.attemptUsageCalls)
 		b.resetAttemptUsage()
 		return b.send(ui.AttemptDiscardEvent())
-	case llm.EventModelSwitch:
+	case core.EventModelSwitch:
 		model := event.Model
 		if model == "" {
 			model = event.Text
 		}
 		b.stats.SetModel(model)
-	case llm.EventSteering:
+	case core.EventSteering:
 		if event.Text != "" {
 			return b.send(ui.SteeringEvent(event.Text, event.SteeringID))
 		}

@@ -12,7 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -94,9 +95,9 @@ func (p *rootContextBlockingProvider) Name() string { return "root-context-block
 
 func (p *rootContextBlockingProvider) Credential() string { return "test" }
 
-func (p *rootContextBlockingProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *rootContextBlockingProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
 
-func (p *rootContextBlockingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *rootContextBlockingProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	select {
 	case p.started <- ctx:
 	default:
@@ -108,9 +109,9 @@ type rootContextBlockingStream struct {
 	ctx context.Context
 }
 
-func (s rootContextBlockingStream) Recv() (llm.Event, error) {
+func (s rootContextBlockingStream) Recv() (core.Event, error) {
 	<-s.ctx.Done()
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 
 func (s rootContextBlockingStream) Close() error { return nil }
@@ -141,7 +142,7 @@ func TestStartStreamUsesRootContextCancellation(t *testing.T) {
 	provider := newRootContextBlockingProvider()
 	m := newTestChatModel(false)
 	m.provider = provider
-	m.engine = llm.NewEngine(provider, nil)
+	m.engine = engine.NewEngine(provider, nil)
 	m.providerName = provider.Name()
 	m.modelName = "root-context-model"
 	m.sess = &session.Session{ID: "root-context-stream"}
@@ -178,8 +179,8 @@ func TestCmdCompressUsesRootContextCancellation(t *testing.T) {
 	m.modelName = "root-context-model"
 	m.sess = &session.Session{ID: "root-context-compact"}
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.UserText("hello"), 0),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("hi"), 1),
+		*session.NewMessage(m.sess.ID, core.UserText("hello"), 0),
+		*session.NewMessage(m.sess.ID, core.AssistantText("hi"), 1),
 	}
 
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
@@ -226,8 +227,8 @@ func TestCmdHandoverUsesRootContextCancellation(t *testing.T) {
 	m.config = &config.Config{}
 	m.sess = &session.Session{ID: "root-context-handover", CreatedAt: time.Now()}
 	m.messages = []session.Message{
-		*session.NewMessage(m.sess.ID, llm.UserText("please continue"), 0),
-		*session.NewMessage(m.sess.ID, llm.AssistantText("Working on it."), 1),
+		*session.NewMessage(m.sess.ID, core.UserText("please continue"), 0),
+		*session.NewMessage(m.sess.ID, core.AssistantText("Working on it."), 1),
 	}
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
 		return &agents.Agent{Name: name, SystemPrompt: "You are target."}, nil

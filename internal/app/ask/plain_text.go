@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -36,7 +36,7 @@ func StreamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 	newlineCompactor := ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 	showToolStatus := !suppressToolStatus
 	var pendingText strings.Builder
-	mediaByReference := make(map[string]llm.MediaArtifact)
+	mediaByReference := make(map[string]core.MediaArtifact)
 
 	flushPendingText := func() {
 		text := ui.ReplaceMediaMarkdown(pendingText.String(), mediaByReference)
@@ -120,7 +120,7 @@ func StreamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 
 			case ui.StreamEventPhase:
 				// Print WARNING phases to stderr, skip others
-				if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) {
+				if strings.HasPrefix(ev.Phase, core.WarningPhasePrefix) {
 					fmt.Fprintf(stderr, "\n%s\n", terminaltext.SanitizeSingleLine(ev.Phase))
 				}
 				continue

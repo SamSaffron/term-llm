@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 )
 
@@ -44,7 +44,7 @@ func (m *Model) providerContextCapture() func() runboundary.ProviderContext {
 	workingDir := m.effectiveWorkingDir()
 	return func() runboundary.ProviderContext {
 		captured := runboundary.ProviderContext{WorkingDir: workingDir, ProviderKey: providerKey, Model: model}
-		if exporter, ok := provider.(llm.ProviderStateExporter); ok {
+		if exporter, ok := provider.(core.ProviderStateExporter); ok {
 			if state, exported := exporter.ExportProviderState(); exported {
 				captured.State = state
 			}

@@ -8,6 +8,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/cache"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
@@ -30,7 +32,7 @@ func endpointModelCacheKey(providerCfg config.ProviderConfig) string {
 // (OPENAI_BASE_URL or the public API root).
 func endpointModelBaseURL(providerCfg config.ProviderConfig) string {
 	if baseURL := strings.TrimSpace(providerCfg.BaseURL); baseURL != "" {
-		return NewOpenAICompatProvider(baseURL, "", "", "").BaseURL()
+		return opencompat.NewOpenAICompatProvider(baseURL, "", "", "").BaseURL()
 	}
 	return providerCfg.OpenAIEndpoint().BaseURL
 }
@@ -64,7 +66,7 @@ func RefreshEndpointModelsIfStale(ctx context.Context, providerCfg config.Provid
 	if apiKey == "" {
 		apiKey = providerCfg.APIKey
 	}
-	models, err := NewOpenAICompatProvider(endpointModelBaseURL(providerCfg), apiKey, providerCfg.Model, "").ListModels(ctx)
+	models, err := opencompat.NewOpenAICompatProvider(endpointModelBaseURL(providerCfg), apiKey, providerCfg.Model, "").ListModels(ctx)
 	if err != nil {
 		return err
 	}
@@ -80,7 +82,7 @@ func GetCachedEndpointModels(providerCfg config.ProviderConfig) []string {
 	if err != nil || cached == nil {
 		return nil
 	}
-	infos := modelInfosFromCache(cached)
+	infos := opencompat.ModelInfosFromCache(cached)
 	ids := make([]string, 0, len(infos))
 	for _, model := range infos {
 		if id := strings.TrimSpace(model.ID); id != "" {
@@ -92,9 +94,9 @@ func GetCachedEndpointModels(providerCfg config.ProviderConfig) []string {
 
 // RefreshEndpointCacheSync stores a freshly fetched endpoint catalog for
 // completion and offline provider/model pickers.
-func RefreshEndpointCacheSync(providerCfg config.ProviderConfig, models []ModelInfo) {
+func RefreshEndpointCacheSync(providerCfg config.ProviderConfig, models []core.ModelInfo) {
 	if len(models) == 0 {
 		return
 	}
-	_ = cache.WriteModelInfoCache(endpointModelCacheKey(providerCfg), modelInfosToCache(models))
+	_ = cache.WriteModelInfoCache(endpointModelCacheKey(providerCfg), opencompat.ModelInfosToCache(models))
 }

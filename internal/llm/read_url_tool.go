@@ -16,7 +16,6 @@ import (
 )
 
 const (
-	ReadURLToolName         = core.ReadURLToolName
 	maxReadURLChars         = 50000
 	maxReadURLRedirects     = 10
 	readURLTruncationSuffix = "\n\n[Content truncated at 50,000 characters]"
@@ -61,7 +60,7 @@ func NewReadURLToolWithFetcher(fetcher URLFetcher) *ReadURLTool {
 	return tool
 }
 
-func (t *ReadURLTool) Spec() ToolSpec {
+func (t *ReadURLTool) Spec() core.ToolSpec {
 	return ReadURLToolSpec()
 }
 
@@ -76,9 +75,9 @@ func (t *ReadURLTool) Preview(args json.RawMessage) string {
 }
 
 // ReadURLToolSpec returns the tool spec for reading web pages.
-func ReadURLToolSpec() ToolSpec {
-	return ToolSpec{
-		Name:        ReadURLToolName,
+func ReadURLToolSpec() core.ToolSpec {
+	return core.ToolSpec{
+		Name:        core.ReadURLToolName,
 		Description: "Fetch and read a web page. Returns the page content as clean markdown. Use this to read full content from URLs found in search results.",
 		Schema: map[string]interface{}{
 			"type": "object",
@@ -94,29 +93,29 @@ func ReadURLToolSpec() ToolSpec {
 	}
 }
 
-func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return ToolOutput{}, fmt.Errorf("parse read_url args: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("parse read_url args: %w", err)
 	}
 
 	if payload.URL == "" {
-		return ToolOutput{}, fmt.Errorf("url is required")
+		return core.ToolOutput{}, fmt.Errorf("url is required")
 	}
 
 	url, err := resolveReadURLTarget(ctx, t.client, payload.URL)
 	if err != nil {
-		return ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 
 	if t.fetcher != nil {
 		content, err := t.fetcher.FetchURL(ctx, url)
 		if err != nil {
-			return TextOutput(fmt.Sprintf("Error fetching URL: %v", err)), nil
+			return core.TextOutput(fmt.Sprintf("Error fetching URL: %v", err)), nil
 		}
-		return TextOutput(content), nil
+		return core.TextOutput(content), nil
 	}
 
 	// Fetch via Jina AI Reader
@@ -124,12 +123,12 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 
 	req, err := http.NewRequestWithContext(ctx, "GET", jinaURL, nil)
 	if err != nil {
-		return ToolOutput{}, fmt.Errorf("create request: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("create request: %w", err)
 	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return TextOutput(fmt.Sprintf("Error fetching URL: %v", err)), nil
+		return core.TextOutput(fmt.Sprintf("Error fetching URL: %v", err)), nil
 	}
 	defer resp.Body.Close()
 
@@ -139,19 +138,19 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 		if statusText == "" {
 			statusText = "Unknown"
 		}
-		return TextOutput(fmt.Sprintf("Error: HTTP %d %s - Unable to fetch this URL.", resp.StatusCode, statusText)), nil
+		return core.TextOutput(fmt.Sprintf("Error: HTTP %d %s - Unable to fetch this URL.", resp.StatusCode, statusText)), nil
 	}
 
 	content, truncated, err := readURLContent(resp.Body)
 	if err != nil {
-		return TextOutput(fmt.Sprintf("Error reading response: %v", err)), nil
+		return core.TextOutput(fmt.Sprintf("Error reading response: %v", err)), nil
 	}
 
 	if truncated {
 		content += readURLTruncationSuffix
 	}
 
-	return TextOutput(content), nil
+	return core.TextOutput(content), nil
 }
 
 func readURLContent(r io.Reader) (string, bool, error) {

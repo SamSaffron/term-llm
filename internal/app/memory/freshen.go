@@ -13,6 +13,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -87,7 +89,7 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 		return err
 	}
 
-	var engine *llm.Engine
+	var engine *engine.Engine
 	var reqModel string
 	buildUpdatedRecent := func(sessionSnippets, existingRecent, fragmentsText string) (string, error) {
 		if engine == nil {
@@ -213,7 +215,7 @@ func resolveUpdateRecentPath(env Env, file string, cfg *config.Config, agentName
 	return resolveAgentRecentPath(env, cfg, agentName)
 }
 
-func newMemoryUpdateRecentProvider(cfg *config.Config, modelOverride string) (llm.Provider, string, error) {
+func newMemoryUpdateRecentProvider(cfg *config.Config, modelOverride string) (core.Provider, string, error) {
 	modelOverride = strings.TrimSpace(modelOverride)
 	if modelOverride == "" {
 		provider, err := llm.NewFastProvider(cfg, cfg.DefaultProvider)
@@ -251,13 +253,13 @@ func newMemoryUpdateRecentProvider(cfg *config.Config, modelOverride string) (ll
 	return provider, modelOverride, nil
 }
 
-func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int, debugRaw bool) (string, error) {
-	req := llm.Request{
+func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int, debugRaw bool) (string, error) {
+	req := core.Request{
 		Model:     strings.TrimSpace(model),
 		Ephemeral: true,
-		Messages: []llm.Message{
-			llm.SystemText(memoryUpdateRecentSystemPrompt(targetTokens, targetChars)),
-			llm.UserText(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText)),
+		Messages: []core.Message{
+			core.SystemText(memoryUpdateRecentSystemPrompt(targetTokens, targetChars)),
+			core.UserText(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText)),
 		},
 		MaxTurns: 1,
 		DebugRaw: debugRaw,
@@ -279,9 +281,9 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model
 			return "", err
 		}
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			b.WriteString(ev.Text)
-		case llm.EventError:
+		case core.EventError:
 			if ev.Err != nil {
 				return "", ev.Err
 			}
@@ -295,13 +297,13 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model
 	return content, nil
 }
 
-func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, model, candidateRecent string, targetTokens, targetChars int, debugRaw bool) (string, error) {
-	req := llm.Request{
+func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, model, candidateRecent string, targetTokens, targetChars int, debugRaw bool) (string, error) {
+	req := core.Request{
 		Model:     strings.TrimSpace(model),
 		Ephemeral: true,
-		Messages: []llm.Message{
-			llm.SystemText(memoryCompactRecentSystemPrompt(targetTokens, targetChars)),
-			llm.UserText(memoryCompactRecentUserPrompt(candidateRecent)),
+		Messages: []core.Message{
+			core.SystemText(memoryCompactRecentSystemPrompt(targetTokens, targetChars)),
+			core.UserText(memoryCompactRecentUserPrompt(candidateRecent)),
 		},
 		MaxTurns: 1,
 		DebugRaw: debugRaw,
@@ -323,9 +325,9 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, mode
 			return "", err
 		}
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			b.WriteString(ev.Text)
-		case llm.EventError:
+		case core.EventError:
 			if ev.Err != nil {
 				return "", ev.Err
 			}
@@ -339,7 +341,7 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, mode
 	return content, nil
 }
 
-func fitUpdatedRecentWithinBudget(ctx context.Context, engine *llm.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int, debugRaw bool) (string, error) {
+func fitUpdatedRecentWithinBudget(ctx context.Context, engine *engine.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int, debugRaw bool) (string, error) {
 	if len([]byte(updatedRecent)) <= highWaterChars {
 		return updatedRecent, nil
 	}
@@ -652,11 +654,11 @@ func formatUpdateRecentSessionHeader(sess memoryUpdateRecentSession) string {
 
 func formatUpdateRecentMessage(msg session.Message) string {
 	switch msg.Role {
-	case llm.RoleUser:
+	case core.RoleUser:
 		if text := truncateUpdateRecentText(msg.TextContent, memoryUpdateRecentUserCharCap, false); text != "" {
 			return "User: " + text
 		}
-	case llm.RoleAssistant:
+	case core.RoleAssistant:
 		if text := truncateUpdateRecentText(msg.TextContent, memoryUpdateRecentAssistantCharCap, true); text != "" {
 			return "Assistant: " + text
 		}

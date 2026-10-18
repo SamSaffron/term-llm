@@ -10,7 +10,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -281,7 +282,7 @@ func TestMaybeNameHandoverUsesBoundWorktreePath(t *testing.T) {
 	m := newFileHandoverTestModel(planPath, "name-worktree")
 	m.sess.CWD = worktreeDir
 	m.sess.WorktreeDir = worktreeDir
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("worktree plan")
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse("worktree plan")
 
 	cmd := m.maybeNameHandoverCmd("fix worktree handovers")
 	if cmd == nil {
@@ -326,7 +327,7 @@ func TestMaybeRenameHandoverUsesBoundWorktreePath(t *testing.T) {
 	m := newFileHandoverTestModel(planPath, "rename-worktree")
 	m.sess.CWD = worktreeDir
 	m.sess.WorktreeDir = worktreeDir
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("worktree handover")
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse("worktree handover")
 
 	cmd := m.maybeRenameHandoverCmd()
 	if cmd == nil {
@@ -362,7 +363,7 @@ func TestCmdHandoverFileModeLegacyPromptScansEffectiveDirectory(t *testing.T) {
 	m := newFileHandoverTestModel("", "legacy-prompt")
 	m.sess.CWD = worktreeDir
 	m.sess.WorktreeDir = worktreeDir
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.SystemText("Legacy planner prompt without an assigned path."), -1)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.SystemText("Legacy planner prompt without an assigned path."), -1)}
 	assertHandoverDocument(t, handoverCommand(t, m), "legacy session plan")
 }
 
@@ -377,7 +378,7 @@ func newFileHandoverTestModel(planPath, id string) *Model {
 		return &agents.Agent{Name: name, SystemPrompt: "You are target."}, nil
 	}
 	sysPrompt := handoverAssignment(planPath)
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.SystemText(sysPrompt), -1)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.SystemText(sysPrompt), -1)}
 	return m
 }
 

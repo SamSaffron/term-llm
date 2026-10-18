@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestLiveSettingsRequiresOriginatingTurnAuthority(t *testing.T) {
@@ -20,9 +20,9 @@ func TestLiveSettingsRequiresOriginatingTurnAuthority(t *testing.T) {
 	}
 	bound := ContextWithLiveSettings(context.Background(), "parent", apply)
 	for name, ctx := range map[string]context.Context{
-		"ordinary turn": llm.ContextWithSessionID(context.Background(), "parent"),
+		"ordinary turn": core.ContextWithSessionID(context.Background(), "parent"),
 		"no session":    bound,
-		"child session": llm.ContextWithSessionID(bound, "child"),
+		"child session": core.ContextWithSessionID(bound, "child"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tool.Execute(ctx, json.RawMessage(`{}`))
@@ -35,7 +35,7 @@ func TestLiveSettingsRequiresOriginatingTurnAuthority(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("unauthorized callbacks = %d", calls)
 	}
-	ctx := llm.ContextWithSessionID(bound, "parent")
+	ctx := core.ContextWithSessionID(bound, "parent")
 	out, err := tool.Execute(ctx, json.RawMessage(`{}`))
 	if err != nil || !strings.Contains(out.Content, `"voice":"cove"`) || calls != 1 {
 		t.Fatalf("authorized output = %+v, %v; calls=%d", out, err, calls)
@@ -48,7 +48,7 @@ func TestLiveSettingsArgumentsAndProviderFailures(t *testing.T) {
 		requested = voice
 		return live.Capabilities{}, errors.New("provider refused the change")
 	})
-	ctx = llm.ContextWithSessionID(ctx, "chat")
+	ctx = core.ContextWithSessionID(ctx, "chat")
 	tool := &LiveSettingsTool{}
 	if _, err := tool.Execute(ctx, json.RawMessage(`{"voice":42}`)); err == nil {
 		t.Fatal("invalid arguments accepted")

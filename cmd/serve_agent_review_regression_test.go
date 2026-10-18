@@ -3,16 +3,17 @@ package cmd
 import (
 	"context"
 	"database/sql"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestAgentReviewWakePreservesRequestConfiguration(t *testing.T) {
-	provider := llm.NewMockProvider("debug").AddTextResponse("done")
+	provider := mockprovider.NewMockProvider("debug").AddTextResponse("done")
 	srv, store, rt := newAgentWakeFixture(t, provider)
 	rt.maxTurns = 7
 	rt.search = true
@@ -44,7 +45,7 @@ func (s *agentSnapshotStore) ListPendingAgentRunsForParent(ctx context.Context, 
 func TestAgentReviewWakeRevalidatesStopOrCollection(t *testing.T) {
 	for _, operation := range []string{"stop", "collect"} {
 		t.Run(operation, func(t *testing.T) {
-			provider := llm.NewMockProvider("debug").AddTextResponse("unwanted automatic turn")
+			provider := mockprovider.NewMockProvider("debug").AddTextResponse("unwanted automatic turn")
 			srv, store, _ := newAgentWakeFixture(t, provider)
 			row := putWakeRun(t, store, "completed")
 			blocked := &agentSnapshotStore{SQLiteStore: store, read: make(chan struct{}), release: make(chan struct{})}
@@ -70,7 +71,7 @@ func TestAgentReviewWakeRevalidatesStopOrCollection(t *testing.T) {
 }
 
 func TestAgentReviewRestartRetriesWakeAfterOldParentLeaseExpires(t *testing.T) {
-	provider := llm.NewMockProvider("debug").AddTextResponse("recovered child")
+	provider := mockprovider.NewMockProvider("debug").AddTextResponse("recovered child")
 	srv, store, _ := newAgentWakeFixture(t, provider)
 	srv.shutdownCh = make(chan struct{})
 	// Drive the startup and periodic lifecycle bodies synchronously, without sleeps.
@@ -115,7 +116,7 @@ func TestAgentReviewRestartRetriesWakeAfterOldParentLeaseExpires(t *testing.T) {
 }
 
 func TestAgentWakeDoesNotRecreateDeletedParentSession(t *testing.T) {
-	provider := llm.NewMockProvider("debug").AddTextResponse("spontaneous reply")
+	provider := mockprovider.NewMockProvider("debug").AddTextResponse("spontaneous reply")
 	srv, store, rt := newAgentWakeFixture(t, provider)
 	putWakeRun(t, store, "completed")
 	if err := store.Delete(context.Background(), "wake-parent"); err != nil {
@@ -138,8 +139,8 @@ func TestAgentWakeDoesNotRecreateDeletedParentSession(t *testing.T) {
 }
 
 func TestAgentWakeAcknowledgmentSurvivesHostWaiterExit(t *testing.T) {
-	provider := llm.NewMockProvider("debug").
-		AddTurn(llm.MockTurn{Text: "handled child result", Delay: 250 * time.Millisecond}).
+	provider := mockprovider.NewMockProvider("debug").
+		AddTurn(mockprovider.MockTurn{Text: "handled child result", Delay: 250 * time.Millisecond}).
 		AddTextResponse("handled the SAME child result again")
 	srv, store, _ := newAgentWakeFixture(t, provider)
 	srv.shutdownCh = make(chan struct{})
@@ -185,7 +186,7 @@ func TestAgentHostShutdownIsNotExplicitStop(t *testing.T) {
 }
 
 func TestAgentResponseTimeoutLeavesDetachedChildrenOwned(t *testing.T) {
-	provider := llm.NewMockProvider("debug")
+	provider := mockprovider.NewMockProvider("debug")
 	_, _, rt := newAgentWakeFixture(t, provider)
 	run := newResponseRun("timeout", "parent", "", "fast", time.Now().Unix(), func() {})
 	ctx, cancel := context.WithCancelCause(withResponseRunContext(context.Background(), run))
@@ -197,7 +198,7 @@ func TestAgentResponseTimeoutLeavesDetachedChildrenOwned(t *testing.T) {
 
 func TestAgentWakeReloadCarriesDeliveryAndProvenance(t *testing.T) {
 	saved := webReloadFixture(t, "wake-reload", "debug")
-	provider := llm.NewMockProvider("debug")
+	provider := mockprovider.NewMockProvider("debug")
 	_, _, rt := newAgentWakeFixture(t, provider)
 	run := restoreWebRun(&saved, func() {})
 	events := []session.AgentRun{{ID: "child", RunGeneration: 3}}
@@ -211,7 +212,7 @@ func TestAgentWakeReloadCarriesDeliveryAndProvenance(t *testing.T) {
 }
 
 func TestStoppingHostWakeSuppressesItsOfferedGenerations(t *testing.T) {
-	provider := llm.NewMockProvider("debug")
+	provider := mockprovider.NewMockProvider("debug")
 	_, store, rt := newAgentWakeFixture(t, provider)
 	event := putWakeRun(t, store, "completed")
 	event.ParentResponseID = "older-user-turn"

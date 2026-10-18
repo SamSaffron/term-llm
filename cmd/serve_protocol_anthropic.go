@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 type anthropicMessagesRequest struct {
@@ -69,9 +69,9 @@ func writeAnthropicSSE(w io.Writer, eventType string, payload any) error {
 	return err
 }
 
-// parseAnthropicMessages converts Anthropic-format messages to llm.Message.
-func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
-	result := make([]llm.Message, 0, len(msgs))
+// parseAnthropicMessages converts Anthropic-format messages to core.Message.
+func parseAnthropicMessages(msgs []anthropicMessage) ([]core.Message, error) {
+	result := make([]core.Message, 0, len(msgs))
 
 	for _, msg := range msgs {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
@@ -81,9 +81,9 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 		if err := json.Unmarshal(msg.Content, &textContent); err == nil {
 			switch role {
 			case "user":
-				result = append(result, llm.UserText(textContent))
+				result = append(result, core.UserText(textContent))
 			case "assistant":
-				result = append(result, llm.AssistantText(textContent))
+				result = append(result, core.AssistantText(textContent))
 			default:
 				return nil, fmt.Errorf("unsupported message role: %s", role)
 			}
@@ -96,13 +96,13 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 			return nil, fmt.Errorf("invalid content for %s message", role)
 		}
 
-		var parts []llm.Part
+		var parts []core.Part
 		attachmentCount := 0
 		for _, block := range blocks {
 			switch block.Type {
 			case "text":
 				if block.Text != "" {
-					parts = append(parts, llm.Part{Type: llm.PartText, Text: block.Text})
+					parts = append(parts, core.Part{Type: core.PartText, Text: block.Text})
 				}
 			case "image":
 				if block.Source == nil || strings.TrimSpace(block.Source.Data) == "" {
@@ -117,9 +117,9 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 					return nil, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 				}
 				{
-					imagePart := llm.Part{
-						Type:      llm.PartImage,
-						ImageData: &llm.ToolImageData{MediaType: mediaType, Base64: block.Source.Data},
+					imagePart := core.Part{
+						Type:      core.PartImage,
+						ImageData: &core.ToolImageData{MediaType: mediaType, Base64: block.Source.Data},
 					}
 					raw, err := decodeUploadedFile("image", block.Source.Data)
 					if err != nil {
@@ -138,9 +138,9 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 				if len(args) == 0 {
 					args = json.RawMessage("{}")
 				}
-				parts = append(parts, llm.Part{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+				parts = append(parts, core.Part{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        block.ID,
 						Name:      block.Name,
 						Arguments: args,
@@ -166,9 +166,9 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 						}
 					}
 				}
-				parts = append(parts, llm.Part{
-					Type: llm.PartToolResult,
-					ToolResult: &llm.ToolResult{
+				parts = append(parts, core.Part{
+					Type: core.PartToolResult,
+					ToolResult: &core.ToolResult{
 						ID:      block.ToolUseID,
 						Content: content,
 						IsError: block.IsError,
@@ -186,22 +186,22 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 			// Anthropic puts tool_result blocks in user messages.
 			// Split them out into RoleTool messages so the OpenAI-compat
 			// provider can emit proper {"role":"tool"} entries.
-			var userParts, toolParts []llm.Part
+			var userParts, toolParts []core.Part
 			for _, p := range parts {
-				if p.Type == llm.PartToolResult {
+				if p.Type == core.PartToolResult {
 					toolParts = append(toolParts, p)
 				} else {
 					userParts = append(userParts, p)
 				}
 			}
 			if len(toolParts) > 0 {
-				result = append(result, llm.Message{Role: llm.RoleTool, Parts: toolParts})
+				result = append(result, core.Message{Role: core.RoleTool, Parts: toolParts})
 			}
 			if len(userParts) > 0 {
-				result = append(result, llm.Message{Role: llm.RoleUser, Parts: userParts})
+				result = append(result, core.Message{Role: core.RoleUser, Parts: userParts})
 			}
 		case "assistant":
-			result = append(result, llm.Message{Role: llm.RoleAssistant, Parts: parts})
+			result = append(result, core.Message{Role: core.RoleAssistant, Parts: parts})
 		default:
 			return nil, fmt.Errorf("unsupported message role: %s", role)
 		}
@@ -235,16 +235,16 @@ func parseAnthropicSystem(raw json.RawMessage) string {
 	return ""
 }
 
-// anthropicToolsToSpecs converts Anthropic tool definitions to llm.ToolSpec.
+// anthropicToolsToSpecs converts Anthropic tool definitions to core.ToolSpec.
 // This allows clients (e.g. Claude Code) to pass their own tool definitions
 // through to the backend model.
-func anthropicToolsToSpecs(tools []anthropicToolDef) []llm.ToolSpec {
-	specs := make([]llm.ToolSpec, 0, len(tools))
+func anthropicToolsToSpecs(tools []anthropicToolDef) []core.ToolSpec {
+	specs := make([]core.ToolSpec, 0, len(tools))
 	for _, t := range tools {
 		if t.Name == "" {
 			continue
 		}
-		specs = append(specs, llm.ToolSpec{
+		specs = append(specs, core.ToolSpec{
 			Name:        t.Name,
 			Description: t.Description,
 			Schema:      t.InputSchema,
@@ -265,27 +265,27 @@ func parseAnthropicRequestedToolNames(tools []anthropicToolDef) map[string]bool 
 	return requested
 }
 
-// parseAnthropicToolChoice parses Anthropic-format tool_choice into llm.ToolChoice.
-func parseAnthropicToolChoice(raw json.RawMessage) llm.ToolChoice {
+// parseAnthropicToolChoice parses Anthropic-format tool_choice into core.ToolChoice.
+func parseAnthropicToolChoice(raw json.RawMessage) core.ToolChoice {
 	if len(raw) == 0 {
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return core.ToolChoice{Mode: core.ToolChoiceAuto}
 	}
 	var obj struct {
 		Type string `json:"type"`
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return core.ToolChoice{Mode: core.ToolChoiceAuto}
 	}
 	switch obj.Type {
 	case "any":
-		return llm.ToolChoice{Mode: llm.ToolChoiceRequired}
+		return core.ToolChoice{Mode: core.ToolChoiceRequired}
 	case "tool":
-		return llm.ToolChoice{Mode: llm.ToolChoiceName, Name: obj.Name}
+		return core.ToolChoice{Mode: core.ToolChoiceName, Name: obj.Name}
 	case "none":
-		return llm.ToolChoice{Mode: llm.ToolChoiceNone}
+		return core.ToolChoice{Mode: core.ToolChoiceNone}
 	default:
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return core.ToolChoice{Mode: core.ToolChoiceAuto}
 	}
 }
 

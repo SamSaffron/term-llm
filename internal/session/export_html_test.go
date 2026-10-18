@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestExportToHTMLRendersTranscriptAndMetadata(t *testing.T) {
@@ -18,9 +18,9 @@ func TestExportToHTMLRendersTranscriptAndMetadata(t *testing.T) {
 		UserTurns: 1, LLMTurns: 1, ToolCalls: 1, InputTokens: 1200, CachedInputTokens: 20, CacheWriteTokens: 30, OutputTokens: 400,
 	}
 	messages := []Message{
-		{Role: llm.RoleUser, TextContent: "Hello **world**", Parts: []llm.Part{{Type: llm.PartText, Text: "Hello **world**"}}, CreatedAt: now},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "```go\nfmt.Println(\"hi\")\n```"}, {Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "shell", Arguments: []byte(`{"command":"go test"}`)}}}, CreatedAt: now.Add(time.Second), DurationMs: 1250},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-1", Name: "shell", Content: "ok"}}}, CreatedAt: now.Add(2 * time.Second)},
+		{Role: core.RoleUser, TextContent: "Hello **world**", Parts: []core.Part{{Type: core.PartText, Text: "Hello **world**"}}, CreatedAt: now},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "```go\nfmt.Println(\"hi\")\n```"}, {Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "shell", Arguments: []byte(`{"command":"go test"}`)}}}, CreatedAt: now.Add(time.Second), DurationMs: 1250},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-1", Name: "shell", Content: "ok"}}}, CreatedAt: now.Add(2 * time.Second)},
 	}
 
 	html, err := ExportToHTML(sess, messages, ExportOptions{})
@@ -42,8 +42,8 @@ func TestExportToHTMLUsesCompactHeaderControlsAndModelLabel(t *testing.T) {
 		ID: "s", Provider: "ChatGPT (gpt-5.6-sol, effort=medium)", Model: "gpt-5.6-sol-medium", CreatedAt: time.Now(),
 	}
 	messages := []Message{{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartText, ReasoningContent: "summary", ReasoningKind: llm.ReasoningKindSummary}},
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartText, ReasoningContent: "summary", ReasoningKind: core.ReasoningKindSummary}},
 	}}
 	html, err := ExportToHTML(sess, messages, ExportOptions{IncludeReasoningSummaries: true})
 	if err != nil {
@@ -65,16 +65,16 @@ func TestExportToHTMLGroupsConsecutiveTools(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 34, 0, 0, time.UTC)
 	sess := &Session{ID: "s", Provider: "p", Model: "m", CreatedAt: now}
 	messages := []Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "run tools"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "grep"}},
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-2", Name: "shell"}},
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-3", Name: "read_file"}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "run tools"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "grep"}},
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-2", Name: "shell"}},
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-3", Name: "read_file"}},
 		}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-1", Content: "one"}}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-2", Content: "two"}}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-3", Content: "three"}}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "done"}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-1", Content: "one"}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-2", Content: "two"}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-3", Content: "three"}}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "done"}}},
 	}
 
 	html, err := ExportToHTML(sess, messages, ExportOptions{})
@@ -109,14 +109,14 @@ func TestExportToHTMLVisibilityReasoningToolsAndMedia(t *testing.T) {
 	png := base64.StdEncoding.EncodeToString(testPNG(t, 4, 4, true))
 	sess := &Session{ID: "s", Provider: "p", Model: "m", CreatedAt: time.Now()}
 	messages := []Message{
-		{Role: llm.RoleSystem, TextContent: "secret system", Parts: []llm.Part{{Type: llm.PartText, Text: "secret system"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{
-			{Type: llm.PartText, ReasoningContent: "safe summary", ReasoningKind: llm.ReasoningKindSummary},
-			{Type: llm.PartText, ReasoningContent: "raw thoughts", ReasoningKind: llm.ReasoningKindRaw},
-			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "orphan", Name: "bad-json", Arguments: []byte(`{"oops"`)}},
+		{Role: core.RoleSystem, TextContent: "secret system", Parts: []core.Part{{Type: core.PartText, Text: "secret system"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{
+			{Type: core.PartText, ReasoningContent: "safe summary", ReasoningKind: core.ReasoningKindSummary},
+			{Type: core.PartText, ReasoningContent: "raw thoughts", ReasoningKind: core.ReasoningKindRaw},
+			{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "orphan", Name: "bad-json", Arguments: []byte(`{"oops"`)}},
 		}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "missing", Name: "failed", Content: "boom", IsError: true, Diffs: []llm.DiffData{{File: "main.go", Old: "old", New: "new"}}, ContentParts: []llm.ToolContentPart{{Type: llm.ToolContentPartImageData, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: png}}}}}}},
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartFile, FileData: &llm.ToolFileData{Filename: "notes.txt", MediaType: "text/plain", SizeBytes: 12}, FilePath: "/private/do-not-read"}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "missing", Name: "failed", Content: "boom", IsError: true, Diffs: []core.DiffData{{File: "main.go", Old: "old", New: "new"}}, ContentParts: []core.ToolContentPart{{Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: png}}}}}}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartFile, FileData: &core.ToolFileData{Filename: "notes.txt", MediaType: "text/plain", SizeBytes: 12}, FilePath: "/private/do-not-read"}}},
 	}
 
 	without, err := ExportToHTML(sess, messages, ExportOptions{})
@@ -144,20 +144,20 @@ func TestExportToHTMLPreventsTranscriptXSS(t *testing.T) {
 	sess := &Session{ID: "s", Name: `<script>alert("title")</script>`, Provider: `<img src=x onerror=alert(1)>`, Model: "m", CreatedAt: time.Now()}
 	messages := []Message{
 		{
-			Role: llm.RoleUser,
-			Parts: []llm.Part{
-				{Type: llm.PartText, Text: `<script>alert("message")</script><img src=x onerror=alert(2)> [bad](javascript:alert(3))`},
-				{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: `image/svg+xml" onload="alert(4)`, Base64: "PHN2Zz4="}},
+			Role: core.RoleUser,
+			Parts: []core.Part{
+				{Type: core.PartText, Text: `<script>alert("message")</script><img src=x onerror=alert(2)> [bad](javascript:alert(3))`},
+				{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: `image/svg+xml" onload="alert(4)`, Base64: "PHN2Zz4="}},
 			},
 		},
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{
 				ID: "x", Name: `</summary><script>alert(5)</script>`, Arguments: []byte(`</script><script>alert(6)</script>`),
 			}}},
 		},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "x", Content: `<img onerror=alert(7)>`}}}},
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartFile, FileData: &llm.ToolFileData{Filename: `"><img onerror=alert(8)>`, MediaType: "text/plain"}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "x", Content: `<img onerror=alert(7)>`}}}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartFile, FileData: &core.ToolFileData{Filename: `"><img onerror=alert(8)>`, MediaType: "text/plain"}}}},
 	}
 
 	html, err := ExportToHTML(sess, messages, ExportOptions{})
@@ -182,7 +182,7 @@ func TestVisibleExportMessages(t *testing.T) {
 		{Sequence: 1, TextContent: "before"},
 		{Sequence: 2, TextContent: "[Context Compaction] summary"},
 		{Sequence: 3, TextContent: "duplicate", CompactionTail: true},
-		*NewMessage("s", llm.GoalSteeringText("internal continuation"), 4),
+		*NewMessage("s", core.GoalSteeringText("internal continuation"), 4),
 		{Sequence: 5, TextContent: "after"},
 	}
 	got := VisibleExportMessages(messages)
@@ -197,13 +197,13 @@ func TestVisibleExportMessages(t *testing.T) {
 func TestHTMLExportPlacesReferencedMediaPlaceholderInAssistantText(t *testing.T) {
 	const reference = "0123456789abcdef0123456789abcdef"
 	messages := []Message{
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
-			ID: "media-call", Name: "show_media", Media: []llm.MediaArtifact{{
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+			ID: "media-call", Name: "show_media", Media: []core.MediaArtifact{{
 				Reference: reference, SourcePath: "/private/chart.png", MediaType: "image/png", Name: "chart.png",
 			}},
 		}}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{
-			Type: llm.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter",
+		{Role: core.RoleAssistant, Parts: []core.Part{{
+			Type: core.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter",
 		}}},
 	}
 	views, _ := buildHTMLExportMessages(messages, ExportOptions{}, newExportImages(ExportOptions{}), newExportAudio(ExportOptions{}))

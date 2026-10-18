@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/pflag"
 )
 
@@ -269,7 +269,7 @@ func fetchCursorBinUsage(ctx context.Context, token string) (json.RawMessage, cu
 	return raw, report, nil
 }
 
-func writeCursorBinUsageWithOptions(out io.Writer, report cursorBinUsageReport, now time.Time, opts llm.ProviderUsageFormatOptions) error {
+func writeCursorBinUsageWithOptions(out io.Writer, report cursorBinUsageReport, now time.Time, opts providerusage.FormatOptions) error {
 	reset := parseCursorUsageTime(report.BillingCycleEnd)
 	start := parseCursorUsageTime(report.BillingCycleStart)
 	duration := 0
@@ -277,25 +277,25 @@ func writeCursorBinUsageWithOptions(out io.Writer, report cursorBinUsageReport, 
 		duration = int(reset.Sub(start).Round(time.Minute) / time.Minute)
 	}
 
-	providerReport := &llm.ProviderUsage{Provider: "cursor"}
+	providerReport := &providerusage.Report{Provider: "cursor"}
 	providerReport.Limits = append(providerReport.Limits, cursorUsageLimit("plan", "Plan usage", report.PlanUsage, reset, duration))
 	if cursorUsageBucketPresent(report.SpendLimitUsage) {
 		providerReport.Limits = append(providerReport.Limits, cursorUsageLimit("spend_limit", "Spend limit", report.SpendLimitUsage, reset, duration))
 	}
-	_, err := fmt.Fprintln(out, llm.FormatProviderUsageWithOptions(providerReport, now, opts))
+	_, err := fmt.Fprintln(out, providerusage.FormatWithOptions(providerReport, now, opts))
 	return err
 }
 
-func cursorUsageLimit(id, name string, bucket *cursorBinUsageBucket, reset time.Time, duration int) llm.ProviderUsageLimit {
+func cursorUsageLimit(id, name string, bucket *cursorBinUsageBucket, reset time.Time, duration int) providerusage.Limit {
 	percent, _ := cursorUsagePercent(bucket)
-	window := &llm.ProviderUsageWindow{
+	window := &providerusage.Window{
 		Label:           "Billing cycle",
 		UsedPercent:     percent,
 		DurationMinutes: duration,
 		ResetsAt:        reset,
 		Detail:          cursorUsageDetail(bucket),
 	}
-	return llm.ProviderUsageLimit{ID: id, Name: name, Allowed: percent < 100, LimitReached: percent >= 100, PrimaryWindow: window}
+	return providerusage.Limit{ID: id, Name: name, Allowed: percent < 100, LimitReached: percent >= 100, PrimaryWindow: window}
 }
 
 func cursorUsagePercent(bucket *cursorBinUsageBucket) (float64, bool) {

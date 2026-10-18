@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -217,7 +217,7 @@ func TestStreamJSON_GuardianReviewEvent(t *testing.T) {
 			Outcome:    tools.GuardianApproved,
 			Model:      "guardian-model",
 			DurationMS: 12.5, StateBytes: 1234,
-			Usage: llm.Usage{InputTokens: 9, OutputTokens: 3, CachedInputTokens: 4, CacheWriteTokens: 1},
+			Usage: core.Usage{InputTokens: 9, OutputTokens: 3, CachedInputTokens: 4, CacheWriteTokens: 1},
 		}),
 		ui.ToolEndEvent("call-1", "shell", "(git status)", true),
 		ui.DoneEvent(0),
@@ -493,7 +493,7 @@ func TestStreamJSON_ImageAndDiffAndPhaseEvents(t *testing.T) {
 
 func TestStreamJSON_DiffEventWithOperation(t *testing.T) {
 	out := captureStreamJSONOutput(t, []ui.StreamEvent{
-		ui.DiffEventWithOperation("demo.rb", "", "puts \"hello\"\n", 1, llm.DiffOperationCreate),
+		ui.DiffEventWithOperation("demo.rb", "", "puts \"hello\"\n", 1, core.DiffOperationCreate),
 		ui.DoneEvent(0),
 	}, defaultTestSessionInfo())
 
@@ -508,8 +508,8 @@ func TestStreamJSON_DiffEventWithOperation(t *testing.T) {
 	if diff == nil {
 		t.Fatal("missing diff event")
 	}
-	if diff["operation"] != llm.DiffOperationCreate {
-		t.Errorf("diff operation = %v, want %q", diff["operation"], llm.DiffOperationCreate)
+	if diff["operation"] != core.DiffOperationCreate {
+		t.Errorf("diff operation = %v, want %q", diff["operation"], core.DiffOperationCreate)
 	}
 }
 
@@ -767,8 +767,8 @@ func TestJSONEmitter_SeqMonotonicUnderConcurrency(t *testing.T) {
 }
 
 func TestStreamJSONAudioUsesMediaEvent(t *testing.T) {
-	audio := llm.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
-	out := captureStreamJSONOutput(t, []ui.StreamEvent{ui.MediaEvent(audio), ui.MediaEvent(llm.MediaArtifact{MediaType: "audio/wav"}), ui.DoneEvent(0)}, defaultTestSessionInfo())
+	audio := core.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
+	out := captureStreamJSONOutput(t, []ui.StreamEvent{ui.MediaEvent(audio), ui.MediaEvent(core.MediaArtifact{MediaType: "audio/wav"}), ui.DoneEvent(0)}, defaultTestSessionInfo())
 	events := parseJSONL(t, out)
 	count := 0
 	for _, ev := range events {

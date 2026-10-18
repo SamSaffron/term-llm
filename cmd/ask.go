@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -63,7 +64,7 @@ var (
 
 	askRunnerCleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
 
-	newAskProvider = func(cfg *config.Config, fast bool) (llm.Provider, error) {
+	newAskProvider = func(cfg *config.Config, fast bool) (core.Provider, error) {
 		if fast {
 			key, model, ok := llm.ResolveFastTarget(cfg, cfg.DefaultProvider)
 			if !ok {
@@ -373,7 +374,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			ask.CleanupPreparedInput(preparedInput)
 		}
 	}()
-	settings.AutoTools = ask.AddAutoTools(settings.AutoTools, []llm.Message{preparedInput.Message})
+	settings.AutoTools = ask.AddAutoTools(settings.AutoTools, []core.Message{preparedInput.Message})
 
 	// Resolve session identity before tool wiring captures it.
 	sessionID, baseInputPrompt := finalizeAskSessionSettings(&settings, sess, selectedInputs, skillsSetup, cfg, provider, resuming)
@@ -467,11 +468,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	var outputToolMessagesMu sync.Mutex
-	outputToolMessages := append([]llm.Message{}, messages...)
-	outputToolFinalizationReq := func() llm.Request {
+	outputToolMessages := append([]core.Message{}, messages...)
+	outputToolFinalizationReq := func() core.Request {
 		out := req
 		outputToolMessagesMu.Lock()
-		out.Messages = append([]llm.Message{}, outputToolMessages...)
+		out.Messages = append([]core.Message{}, outputToolMessages...)
 		outputToolMessagesMu.Unlock()
 		return out
 	}
@@ -608,7 +609,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		DebugRaw:                    debugRaw,
 		ForceExternalSearch:         &forceExternalSearch,
 		DisableExternalWebFetch:     askNoWebFetch,
-		ExtraTools:                  append([]llm.ToolSpec(nil), req.Tools...),
+		ExtraTools:                  append([]core.ToolSpec(nil), req.Tools...),
 		IncludeConfiguredTools:      &includeConfiguredTools,
 		EnableToolDiscovery:         req.EnableToolDiscovery,
 		OnAssistantSnapshot:         assistantSnapshotCallback,
@@ -705,10 +706,10 @@ func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *confi
 
 // Restoring exact-file grants must use structured parts from both the durable
 // history (including messages beyond compaction) and the active conversation.
-func grantAskResumedUploadedFileReads(ctx context.Context, store session.Store, sess *session.Session, resuming bool, toolMgr *tools.ToolManager, messages []llm.Message) {
+func grantAskResumedUploadedFileReads(ctx context.Context, store session.Store, sess *session.Session, resuming bool, toolMgr *tools.ToolManager, messages []core.Message) {
 	if resuming && store != nil && sess != nil {
 		if rows, err := store.GetMessages(ctx, sess.ID, 0, 0); err == nil {
-			history := make([]llm.Message, 0, len(rows))
+			history := make([]core.Message, 0, len(rows))
 			for i := range rows {
 				history = append(history, rows[i].ToLLMMessage())
 			}

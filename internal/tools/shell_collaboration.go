@@ -5,7 +5,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 // ShellRoutingMode determines whether a shell tool may use the local executor.
@@ -126,8 +127,8 @@ type SharedShellActivity struct {
 type CollaborativeShellController interface {
 	Mode(ctx context.Context, sessionID string) CollaborativeShellMode
 	Execute(ctx context.Context, sessionID string, args SharedShellArgs) (ShellResult, error)
-	PrepareRequestContext(ctx context.Context, sessionID string, messages []llm.Message) ([]llm.Message, error)
-	PrepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error
+	PrepareRequestContext(ctx context.Context, sessionID string, messages []core.Message) ([]core.Message, error)
+	PrepareCompactionContext(ctx context.Context, sessionID string, result *engine.CompactionResult) error
 }
 
 // CollaborativeShellActivityController advances terminal activity only after

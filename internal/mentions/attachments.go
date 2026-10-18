@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 const (
@@ -217,13 +218,13 @@ func loadTextFile(ctx context.Context, file *os.File, display string, mention Su
 	// token-truncation result. Every full-file and ranged selection reaches this
 	// common post-selection check, so either local equivalent receives Claude's
 	// first-2,000-lines fallback.
-	if llm.EstimateTokens(string(selected)) > MaxEagerContentTokens {
+	if engine.EstimateTokens(string(selected)) > MaxEagerContentTokens {
 		fallbackStart := mention.LineStart
 		if fallbackStart == 0 {
 			fallbackStart = 1
 		}
 		selected, lineStart, lineEnd = selectLines(content, fallbackStart, fallbackStart+MaxEagerFallbackLines-1)
-		if len(selected) == 0 || llm.EstimateTokens(string(selected)) > MaxEagerContentTokens {
+		if len(selected) == 0 || engine.EstimateTokens(string(selected)) > MaxEagerContentTokens {
 			return EagerAttachment{}, errors.New("file exceeds eager token limit")
 		}
 		truncated = true

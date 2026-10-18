@@ -9,8 +9,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -22,13 +22,13 @@ type telegramReplyFinalizer struct {
 	bot                            botSender
 	sess                           *telegramSession
 	chatID                         int64
-	user                           llm.Message
+	user                           core.Message
 	resume                         *telegramContinuation
 	events                         *telegramEventAccumulator
 	presentation                   *telegramPresentation
 	producedMu                     *sync.Mutex
-	produced                       *[]llm.Message
-	metrics                        *llm.TurnMetrics
+	produced                       *[]core.Message
+	metrics                        *core.TurnMetrics
 	turnCount                      *int
 	callbackStoreQueue             *telegramStoreOpQueue
 	drainCallbackStoreQueue        func() bool
@@ -39,14 +39,14 @@ type telegramReplyFinalizer struct {
 	includeSystemPromptOnReconcile bool
 }
 
-func (f *telegramReplyFinalizer) finishSuspension(ctx context.Context, suspended *llm.SuspendedError) error {
+func (f *telegramReplyFinalizer) finishSuspension(ctx context.Context, suspended *engine.SuspendedError) error {
 	if !f.stopStreamWithCleanupTimeout() || !f.drainCallbackStoreQueue() {
 		return fmt.Errorf("Telegram continuation cleanup did not settle")
 	}
 	history := suspended.Continuation.Request.Messages
 	f.updateActiveHistory("")
 	if f.sess.activeHistory != nil {
-		history = append([]llm.Message{}, f.sess.history...)
+		history = append([]core.Message{}, f.sess.history...)
 		if f.resume == nil {
 			history = append(history, normalizeUserMessageForHistory(f.user))
 		}
@@ -119,7 +119,7 @@ func (f *telegramReplyFinalizer) finishSuccess(ctx context.Context) error {
 	}
 	f.presentation.deliverMedia(snapshot.Images, mediaToSend)
 
-	newHistory := make([]llm.Message, 0, len(f.sess.history)+2+len(*f.produced))
+	newHistory := make([]core.Message, 0, len(f.sess.history)+2+len(*f.produced))
 	newHistory = append(newHistory, f.sess.history...)
 	if f.resume == nil {
 		newHistory = append(newHistory, normalizeUserMessageForHistory(f.user))
@@ -129,14 +129,14 @@ func (f *telegramReplyFinalizer) finishSuccess(ctx context.Context) error {
 	f.producedMu.Unlock()
 	if len(*f.produced) == 0 && full != "" {
 		if f.manager.store != nil && f.sess.meta != nil {
-			assistant := session.NewMessage(f.sess.meta.ID, llm.AssistantText(full), -1)
+			assistant := session.NewMessage(f.sess.meta.ID, core.AssistantText(full), -1)
 			if !f.manager.runStoreOp(ctx, f.sess.meta.ID, "AddMessage(assistant_fallback)", func(storeCtx context.Context) error {
 				return f.manager.store.AddMessage(storeCtx, f.sess.meta.ID, assistant)
 			}) {
 				*f.turnPersistenceDegraded = true
 			}
 		}
-		newHistory = append(newHistory, llm.AssistantText(full))
+		newHistory = append(newHistory, core.AssistantText(full))
 	}
 	activeFallback := ""
 	if len(*f.produced) == 0 {

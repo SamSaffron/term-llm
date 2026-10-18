@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 )
 
@@ -114,14 +115,14 @@ func TestMemoryPromoteRechecksCutoffAfterWaitingForRecentLock(t *testing.T) {
 		t.Fatal("first lock was not acquired")
 	}
 
-	provider := llm.NewMockProvider("memory-promote-race")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("memory-promote-race")
+	eng := engine.NewEngine(provider, nil)
 	runDone := make(chan struct {
 		count int
 		err   error
 	}, 1)
 	go func() {
-		count, err := runMemoryPromoteFlow(ctx, testEnv("", ""), &config.Config{}, engine, store, memoryPromoteOptions{
+		count, err := runMemoryPromoteFlow(ctx, testEnv("", ""), &config.Config{}, eng, store, memoryPromoteOptions{
 			Agent:        agentDir,
 			QuietNothing: true,
 		})

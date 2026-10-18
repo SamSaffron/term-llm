@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -267,8 +267,8 @@ func (m *Model) registerSkillActivationTools(activation *skills.Activation) erro
 	}
 
 	names := make([]string, 0, len(activation.ToolDefs))
-	enginePrevious := make(map[string]llm.Tool)
-	registryPrevious := make(map[string]llm.Tool)
+	enginePrevious := make(map[string]core.Tool)
+	registryPrevious := make(map[string]core.Tool)
 	seen := make(map[string]bool)
 	for _, definition := range activation.ToolDefs {
 		if seen[definition.Name] {
@@ -369,10 +369,10 @@ func (m *Model) persistSkillActivationContext(activation *skills.Activation) {
 	instructions := skills.RenderActivationInstructions(activation)
 	message := &session.Message{
 		SessionID: m.sess.ID,
-		Role:      llm.RoleDeveloper,
-		Parts: []llm.Part{
-			{Type: llm.PartSkillActivation, SkillActivation: provenance},
-			{Type: llm.PartText, Text: instructions},
+		Role:      core.RoleDeveloper,
+		Parts: []core.Part{
+			{Type: core.PartSkillActivation, SkillActivation: provenance},
+			{Type: core.PartText, Text: instructions},
 		},
 		TextContent: instructions,
 		CreatedAt:   time.Now(),
@@ -386,11 +386,11 @@ func (m *Model) persistSkillActivationContext(activation *skills.Activation) {
 	m.invalidateHistoryCache()
 }
 
-func skillActivationProvenance(activation *skills.Activation) *llm.SkillActivationProvenance {
+func skillActivationProvenance(activation *skills.Activation) *core.SkillActivationProvenance {
 	if activation == nil || activation.Skill == nil {
 		return nil
 	}
-	return &llm.SkillActivationProvenance{
+	return &core.SkillActivationProvenance{
 		Name:                activation.Skill.Name,
 		Source:              activation.Skill.Source.SourceName(),
 		SourcePath:          activation.Skill.SourcePath,

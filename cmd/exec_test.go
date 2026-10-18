@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -41,7 +41,7 @@ func TestEnvEnabled(t *testing.T) {
 func TestExecRunSinkAccountsGuardianUsage(t *testing.T) {
 	stats := ui.NewSessionStats()
 	sink := &execRunSink{stats: stats}
-	usage := llm.Usage{InputTokens: 11, OutputTokens: 3, CachedInputTokens: 7, CacheWriteTokens: 2}
+	usage := core.Usage{InputTokens: 11, OutputTokens: 3, CachedInputTokens: 7, CacheWriteTokens: 2}
 
 	sink.GuardianEvent(tools.GuardianEvent{Model: "guardian-model", Usage: usage})
 
@@ -55,11 +55,11 @@ func TestExecRunSinkDiscardsRetryAttemptUsageAndPerformance(t *testing.T) {
 	stats := ui.NewSessionStats()
 	stats.SetModel("gpt-5.6-sol")
 	sink := &execRunSink{stats: stats}
-	sink.Event(llm.Event{Type: llm.EventTextDelta, Text: "discard me"})
-	sink.Event(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 10, OutputTokens: 50}})
-	sink.Event(llm.Event{Type: llm.EventAttemptDiscard})
-	sink.Event(llm.Event{Type: llm.EventTextDelta, Text: "keep me"})
-	sink.Event(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 2, OutputTokens: 3}})
+	sink.Event(core.Event{Type: core.EventTextDelta, Text: "discard me"})
+	sink.Event(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 10, OutputTokens: 50}})
+	sink.Event(core.Event{Type: core.EventAttemptDiscard})
+	sink.Event(core.Event{Type: core.EventTextDelta, Text: "keep me"})
+	sink.Event(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 2, OutputTokens: 3}})
 	calls, _ := stats.UsageCalls()
 	if stats.InputTokens != 2 || stats.OutputTokens != 3 || len(calls) != 1 || calls[0].OutputTokens != 3 {
 		t.Fatalf("exec stats retained discarded attempt: stats=%+v calls=%+v", stats, calls)
@@ -69,9 +69,9 @@ func TestExecRunSinkDiscardsRetryAttemptUsageAndPerformance(t *testing.T) {
 func TestExecRunSinkEndsToolTiming(t *testing.T) {
 	stats := ui.NewSessionStats()
 	sink := &execRunSink{stats: stats}
-	sink.Event(llm.Event{Type: llm.EventToolExecStart, ToolName: "shell"})
+	sink.Event(core.Event{Type: core.EventToolExecStart, ToolName: "shell"})
 	time.Sleep(time.Millisecond)
-	sink.Event(llm.Event{Type: llm.EventToolExecEnd, ToolName: "shell", ToolSuccess: true})
+	sink.Event(core.Event{Type: core.EventToolExecEnd, ToolName: "shell", ToolSuccess: true})
 	toolTime := stats.ToolTime
 	time.Sleep(time.Millisecond)
 	stats.Finalize()

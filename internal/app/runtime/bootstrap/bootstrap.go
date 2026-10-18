@@ -12,6 +12,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/agent"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/debug"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -36,7 +38,7 @@ func RegisterModelLimits(cfg *config.Config) {
 		}
 	}
 	llm.RegisterProviderAliases(aliases)
-	llm.RegisterChatGPTContextConfig(cfg.Providers)
+	responsesproviders.RegisterChatGPTContextConfig(cfg.Providers)
 
 	var limits []llm.ConfigModelLimit
 	var reasoning []llm.ConfigModelReasoningEfforts
@@ -251,7 +253,7 @@ func ResolveForceExternalSearch(cfg *config.Config, nativeSearchFlag, noNativeSe
 // Returns nil if debug logging is disabled.
 // Returns an error if debug logging is enabled but logger creation fails.
 // The caller is responsible for calling Close() on the returned logger when done.
-func CreateDebugLogger(cfg *config.Config) (*llm.DebugLogger, error) {
+func CreateDebugLogger(cfg *config.Config) (*debug.Logger, error) {
 	if !cfg.DebugLogs.Enabled {
 		return nil, nil
 	}
@@ -265,7 +267,7 @@ func CreateDebugLogger(cfg *config.Config) (*llm.DebugLogger, error) {
 	// Generate session ID: timestamp + random suffix for uniqueness
 	sessionID := GenerateSessionID()
 
-	logger, err := llm.NewDebugLogger(dir, sessionID)
+	logger, err := debug.NewLogger(dir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create debug logger: %w", err)
 	}

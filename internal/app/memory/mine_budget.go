@@ -9,7 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -45,7 +46,7 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 	}
 	if len(fragments) == 0 {
 		base := "Memory fragment map:\n- total_fragments: 0\n- no existing fragments"
-		if llm.EstimateTokens(base) <= maxTokens {
+		if engine.EstimateTokens(base) <= maxTokens {
 			return base
 		}
 		return "fragment_count=0; use lookup tools"
@@ -83,7 +84,7 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 	b.WriteString("Memory fragment map:\n")
 	b.WriteString(fmt.Sprintf("- total_fragments: %d\n", len(byPath)))
 	b.WriteString("- note: compact map only; use lookup tools for exact duplicate checks or content inspection\n")
-	if llm.EstimateTokens(b.String()) > maxTokens {
+	if engine.EstimateTokens(b.String()) > maxTokens {
 		return fmt.Sprintf("fragment_count=%d; use lookup tools", len(byPath))
 	}
 
@@ -95,7 +96,7 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 	dirLines := 0
 	for _, dir := range dirs {
 		line := fmt.Sprintf("- %s (%d)\n", dir.Path, dir.Count)
-		if llm.EstimateTokens(b.String()+line) > dirBudget {
+		if engine.EstimateTokens(b.String()+line) > dirBudget {
 			break
 		}
 		b.WriteString(line)
@@ -109,7 +110,7 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 	addedPaths := 0
 	for _, frag := range byPath {
 		line := "- " + frag.Path + "\n"
-		if llm.EstimateTokens(b.String()+line) > maxTokens {
+		if engine.EstimateTokens(b.String()+line) > maxTokens {
 			break
 		}
 		b.WriteString(line)
@@ -117,7 +118,7 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 	}
 	if omitted := len(byPath) - addedPaths; omitted > 0 {
 		line := fmt.Sprintf("- ... %d more path(s) omitted from map; use lookup tools\n", omitted)
-		if llm.EstimateTokens(b.String()+line) <= maxTokens {
+		if engine.EstimateTokens(b.String()+line) <= maxTokens {
 			b.WriteString(line)
 		}
 	}
@@ -131,7 +132,7 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 
 func estimateExtractionPromptTokens(candidate memoryMineCandidate, startOffset, endOffset int, messages []session.Message, taxonomyMap string) int {
 	prompt := buildExtractionPrompt(candidate, startOffset, endOffset, messages, taxonomyMap)
-	return llm.EstimateTokens(memoryExtractionSystemPrompt) + llm.EstimateTokens(prompt)
+	return engine.EstimateTokens(memoryExtractionSystemPrompt) + engine.EstimateTokens(prompt)
 }
 
 func (opts MineOptions) truncateMessageForPromptBudget(candidate memoryMineCandidate, startOffset, nextOffset int, taxonomyMap string, msg session.Message) (session.Message, bool) {
@@ -183,7 +184,7 @@ func (opts MineOptions) fitMessagesForPromptBudget(candidate memoryMineCandidate
 	for _, pass := range passes {
 		for i := range result.Messages {
 			msg := &result.Messages[i]
-			if msg.Role != llm.RoleAssistant {
+			if msg.Role != core.RoleAssistant {
 				continue
 			}
 			if strings.TrimSpace(msg.TextContent) == "" {
@@ -205,7 +206,7 @@ func (opts MineOptions) fitMessagesForPromptBudget(candidate memoryMineCandidate
 
 	for i := range result.Messages {
 		msg := &result.Messages[i]
-		if msg.Role != llm.RoleUser {
+		if msg.Role != core.RoleUser {
 			continue
 		}
 		if strings.TrimSpace(msg.TextContent) == "" {
@@ -229,9 +230,9 @@ func (opts MineOptions) fitMessagesForPromptBudget(candidate memoryMineCandidate
 		if ok {
 			result.Messages[0] = clipped
 			result.TruncatedMessages++
-			if result.Messages[0].Role == llm.RoleAssistant {
+			if result.Messages[0].Role == core.RoleAssistant {
 				result.AssistantMessagesCut++
-			} else if result.Messages[0].Role == llm.RoleUser {
+			} else if result.Messages[0].Role == core.RoleUser {
 				result.UserMessagesCut++
 			}
 			result.SingleMessageClipped = true
@@ -323,8 +324,8 @@ type memorySearchFragmentsTool struct {
 	readBytes int
 }
 
-func (t *memorySearchFragmentsTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *memorySearchFragmentsTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "memory_search_fragments",
 		Description: "Search existing memory fragments by content and path. Use this before creating a new fragment when duplicate or overlapping memory might already exist.",
 		Schema: map[string]interface{}{
@@ -349,17 +350,17 @@ func (t *memorySearchFragmentsTool) Preview(args json.RawMessage) string {
 	return strings.TrimSpace(payload.Query)
 }
 
-func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("parse memory_search_fragments args: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("parse memory_search_fragments args: %w", err)
 	}
 	payload.Query = strings.TrimSpace(payload.Query)
 	if payload.Query == "" {
-		return llm.ToolOutput{}, fmt.Errorf("query is required")
+		return core.ToolOutput{}, fmt.Errorf("query is required")
 	}
 	if payload.Limit <= 0 || payload.Limit > memoryMineFragmentSearchLimit {
 		payload.Limit = 5
@@ -367,7 +368,7 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 
 	results, err := t.store.SearchFragments(ctx, payload.Query, payload.Limit, t.agent)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	for i := range results {
 		snippetLimit := memoryMineFragmentSnippetChars
@@ -384,7 +385,7 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 		"results": results,
 	}
 	data, _ := json.MarshalIndent(response, "", "  ")
-	return llm.TextOutput(string(data)), nil
+	return core.TextOutput(string(data)), nil
 }
 
 type memoryListFragmentsTool struct {
@@ -392,8 +393,8 @@ type memoryListFragmentsTool struct {
 	agent string
 }
 
-func (t *memoryListFragmentsTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *memoryListFragmentsTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "memory_list_fragments",
 		Description: "List existing memory fragment paths, optionally narrowed by prefix. Use this when you know the area of memory you want to inspect but not the exact path.",
 		Schema: map[string]interface{}{
@@ -417,13 +418,13 @@ func (t *memoryListFragmentsTool) Preview(args json.RawMessage) string {
 	return strings.TrimSpace(payload.Prefix)
 }
 
-func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		Prefix string `json:"prefix"`
 		Limit  int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("parse memory_list_fragments args: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("parse memory_list_fragments args: %w", err)
 	}
 	prefix := strings.TrimSpace(payload.Prefix)
 	limit := payload.Limit
@@ -433,7 +434,7 @@ func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMess
 
 	paths, err := t.store.ListFragmentPaths(ctx, t.agent, prefix, limit)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	response := map[string]any{
 		"agent":  t.agent,
@@ -441,7 +442,7 @@ func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMess
 		"paths":  paths,
 	}
 	data, _ := json.MarshalIndent(response, "", "  ")
-	return llm.TextOutput(string(data)), nil
+	return core.TextOutput(string(data)), nil
 }
 
 type memoryGetFragmentTool struct {
@@ -450,8 +451,8 @@ type memoryGetFragmentTool struct {
 	readBytes int
 }
 
-func (t *memoryGetFragmentTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *memoryGetFragmentTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "memory_get_fragment",
 		Description: "Read one existing memory fragment by exact path. Use this before updating a fragment so you can merge instead of overwrite blindly.",
 		Schema: map[string]interface{}{
@@ -475,23 +476,23 @@ func (t *memoryGetFragmentTool) Preview(args json.RawMessage) string {
 	return strings.TrimSpace(payload.Path)
 }
 
-func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("parse memory_get_fragment args: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("parse memory_get_fragment args: %w", err)
 	}
 	fragPath := strings.TrimSpace(payload.Path)
 	if fragPath == "" {
-		return llm.ToolOutput{}, fmt.Errorf("path is required")
+		return core.ToolOutput{}, fmt.Errorf("path is required")
 	}
 	frag, err := t.store.GetFragment(ctx, t.agent, fragPath)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	if frag == nil {
-		return llm.TextOutput(fmt.Sprintf("{\n  \"agent\": %q,\n  \"path\": %q,\n  \"found\": false\n}", t.agent, fragPath)), nil
+		return core.TextOutput(fmt.Sprintf("{\n  \"agent\": %q,\n  \"path\": %q,\n  \"found\": false\n}", t.agent, fragPath)), nil
 	}
 	content := frag.Content
 	readLimit := memoryMineFragmentReadChars
@@ -508,5 +509,5 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 		"content": content,
 	}
 	data, _ := json.MarshalIndent(response, "", "  ")
-	return llm.TextOutput(string(data)), nil
+	return core.TextOutput(string(data)), nil
 }

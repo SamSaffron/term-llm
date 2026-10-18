@@ -14,7 +14,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
 )
 
@@ -153,7 +153,7 @@ func TestTelegramAudioDispatch(t *testing.T) {
 			}
 			bot := &mediaBotSender{fakeBotSender: &fakeBotSender{}}
 			p := &telegramPresentation{bot: bot, chatID: 123}
-			p.deliverMedia(nil, []llm.MediaArtifact{{SourcePath: path, MediaType: c.mime, Name: "/private/narration.bin", Caption: "A caption"}})
+			p.deliverMedia(nil, []core.MediaArtifact{{SourcePath: path, MediaType: c.mime, Name: "/private/narration.bin", Caption: "A caption"}})
 			if len(bot.uploads) != 1 {
 				t.Fatalf("uploads=%+v", bot.uploads)
 			}
@@ -179,7 +179,7 @@ func TestTelegramNativeMediaFallbackReopens(t *testing.T) {
 			}
 			bot := &mediaBotSender{fakeBotSender: &fakeBotSender{}, failNative: true}
 			p := &telegramPresentation{bot: bot}
-			p.deliverMedia(nil, []llm.MediaArtifact{{SourcePath: path, MediaType: mime, Caption: "plain <caption>"}})
+			p.deliverMedia(nil, []core.MediaArtifact{{SourcePath: path, MediaType: mime, Caption: "plain <caption>"}})
 			if len(bot.uploads) != 2 || bot.uploads[1].kind != "document" || !bytes.Equal(bot.uploads[1].data, data) {
 				t.Fatalf("fallback=%+v", bot.uploads)
 			}
@@ -201,11 +201,11 @@ func TestTelegramAudioOversizeAndMissing(t *testing.T) {
 	}
 	bot := &mediaBotSender{fakeBotSender: &fakeBotSender{}}
 	p := &telegramPresentation{bot: bot}
-	p.deliverMedia(nil, []llm.MediaArtifact{{SourcePath: path, MediaType: "audio/mpeg"}, {SourcePath: "missing", MediaType: "audio/wav"}})
+	p.deliverMedia(nil, []core.MediaArtifact{{SourcePath: path, MediaType: "audio/mpeg"}, {SourcePath: "missing", MediaType: "audio/wav"}})
 	if len(bot.uploads) != 0 || !strings.Contains(bot.lastText(), "media.mp3 was not sent") || !strings.Contains(bot.lastText(), "50 MiB") || strings.Contains(bot.lastText(), path) {
 		t.Fatalf("oversize=%s", bot.lastText())
 	}
-	if got := extractToolResultTextWithPlaceholders(&llm.ToolResult{Media: []llm.MediaArtifact{{MediaType: "audio/mpeg"}}}); got != "[audio uploaded]" {
+	if got := extractToolResultTextWithPlaceholders(&core.ToolResult{Media: []core.MediaArtifact{{MediaType: "audio/mpeg"}}}); got != "[audio uploaded]" {
 		t.Fatalf("placeholder=%q", got)
 	}
 }
@@ -242,7 +242,7 @@ func TestTelegramFallbackRechecksFile(t *testing.T) {
 				},
 			}
 			p := &telegramPresentation{bot: bot}
-			p.deliverArtifact(llm.MediaArtifact{SourcePath: path, MediaType: "audio/mpeg"})
+			p.deliverArtifact(core.MediaArtifact{SourcePath: path, MediaType: "audio/mpeg"})
 			if attempts != 1 {
 				t.Fatalf("unsafe document fallback attempted; uploads=%d", attempts)
 			}

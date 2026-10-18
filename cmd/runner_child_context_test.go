@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -47,9 +48,9 @@ func TestCmdRunnerChildDoesNotInheritParentResponseOwnership(t *testing.T) {
 	result, err := runner.Run(parentCtx, runpkg.Request{
 		Platform: runpkg.PlatformConsole, Prompt: "do child work", SessionID: "child-session", ParentSessionID: parentID,
 		IsSubagent: true, Persist: true, Cwd: t.TempDir(), IncludeConfiguredTools: &includeTools,
-		ProviderInstance: llm.NewMockProvider("mock").AddTextResponse("child result"),
-	}, eventSinkFunc(func(event llm.Event) {
-		if event.Type == llm.EventTextDelta {
+		ProviderInstance: mockprovider.NewMockProvider("mock").AddTextResponse("child result"),
+	}, eventSinkFunc(func(event core.Event) {
+		if event.Type == core.EventTextDelta {
 			streamed.WriteString(event.Text)
 		}
 	}))
@@ -68,7 +69,7 @@ func TestCmdRunnerChildDoesNotInheritParentResponseOwnership(t *testing.T) {
 		if msg.ResponseID == parent.id {
 			t.Fatalf("child message attributed to parent: %+v", msg)
 		}
-		if msg.Role == llm.RoleAssistant && msg.TextContent == "child result" {
+		if msg.Role == core.RoleAssistant && msg.TextContent == "child result" {
 			foundAnswer = true
 		}
 	}
@@ -86,13 +87,13 @@ func TestCmdRunnerChildDoesNotInheritParentResponseOwnership(t *testing.T) {
 		t.Fatal("original parent context was changed")
 	}
 	// The parent must still persist and terminalize using its own ownership.
-	assistant := tagResponseRunMessage(parentCtx, llm.AssistantText("parent result"), 0)
-	if _, err := runResponseRunPersistence(parentCtx, []llm.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
+	assistant := tagResponseRunMessage(parentCtx, core.AssistantText("parent result"), 0)
+	if _, err := runResponseRunPersistence(parentCtx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
 		return addResponseRunMessage(session.WithResponseRunFence(ctx, fence), store, parentID, session.NewMessage(parentID, assistant, -1))
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := parent.complete(map[string]any{"response": map[string]any{"id": parent.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+	if err := parent.complete(map[string]any{"response": map[string]any{"id": parent.id}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatal(err)
 	}
 	if parent.status != "completed" || !parent.durableHandoff || parent.durableOutputCount != 1 {
@@ -108,7 +109,7 @@ func TestWithoutResponseRunOwnershipPreservesExecutionContext(t *testing.T) {
 	ctx := withResponseRunContext(base, parent)
 	fence := session.ResponseRunFence{ResponseID: parent.id, OwnerInstanceID: "owner", FencingToken: 1}
 	ctx = session.WithResponseRunFence(ctx, fence)
-	ctx = llm.ContextWithApprovalTranscript(ctx, []llm.Message{llm.UserText("authorized task")})
+	ctx = core.ContextWithApprovalTranscript(ctx, []core.Message{core.UserText("authorized task")})
 	progressCalls := 0
 	ctx = tools.ContextWithSubagentEventCallback(ctx, func(string, tools.SubagentEvent) { progressCalls++ })
 	// A second isolation boundary models a nested child: both must preserve the
@@ -125,7 +126,7 @@ func TestWithoutResponseRunOwnershipPreservesExecutionContext(t *testing.T) {
 		if got, ok := isolated.Deadline(); !ok || !got.Equal(deadline) {
 			t.Fatalf("deadline = %v/%v", got, ok)
 		}
-		transcript := llm.ApprovalTranscriptFromContext(isolated)
+		transcript := core.ApprovalTranscriptFromContext(isolated)
 		if len(transcript) != 1 || transcript[0].Parts[0].Text != "authorized task" {
 			t.Fatalf("approval context = %+v", transcript)
 		}
@@ -134,14 +135,14 @@ func TestWithoutResponseRunOwnershipPreservesExecutionContext(t *testing.T) {
 			t.Fatal("lost progress callback")
 		}
 		callback("child-call", tools.SubagentEvent{})
-		msg := tagResponseRunMessage(isolated, llm.AssistantText("child"), 0)
+		msg := tagResponseRunMessage(isolated, core.AssistantText("child"), 0)
 		if msg.ResponseID != "" {
 			t.Fatalf("child response identity = %q", msg.ResponseID)
 		}
 		// Even a failed child write containing parent-tagged input must never poison
 		// the parent's durable handoff or be fenced by its ownership.
 		writeErr := errors.New("child write failed")
-		_, err := runResponseRunPersistence(isolated, []llm.Message{tagResponseRunMessage(ctx, llm.AssistantText("parent-tagged history"), 0)}, func(got session.ResponseRunFence) (int64, error) {
+		_, err := runResponseRunPersistence(isolated, []core.Message{tagResponseRunMessage(ctx, core.AssistantText("parent-tagged history"), 0)}, func(got session.ResponseRunFence) (int64, error) {
 			if got.ResponseID != "" {
 				t.Fatalf("child write fence = %+v", got)
 			}

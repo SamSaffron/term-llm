@@ -14,7 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -46,7 +47,7 @@ type agentEntry struct {
 	originCallID        string
 	result              SpawnAgentRunResult
 	startedAt           time.Time
-	media               []llm.MediaArtifact
+	media               []core.MediaArtifact
 	currentTool         string
 	err                 error
 	queued              bool
@@ -148,7 +149,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 	if id == "" {
 		id = session.NewID()
 	}
-	parent := llm.SessionIDFromContext(ctx)
+	parent := core.SessionIDFromContext(ctx)
 	if parent == "" {
 		if provider, ok := runner.(interface{ ParentAgentSessionID() string }); ok {
 			parent = provider.ParentAgentSessionID()
@@ -158,7 +159,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		parent = existing.ParentSessionID
 	}
 	if parent != "" {
-		ctx = llm.ContextWithSessionID(ctx, parent)
+		ctx = core.ContextWithSessionID(ctx, parent)
 	}
 	now := time.Now()
 	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, BaseDir: existing.BaseDir, RunGeneration: existing.RunGeneration + 1, NotifyWhenDone: existing.NotifyWhenDone, NotifyOrigin: existing.NotifyOrigin, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
@@ -178,8 +179,8 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		e.prior = &existing
 		e.instructions = instructions
 		if existing.CollectedAt.IsZero() {
-			e.media = append([]llm.MediaArtifact(nil), existing.Media...)
-			e.record.Media = append([]llm.MediaArtifact(nil), existing.Media...)
+			e.media = append([]core.MediaArtifact(nil), existing.Media...)
+			e.record.Media = append([]core.MediaArtifact(nil), existing.Media...)
 		}
 	}
 	e.initial = e.attachment
@@ -276,7 +277,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	e.record.Started = true
 	e.record.UpdatedAt = time.Now()
 	record := e.record
-	record.Media = append([]llm.MediaArtifact(nil), e.media...)
+	record.Media = append([]core.MediaArtifact(nil), e.media...)
 	m.mu.Unlock()
 	m.save(record)
 	cb := func(eventCallID string, event SubagentEvent) {
@@ -297,7 +298,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 			attachment.inFlight.Add(1)
 		}
 		record := e.record
-		record.Media = append([]llm.MediaArtifact(nil), e.media...)
+		record.Media = append([]core.MediaArtifact(nil), e.media...)
 		m.mu.Unlock()
 		if attachment != nil && attachment.callback != nil {
 			func() {
@@ -341,7 +342,7 @@ func agentStopError(ctx context.Context, err error) error {
 }
 
 func isTypedTurnLimit(err error) bool {
-	var limit *llm.MaxTurnsExceededError
+	var limit *engine.MaxTurnsExceededError
 	return errors.As(err, &limit)
 }
 
@@ -388,7 +389,7 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 	}
 	e.record.UpdatedAt = time.Now()
 	record := e.record
-	record.Media = append([]llm.MediaArtifact(nil), e.media...)
+	record.Media = append([]core.MediaArtifact(nil), e.media...)
 	m.mu.Unlock()
 	if !m.save(record) {
 		return
@@ -410,7 +411,7 @@ func (m *agentManager) get(ctx context.Context, id, parent string) (session.Agen
 		e.manager.mu.Lock()
 		record = e.record
 		record.CurrentTool = e.currentTool
-		record.Media = append([]llm.MediaArtifact(nil), e.media...)
+		record.Media = append([]core.MediaArtifact(nil), e.media...)
 		e.manager.mu.Unlock()
 	}
 	if e == nil && m.store != nil {
@@ -456,7 +457,7 @@ func (m *agentManager) snapshot(ctx context.Context, parent string) ([]session.A
 		e.manager.mu.Lock()
 		record := e.record
 		record.CurrentTool = e.currentTool
-		record.Media = append([]llm.MediaArtifact(nil), e.media...)
+		record.Media = append([]core.MediaArtifact(nil), e.media...)
 		e.manager.mu.Unlock()
 		if record.ParentSessionID == parent && !seen[record.ID] {
 			runs = append(runs, record)
@@ -515,7 +516,7 @@ func (m *agentManager) attach(e *agentEntry, cb SubagentEventCallback, callID st
 	return attached
 }
 
-func agentOutput(a session.AgentRun) llm.ToolOutput {
+func agentOutput(a session.AgentRun) core.ToolOutput {
 	status := a.Status
 	result := SpawnAgentResult{AgentName: a.AgentName, AgentID: a.ID, SessionID: a.ID, Status: status, Output: a.Output, Error: a.Error, Duration: 0, TurnsUsed: a.TurnsUsed, LastActivity: a.UpdatedAt, CurrentTool: a.CurrentTool}
 	if status == "failed" {
@@ -533,14 +534,14 @@ func agentOutput(a session.AgentRun) llm.ToolOutput {
 		result.Next = fmt.Sprintf("continue_agent({\"agent_id\":%q,\"instructions\":\"continue\"})", a.ID)
 	}
 	data, _ := json.Marshal(result)
-	return llm.ToolOutput{Content: string(data), IsError: status == "failed"}
+	return core.ToolOutput{Content: string(data), IsError: status == "failed"}
 }
 
-func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOutput {
+func (m *agentManager) output(record session.AgentRun, e *agentEntry) core.ToolOutput {
 	out := agentOutput(record)
 	if e == nil {
 		if record.CollectedAt.IsZero() {
-			out.Media = llm.NormalizeMedia(record.Media, nil)
+			out.Media = core.NormalizeMedia(record.Media, nil)
 		}
 		return out
 	}
@@ -548,7 +549,7 @@ func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOu
 	result := e.result
 	runErr := e.err
 	instructions := e.instructions
-	media := append([]llm.MediaArtifact(nil), e.media...)
+	media := append([]core.MediaArtifact(nil), e.media...)
 	started := e.startedAt
 	e.manager.mu.Unlock()
 	var payload SpawnAgentResult
@@ -580,7 +581,7 @@ func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOu
 		payload.Duration = 0
 	}
 	out.Content = marshalAgentResult(payload)
-	out.Media = llm.NormalizeMedia(media, nil)
+	out.Media = core.NormalizeMedia(media, nil)
 	return out
 }
 
@@ -589,7 +590,7 @@ func marshalAgentResult(result SpawnAgentResult) string {
 	return string(data)
 }
 
-func agentParent(ctx context.Context) string { return llm.SessionIDFromContext(ctx) }
+func agentParent(ctx context.Context) string { return core.SessionIDFromContext(ctx) }
 
 // releaseCollected drops process-wide references after the terminal record is
 // durable. Without a store the entry must remain discoverable for list/continue.
@@ -835,7 +836,7 @@ func interruptAgentsForParent(parent string, suppressWake bool) func(context.Con
 // payload is snapshotted before collection: once collected, the run goroutine
 // may release the entry concurrently. If collection fails the result is still
 // returned; it may then be delivered again, which beats losing it.
-func (m *agentManager) deliver(ctx context.Context, record session.AgentRun, e *agentEntry) llm.ToolOutput {
+func (m *agentManager) deliver(ctx context.Context, record session.AgentRun, e *agentEntry) core.ToolOutput {
 	out := m.output(record, e)
 	if !agentTerminal(record.Status) {
 		return out

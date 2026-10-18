@@ -3,8 +3,6 @@ package llm
 import (
 	"context"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
-	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,6 +11,13 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/factory"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestNewProviderRejectsDisabledProvider(t *testing.T) {
@@ -102,17 +107,17 @@ func TestCreateProviderFromConfigKeyProviderEnvFallback(t *testing.T) {
 		name   string
 		kind   config.ProviderType
 		envKey string
-		want   Provider
+		want   core.Provider
 	}{
-		{"zen", config.ProviderTypeZen, "ZEN_API_KEY", &ZenProvider{}},
-		{"venice", config.ProviderTypeVenice, "VENICE_API_KEY", &VeniceProvider{}},
-		{"nearai", config.ProviderTypeNearAI, "NEARAI_API_KEY", &NearAIProvider{}},
-		{"sambanova", config.ProviderTypeSambaNova, "SAMBANOVA_API_KEY", &SambaNovaProvider{}},
+		{"zen", config.ProviderTypeZen, "ZEN_API_KEY", &rp.ZenProvider{}},
+		{"venice", config.ProviderTypeVenice, "VENICE_API_KEY", &opencompat.VeniceProvider{}},
+		{"nearai", config.ProviderTypeNearAI, "NEARAI_API_KEY", &opencompat.NearAIProvider{}},
+		{"sambanova", config.ProviderTypeSambaNova, "SAMBANOVA_API_KEY", &opencompat.SambaNovaProvider{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(tc.envKey, "  env-key  ")
-			provider, err := createProviderFromConfig(tc.name, &config.ProviderConfig{Type: tc.kind})
+			provider, err := factory.Create(tc.name, &config.ProviderConfig{Type: tc.kind}, factoryOptions())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,39 +129,39 @@ func TestCreateProviderFromConfigKeyProviderEnvFallback(t *testing.T) {
 }
 
 func TestCreateProviderFromConfigClaudeBinPreservesHooks(t *testing.T) {
-	provider, err := createProviderFromConfig("claude-bin", &config.ProviderConfig{
+	provider, err := factory.Create("claude-bin", &config.ProviderConfig{
 		Type: config.ProviderTypeClaudeBin, EnableHooks: true,
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	claude, ok := provider.(*ClaudeBinProvider)
+	claude, ok := provider.(*clibin.ClaudeBinProvider)
 	if !ok || !claude.HooksEnabled() {
 		t.Fatalf("provider = %T, want ClaudeBinProvider with hooks enabled", provider)
 	}
 }
 
 func TestCreateProviderFromConfigRejectsInvalidOllamaThinkLevel(t *testing.T) {
-	_, err := createProviderFromConfig("local", &config.ProviderConfig{
+	_, err := factory.Create("local", &config.ProviderConfig{
 		Type:       config.ProviderTypeOllama,
 		Model:      "qwen3:14b",
 		ThinkLevel: "extreme",
-	})
+	}, factoryOptions())
 	if err == nil || !strings.Contains(err.Error(), "invalid Ollama think_level") {
 		t.Fatalf("error = %v, want invalid think_level guidance", err)
 	}
 }
 
 func TestCreateProviderFromConfigGrokBin(t *testing.T) {
-	provider, err := createProviderFromConfig("grok-bin", &config.ProviderConfig{
+	provider, err := factory.Create("grok-bin", &config.ProviderConfig{
 		Type:  config.ProviderTypeGrokBin,
 		Model: "grok-4.5-high",
 		Env:   map[string]string{"GROK_AUTH_PATH": "/custom/auth.json"},
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("createProviderFromConfig: %v", err)
 	}
-	grok, ok := provider.(*GrokBinProvider)
+	grok, ok := provider.(*clibin.GrokBinProvider)
 	if !ok {
 		t.Fatalf("provider type = %T, want *GrokBinProvider", provider)
 	}
@@ -167,15 +172,15 @@ func TestCreateProviderFromConfigGrokBin(t *testing.T) {
 }
 
 func TestCreateProviderFromConfigCursorBin(t *testing.T) {
-	provider, err := createProviderFromConfig("cursor-bin", &config.ProviderConfig{
+	provider, err := factory.Create("cursor-bin", &config.ProviderConfig{
 		Type:  config.ProviderTypeCursorBin,
 		Model: "grok-4.5-high-fast",
 		Env:   map[string]string{"CURSOR_API_ENDPOINT": "https://example.test"},
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("createProviderFromConfig: %v", err)
 	}
-	cursor, ok := provider.(*CursorBinProvider)
+	cursor, ok := provider.(*clibin.CursorBinProvider)
 	if !ok {
 		t.Fatalf("provider type = %T, want *CursorBinProvider", provider)
 	}
@@ -219,11 +224,11 @@ func TestCreateProviderFromConfigAnthropicCustomBaseURL(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	provider, err := createProviderFromConfig("custom-anthropic", &config.ProviderConfig{
+	provider, err := factory.Create("custom-anthropic", &config.ProviderConfig{
 		Type:    config.ProviderTypeAnthropic,
 		BaseURL: ts.URL + "/proxy",
 		Model:   "custom-model",
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("createProviderFromConfig: %v", err)
 	}
@@ -240,11 +245,11 @@ func TestCreateProviderFromConfigAnthropicCustomBaseURL(t *testing.T) {
 }
 
 func TestCreateProviderFromConfigRejectsInvalidAnthropicBaseURL(t *testing.T) {
-	_, err := createProviderFromConfig("custom-anthropic", &config.ProviderConfig{
+	_, err := factory.Create("custom-anthropic", &config.ProviderConfig{
 		Type:           config.ProviderTypeAnthropic,
 		BaseURL:        "gateway.example.test/anthropic",
 		ResolvedAPIKey: "sk-custom-key",
-	})
+	}, factoryOptions())
 	if err == nil || !strings.Contains(err.Error(), "must include scheme and host") {
 		t.Fatalf("error = %v, want invalid base_url guidance", err)
 	}
@@ -271,15 +276,15 @@ func TestCreateProviderFromConfigRoutesLazyBaseURLs(t *testing.T) {
 			t.Fatalf("ResolveProviderCredentials: %v", err)
 		}
 		providerCfg := cfg.Providers["custom"]
-		provider, err := createProviderFromConfig("custom", &providerCfg)
+		provider, err := factory.Create("custom", &providerCfg, factoryOptions())
 		if err != nil {
 			t.Fatalf("createProviderFromConfig: %v", err)
 		}
-		compat, ok := provider.(*OpenAICompatProvider)
+		compat, ok := provider.(*opencompat.OpenAICompatProvider)
 		if !ok {
 			t.Fatalf("provider type = %T, want *OpenAICompatProvider", provider)
 		}
-		resp, err := compat.MakeChatRequest(context.Background(), oaiChatRequest{Model: "custom-model"})
+		resp, err := compat.MakeChatRequest(context.Background(), opencompat.OAIChatRequest{Model: "custom-model"})
 		if err != nil {
 			t.Fatalf("makeChatRequest: %v", err)
 		}
@@ -300,7 +305,7 @@ func TestCreateProviderFromConfigRoutesLazyBaseURLs(t *testing.T) {
 			t.Fatalf("ResolveProviderCredentials: %v", err)
 		}
 		providerCfg := cfg.Providers["ollama"]
-		provider, err := createProviderFromConfig("ollama", &providerCfg)
+		provider, err := factory.Create("ollama", &providerCfg, factoryOptions())
 		if err != nil {
 			t.Fatalf("createProviderFromConfig: %v", err)
 		}
@@ -315,30 +320,30 @@ func TestCreateProviderFromConfigRoutesLazyBaseURLs(t *testing.T) {
 }
 
 func TestCreateProviderFromConfigOpenCodeGo(t *testing.T) {
-	provider, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{
+	provider, err := factory.Create("opencode-go", &config.ProviderConfig{
 		Type:           config.ProviderTypeOpenCodeGo,
 		ResolvedAPIKey: "test-key",
 		Model:          "glm-5.2",
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("createProviderFromConfig: %v", err)
 	}
-	if _, ok := provider.(*OpenCodeGoProvider); !ok {
+	if _, ok := provider.(*rp.OpenCodeGoProvider); !ok {
 		t.Fatalf("provider type = %T, want *OpenCodeGoProvider", provider)
 	}
 }
 
 func TestCreateProviderFromConfigOpenCodeGoUsesBaseURLOverride(t *testing.T) {
-	provider, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{
+	provider, err := factory.Create("opencode-go", &config.ProviderConfig{
 		Type:           config.ProviderTypeOpenCodeGo,
 		ResolvedAPIKey: "test-key",
 		Model:          "muse-spark-1.2-contributor",
 		BaseURL:        "https://example.test/muse/v1/",
-	})
+	}, factoryOptions())
 	if err != nil {
 		t.Fatalf("createProviderFromConfig: %v", err)
 	}
-	openCodeGo, ok := provider.(*OpenCodeGoProvider)
+	openCodeGo, ok := provider.(*rp.OpenCodeGoProvider)
 	if !ok {
 		t.Fatalf("provider type = %T, want *OpenCodeGoProvider", provider)
 	}
@@ -348,18 +353,18 @@ func TestCreateProviderFromConfigOpenCodeGoUsesBaseURLOverride(t *testing.T) {
 }
 
 func TestCreateProviderFromConfigOpenCodeGoRejectsURLOverride(t *testing.T) {
-	_, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{
+	_, err := factory.Create("opencode-go", &config.ProviderConfig{
 		Type:           config.ProviderTypeOpenCodeGo,
 		ResolvedAPIKey: "test-key",
 		URL:            "https://example.test/responses",
-	})
+	}, factoryOptions())
 	if err == nil || !strings.Contains(err.Error(), "use base_url") {
 		t.Fatalf("error = %v, want base_url guidance", err)
 	}
 }
 
 func TestCreateProviderFromConfigOpenCodeGoRequiresKey(t *testing.T) {
-	_, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{Type: config.ProviderTypeOpenCodeGo})
+	_, err := factory.Create("opencode-go", &config.ProviderConfig{Type: config.ProviderTypeOpenCodeGo}, factoryOptions())
 	if err == nil || !strings.Contains(err.Error(), "OPENCODE_API_KEY") {
 		t.Fatalf("error = %v, want OPENCODE_API_KEY guidance", err)
 	}
@@ -374,11 +379,11 @@ func TestCreateProviderFromConfig_OpenAICompatRequiresProviderName(t *testing.T)
 		}
 	}()
 
-	_, err := createProviderFromConfig("", &config.ProviderConfig{
+	_, err := factory.Create("", &config.ProviderConfig{
 		Type:    config.ProviderTypeOpenAICompat,
 		BaseURL: "https://example.com/v1",
 		Model:   "test-model",
-	})
+	}, factoryOptions())
 	if err == nil {
 		t.Fatal("expected empty provider name to return an error")
 	}
@@ -390,7 +395,7 @@ func TestCreateProviderFromConfig_OpenAICompatRequiresProviderName(t *testing.T)
 func TestOpenAICompatReasoningParserOptionsUsesOnlyExplicitConfig(t *testing.T) {
 	t.Parallel()
 
-	parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(&config.ProviderConfig{
+	parseReasoning, includeReasoning, thinkingParam := factory.OpenAICompatReasoningParserOptions(&config.ProviderConfig{
 		Type:    config.ProviderTypeOpenAICompat,
 		BaseURL: "https://example.invalid/v1",
 	})
@@ -403,7 +408,7 @@ func TestOpenAICompatReasoningParserOptionsReadsExplicitConfig(t *testing.T) {
 	t.Parallel()
 
 	no := false
-	parseReasoning, includeReasoning, thinkingParam := openAICompatReasoningParserOptions(&config.ProviderConfig{
+	parseReasoning, includeReasoning, thinkingParam := factory.OpenAICompatReasoningParserOptions(&config.ProviderConfig{
 		Type:             config.ProviderTypeOpenAICompat,
 		BaseURL:          "https://example.invalid/v1",
 		ParseReasoning:   &no,
@@ -458,12 +463,12 @@ func TestZenRequiresKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	zen := providerFromEnv.(*ZenProvider)
+	zen := providerFromEnv.(*rp.ZenProvider)
 	if zen.APIKey() != "env-key" || zen.Model() != "deepseek-v4-flash" {
 		t.Fatal("Zen did not use environment credentials and paid default")
 	}
 
-	provider, err := createProviderFromConfig("zen", &config.ProviderConfig{Type: config.ProviderTypeZen, ResolvedAPIKey: "test-key", Model: "deepseek-v4-flash"})
+	provider, err := factory.Create("zen", &config.ProviderConfig{Type: config.ProviderTypeZen, ResolvedAPIKey: "test-key", Model: "deepseek-v4-flash"}, factoryOptions())
 	if err != nil || provider == nil {
 		t.Fatalf("keyed Zen: provider=%v error=%v", provider, err)
 	}

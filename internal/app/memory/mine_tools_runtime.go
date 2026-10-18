@@ -8,7 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 )
 
@@ -87,8 +88,8 @@ type memoryCreateFragmentTool struct {
 	collector *memoryExtractionCollector
 }
 
-func (t *memoryCreateFragmentTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *memoryCreateFragmentTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "memory_create_fragment",
 		Description: "Create a new durable memory fragment. Use this only when memory does not already exist under a suitable path.",
 		Schema: map[string]interface{}{
@@ -112,33 +113,33 @@ func (t *memoryCreateFragmentTool) Preview(args json.RawMessage) string {
 	return strings.TrimSpace(payload.Path)
 }
 
-func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 		Reason  string `json:"reason"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("parse memory_create_fragment args: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("parse memory_create_fragment args: %w", err)
 	}
 	fragPath, err := validateFragmentPath(payload.Path)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	content := strings.TrimSpace(payload.Content)
 	if content == "" {
-		return llm.ToolOutput{}, fmt.Errorf("content cannot be empty")
+		return core.ToolOutput{}, fmt.Errorf("content cannot be empty")
 	}
 	if len([]byte(content)) > 8192 {
-		return llm.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
+		return core.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
 	}
 	if !t.dryRun {
 		if err := t.store.CreateFragment(ctx, &memorydb.Fragment{Agent: t.agent, Path: fragPath, Content: content, Source: memorydb.DefaultSourceMine}); err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
 	}
 	t.collector.noteCreated(fragPath)
-	return llm.TextOutput(fmt.Sprintf("created %s", fragPath)), nil
+	return core.TextOutput(fmt.Sprintf("created %s", fragPath)), nil
 }
 
 type memoryUpdateFragmentTool struct {
@@ -148,8 +149,8 @@ type memoryUpdateFragmentTool struct {
 	collector *memoryExtractionCollector
 }
 
-func (t *memoryUpdateFragmentTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *memoryUpdateFragmentTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "memory_update_fragment",
 		Description: "Update an existing durable memory fragment after inspecting it. Use this when the memory already exists and should be revised or expanded.",
 		Schema: map[string]interface{}{
@@ -173,48 +174,48 @@ func (t *memoryUpdateFragmentTool) Preview(args json.RawMessage) string {
 	return strings.TrimSpace(payload.Path)
 }
 
-func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 		Reason  string `json:"reason"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("parse memory_update_fragment args: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("parse memory_update_fragment args: %w", err)
 	}
 	fragPath, err := validateFragmentPath(payload.Path)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	content := strings.TrimSpace(payload.Content)
 	if content == "" {
-		return llm.ToolOutput{}, fmt.Errorf("content cannot be empty")
+		return core.ToolOutput{}, fmt.Errorf("content cannot be empty")
 	}
 	if len([]byte(content)) > 8192 {
-		return llm.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
+		return core.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
 	}
 	if !t.dryRun {
 		ok, err := t.store.UpdateFragment(ctx, t.agent, fragPath, content)
 		if err != nil {
-			return llm.ToolOutput{}, err
+			return core.ToolOutput{}, err
 		}
 		if !ok {
-			return llm.ToolOutput{}, fmt.Errorf("fragment %s does not exist", fragPath)
+			return core.ToolOutput{}, fmt.Errorf("fragment %s does not exist", fragPath)
 		}
 	}
 	t.collector.noteUpdated(fragPath)
-	return llm.TextOutput(fmt.Sprintf("updated %s", fragPath)), nil
+	return core.TextOutput(fmt.Sprintf("updated %s", fragPath)), nil
 }
 
-func registerMemoryExtractionTools(engine *llm.Engine, store *memorydb.Store, agent string, collector *memoryExtractionCollector, readBytes int, dryRun bool) ([]llm.ToolSpec, func()) {
-	tools := []llm.Tool{
+func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store, agent string, collector *memoryExtractionCollector, readBytes int, dryRun bool) ([]core.ToolSpec, func()) {
+	tools := []core.Tool{
 		&memorySearchFragmentsTool{store: store, agent: agent, readBytes: readBytes},
 		&memoryListFragmentsTool{store: store, agent: agent},
 		&memoryGetFragmentTool{store: store, agent: agent, readBytes: readBytes},
 		&memoryCreateFragmentTool{store: store, agent: agent, dryRun: dryRun, collector: collector},
 		&memoryUpdateFragmentTool{store: store, agent: agent, dryRun: dryRun, collector: collector},
 	}
-	specs := make([]llm.ToolSpec, 0, len(tools))
+	specs := make([]core.ToolSpec, 0, len(tools))
 	for _, tool := range tools {
 		engine.RegisterTool(tool)
 		specs = append(specs, tool.Spec())

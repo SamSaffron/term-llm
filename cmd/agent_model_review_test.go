@@ -12,7 +12,9 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -196,7 +198,7 @@ func TestLegacySetupAgentToolsDoesNotRunSeparateModelAdmission(t *testing.T) {
 	runner.SetModelPolicySource(func() ParentModelState {
 		return ParentModelState{Policy: modelpolicy.Policy{}.With("boss", []string{"debug:allowed"}), Provider: "other", Model: "denied"}
 	})
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	agent := &agents.Agent{Name: "parent", Tools: agents.ToolsConfig{Enabled: []string{tools.SpawnAgentToolName}}}
 	if _, err := runner.setupAgentTools(cfg, engine, agent, 0, "child-session"); err != nil {
 		t.Fatalf("legacy setup rejected an unrelated model: %v", err)
@@ -205,9 +207,9 @@ func TestLegacySetupAgentToolsDoesNotRunSeparateModelAdmission(t *testing.T) {
 
 func TestUnrestrictedTitleRefinePreservesConfiguredProviderError(t *testing.T) {
 	store := newTitleRefineTestStore(t, "title-parity")
-	addTitleRefineMessage(t, store, "title-parity", llm.UserText("name this conversation"))
+	addTitleRefineMessage(t, store, "title-parity", core.UserText("name this conversation"))
 	calls := 0
-	s := &serveServer{cfgRef: &config.Config{}, store: store, titleProviderFactory: func(*config.Config) (llm.Provider, error) { calls++; return nil, errors.New("legacy title failure") }}
+	s := &serveServer{cfgRef: &config.Config{}, store: store, titleProviderFactory: func(*config.Config) (core.Provider, error) { calls++; return nil, errors.New("legacy title failure") }}
 	w := httptest.NewRecorder()
 	s.handleSessionTitleRefine(w, httptest.NewRequest(http.MethodPost, "/v1/sessions/title-parity/title/refine", strings.NewReader(`{"preview":true}`)), "title-parity")
 	if calls != 1 || w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "failed to create fast title provider: legacy title failure") {
@@ -253,7 +255,7 @@ func TestInvalidPersistedAgentBlocksAuxiliaryWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	s := &serveServer{cfgRef: cfg, store: store, autoTitleProviderFactory: func(string) (llm.Provider, error) { calls++; return llm.NewMockProvider("title"), nil }, liveControlProviderFactory: func(string) (llm.Provider, error) { calls++; return llm.NewMockProvider("control"), nil }}
+	s := &serveServer{cfgRef: cfg, store: store, autoTitleProviderFactory: func(string) (core.Provider, error) { calls++; return mockprovider.NewMockProvider("title"), nil }, liveControlProviderFactory: func(string) (core.Provider, error) { calls++; return mockprovider.NewMockProvider("control"), nil }}
 	s.scheduleAutoTitle(sess.ID, "debug")
 	s.autoTitleWG.Wait()
 	if calls != 0 {

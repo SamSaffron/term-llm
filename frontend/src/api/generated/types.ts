@@ -38,7 +38,7 @@ export type SessionInterruptRequest = { "message": string; "content": unknown; "
 
 export type SessionMessageEntry = { "id": number; "sequence": number; "role": string; "parts": (SessionMessagePartEntry)[] | null; "created_at": number; "compaction_tail"?: boolean; "client_message_id"?: string; "response_id"?: string; "assistant_segment_ordinal"?: number; "segment_start_sequence"?: number; "segment_end_sequence"?: number; };
 
-export type SessionMessagePartEntry = { "created_at"?: number; "type": string; "text"?: string; "skill_activation"?: LlmSkillActivationProvenance; "path_note"?: LlmPathNoteProvenance; "diff_comment"?: LlmDiffComment; "model_swap"?: LlmModelSwapMarker; "tool_name"?: string; "tool_info"?: string; "tool_arguments"?: string; "tool_call_id"?: string; "tool_status"?: string; "ask_user_summary"?: string; "image_url"?: string; "images"?: (string)[]; "media"?: (WebMediaEntry)[]; "tool_error"?: boolean; "guardian_reviews"?: (LlmGuardianReview)[]; "spawn_agent"?: ToolsSpawnAgentResult; "spawn_agent_tool_calls"?: number; "agent_session_ids"?: (string)[]; "mime_type"?: string; "file_url"?: string; "size_bytes"?: number; "kind"?: string; "width"?: number; "height"?: number; };
+export type SessionMessagePartEntry = { "created_at"?: number; "type": string; "text"?: string; "skill_activation"?: CoreSkillActivationProvenance; "path_note"?: CorePathNoteProvenance; "diff_comment"?: CoreDiffComment; "model_swap"?: CoreModelSwapMarker; "tool_name"?: string; "tool_info"?: string; "tool_arguments"?: string; "tool_call_id"?: string; "tool_status"?: string; "ask_user_summary"?: string; "image_url"?: string; "images"?: (string)[]; "media"?: (WebMediaEntry)[]; "tool_error"?: boolean; "guardian_reviews"?: (CoreGuardianReview)[]; "spawn_agent"?: ToolsSpawnAgentResult; "spawn_agent_tool_calls"?: number; "agent_session_ids"?: (string)[]; "mime_type"?: string; "file_url"?: string; "size_bytes"?: number; "kind"?: string; "width"?: number; "height"?: number; };
 
 export type SessionMessagesResponse = { "lastResponseId"?: string; "messages": (SessionMessageEntry)[] | null; "has_more": boolean; "next_offset"?: number; "next_before_seq"?: number; "compaction_seq"?: number; "compaction_count"?: number; };
 
@@ -63,16 +63,6 @@ export type WebSessionEntry = { "id": string; "number"?: number; "name"?: string
 export type WebSessionMetrics = { "input_tokens": number; "output_tokens": number; "cached_input_tokens": number; "cache_write_tokens": number; "tool_calls": number; "llm_turns": number; };
 
 export type HubStatus = { "reachable": boolean; "state": string; "latency_ms": number; "version"?: string; "agent"?: string; "capabilities"?: (string)[]; "details"?: Record<string, string>; "error"?: string; };
-
-export type LlmDiffComment = CoreDiffComment;
-
-export type LlmGuardianReview = CoreGuardianReview;
-
-export type LlmModelSwapMarker = CoreModelSwapMarker;
-
-export type LlmPathNoteProvenance = CorePathNoteProvenance;
-
-export type LlmSkillActivationProvenance = CoreSkillActivationProvenance;
 
 export type CoreDiffComment = { "id": string; "parent_id"?: string; "path": string; "scope"?: string; "side": string; "line": number; "file_change_seq": number; "line_text": string; "context_before"?: (CoreDiffCommentContextLine)[]; "context_after"?: (CoreDiffCommentContextLine)[]; "instruction": string; };
 

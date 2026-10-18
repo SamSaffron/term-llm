@@ -4,7 +4,8 @@ import (
 	"context"
 
 	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 // Compatibility aliases keep cmd callers stable until runner, ask and serve move.
@@ -26,7 +27,7 @@ func isProgressToolName(name string) bool  { return progressive.IsProgressTool(n
 func validateAskProgressiveOptions(opts *askProgressiveOptions) error {
 	return progressive.ValidateAskOptions(opts)
 }
-func runProgressiveSession(ctx context.Context, engine *llm.Engine, req llm.Request, opts progressiveRunOptions) (progressiveRunResult, error) {
+func runProgressiveSession(ctx context.Context, engine *engine.Engine, req core.Request, opts progressiveRunOptions) (progressiveRunResult, error) {
 	return progressive.RunSession(ctx, engine, req, opts)
 }
 func buildProgressiveRunResult(id, reason string, finalized bool, commit *progressCommit, fallback string) progressiveRunResult {

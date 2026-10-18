@@ -13,6 +13,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -35,7 +36,7 @@ func (l *followUpClaimLease) Release() {
 type resolvedResponsesRequest struct {
 	firstParty                 bool
 	req                        responsesCreateRequest
-	inputMessages              []llm.Message
+	inputMessages              []core.Message
 	replaceHistory             bool
 	sessionID                  string
 	previousResponseID         string
@@ -69,7 +70,7 @@ func validateResponseReasoningMode(provider, model, mode string, explicit bool) 
 	return normalized, false, nil
 }
 
-func prepareResponseClientMessageIDs(messages []llm.Message, requestID string, firstParty bool) (bool, error) {
+func prepareResponseClientMessageIDs(messages []core.Message, requestID string, firstParty bool) (bool, error) {
 	requestID = strings.TrimSpace(requestID)
 	if !firstParty {
 		// Item-level identities are reserved for the first-party UI contract.
@@ -78,7 +79,7 @@ func prepareResponseClientMessageIDs(messages []llm.Message, requestID string, f
 		}
 		if requestID != "" {
 			for i := len(messages) - 1; i >= 0; i-- {
-				if messages[i].Role == llm.RoleUser {
+				if messages[i].Role == core.RoleUser {
 					messages[i].ClientMessageID = requestID
 					break
 				}
@@ -89,7 +90,7 @@ func prepareResponseClientMessageIDs(messages []llm.Message, requestID string, f
 
 	userIndexes := make([]int, 0, len(messages))
 	for i := range messages {
-		if messages[i].Role == llm.RoleUser {
+		if messages[i].Role == core.RoleUser {
 			userIndexes = append(userIndexes, i)
 		}
 	}
@@ -131,10 +132,10 @@ func prepareResponseClientMessageIDs(messages []llm.Message, requestID string, f
 	return true, nil
 }
 
-func responseClientMessageIDs(messages []llm.Message) []string {
+func responseClientMessageIDs(messages []core.Message) []string {
 	ids := make([]string, 0, len(messages))
 	for i := range messages {
-		if messages[i].Role != llm.RoleUser {
+		if messages[i].Role != core.RoleUser {
 			continue
 		}
 		if id := strings.TrimSpace(messages[i].ClientMessageID); id != "" {
@@ -227,7 +228,7 @@ type resolvedResponsesSession struct {
 	branched           bool
 }
 
-func (s *serveServer) validateResponsesAdmissionRequest(w http.ResponseWriter, r *http.Request, ctx context.Context, req *responsesCreateRequest, inputMessages []llm.Message, replaceHistory *bool) (bool, bool, bool) {
+func (s *serveServer) validateResponsesAdmissionRequest(w http.ResponseWriter, r *http.Request, ctx context.Context, req *responsesCreateRequest, inputMessages []core.Message, replaceHistory *bool) (bool, bool, bool) {
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	firstParty := isFirstPartyUIResponseRequest(r)
 	if req.UIContext != nil {
@@ -385,7 +386,7 @@ func (s *serveServer) prepareResponsesSessionAdmission(w http.ResponseWriter, r 
 	}, false
 }
 
-func (s *serveServer) resolveResponsesSession(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, inputMessages []llm.Message, identifiedUserBatch bool, admission responsesSessionAdmission, replaceHistory *bool) (resolvedResponsesSession, bool) {
+func (s *serveServer) resolveResponsesSession(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, inputMessages []core.Message, identifiedUserBatch bool, admission responsesSessionAdmission, replaceHistory *bool) (resolvedResponsesSession, bool) {
 	sessionID := ""
 	previousDurable := false
 	resolvedPreviousResponseID := req.PreviousResponseID
@@ -535,7 +536,7 @@ func (s *serveServer) handleResponseRuntimeError(w http.ResponseWriter, r *http.
 	return true
 }
 
-func (s *serveServer) validateRuntimePreviousResponse(w http.ResponseWriter, ctx context.Context, sessionID, previousResponseID string, previousDurable bool, runtime *serveRuntime, stateful bool, inputMessages []llm.Message) bool {
+func (s *serveServer) validateRuntimePreviousResponse(w http.ResponseWriter, ctx context.Context, sessionID, previousResponseID string, previousDurable bool, runtime *serveRuntime, stateful bool, inputMessages []core.Message) bool {
 	if previousResponseID == "" {
 		return true
 	}
@@ -561,7 +562,7 @@ func (s *serveServer) validateRuntimePreviousResponse(w http.ResponseWriter, ctx
 	return true
 }
 
-func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest, inputMessages []llm.Message, sessionID, idempotencyScope, idempotencyKey string) (serveWorkspaceBinding, func(), bool) {
+func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest, inputMessages []core.Message, sessionID, idempotencyScope, idempotencyKey string) (serveWorkspaceBinding, func(), bool) {
 	release := func() {}
 	keepAdmission := false
 	defer func() {
@@ -612,13 +613,13 @@ func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r 
 	return binding, release, false
 }
 
-func assignFinalResponseClientMessageID(messages []llm.Message, clientMessageID string) {
+func assignFinalResponseClientMessageID(messages []core.Message, clientMessageID string) {
 	clientMessageID = strings.TrimSpace(clientMessageID)
 	if clientMessageID == "" {
 		return
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == llm.RoleUser {
+		if messages[i].Role == core.RoleUser {
 			messages[i].ClientMessageID = clientMessageID
 			return
 		}
@@ -879,16 +880,16 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 
 	s.executeSynchronousResponse(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, modelSwapExec, resetResponseIDsOnSuccess)
 }
-func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sessionID string, runtime *serveRuntime, messages []llm.Message) {
+func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sessionID string, runtime *serveRuntime, messages []core.Message) {
 	missing := missingResponsesToolResultNames(messages)
 	if len(missing) == 0 {
 		return
 	}
 
 	names := make(map[string]string, len(missing))
-	collectParts := func(parts []llm.Part) bool {
+	collectParts := func(parts []core.Part) bool {
 		for _, part := range parts {
-			if part.Type != llm.PartToolCall || part.ToolCall == nil {
+			if part.Type != core.PartToolCall || part.ToolCall == nil {
 				continue
 			}
 			id := strings.TrimSpace(part.ToolCall.ID)
@@ -901,7 +902,7 @@ func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sess
 		}
 		return len(names) == len(missing)
 	}
-	collectHistory := func(history []llm.Message) bool {
+	collectHistory := func(history []core.Message) bool {
 		for i := len(history) - 1; i >= 0; i-- {
 			if collectParts(history[i].Parts) {
 				return true
@@ -920,11 +921,11 @@ func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sess
 	applyResponsesToolResultNames(messages, names)
 }
 
-func missingResponsesToolResultNames(messages []llm.Message) map[string]bool {
+func missingResponsesToolResultNames(messages []core.Message) map[string]bool {
 	missing := map[string]bool{}
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
-			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
 				continue
 			}
 			id := strings.TrimSpace(part.ToolResult.ID)
@@ -939,7 +940,7 @@ func missingResponsesToolResultNames(messages []llm.Message) map[string]bool {
 
 const responsesToolNameLookupPageSize = 128
 
-func (s *serveServer) collectResponsesToolCallNamesFromStore(ctx context.Context, sessionID string, collectParts func([]llm.Part) bool) {
+func (s *serveServer) collectResponsesToolCallNamesFromStore(ctx context.Context, sessionID string, collectParts func([]core.Part) bool) {
 	if pager, ok := s.store.(session.MessagesDescendingPager); ok {
 		beforeSeq := 0
 		for {
@@ -974,14 +975,14 @@ func (s *serveServer) collectResponsesToolCallNamesFromStore(ctx context.Context
 	}
 }
 
-func applyResponsesToolResultNames(messages []llm.Message, names map[string]string) {
+func applyResponsesToolResultNames(messages []core.Message, names map[string]string) {
 	if len(names) == 0 {
 		return
 	}
 	for msgIndex := range messages {
 		for partIndex := range messages[msgIndex].Parts {
 			part := &messages[msgIndex].Parts[partIndex]
-			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
 				continue
 			}
 			if strings.TrimSpace(part.ToolResult.Name) != "" {
@@ -1055,14 +1056,14 @@ func isFirstPartyUIResponseRequest(r *http.Request) bool {
 	return strings.TrimSpace(r.Header.Get("X-Term-LLM-UI-Version")) != ""
 }
 
-func responseServerTools(runtime *serveRuntime, requested map[string]bool, includeServerTools bool) []llm.ToolSpec {
+func responseServerTools(runtime *serveRuntime, requested map[string]bool, includeServerTools bool) []core.ToolSpec {
 	if includeServerTools {
 		return runtime.selectTools(nil)
 	}
 	return runtime.selectTools(requested)
 }
 
-func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools []llm.ToolSpec, toolMap map[string]string) []llm.ToolSpec {
+func appendResponsePassthroughTools(serverTools []core.ToolSpec, passthroughTools []core.ToolSpec, toolMap map[string]string) []core.ToolSpec {
 	if len(passthroughTools) == 0 {
 		return serverTools
 	}
@@ -1086,8 +1087,8 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, firstParty bool, onDone, onAdmissionDone func()) bool {
-	var runner func(string) llm.ClientToolRunner
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, firstParty bool, onDone, onAdmissionDone func()) bool {
+	var runner func(string) core.ClientToolRunner
 	if firstParty {
 		runner = s.typedClientToolRunner(runtime, llmReq.Tools)
 	}

@@ -22,6 +22,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/filemime"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -118,7 +120,7 @@ func parseDataURL(dataURL string) (mediaType, base64Data string) {
 
 // isLLMImageType returns true for image media types that LLM providers handle natively.
 func isLLMImageType(mediaType string) bool {
-	switch llm.NormalizeMediaType(mediaType) {
+	switch filemime.NormalizeMediaType(mediaType) {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		return true
 	default:
@@ -259,14 +261,14 @@ func abbreviatePath(path string) string {
 }
 
 func normalizeUploadMediaType(filename, mediaType string, raw []byte) string {
-	mediaType = llm.NormalizeMediaType(mediaType)
+	mediaType = filemime.NormalizeMediaType(mediaType)
 	if mediaType == "" || mediaType == "application/octet-stream" {
-		if extType := llm.NormalizeMediaType(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); extType != "" {
+		if extType := filemime.NormalizeMediaType(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); extType != "" {
 			mediaType = extType
 		}
 	}
 	if (mediaType == "" || mediaType == "application/octet-stream") && len(raw) > 0 {
-		if detected := llm.NormalizeMediaType(http.DetectContentType(raw)); detected != "" {
+		if detected := filemime.NormalizeMediaType(http.DetectContentType(raw)); detected != "" {
 			mediaType = detected
 		}
 	}
@@ -282,9 +284,9 @@ func normalizeUploadMediaType(filename, mediaType string, raw []byte) string {
 	// their label so isLLMImageType keeps routing them down the image path.
 	if !isLLMImageType(mediaType) {
 		if rawLooksLikeText(raw) {
-			mediaType = llm.CanonicalTextUploadMediaType(filename, mediaType)
+			mediaType = filemime.CanonicalTextUploadMediaType(filename, mediaType)
 		} else {
-			mediaType = llm.CanonicalUploadMediaType(filename, mediaType)
+			mediaType = filemime.CanonicalUploadMediaType(filename, mediaType)
 		}
 	}
 	if mediaType == "" {
@@ -307,7 +309,7 @@ func textUploadContent(filename, mediaType string, raw []byte) (string, bool) {
 	if !rawLooksLikeText(raw) {
 		return "", false
 	}
-	mediaType = llm.NormalizeMediaType(mediaType)
+	mediaType = filemime.NormalizeMediaType(mediaType)
 	genericMediaType := mediaType == "" || mediaType == "application/octet-stream"
 	if isTextUploadMIME(mediaType) || isTextUploadExtension(filename) || (genericMediaType && looksLikePlainText(raw)) {
 		return string(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))), true
@@ -326,7 +328,7 @@ func rawLooksLikeText(raw []byte) bool {
 // the provider MIME tables so a label like application/toml is embedded instead of
 // being written off as binary.
 func isTextUploadMIME(mediaType string) bool {
-	return llm.IsTextLikeMediaType(mediaType)
+	return filemime.IsTextLikeMediaType(mediaType)
 }
 
 func isTextUploadExtension(filename string) bool {
@@ -485,8 +487,8 @@ const (
 	diffCommentMaxAggregatePayloadBytes = 256 * 1024
 )
 
-func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
-	var comment llm.DiffComment
+func parseDiffCommentPart(raw json.RawMessage) (*core.DiffComment, error) {
+	var comment core.DiffComment
 	if err := json.Unmarshal(raw, &comment); err != nil {
 		return nil, fmt.Errorf("invalid diff_comment metadata: %w", err)
 	}
@@ -532,7 +534,7 @@ func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
 		return nil, fmt.Errorf("diff_comment context is limited to four lines on each side")
 	}
 	totalBytes := len(comment.ID) + len(comment.ParentID) + len(comment.Path) + len(comment.Scope) + len(comment.Side) + len(comment.LineText) + len(comment.Instruction)
-	for _, contextLines := range [][]llm.DiffCommentContextLine{comment.ContextBefore, comment.ContextAfter} {
+	for _, contextLines := range [][]core.DiffCommentContextLine{comment.ContextBefore, comment.ContextAfter} {
 		for i := range contextLines {
 			contextLines[i].Side = strings.ToLower(strings.TrimSpace(contextLines[i].Side))
 			if contextLines[i].Side != "old" && contextLines[i].Side != "new" || contextLines[i].Line <= 0 {
@@ -550,7 +552,7 @@ func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
 	return &comment, nil
 }
 
-// parseUserMessageContent builds a user llm.Message from a content field
+// parseUserMessageContent builds a user core.Message from a content field
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
 // Chat Completions-style text/image_url parts are also accepted.
 // Supported image types are sent inline to the LLM and also saved to disk
@@ -561,10 +563,10 @@ func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
 // Images exceeding 1 MB are resized/compressed only for the inline LLM payload
 // to avoid provider errors; the saved ImagePath always points at the original
 // uploaded bytes.
-func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
+func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
-		var llmParts []llm.Part
+		var llmParts []core.Part
 		fileCount := 0
 		diffCommentCount := 0
 		diffCommentAggregateBytes := 0
@@ -574,37 +576,37 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 			case "diff_comment":
 				diffCommentCount++
 				if diffCommentCount > diffCommentMaxPartsPerMessage {
-					return llm.Message{}, fmt.Errorf("too many diff_comment parts (max %d)", diffCommentMaxPartsPerMessage)
+					return core.Message{}, fmt.Errorf("too many diff_comment parts (max %d)", diffCommentMaxPartsPerMessage)
 				}
 				diffCommentAggregateBytes += len(part["diff_comment"])
 				if diffCommentAggregateBytes > diffCommentMaxAggregatePayloadBytes {
-					return llm.Message{}, fmt.Errorf("diff_comment parts exceed aggregate payload limit (%d bytes)", diffCommentMaxAggregatePayloadBytes)
+					return core.Message{}, fmt.Errorf("diff_comment parts exceed aggregate payload limit (%d bytes)", diffCommentMaxAggregatePayloadBytes)
 				}
 				comment, err := parseDiffCommentPart(part["diff_comment"])
 				if err != nil {
-					return llm.Message{}, err
+					return core.Message{}, err
 				}
-				llmParts = append(llmParts, llm.Part{Type: llm.PartDiffComment, DiffComment: comment})
+				llmParts = append(llmParts, core.Part{Type: core.PartDiffComment, DiffComment: comment})
 			case "input_text", "text", "output_text":
 				text := jsonString(part["text"])
 				if text != "" {
-					llmParts = append(llmParts, llm.Part{Type: llm.PartText, Text: text})
+					llmParts = append(llmParts, core.Part{Type: core.PartText, Text: text})
 				}
 			case "input_image", "image_url":
 				imageURL := jsonImageURL(part["image_url"])
 				filename := jsonString(part["filename"])
 				if !strings.HasPrefix(imageURL, "data:") {
-					return llm.Message{}, fmt.Errorf("attachment %q must use an inline data URL", filename)
+					return core.Message{}, fmt.Errorf("attachment %q must use an inline data URL", filename)
 				}
 				mt, b64 := parseDataURL(imageURL)
 				mt = normalizeUploadMediaType(filename, mt, nil)
 				if mt == "" || b64 == "" {
-					return llm.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", filename)
+					return core.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", filename)
 				}
 				if isLLMImageType(mt) {
 					fileCount++
 					if fileCount > maxAttachments {
-						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+						return core.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 					}
 					if filename == "" {
 						filename = "image"
@@ -613,11 +615,11 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					b64 = stripBase64Newlines(b64)
 					raw, err := decodeUploadedFile(filename, b64)
 					if err != nil {
-						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+						return core.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 					}
 					path, err := saveUploadedBytes(filename, raw)
 					if err != nil {
-						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
+						return core.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
 
 					sendB64 := b64
@@ -635,9 +637,9 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					clientWidth := jsonImageDimension(part["width"])
 					clientHeight := jsonImageDimension(part["height"])
 					width, height := uploadedImageDimensions(raw, clientWidth, clientHeight)
-					llmParts = append(llmParts, llm.Part{
-						Type: llm.PartImage,
-						ImageData: &llm.ToolImageData{
+					llmParts = append(llmParts, core.Part{
+						Type: core.PartImage,
+						ImageData: &core.ToolImageData{
 							MediaType: sendMT,
 							Base64:    sendB64,
 							Width:     width,
@@ -648,11 +650,11 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				} else {
 					fileCount++
 					if fileCount > maxAttachments {
-						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+						return core.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 					}
 					filePart, err := parseUploadedFilePart(filename, mt, b64)
 					if err != nil {
-						return llm.Message{}, err
+						return core.Message{}, err
 					}
 					llmParts = append(llmParts, filePart)
 				}
@@ -664,20 +666,20 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				}
 				displayFilename := llm.EmbeddedFileDisplayName(filename)
 				if !strings.HasPrefix(fileData, "data:") {
-					return llm.Message{}, fmt.Errorf("attachment %q must use an inline data URL", displayFilename)
+					return core.Message{}, fmt.Errorf("attachment %q must use an inline data URL", displayFilename)
 				}
 				mt, b64 := parseDataURL(fileData)
 				mt = normalizeUploadMediaType(displayFilename, mt, nil)
 				if mt == "" || b64 == "" {
-					return llm.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", displayFilename)
+					return core.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", displayFilename)
 				}
 				fileCount++
 				if fileCount > maxAttachments {
-					return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+					return core.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 				}
 				filePart, err := parseUploadedFilePart(displayFilename, mt, b64)
 				if err != nil {
-					return llm.Message{}, err
+					return core.Message{}, err
 				}
 				llmParts = append(llmParts, filePart)
 			}
@@ -686,16 +688,16 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 			hasDiffComment := false
 			hasProviderContent := false
 			for _, part := range llmParts {
-				hasDiffComment = hasDiffComment || part.Type == llm.PartDiffComment
-				hasProviderContent = hasProviderContent || ((part.Type == llm.PartText || part.Type == llm.PartFile) && strings.TrimSpace(part.Text) != "") || part.Type == llm.PartImage
+				hasDiffComment = hasDiffComment || part.Type == core.PartDiffComment
+				hasProviderContent = hasProviderContent || ((part.Type == core.PartText || part.Type == core.PartFile) && strings.TrimSpace(part.Text) != "") || part.Type == core.PartImage
 			}
 			if hasDiffComment && !hasProviderContent {
-				return llm.Message{}, fmt.Errorf("diff_comment requires adjacent provider-facing content")
+				return core.Message{}, fmt.Errorf("diff_comment requires adjacent provider-facing content")
 			}
-			return llm.Message{Role: llm.RoleUser, Parts: llmParts}, nil
+			return core.Message{Role: core.RoleUser, Parts: llmParts}, nil
 		}
 	}
-	return llm.UserText(extractItemContent(content)), nil
+	return core.UserText(extractItemContent(content)), nil
 }
 
 func jsonImageURL(raw json.RawMessage) string {
@@ -888,22 +890,22 @@ func randomSuffix() string {
 
 // parseUploadedFilePart stores any file independently of provider comprehension.
 // Providers decide whether FileData can travel natively; Text is the safe fallback.
-func parseUploadedFilePart(filename, mediaType, b64 string) (llm.Part, error) {
+func parseUploadedFilePart(filename, mediaType, b64 string) (core.Part, error) {
 	filename = llm.EmbeddedFileDisplayName(filename)
 	b64 = stripBase64Newlines(b64)
 	raw, err := decodeUploadedFile(filename, b64)
 	if err != nil {
-		return llm.Part{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+		return core.Part{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 	}
 	mediaType = normalizeUploadMediaType(filename, mediaType, raw)
 	path, err := saveUploadedBytes(filename, raw)
 	if err != nil {
-		return llm.Part{}, fmt.Errorf("save attachment %q: %w", filename, err)
+		return core.Part{}, fmt.Errorf("save attachment %q: %w", filename, err)
 	}
-	return llm.Part{
-		Type:     llm.PartFile,
+	return core.Part{
+		Type:     core.PartFile,
 		Text:     uploadFallbackText(filename, mediaType, path, raw),
-		FileData: &llm.ToolFileData{MediaType: mediaType, Base64: b64, Filename: filename, SizeBytes: int64(len(raw))},
+		FileData: &core.ToolFileData{MediaType: mediaType, Base64: b64, Filename: filename, SizeBytes: int64(len(raw))},
 		FilePath: path,
 	}, nil
 }

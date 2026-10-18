@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 // ApprovalResponse represents how to respond to an approval prompt.
@@ -24,16 +26,16 @@ const (
 
 // EngineHarness provides a test harness for engine-level testing without TUI.
 type EngineHarness struct {
-	Provider *llm.MockProvider
-	Engine   *llm.Engine
-	Registry *llm.ToolRegistry
+	Provider *mockprovider.MockProvider
+	Engine   *engine.Engine
+	Registry *engine.ToolRegistry
 	Screen   *ScreenCapture
 
 	// Recorded data
 	TextOutput     strings.Builder
-	ToolCalls      []llm.ToolCall
+	ToolCalls      []core.ToolCall
 	ToolExecutions []ToolExecution
-	Events         []llm.Event
+	Events         []core.Event
 
 	// Approval handling
 	approvalResponse ApprovalResponse
@@ -50,8 +52,8 @@ type ToolExecution struct {
 
 // NewEngineHarness creates a new engine test harness.
 func NewEngineHarness() *EngineHarness {
-	provider := llm.NewMockProvider("test-mock")
-	registry := llm.NewToolRegistry()
+	provider := mockprovider.NewMockProvider("test-mock")
+	registry := engine.NewToolRegistry()
 
 	h := &EngineHarness{
 		Provider:         provider,
@@ -60,12 +62,12 @@ func NewEngineHarness() *EngineHarness {
 		approvalResponse: ApprovalApprove, // default to auto-approve
 	}
 
-	h.Engine = llm.NewEngine(provider, registry)
+	h.Engine = engine.NewEngine(provider, registry)
 	return h
 }
 
 // AddTool registers a tool with the engine.
-func (h *EngineHarness) AddTool(tool llm.Tool) {
+func (h *EngineHarness) AddTool(tool core.Tool) {
 	h.Registry.Register(tool)
 }
 
@@ -101,7 +103,7 @@ func (h *EngineHarness) Reset() {
 }
 
 // Stream runs a streaming request and collects all output.
-func (h *EngineHarness) Stream(ctx context.Context, req llm.Request) (string, error) {
+func (h *EngineHarness) Stream(ctx context.Context, req core.Request) (string, error) {
 	h.Screen.Enable()
 	defer h.Screen.Disable()
 
@@ -126,25 +128,25 @@ func (h *EngineHarness) Stream(ctx context.Context, req llm.Request) (string, er
 		h.Events = append(h.Events, event)
 
 		switch event.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			textBuilder.WriteString(event.Text)
 			h.TextOutput.WriteString(event.Text)
 			// Capture screen state after each text update
 			h.Screen.Capture(textBuilder.String(), phase)
 
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			if event.Tool != nil {
 				h.ToolCalls = append(h.ToolCalls, *event.Tool)
 			}
 
-		case llm.EventToolExecStart:
+		case core.EventToolExecStart:
 			if event.ToolName != "" {
 				phase = fmt.Sprintf("%s: %s", event.ToolName, event.ToolInfo)
 			} else {
 				phase = "Thinking"
 			}
 
-		case llm.EventError:
+		case core.EventError:
 			if event.Err != nil {
 				return textBuilder.String(), event.Err
 			}
@@ -158,7 +160,7 @@ func (h *EngineHarness) Stream(ctx context.Context, req llm.Request) (string, er
 }
 
 // Run is an alias for Stream that returns the text output.
-func (h *EngineHarness) Run(ctx context.Context, req llm.Request) (string, error) {
+func (h *EngineHarness) Run(ctx context.Context, req core.Request) (string, error) {
 	return h.Stream(ctx, req)
 }
 
@@ -266,7 +268,7 @@ func (h *TUIHarness) CapturedOutput() string {
 }
 
 // RunWithOutput runs a request and returns both the text content and TUI output.
-func (h *TUIHarness) RunWithOutput(ctx context.Context, req llm.Request) (textContent string, tuiOutput string, err error) {
+func (h *TUIHarness) RunWithOutput(ctx context.Context, req core.Request) (textContent string, tuiOutput string, err error) {
 	textContent, err = h.Run(ctx, req)
 	tuiOutput = h.CapturedOutput()
 	return

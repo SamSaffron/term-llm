@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -366,7 +368,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get tool specs
-	var toolSpecs []llm.ToolSpec
+	var toolSpecs []core.ToolSpec
 	if toolMgr != nil || mcpManager != nil {
 		toolSpecs = llm.ToolSpecsForRequest(engine.Tools(), settings.Search)
 		var approvalMgr *tools.ApprovalManager
@@ -419,18 +421,18 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		}
 
 		// Build messages
-		messages := []llm.Message{}
+		messages := []core.Message{}
 		if settings.SystemPrompt != "" {
-			messages = append(messages, llm.SystemText(settings.SystemPrompt))
+			messages = append(messages, core.SystemText(settings.SystemPrompt))
 		}
-		messages = append(messages, llm.UserText(expandedPrompt))
+		messages = append(messages, core.UserText(expandedPrompt))
 
 		// Build request
-		req := llm.Request{
+		req := core.Request{
 			WorkingDir:              settings.BaseDir,
 			Messages:                messages,
 			Tools:                   toolSpecs,
-			ToolChoice:              llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+			ToolChoice:              core.ToolChoice{Mode: core.ToolChoiceAuto},
 			EnableToolDiscovery:     mcpManager != nil,
 			ParallelToolCalls:       true,
 			Search:                  settings.Search,
@@ -476,7 +478,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 }
 
 // runLoopIteration runs a single iteration and returns a summary for history
-func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, stdout, stderr io.Writer) (string, error) {
+func runLoopIteration(ctx context.Context, engine *engine.Engine, req core.Request, stdout, stderr io.Writer) (string, error) {
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
 		return "", err
@@ -485,7 +487,7 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 
 	var textContent strings.Builder
 	var toolsUsed []string
-	mediaByReference := make(map[string]llm.MediaArtifact)
+	mediaByReference := make(map[string]core.MediaArtifact)
 	var mediaOutput ui.MediaMarkdownStream
 
 	for {
@@ -499,11 +501,11 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 		}
 
 		switch event.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			textContent.WriteString(event.Text)
 			fmt.Fprint(stdout, mediaOutput.Write(event.Text, mediaByReference))
 
-		case llm.EventToolExecStart:
+		case core.EventToolExecStart:
 			if event.ToolName != "" {
 				// Track tool usage for summary
 				toolsUsed = append(toolsUsed, event.ToolName)
@@ -511,7 +513,7 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 				fmt.Fprintf(stderr, "  > %s\n", phase.Active)
 			}
 
-		case llm.EventToolExecEnd:
+		case core.EventToolExecEnd:
 			// Tool completed
 			if event.ToolName != "" {
 				phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo)
@@ -535,10 +537,10 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 				}
 			}
 
-		case llm.EventRetry:
+		case core.EventRetry:
 			fmt.Fprintf(stderr, "  %s\n", ui.FormatRetryStatus("Rate limited", event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs, 0, "..."))
 
-		case llm.EventError:
+		case core.EventError:
 			if event.Err != nil {
 				fmt.Fprint(stdout, mediaOutput.Finish(mediaByReference))
 				return "", event.Err

@@ -12,6 +12,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
@@ -164,8 +167,8 @@ func TestCompactionBoundaryAppliesAtResumePhaseBarrier(t *testing.T) {
 	m.sess.ID = "compaction-update"
 	m.engine.SetContextEstimateBaseline(17_500, 3)
 	messages := []session.Message{
-		{Role: llm.RoleUser, TextContent: "before", Sequence: 0},
-		{Role: llm.RoleUser, TextContent: "[Context Compaction]\nsummary", Sequence: 1},
+		{Role: core.RoleUser, TextContent: "before", Sequence: 0},
+		{Role: core.RoleUser, TextContent: "[Context Compaction]\nsummary", Sequence: 1},
 	}
 	refreshed := *m.sess
 	refreshed.CompactionSeq = 1
@@ -180,14 +183,14 @@ func TestCompactionBoundaryAppliesAtResumePhaseBarrier(t *testing.T) {
 		activeStart: 1,
 		refreshed:   &refreshed,
 		model:       "compact-model",
-		usage:       llm.Usage{InputTokens: 20, OutputTokens: 5},
+		usage:       core.Usage{InputTokens: 20, OutputTokens: 5},
 	})
 	if m.compactionIdx != 0 {
 		t.Fatalf("boundary applied before ordered resume phase: %d", m.compactionIdx)
 	}
 
 	updated, cmd := m.Update(streamEventMsg{
-		event:      ui.PhaseEvent(llm.PhaseCompactingResumeTask),
+		event:      ui.PhaseEvent(engine.PhaseCompactingResumeTask),
 		generation: m.streamGeneration,
 	})
 	if cmd == nil {
@@ -218,7 +221,7 @@ func TestPendingCompactionForStaleSessionIsDiscarded(t *testing.T) {
 	m.queueCompactionForUI(compactionAppliedMsg{
 		generation:  m.streamGeneration,
 		sessionID:   "stale",
-		messages:    []session.Message{{Role: llm.RoleUser, TextContent: "wrong session"}},
+		messages:    []session.Message{{Role: core.RoleUser, TextContent: "wrong session"}},
 		activeStart: 1,
 	})
 
@@ -287,10 +290,10 @@ func TestDeferredBoundaryDoesNotClobberPostCompactionStreamingContext(t *testing
 	m.streaming = true
 	m.sess.ID = "stream-context"
 	m.streamGeneration = 3
-	m.messages = []session.Message{{Role: llm.RoleUser, TextContent: "old", Sequence: 0}}
+	m.messages = []session.Message{{Role: core.RoleUser, TextContent: "old", Sequence: 0}}
 	m.pendingAssistantMsgID = 42
 	m.pendingAssistantTextSet = true
-	result := &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("[Context Compaction]\nsummary")}}
+	result := &engine.CompactionResult{NewMessages: []core.Message{core.UserText("[Context Compaction]\nsummary")}}
 
 	if err := m.streamCompactionCallback(m.sess, 3)(context.Background(), result); err != nil {
 		t.Fatalf("compaction callback: %v", err)
@@ -299,20 +302,20 @@ func TestDeferredBoundaryDoesNotClobberPostCompactionStreamingContext(t *testing
 		t.Fatalf("pre-boundary assistant identity survived callback: id=%d text_set=%v", m.pendingAssistantMsgID, m.pendingAssistantTextSet)
 	}
 	m.contextEstimateMu.Lock()
-	m.streamingContextMessages = append(m.streamingContextMessages, llm.AssistantText("post-compaction assistant"))
+	m.streamingContextMessages = append(m.streamingContextMessages, core.AssistantText("post-compaction assistant"))
 	m.contextEstimateMu.Unlock()
 
 	m.applyNextPendingCompactionToUI(3)
 	contextMessages := m.buildMessagesForContextEstimate()
-	if got := llm.MessageText(contextMessages[len(contextMessages)-1]); got != "post-compaction assistant" {
+	if got := core.MessageText(contextMessages[len(contextMessages)-1]); got != "post-compaction assistant" {
 		t.Fatalf("deferred boundary clobbered post-compaction context: %#v", contextMessages)
 	}
 }
 
 func TestEnsureContextMessagesResetsBaselineWhenMutatingPrefix(t *testing.T) {
 	baseMessages := []session.Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello", Sequence: 0},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}, TextContent: "hi", Sequence: 1},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "hello"}}, TextContent: "hello", Sequence: 0},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "hi"}}, TextContent: "hi", Sequence: 1},
 	}
 
 	tests := []struct {
@@ -468,10 +471,10 @@ func TestRunnerStreamPropagatesSessionWorkingDirectory(t *testing.T) {
 }
 
 func TestDirectStreamPropagatesSessionWorkingDirectory(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("done")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("done")
 	m := newTestChatModel(false)
 	m.provider = provider
-	m.engine = llm.NewEngine(provider, nil)
+	m.engine = engine.NewEngine(provider, nil)
 	worktreeDir := t.TempDir()
 	m.sess = &session.Session{
 		ID:          "direct-working-dir",
@@ -501,14 +504,14 @@ func TestStatusLineContextEstimateUsesInProgressStreamingSnapshot(t *testing.T) 
 	m.modelName = "gpt-5"
 	m.engine.ConfigureContextManagement(m.provider, m.providerName, m.modelName, false)
 
-	baseMessages := []llm.Message{
-		llm.UserText("hello"),
-		llm.AssistantText("hi"),
+	baseMessages := []core.Message{
+		core.UserText("hello"),
+		core.AssistantText("hi"),
 	}
 	m.engine.SetContextEstimateBaseline(1000, len(baseMessages))
 	m.messages = []session.Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello"},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}, TextContent: "hi"},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "hello"}}, TextContent: "hello"},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "hi"}}, TextContent: "hi"},
 	}
 
 	baseline := m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
@@ -516,7 +519,7 @@ func TestStatusLineContextEstimateUsesInProgressStreamingSnapshot(t *testing.T) 
 		t.Fatalf("baseline estimate = %d, want 1000", baseline)
 	}
 
-	largeToolResult := llm.ToolResultMessage("call-1", "read_file", strings.Repeat("tool output ", 1200), nil)
+	largeToolResult := core.ToolResultMessage("call-1", "read_file", strings.Repeat("tool output ", 1200), nil)
 	m.streaming = true
 	m.setStreamingContextMessages(append(baseMessages, largeToolResult))
 
@@ -536,7 +539,7 @@ func TestEstimateContextTokensCached_InvalidatesOnStreamingSnapshotChanges(t *te
 	m := newTestChatModel(false)
 	m.engine.SetContextTracking(200_000)
 	m.streaming = true
-	m.setStreamingContextMessages([]llm.Message{llm.UserText("hello")})
+	m.setStreamingContextMessages([]core.Message{core.UserText("hello")})
 
 	baseline := m.estimateContextTokensCached()
 	if baseline <= 0 {
@@ -547,7 +550,7 @@ func TestEstimateContextTokensCached_InvalidatesOnStreamingSnapshotChanges(t *te
 	}
 	version := m.contextEstimateVersion
 
-	m.updateStreamingContextAssistant(llm.AssistantText(strings.Repeat("expanding snapshot ", 1500)))
+	m.updateStreamingContextAssistant(core.AssistantText(strings.Repeat("expanding snapshot ", 1500)))
 	if m.contextEstimateCachedValid {
 		t.Fatal("expected streaming snapshot update to invalidate cached estimate")
 	}
@@ -568,9 +571,9 @@ func TestEstimateContextTokensCached_InvalidatesOnHistoryChanges(t *testing.T) {
 	m := newTestChatModel(false)
 	m.engine.SetContextTracking(200_000)
 	m.messages = []session.Message{{
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: "hello",
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+		Parts:       []core.Part{{Type: core.PartText, Text: "hello"}},
 	}}
 	m.invalidateHistoryCache()
 
@@ -585,9 +588,9 @@ func TestEstimateContextTokensCached_InvalidatesOnHistoryChanges(t *testing.T) {
 
 	bigger := strings.Repeat("history growth ", 1200)
 	m.messages = append(m.messages, session.Message{
-		Role:        llm.RoleAssistant,
+		Role:        core.RoleAssistant,
 		TextContent: bigger,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: bigger}},
+		Parts:       []core.Part{{Type: core.PartText, Text: bigger}},
 	})
 	m.invalidateHistoryCache()
 	if m.contextEstimateCachedValid {
@@ -608,23 +611,23 @@ func TestEstimateContextTokensCached_InvalidatesOnHistoryChanges(t *testing.T) {
 
 func TestStreamingContextCallbacksUpdateEstimateSnapshotWithoutMutatingMessages(t *testing.T) {
 	m := newTestChatModel(false)
-	m.messages = []session.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "base"}}, TextContent: "base"}}
-	baseMessages := []llm.Message{llm.UserText("base")}
+	m.messages = []session.Message{{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "base"}}, TextContent: "base"}}
+	baseMessages := []core.Message{core.UserText("base")}
 	m.streaming = true
 	m.setStreamingContextMessages(baseMessages)
 
-	m.updateStreamingContextAssistant(llm.AssistantText("I'll inspect that."))
-	m.updateStreamingContextAssistant(llm.AssistantText("I'll inspect that now."))
-	m.appendStreamingContextTurnMessages([]llm.Message{
-		llm.AssistantText("I'll inspect that now."),
-		llm.ToolResultMessage("call-1", "read_file", "file contents", nil),
+	m.updateStreamingContextAssistant(core.AssistantText("I'll inspect that."))
+	m.updateStreamingContextAssistant(core.AssistantText("I'll inspect that now."))
+	m.appendStreamingContextTurnMessages([]core.Message{
+		core.AssistantText("I'll inspect that now."),
+		core.ToolResultMessage("call-1", "read_file", "file contents", nil),
 	})
 
 	got := m.buildMessagesForContextEstimate()
 	if len(got) != 3 {
 		t.Fatalf("context estimate message count = %d, want 3", len(got))
 	}
-	if got[1].Role != llm.RoleAssistant || got[2].Role != llm.RoleTool {
+	if got[1].Role != core.RoleAssistant || got[2].Role != core.RoleTool {
 		t.Fatalf("context estimate roles = %v, %v; want assistant, tool", got[1].Role, got[2].Role)
 	}
 	if len(m.messages) != 1 {
@@ -649,16 +652,16 @@ func TestModelSwapPhaseEventUpdatesStreamingStatus(t *testing.T) {
 	}
 }
 
-func (t *steeringTestTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *steeringTestTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        "noop_tool",
 		Description: "does nothing",
 		Schema:      map[string]any{"type": "object"},
 	}
 }
 
-func (t *steeringTestTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("ok"), nil
+func (t *steeringTestTool) Execute(_ context.Context, _ json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("ok"), nil
 }
 
 func (t *steeringTestTool) Preview(_ json.RawMessage) string { return "" }
@@ -671,14 +674,14 @@ func (t *steeringTestTool) Preview(_ json.RawMessage) string { return "" }
 // steering persistence. Covers both sync-tool/MCP and async-tool paths
 // since both paths emit steering via the same two mechanisms.
 func TestSteeringDuringToolTurnDoesNotDoublePersist(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("call-1", "noop_tool", map[string]any{}).
 		AddTextResponse("done")
 
 	tool := &steeringTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	eng := engine.NewEngine(provider, registry)
 
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
@@ -693,19 +696,19 @@ func TestSteeringDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	}
 
 	m := newTestChatModel(false)
-	m.engine = engine
+	m.engine = eng
 	m.store = store
 	m.sess = sess
 
 	m.setupStreamPersistenceCallbacks(time.Now())
 	t.Cleanup(m.clearStreamCallbacks)
 
-	engine.Steer("reconsider this")
+	eng.Steer("reconsider this")
 
-	stream, err := engine.Stream(context.Background(), llm.Request{
-		Messages:   []llm.Message{llm.UserText("run tool")},
-		Tools:      []llm.ToolSpec{tool.Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+	stream, err := eng.Stream(context.Background(), core.Request{
+		Messages:   []core.Message{core.UserText("run tool")},
+		Tools:      []core.ToolSpec{tool.Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:   3,
 	})
 	if err != nil {
@@ -722,12 +725,12 @@ func TestSteeringDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Recv: %v", err)
 		}
-		if ev.Type == llm.EventSteering {
+		if ev.Type == core.EventSteering {
 			sawSteering = true
 			userMsg := &session.Message{
 				SessionID:   sess.ID,
-				Role:        llm.RoleUser,
-				Parts:       []llm.Part{{Type: llm.PartText, Text: ev.Text}},
+				Role:        core.RoleUser,
+				Parts:       []core.Part{{Type: core.PartText, Text: ev.Text}},
 				TextContent: ev.Text,
 				CreatedAt:   time.Now(),
 				Sequence:    -1,
@@ -751,7 +754,7 @@ func TestSteeringDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	userRows := 0
 	var userTexts []string
 	for _, msg := range msgs {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			userRows++
 			userTexts = append(userTexts, msg.TextContent)
 		}
@@ -767,7 +770,7 @@ func TestSteeringDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 func TestListenForStreamEventsSync_CancelledClosedStreamUsesInterruptedCleanup(t *testing.T) {
 	store := &mockStore{}
 	sess := &session.Session{ID: "stream-cancel-closed", CreatedAt: time.Now()}
-	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	userMsg := session.NewMessage(sess.ID, core.UserText("hello"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
@@ -779,7 +782,7 @@ func TestListenForStreamEventsSync_CancelledClosedStreamUsesInterruptedCleanup(t
 	m.streaming = true
 	m.setStreamCancelRequested(true)
 	m.streamStartTime = time.Now().Add(-2 * time.Second)
-	m.pendingAssistantSnapshot = llm.AssistantText("partial answer")
+	m.pendingAssistantSnapshot = core.AssistantText("partial answer")
 	m.pendingAssistantSnapshotSet = true
 	m.width = 80
 
@@ -829,7 +832,7 @@ func TestUpdate_StreamErrorSalvagesPartialAssistantReply(t *testing.T) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	userMsg := session.NewMessage(sess.ID, core.UserText("hello"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
@@ -860,8 +863,8 @@ func TestUpdate_StreamErrorSalvagesPartialAssistantReply(t *testing.T) {
 	if len(persisted) != 2 {
 		t.Fatalf("persisted message count = %d, want 2", len(persisted))
 	}
-	if persisted[1].Role != llm.RoleAssistant || persisted[1].TextContent != "partial answer" {
-		t.Fatalf("persisted assistant = (%s, %q), want (%s, %q)", persisted[1].Role, persisted[1].TextContent, llm.RoleAssistant, "partial answer")
+	if persisted[1].Role != core.RoleAssistant || persisted[1].TextContent != "partial answer" {
+		t.Fatalf("persisted assistant = (%s, %q), want (%s, %q)", persisted[1].Role, persisted[1].TextContent, core.RoleAssistant, "partial answer")
 	}
 	if m.messages[1].ID != persisted[1].ID {
 		t.Fatalf("in-memory assistant ID = %d, want persisted ID %d", m.messages[1].ID, persisted[1].ID)
@@ -880,11 +883,11 @@ func TestUpdate_StreamErrorUpdatesPendingAssistantFallbackRow(t *testing.T) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	userMsg := session.NewMessage(sess.ID, core.UserText("hello"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
-	pendingMsg := session.NewMessage(sess.ID, llm.AssistantText("draft"), -1)
+	pendingMsg := session.NewMessage(sess.ID, core.AssistantText("draft"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, pendingMsg); err != nil {
 		t.Fatalf("AddMessage(pending): %v", err)
 	}
@@ -943,15 +946,15 @@ func TestUpdate_StreamErrorUsesCurrentTurnSnapshotAfterToolTurn(t *testing.T) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	userMsg := session.NewMessage(sess.ID, core.UserText("hello"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
-	completedAssistant := session.NewMessage(sess.ID, llm.AssistantText("first turn"), -1)
+	completedAssistant := session.NewMessage(sess.ID, core.AssistantText("first turn"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, completedAssistant); err != nil {
 		t.Fatalf("AddMessage(completed assistant): %v", err)
 	}
-	pendingMsg := session.NewMessage(sess.ID, llm.AssistantText("stale second"), -1)
+	pendingMsg := session.NewMessage(sess.ID, core.AssistantText("stale second"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, pendingMsg); err != nil {
 		t.Fatalf("AddMessage(pending): %v", err)
 	}
@@ -969,7 +972,7 @@ func TestUpdate_StreamErrorUsesCurrentTurnSnapshotAfterToolTurn(t *testing.T) {
 	m.sess = sess
 	m.messages = []session.Message{persisted[0], persisted[1]}
 	m.pendingAssistantMsgID = persisted[2].ID
-	m.pendingAssistantSnapshot = llm.AssistantText("second turn partial")
+	m.pendingAssistantSnapshot = core.AssistantText("second turn partial")
 	m.pendingAssistantSnapshotSet = true
 	m.completedAssistantTurns = 1
 	m.streaming = true
@@ -1018,22 +1021,22 @@ func TestUpdate_StreamErrorReloadsPersistedToolTurnBeforeNextPrompt(t *testing.T
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	userMsg := session.NewMessage(sess.ID, core.UserText("hello"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
 		t.Fatalf("AddMessage(user): %v", err)
 	}
-	completedAssistant := session.NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartText, Text: "first turn before tool"},
-		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"main.go"}`)}},
+	completedAssistant := session.NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartText, Text: "first turn before tool"},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"main.go"}`)}},
 	}}, -1)
 	if err := store.AddMessage(context.Background(), sess.ID, completedAssistant); err != nil {
 		t.Fatalf("AddMessage(completed assistant): %v", err)
 	}
-	toolResult := session.NewMessage(sess.ID, llm.ToolResultMessage("call-1", "read_file", "tool output", nil), -1)
+	toolResult := session.NewMessage(sess.ID, core.ToolResultMessage("call-1", "read_file", "tool output", nil), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, toolResult); err != nil {
 		t.Fatalf("AddMessage(tool result): %v", err)
 	}
-	pendingMsg := session.NewMessage(sess.ID, llm.AssistantText("stale second"), -1)
+	pendingMsg := session.NewMessage(sess.ID, core.AssistantText("stale second"), -1)
 	if err := store.AddMessage(context.Background(), sess.ID, pendingMsg); err != nil {
 		t.Fatalf("AddMessage(pending): %v", err)
 	}
@@ -1053,7 +1056,7 @@ func TestUpdate_StreamErrorReloadsPersistedToolTurnBeforeNextPrompt(t *testing.T
 	// normally reloaded until terminal stream handling. Simulate Ctrl-C before Done.
 	m.messages = []session.Message{persisted[0]}
 	m.pendingAssistantMsgID = persisted[3].ID
-	m.pendingAssistantSnapshot = llm.AssistantText("second turn partial")
+	m.pendingAssistantSnapshot = core.AssistantText("second turn partial")
 	m.pendingAssistantSnapshotSet = true
 	m.completedAssistantTurns = 1
 	m.streaming = true
@@ -1068,7 +1071,7 @@ func TestUpdate_StreamErrorReloadsPersistedToolTurnBeforeNextPrompt(t *testing.T
 	if got := m.messages[1].TextContent; got != "first turn before tool" {
 		t.Fatalf("message[1] text = %q, want completed assistant", got)
 	}
-	if m.messages[2].Role != llm.RoleTool {
+	if m.messages[2].Role != core.RoleTool {
 		t.Fatalf("message[2] role = %s, want tool result", m.messages[2].Role)
 	}
 	if got := m.messages[3].TextContent; got != "second turn partial" {
@@ -1079,20 +1082,20 @@ func TestUpdate_StreamErrorReloadsPersistedToolTurnBeforeNextPrompt(t *testing.T
 	if len(llmMessages) != 4 {
 		t.Fatalf("next stream context message count = %d, want 4", len(llmMessages))
 	}
-	if llmMessages[2].Role != llm.RoleTool {
+	if llmMessages[2].Role != core.RoleTool {
 		t.Fatalf("next stream context message[2] role = %s, want tool result", llmMessages[2].Role)
 	}
 }
 
 func TestUpdate_StreamErrorPreservesUnpersistedSalvageWhenStoreUpdateFails(t *testing.T) {
 	sess := &session.Session{ID: "stream-error-preserve-unpersisted", CreatedAt: time.Now()}
-	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), 0)
+	userMsg := session.NewMessage(sess.ID, core.UserText("hello"), 0)
 	userMsg.ID = 1
-	completedAssistant := session.NewMessage(sess.ID, llm.AssistantText("first turn"), 1)
+	completedAssistant := session.NewMessage(sess.ID, core.AssistantText("first turn"), 1)
 	completedAssistant.ID = 2
-	toolResult := session.NewMessage(sess.ID, llm.ToolResultMessage("call-1", "read_file", "tool output", nil), 2)
+	toolResult := session.NewMessage(sess.ID, core.ToolResultMessage("call-1", "read_file", "tool output", nil), 2)
 	toolResult.ID = 3
-	stalePending := session.NewMessage(sess.ID, llm.AssistantText("stale second"), 3)
+	stalePending := session.NewMessage(sess.ID, core.AssistantText("stale second"), 3)
 	stalePending.ID = 4
 
 	baseStore := &mockStore{
@@ -1108,7 +1111,7 @@ func TestUpdate_StreamErrorPreservesUnpersistedSalvageWhenStoreUpdateFails(t *te
 	m.sess = sess
 	m.messages = []session.Message{*userMsg}
 	m.pendingAssistantMsgID = stalePending.ID
-	m.pendingAssistantSnapshot = llm.AssistantText("second turn partial")
+	m.pendingAssistantSnapshot = core.AssistantText("second turn partial")
 	m.pendingAssistantSnapshotSet = true
 	m.completedAssistantTurns = 1
 	m.streaming = true
@@ -1135,7 +1138,7 @@ func TestStartStreamRecoversFromStreamClosePanic(t *testing.T) {
 	provider := panicCloseProvider{}
 	m := newTestChatModel(false)
 	m.provider = provider
-	m.engine = llm.NewEngine(provider, nil)
+	m.engine = engine.NewEngine(provider, nil)
 	m.providerName = provider.Name()
 	m.modelName = "panic-close-model"
 	m.sess = &session.Session{ID: "stream-close-panic-test"}
@@ -1154,15 +1157,15 @@ func (p panicCloseProvider) Name() string { return "panic-close" }
 
 func (p panicCloseProvider) Credential() string { return "test" }
 
-func (p panicCloseProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p panicCloseProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
 
-func (p panicCloseProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p panicCloseProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return panicCloseStream{}, nil
 }
 
 type panicCloseStream struct{}
 
-func (s panicCloseStream) Recv() (llm.Event, error) { return llm.Event{}, io.EOF }
+func (s panicCloseStream) Recv() (core.Event, error) { return core.Event{}, io.EOF }
 
 func (s panicCloseStream) Close() error { panic("close exploded") }
 
@@ -1207,7 +1210,7 @@ func TestCompletedToolPersistenceAdvancesDurableRunBoundary(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	user := session.NewMessage(sess.ID, llm.UserText("question"), -1)
+	user := session.NewMessage(sess.ID, core.UserText("question"), -1)
 	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
 		t.Fatal(err)
 	}
@@ -1215,14 +1218,14 @@ func TestCompletedToolPersistenceAdvancesDurableRunBoundary(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store, m.sess = store, sess
 	m.activeBranchAnchorID = user.ID
-	m.runBoundary = runboundary.New("stream-run", []llm.Message{llm.UserText("question")}, user.ID, true, runboundary.ProviderContext{})
+	m.runBoundary = runboundary.New("stream-run", []core.Message{core.UserText("question")}, user.ID, true, runboundary.ProviderContext{})
 	_, responseCompleted, turnCompleted := m.streamPersistenceCallbacks(time.Now())
-	assistant := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read_file"}}}}
-	if err := responseCompleted(ctx, 0, assistant, llm.TurnMetrics{}); err != nil {
+	assistant := core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "read_file"}}}}
+	if err := responseCompleted(ctx, 0, assistant, core.TurnMetrics{}); err != nil {
 		t.Fatal(err)
 	}
-	tool := llm.ToolResultMessage("call-1", "read_file", "result", nil)
-	if err := turnCompleted(ctx, 0, []llm.Message{tool}, llm.TurnMetrics{}); err != nil {
+	tool := core.ToolResultMessage("call-1", "read_file", "result", nil)
+	if err := turnCompleted(ctx, 0, []core.Message{tool}, core.TurnMetrics{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1234,19 +1237,19 @@ func TestCompletedToolPersistenceAdvancesDurableRunBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 3 || rows[len(rows)-1].ID != boundary.DurableAnchorID || rows[len(rows)-1].Role != llm.RoleTool {
+	if len(rows) != 3 || rows[len(rows)-1].ID != boundary.DurableAnchorID || rows[len(rows)-1].Role != core.RoleTool {
 		t.Fatalf("persisted rows = %#v", rows)
 	}
 
-	finalAssistant := llm.AssistantText("final answer")
-	if err := responseCompleted(ctx, 1, finalAssistant, llm.TurnMetrics{}); err != nil {
+	finalAssistant := core.AssistantText("final answer")
+	if err := responseCompleted(ctx, 1, finalAssistant, core.TurnMetrics{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := turnCompleted(ctx, 1, nil, llm.TurnMetrics{}); err != nil {
+	if err := turnCompleted(ctx, 1, nil, core.TurnMetrics{}); err != nil {
 		t.Fatal(err)
 	}
 	finalBoundary := m.runBoundary.CompletedSnapshot()
-	if !finalBoundary.Durable || finalBoundary.DurableAnchorID <= boundary.DurableAnchorID || len(finalBoundary.Messages) == 0 || finalBoundary.Messages[len(finalBoundary.Messages)-1].Role != llm.RoleAssistant {
+	if !finalBoundary.Durable || finalBoundary.DurableAnchorID <= boundary.DurableAnchorID || len(finalBoundary.Messages) == 0 || finalBoundary.Messages[len(finalBoundary.Messages)-1].Role != core.RoleAssistant {
 		t.Fatalf("final assistant boundary = %#v", finalBoundary)
 	}
 }
@@ -1347,7 +1350,7 @@ func TestBeginUserResponseKeepsRunClockSeparateFromGoalElapsed(t *testing.T) {
 	}
 
 	assistantSnapshot, _, _ := m.streamPersistenceCallbacks(m.streamStartTime)
-	if err := assistantSnapshot(context.Background(), 0, llm.AssistantText("working")); err != nil {
+	if err := assistantSnapshot(context.Background(), 0, core.AssistantText("working")); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.added) != 1 {

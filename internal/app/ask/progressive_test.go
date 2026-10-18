@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -15,7 +15,7 @@ import (
 func TestAskProgressiveRunnerSinkAccountsGuardianUsage(t *testing.T) {
 	bridge := NewProgressiveBridge(1)
 	sink := ProgressiveRunnerSink{Bridge: bridge}
-	usage := llm.Usage{InputTokens: 13, OutputTokens: 4, CachedInputTokens: 8, CacheWriteTokens: 2}
+	usage := core.Usage{InputTokens: 13, OutputTokens: 4, CachedInputTokens: 8, CacheWriteTokens: 2}
 
 	event := tools.GuardianEvent{ToolCallID: "call-1", Model: "guardian-model", Message: "guardian: approved", Usage: usage}
 	sink.GuardianEvent(event)
@@ -33,8 +33,8 @@ func TestAskProgressiveRunnerSinkAccountsGuardianUsage(t *testing.T) {
 func TestAskProgressiveBridge_PropagatesSteeringID(t *testing.T) {
 	bridge := NewProgressiveBridge(ui.DefaultStreamBufferSize)
 
-	if err := bridge.HandleEvent(llm.Event{
-		Type:       llm.EventSteering,
+	if err := bridge.HandleEvent(core.Event{
+		Type:       core.EventSteering,
 		Text:       "keep sleeping",
 		SteeringID: "bridge-steer-1",
 	}); err != nil {
@@ -65,7 +65,7 @@ func TestAskProgressiveBridge_StopUnblocksProducerAfterConsumerWriteError(t *tes
 
 	go func() {
 		for i := 0; i < 8; i++ {
-			err := bridge.HandleEvent(llm.Event{Type: llm.EventTextDelta, Text: "chunk"})
+			err := bridge.HandleEvent(core.Event{Type: core.EventTextDelta, Text: "chunk"})
 			if err != nil {
 				bridge.CloseError(err)
 				runCh <- err

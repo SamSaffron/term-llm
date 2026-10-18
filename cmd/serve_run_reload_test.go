@@ -11,20 +11,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 type webContinuationTool struct{ calls atomic.Int32 }
 
-func (*webContinuationTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "web_continuation_effect", Schema: map[string]any{"type": "object"}}
+func (*webContinuationTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "web_continuation_effect", Schema: map[string]any{"type": "object"}}
 }
 func (*webContinuationTool) Preview(json.RawMessage) string { return "effect" }
-func (t *webContinuationTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+func (t *webContinuationTool) Execute(context.Context, json.RawMessage) (core.ToolOutput, error) {
 	t.calls.Add(1)
-	return llm.TextOutput("once"), nil
+	return core.TextOutput("once"), nil
 }
 
 func TestWebContinuationFailedExecResumesSameResponseAfterHello(t *testing.T) {
@@ -32,16 +34,16 @@ func TestWebContinuationFailedExecResumesSameResponseAfterHello(t *testing.T) {
 	c := &restart.Coordinator{}
 	restart.Default = c
 	defer func() { restart.Default = old }()
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Text: "Hello", Usage: llm.Usage{InputTokens: 11, OutputTokens: 7}, ToolCalls: []llm.ToolCall{{ID: "effect-1", Name: "web_continuation_effect", Arguments: json.RawMessage(`{}`)}}}).AddTurn(llm.MockTurn{Text: "finished", Usage: llm.Usage{InputTokens: 13, OutputTokens: 5}})
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Text: "Hello", Usage: core.Usage{InputTokens: 11, OutputTokens: 7}, ToolCalls: []core.ToolCall{{ID: "effect-1", Name: "web_continuation_effect", Arguments: json.RawMessage(`{}`)}}}).AddTurn(mockprovider.MockTurn{Text: "finished", Usage: core.Usage{InputTokens: 13, OutputTokens: 5}})
 	tool := &webContinuationTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: llm.NewEngine(provider, registry), defaultModel: "mock-model"}
+	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: engine.NewEngine(provider, registry), defaultModel: "mock-model"}
 	rt.Touch()
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 	defer srv.responseRuns.Close()
 	var requested atomic.Bool
-	rt.responseCompletedCB = func(context.Context, int, llm.Message, llm.TurnMetrics) error {
+	rt.responseCompletedCB = func(context.Context, int, core.Message, core.TurnMetrics) error {
 		if requested.CompareAndSwap(false, true) {
 			c.Request()
 		}
@@ -80,7 +82,7 @@ func TestWebContinuationFailedExecResumesSameResponseAfterHello(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("work")}, llm.Request{SessionID: "web-suspend", Tools: []llm.ToolSpec{tool.Spec()}, MaxTurns: 4}, "web-suspend", startResponseRunOptions{})
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("work")}, core.Request{SessionID: "web-suspend", Tools: []core.ToolSpec{tool.Spec()}, MaxTurns: 4}, "web-suspend", startResponseRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +135,7 @@ func webReloadFixture(t *testing.T, id, provider string) webRunContinuation {
 	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "Hello", "output_index": 0}); err != nil {
 		t.Fatal(err)
 	}
-	checkpoint := &llm.Continuation{Turn: 1, BaseMessageCount: 1, Request: llm.Request{SessionID: run.sessionID, Model: "mock-model", Messages: []llm.Message{llm.UserText("work"), llm.AssistantText("Hello")}, MaxTurns: 3}}
+	checkpoint := &core.Continuation{Turn: 1, BaseMessageCount: 1, Request: core.Request{SessionID: run.sessionID, Model: "mock-model", Messages: []core.Message{core.UserText("work"), core.AssistantText("Hello")}, MaxTurns: 3}}
 	saved, err := snapshotWebRun(run, newResponseRunStreamState("mock-model", ""), checkpoint, &serveRuntime{providerKey: provider}, true, startResponseRunOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -158,8 +160,8 @@ func newWebReloadTestServer(t *testing.T) *serveServer {
 		if provider == "missing" {
 			return nil, errors.New("provider removed during upgrade")
 		}
-		mock := llm.NewMockProvider(provider).AddTextResponse("finished")
-		rt := &serveRuntime{provider: mock, providerKey: provider, engine: llm.NewEngine(mock, nil), defaultModel: "mock-model"}
+		mock := mockprovider.NewMockProvider(provider).AddTextResponse("finished")
+		rt := &serveRuntime{provider: mock, providerKey: provider, engine: engine.NewEngine(mock, nil), defaultModel: "mock-model"}
 		rt.Touch()
 		return rt, nil
 	}

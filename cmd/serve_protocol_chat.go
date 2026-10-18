@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 type chatCompletionsRequest struct {
@@ -55,9 +55,9 @@ type chatToolCall struct {
 	} `json:"function"`
 }
 
-func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
+func parseChatMessages(msgs []chatMessage) ([]core.Message, bool, error) {
 	callNameByID := make(map[string]string)
-	result := make([]llm.Message, 0, len(msgs))
+	result := make([]core.Message, 0, len(msgs))
 	allToolMessages := len(msgs) > 0
 	for _, msg := range msgs {
 		if strings.ToLower(strings.TrimSpace(msg.Role)) != "tool" {
@@ -71,10 +71,10 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
 		switch role {
 		case "system":
-			result = append(result, llm.SystemText(extractMessageText(msg.Content)))
+			result = append(result, core.SystemText(extractMessageText(msg.Content)))
 			replaceHistory = true
 		case "developer":
-			result = append(result, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: extractMessageText(msg.Content)}}})
+			result = append(result, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: extractMessageText(msg.Content)}}})
 			replaceHistory = true
 		case "user":
 			userMsg, err := parseUserMessageContent(msg.Content)
@@ -87,16 +87,16 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 			if err != nil {
 				return nil, false, fmt.Errorf("assistant message: %w", err)
 			}
-			parts := append([]llm.Part{}, assistantMsg.Parts...)
+			parts := append([]core.Part{}, assistantMsg.Parts...)
 			for _, tc := range msg.ToolCalls {
 				args := tc.Function.Arguments
 				if strings.TrimSpace(args) == "" {
 					args = "{}"
 				}
 				callNameByID[tc.ID] = tc.Function.Name
-				parts = append(parts, llm.Part{
-					Type: llm.PartToolCall,
-					ToolCall: &llm.ToolCall{
+				parts = append(parts, core.Part{
+					Type: core.PartToolCall,
+					ToolCall: &core.ToolCall{
 						ID:        tc.ID,
 						Name:      tc.Function.Name,
 						Arguments: json.RawMessage(args),
@@ -106,7 +106,7 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 			if len(parts) == 0 {
 				continue
 			}
-			result = append(result, llm.Message{Role: llm.RoleAssistant, Parts: parts})
+			result = append(result, core.Message{Role: core.RoleAssistant, Parts: parts})
 			replaceHistory = true
 		case "tool":
 			callID := strings.TrimSpace(msg.ToolCallID)
@@ -117,7 +117,7 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 			if name == "" {
 				name = callNameByID[callID]
 			}
-			result = append(result, llm.ToolResultMessage(callID, name, extractMessageText(msg.Content), nil))
+			result = append(result, core.ToolResultMessage(callID, name, extractMessageText(msg.Content), nil))
 		default:
 			return nil, false, fmt.Errorf("unsupported message role: %s", msg.Role)
 		}
@@ -126,7 +126,7 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 	return result, replaceHistory, nil
 }
 
-func populateMissingToolResultNames(messages []llm.Message, history []llm.Message) {
+func populateMissingToolResultNames(messages []core.Message, history []core.Message) {
 	callNameByID := make(map[string]string)
 	collectToolNamesByID(callNameByID, history)
 	if len(callNameByID) == 0 {
@@ -135,7 +135,7 @@ func populateMissingToolResultNames(messages []llm.Message, history []llm.Messag
 	for i := range messages {
 		for j := range messages[i].Parts {
 			part := &messages[i].Parts[j]
-			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
 				continue
 			}
 			if strings.TrimSpace(part.ToolResult.Name) != "" {
@@ -146,11 +146,11 @@ func populateMissingToolResultNames(messages []llm.Message, history []llm.Messag
 	}
 }
 
-func collectToolNamesByID(callNameByID map[string]string, messages []llm.Message) {
+func collectToolNamesByID(callNameByID map[string]string, messages []core.Message) {
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
 			switch part.Type {
-			case llm.PartToolCall:
+			case core.PartToolCall:
 				if part.ToolCall == nil {
 					continue
 				}
@@ -159,7 +159,7 @@ func collectToolNamesByID(callNameByID map[string]string, messages []llm.Message
 				if callID != "" && name != "" {
 					callNameByID[callID] = name
 				}
-			case llm.PartToolResult:
+			case core.PartToolResult:
 				if part.ToolResult == nil {
 					continue
 				}
@@ -190,14 +190,14 @@ func parseChatRequestedToolNames(tools []chatTool) map[string]bool {
 	return selected
 }
 
-func chatToolsToSpecs(tools []chatTool) []llm.ToolSpec {
-	specs := make([]llm.ToolSpec, 0, len(tools))
+func chatToolsToSpecs(tools []chatTool) []core.ToolSpec {
+	specs := make([]core.ToolSpec, 0, len(tools))
 	for _, t := range tools {
 		if strings.ToLower(strings.TrimSpace(t.Type)) != "function" {
 			continue
 		}
 		name := strings.TrimSpace(t.Name)
-		spec := llm.ToolSpec{}
+		spec := core.ToolSpec{}
 		if t.Function != nil {
 			if name == "" {
 				name = strings.TrimSpace(t.Function.Name)
@@ -214,24 +214,24 @@ func chatToolsToSpecs(tools []chatTool) []llm.ToolSpec {
 	return specs
 }
 
-func parseToolChoice(raw json.RawMessage) llm.ToolChoice {
+func parseToolChoice(raw json.RawMessage) core.ToolChoice {
 	if len(raw) == 0 {
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return core.ToolChoice{Mode: core.ToolChoiceAuto}
 	}
 	value := strings.TrimSpace(string(raw))
 	if value == "" || value == "null" {
-		return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		return core.ToolChoice{Mode: core.ToolChoiceAuto}
 	}
 
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
 		switch strings.ToLower(strings.TrimSpace(text)) {
 		case "none":
-			return llm.ToolChoice{Mode: llm.ToolChoiceNone}
+			return core.ToolChoice{Mode: core.ToolChoiceNone}
 		case "required":
-			return llm.ToolChoice{Mode: llm.ToolChoiceRequired}
+			return core.ToolChoice{Mode: core.ToolChoiceRequired}
 		default:
-			return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+			return core.ToolChoice{Mode: core.ToolChoiceAuto}
 		}
 	}
 
@@ -249,11 +249,11 @@ func parseToolChoice(raw json.RawMessage) llm.ToolChoice {
 				name = strings.TrimSpace(obj.Function.Name)
 			}
 			if name != "" {
-				return llm.ToolChoice{Mode: llm.ToolChoiceName, Name: name}
+				return core.ToolChoice{Mode: core.ToolChoiceName, Name: name}
 			}
 		}
 	}
-	return llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+	return core.ToolChoice{Mode: core.ToolChoiceAuto}
 }
 
 func chatCompletionFinalResponse(result serveRunResult, model string) map[string]any {

@@ -13,12 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestRateLimitErrorPreservesTypeAcrossProviderBoundary(t *testing.T) {
 	err := fmt.Errorf("chatgpt stream: %w", &rp.RateLimitError{Message: "limit reached", RetryAfter: 2 * time.Second})
-	var rateLimit *RateLimitError
+	var rateLimit *core.RateLimitError
 	if !errors.As(err, &rateLimit) || rateLimit.RetryAfter != 2*time.Second {
 		t.Fatalf("provider rate limit not recognized by retry: %v", err)
 	}
@@ -57,69 +59,69 @@ func (p *phaseThenErrorProvider) Credential() string        { return "mock" }
 func (p *warningPhaseThenErrorProvider) Credential() string { return "mock" }
 func (p *syncToolProvider) Credential() string              { return "mock" }
 
-func (p *retryStreamingProvider) Capabilities() Capabilities        { return Capabilities{} }
-func (p *textThenErrorProvider) Capabilities() Capabilities         { return Capabilities{} }
-func (p *phaseThenErrorProvider) Capabilities() Capabilities        { return Capabilities{} }
-func (p *warningPhaseThenErrorProvider) Capabilities() Capabilities { return Capabilities{} }
-func (p *syncToolProvider) Capabilities() Capabilities              { return Capabilities{} }
+func (p *retryStreamingProvider) Capabilities() core.Capabilities        { return core.Capabilities{} }
+func (p *textThenErrorProvider) Capabilities() core.Capabilities         { return core.Capabilities{} }
+func (p *phaseThenErrorProvider) Capabilities() core.Capabilities        { return core.Capabilities{} }
+func (p *warningPhaseThenErrorProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *syncToolProvider) Capabilities() core.Capabilities              { return core.Capabilities{} }
 
-func (p *retryStreamingProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *retryStreamingProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.attempt++
 	if p.attempt == 1 {
 		return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-			send.Send(Event{Type: EventError, Err: &RateLimitError{Message: "rate limit", RetryAfter: 5 * time.Millisecond}})
+			send.Send(core.Event{Type: core.EventError, Err: &core.RateLimitError{Message: "rate limit", RetryAfter: 5 * time.Millisecond}})
 			return nil
 		}), nil
 	}
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		send.Send(Event{Type: EventTextDelta, Text: "hello"})
-		send.Send(Event{Type: EventTextDelta, Text: " world"})
+		send.Send(core.Event{Type: core.EventTextDelta, Text: "hello"})
+		send.Send(core.Event{Type: core.EventTextDelta, Text: " world"})
 		return nil
 	}), nil
 }
 
-func (p *textThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *textThenErrorProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.attempts++
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		send.Send(Event{Type: EventTextDelta, Text: "hello"})
-		send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
+		send.Send(core.Event{Type: core.EventTextDelta, Text: "hello"})
+		send.Send(core.Event{Type: core.EventError, Err: errors.New("502 bad gateway")})
 		return nil
 	}), nil
 }
 
-func (p *phaseThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *phaseThenErrorProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.attempts++
 	if p.attempts == 1 {
 		return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-			send.Send(Event{Type: EventPhase, Text: "Compacting context..."})
-			send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
+			send.Send(core.Event{Type: core.EventPhase, Text: "Compacting context..."})
+			send.Send(core.Event{Type: core.EventError, Err: errors.New("502 bad gateway")})
 			return nil
 		}), nil
 	}
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		send.Send(Event{Type: EventTextDelta, Text: "hello"})
-		send.Send(Event{Type: EventTextDelta, Text: " world"})
+		send.Send(core.Event{Type: core.EventTextDelta, Text: "hello"})
+		send.Send(core.Event{Type: core.EventTextDelta, Text: " world"})
 		return nil
 	}), nil
 }
 
-func (p *warningPhaseThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *warningPhaseThenErrorProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.attempts++
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "context is nearly full"})
-		send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
+		send.Send(core.Event{Type: core.EventPhase, Text: core.WarningPhasePrefix + "context is nearly full"})
+		send.Send(core.Event{Type: core.EventError, Err: errors.New("502 bad gateway")})
 		return nil
 	}), nil
 }
 
-func (p *syncToolProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *syncToolProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		responseCh := make(chan ToolExecutionResponse, 1)
-		send.Send(Event{
-			Type:         EventToolCall,
+		responseCh := make(chan core.ToolExecutionResponse, 1)
+		send.Send(core.Event{
+			Type:         core.EventToolCall,
 			ToolCallID:   "tool-1",
 			ToolName:     "read_file",
-			Tool:         &ToolCall{ID: "tool-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"/tmp/test.txt"}`)},
+			Tool:         &core.ToolCall{ID: "tool-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"/tmp/test.txt"}`)},
 			ToolResponse: responseCh,
 		})
 
@@ -128,7 +130,7 @@ func (p *syncToolProvider) Stream(ctx context.Context, req Request) (Stream, err
 			if resp.Err != nil {
 				return resp.Err
 			}
-			send.Send(Event{Type: EventTextDelta, Text: resp.Result.Content})
+			send.Send(core.Event{Type: core.EventTextDelta, Text: resp.Result.Content})
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -153,7 +155,7 @@ func TestRetryProvider_ZeroConfigDoesNotRetry(t *testing.T) {
 	inner := &retryFailNTimesProvider{failures: 2, err: errors.New("503 service unavailable")}
 	provider := WrapWithRetry(inner, RetryConfig{})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
@@ -163,7 +165,7 @@ func TestRetryProvider_ZeroConfigDoesNotRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recv returned error: %v", err)
 	}
-	if event.Type != EventError || event.Err == nil {
+	if event.Type != core.EventError || event.Err == nil {
 		t.Fatalf("got event %+v, want error event", event)
 	}
 	if inner.attempts != 1 {
@@ -221,24 +223,24 @@ type toolThenErrorProvider struct {
 
 func (p *toolThenErrorProvider) Name() string       { return "tool-then-error" }
 func (p *toolThenErrorProvider) Credential() string { return "mock" }
-func (p *toolThenErrorProvider) Capabilities() Capabilities {
-	return Capabilities{}
+func (p *toolThenErrorProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{}
 }
 
-func (p *toolThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *toolThenErrorProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.attempts++
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		// Emit a synchronous tool call (has ToolResponse channel)
-		response := make(chan ToolExecutionResponse, 1)
-		send.Send(Event{
-			Type:         EventToolCall,
+		response := make(chan core.ToolExecutionResponse, 1)
+		send.Send(core.Event{
+			Type:         core.EventToolCall,
 			ToolResponse: response,
 			ToolName:     "test_tool",
 		})
 		// Simulate tool execution completing
-		response <- ToolExecutionResponse{Result: ToolOutput{Content: "tool result"}}
+		response <- core.ToolExecutionResponse{Result: core.ToolOutput{Content: "tool result"}}
 		// Then a retryable error occurs
-		send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
+		send.Send(core.Event{Type: core.EventError, Err: errors.New("502 bad gateway")})
 		return nil
 	}), nil
 }
@@ -249,16 +251,16 @@ type retryFailNTimesProvider struct {
 	err      error
 }
 
-func (p *retryFailNTimesProvider) Name() string               { return "retry-fail-n-times" }
-func (p *retryFailNTimesProvider) Credential() string         { return "mock" }
-func (p *retryFailNTimesProvider) Capabilities() Capabilities { return Capabilities{} }
-func (p *retryFailNTimesProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *retryFailNTimesProvider) Name() string                    { return "retry-fail-n-times" }
+func (p *retryFailNTimesProvider) Credential() string              { return "mock" }
+func (p *retryFailNTimesProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *retryFailNTimesProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.attempts++
 	if p.attempts <= p.failures {
 		return nil, p.err
 	}
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		return send.Send(Event{Type: EventDone})
+		return send.Send(core.Event{Type: core.EventDone})
 	}), nil
 }
 
@@ -271,7 +273,7 @@ func TestRetryProvider_TimeBudgetRetriesBeyondFiveAttempts(t *testing.T) {
 		MaxBackoff:     time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
@@ -286,10 +288,10 @@ func TestRetryProvider_TimeBudgetRetriesBeyondFiveAttempts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Recv returned error: %v", err)
 		}
-		if event.Type == EventError {
+		if event.Type == core.EventError {
 			t.Fatalf("unexpected error event: %v", event.Err)
 		}
-		if event.Type == EventRetry {
+		if event.Type == core.EventRetry {
 			retryEvents++
 			if event.RetryMaxAttempts != 0 {
 				t.Fatalf("RetryMaxAttempts = %d, want 0 for time-budget retry", event.RetryMaxAttempts)
@@ -308,7 +310,7 @@ func TestRetryProvider_TimeBudgetRetriesBeyondFiveAttempts(t *testing.T) {
 func TestRetryProvider_StopsWhenRetryAfterExceedsElapsedBudget(t *testing.T) {
 	inner := &retryFailNTimesProvider{
 		failures: 100,
-		err:      &RateLimitError{Message: "rate limit", RetryAfter: 20 * time.Millisecond},
+		err:      &core.RateLimitError{Message: "rate limit", RetryAfter: 20 * time.Millisecond},
 	}
 	provider := WrapWithRetry(inner, RetryConfig{
 		MaxAttempts:    0,
@@ -317,7 +319,7 @@ func TestRetryProvider_StopsWhenRetryAfterExceedsElapsedBudget(t *testing.T) {
 		MaxBackoff:     time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
@@ -327,7 +329,7 @@ func TestRetryProvider_StopsWhenRetryAfterExceedsElapsedBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recv returned error: %v", err)
 	}
-	if event.Type != EventError || event.Err == nil {
+	if event.Type != core.EventError || event.Err == nil {
 		t.Fatalf("got event %+v, want error event", event)
 	}
 	if !strings.Contains(event.Err.Error(), "exceeds remaining retry window") {
@@ -358,7 +360,7 @@ func TestRetryProvider_BackoffUsesStructuredRetryAfterWithoutMaxBackoffCap(t *te
 		MaxBackoff:  30 * time.Second,
 	}}
 
-	err := &RateLimitError{Message: "rate limit", RetryAfter: 2 * time.Minute}
+	err := &core.RateLimitError{Message: "rate limit", RetryAfter: 2 * time.Minute}
 	if got := provider.calculateBackoff(1, err); got != 2*time.Minute {
 		t.Fatalf("backoff = %s, want uncapped Retry-After 2m", got)
 	}
@@ -385,7 +387,7 @@ func TestRetryProvider_DoesNotRetryAfterCommittedToolCall(t *testing.T) {
 		MaxBackoff:  10 * time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
@@ -413,7 +415,7 @@ func TestRetryProvider_RetriesBeforeVisibleTextIsCommitted(t *testing.T) {
 		MaxBackoff:  10 * time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
@@ -430,11 +432,11 @@ func TestRetryProvider_RetriesBeforeVisibleTextIsCommitted(t *testing.T) {
 			t.Fatalf("Recv returned error: %v", err)
 		}
 		switch event.Type {
-		case EventTextDelta:
+		case core.EventTextDelta:
 			text += event.Text
-		case EventRetry:
+		case core.EventRetry:
 			retryEvents++
-		case EventError:
+		case core.EventError:
 			t.Fatalf("unexpected final error event: %v", event.Err)
 		}
 	}
@@ -455,7 +457,7 @@ func TestRetryProvider_RetriesAfterTransientPhaseBeforeCommit(t *testing.T) {
 		MaxBackoff:  10 * time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
@@ -473,13 +475,13 @@ func TestRetryProvider_RetriesAfterTransientPhaseBeforeCommit(t *testing.T) {
 			t.Fatalf("Recv returned error: %v", err)
 		}
 		switch event.Type {
-		case EventTextDelta:
+		case core.EventTextDelta:
 			text += event.Text
-		case EventPhase:
+		case core.EventPhase:
 			phaseEvents++
-		case EventRetry:
+		case core.EventRetry:
 			retryEvents++
-		case EventError:
+		case core.EventError:
 			t.Fatalf("unexpected final error event: %v", event.Err)
 		}
 	}
@@ -506,13 +508,13 @@ func TestRetryProvider_DoesNotRetryAfterVisibleWarningPhaseCommit(t *testing.T) 
 		MaxBackoff:  10 * time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
 	defer stream.Close()
 
-	firstEvent := make(chan Event, 1)
+	firstEvent := make(chan core.Event, 1)
 	errCh := make(chan error, 1)
 	go func() {
 		event, err := stream.Recv()
@@ -527,8 +529,8 @@ func TestRetryProvider_DoesNotRetryAfterVisibleWarningPhaseCommit(t *testing.T) 
 	case err := <-errCh:
 		t.Fatalf("Recv returned error before warning phase event: %v", err)
 	case event := <-firstEvent:
-		want := WarningPhasePrefix + "context is nearly full"
-		if event.Type != EventPhase || event.Text != want {
+		want := core.WarningPhasePrefix + "context is nearly full"
+		if event.Type != core.EventPhase || event.Text != want {
 			t.Fatalf("first event = %+v, want warning phase %q", event, want)
 		}
 	case <-time.After(200 * time.Millisecond):
@@ -539,7 +541,7 @@ func TestRetryProvider_DoesNotRetryAfterVisibleWarningPhaseCommit(t *testing.T) 
 	if err != nil {
 		t.Fatalf("expected committed error event, got recv error: %v", err)
 	}
-	if event.Type != EventError || event.Err == nil {
+	if event.Type != core.EventError || event.Err == nil {
 		t.Fatalf("expected committed error event after warning phase, got %+v", event)
 	}
 	if inner.attempts != 1 {
@@ -555,13 +557,13 @@ func TestRetryProvider_ForwardsVisibleTextImmediatelyAndDoesNotRetryAfterCommit(
 		MaxBackoff:  10 * time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
 	defer stream.Close()
 
-	firstEvent := make(chan Event, 1)
+	firstEvent := make(chan core.Event, 1)
 	errCh := make(chan error, 1)
 	go func() {
 		event, err := stream.Recv()
@@ -576,7 +578,7 @@ func TestRetryProvider_ForwardsVisibleTextImmediatelyAndDoesNotRetryAfterCommit(
 	case err := <-errCh:
 		t.Fatalf("Recv returned error before first text event: %v", err)
 	case event := <-firstEvent:
-		if event.Type != EventTextDelta || event.Text != "hello" {
+		if event.Type != core.EventTextDelta || event.Text != "hello" {
 			t.Fatalf("first event = %+v, want text_delta hello", event)
 		}
 	case <-time.After(200 * time.Millisecond):
@@ -587,7 +589,7 @@ func TestRetryProvider_ForwardsVisibleTextImmediatelyAndDoesNotRetryAfterCommit(
 	if err != nil {
 		t.Fatalf("expected committed error event, got recv error: %v", err)
 	}
-	if event.Type != EventError || event.Err == nil {
+	if event.Type != core.EventError || event.Err == nil {
 		t.Fatalf("expected committed error event after visible text, got %+v", event)
 	}
 	if inner.attempts != 1 {
@@ -602,13 +604,13 @@ func TestRetryProvider_ForwardsSyncToolCallsImmediately(t *testing.T) {
 		MaxBackoff:  10 * time.Millisecond,
 	})
 
-	stream, err := provider.Stream(context.Background(), Request{})
+	stream, err := provider.Stream(context.Background(), core.Request{})
 	if err != nil {
 		t.Fatalf("Stream returned error: %v", err)
 	}
 	defer stream.Close()
 
-	gotTool := make(chan Event, 1)
+	gotTool := make(chan core.Event, 1)
 	errCh := make(chan error, 1)
 	go func() {
 		event, err := stream.Recv()
@@ -623,13 +625,13 @@ func TestRetryProvider_ForwardsSyncToolCallsImmediately(t *testing.T) {
 	case err := <-errCh:
 		t.Fatalf("Recv returned error before tool event: %v", err)
 	case event := <-gotTool:
-		if event.Type != EventToolCall {
-			t.Fatalf("first event type = %v, want %v", event.Type, EventToolCall)
+		if event.Type != core.EventToolCall {
+			t.Fatalf("first event type = %v, want %v", event.Type, core.EventToolCall)
 		}
 		if event.ToolResponse == nil {
 			t.Fatal("expected ToolResponse channel on sync tool event")
 		}
-		event.ToolResponse <- ToolExecutionResponse{Result: ToolOutput{Content: "alpha"}}
+		event.ToolResponse <- core.ToolExecutionResponse{Result: core.ToolOutput{Content: "alpha"}}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("timed out waiting for sync tool event; retry wrapper buffered it")
 	}
@@ -638,34 +640,34 @@ func TestRetryProvider_ForwardsSyncToolCallsImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recv after tool response returned error: %v", err)
 	}
-	if event.Type != EventTextDelta || event.Text != "alpha" {
+	if event.Type != core.EventTextDelta || event.Text != "alpha" {
 		t.Fatalf("got event %+v, want text_delta alpha", event)
 	}
 }
 
 type listModelsProvider struct {
-	models []ModelInfo
+	models []core.ModelInfo
 	err    error
 	calls  int
 }
 
-func (p *listModelsProvider) Name() string               { return "list-models" }
-func (p *listModelsProvider) Credential() string         { return "mock" }
-func (p *listModelsProvider) Capabilities() Capabilities { return Capabilities{} }
-func (p *listModelsProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *listModelsProvider) Name() string                    { return "list-models" }
+func (p *listModelsProvider) Credential() string              { return "mock" }
+func (p *listModelsProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *listModelsProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return nil, errors.New("not used in this test")
 }
-func (p *listModelsProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+func (p *listModelsProvider) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	p.calls++
 	return p.models, p.err
 }
 
 type noListModelsProvider struct{}
 
-func (p *noListModelsProvider) Name() string               { return "no-list-models" }
-func (p *noListModelsProvider) Credential() string         { return "mock" }
-func (p *noListModelsProvider) Capabilities() Capabilities { return Capabilities{} }
-func (p *noListModelsProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *noListModelsProvider) Name() string                    { return "no-list-models" }
+func (p *noListModelsProvider) Credential() string              { return "mock" }
+func (p *noListModelsProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *noListModelsProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return nil, errors.New("not used in this test")
 }
 
@@ -729,11 +731,11 @@ func TestRetryProvider_BackoffDoesNotCapRetryAfterHTTPDate(t *testing.T) {
 }
 
 func TestRetryProviderForwardsListModels(t *testing.T) {
-	inner := &listModelsProvider{models: []ModelInfo{{ID: "a"}, {ID: "b"}}}
+	inner := &listModelsProvider{models: []core.ModelInfo{{ID: "a"}, {ID: "b"}}}
 	wrapped := WrapWithRetry(inner, DefaultRetryConfig())
 
 	lister, ok := wrapped.(interface {
-		ListModels(context.Context) ([]ModelInfo, error)
+		ListModels(context.Context) ([]core.ModelInfo, error)
 	})
 	if !ok {
 		t.Fatal("wrapped provider does not satisfy ListModels interface")
@@ -754,18 +756,18 @@ type retryingListModelsProvider struct {
 	calls int
 }
 
-func (p *retryingListModelsProvider) Name() string               { return "retrying-list-models" }
-func (p *retryingListModelsProvider) Credential() string         { return "mock" }
-func (p *retryingListModelsProvider) Capabilities() Capabilities { return Capabilities{} }
-func (p *retryingListModelsProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+func (p *retryingListModelsProvider) Name() string                    { return "retrying-list-models" }
+func (p *retryingListModelsProvider) Credential() string              { return "mock" }
+func (p *retryingListModelsProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *retryingListModelsProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return nil, errors.New("not used in this test")
 }
-func (p *retryingListModelsProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+func (p *retryingListModelsProvider) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
 	p.calls++
 	if p.calls == 1 {
 		return nil, newHTTPStatusErrorString("test", http.StatusServiceUnavailable, "503 Service Unavailable", nil, "try again")
 	}
-	return []ModelInfo{{ID: "ok"}}, nil
+	return []core.ModelInfo{{ID: "ok"}}, nil
 }
 
 func TestRetryProviderRetriesListModelsTransientError(t *testing.T) {
@@ -776,7 +778,7 @@ func TestRetryProviderRetriesListModelsTransientError(t *testing.T) {
 		MaxBackoff:  time.Millisecond,
 	})
 	lister := wrapped.(interface {
-		ListModels(context.Context) ([]ModelInfo, error)
+		ListModels(context.Context) ([]core.ModelInfo, error)
 	})
 	models, err := lister.ListModels(context.Background())
 	if err != nil {
@@ -793,7 +795,7 @@ func TestRetryProviderRetriesListModelsTransientError(t *testing.T) {
 func TestRetryProviderListModelsUnsupportedWhenInnerLacksMethod(t *testing.T) {
 	wrapped := WrapWithRetry(&noListModelsProvider{}, DefaultRetryConfig())
 	lister := wrapped.(interface {
-		ListModels(context.Context) ([]ModelInfo, error)
+		ListModels(context.Context) ([]core.ModelInfo, error)
 	})
 	_, err := lister.ListModels(context.Background())
 	if !errors.Is(err, ErrListModelsUnsupported) {
@@ -828,10 +830,10 @@ func TestRetryProvider_ResponseHeaderTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	provider := WrapWithRetry(NewOpenAICompatProvider(server.URL, "", "test-model", "Test"), RetryConfig{
+	provider := WrapWithRetry(opencompat.NewOpenAICompatProvider(server.URL, "", "test-model", "Test"), RetryConfig{
 		MaxAttempts: 2, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
 	})
-	stream, err := provider.Stream(ctx, Request{Messages: []Message{UserText("hello")}})
+	stream, err := provider.Stream(ctx, core.Request{Messages: []core.Message{core.UserText("hello")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,13 +848,13 @@ func TestRetryProvider_ResponseHeaderTimeout(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if event.Type == EventError {
+		if event.Type == core.EventError {
 			t.Fatalf("stream failed after %d requests (parent error: %v): %v", requests.Load(), ctx.Err(), event.Err)
 		}
-		if event.Type == EventTextDelta {
+		if event.Type == core.EventTextDelta {
 			text.WriteString(event.Text)
 		}
-		if event.Type == EventRetry {
+		if event.Type == core.EventRetry {
 			retries++
 		}
 	}

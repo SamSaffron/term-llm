@@ -8,19 +8,21 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 type turnLimitTestTool struct{}
 
-func (turnLimitTestTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "test_tool", Description: "Test tool", Schema: map[string]any{"type": "object"}}
+func (turnLimitTestTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "test_tool", Description: "Test tool", Schema: map[string]any{"type": "object"}}
 }
 func (turnLimitTestTool) Preview(_ json.RawMessage) string { return "" }
-func (turnLimitTestTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("tool complete"), nil
+func (turnLimitTestTool) Execute(_ context.Context, _ json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("tool complete"), nil
 }
 
 func TestChildTurnLimitPersistsToolResultsWithMockProvider(t *testing.T) {
@@ -34,12 +36,12 @@ func TestChildTurnLimitPersistsToolResultsWithMockProvider(t *testing.T) {
 	if err := store.Create(ctx, parent); err != nil {
 		t.Fatal(err)
 	}
-	mock := llm.NewMockProvider("mock").AddToolCall("call-one", "test_tool", map[string]any{})
+	mock := mockprovider.NewMockProvider("mock").AddToolCall("call-one", "test_tool", map[string]any{})
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 	runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store})
 	includeTools := false
-	_, err = runner.Run(ctx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: "child", ParentSessionID: parent.ID, IsSubagent: true, Persist: true, Cwd: t.TempDir(), Prompt: "do work", MaxTurns: 1, MaxTurnsSet: true, IncludeConfiguredTools: &includeTools, ExtraTools: []llm.ToolSpec{(turnLimitTestTool{}).Spec()}, OnEngineReady: func(e *llm.Engine) { e.RegisterTool(turnLimitTestTool{}) }, ProviderInstance: mock}, eventSinkFunc(func(llm.Event) {}))
-	var limit *llm.MaxTurnsExceededError
+	_, err = runner.Run(ctx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: "child", ParentSessionID: parent.ID, IsSubagent: true, Persist: true, Cwd: t.TempDir(), Prompt: "do work", MaxTurns: 1, MaxTurnsSet: true, IncludeConfiguredTools: &includeTools, ExtraTools: []core.ToolSpec{(turnLimitTestTool{}).Spec()}, OnEngineReady: func(e *engine.Engine) { e.RegisterTool(turnLimitTestTool{}) }, ProviderInstance: mock}, eventSinkFunc(func(core.Event) {}))
+	var limit *engine.MaxTurnsExceededError
 	if !errors.As(err, &limit) {
 		t.Fatalf("run error = %v, want typed turn limit", err)
 	}
@@ -50,10 +52,10 @@ func TestChildTurnLimitPersistsToolResultsWithMockProvider(t *testing.T) {
 	calls, results := map[string]bool{}, map[string]bool{}
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil {
+			if part.Type == core.PartToolCall && part.ToolCall != nil {
 				calls[part.ToolCall.ID] = true
 			}
-			if part.Type == llm.PartToolResult && part.ToolResult != nil {
+			if part.Type == core.PartToolResult && part.ToolResult != nil {
 				results[part.ToolResult.ID] = true
 			}
 		}

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +49,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 
 	// Prepend system message if provided
 	if sysText := parseAnthropicSystem(req.System); sysText != "" {
-		messages = append([]llm.Message{llm.SystemText(sysText)}, messages...)
+		messages = append([]core.Message{core.SystemText(sysText)}, messages...)
 	}
 
 	// Anthropic Messages API: each request carries the full conversation,
@@ -94,7 +94,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	// ToolMap targets (e.g. "search" when mapping "WebSearch" → "search") are
 	// excluded from the server list — the LLM will see the client's tool name
 	// and the engine redirects execution via ToolMap.
-	serverTools := []llm.ToolSpec(nil)
+	serverTools := []core.ToolSpec(nil)
 	if len(requestedTools) > 0 {
 		serverTools = runtime.selectTools(requestedTools)
 	}
@@ -107,7 +107,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		}
 	}
 	serverNames := make(map[string]bool, len(serverTools))
-	tools := make([]llm.ToolSpec, 0, len(serverTools)+len(req.Tools))
+	tools := make([]core.ToolSpec, 0, len(serverTools)+len(req.Tools))
 	for _, t := range serverTools {
 		serverNames[t.Name] = true
 		if !mappedTargets[t.Name] {
@@ -120,7 +120,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if len(tools) == 0 {
-		toolChoice = llm.ToolChoice{}
+		toolChoice = core.ToolChoice{}
 	}
 
 	// Don't pass the client's model name to the provider — clients like
@@ -128,7 +128,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	// which the backend provider won't recognize. Leave Model empty so
 	// chooseModel falls through to the provider's configured model.
 	// The response uses runtime.defaultModel (the server-side model name).
-	llmReq := llm.Request{
+	llmReq := core.Request{
 		SessionID:           sessionID,
 		Tools:               tools,
 		ToolChoice:          toolChoice,
@@ -176,7 +176,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 
 	if s.cfg.suppressServerTools {
-		filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
+		filtered := make([]core.ToolCall, 0, len(result.ToolCalls))
 		for _, call := range result.ToolCalls {
 			if !runtime.isServerExecutedTool(call.Name) {
 				filtered = append(filtered, call)
@@ -192,7 +192,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, anthropicMessagesFinalResponse(result, model))
 }
 
-func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string) {
+func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string) {
 	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -254,12 +254,12 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 	flusher.Flush()
 	pingMu.Unlock()
 
-	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev core.Event) error {
 		pingMu.Lock()
 		defer pingMu.Unlock()
 		var writeErr error
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			if openBlock != "text" {
 				closeBlock()
 				writeErr = writeAnthropicSSE(w, "content_block_start", map[string]any{
@@ -278,7 +278,7 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 				"index": blockIndex,
 				"delta": map[string]any{"type": "text_delta", "text": ev.Text},
 			})
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			if ev.Tool == nil {
 				return nil
 			}
@@ -324,7 +324,7 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 				"index": blockIndex,
 			})
 			blockIndex++
-		case llm.EventReasoningDelta:
+		case core.EventReasoningDelta:
 			if openBlock != "thinking" {
 				closeBlock()
 				writeErr = writeAnthropicSSE(w, "content_block_start", map[string]any{

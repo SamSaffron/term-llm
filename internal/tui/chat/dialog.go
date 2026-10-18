@@ -12,6 +12,7 @@ import (
 	"github.com/muesli/reflow/wrap"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -61,7 +62,7 @@ type DialogModel struct {
 	treeExpandedTurns map[string]bool
 
 	// New-path context specific
-	branchSourceRole    llm.Role
+	branchSourceRole    core.Role
 	branchSourceNumber  int
 	branchSourcePreview string
 	branchFocusEditing  bool
@@ -79,7 +80,7 @@ type DialogItem struct {
 	TreeUserTurn      bool
 	TreeTool          bool
 	TreeTurnID        string
-	TreeRole          llm.Role
+	TreeRole          core.Role
 	TreeRoleLabel     string
 	TreePreview       string
 	TreePath          bool
@@ -205,7 +206,7 @@ func (d *DialogModel) ShowBranchTree(items []DialogItem, currentItemID string) {
 }
 
 // ShowBranchContext asks which context the new path should include.
-func (d *DialogModel) ShowBranchContext(sourceMessages int, sourceRole llm.Role, sourceNumber int, sourcePreview string) {
+func (d *DialogModel) ShowBranchContext(sourceMessages int, sourceRole core.Role, sourceNumber int, sourcePreview string) {
 	items := []DialogItem{{ID: "clean", Label: "Start clean", Description: "Start without additional conversation context"}}
 	if sourceMessages > 0 {
 		detail := fmt.Sprintf("Include useful context from %d other message%s", sourceMessages, map[bool]string{true: "", false: "s"}[sourceMessages == 1])
@@ -375,7 +376,7 @@ func (d *DialogModel) ShowShareChoice(canUpdate bool, guidance string) {
 }
 
 // ShowMCPPicker opens the MCP server picker dialog.
-func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager, discovery ...llm.ToolDiscoveryDiagnostics) {
+func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager, discovery ...core.ToolDiscoveryDiagnostics) {
 	d.dialogType = DialogMCPPicker
 	d.title = "MCP Servers"
 	d.cursor = 0
@@ -385,7 +386,7 @@ func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager, discovery ...llm.To
 	available := mcpManager.AvailableServers()
 	states := mcpManager.GetAllStates()
 	authStatuses := mcpManager.AuthStatuses()
-	discoveryServers := make(map[string]llm.ToolDiscoveryServerDiagnostic)
+	discoveryServers := make(map[string]core.ToolDiscoveryServerDiagnostic)
 	if len(discovery) > 0 {
 		for _, server := range discovery[0].Servers {
 			discoveryServers[server.Name] = server
@@ -952,10 +953,10 @@ func (d *DialogModel) viewBranchTree() string {
 				roleText := disclosure + item.TreeRoleLabel + ":"
 				previewText := " " + item.TreePreview + suffix
 				switch item.TreeRole {
-				case llm.RoleUser:
+				case core.RoleUser:
 					b.WriteString(userRoleStyle.Render(roleText))
 					b.WriteString(userPreviewStyle.Render(previewText))
-				case llm.RoleAssistant:
+				case core.RoleAssistant:
 					b.WriteString(assistantRoleStyle.Render(roleText))
 					b.WriteString(previewStyle.Render(previewText))
 				default:
@@ -1266,9 +1267,9 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 	seen := make(map[string]bool)
 
 	// Add built-in providers first, merging any configured model
-	for _, name := range llm.GetBuiltInProviderNames() {
+	for _, name := range config.GetBuiltInProviderNames() {
 		seen[name] = true
-		if llm.ProviderConfiguredVia(cfg, name, providerHasLocalCredentials) == "" {
+		if cfg.ProviderConfiguredVia(name, providerHasLocalCredentials) == "" {
 			continue
 		}
 		curated := llm.ProviderModelIDs(name)

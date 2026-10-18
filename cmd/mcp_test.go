@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/spf13/cobra"
 )
@@ -105,7 +105,7 @@ func TestMCPRunArgCompletionUsesCachedTools(t *testing.T) {
 	}
 }
 func TestMCPRunIsErrorRendersThenFails(t *testing.T) {
-	result := llm.ToolOutput{
+	result := core.ToolOutput{
 		Content: "tool failed usefully",
 		IsError: true,
 	}
@@ -122,9 +122,9 @@ func TestMCPRunIsErrorRendersThenFails(t *testing.T) {
 }
 
 func TestRenderMCPToolResultImageOnly(t *testing.T) {
-	result := llm.ToolOutput{ContentParts: []llm.ToolContentPart{{
-		Type:      llm.ToolContentPartImageData,
-		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+	result := core.ToolOutput{ContentParts: []core.ToolContentPart{{
+		Type:      core.ToolContentPartImageData,
+		ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
 	}}}
 	var output bytes.Buffer
 	if err := renderMCPToolResult(&output, result); err != nil {

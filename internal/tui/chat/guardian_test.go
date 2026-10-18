@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -15,7 +15,7 @@ func TestGuardianReviewPersistsSessionMetrics(t *testing.T) {
 	m := newTestChatModel(true)
 	m.store = store
 	m.sess = &session.Session{ID: "session-1"}
-	usage := llm.Usage{InputTokens: 41, OutputTokens: 9, CachedInputTokens: 30, CacheWriteTokens: 5}
+	usage := core.Usage{InputTokens: 41, OutputTokens: 9, CachedInputTokens: 30, CacheWriteTokens: 5}
 
 	m.Update(GuardianReviewMsg{Event: tools.GuardianEvent{Model: "guardian-model", Usage: usage, Message: "guardian: denied", Outcome: tools.GuardianDenied}})
 
@@ -29,7 +29,7 @@ func TestGuardianReviewPersistsSessionMetrics(t *testing.T) {
 
 func TestSubagentGuardianReviewAccountsUsage(t *testing.T) {
 	m := newTestChatModel(true)
-	usage := llm.Usage{InputTokens: 17, OutputTokens: 6, CachedInputTokens: 9, CacheWriteTokens: 3}
+	usage := core.Usage{InputTokens: 17, OutputTokens: 6, CachedInputTokens: 9, CacheWriteTokens: 3}
 
 	m.Update(SubagentProgressMsg{CallID: "spawn-1", Event: tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Model: "child-guardian", Usage: usage}}})
 
@@ -41,7 +41,7 @@ func TestSubagentGuardianReviewAccountsUsage(t *testing.T) {
 
 func TestGuardianReviewAccountsUsage(t *testing.T) {
 	m := newTestChatModel(true)
-	usage := llm.Usage{InputTokens: 41, OutputTokens: 9, CachedInputTokens: 30, CacheWriteTokens: 5}
+	usage := core.Usage{InputTokens: 41, OutputTokens: 9, CachedInputTokens: 30, CacheWriteTokens: 5}
 
 	m.Update(GuardianReviewMsg{Event: tools.GuardianEvent{Model: "guardian-model", Usage: usage, Message: "guardian: approved", Outcome: tools.GuardianApproved}})
 

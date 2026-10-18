@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 )
 
@@ -25,7 +25,7 @@ func newUndoRedoSQLiteStore(t *testing.T) (*SQLiteStore, string) {
 	return store, path
 }
 
-func addUndoRedoMessage(t *testing.T, store *SQLiteStore, sessionID string, msg llm.Message, at time.Time) Message {
+func addUndoRedoMessage(t *testing.T, store *SQLiteStore, sessionID string, msg core.Message, at time.Time) Message {
 	t.Helper()
 	stored := NewMessage(sessionID, msg, -1)
 	stored.CreatedAt = at
@@ -86,22 +86,22 @@ func TestSQLiteUndoRedoShrinksAndExactlyRestoresTranscriptAcrossRestart(t *testi
 		t.Fatalf("Create: %v", err)
 	}
 	base := time.Date(2026, 8, 3, 11, 0, 0, 0, time.UTC)
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("first"), base)
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("first"), base)
 	if err := store.IncrementUserTurns(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("first answer"), base.Add(time.Second))
-	latest := llm.UserText("second exact prompt")
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("first answer"), base.Add(time.Second))
+	latest := core.UserText("second exact prompt")
 	latest.ClientMessageID = "client_second"
 	addUndoRedoMessage(t, store, sess.ID, latest, base.Add(2*time.Second))
 	if err := store.IncrementUserTurns(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
-	assistant := llm.AssistantText("second answer")
+	assistant := core.AssistantText("second answer")
 	assistant.ResponseID = "resp_second"
 	assistant.AssistantSegmentOrdinal = 0
 	addUndoRedoMessage(t, store, sess.ID, assistant, base.Add(3*time.Second))
-	addUndoRedoMessage(t, store, sess.ID, llm.Message{Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartText, Text: "tail event"}}}, base.Add(4*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.Message{Role: core.RoleEvent, Parts: []core.Part{{Type: core.PartText, Text: "tail event"}}}, base.Add(4*time.Second))
 
 	before, err := store.GetMessages(ctx, sess.ID, 0, 0)
 	if err != nil {
@@ -179,10 +179,10 @@ func TestSQLiteUndoRedoMultipleTurnsRoundTripInLIFOOrderAcrossRestart(t *testing
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn B"), base)
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer B"), base.Add(time.Second))
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn A"), base.Add(2*time.Second))
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer A"), base.Add(3*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("turn B"), base)
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer B"), base.Add(time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("turn A"), base.Add(2*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer A"), base.Add(3*time.Second))
 	before, err := store.GetMessages(ctx, sess.ID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -236,17 +236,17 @@ func TestSQLiteAddMessageClearsEntireRedoStackAfterOneOrMultipleUndos(t *testing
 				t.Fatal(err)
 			}
 			base := time.Now()
-			addUndoRedoMessage(t, store, sess.ID, llm.UserText("first"), base)
-			addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("first answer"), base.Add(time.Millisecond))
-			addUndoRedoMessage(t, store, sess.ID, llm.UserText("second"), base.Add(2*time.Millisecond))
-			addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("second answer"), base.Add(3*time.Millisecond))
+			addUndoRedoMessage(t, store, sess.ID, core.UserText("first"), base)
+			addUndoRedoMessage(t, store, sess.ID, core.AssistantText("first answer"), base.Add(time.Millisecond))
+			addUndoRedoMessage(t, store, sess.ID, core.UserText("second"), base.Add(2*time.Millisecond))
+			addUndoRedoMessage(t, store, sess.ID, core.AssistantText("second answer"), base.Add(3*time.Millisecond))
 			for range undoCount {
 				applyUndoRedo(t, store, sess.ID, false)
 			}
 			if got := redoStackCount(t, store, sess.ID); got != undoCount {
 				t.Fatalf("redo stack count before continuation = %d, want %d", got, undoCount)
 			}
-			addUndoRedoMessage(t, store, sess.ID, llm.UserText("ordinary continuation"), base.Add(time.Second))
+			addUndoRedoMessage(t, store, sess.ID, core.UserText("ordinary continuation"), base.Add(time.Second))
 			if got := redoStackCount(t, store, sess.ID); got != 0 {
 				t.Fatalf("redo stack count after continuation = %d, want 0", got)
 			}
@@ -270,10 +270,10 @@ func TestSQLiteUndoRedoInterleavingPreservesStackOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Now()
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn B"), base)
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer B"), base.Add(time.Millisecond))
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn A"), base.Add(2*time.Millisecond))
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer A"), base.Add(3*time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("turn B"), base)
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer B"), base.Add(time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("turn A"), base.Add(2*time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer A"), base.Add(3*time.Millisecond))
 	want := []string{"turn B", "answer B", "turn A", "answer A"}
 
 	applyUndoRedo(t, store, sess.ID, false) // undo A
@@ -298,7 +298,7 @@ func TestSQLiteUndoRedoOptimisticChecksAndMutationInvalidation(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("one"), time.Now())
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("one"), time.Now())
 	state, err := store.TranscriptMutationState(ctx, sess.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestSQLiteUndoRedoOptimisticChecksAndMutationInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("replacement"), time.Now().Add(time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("replacement"), time.Now().Add(time.Second))
 	current, err := store.TranscriptMutationState(ctx, sess.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -329,14 +329,14 @@ func TestSQLiteUndoRedoOptimisticChecksAndMutationInvalidation(t *testing.T) {
 func TestSQLiteOrdinaryTranscriptMutationsInvalidateRedo(t *testing.T) {
 	mutations := map[string]func(*testing.T, context.Context, *SQLiteStore, string){
 		"add": func(t *testing.T, ctx context.Context, store *SQLiteStore, sessionID string) {
-			addUndoRedoMessage(t, store, sessionID, llm.UserText("new turn"), time.Now())
+			addUndoRedoMessage(t, store, sessionID, core.UserText("new turn"), time.Now())
 		},
 		"update": func(t *testing.T, ctx context.Context, store *SQLiteStore, sessionID string) {
 			messages, err := store.GetMessages(ctx, sessionID, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			messages[len(messages)-1].Parts = []llm.Part{{Type: llm.PartText, Text: "edited answer"}}
+			messages[len(messages)-1].Parts = []core.Part{{Type: core.PartText, Text: "edited answer"}}
 			messages[len(messages)-1].TextContent = "edited answer"
 			if err := store.UpdateMessage(ctx, sessionID, &messages[len(messages)-1]); err != nil {
 				t.Fatal(err)
@@ -352,7 +352,7 @@ func TestSQLiteOrdinaryTranscriptMutationsInvalidateRedo(t *testing.T) {
 			}
 		},
 		"compact": func(t *testing.T, ctx context.Context, store *SQLiteStore, sessionID string) {
-			summary := NewMessage(sessionID, llm.UserText("[Context Compaction]\nsummary"), 0)
+			summary := NewMessage(sessionID, core.UserText("[Context Compaction]\nsummary"), 0)
 			if err := store.CompactMessages(ctx, sessionID, []Message{*summary}); err != nil {
 				t.Fatal(err)
 			}
@@ -367,9 +367,9 @@ func TestSQLiteOrdinaryTranscriptMutationsInvalidateRedo(t *testing.T) {
 			if err := store.Create(ctx, sess); err != nil {
 				t.Fatal(err)
 			}
-			addUndoRedoMessage(t, store, sess.ID, llm.UserText("first"), time.Now())
-			addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer"), time.Now().Add(time.Millisecond))
-			addUndoRedoMessage(t, store, sess.ID, llm.UserText("undo me"), time.Now().Add(2*time.Millisecond))
+			addUndoRedoMessage(t, store, sess.ID, core.UserText("first"), time.Now())
+			addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer"), time.Now().Add(time.Millisecond))
+			addUndoRedoMessage(t, store, sess.ID, core.UserText("undo me"), time.Now().Add(2*time.Millisecond))
 			state, err := store.TranscriptMutationState(ctx, sess.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -398,11 +398,11 @@ func TestSQLiteUndoPreservesCompactionBoundaryAndSkipsSyntheticUsers(t *testing.
 		t.Fatalf("Create: %v", err)
 	}
 	base := time.Now()
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("old real prompt"), base)
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("old answer"), base.Add(time.Second))
-	summary := NewMessage(sess.ID, llm.UserText("[Context Compaction]\nsummary"), 0)
-	ack := NewMessage(sess.ID, llm.AssistantText("context loaded"), 1)
-	tail := NewMessage(sess.ID, llm.UserText("retained real-looking tail"), 2)
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("old real prompt"), base)
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("old answer"), base.Add(time.Second))
+	summary := NewMessage(sess.ID, core.UserText("[Context Compaction]\nsummary"), 0)
+	ack := NewMessage(sess.ID, core.AssistantText("context loaded"), 1)
+	tail := NewMessage(sess.ID, core.UserText("retained real-looking tail"), 2)
 	tail.CompactionTail = true
 	if err := store.CompactMessages(ctx, sess.ID, []Message{*summary, *ack, *tail}); err != nil {
 		t.Fatalf("CompactMessages: %v", err)
@@ -418,8 +418,8 @@ func TestSQLiteUndoPreservesCompactionBoundaryAndSkipsSyntheticUsers(t *testing.
 	if _, err := store.UndoLastUserTurn(ctx, sess.ID, state); !errors.Is(err, ErrNothingToUndo) {
 		t.Fatalf("synthetic-only undo error = %v", err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("post compact prompt"), base.Add(2*time.Second))
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("post compact answer"), base.Add(3*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("post compact prompt"), base.Add(2*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("post compact answer"), base.Add(3*time.Second))
 	state, _ = store.TranscriptMutationState(ctx, sess.ID)
 	if _, err := store.UndoLastUserTurn(ctx, sess.ID, state); err != nil {
 		t.Fatalf("UndoLastUserTurn post compact: %v", err)
@@ -444,9 +444,9 @@ func TestSQLiteUndoReconcilesPlanAndClearsProviderState(t *testing.T) {
 	firstPlan := `{"plan":[{"step":"first","status":"completed"}]}`
 	secondPlan := `{"plan":[{"step":"second","status":"in_progress"}]}`
 	addPlan := func(prompt, callID, args string, at time.Time) {
-		addUndoRedoMessage(t, store, sess.ID, llm.UserText(prompt), at)
-		addUndoRedoMessage(t, store, sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: callID, Name: planpkg.ToolName, Arguments: []byte(args)}}}}, at.Add(time.Millisecond))
-		addUndoRedoMessage(t, store, sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: callID, Name: planpkg.ToolName, Content: "ok"}}}}, at.Add(2*time.Millisecond))
+		addUndoRedoMessage(t, store, sess.ID, core.UserText(prompt), at)
+		addUndoRedoMessage(t, store, sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: callID, Name: planpkg.ToolName, Arguments: []byte(args)}}}}, at.Add(time.Millisecond))
+		addUndoRedoMessage(t, store, sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: callID, Name: planpkg.ToolName, Content: "ok"}}}}, at.Add(2*time.Millisecond))
 	}
 	addPlan("first prompt", "plan_1", firstPlan, time.Now())
 	addPlan("second prompt", "plan_2", secondPlan, time.Now().Add(time.Second))
@@ -499,12 +499,12 @@ func TestSQLiteUndoCanonicalizesLongMultilineSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Now()
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText(firstPrompt), base)
+	addUndoRedoMessage(t, store, sess.ID, core.UserText(firstPrompt), base)
 	if err := store.IncrementUserTurns(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer"), base.Add(time.Second))
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("undo me"), base.Add(2*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer"), base.Add(time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("undo me"), base.Add(2*time.Second))
 	if err := store.IncrementUserTurns(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestSQLiteUndoSkipsWhitespacePrefixedCompactionMarker(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	summary := NewMessage(sess.ID, llm.UserText("\n\t \r[Context Compaction]\nsummary"), 0)
+	summary := NewMessage(sess.ID, core.UserText("\n\t \r[Context Compaction]\nsummary"), 0)
 	if err := store.CompactMessages(ctx, sess.ID, []Message{*summary}); err != nil {
 		t.Fatal(err)
 	}
@@ -559,19 +559,19 @@ func TestSQLiteUndoPreservesEveryUserRowActivityAndMonotonicTurns(t *testing.T) 
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("old real prompt"), base)
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("old real prompt"), base)
 	if err := store.IncrementUserTurns(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
-	summary := NewMessage(sess.ID, llm.UserText("[Context Compaction]\nsummary"), -1)
+	summary := NewMessage(sess.ID, core.UserText("[Context Compaction]\nsummary"), -1)
 	summary.CreatedAt = base.Add(10 * time.Second)
-	tail := NewMessage(sess.ID, llm.UserText("retained tail"), -1)
+	tail := NewMessage(sess.ID, core.UserText("retained tail"), -1)
 	tail.CreatedAt = base.Add(11 * time.Second)
 	tail.CompactionTail = true
 	if err := store.CompactMessages(ctx, sess.ID, []Message{*summary, *tail}); err != nil {
 		t.Fatal(err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("post-compaction prompt"), base.Add(20*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("post-compaction prompt"), base.Add(20*time.Second))
 	if err := store.IncrementUserTurns(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +606,7 @@ func TestSQLiteUndoConcurrentRequestsAllowOneWinner(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("race"), time.Now())
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("race"), time.Now())
 	state, err := store.TranscriptMutationState(ctx, sess.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -651,10 +651,10 @@ func TestSQLiteRedoConcurrentRequestsConsumeOnlyOneStackEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Now()
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn B"), base)
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer B"), base.Add(time.Millisecond))
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn A"), base.Add(2*time.Millisecond))
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer A"), base.Add(3*time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("turn B"), base)
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer B"), base.Add(time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("turn A"), base.Add(2*time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("answer A"), base.Add(3*time.Millisecond))
 	applyUndoRedo(t, store, sess.ID, false)
 	applyUndoRedo(t, store, sess.ID, false)
 	state, err := store.TranscriptMutationState(ctx, sess.ID)
@@ -759,9 +759,9 @@ func TestSQLiteRedoStackCascadesWhenSessionDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Now()
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("delete first"), base)
-	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("first answer"), base.Add(time.Millisecond))
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("delete second"), base.Add(2*time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("delete first"), base)
+	addUndoRedoMessage(t, store, sess.ID, core.AssistantText("first answer"), base.Add(time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, core.UserText("delete second"), base.Add(2*time.Millisecond))
 	applyUndoRedo(t, store, sess.ID, false)
 	applyUndoRedo(t, store, sess.ID, false)
 	if count := redoStackCount(t, store, sess.ID); count != 2 {
@@ -783,8 +783,8 @@ func TestSQLiteUndoReportsAttachmentsOmittedFromComposer(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	message := llm.UserText("describe this")
-	message.Parts = append(message.Parts, llm.Part{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}})
+	message := core.UserText("describe this")
+	message.Parts = append(message.Parts, core.Part{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}})
 	addUndoRedoMessage(t, store, sess.ID, message, time.Now())
 	state, err := store.TranscriptMutationState(ctx, sess.ID)
 	if err != nil {

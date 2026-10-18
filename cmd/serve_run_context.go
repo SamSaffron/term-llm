@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // prepareRunContext binds platform-owned context values and normalizes the
 // provider runtime identity. Cancellation remains owned by runOnce.
-func (rt *serveRuntime) prepareRunContext(ctx context.Context, collaboration tools.CollaborativeShellRunBinding, req *llm.Request) (context.Context, string, string) {
+func (rt *serveRuntime) prepareRunContext(ctx context.Context, collaboration tools.CollaborativeShellRunBinding, req *core.Request) (context.Context, string, string) {
 	if rt.toolMgr != nil && rt.toolMgr.Registry != nil {
 		ctx = tools.ContextWithCollaborativeShellRunBinding(ctx, collaboration)
 	}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -18,25 +19,25 @@ func telegramStreamContext(ctx context.Context, sess *telegramSession, chatID in
 	}), sess.meta.ID
 }
 
-func initialTelegramActiveHistory(sess *telegramSession, user llm.Message, resume *telegramContinuation) []llm.Message {
+func initialTelegramActiveHistory(sess *telegramSession, user core.Message, resume *telegramContinuation) []core.Message {
 	if sess.activeHistory == nil {
 		return nil
 	}
-	history := append([]llm.Message{}, sess.activeHistory...)
+	history := append([]core.Message{}, sess.activeHistory...)
 	if resume == nil {
 		history = append(history, normalizeUserMessageForHistory(user))
 	}
 	return history
 }
 
-func (m *telegramSessionMgr) persistTurnStart(ctx context.Context, sess *telegramSession, user llm.Message, userText string, resume *telegramContinuation) (degraded, includeSystemPromptOnReconcile bool) {
+func (m *telegramSessionMgr) persistTurnStart(ctx context.Context, sess *telegramSession, user core.Message, userText string, resume *telegramContinuation) (degraded, includeSystemPromptOnReconcile bool) {
 	includeSystemPromptOnReconcile = sess.systemPromptPersisted
 	if resume != nil || m.store == nil || sess.meta == nil {
 		return false, includeSystemPromptOnReconcile
 	}
 	if m.settings.SystemPrompt != "" && !sess.systemPromptPersisted {
 		includeSystemPromptOnReconcile = true
-		system := &session.Message{SessionID: sess.meta.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: m.settings.SystemPrompt}}, TextContent: m.settings.SystemPrompt, CreatedAt: time.Now(), Sequence: -1}
+		system := &session.Message{SessionID: sess.meta.ID, Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: m.settings.SystemPrompt}}, TextContent: m.settings.SystemPrompt, CreatedAt: time.Now(), Sequence: -1}
 		if m.runStoreOp(ctx, sess.meta.ID, "AddMessage(system)", func(storeCtx context.Context) error {
 			return m.store.AddMessage(storeCtx, sess.meta.ID, system)
 		}) {
@@ -55,7 +56,7 @@ func (m *telegramSessionMgr) persistTurnStart(ctx context.Context, sess *telegra
 			degraded = true
 		}
 	}
-	storeUser := &session.Message{SessionID: sess.meta.ID, Role: llm.RoleUser, Parts: user.Parts, TextContent: userText, CreatedAt: time.Now(), Sequence: -1}
+	storeUser := &session.Message{SessionID: sess.meta.ID, Role: core.RoleUser, Parts: user.Parts, TextContent: userText, CreatedAt: time.Now(), Sequence: -1}
 	if !m.runStoreOp(ctx, sess.meta.ID, "AddMessage(user)", func(storeCtx context.Context) error {
 		return m.store.AddMessage(storeCtx, sess.meta.ID, storeUser)
 	}) {
@@ -82,7 +83,7 @@ func (m *telegramSessionMgr) persistTurnStart(ctx context.Context, sess *telegra
 // prepareRequestHistory builds provider context while keeping the durable full
 // transcript on sess.history. It intentionally consumes one-shot carryover and
 // establishes time grounding before a continuation overrides provider messages.
-func (m *telegramSessionMgr) prepareRequestHistory(sess *telegramSession, user llm.Message, resume *telegramContinuation, now time.Time) []llm.Message {
+func (m *telegramSessionMgr) prepareRequestHistory(sess *telegramSession, user core.Message, resume *telegramContinuation, now time.Time) []core.Message {
 	if m.settings.TimeGrounding {
 		sess.history = llm.BeginConversation(sess.history, now)
 		if sess.activeHistory != nil {
@@ -93,16 +94,16 @@ func (m *telegramSessionMgr) prepareRequestHistory(sess *telegramSession, user l
 	if sess.activeHistory != nil {
 		history = sess.activeHistory
 	}
-	messages := make([]llm.Message, 0, len(history)+3)
+	messages := make([]core.Message, 0, len(history)+3)
 	if m.settings.SystemPrompt != "" && !containsSystemMsg(history) {
-		messages = append(messages, llm.SystemText(m.settings.SystemPrompt))
+		messages = append(messages, core.SystemText(m.settings.SystemPrompt))
 	}
 	if sess.carryoverContext != "" {
 		label := sess.carryoverContextLabel
 		if label == "" {
 			label = "Context from previous session (tail):"
 		}
-		messages = append(messages, llm.SystemText(label+"\n"+sess.carryoverContext))
+		messages = append(messages, core.SystemText(label+"\n"+sess.carryoverContext))
 		sess.carryoverContext, sess.carryoverContextLabel = "", ""
 	}
 	if text := m.settings.PlatformMessages.For("telegram"); text != "" {

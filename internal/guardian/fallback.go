@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // ReviewFunc is the shape shared by every Guardian backend.
@@ -54,7 +54,7 @@ type escalationUsage struct {
 	CacheWriteTokens  int `json:"cache_write_tokens"`
 }
 
-func newEscalationUsage(usage llm.Usage) escalationUsage {
+func newEscalationUsage(usage core.Usage) escalationUsage {
 	return escalationUsage{
 		InputTokens:       usage.InputTokens,
 		OutputTokens:      usage.OutputTokens,

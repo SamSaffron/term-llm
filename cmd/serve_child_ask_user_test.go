@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -51,8 +51,8 @@ func newChildAskUserHarness(t *testing.T, childID string) *childAskUserHarness {
 		Agent: "researcher", Prompt: "investigate " + childID,
 	}).(*childRunHandle)
 	questions := json.RawMessage(`{"questions":[{"header":"Target","question":"Which schema?","options":[{"label":"v2","description":"new"},{"label":"v3","description":"newer"}]}]}`)
-	if err := srv.appendResponseToolExecStart(childRT, childRun, newResponseRunStreamState("mock", ""), llm.Event{
-		Type: llm.EventToolExecStart, ToolCallID: "call-ask", ToolName: tools.AskUserToolName, ToolArgs: questions,
+	if err := srv.appendResponseToolExecStart(childRT, childRun, newResponseRunStreamState("mock", ""), core.Event{
+		Type: core.EventToolExecStart, ToolCallID: "call-ask", ToolName: tools.AskUserToolName, ToolArgs: questions,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func (h *childAskUserHarness) start(t *testing.T, ctx context.Context) <-chan ch
 	t.Helper()
 	done := make(chan childAskUserOutcome, 1)
 	go func() {
-		answers, err := h.handle.AskUser(llm.ContextWithCallID(ctx, "call-ask"), []tools.AskUserQuestion{{
+		answers, err := h.handle.AskUser(core.ContextWithCallID(ctx, "call-ask"), []tools.AskUserQuestion{{
 			Header: "Target", Question: "Which schema?",
 			Options: []tools.AskUserOption{{Label: "v2", Description: "new"}, {Label: "v3", Description: "newer"}},
 		}})
@@ -163,7 +163,7 @@ func TestChildAskUserCanonicalGateEarlyAnswer(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	answers, err := h.handle.AskUser(llm.ContextWithCallID(ctx, "call-ask"), questions)
+	answers, err := h.handle.AskUser(core.ContextWithCallID(ctx, "call-ask"), questions)
 	if err != nil || len(answers) != 1 || answers[0].Selected != "v2" {
 		t.Fatalf("early answer was lost: answers=%v err=%v", answers, err)
 	}
@@ -275,7 +275,7 @@ func TestChildAskUserCanonicalGateSiblingIsolation(t *testing.T) {
 	first.srv.responseRuns.setActiveRun("ask-sibling-b", secondRun.id)
 	secondHandle := first.srv.ensureChildRuns().ChildRunStarted(childRunInfo{ChildSessionID: "ask-sibling-b", ParentSessionID: "ask-parent", CallID: "spawn-b"}).(*childRunHandle)
 	args := json.RawMessage(`{"questions":[{"header":"Target","question":"Which schema?","options":[{"label":"v2","description":"new"}]}]}`)
-	if err := first.srv.appendResponseToolExecStart(secondChildRT, secondRun, newResponseRunStreamState("mock", ""), llm.Event{Type: llm.EventToolExecStart, ToolCallID: "call-ask", ToolName: tools.AskUserToolName, ToolArgs: args}); err != nil {
+	if err := first.srv.appendResponseToolExecStart(secondChildRT, secondRun, newResponseRunStreamState("mock", ""), core.Event{Type: core.EventToolExecStart, ToolCallID: "call-ask", ToolName: tools.AskUserToolName, ToolArgs: args}); err != nil {
 		t.Fatal(err)
 	}
 	second := &childAskUserHarness{srv: first.srv, handle: secondHandle, parentRT: first.parentRT, childRT: secondChildRT, parentRun: first.parentRun, childRun: secondRun}

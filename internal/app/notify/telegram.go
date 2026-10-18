@@ -10,12 +10,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/session"
-	"time"
 )
 
 // Telegram helpers — shared by notify, notify telegram and serve jobs.
@@ -158,10 +158,10 @@ func LogTelegramNotifySession(ctx context.Context, deps Deps, cfg *config.Config
 		}
 	}
 
-	msg := session.NewMessage(sess.ID, llm.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartText,
+	msg := session.NewMessage(sess.ID, core.Message{
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type: core.PartText,
 			Text: message,
 		}},
 	}, -1)

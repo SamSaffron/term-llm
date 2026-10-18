@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/search"
 )
 
@@ -18,7 +19,7 @@ func NewWebSearchTool(searcher search.Searcher) *WebSearchTool {
 	return &WebSearchTool{searcher: searcher}
 }
 
-func (t *WebSearchTool) Spec() ToolSpec {
+func (t *WebSearchTool) Spec() core.ToolSpec {
 	return WebSearchToolSpec()
 }
 
@@ -32,23 +33,23 @@ func (t *WebSearchTool) Preview(args json.RawMessage) string {
 	return payload.Query
 }
 
-func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var payload struct {
 		Query      string `json:"query"`
 		MaxResults int    `json:"max_results"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return ToolOutput{}, fmt.Errorf("parse web_search args: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("parse web_search args: %w", err)
 	}
 	if payload.MaxResults <= 0 {
 		payload.MaxResults = 20
 	}
 	results, err := t.searcher.Search(ctx, payload.Query, payload.MaxResults)
 	if err != nil {
-		return ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	if len(results) == 0 {
-		return TextOutput("No results found."), nil
+		return core.TextOutput("No results found."), nil
 	}
 
 	var b strings.Builder
@@ -67,5 +68,5 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (Tool
 		}
 		b.WriteString("\n")
 	}
-	return TextOutput(strings.TrimSuffix(b.String(), "\n")), nil
+	return core.TextOutput(strings.TrimSuffix(b.String(), "\n")), nil
 }

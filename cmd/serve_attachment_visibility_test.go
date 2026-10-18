@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -114,7 +115,7 @@ func TestUploadedFileRemainsVisibleAfterPersistence(t *testing.T) {
 				// Consumed guidance and recovery must project the same stored attachment,
 				// even for an attachment-only interjection with no display text.
 				run := newResponseRun("resp-file", sess.ID, "", "mock", 1, nil)
-				err = srv.appendResponseSteering(nil, run, &responseRunStreamState{}, llm.Event{SteeringID: "file-steering", Text: display, Message: stored[0].ToLLMMessage()})
+				err = srv.appendResponseSteering(nil, run, &responseRunStreamState{}, core.Event{SteeringID: "file-steering", Text: display, Message: stored[0].ToLLMMessage()})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -155,7 +156,7 @@ func TestEmbeddedMentionChipIsReference(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	msg := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: embedded}}}
+	msg := core.Message{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: embedded}}}
 	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
 		t.Fatal(err)
 	}

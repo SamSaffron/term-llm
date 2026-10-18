@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
@@ -37,12 +37,12 @@ func TestSessionsShareNoToolsIsStickyAcrossUpdates(t *testing.T) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
-	call := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartText, Text: "Let me check."},
-		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "shell", Arguments: []byte(`{"command":"env"}`)}},
+	call := core.Message{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartText, Text: "Let me check."},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c1", Name: "shell", Arguments: []byte(`{"command":"env"}`)}},
 	}}
-	result := llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "c1", Name: "shell", Content: "API_KEY=sk-live-SECRET"}}}}
-	for _, message := range []llm.Message{llm.UserText("what is set?"), call, result, llm.AssistantText("Everything looks fine.")} {
+	result := core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "c1", Name: "shell", Content: "API_KEY=sk-live-SECRET"}}}}
+	for _, message := range []core.Message{core.UserText("what is set?"), call, result, core.AssistantText("Everything looks fine.")} {
 		if err := store.AddMessage(context.Background(), sess.ID, session.NewMessage(sess.ID, message, -1)); err != nil {
 			t.Fatal(err)
 		}

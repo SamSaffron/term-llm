@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -19,16 +19,16 @@ func (r *responseRun) appendEvent(event string, payload map[string]any) error {
 	return r.appendEventLocked(event, payload, false)
 }
 
-func responseRunOwnedOutputKeys(runID string, messages []llm.Message) []string {
+func responseRunOwnedOutputKeys(runID string, messages []core.Message) []string {
 	keys := make([]string, 0, len(messages))
 	for _, msg := range messages {
 		if msg.ResponseID != runID {
 			continue
 		}
 		switch msg.Role {
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			keys = append(keys, fmt.Sprintf("assistant:%d", msg.AssistantSegmentOrdinal))
-		case llm.RoleTool:
+		case core.RoleTool:
 			callID := ""
 			for _, part := range msg.Parts {
 				if part.ToolResult != nil && part.ToolResult.ID != "" {
@@ -45,7 +45,7 @@ func responseRunOwnedOutputKeys(runID string, messages []llm.Message) []string {
 			} else {
 				keys = append(keys, "")
 			}
-		case llm.RoleEvent:
+		case core.RoleEvent:
 			if msg.SegmentStartSequence > 0 || msg.SegmentEndSequence > 0 {
 				keys = append(keys, fmt.Sprintf("event:%d:%d", msg.SegmentStartSequence, msg.SegmentEndSequence))
 			} else {
@@ -56,7 +56,7 @@ func responseRunOwnedOutputKeys(runID string, messages []llm.Message) []string {
 	return keys
 }
 
-func beginResponseRunPersistence(ctx context.Context, messages []llm.Message) (func(int64, error), int) {
+func beginResponseRunPersistence(ctx context.Context, messages []core.Message) (func(int64, error), int) {
 	run, _ := ctx.Value(responseRunContextKey{}).(*responseRun)
 	if run == nil || run.persistence == nil {
 		return func(int64, error) {}, 0
@@ -123,7 +123,7 @@ func beginResponseRunPersistence(ctx context.Context, messages []llm.Message) (f
 	}, reservedOutputCount
 }
 
-func runResponseRunPersistence(ctx context.Context, messages []llm.Message, persist func(session.ResponseRunFence) (int64, error)) (rev int64, err error) {
+func runResponseRunPersistence(ctx context.Context, messages []core.Message, persist func(session.ResponseRunFence) (int64, error)) (rev int64, err error) {
 	run := responseRunFromContext(ctx)
 	if run != nil && run.validateLifecycle != nil {
 		if err := run.validateLifecycle(); err != nil {

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -35,8 +37,8 @@ type responseModelSwapExecution struct {
 	plan            responseModelSwapPlan
 	candidate       *serveRuntime
 	previous        *serveRuntime
-	previousHistory []llm.Message
-	restoreHistory  []llm.Message
+	previousHistory []core.Message
+	restoreHistory  []core.Message
 	commit          func()
 	rollback        func()
 	committed       bool
@@ -182,16 +184,16 @@ func providerModelLabel(provider, model string) string {
 	}
 }
 
-func copyLLMMessageSlice(messages []llm.Message) []llm.Message {
+func copyLLMMessageSlice(messages []core.Message) []core.Message {
 	if len(messages) == 0 {
 		return nil
 	}
-	out := make([]llm.Message, len(messages))
+	out := make([]core.Message, len(messages))
 	copy(out, messages)
 	return out
 }
 
-func (s *serveServer) loadPersistedLLMHistory(ctx context.Context, sessionID string) []llm.Message {
+func (s *serveServer) loadPersistedLLMHistory(ctx context.Context, sessionID string) []core.Message {
 	if s.store == nil || sessionID == "" {
 		return nil
 	}
@@ -199,14 +201,14 @@ func (s *serveServer) loadPersistedLLMHistory(ctx context.Context, sessionID str
 	if err != nil || len(stored) == 0 {
 		return nil
 	}
-	messages := make([]llm.Message, 0, len(stored))
+	messages := make([]core.Message, 0, len(stored))
 	for _, msg := range stored {
 		messages = append(messages, msg.ToLLMMessage())
 	}
 	return messages
 }
 
-func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID string, plan responseModelSwapPlan, inputMessages []llm.Message) (*responseModelSwapExecution, error) {
+func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID string, plan responseModelSwapPlan, inputMessages []core.Message) (*responseModelSwapExecution, error) {
 	if !plan.enabled {
 		return nil, nil
 	}
@@ -228,7 +230,7 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 		restoreHistory = s.loadPersistedLLMHistory(ctx, sessionID)
 	}
 	restoreHistory = copyLLMMessageSlice(restoreHistory)
-	previousHistory := llm.FilterConversationMessages(copyLLMMessageSlice(restoreHistory))
+	previousHistory := core.FilterConversationMessages(copyLLMMessageSlice(restoreHistory))
 
 	agentName := strings.TrimSpace(previous.agentName)
 	if agentName == "" {
@@ -259,7 +261,7 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 		retainedPrevious.ensurePersistedSession(ctx, sessionID, inputMessages)
 		if hist := retainedPrevious.snapshotHistory(); hist != nil {
 			restoreHistory = copyLLMMessageSlice(hist)
-			previousHistory = llm.FilterConversationMessages(copyLLMMessageSlice(hist))
+			previousHistory = core.FilterConversationMessages(copyLLMMessageSlice(hist))
 		}
 	}
 	seedRuntimeHistory(candidate, previousHistory)
@@ -274,7 +276,7 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	}, nil
 }
 
-func seedRuntimeHistory(rt *serveRuntime, history []llm.Message) {
+func seedRuntimeHistory(rt *serveRuntime, history []core.Message) {
 	if rt == nil {
 		return
 	}
@@ -282,7 +284,7 @@ func seedRuntimeHistory(rt *serveRuntime, history []llm.Message) {
 	defer rt.mu.Unlock()
 	rt.history = copyLLMMessageSlice(history)
 	rt.historyPersisted = false
-	rt.cumulativeUsage = llm.Usage{}
+	rt.cumulativeUsage = core.Usage{}
 	rt.lastInjectedPlatform = ""
 	if rt.engine != nil {
 		rt.engine.ResetConversation()
@@ -309,11 +311,11 @@ func (exec *responseModelSwapExecution) markRolledBack() {
 	}
 }
 
-func modelSwapVisibleEvent(ev llm.Event) bool {
+func modelSwapVisibleEvent(ev core.Event) bool {
 	switch ev.Type {
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		return ev.Text != ""
-	case llm.EventToolCall, llm.EventToolExecStart, llm.EventToolExecEnd, llm.EventSteering, llm.EventImageGenerated:
+	case core.EventToolCall, core.EventToolExecStart, core.EventToolExecEnd, core.EventSteering, core.EventImageGenerated:
 		return true
 	default:
 		return false
@@ -362,11 +364,11 @@ func effectiveTargetModel(plan responseModelSwapPlan, candidate *serveRuntime) s
 	return model
 }
 
-func (s *serveServer) runModelSwapHandover(ctx context.Context, exec *responseModelSwapExecution) (*llm.HandoverResult, error) {
+func (s *serveServer) runModelSwapHandover(ctx context.Context, exec *responseModelSwapExecution) (*engine.HandoverResult, error) {
 	if exec == nil || exec.candidate == nil {
 		return nil, fmt.Errorf("model swap execution is not initialized")
 	}
-	messages := llm.FilterConversationMessages(copyLLMMessageSlice(exec.previousHistory))
+	messages := core.FilterConversationMessages(copyLLMMessageSlice(exec.previousHistory))
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages to hand over")
 	}
@@ -378,7 +380,7 @@ func (s *serveServer) runModelSwapHandover(ctx context.Context, exec *responseMo
 	sourceLabel := providerModelLabel(exec.plan.previousProvider, previousModel)
 	targetLabel := providerModelLabel(exec.plan.requestedProvider, targetModel)
 
-	provider := llm.Provider(nil)
+	provider := core.Provider(nil)
 	var helper *serveRuntime
 	if s.runtimeFactory != nil {
 		rt, err := s.runtimeFactory(ctx, serveRuntimeRequest{Provider: exec.plan.previousProvider, Model: previousModel})
@@ -394,8 +396,8 @@ func (s *serveServer) runModelSwapHandover(ctx context.Context, exec *responseMo
 	if provider == nil {
 		return nil, fmt.Errorf("previous provider is unavailable for handover")
 	}
-	config := llm.DefaultCompactionConfig()
-	return llm.Handover(ctx, provider, previousModel, runtimeSystemPrompt(exec.previous), runtimeSystemPrompt(exec.candidate), messages, sourceLabel, targetLabel, config, llm.HandoverOptions{AllowProviderFork: true})
+	config := engine.DefaultCompactionConfig()
+	return llm.Handover(ctx, provider, previousModel, runtimeSystemPrompt(exec.previous), runtimeSystemPrompt(exec.candidate), messages, sourceLabel, targetLabel, config, engine.HandoverOptions{AllowProviderFork: true})
 }
 
 func runtimeSystemPrompt(rt *serveRuntime) string {
@@ -417,8 +419,8 @@ func modelSwapCombinedError(naiveErr, retryErr error) error {
 	return fmt.Errorf("model swap naive continuation failed: %v; handover retry failed: %w", naiveErr, retryErr)
 }
 
-func modelSwapMarkerMessage(plan responseModelSwapPlan, candidate *serveRuntime, status, strategy string) llm.Message {
-	marker := llm.ModelSwapMarker{
+func modelSwapMarkerMessage(plan responseModelSwapPlan, candidate *serveRuntime, status, strategy string) core.Message {
+	marker := core.ModelSwapMarker{
 		FromProvider: plan.previousProvider,
 		FromModel:    plan.previousModel,
 		FromEffort:   plan.previousEffort,
@@ -428,30 +430,30 @@ func modelSwapMarkerMessage(plan responseModelSwapPlan, candidate *serveRuntime,
 		Strategy:     strategy,
 		Status:       status,
 	}
-	return llm.ModelSwapEventMessage(marker)
+	return core.ModelSwapEventMessage(marker)
 }
 
-func insertModelSwapMarkerAfterTrigger(history []llm.Message, marker llm.Message) []llm.Message {
+func insertModelSwapMarkerAfterTrigger(history []core.Message, marker core.Message) []core.Message {
 	// Live progress is rendered after the submitted user message and before the
 	// reply. The triggering input is the latest user message in both the naive
 	// and handover histories, so anchoring there avoids matching an older turn
 	// when prompt text was repeated or normalized during persistence.
 	insertAt := len(history)
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == llm.RoleUser {
+		if history[i].Role == core.RoleUser {
 			insertAt = i + 1
 			break
 		}
 	}
 
-	updated := make([]llm.Message, 0, len(history)+1)
+	updated := make([]core.Message, 0, len(history)+1)
 	updated = append(updated, history[:insertAt]...)
 	updated = append(updated, marker)
 	updated = append(updated, history[insertAt:]...)
 	return updated
 }
 
-func setRuntimeHistoryPreserveEngine(rt *serveRuntime, history []llm.Message) {
+func setRuntimeHistoryPreserveEngine(rt *serveRuntime, history []core.Message) {
 	if rt == nil {
 		return
 	}
@@ -505,7 +507,7 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 		sm := session.NewMessage(sessionID, msg, -1)
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, _ = runResponseRunPersistence(ctx, []llm.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
+		_, _ = runResponseRunPersistence(ctx, []core.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
 			return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), s.store, sessionID, sm)
 		})
 	}
@@ -543,7 +545,7 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 	}
 }
 
-func addRuntimeUsage(rt *serveRuntime, usage llm.Usage) {
+func addRuntimeUsage(rt *serveRuntime, usage core.Usage) {
 	if rt == nil || usage.IsZero() {
 		return
 	}
@@ -552,7 +554,7 @@ func addRuntimeUsage(rt *serveRuntime, usage llm.Usage) {
 	rt.mu.Unlock()
 }
 
-func (s *serveServer) recordModelSwapHandoverUsage(ctx context.Context, sessionID string, exec *responseModelSwapExecution, usage llm.Usage) {
+func (s *serveServer) recordModelSwapHandoverUsage(ctx context.Context, sessionID string, exec *responseModelSwapExecution, usage core.Usage) {
 	if exec == nil || usage.IsZero() {
 		return
 	}
@@ -594,7 +596,7 @@ func (s *serveServer) recordModelSwapHandoverUsage(ctx context.Context, sessionI
 	}
 }
 
-func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtime *serveRuntime, run *responseRun, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID, respID, model string, created int64, options startResponseRunOptions) {
+func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtime *serveRuntime, run *responseRun, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID, respID, model string, created int64, options startResponseRunOptions) {
 	exec := options.modelSwap
 	mgr := s.ensureResponseRuns()
 	if exec == nil || !exec.plan.enabled {
@@ -641,7 +643,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	streamState := &responseRunStreamState{}
 	result, err := runtime.RunWithEventsAndStart(runCtx, true, false, inputMessages, llmReq, func() {
 		mgr.setActiveRun(sessionID, respID)
-	}, func(ev llm.Event) error {
+	}, func(ev core.Event) error {
 		if modelSwapVisibleEvent(ev) {
 			visible = true
 		}
@@ -735,7 +737,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	streamState = &responseRunStreamState{}
 	result, retryErr := runtime.RunWithEventsAndStart(runCtx, true, true, fallbackInput, llmReq, func() {
 		mgr.setActiveRun(sessionID, respID)
-	}, func(ev llm.Event) error {
+	}, func(ev core.Event) error {
 		return s.appendResponseRunEvent(runtime, run, streamState, ev)
 	})
 	if retryErr != nil {
@@ -781,13 +783,13 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	}
 }
 
-func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, exec *responseModelSwapExecution) (serveRunResult, string, error) {
+func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, exec *responseModelSwapExecution) (serveRunResult, string, error) {
 	if exec == nil || !exec.plan.enabled {
 		result, err := runtime.Run(ctx, stateful, replaceHistory, inputMessages, llmReq)
 		return result, "", err
 	}
 	visible := false
-	result, err := runtime.RunWithEvents(ctx, true, false, inputMessages, llmReq, func(ev llm.Event) error {
+	result, err := runtime.RunWithEvents(ctx, true, false, inputMessages, llmReq, func(ev core.Event) error {
 		if modelSwapVisibleEvent(ev) {
 			visible = true
 		}

@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -42,18 +43,18 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.SystemText("old prompt"), 0)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.SystemText("old prompt"), 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("earlier human"), 1)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText("earlier human"), 1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.AssistantText("earlier answer"), 2)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.AssistantText("earlier answer"), 2)); err != nil {
 		t.Fatal(err)
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("first answer").AddTextResponse("second answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("first answer").AddTextResponse("second answer")
 	oldFactory := newAskProvider
-	newAskProvider = func(*config.Config, bool) (llm.Provider, error) { return provider, nil }
+	newAskProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
 	t.Cleanup(func() { newAskProvider = oldFactory })
 	oldCoordinator := processSessionInputs
 	processSessionInputs = newSessionInputCoordinator()
@@ -99,10 +100,10 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 	for _, request := range provider.Requests {
 		systemCount := 0
 		for _, message := range request.Messages {
-			if message.Role == llm.RoleSystem {
+			if message.Role == core.RoleSystem {
 				systemCount++
-				if llm.MessageText(message) != "CLI resumed workspace include" {
-					t.Fatalf("wrong system: %q", llm.MessageText(message))
+				if core.MessageText(message) != "CLI resumed workspace include" {
+					t.Fatalf("wrong system: %q", core.MessageText(message))
 				}
 			}
 		}
