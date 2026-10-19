@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	inputpkg "github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -127,7 +128,7 @@ func TestPrepareAskInputStagesLargeTextAfterFileContext(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("staged mode = %v, err = %v", info.Mode().Perm(), err)
 	}
-	if !pathWithinDir(part.FilePath, Uploads.Dir()) {
+	if !pathWithinDir(part.FilePath, uploads.Dir()) {
 		t.Fatalf("staged path %q is outside uploads", part.FilePath)
 	}
 }
@@ -190,16 +191,26 @@ func TestPrepareAskInputResizesLargeImageWithProviderDimensions(t *testing.T) {
 	}
 	t.Cleanup(func() { CleanupPreparedInput(got) })
 	part := got.Message.Parts[0]
-	if part.ImageData == nil || part.ImageData.MediaType != "image/jpeg" {
-		t.Fatalf("image metadata = %#v, want resized JPEG", part.ImageData)
+	if part.ImageData == nil {
+		t.Fatal("missing provider image metadata")
 	}
 	providerBytes, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	width, height := Uploads.ImageDimensions(providerBytes)
-	if part.ImageData.Width != width || part.ImageData.Height != height || width >= 1024 || height >= 1024 {
+	width, height := uploads.ImageDisplayDimensions(providerBytes)
+	if width <= 0 || height <= 0 || part.ImageData.Width != width || part.ImageData.Height != height || width >= 1024 || height >= 1024 {
 		t.Fatalf("metadata dimensions = %dx%d, provider bytes = %dx%d", part.ImageData.Width, part.ImageData.Height, width, height)
+	}
+	if len(providerBytes) > uploads.MaxLLMImageBytes {
+		t.Fatalf("provider image is %d bytes, want at most %d", len(providerBytes), uploads.MaxLLMImageBytes)
+	}
+	if part.ImageData.MediaType != "image/jpeg" {
+		t.Fatalf("provider image MIME = %q, want resized JPEG", part.ImageData.MediaType)
+	}
+	saved, err := os.ReadFile(part.ImagePath)
+	if err != nil || !bytes.Equal(saved, encoded.Bytes()) {
+		t.Fatalf("saved original differs: err=%v", err)
 	}
 }
 
@@ -291,7 +302,7 @@ func TestPrepareAskInputStagesLargeFileSource(t *testing.T) {
 	if len(got.StagedPaths) != 1 || got.StagedPaths[0] != part.FilePath {
 		t.Fatalf("staged paths = %v, want structured file path %q", got.StagedPaths, part.FilePath)
 	}
-	if part.FilePath == source || !pathWithinDir(part.FilePath, Uploads.Dir()) {
+	if part.FilePath == source || !pathWithinDir(part.FilePath, uploads.Dir()) {
 		t.Fatalf("staged path = %q, source = %q", part.FilePath, source)
 	}
 	saved, err := os.ReadFile(part.FilePath)
@@ -317,7 +328,7 @@ func TestPrepareAskInputClassifiesPNGFileAndStagesOriginal(t *testing.T) {
 		t.Fatalf("parts = %#v, want image then question", got.Message.Parts)
 	}
 	part := got.Message.Parts[0]
-	if part.ImagePath == source || !pathWithinDir(part.ImagePath, Uploads.Dir()) {
+	if part.ImagePath == source || !pathWithinDir(part.ImagePath, uploads.Dir()) {
 		t.Fatalf("image path = %q, source = %q", part.ImagePath, source)
 	}
 	if len(got.StagedPaths) != 1 || got.StagedPaths[0] != part.ImagePath {
@@ -356,7 +367,7 @@ func TestPrepareAskInputStagesBinaryFileSource(t *testing.T) {
 	if part.FileData == nil || part.FileData.MediaType != "application/pdf" || part.FileData.Filename != "misleading.pdf" {
 		t.Fatalf("file metadata = %#v", part.FileData)
 	}
-	if len(got.StagedPaths) != 1 || got.StagedPaths[0] != part.FilePath || part.FilePath == source || !pathWithinDir(part.FilePath, Uploads.Dir()) {
+	if len(got.StagedPaths) != 1 || got.StagedPaths[0] != part.FilePath || part.FilePath == source || !pathWithinDir(part.FilePath, uploads.Dir()) {
 		t.Fatalf("staged paths/file path = %v / %q", got.StagedPaths, part.FilePath)
 	}
 	saved, err := os.ReadFile(part.FilePath)

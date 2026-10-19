@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -16,11 +17,11 @@ func TestGrantUploadedFileReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	imagePath, err := saveUploadedBytes("image.png", []byte("image"))
+	imagePath, err := uploads.SaveBytes("image.png", []byte("image"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sibling, err := saveUploadedBytes("other.bin", []byte("other session"))
+	sibling, err := uploads.SaveBytes("other.bin", []byte("other session"))
 	if err != nil {
 		t.Fatal(err)
 	}

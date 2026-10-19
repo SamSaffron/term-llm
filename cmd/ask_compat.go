@@ -32,14 +32,3 @@ func writeGuardianStatus(w io.Writer, event tools.GuardianEvent) {
 func runOnCompleteCaptureInDir(command, input, baseDir string) (runtimeoncomplete.Result, error) {
 	return runtimeoncomplete.RunCaptureInDir(command, input, baseDir)
 }
-
-func init() {
-	ask.Uploads = ask.UploadHooks{
-		SaveBytes:          saveUploadedBytesWithLimit,
-		ResizeImage:        resizeImageForLLMQuiet,
-		ImageDimensions:    imageDisplayDimensions,
-		NormalizeMediaType: normalizeUploadMediaType,
-		Dir:                serveUploadsDir,
-		MaxImagePixels:     maxLLMImagePixels,
-	}
-}

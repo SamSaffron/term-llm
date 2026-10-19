@@ -1783,26 +1783,6 @@ func TestAbbreviatePath(t *testing.T) {
 	}
 }
 
-func TestParseDataURL(t *testing.T) {
-	mt, b64 := parseDataURL("data:image/jpeg;base64,/9j/4AAQ")
-	if mt != "image/jpeg" {
-		t.Fatalf("media type = %q, want image/jpeg", mt)
-	}
-	if b64 != "/9j/4AAQ" {
-		t.Fatalf("base64 = %q, want /9j/4AAQ", b64)
-	}
-
-	mt, b64 = parseDataURL("not-a-data-url")
-	if mt != "" || b64 != "" {
-		t.Fatalf("expected empty for invalid data URL, got %q %q", mt, b64)
-	}
-
-	mt, b64 = parseDataURL("data:text/plain;charset=utf-8,hello")
-	if mt != "" || b64 != "" {
-		t.Fatalf("expected empty for non-base64 data URL, got %q %q", mt, b64)
-	}
-}
-
 func TestParseResponsesInput_FunctionCallOutputDoesNotReplaceHistory(t *testing.T) {
 	payload := json.RawMessage(`[
 		{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"},

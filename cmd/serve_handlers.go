@@ -28,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -613,7 +614,7 @@ func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
 // ensureFileServeable makes the given file available from the configured
 // files-dir when it already comes from an approved source directory. Approved
 // sources are: the files-dir itself, the image output directory, the uploads
-// directory used by saveUploadedBytes, and any directory granted to tools via
+// directory used by uploads.SaveBytes, and any directory granted to tools via
 // --write-dir or cfg.Tools.WriteDirs. Tool output in those locations is
 // operator- or server-sanctioned, so republishing it under /files/ respects
 // the documented --files-dir contract while still blocking tool results that
@@ -742,7 +743,7 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 // ensureImageServeable makes the given image path servable via /images/ by
 // copying it into the configured image output directory when the source is
 // already under an approved location (image output dir itself, the uploads
-// dir used by saveUploadedBytes, or any operator-granted tool write-dir).
+// dir used by uploads.SaveBytes, or any operator-granted tool write-dir).
 // Tool-reported paths outside every approved dir are rejected so arbitrary
 // host files can't be republished through /images/. Returns the serveable
 // path and true on success, or ("", false) otherwise.
@@ -881,15 +882,8 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	return destPath, true
 }
 
-// serveUploadsDir returns the first-party uploads directory used by
-// saveUploadedBytes. Returns empty string if the data dir is unavailable.
-func serveUploadsDir() string {
-	dataDir, err := session.GetDataDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dataDir, "uploads")
-}
+// serveUploadsDir returns the first-party uploads directory.
+func serveUploadsDir() string { return uploads.Dir() }
 
 const (
 	sessionMessagesPageSize          = 200
@@ -1190,11 +1184,11 @@ func (s *serveServer) materializeInlineSessionImage(mediaType, base64Data string
 }
 
 func imageDimensionsFromReader(reader io.Reader) (width, height int) {
-	metadata, err := io.ReadAll(io.LimitReader(reader, maxImageMetadataBytes))
+	metadata, err := io.ReadAll(io.LimitReader(reader, uploads.MaxImageMetadataBytes))
 	if err != nil {
 		return 0, 0
 	}
-	return imageDisplayDimensions(metadata)
+	return uploads.ImageDisplayDimensions(metadata)
 }
 
 func sessionMessageImageDimensions(part core.Part, serveablePath string) (width, height int) {

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
@@ -190,27 +191,27 @@ func TestSetSessionNumberHeader(t *testing.T) {
 func TestParseUserMessageContent_AllowsUpToMaxInlineImages(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	content := marshalInlineImageParts(t, maxAttachments)
+	content := marshalInlineImageParts(t, uploads.MaxAttachments)
 
 	msg, err := parseUserMessageContent(content)
 	if err != nil {
 		t.Fatalf("parseUserMessageContent() error = %v", err)
 	}
-	if len(msg.Parts) != maxAttachments {
-		t.Fatalf("len(msg.Parts) = %d, want %d", len(msg.Parts), maxAttachments)
+	if len(msg.Parts) != uploads.MaxAttachments {
+		t.Fatalf("len(msg.Parts) = %d, want %d", len(msg.Parts), uploads.MaxAttachments)
 	}
 }
 
 func TestParseUserMessageContent_RejectsTooManyInlineImages(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	content := marshalInlineImageParts(t, maxAttachments+1)
+	content := marshalInlineImageParts(t, uploads.MaxAttachments+1)
 
 	_, err := parseUserMessageContent(content)
 	if err == nil {
 		t.Fatal("parseUserMessageContent() error = nil, want attachment limit error")
 	}
-	if !strings.Contains(err.Error(), fmt.Sprintf("too many attachments (max %d)", maxAttachments)) {
+	if !strings.Contains(err.Error(), fmt.Sprintf("too many attachments (max %d)", uploads.MaxAttachments)) {
 		t.Fatalf("parseUserMessageContent() error = %v, want attachment limit error", err)
 	}
 }
@@ -281,7 +282,7 @@ func TestParseUserMessageContent_PersistsEXIFOrientedImageDimensions(t *testing.
 func TestParseUserMessageContent_RejectsOversizedInlineImage(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	raw := bytes.Repeat([]byte("a"), maxAttachmentBytes+1)
+	raw := bytes.Repeat([]byte("a"), uploads.MaxAttachmentBytes+1)
 	content, err := json.Marshal([]map[string]any{{
 		"type":      "input_image",
 		"image_url": "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw),
@@ -295,7 +296,7 @@ func TestParseUserMessageContent_RejectsOversizedInlineImage(t *testing.T) {
 	if err == nil {
 		t.Fatal("parseUserMessageContent() error = nil, want size limit error")
 	}
-	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d MB limit", maxAttachmentBytes>>20)) {
+	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d MB limit", uploads.MaxAttachmentBytes>>20)) {
 		t.Fatalf("parseUserMessageContent() error = %v, want size limit error", err)
 	}
 }
@@ -318,32 +319,6 @@ func TestParseUserMessageContent_RejectsInvalidSmallInlineImage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad.png") || !strings.Contains(err.Error(), "decode base64") {
 		t.Fatalf("parseUserMessageContent() error = %v, want filename + decode error", err)
-	}
-}
-
-func TestDecodeUploadedFile_AllowsWrappedBase64(t *testing.T) {
-	wrapped := "aGVs\r\nbG8="
-	raw, err := decodeUploadedFile("hello.txt", wrapped)
-	if err != nil {
-		t.Fatalf("decodeUploadedFile() error = %v", err)
-	}
-	if string(raw) != "hello" {
-		t.Fatalf("decodeUploadedFile() = %q, want hello", string(raw))
-	}
-}
-
-func TestDecodeUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
-	b64 := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxAttachmentBytes+1)-1) + "!"
-
-	_, err := decodeUploadedFile("too-large.bin", b64)
-	if err == nil {
-		t.Fatal("decodeUploadedFile() error = nil, want size limit error")
-	}
-	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d MB limit", maxAttachmentBytes>>20)) {
-		t.Fatalf("decodeUploadedFile() error = %v, want size limit error", err)
-	}
-	if strings.Contains(err.Error(), "decode base64") {
-		t.Fatalf("decodeUploadedFile() error = %v, want size check before base64 decode", err)
 	}
 }
 
@@ -379,8 +354,8 @@ func TestParseUserMessageContent_LargeImageSavesOriginalButSendsResizedInline(t 
 	t.Setenv("XDG_DATA_HOME", dataHome)
 
 	raw := makeLargeJPEG(t)
-	if len(raw) <= maxLLMImageBytes {
-		t.Fatalf("test JPEG is %d bytes, want > %d", len(raw), maxLLMImageBytes)
+	if len(raw) <= uploads.MaxLLMImageBytes {
+		t.Fatalf("test JPEG is %d bytes, want > %d", len(raw), uploads.MaxLLMImageBytes)
 	}
 	content, err := json.Marshal([]map[string]any{{
 		"type":      "input_image",
@@ -428,7 +403,7 @@ func makeLargeJPEG(t *testing.T) []byte {
 	t.Helper()
 
 	// Noisy pattern compresses poorly, so 1200x1200 at Q95 stays comfortably
-	// over maxLLMImageBytes (the caller asserts this).
+	// over uploads.MaxLLMImageBytes (the caller asserts this).
 	img := image.NewRGBA(image.Rect(0, 0, 1200, 1200))
 	for y := 0; y < 1200; y++ {
 		for x := 0; x < 1200; x++ {
@@ -551,8 +526,8 @@ func TestArbitraryUploadsKeepValidationLimits(t *testing.T) {
 		name, data, want string
 		count            int
 	}{
-		{"count", "AP8BgA==", "too many attachments", maxAttachments + 1},
-		{"size", strings.Repeat("AAAA", (maxAttachmentBytes/3)+1), "exceeds 20 MB limit", 1},
+		{"count", "AP8BgA==", "too many attachments", uploads.MaxAttachments + 1},
+		{"size", strings.Repeat("AAAA", (uploads.MaxAttachmentBytes/3)+1), "exceeds 20 MB limit", 1},
 		{"base64", "!!!!", "decode base64", 1},
 		{"empty", "", "empty or malformed", 1},
 	} {

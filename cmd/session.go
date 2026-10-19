@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -536,20 +537,7 @@ func newVisionProviderForTarget(cfg *config.Config, target string) (core.Provide
 	return provider, modelName, nil
 }
 
-func uploadsReadDir() string {
-	dataDir, err := session.GetDataDir()
-	if err != nil {
-		return ""
-	}
-	dir := filepath.Join(dataDir, "uploads")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return ""
-	}
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		return resolved
-	}
-	return dir
-}
+func uploadsReadDir() string { return uploads.ReadDir() }
 
 func appendUniqueString(values []string, value string) []string {
 	value = strings.TrimSpace(value)

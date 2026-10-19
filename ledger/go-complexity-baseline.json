@@ -802,7 +802,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleCapabilities",
+      "key": ".|cmd/serve_capabilities.go|cmd|*serveServer|handleCapabilities",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -850,7 +850,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_protocol.go|cmd||jpegEXIFOrientation",
+      "key": ".|internal/app/uploads/image.go|uploads||jpegEXIFOrientation",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
