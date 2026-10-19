@@ -335,7 +335,7 @@ func (p *AnthropicProvider) streamStandardForModel(ctx context.Context, req core
 		applyAnthropicEffort(params, reasoningEffort)
 
 		if req.Debug {
-			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic core.Stream core.Request ===")
+			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic Stream Request ===")
 			runtimeoutput.Printf("Provider: %s\n", p.Name())
 			runtimeoutput.Printf("System: %s\n", core.Truncate(system, 200))
 			runtimeoutput.Printf("Messages: %d\n", len(messages))
@@ -383,7 +383,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req core.Reque
 		applyAnthropicEffort(params, reasoningEffort)
 
 		if req.Debug {
-			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic core.Stream core.Request (search) ===")
+			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic Stream Request (search) ===")
 			runtimeoutput.Printf("Provider: %s\n", p.Name())
 			runtimeoutput.Printf("System: %s\n", core.Truncate(system, 200))
 			runtimeoutput.Printf("Messages: %d\n", len(messages))

@@ -126,6 +126,29 @@ func respondTranscript(text string) func(http.ResponseWriter, chatGPTTranscribeR
 	}
 }
 
+func TestTranscribeChatGPT_SendsOAuthMultipart(t *testing.T) {
+	fx := setupChatGPTTranscribeTest(t, respondTranscript("hello world"))
+	audio := writeTestAudio(t, "memo.ogg", "audio-bytes")
+
+	got, err := TranscribeChatGPT(context.Background(), audio, "en")
+	if err != nil {
+		t.Fatalf("TranscribeChatGPT: %v", err)
+	}
+	if got != "hello world" {
+		t.Fatalf("transcript = %q, want hello world", got)
+	}
+	if fx.refreshes != 0 || fx.rejectedRefreshes != 0 || len(fx.requests) != 1 {
+		t.Fatalf("refreshes=%d rejected=%d requests=%d, want 0, 0 and 1", fx.refreshes, fx.rejectedRefreshes, len(fx.requests))
+	}
+	want := chatGPTTranscribeRequest{
+		auth: "Bearer old-token", accountID: "acct-1", originator: chatGPTOriginator, userAgent: chatGPTUserAgent(),
+		filename: "memo.ogg", fileType: "audio/ogg", file: "audio-bytes", language: "en",
+	}
+	if req := fx.requests[0]; req != want {
+		t.Fatalf("request = %+v, want %+v", req, want)
+	}
+}
+
 func TestTranscribeChatGPT_RefreshesExpiredSessionBeforeUpload(t *testing.T) {
 	fx := setupChatGPTTranscribeTest(t, respondTranscript("fresh"))
 	fx.creds.ExpiresAt = time.Now().Add(-time.Hour).Unix()

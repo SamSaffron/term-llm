@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+func TestGenerateEndsWithSingleNewline(t *testing.T) {
+	got, err := Generate("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(got), ";\n") || strings.HasSuffix(string(got), "\n\n") {
+		t.Fatal("generated API contracts must end with exactly one newline")
+	}
+}
+
 func TestJSONFieldRules(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "internal", "wire")

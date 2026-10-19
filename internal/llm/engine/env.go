@@ -16,7 +16,8 @@ type DebugLogger interface {
 
 // Env injects root-package behaviour the turn loop depends on. Every field is
 // optional; a nil field falls back to neutral behaviour. The root llm package
-// installs its implementation with SetEnv at init time.
+// installs its production implementation with SetEnv in its init() function.
+// Packages importing only engine retain the neutral defaults.
 type Env struct {
 	CompactionEnv
 

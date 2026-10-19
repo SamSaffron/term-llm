@@ -46,7 +46,7 @@ Follow `frontend/AGENTS.md` and `frontend/README.md` for ownership, formatting, 
 
 ## Testing Conventions
 - Add a regression test that fails before the fix when practical. Keep tests beside code as `*_test.go`; use table-driven cases for meaningful variants.
-- Use `internal/llm/mock_provider.go` for scripted provider turns and recorded requests. Use `internal/testutil/harness.go` for engine-level behavior rather than invoking a live model.
+- Use `internal/llm/mockprovider/` for scripted provider turns and recorded requests. Use `internal/testutil/harness.go` for engine-level behavior rather than invoking a live model.
 - Test observable behavior and failure paths, not implementation trivia. Avoid network access, real API keys, timing sleeps, and dependence on the user's home directory.
 
 ## Package Documentation

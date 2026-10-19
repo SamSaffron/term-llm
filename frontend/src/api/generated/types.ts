@@ -95,4 +95,3 @@ export type ShareProviderID = string;
 export type ShareVisibility = string;
 
 export type ToolsSpawnAgentResult = { "agent_name": string; "output"?: string; "error"?: string; "type"?: string; "duration_ms"?: number; "session_id"?: string; "agent_id"?: string; "status"?: string; "resumable": boolean; "next"?: string; "turns_used"?: number; "last_activity"?: string; "current_tool"?: string; "interventions"?: (string)[]; "intervention_disposition"?: string; "cancelled_by_user"?: boolean; };
-

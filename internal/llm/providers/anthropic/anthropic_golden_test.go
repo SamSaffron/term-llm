@@ -14,12 +14,12 @@ package anthropic
 // Updating rewrites them from the current implementation, so review any diff
 // as a wire-format change. Regenerate request/event goldens from fixtures with
 //
-//	UPDATE_ANTHROPIC_GOLDEN=1 go test ./internal/llm -run 'AnthropicGolden|BedrockGolden'
+//	UPDATE_ANTHROPIC_GOLDEN=1 go test ./internal/llm/providers/anthropic -run 'AnthropicGolden'
 //
 // and refresh live fixtures (direct API only) with
 //
 //	ANTHROPIC_GOLDEN_LIVE=1 ANTHROPIC_GOLDEN_API_KEY=... [ANTHROPIC_GOLDEN_WORKSPACE_ID=...] \
-//	  go test ./internal/llm -run 'TestAnthropicGolden' -count=1
+//	  go test ./internal/llm/providers/anthropic -run 'TestAnthropicGolden' -count=1
 //
 // Credentials only ever live in the environment; fixtures store response
 // bodies plus status/content-type/retry-after, and request goldens store an

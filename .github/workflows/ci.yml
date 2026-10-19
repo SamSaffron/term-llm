@@ -144,7 +144,7 @@ jobs:
         if: needs.changes.outputs.backend == 'true'
         run: |
           go test -race ./internal/session ./internal/termhost ./cmd
-          go test -race -tags browserfixture ./internal/llm -run '^TestDebugBrowserGate$'
+          go test -race -tags browserfixture ./internal/llm/debug -run '^TestDebugBrowserGate$'
 
       - name: Race-test nested modules
         if: needs.changes.outputs.backend == 'true'

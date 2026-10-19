@@ -1,6 +1,7 @@
 package llm
 
-// Golden wire tests for the Anthropic Messages adapter (direct and Bedrock).
+// Golden wire tests for the Bedrock Anthropic Messages adapter.
+// Direct Anthropic adapter tests live in providers/anthropic.
 //
 // Each scenario under testdata/anthropic_golden/<name>/ stores, per turn:
 //   - turnN.response + turnN.response.json: the HTTP response replayed to the
@@ -14,12 +15,12 @@ package llm
 // Updating rewrites them from the current implementation, so review any diff
 // as a wire-format change. Regenerate request/event goldens from fixtures with
 //
-//	UPDATE_ANTHROPIC_GOLDEN=1 go test ./internal/llm -run 'AnthropicGolden|BedrockGolden'
+//	UPDATE_ANTHROPIC_GOLDEN=1 go test ./internal/llm -run 'TestBedrockGolden'
 //
 // and refresh live fixtures (direct API only) with
 //
 //	ANTHROPIC_GOLDEN_LIVE=1 ANTHROPIC_GOLDEN_API_KEY=... [ANTHROPIC_GOLDEN_WORKSPACE_ID=...] \
-//	  go test ./internal/llm -run 'TestAnthropicGolden' -count=1
+//	  go test ./internal/llm/providers/anthropic -run 'TestAnthropicGolden' -count=1
 //
 // Credentials only ever live in the environment; fixtures store response
 // bodies plus status/content-type/retry-after, and request goldens store an
@@ -49,7 +50,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	llmstream "github.com/samsaffron/term-llm/internal/llm/core/stream"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
 	"github.com/samsaffron/term-llm/internal/llm/providers/bedrock"
 )
 
@@ -779,15 +779,6 @@ func runAnthropicGoldenScenario(t *testing.T, sc anthropicGoldenScenario, bedroc
 	return all
 }
 
-func newGoldenDirectProvider(t *testing.T, baseURL string, sc anthropicGoldenScenario) core.Provider {
-	t.Helper()
-	p, err := anthropic.NewAnthropicProviderWithBaseURL("test-key", sc.model, anthropic.AnthropicCredAPIKey, baseURL)
-	if err != nil {
-		t.Fatalf("NewAnthropicProviderWithBaseURL: %v", err)
-	}
-	return p
-}
-
 // goldenRedirectTransport sends every request to the fixture server while
 // preserving the original path, raw path, query, and headers.
 type goldenRedirectTransport struct {
@@ -817,22 +808,6 @@ func newGoldenBedrockProvider(t *testing.T, baseURL string, sc anthropicGoldenSc
 		t.Fatalf("NewBedrockProvider: %v", err)
 	}
 	return p
-}
-
-func TestAnthropicGolden(t *testing.T) {
-	for _, sc := range anthropicGoldenScenarios() {
-		if sc.bedrockOnly {
-			continue
-		}
-		t.Run(sc.name, func(t *testing.T) {
-			goldenIsolateEnv(t)
-			if anthropicGoldenLive() && !sc.live {
-				t.Skip("handwritten fixture")
-			}
-			events := runAnthropicGoldenScenario(t, sc, false, newGoldenDirectProvider)
-			compareOrUpdateGolden(t, filepath.Join(anthropicGoldenDir, sc.name, "events.json"), goldenJSON(t, events))
-		})
-	}
 }
 
 func TestBedrockGolden(t *testing.T) {
@@ -878,26 +853,4 @@ func bedrockOnlyGoldenScenarios() []anthropicGoldenScenario {
 		out = append(out, anthropicGoldenScenario{name: name, model: model, bedrockOnly: true, turns: goldenSingleTurn(core.Request{Messages: goldenUser("edge")})})
 	}
 	return out
-}
-
-func TestAnthropicGoldenListModels(t *testing.T) {
-	goldenIsolateEnv(t)
-	dir := filepath.Join(anthropicGoldenDir, "list_models")
-	sc := anthropicGoldenScenario{name: "list_models", model: "claude-haiku-4-5", live: true}
-	srv := &goldenServer{t: t, dir: dir, scenario: sc, live: anthropicGoldenLive(), turn: 1}
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
-	p, err := anthropic.NewAnthropicProviderWithBaseURL("test-key", sc.model, anthropic.AnthropicCredAPIKey, ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	models, err := p.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("ListModels: %v", err)
-	}
-	if len(srv.requests) == 0 {
-		t.Fatal("ListModels sent no request")
-	}
-	compareOrUpdateGolden(t, filepath.Join(dir, "turn1.request.json"), goldenJSON(t, srv.requests[len(srv.requests)-1]))
-	compareOrUpdateGolden(t, filepath.Join(dir, "models.json"), goldenJSON(t, models))
 }

@@ -1837,9 +1837,3 @@ func TestCompactRetainsAudioMediaAndSummarizesKinds(t *testing.T) {
 		t.Fatalf("audio result removed from retained tail: %+v", result.NewMessages)
 	}
 }
-
-func TestEngineContinuationPromptMatchesCompactionFilter(t *testing.T) {
-	if engine.ContextContinuationPrompt != engine.ContextContinuationPrompt {
-		t.Fatalf("engine.ContextContinuationPrompt = %q, want %q", engine.ContextContinuationPrompt, engine.ContextContinuationPrompt)
-	}
-}
