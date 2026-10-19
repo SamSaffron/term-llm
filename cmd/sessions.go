@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"time"
 
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	sessionsapp "github.com/samsaffron/term-llm/internal/app/sessions"
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -268,8 +271,10 @@ func sessionsApp() sessionsapp.App {
 			AutotitleVerbose:          sessionsAutotitleVerbose,
 		},
 		Deps: sessionsapp.Deps{
-			LoadConfig:                  loadConfig,
-			SessionStoreConfig:          sessionStoreConfig,
+			LoadConfig: loadConfig,
+			SessionStoreConfig: func(cfg *config.Config) session.Config {
+				return appruntime.SessionStoreConfigWith(cfg, appruntime.SessionStoreOverrides{NoSession: noSession, DBPath: sessionDBPath})
+			},
 			StartInteractiveDiagnostics: startInteractiveDiagnostics,
 			ResumeChat:                  resumeChatSession,
 			NewSharePublisher:           newSessionSharePublisher,

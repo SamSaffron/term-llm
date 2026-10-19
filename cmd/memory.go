@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
@@ -65,8 +67,10 @@ func memoryEnv() memory.Env {
 			ApplyAskProviderOverrides: func(cfg *config.Config) error {
 				return applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, "", "", "")
 			},
-			NewEngine:          newEngine,
-			SessionStoreConfig: sessionStoreConfig,
+			NewEngine: newEngine,
+			SessionStoreConfig: func(cfg *config.Config) session.Config {
+				return appruntime.SessionStoreConfigWith(cfg, appruntime.SessionStoreOverrides{NoSession: noSession, DBPath: sessionDBPath})
+			},
 			ParseTags:          parseTags,
 			FormatRelativeTime: formatRelativeTime,
 			FormatBytes:        formatBytes,

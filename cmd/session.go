@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -21,7 +20,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -138,66 +136,6 @@ func (cli CLIFlags) applyActiveLLM(provider, model string) (string, string) {
 		return active, strings.TrimSpace(cli.ActiveModel)
 	}
 	return provider, model
-}
-
-// LoadAgent loads and validates an agent by name or path.
-// Returns nil if agentName is empty.
-// If agentName contains a path separator, it is loaded directly from the filesystem.
-// Otherwise, it is looked up in the agent registry.
-func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
-	if agentName == "" {
-		return nil, nil
-	}
-
-	// If the value contains a path separator, load directly from filesystem
-	if agents.IsAgentPath(agentName) {
-		agent, err := agents.LoadFromPath(agentName)
-		if err != nil {
-			return nil, fmt.Errorf("load agent from path: %w", err)
-		}
-		if err := agent.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid agent at %s: %w", agentName, err)
-		}
-		// Apply preferences by agent name if configured
-		if pref, ok := cfg.Agents.Preferences[agent.Name]; ok {
-			agent.Merge(pref)
-		}
-		return agent, nil
-	}
-
-	registry, err := agents.NewRegistry(agents.RegistryConfig{
-		UseBuiltin:  cfg.Agents.UseBuiltin,
-		SearchPaths: cfg.Agents.SearchPaths,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create agent registry: %w", err)
-	}
-
-	// Apply agent preferences from config
-	registry.SetPreferences(cfg.Agents.Preferences)
-
-	agent, err := registry.Get(agentName)
-	if err != nil {
-		return nil, fmt.Errorf("load agent: %w", err)
-	}
-
-	if err := agent.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid agent: %w", err)
-	}
-
-	return agent, nil
-}
-
-// ListAgentNames returns all available agent names for completions.
-func ListAgentNames(cfg *config.Config) ([]string, error) {
-	registry, err := agents.NewRegistry(agents.RegistryConfig{
-		UseBuiltin:  cfg.Agents.UseBuiltin,
-		SearchPaths: cfg.Agents.SearchPaths,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return registry.ListNames()
 }
 
 // ResolveSettings merges config, agent, and CLI flags into final settings.
@@ -784,20 +722,6 @@ func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.To
 	return runner, nil
 }
 
-func sessionStoreConfig(cfg *config.Config) session.Config {
-	path := strings.TrimSpace(cfg.Sessions.Path)
-	if cliPath := strings.TrimSpace(sessionDBPath); cliPath != "" {
-		path = cliPath
-	}
-	return session.Config{
-		Enabled:          cfg.Sessions.Enabled && !noSession,
-		MaxAgeDays:       cfg.Sessions.MaxAgeDays,
-		MaxCount:         cfg.Sessions.MaxCount,
-		Path:             path,
-		StripImageBase64: cfg.Sessions.StripImageBase64,
-	}
-}
-
 // ensureRequestSessionID returns a stable request/session key for provider-side
 // continuity and prompt caching. This is intentionally independent of the local
 // session store so --no-session only disables DB persistence, not upstream cache hints.
@@ -819,134 +743,6 @@ func applyPersistedContextEstimate(engine *engine.Engine, sess *session.Session)
 		return
 	}
 	engine.SetContextEstimateBaseline(sess.LastTotalTokens, sess.LastMessageCount)
-}
-
-// InitSessionStore creates a session store if enabled in config.
-// Returns the store (may be nil if disabled) and a cleanup function.
-// The cleanup function is always safe to call (handles nil store).
-// Warnings are written to errWriter.
-func InitSessionStore(cfg *config.Config, errWriter io.Writer) (session.Store, func()) {
-	storeCfg := sessionStoreConfig(cfg)
-	if !storeCfg.Enabled {
-		return nil, func() {}
-	}
-
-	store, err := session.NewStore(storeCfg)
-	if err != nil {
-		// Check if this is a schema error that can be recovered by reset
-		if isSchemaError(err) {
-			dbPath, _ := session.ResolveDBPath(storeCfg.Path)
-			fmt.Fprintf(errWriter, "Session database has schema errors: %v\n\n", err)
-			fmt.Fprintf(errWriter, "Would you like to reset the sessions database? [y/N]: ")
-
-			if promptForReset() {
-				if resetErr := resetSessionDatabase(storeCfg.Path); resetErr != nil {
-					fmt.Fprintf(errWriter, "warning: failed to reset database: %v\n", resetErr)
-					return nil, func() {}
-				}
-				fmt.Fprintln(errWriter, "Session database reset. Creating new store...")
-				// Retry store creation
-				store, err = session.NewStore(storeCfg)
-				if err != nil {
-					fmt.Fprintf(errWriter, "warning: session store still unavailable after reset: %v\n", err)
-					return nil, func() {}
-				}
-			} else {
-				fmt.Fprintf(errWriter, "\nTo fix manually, run: term-llm sessions reset\n")
-				fmt.Fprintf(errWriter, "Or delete: %s\n", dbPath)
-				return nil, func() {}
-			}
-		} else {
-			fmt.Fprintf(errWriter, "warning: session store unavailable: %v\n", err)
-			return nil, func() {}
-		}
-	}
-
-	// Wrap store with logging to surface persistence errors
-	store = session.NewLoggingStore(store, func(format string, args ...any) {
-		fmt.Fprintf(errWriter, "warning: "+format+"\n", args...)
-	})
-
-	cleanup := func() {
-		if store != nil {
-			store.Close()
-		}
-	}
-
-	return store, cleanup
-}
-
-// isSchemaError checks if an error indicates a database schema problem
-// that could be fixed by resetting the database.
-func isSchemaError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	schemaPatterns := []string{
-		"no such column",
-		"no such table",
-		"SQL logic error",
-		"database disk image is malformed",
-		"file is not a database",
-		"create base schema",
-		"initialize schema",
-	}
-	for _, pattern := range schemaPatterns {
-		if strings.Contains(errStr, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// promptForReset asks the user if they want to reset the session database.
-// Returns true if user confirms with 'y' or 'yes'.
-func promptForReset() bool {
-	if !terminalpolicy.OutputInteractive(os.Stderr) {
-		return false
-	}
-
-	// Use /dev/tty directly; never consume redirected stdin for an implicit,
-	// destructive recovery prompt.
-	tty, err := os.Open("/dev/tty")
-	if err != nil {
-		return false
-	}
-	defer tty.Close()
-
-	reader := bufio.NewReader(tty)
-	response, err := reader.ReadString('\n')
-	if err != nil {
-		return false
-	}
-	response = strings.TrimSpace(strings.ToLower(response))
-	return response == "yes" || response == "y"
-}
-
-// resetSessionDatabase deletes the session database files.
-func resetSessionDatabase(pathOverride string) error {
-	dbPath, err := session.ResolveDBPath(pathOverride)
-	if err != nil {
-		return fmt.Errorf("get db path: %w", err)
-	}
-	if dbPath == ":memory:" {
-		return nil
-	}
-
-	filesToDelete := []string{
-		dbPath,
-		dbPath + "-wal",
-		dbPath + "-shm",
-	}
-
-	for _, f := range filesToDelete {
-		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("delete %s: %w", f, err)
-		}
-	}
-
-	return nil
 }
 
 // SetupSkills initializes the skills system if enabled.

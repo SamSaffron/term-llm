@@ -2,9 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
@@ -47,20 +44,6 @@ func wireStaticAgentModelAdmission(cfg *config.Config, mgr *tools.ToolManager, s
 	}
 }
 
-// loadPersistedAgent permits a removed definition without lifting any policy
-// already stored on its session. Invalid existing definitions fail closed.
 func loadPersistedAgent(name string, cfg *config.Config) (*agents.Agent, error) {
-	agent, err := LoadAgent(name, cfg)
-	if err == nil {
-		return agent, nil
-	}
-	if errors.Is(err, agents.ErrNotFound) {
-		return nil, nil
-	}
-	if agents.IsAgentPath(name) {
-		if _, statErr := os.Stat(filepath.Join(name, "agent.yaml")); errors.Is(statErr, os.ErrNotExist) {
-			return nil, nil
-		}
-	}
-	return nil, err
+	return runtime.LoadPersistedAgent(name, cfg)
 }
