@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -20,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/tui/chat/agentbarrier"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -780,14 +782,20 @@ func (m *Model) refreshStreamGoalElapsed(streamStarted time.Time) tea.Cmd {
 // own structured, literal command result without re-running composer semantics
 // such as @ mentions, pasted placeholders, or attachment expansion.
 func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea.Cmd) (tea.Model, tea.Cmd) {
-	// Clear input and attachments
-	m.resetPromptHistory()
-	m.setTextareaValue("")
-	m.hideMentionPopup()
-	m.files = nil
-	m.images = nil
-	m.selectedImage = -1
-	m.pasteChunks = nil
+	return m.beginResponse(content, userDisplay, preSendCmds, nil)
+}
+
+func (m *Model) beginResponse(content, userDisplay string, preSendCmds []tea.Cmd, barrier *agentBarrierTurn) (tea.Model, tea.Cmd) {
+	if barrier == nil {
+		// Clear input and attachments
+		m.resetPromptHistory()
+		m.setTextareaValue("")
+		m.hideMentionPopup()
+		m.files = nil
+		m.images = nil
+		m.selectedImage = -1
+		m.pasteChunks = nil
+	}
 
 	// Start streaming
 	m.beginMainStreamEpoch()
@@ -842,11 +850,16 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	m.smoothTickPending = false
 	m.streamRenderTickPending = false
 
+	start := m.startStreamTurn(content, barrier)
+	if barrier != nil && barrier.background {
+		return m, start
+	}
+
 	// Start the stream. In alt screen mode, View() renders history including the
 	// user message. Inline mode prints the prepared user turn to scrollback first.
 	if m.altScreen {
 		cmds := []tea.Cmd{
-			m.startStream(content),
+			start,
 			refreshGoalElapsedCmd,
 			m.spinner.Tick,
 			m.tickEvery(),
@@ -856,7 +869,7 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 		return m, tea.Batch(cmds...)
 	}
 	asyncCmds := []tea.Cmd{
-		m.startStream(content),
+		start,
 		refreshGoalElapsedCmd,
 		m.spinner.Tick,
 		m.tickEvery(),
@@ -867,51 +880,18 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	return m, cmd
 }
 
-// claimStreamTurnLease takes the claim sendMessage made before its first write,
-// or claims the turn for resumed and synthetic turns (reload resume, steering
-// flush, direct shell). A displaced active claim is released, never leaked.
-func (m *Model) claimStreamTurnLease(ctx context.Context, sessionID string) (*turnLease, error) {
-	lease := m.pendingTurnLease.Swap(nil)
-	if lease == nil {
-		claimed, err := m.acquireTurnLease(ctx, sessionID)
-		if err != nil {
-			return nil, err
-		}
-		lease = claimed
-	}
-	if lease != nil {
-		m.releaseTurnLease(m.activeTurnLease.Swap(lease), session.ResponseRunCancelled)
-	}
-	return lease, nil
-}
-
-// finalizeMainRunTurn writes the terminal status while this process still owns
-// the turn, then releases the lease; releasing first would let a successor's
-// Active status be overwritten by this stale terminal write. A suspended run
-// keeps its lease for suspendForReload, which still rewrites under its fence.
-func (m *Model) finalizeMainRunTurn(lease *turnLease, sessionID string, runErr error) {
-	status := session.StatusComplete
-	var suspended *engine.SuspendedError
-	if errors.As(runErr, &suspended) {
-		status = session.StatusActive
-	} else if runErr != nil {
-		status = session.StatusError
-		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
-			status = session.StatusInterrupted
-		}
-	}
-	if m.store != nil {
-		_ = m.store.UpdateStatus(context.Background(), sessionID, status)
-	}
-	if suspended == nil {
-		m.releaseTurnLease(lease, turnLeaseOutcome(runErr))
-	}
-}
-
 func (m *Model) startStream(content string) tea.Cmd {
+	return m.startStreamTurn(content, nil)
+}
+
+func (m *Model) startStreamTurn(content string, barrier *agentBarrierTurn) tea.Cmd {
 	continuation := m.reloadContinuation
 	m.reloadContinuation = nil
 	steeringOperationID := m.steeringHandoff
+	runID := "tui-run-" + session.NewID()
+	if steeringOperationID != "" {
+		runID = "tui-rush-" + steeringOperationID
+	}
 	ctx := m.rootContext()
 	release := func() {}
 	if m.reloadEnabled {
@@ -931,16 +911,20 @@ func (m *Model) startStream(content string) tea.Cmd {
 	m.streamCancelFunc = func() {
 		cancel()
 		if m.mainRunManager != nil {
-			m.mainRunManager.Cancel(sessionID)
+			m.mainRunManager.Stop(sessionID, runID)
 		}
 	}
 	m.setStreamCancelRequested(false)
+	explicitStop := &atomic.Bool{}
+	m.agentUserStop.Store(explicitStop)
+	m.agentBarrierStarting.Store(true)
 
-	return func() tea.Msg {
+	command := func() tea.Msg {
+		defer m.agentBarrierStarting.Store(false)
 		defer release()
 		lease, err := m.claimStreamTurnLease(ctx, sessionID)
 		if err != nil {
-			return streamEventMsg{event: ui.ErrorEvent(errors.New(turnLeaseRefusal(err))), generation: streamGeneration}
+			return streamEventMsg{event: ui.ErrorEvent(fmt.Errorf("%s: %w", turnLeaseRefusal(err), err)), generation: streamGeneration}
 		}
 		// Mark session as active when starting a new stream
 		if m.store != nil && m.sess != nil {
@@ -1066,6 +1050,10 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}
 
 		runWithAdapter := func(runCtx context.Context, streamAdapter *ui.StreamAdapter) {
+			if err := agentbarrier.CheckRun(runCtx); err != nil {
+				streamAdapter.EmitErrorAndClose(err)
+				return
+			}
 			if m.runner != nil {
 				includeConfiguredTools := false
 				searchEnabled := m.searchEnabled
@@ -1124,26 +1112,32 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}
 
 		if m.mainRunManager != nil {
-			if err := ctx.Err(); err != nil {
+			if err := ctx.Err(); err != nil && (barrier == nil || !explicitStop.Load()) {
 				m.releaseTurnLease(lease, session.ResponseRunCancelled)
 				return streamEventMsg{event: ui.ErrorEvent(err), generation: streamGeneration}
 			}
 			runSessionID := req.SessionID
 			snapshot, err := m.mainRunManager.Start(runSessionID, MainRunExecution{
 				Reloadable:          m.reloadEnabled,
+				AgentBarrier:        barrier != nil,
+				UserStop:            explicitStop,
 				Context:             ctx,
 				SteeringOperationID: steeringOperationID,
-				RunID: func() string {
-					if steeringOperationID != "" {
-						return "tui-rush-" + steeringOperationID
-					}
-					return ""
-				}(),
+				RunID:               runID,
 				Execute: func(runCtx context.Context, emit func(ui.StreamEvent)) error {
 					// Every transcript write of this run inherits the lease fence, so
 					// a run that loses ownership cannot commit late output.
-					runCtx = lease.context(runCtx)
-					lease.startRenewals(runCtx, func() { m.mainRunManager.Cancel(runSessionID) })
+					runCtx = agentbarrier.RunContext(lease.context(runCtx), runSessionID, explicitStop, barrier != nil, m.mainRunManager.signalAgentBarrier)
+					settleCtx, settleCancel := m.agentBarrierSettlementContext(lease, runSessionID, runID)
+					defer settleCancel()
+					if barrier != nil {
+						var err error
+						messages, err = m.persistAgentBarrierNotice(runCtx, runID, barrier, messages, boundary)
+						if err != nil {
+							return agentbarrier.Complete(runCtx, settleCtx, m.mainRunManager.ctx, session.AsAgentRunDeliveryStore(m.store), explicitStop, barrier.offeredEvents(), err)
+						}
+						req.Messages = messages
+					}
 					runCtx = tools.ContextWithAskUserUIFunc(runCtx, func(promptCtx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
 						done := make(chan []tools.AskUserAnswer, 1)
 						if err := m.mainRunManager.DeliverUI(runSessionID, AskUserRequestMsg{Questions: questions, DoneCh: done}); err != nil {
@@ -1182,7 +1176,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 						emit(event)
 					}
 					<-done
-					return runErr
+					return agentbarrier.Complete(runCtx, settleCtx, m.mainRunManager.ctx, session.AsAgentRunDeliveryStore(m.store), explicitStop, barrier.offeredEvents(), runErr)
 				},
 				Finalize: func(runErr error) { m.finalizeMainRunTurn(lease, runSessionID, runErr) },
 				QueueSteering: func(steering engine.QueuedSteering) engine.SteeringQueueStatus {
@@ -1248,6 +1242,13 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}()
 		return m.listenForStreamEventsSync(streamGeneration)
 	}
+	if barrier == nil {
+		return command
+	}
+	return func() tea.Msg {
+		result := command()
+		return AgentBarrierMsg{manager: m.mainRunManager, coordinator: barrier.coordinator, result: result}
+	}
 }
 
 func (m *Model) attachMainRun(sessionID string) tea.Cmd {
@@ -1286,6 +1287,9 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 	if snapshot.RunID == "" {
 		detach()
 		return nil
+	}
+	if snapshot.AgentBarrier {
+		_, _ = m.showFooterMuted(agentBarrierNotice)
 	}
 	if !snapshot.Active {
 		detach()
@@ -1356,7 +1360,7 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 	m.beginMainStreamEpoch()
 	m.streaming = true
 	m.streamDone = snapshot.Done
-	m.streamCancelFunc = func() { m.mainRunManager.Cancel(sessionID) }
+	m.streamCancelFunc = func() { m.mainRunManager.Stop(sessionID, snapshot.RunID) }
 	// The manager owns this run's context. UI terminal cleanup has no local
 	// resource to cancel and must not issue a session-wide Stop.
 	m.streamCleanupFunc = func() {}

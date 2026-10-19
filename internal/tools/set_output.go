@@ -94,6 +94,12 @@ func (t *SetOutputTool) Preview(args json.RawMessage) string {
 	return "" // No preview needed
 }
 
+// Reset clears the previous turn's captured output before another turn runs.
+func (t *SetOutputTool) Reset() {
+	t.value = ""
+	t.captured = false
+}
+
 // Value returns the captured output value.
 func (t *SetOutputTool) Value() string {
 	return t.value

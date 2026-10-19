@@ -29,8 +29,8 @@ type queueAgentOriginContextKey struct{}
 type subagentEventCallbackContextKey struct{}
 type agentCompletionWakeKey struct{}
 
-// ContextWithAgentCompletionWake installs a trusted host callback. A child may
-// opt into waking its own parent, but cannot select another session or target.
+// ContextWithAgentCompletionWake installs a trusted host callback. Every child
+// finish signals it, independently of notify_when_done; the host checks eligibility.
 func ContextWithAgentCompletionWake(ctx context.Context, wake func(string)) context.Context {
 	return context.WithValue(ctx, agentCompletionWakeKey{}, wake)
 }
@@ -94,4 +94,23 @@ type agentRecoveryNoticeKey struct{}
 
 func ContextWithAgentRecoveryNotice(ctx context.Context) context.Context {
 	return context.WithValue(ctx, agentRecoveryNoticeKey{}, true)
+}
+
+// ContextWithAgentLifecycleWake installs the unconditional lifecycle signal.
+// The callback must only schedule host reconciliation, never run a turn inline.
+func ContextWithAgentLifecycleWake(ctx context.Context, wake func(string)) context.Context {
+	return ContextWithAgentCompletionWake(ctx, wake)
+}
+
+type agentLifecycleRestrictedKey struct{}
+
+// ContextWithAgentLifecycleRestricted prevents lifecycle reserve turns from
+// creating or continuing work, even if the provider emits those tool calls.
+func ContextWithAgentLifecycleRestricted(ctx context.Context) context.Context {
+	return context.WithValue(ctx, agentLifecycleRestrictedKey{}, true)
+}
+
+func agentLifecycleRestricted(ctx context.Context) bool {
+	restricted, _ := ctx.Value(agentLifecycleRestrictedKey{}).(bool)
+	return restricted
 }

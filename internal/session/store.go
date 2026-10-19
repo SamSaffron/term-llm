@@ -218,7 +218,9 @@ var (
 type ResponseRunAdmission struct {
 	// AgentEvents fences a host wake against collection/stop/new generations
 	// in the same transaction as durable parent admission; only ID/generation matter.
-	AgentEvents     []AgentRun
+	AgentEvents []AgentRun
+	// AgentBarrier additionally fences against any outstanding direct children.
+	AgentBarrier    bool
 	ResponseID      string
 	SessionID       string
 	RunEpoch        int64

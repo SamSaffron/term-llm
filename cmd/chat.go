@@ -984,11 +984,14 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 }
 
 // disposeChatSessionRuntime releases a runtime replaced by an in-process
-// session switch. When the outgoing session still owns an active background
-// run, the MainRunManager adopts cleanup and runs it after execution stops;
-// otherwise cleanup happens off the UI goroutine after a bounded stream drain.
+// session switch. Pending child lifecycle delivery retains its execution
+// resources, even between main runs. Otherwise an active main run adopts cleanup,
+// or cleanup runs off the UI goroutine after a bounded stream drain.
 func disposeChatSessionRuntime(rt *chatSessionRuntime, mainRuns *chat.MainRunManager) {
 	if rt == nil {
+		return
+	}
+	if mainRuns != nil && mainRuns.AdoptAgentWakeResources(rt.model.SessionID(), rt.cleanupResources) {
 		return
 	}
 	if mainRuns != nil && mainRuns.AdoptResources(rt.model.SessionID(), rt.cleanupResources) {

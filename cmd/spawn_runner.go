@@ -204,6 +204,17 @@ func (r *SpawnAgentRunner) OutstandingAgentIDs() []string {
 	return r.lifecycle.OutstandingAgentIDs()
 }
 
+// WaitForChildren blocks until every local child of parent has finished,
+// without draining the runner. A delegated child uses it to stay alive until
+// its own children finish and can still delegate from a lifecycle turn that has
+// budget left, unlike Drain, which permanently prevents new runs.
+func (r *SpawnAgentRunner) WaitForChildren(ctx context.Context, parent string) error {
+	if r == nil || r.lifecycle == nil || strings.TrimSpace(parent) == "" {
+		return nil
+	}
+	return r.lifecycle.WaitForChildren(ctx, parent)
+}
+
 func (r *SpawnAgentRunner) Drain(ctx context.Context) error {
 	if r.lifecycle != nil {
 		if err := r.lifecycle.Drain(ctx); err != nil {
@@ -719,6 +730,19 @@ func (s *spawnRunSink) Output() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.output.Response()
+}
+
+// BeginChildTurn starts a new turn of the same delegated run. The settled
+// turn's accumulated output is dropped so the child's reported output is the
+// final response of the lifecycle turn that produced it, never every turn
+// concatenated. Usage already streamed to the host stays accounted for.
+func (s *spawnRunSink) BeginChildTurn() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.output = runtime.RunnerOutput{}
+	s.mu.Unlock()
 }
 
 // SetResolvedModel replaces the preview identity with the actual runner model.

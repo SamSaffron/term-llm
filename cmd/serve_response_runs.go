@@ -205,6 +205,7 @@ type startResponseRunOptions struct {
 	requestFingerprint         string
 	notificationSubscriptionID string
 	agentEvents                []session.AgentRun
+	agentBarrier               bool // admission requires every direct child to be terminal
 	agentCompletion            bool // host-owned wake, never user-authored input
 	onDone                     func()
 	onRuntimeDone              func() // detach borrowed runtime before executor-owned close

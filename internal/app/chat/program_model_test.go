@@ -277,3 +277,21 @@ func typeName(value any) string {
 	}
 	return typeInfo.Name()
 }
+
+func TestScopeChatProgramCmdKeepsAgentBarrierHostOwnedAcrossSessionSwitch(t *testing.T) {
+	// A completion/admission result is not an old view's stream message. It must
+	// survive even though an ordinary application command from generation 1 is
+	// rejected after the visible session is replaced by generation 2.
+	command := scopeChatProgramCmd(func() tea.Msg { return tuichat.AgentBarrierMsg{} }, 1)
+	host := newProgramModelForChild(&lifecycleProgramTestModel{}, nil)
+	host.model = &lifecycleProgramTestModel{snapshot: lifecycle.Snapshot{SessionID: "replacement"}}
+	host.generation = 2
+	message := command()
+	if _, ok := message.(tuichat.AgentBarrierMsg); !ok {
+		t.Fatalf("host wake was scoped to old displayed session: %T", message)
+	}
+	updated, _ := host.Update(message)
+	if updated != host || host.generation != 2 {
+		t.Fatal("host wake changed displayed-session ownership")
+	}
+}

@@ -447,17 +447,21 @@ type Model struct {
 	// provider. Side questions read it from their own goroutine.
 	mainStreamEpoch atomic.Uint64
 
-	mainRunManager      *MainRunManager
-	mainRunLive         <-chan MainRunEvent
-	mainRunCoalescer    *mainRunEventCoalescer
-	mainRunReplay       []MainRunEvent
-	mainRunDetach       func()
-	mainRunUIDetach     func()
-	mainRunID           string
-	mainRunSubscription uint64
-	mainRunLastSeq      uint64
-	mainRunViewComplete bool
-	backgroundRunCount  int
+	agentBarrierSkillWork atomic.Int64
+	agentBarrierAdmitting atomic.Bool
+	agentBarrierStarting  atomic.Bool
+	agentUserStop         atomic.Pointer[atomic.Bool]
+	mainRunManager        *MainRunManager
+	mainRunLive           <-chan MainRunEvent
+	mainRunCoalescer      *mainRunEventCoalescer
+	mainRunReplay         []MainRunEvent
+	mainRunDetach         func()
+	mainRunUIDetach       func()
+	mainRunID             string
+	mainRunSubscription   uint64
+	mainRunLastSeq        uint64
+	mainRunViewComplete   bool
+	backgroundRunCount    int
 
 	// In-process session switching (nil switcher falls back to quit+relaunch).
 	sessionSwitcher      SessionSwitcher
@@ -669,6 +673,13 @@ func (m *Model) releaseStreamCancelFunc() {
 }
 
 func (m *Model) setStreamCancelRequested(requested bool) {
+	if requested {
+		if m.mainRunManager != nil && m.mainRunID != "" {
+			m.mainRunManager.Stop(m.SessionID(), m.mainRunID)
+		} else if stopped := m.agentUserStop.Load(); stopped != nil {
+			stopped.Store(true)
+		}
+	}
 	if m.streamCancelRequested == nil {
 		return
 	}
@@ -1885,17 +1896,6 @@ func (m *Model) SetChildRunner(runner runpkg.ChildRunner) {
 	m.childRunner = runner
 }
 
-// SetProgram gives the model a handle to the running Bubble Tea program for
-// model wakeups that originate outside the Update loop.
-func (m *Model) SetProgram(p *tea.Program) {
-	m.program = p
-}
-
-// SetMainRunManager attaches process-scoped execution ownership to this model.
-func (m *Model) SetMainRunManager(manager *MainRunManager) {
-	m.mainRunManager = manager
-}
-
 // AttachMainRunUISink routes session-owned prompts to the currently visible
 // Bubble Tea program. Navigation detaches it before the program exits so a
 // background run retains later prompts for the next attachment.
@@ -2497,6 +2497,10 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	}
 	if timeoutMsg, ok := msg.(streamCancelTimeoutMsg); ok {
 		return m.handleStreamCancelTimeout(timeoutMsg)
+	}
+	if notice, ok := msg.(agentBarrierNoticeMsg); ok {
+		m.applyAgentBarrierNotice(notice)
+		return m, nil
 	}
 	if started, ok := msg.(mainRunStartedMsg); ok {
 		if started.generation != m.streamGeneration || started.sessionID != m.SessionID() {

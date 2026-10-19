@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -58,6 +59,7 @@ type childRunHandle struct {
 	interventions   []childRunIntervention
 	cancelledByUser bool
 	finished        bool
+	readyPublished  bool
 	endedAt         int64
 	status          session.SessionStatus
 }
@@ -173,57 +175,85 @@ func truncateChildText(text string, limit int) string {
 	return string(runes[:limit]) + "…"
 }
 
-// Execute hands the prepared child runtime to the same response executor used
-// by POST /v1/responses. The runtime is temporarily attached to sessionMgr so
-// ordinary session state, steering, approvals and ask-user handlers address it.
-func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, onEvent func(core.Event) error) (serveRunResult, error) {
+// Execute runs the delegated child's turns on the borrowed runtime: the child's
+// own turn first, then the host-owned lifecycle turns that deliver its finished
+// children's results. The runtime is retained for the whole run, so a lifecycle
+// turn keeps the child's history, tools and approvals, while every turn still
+// goes through the ordinary response-run ownership.
+func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, sink runpkg.EventSink) (runpkg.Result, error) {
 	if h == nil || h.srv == nil || env == nil || env.runtime == nil {
-		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child runtime is unavailable")}
+		return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child runtime is unavailable")}
 	}
 	if h.srv.sessionMgr == nil {
-		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child session manager is unavailable")}
+		return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child session manager is unavailable")}
 	}
 	// The local Prompt mode delegates enforcement to the parent; it is not
 	// the configured default shown by the web approval controls.
 	env.runtime.approvalDefault = h.srv.approvalDefault
 	release, err := h.srv.sessionMgr.attachBorrowedRuntime(env.req.SessionID, env.runtime)
 	if err != nil {
-		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: err}
+		return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: err}
 	}
-	var result serveRunResult
-	var executionErr error
-	run, err := h.srv.startResponseRun(env.runtime, env.req.Stateful, env.req.ReplaceHistory, env.inputMessages, env.llmReq, env.req.SessionID, startResponseRunOptions{
-		parentContext: ctx,
-		onRuntimeDone: release,
-		onEvent: func(event core.Event) error {
-			h.observeEvent(event)
-			if onEvent != nil {
-				return onEvent(event)
+	defer release()
+	result, runErr := env.runChildLifecycleTurns(ctx, sink, h.runtimeTurn(env))
+	// startResponseRun unregisters response IDs only for runtimes it closes.
+	// This one is retained for the whole delegated run and closed by the
+	// environment afterwards, so its response IDs are released here.
+	h.srv.unregisterResponseIDs(env.runtime)
+	return result, runErr
+}
+
+// runtimeTurn executes exactly one response-run turn of this delegated child.
+// Run ownership, approvals, ask-user routing and event projection stay with the
+// server, exactly as for a single-turn child.
+func (h *childRunHandle) runtimeTurn(env *cmdRunEnvironment) childLifecycleTurn {
+	return func(ctx context.Context, own bool, messages []core.Message, llmReq core.Request, onEvent func(core.Event) error) (serveRunResult, error) {
+		var result serveRunResult
+		var executionErr error
+		run, err := h.srv.startResponseRun(env.runtime, env.childTurnsStateful(), own && env.req.ReplaceHistory, messages, llmReq, env.req.SessionID, startResponseRunOptions{
+			parentContext: ctx,
+			// A non-nil hook keeps startResponseRun from pinning this runtime:
+			// Execute already holds the borrowed-runtime reservation for the
+			// whole run, so pinning the same session would be rejected as busy.
+			// Execute detaches it once every turn, including lifecycle turns,
+			// has settled.
+			onRuntimeDone: func() {},
+			onEvent: func(event core.Event) error {
+				h.observeEvent(event)
+				if onEvent != nil {
+					return onEvent(event)
+				}
+				return nil
+			},
+			onResult: func(completed serveRunResult, runErr error) {
+				result, executionErr = completed, runErr
+			},
+		})
+		if err != nil {
+			if own {
+				return serveRunResult{}, &tools.AgentRunAdmissionError{Err: err}
 			}
-			return nil
-		},
-		onResult: func(completed serveRunResult, runErr error) {
-			result, executionErr = completed, runErr
-		},
-	})
-	if err != nil {
-		release()
-		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: err}
+			return serveRunResult{}, err
+		}
+		h.publishReady()
+		<-run.settled
+		return result, executionErr
 	}
-	// startResponseRun owns and closes a non-stateful runtime. It never closes
-	// a stateful one, which a resumed child (continue_agent) always is, so env
-	// keeps ownership and closes it after the run settles.
-	if !env.req.Stateful {
-		env.runtime = nil
+}
+
+// publishReady announces the admitted delegated run once, exactly as a
+// single-turn child did when its response run was created.
+func (h *childRunHandle) publishReady() {
+	if h == nil || h.srv == nil {
+		return
 	}
-	h.srv.publishChildrenChanged(h.childSessionID, h.parentSessionID, "subagent_ready")
-	<-run.settled
-	if env.runtime != nil {
-		// startResponseRun unregisters response IDs only for runtimes it
-		// closes; this stateful one is closed by env, so release them here.
-		h.srv.unregisterResponseIDs(env.runtime)
+	h.mu.Lock()
+	first := !h.readyPublished
+	h.readyPublished = true
+	h.mu.Unlock()
+	if first {
+		h.srv.publishChildrenChanged(h.childSessionID, h.parentSessionID, "subagent_ready")
 	}
-	return result, executionErr
 }
 
 func (h *childRunHandle) observeEvent(event core.Event) {

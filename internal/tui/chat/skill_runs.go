@@ -83,6 +83,7 @@ func (m *Model) startIsolatedSkillActivation(activation *skills.Activation, disp
 		Activation:        activation,
 		DisplayInvocation: displayInvocation,
 	}
+	m.agentBarrierSkillWork.Add(1)
 	m.skillRuns[runID] = state
 	if !m.streaming {
 		// A standalone isolated run owns the transient tool stream. Drop the
@@ -137,6 +138,7 @@ func (m *Model) startIsolatedSkillActivation(activation *skills.Activation, disp
 		}
 	}
 	runCmd := func() tea.Msg {
+		defer m.agentBarrierSkillWork.Add(-1)
 		defer close(progressDone)
 		defer cancel()
 		result, err := m.childRunner.RunChild(ctx, request, callback)

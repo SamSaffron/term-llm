@@ -29,6 +29,7 @@ type webRunContinuation struct {
 	UI              bool
 	ClientTools     bool
 	AgentCompletion bool
+	AgentBarrier    bool
 	AgentEvents     []session.AgentRun
 	Notification    string
 	View            webRunView
@@ -115,7 +116,7 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *co
 	if run.persistence.failed || run.persistence.inflight != 0 {
 		return nil, errors.New("response persistence is not settled for reload")
 	}
-	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil, Notification: options.notificationSubscriptionID, AgentCompletion: options.agentCompletion, AgentEvents: options.agentEvents,
+	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil, Notification: options.notificationSubscriptionID, AgentCompletion: options.agentCompletion, AgentBarrier: options.agentBarrier, AgentEvents: options.agentEvents,
 		Ledger: webLedgerView{run.persistence.maxRev, run.persistence.outputKeys, run.persistence.nextOutputID},
 		Stream: webStreamView{stream.outputIndex, stream.toolsSeen, stream.assistantBoundaryPending, stream.assistantSegmentOrdinal, stream.model, stream.reasoningEffort, stream.reasoningEffortSet, stream.toolStartedAt},
 		View: webRunView{
@@ -307,7 +308,7 @@ func (s *serveServer) resumeWebRun(saved *webRunContinuation, owner string) erro
 	rt.cumulativeUsage = saved.CumulativeUsage
 	request := saved.Engine.Request
 	request.Resume = saved.Engine
-	options := startResponseRunOptions{agentCompletion: saved.AgentCompletion, agentEvents: saved.AgentEvents, resume: saved, uiSession: saved.UI, notificationSubscriptionID: saved.Notification, previousResponseID: saved.View.PreviousResponseID}
+	options := startResponseRunOptions{agentCompletion: saved.AgentCompletion, agentBarrier: saved.AgentBarrier, agentEvents: saved.AgentEvents, resume: saved, uiSession: saved.UI, notificationSubscriptionID: saved.Notification, previousResponseID: saved.View.PreviousResponseID}
 	if saved.ClientTools {
 		options.clientToolRunner = s.typedClientToolRunner(rt, request.Tools)
 	}

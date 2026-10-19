@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +82,34 @@ func TestSetOutputToolTypedSchemaRejectsNonObjects(t *testing.T) {
 			}
 			if tool.Captured() {
 				t.Fatal("Captured() = true after invalid arguments")
+			}
+		})
+	}
+}
+
+func TestSetOutputToolReset(t *testing.T) {
+	for _, typed := range []bool{false, true} {
+		t.Run(fmt.Sprint("typed=", typed), func(t *testing.T) {
+			var schema map[string]interface{}
+			if typed {
+				schema = map[string]interface{}{"type": "object"}
+			}
+			tool := NewSetOutputTool("submit_result", "", "Submit the result", schema)
+			if _, err := tool.Execute(context.Background(), json.RawMessage(`{"content":"prior turn"}`)); err != nil {
+				t.Fatal(err)
+			}
+			if !tool.Captured() || tool.Value() == "" {
+				t.Fatal("output was not captured")
+			}
+			tool.Reset()
+			if tool.Captured() || tool.Value() != "" {
+				t.Fatalf("stale output after reset: captured=%v value=%q", tool.Captured(), tool.Value())
+			}
+			if _, err := tool.Execute(context.Background(), json.RawMessage(`{"content":"next turn"}`)); err != nil {
+				t.Fatal(err)
+			}
+			if !tool.Captured() || !strings.Contains(tool.Value(), "next turn") {
+				t.Fatalf("capture after reset: %q", tool.Value())
 			}
 		})
 	}

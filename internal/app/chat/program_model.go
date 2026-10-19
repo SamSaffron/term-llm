@@ -92,7 +92,11 @@ func (m *ProgramModel) Init() tea.Cmd {
 	if m == nil || m.model == nil {
 		return nil
 	}
-	return batchChatProgramCmds(m.scope(m.model.Init()), m.initialLifecycleCmd)
+	var barrier tea.Cmd
+	if model, ok := m.model.(*tuichat.Model); ok {
+		barrier = model.AgentBarrierReconcileCmd()
+	}
+	return batchChatProgramCmds(m.scope(m.model.Init()), m.scope(barrier), m.initialLifecycleCmd)
 }
 
 func (m *ProgramModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -115,6 +119,10 @@ func (m *ProgramModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	if m == nil || m.model == nil {
 		return m, nil
+	}
+	if barrier, ok := message.(tuichat.AgentBarrierMsg); ok {
+		visible, _ := m.model.(*tuichat.Model)
+		return m, batchChatProgramCmds(m.scope(barrier.Update(visible)), m.publishLifecycle(false))
 	}
 	if refresh, ok := message.(lifecycleOSCRefreshMsg); ok {
 		if refresh.generation != m.lifecycleOSCGeneration {
@@ -248,6 +256,9 @@ func scopeChatProgramCmd(cmd tea.Cmd, generation uint64, ownership ...*chatComma
 		}
 		if message == nil {
 			return nil
+		}
+		if _, ok := message.(tuichat.AgentBarrierMsg); ok {
+			return message
 		}
 		if batch, ok := message.(tea.BatchMsg); ok {
 			scoped := make(tea.BatchMsg, 0, len(batch))

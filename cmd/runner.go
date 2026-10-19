@@ -166,34 +166,40 @@ func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.Eve
 	collector := &runnerEventCollector{sink: sink}
 	if hosted, ok := sink.(interface{ ChildRunSession() childRunSession }); ok {
 		if child := hosted.ChildRunSession(); child != nil {
-			serveResult, runErr := child.Execute(ctx, env, collector.Event)
-			result := collector.Result(env.req.SessionID)
-			result.Provider = env.provider.Name()
-			result.Model = env.modelName
-			result.Engine = env.engine
-			result.ProviderInstance = env.provider
-			if result.Response == "" {
-				result.Response = serveResult.Text.String()
-			}
-			return result, runErr
+			// A hosted child drives its own turns through the same lifecycle
+			// driver, on the runtime borrowed from this environment.
+			return child.Execute(ctx, env, sink)
 		}
 	}
 	if env.req.Progressive != nil {
+		// Progressive runs are job-owned (jobs-v2), never delegated children:
+		// no spawn path sets Progressive together with IsSubagent. Keep the
+		// branch explicit so a future caller cannot silently bypass the child
+		// barrier.
+		if env.req.IsSubagent {
+			runtimeoutput.Logf("[agents] delegated child %s requested a progressive run; the subagent barrier is not applied", env.req.SessionID)
+		}
 		return r.runProgressive(ctx, env.runtime, env.engine, env.llmReq, env.inputMessages, env.req, env.sess, env.store, env.provider, collector)
 	}
+	// A delegated child's run also owns the lifecycle turns that deliver its
+	// finished children's results. Every other run is a single turn.
+	return env.runChildLifecycleTurns(ctx, sink, env.directTurn)
+}
 
-	serveResult, err := env.runtime.RunWithEvents(ctx, env.req.Stateful, env.req.ReplaceHistory, env.inputMessages, env.llmReq, func(ev core.Event) error {
-		return collector.Event(ev)
-	})
-	result := collector.Result(env.req.SessionID)
-	result.Provider = env.provider.Name()
-	result.Model = env.modelName
-	result.Engine = env.engine
-	result.ProviderInstance = env.provider
-	if result.Response == "" {
-		result.Response = serveResult.Text.String()
-	}
-	return result, err
+// directTurn executes one turn on the runner's own runtime. It is the CLI-side
+// half of the shared single-turn operation used by both delegated paths.
+func (env *cmdRunEnvironment) directTurn(ctx context.Context, own bool, messages []core.Message, req core.Request, onEvent func(core.Event) error) (serveRunResult, error) {
+	// History replacement belongs to the child's own turn only: a lifecycle turn
+	// appended to the retained history must never wipe it.
+	replaceHistory := own && env.req.ReplaceHistory
+	return env.runtime.RunWithEvents(ctx, env.childTurnsStateful(), replaceHistory, messages, req, onEvent)
+}
+
+// childTurnsStateful reports whether a run's turns retain runtime state.
+// Lifecycle turns reuse the child's runtime and its history, so a delegated
+// child is always stateful; a resumed child already was.
+func (env *cmdRunEnvironment) childTurnsStateful() bool {
+	return env.req.IsSubagent || env.req.Stateful
 }
 
 // resolvedRunnerApprovalMode keeps runpkg.Request Auto/Yolo compatibility for

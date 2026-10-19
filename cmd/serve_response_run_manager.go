@@ -474,6 +474,7 @@ func (s *serveServer) startResponseLifecycle() {
 					return
 				case <-ticker.C:
 					s.sweepAndRenewResponseLifecycle(ctx, lifecycle, ownerID)
+					s.reconcileAgentWakes(ctx)
 				}
 			}
 		}()

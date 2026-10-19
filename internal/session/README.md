@@ -24,3 +24,11 @@ Migration 65 adds `session_attention.seen_rev` (default 0) and nullable `seen_so
 
 Do not run old and new binaries concurrently against this database. Older binaries are not supported after schema upgrade. Back up the database before upgrading; downgrade by stopping the server and restoring the backup, not by a destructive reverse migration.
 
+
+Migration 66 acknowledges historical unflagged terminal agent generations before
+unconditional parent barriers are enabled. It preserves pending eager notices,
+`host_restarted` interruptions, and all nonterminal rows. New generations are
+eligible regardless of notification origin or `notify_when_done`; collection,
+notification, and human-stop suppression remain generation scoped. The v65
+binary rejects v66 for read-write use; the table shape is unchanged for read-only
+inspection. Stop older writers before upgrading and restore a backup to downgrade.

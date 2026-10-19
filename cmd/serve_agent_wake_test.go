@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,5 +226,155 @@ func TestAgentInterruptedAfterRestartWakesParentWithoutResumingChild(t *testing.
 	run, err := store.GetAgentRun(context.Background(), "wake-child")
 	if err != nil || run.Status != "running" {
 		t.Fatalf("child was automatically resumed/rewritten: %+v %v", run, err)
+	}
+}
+
+func TestAgentBarrierWaitsForUnflaggedSiblingAndPreservesEagerCompatibility(t *testing.T) {
+	for _, eager := range []bool{false, true} {
+		t.Run(fmt.Sprint("eager=", eager), func(t *testing.T) {
+			provider := mockprovider.NewMockProvider("debug").AddTextResponse("first lifecycle").AddTextResponse("second lifecycle")
+			srv, store, _ := newAgentWakeFixture(t, provider)
+			first := putWakeRun(t, store, "completed")
+			first.NotifyWhenDone = eager
+			if !eager {
+				first.NotifyOrigin = ""
+			}
+			if err := store.PutAgentRun(context.Background(), first); err != nil {
+				t.Fatal(err)
+			}
+			second := first
+			second.ID, second.Status, second.StopReason, second.NotifyWhenDone, second.OwnerInstanceID = "outstanding-sibling", "running", "", false, "remote-owner"
+			if err := store.PutAgentRun(context.Background(), second); err != nil {
+				t.Fatal(err)
+			}
+			srv.wakeAgentParent(first.ParentSessionID)
+			srv.agentWakeWG.Wait()
+			want := 0
+			if eager {
+				want = 1
+			}
+			if provider.CurrentTurn() != want {
+				t.Fatalf("outstanding sibling: turns=%d want=%d", provider.CurrentTurn(), want)
+			}
+			second.Status, second.StopReason = "completed", "completed"
+			if err := store.PutAgentRun(context.Background(), second); err != nil {
+				t.Fatal(err)
+			}
+			// Periodic reconciliation, rather than a process-local callback,
+			// observes this remote child's completion.
+			srv.reconcileAgentWakes(context.Background())
+			srv.agentWakeWG.Wait()
+			if provider.CurrentTurn() != want+1 {
+				t.Fatalf("final barrier: turns=%d", provider.CurrentTurn())
+			}
+			for _, id := range []string{first.ID, second.ID} {
+				row, err := store.GetAgentRun(context.Background(), id)
+				if err != nil || row.NotifiedAt.IsZero() {
+					t.Fatalf("unacknowledged %s: %+v %v", id, row, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAgentBarrierRetriesProviderFailureAndWakesAfterFailedParent(t *testing.T) {
+	for _, initialHuman := range []bool{false, true} {
+		t.Run(fmt.Sprint("human=", initialHuman), func(t *testing.T) {
+			provider := mockprovider.NewMockProvider("debug").AddError(errors.New("injected provider failure")).AddTextResponse("recovered lifecycle")
+			srv, store, rt := newAgentWakeFixture(t, provider)
+			row := putWakeRun(t, store, "completed")
+			row.NotifyWhenDone, row.NotifyOrigin = false, ""
+			if err := store.PutAgentRun(context.Background(), row); err != nil {
+				t.Fatal(err)
+			}
+			if initialHuman {
+				run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("human task")}, core.Request{SessionID: row.ParentSessionID, Model: "fast"}, row.ParentSessionID, startResponseRunOptions{uiSession: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				<-run.settled
+			} else {
+				srv.wakeAgentParent(row.ParentSessionID)
+			}
+			waitForServeCondition(t, 5*time.Second, func() bool {
+				got, err := store.GetAgentRun(context.Background(), row.ID)
+				return err == nil && !got.NotifiedAt.IsZero()
+			}, "provider retry / failed parent lifecycle")
+			srv.agentWakeWG.Wait()
+			if provider.CurrentTurn() != 2 {
+				t.Fatalf("turns=%d", provider.CurrentTurn())
+			}
+		})
+	}
+}
+
+type agentAckRetryStore struct {
+	*session.SQLiteStore
+	attempts atomic.Int32
+}
+
+func (s *agentAckRetryStore) MarkAgentRunNotified(ctx context.Context, id string, gen int64, at time.Time) (bool, error) {
+	if s.attempts.Add(1) <= 2 {
+		return false, errors.New("injected acknowledgment failure")
+	}
+	return s.SQLiteStore.MarkAgentRunNotified(ctx, id, gen, at)
+}
+
+func TestAgentWakeRetriesAcknowledgmentWithoutRepeatingInference(t *testing.T) {
+	provider := mockprovider.NewMockProvider("debug").AddTextResponse("successful lifecycle")
+	srv, store, _ := newAgentWakeFixture(t, provider)
+	row := putWakeRun(t, store, "completed")
+	flaky := &agentAckRetryStore{SQLiteStore: store}
+	srv.store = flaky
+	srv.wakeAgentParent(row.ParentSessionID)
+	waitForServeCondition(t, 5*time.Second, func() bool {
+		got, err := store.GetAgentRun(context.Background(), row.ID)
+		return err == nil && !got.NotifiedAt.IsZero()
+	}, "acknowledgment retry")
+	srv.agentWakeWG.Wait()
+	if provider.CurrentTurn() != 1 || flaky.attempts.Load() < 3 {
+		t.Fatalf("inference=%d acknowledgments=%d", provider.CurrentTurn(), flaky.attempts.Load())
+	}
+}
+
+func TestAgentWakeRoutesLoadedWebParentsNotNestedOrUnloadedTerminalSessions(t *testing.T) {
+	for _, kind := range []string{"loaded-tui", "unloaded-tui", "nested"} {
+		t.Run(kind, func(t *testing.T) {
+			provider := mockprovider.NewMockProvider("debug").AddTextResponse("web handles loaded parent")
+			srv, store, _ := newAgentWakeFixture(t, provider)
+			meta, err := store.Get(context.Background(), "wake-parent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta.Origin, meta.IsSubagent = session.OriginTUI, kind == "nested"
+			if kind == "nested" {
+				if err := store.Create(context.Background(), &session.Session{ID: "owning-child-runner", Provider: "debug", Model: "fast"}); err != nil {
+					t.Fatal(err)
+				}
+				meta.ParentID = "owning-child-runner"
+			}
+			if err := store.Update(context.Background(), meta); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "unloaded-tui" {
+				srv.sessionMgr.mu.Lock()
+				delete(srv.sessionMgr.sessions, meta.ID)
+				srv.sessionMgr.mu.Unlock()
+			}
+			row := putWakeRun(t, store, "completed")
+			row.NotifyWhenDone, row.NotifyOrigin = false, ""
+			if err := store.PutAgentRun(context.Background(), row); err != nil {
+				t.Fatal(err)
+			}
+			srv.reconcileAgentWakes(context.Background())
+			srv.agentWakeWG.Wait()
+			want := 0
+			if kind == "loaded-tui" {
+				want = 1
+			}
+			if provider.CurrentTurn() != want {
+				t.Fatalf("kind=%s turns=%d want=%d", kind, provider.CurrentTurn(), want)
+			}
+		})
 	}
 }

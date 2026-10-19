@@ -129,7 +129,9 @@ func (rt *serveRuntime) runWithGoal(ctx context.Context, stateful bool, replaceH
 	// completed invocation (nil error) never stops children.
 	if err != nil && ctx.Err() != nil && !sweep.swept.Load() && !errors.Is(err, errServeSessionBusy) {
 		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		rt.signalStoppedChildren(ctx, req.SessionID)(waitCtx)
+		if await := rt.signalStoppedChildren(ctx, req.SessionID); await != nil {
+			await(waitCtx)
+		}
 		cancel()
 	}
 	return result, err

@@ -52,6 +52,13 @@ type turnLease struct {
 // (no session storage, read-only, or a session that was never persisted), so
 // those setups keep their previous behaviour.
 func (m *Model) acquireTurnLease(ctx context.Context, sessionID string) (*turnLease, error) {
+	return m.acquireAgentTurnLease(ctx, sessionID, nil)
+}
+
+func (m *Model) acquireAgentTurnLease(ctx context.Context, sessionID string, events []session.AgentRun) (*turnLease, error) {
+	if len(events) == 0 && m.agentBarrierAdmitting.Load() {
+		return nil, session.ErrSessionTurnOwned
+	}
 	if m == nil || m.store == nil || strings.TrimSpace(sessionID) == "" {
 		return nil, nil
 	}
@@ -64,6 +71,8 @@ func (m *Model) acquireTurnLease(ctx context.Context, sessionID string) (*turnLe
 	owner := tuiTurnOwnerID()
 	responseID := "tui_turn_" + session.NewID()
 	lease, err := lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
+		AgentEvents:     events,
+		AgentBarrier:    len(events) > 0,
 		ResponseID:      responseID,
 		SessionID:       sessionID,
 		RunEpoch:        time.Now().UnixNano(),

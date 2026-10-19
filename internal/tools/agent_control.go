@@ -103,8 +103,8 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (c
 	case CancelAgentToolName:
 		out = t.cancel(ctx, parent, a)
 	case ContinueAgentToolName:
-		if notice, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool); notice {
-			return agentControlError("A host lifecycle notice cannot resume child work; obtain explicit user confirmation in a subsequent turn."), nil
+		if agentLifecycleRestricted(ctx) {
+			return agentControlError("This host lifecycle turn cannot continue child work."), nil
 		}
 		out = t.continueRun(ctx, parent, a)
 	default:
@@ -206,6 +206,12 @@ func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentCon
 }
 
 func (t *agentControlTool) continueRun(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
+	if notice, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool); notice {
+		record, _, err := t.spawn.manager.get(ctx, a.AgentID, parent)
+		if err != nil || (record.Status != "completed" && record.Status != "turn_limit") {
+			return agentControlError("A host lifecycle notice may continue only completed or turn_limit children; obtain explicit user confirmation in a subsequent turn to restart interrupted or cancelled work.")
+		}
+	}
 	m := t.spawn.manager
 	record, e, err := m.get(ctx, a.AgentID, parent)
 	if err != nil {

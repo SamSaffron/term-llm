@@ -847,6 +847,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		} else {
 			lease, admitErr = lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
 				AgentEvents:     options.agentEvents,
+				AgentBarrier:    options.agentBarrier,
 				ResponseID:      respID,
 				SessionID:       sessionID,
 				RunEpoch:        run.runEpoch,

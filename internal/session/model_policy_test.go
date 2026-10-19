@@ -58,7 +58,7 @@ func TestSessionModelPolicyMigrationV64(t *testing.T) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	legacy := schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58 + agentRunSchemaV62
+	legacy := schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58 + agentRunSchemaV63
 	// Synthetic v63 schema fixture: omit the newly introduced column.
 	legacy = strings.Replace(legacy, "	model_policy TEXT,\n", "", 1)
 	if _, err := db.Exec(legacy); err != nil {

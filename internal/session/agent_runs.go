@@ -15,6 +15,7 @@ import (
 // pending parent-loop events across process restarts. Collection suppresses a
 // pending wake without discarding the child's transcript or media.
 type AgentRunDeliveryStore interface {
+	AgentRunStore
 	ListPendingAgentRuns(context.Context) ([]AgentRun, error)
 	ListPendingAgentRunsForParent(context.Context, string) ([]AgentRun, error)
 	MarkAgentRunNotified(context.Context, string, int64, time.Time) (bool, error)
@@ -43,7 +44,7 @@ func (s *SQLiteStore) ListPendingAgentRunsForParent(ctx context.Context, parent 
 }
 
 func (s *SQLiteStore) listPendingAgentRuns(ctx context.Context, parent string) ([]AgentRun, error) {
-	query := `SELECT ` + agentRunColumns + ` FROM session_agent_runs WHERE notify_origin != '' AND (notify_when_done=1 OR run_status IN ('queued','running','awaiting_approval','interrupted')) AND notified_at IS NULL AND collected_at IS NULL AND wake_suppressed=0 AND stop_reason != 'parent_stopped'`
+	query := `SELECT ` + agentRunColumns + ` FROM session_agent_runs WHERE notified_at IS NULL AND collected_at IS NULL AND wake_suppressed=0 AND stop_reason != 'parent_stopped'`
 	var args []any
 	if parent != "" {
 		query += " AND parent_session_id=?"
@@ -81,7 +82,7 @@ func (s *SQLiteStore) MarkAgentRunNotified(ctx context.Context, id string, gener
 // results remain available to wait_agent; only automatic loop reactivation is
 // suppressed, including an earlier completion racing the stop.
 func (s *SQLiteStore) SuppressPendingAgentWakes(ctx context.Context, parent string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET wake_suppressed=1 WHERE parent_session_id=? AND notify_origin != '' AND notified_at IS NULL AND collected_at IS NULL`, parent)
+	_, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET wake_suppressed=1 WHERE parent_session_id=? AND notified_at IS NULL AND collected_at IS NULL`, parent)
 	if err != nil {
 		return fmt.Errorf("suppress stopped parent agent wakes: %w", err)
 	}
@@ -272,24 +273,59 @@ func (s *SQLiteStore) CollectAgentRunGeneration(ctx context.Context, id string, 
 // session, plus completions from that turn racing the stop. Earlier completed
 // results keep their lifecycle reason and remain eligible for later delivery.
 func (s *SQLiteStore) SuppressAgentWakesForTurn(ctx context.Context, parent, response string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET wake_suppressed=1 WHERE parent_session_id=? AND notify_origin!='' AND notified_at IS NULL AND collected_at IS NULL AND (parent_response_id=? OR run_status IN ('queued','running','awaiting_approval'))`, parent, response)
+	_, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET wake_suppressed=1 WHERE parent_session_id=? AND notified_at IS NULL AND collected_at IS NULL AND (parent_response_id=? OR run_status IN ('queued','running','awaiting_approval'))`, parent, response)
 	return err
 }
 
 func validateAgentWakeAdmissionTx(ctx context.Context, tx *sql.Tx, admission ResponseRunAdmission) error {
 	if len(admission.AgentEvents) == 0 {
+		if admission.AgentBarrier {
+			return fmt.Errorf("%w: empty agent barrier", ErrSessionTurnOwned)
+		}
 		return nil
 	}
 	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id=? AND origin='web' AND archived=0`, admission.SessionID).Scan(&exists); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id=? AND archived=0`, admission.SessionID).Scan(&exists); err != nil {
 		return err
 	}
 	if exists != 1 {
 		return fmt.Errorf("%w: agent wake parent disappeared", ErrSessionTurnOwned)
 	}
+	if admission.AgentBarrier {
+		rows, err := tx.QueryContext(ctx, `SELECT child_session_id,run_generation FROM session_agent_runs WHERE parent_session_id=? AND run_status IN ('queued','running','awaiting_approval')`, admission.SessionID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var generation int64
+			if err := rows.Scan(&id, &generation); err != nil {
+				return err
+			}
+			// The host may prove a former owner dead without rewriting its row.
+			// Only an offered restart event for this exact generation permits it.
+			recovered := false
+			for _, event := range admission.AgentEvents {
+				if event.ID == id && event.RunGeneration == generation && event.Status == "interrupted" && event.StopReason == "host_restarted" {
+					recovered = true
+					break
+				}
+			}
+			if !recovered {
+				return fmt.Errorf("%w: agent barrier has outstanding child %s", ErrSessionTurnOwned, id)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+	}
 	for _, event := range admission.AgentEvents {
 		var eligible int
-		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_agent_runs WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND notify_origin='web' AND notified_at IS NULL AND collected_at IS NULL AND wake_suppressed=0 AND stop_reason!='parent_stopped'`, event.ID, admission.SessionID, event.RunGeneration).Scan(&eligible)
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_agent_runs WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND notified_at IS NULL AND collected_at IS NULL AND wake_suppressed=0 AND stop_reason!='parent_stopped' AND (run_status IN ('completed','turn_limit','cancelled','interrupted','failed') OR (?='interrupted' AND ?='host_restarted'))`, event.ID, admission.SessionID, event.RunGeneration, event.Status, event.StopReason).Scan(&eligible)
 		if err != nil {
 			return err
 		}

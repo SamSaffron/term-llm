@@ -17,6 +17,9 @@ import (
 )
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
+	if m.sessionSwitcher != nil {
+		return m.beginFreshSessionSwitch()
+	}
 	if m.branchContextInFlight() {
 		return m.showFooterWarning("Wait for path notes to finish, or press Esc to cancel them before starting a new session.")
 	}

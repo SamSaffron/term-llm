@@ -444,6 +444,9 @@ func (m *Model) cmdUndoRedo(redo bool, args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
+	if m.sessionSwitcher != nil {
+		return m.beginFreshSessionSwitch()
+	}
 	m.clearSideQuestionHistory()
 	m.clearPendingStreamModelSwitch()
 	m.resetMainRunSessionBinding()

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"github.com/samsaffron/term-llm/internal/tui/chat/agentbarrier"
 	"sync"
 	"testing"
 	"time"
@@ -89,18 +90,20 @@ func TestStartStreamCancelRoutesToManagerBeforeAttachment(t *testing.T) {
 	manager := NewMainRunManager(context.Background())
 	defer manager.Close(time.Second)
 	m.SetMainRunManager(manager)
-	if _, err := manager.Start(m.SessionID(), MainRunExecution{Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}}); err != nil {
-		t.Fatal(err)
+	m.SetRunner(&barrierStopRunner{requests: make(chan context.Context, 1), childEnd: make(chan bool, 1)})
+	// Execute admission, but do not apply mainRunStartedMsg/attach the view yet.
+	started, ok := m.startStream("pending")().(mainRunStartedMsg)
+	if !ok {
+		t.Fatal("stream did not admit a main run")
 	}
-	_ = m.startStream("pending")
 	m.streamCancelFunc()
 	select {
 	case <-manager.runs[m.SessionID()].done:
+		if stopped, owned := agentbarrier.StopRequested(manager.runs[m.SessionID()].ctx); !stopped || !owned {
+			t.Fatal("pre-attachment cancellation lost human authority")
+		}
 	case <-time.After(time.Second):
-		t.Fatal("pre-attachment cancellation did not stop manager run")
+		t.Fatalf("pre-attachment cancellation did not stop run %s", started.runID)
 	}
 }
 

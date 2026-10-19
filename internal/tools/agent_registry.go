@@ -56,6 +56,7 @@ type agentEntry struct {
 	stopReason          string
 	wake                func(string)
 	manager             *agentManager
+	terminalUnsaved     bool
 }
 
 type agentManager struct {
@@ -164,7 +165,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 	now := time.Now()
 	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, BaseDir: existing.BaseDir, RunGeneration: existing.RunGeneration + 1, NotifyWhenDone: existing.NotifyWhenDone, NotifyOrigin: existing.NotifyOrigin, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
 	origin, _ := QueueAgentOriginFromContext(ctx)
-	if origin.Origin == QueueAgentOriginWeb && origin.SessionID == parent {
+	if parent != "" && origin.SessionID == parent {
 		record.ParentResponseID = origin.ResponseID
 	}
 	if resume {
@@ -258,7 +259,18 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 }
 
 func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgentRunner, depth int, model string, resume bool, instructions string) {
-	defer func() { close(e.done); m.releaseCollected(e) }()
+	defer func() {
+		close(e.done)
+		// Publish completion only after waiters can observe done. The host must
+		// inspect status/durable generations, not infer completion from signals.
+		m.mu.Lock()
+		record, wake := e.record, e.wake
+		m.mu.Unlock()
+		if wake != nil && record.ParentSessionID != "" && record.StopReason != "parent_stopped" {
+			wake(record.ParentSessionID)
+		}
+		m.releaseCollected(e)
+	}()
 	select {
 	case m.slots <- struct{}{}:
 		defer func() { <-m.slots }()
@@ -358,7 +370,10 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 		e.record.RunGeneration++ // rollback admission on the new durable generation
 		record := e.record
 		m.mu.Unlock()
-		m.save(record)
+		saved := m.save(record)
+		m.mu.Lock()
+		e.terminalUnsaved = m.store != nil && !saved
+		m.mu.Unlock()
 		return
 	}
 	switch {
@@ -391,14 +406,12 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 	record := e.record
 	record.Media = append([]core.MediaArtifact(nil), e.media...)
 	m.mu.Unlock()
-	if !m.save(record) {
-		return
-	}
-	if e.wake != nil && record.ParentSessionID != "" && record.StopReason != "parent_stopped" && (record.NotifyWhenDone || record.StopReason == "host_restarted") {
-		// The callback only signals the host to inspect durable pending rows.
-		// It must not inject a message or compete with the current parent turn.
-		e.wake(record.ParentSessionID)
-	}
+	saved := m.save(record)
+	m.mu.Lock()
+	e.terminalUnsaved = m.store != nil && !saved
+	m.mu.Unlock()
+	// Retain a failed write in processAgentEntries. Every host reconciliation
+	// retries it before delivery; do not claim durability while the DB is down.
 }
 
 func (m *agentManager) get(ctx context.Context, id, parent string) (session.AgentRun, *agentEntry, error) {
@@ -601,7 +614,7 @@ func (m *agentManager) releaseCollected(e *agentEntry) {
 		return
 	}
 	m.mu.Lock()
-	if !agentTerminal(e.record.Status) || e.record.CollectedAt.IsZero() {
+	if !agentTerminal(e.record.Status) || e.record.CollectedAt.IsZero() || e.terminalUnsaved {
 		m.mu.Unlock()
 		return
 	}
@@ -793,13 +806,19 @@ func interruptAgentsForParent(parent string, suppressWake bool) func(context.Con
 	var entries []*agentEntry
 	processAgentEntries.Range(func(_, value any) bool {
 		e := value.(*agentEntry)
+		e.manager.mu.Lock()
+		match := e.record.ParentSessionID == parent
+		if match && suppressWake && e.record.NotifiedAt.IsZero() && e.record.CollectedAt.IsZero() {
+			// Suppress already-terminal offered events as well, including hosts
+			// without a durable store. Keep outputs available for wait_agent.
+			e.record.WakeSuppressed = true
+		}
 		select {
 		case <-e.done:
+			e.manager.mu.Unlock()
 			return true
 		default:
 		}
-		e.manager.mu.Lock()
-		match := e.record.ParentSessionID == parent
 		if match {
 			e.shutdown = true
 			if suppressWake {
@@ -838,6 +857,18 @@ func interruptAgentsForParent(parent string, suppressWake bool) func(context.Con
 // returned; it may then be delivered again, which beats losing it.
 func (m *agentManager) deliver(ctx context.Context, record session.AgentRun, e *agentEntry) core.ToolOutput {
 	out := m.output(record, e)
+	recovery, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool)
+	if agentLifecycleRestricted(ctx) || (recovery && (record.Status == "interrupted" || record.Status == "cancelled")) {
+		var result SpawnAgentResult
+		if json.Unmarshal([]byte(out.Content), &result) == nil && result.Resumable {
+			result.Resumable = false
+			result.Next = "Obtain explicit human confirmation in a subsequent turn before restarting this work."
+			if agentLifecycleRestricted(ctx) {
+				result.Next = "This lifecycle turn may collect results, but cannot start or continue child work."
+			}
+			out.Content = marshalAgentResult(result)
+		}
+	}
 	if !agentTerminal(record.Status) {
 		return out
 	}

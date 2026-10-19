@@ -9,12 +9,16 @@ import (
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/tui/chat/agentbarrier"
 )
 
 // explicitParentStop distinguishes a human cancellation from a host reload,
 // response inactivity timeout, or lease loss. Only the former suppresses
 // automatic parent recovery; none of them automatically resume children.
 func explicitParentStop(ctx context.Context) bool {
+	if tools.AgentCancelled(ctx) {
+		return false // model cancel_agent is not human authority to suppress wakes
+	}
 	if errors.Is(context.Cause(ctx), restart.ErrInterrupt) {
 		return false
 	}
@@ -24,7 +28,10 @@ func explicitParentStop(ctx context.Context) bool {
 		run.mu.Unlock()
 		return stopped
 	}
-	return true // interactive/non-response hosts treat a cancelled turn as a stop
+	if stopped, owned := agentbarrier.StopRequested(ctx); owned {
+		return stopped
+	}
+	return true // legacy non-response hosts treat a cancelled turn as a stop
 }
 
 func (rt *serveRuntime) signalStoppedChildren(ctx context.Context, parent string) func(context.Context) []string {
@@ -44,6 +51,8 @@ func (rt *serveRuntime) signalStoppedChildren(ctx context.Context, parent string
 			if err == nil {
 				err = delivery.SuppressAgentEvents(persistCtx, run.agentEvents)
 			}
+		} else if fence, ok := session.ResponseRunFenceFromContext(ctx); ok {
+			err = delivery.SuppressAgentWakesForTurn(persistCtx, parent, fence.ResponseID)
 		} else {
 			err = delivery.SuppressPendingAgentWakes(persistCtx, parent)
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/tui/chat/agentbarrier"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -34,6 +35,7 @@ type MainRunSnapshot struct {
 	RunID              string
 	SessionID          string
 	Active             bool
+	AgentBarrier       bool
 	StartedAt          time.Time
 	CompletedAt        time.Time
 	LastSequence       uint64
@@ -50,8 +52,10 @@ type MainRunSnapshot struct {
 // Execute must publish normalized stream events through emit and return only
 // after provider/tool work and persistence callbacks have stopped.
 type MainRunExecution struct {
-	Reloadable bool
-	Context    context.Context // optional admission ownership, independent of UI cancellation
+	Reloadable   bool
+	AgentBarrier bool
+	UserStop     *atomic.Bool    // execution-owned human Stop intent, retained across view changes
+	Context      context.Context // optional admission ownership, independent of UI cancellation
 
 	RunID               string
 	SteeringOperationID string
@@ -99,6 +103,8 @@ type mainRunState struct {
 
 	mu              sync.Mutex
 	active          bool
+	agentBarrier    bool
+	userStop        *atomic.Bool
 	visited         bool
 	completedAt     time.Time
 	err             error
@@ -132,15 +138,18 @@ type MainRunManager struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu       sync.RWMutex
-	runs     map[string]*mainRunState
-	uiSinks  map[string]mainRunUISink
-	nextRun  atomic.Uint64
-	nextSub  atomic.Uint64
-	nextSink atomic.Uint64
-	closed   bool
-	changed  chan struct{}
-	steering sync.Map
+	mu                sync.RWMutex
+	runs              map[string]*mainRunState
+	uiSinks           map[string]mainRunUISink
+	nextRun           atomic.Uint64
+	nextSub           atomic.Uint64
+	nextSink          atomic.Uint64
+	closed            bool
+	changed           chan struct{}
+	steering          sync.Map
+	agentBarriers     map[string]*agentBarrierCoordinator
+	agentWakeCleanups []func()
+	agentWakeSend     func(tea.Msg)
 }
 
 // NewMainRunManager creates a process-scoped run manager.
@@ -207,7 +216,10 @@ func (m *MainRunManager) Start(sessionID string, execution MainRunExecution) (Ma
 			return visible
 		})
 	}
-	runCtx, runCancel := context.WithCancel(ownerCtx)
+	if execution.UserStop == nil {
+		execution.UserStop = &atomic.Bool{}
+	}
+	runCtx, runCancel := agentbarrier.ExecutionContext(ownerCtx, execution.UserStop)
 	if execution.Cancel != nil {
 		providerCancel := execution.Cancel
 		baseCancel := runCancel
@@ -228,7 +240,7 @@ func (m *MainRunManager) Start(sessionID string, execution MainRunExecution) (Ma
 		anchorMessageID: execution.AnchorMessageID,
 		boundary:        execution.Boundary,
 		startedAt:       time.Now(), ctx: runCtx, cancel: runCancel, done: make(chan struct{}),
-		active: true, subscribers: make(map[uint64]*mainRunSubscriber), cleanup: execution.Cleanup,
+		active: true, agentBarrier: execution.AgentBarrier, userStop: execution.UserStop, subscribers: make(map[uint64]*mainRunSubscriber), cleanup: execution.Cleanup,
 		uiSink: sink.send, uiSinkID: sink.id, queueSteering: execution.QueueSteering,
 		cancelSteering: execution.CancelSteering, discardSteering: execution.DiscardSteering,
 		listSteering: execution.ListSteering, drainSteering: execution.DrainSteering,
@@ -274,6 +286,7 @@ func (m *MainRunManager) execute(run *mainRunState, execution MainRunExecution) 
 		}
 	})
 	m.signalChanged()
+	m.signalAgentBarrier(run.sessionID)
 }
 
 func (m *MainRunManager) publish(run *mainRunState, event ui.StreamEvent) {
@@ -753,32 +766,7 @@ func cancelMainRunPendingUI(run *mainRunState) {
 
 // Cancel stops one session run without affecting other sessions.
 func (m *MainRunManager) Cancel(sessionID string) bool {
-	if m == nil {
-		return false
-	}
-	// Serialize Stop's target capture with replacement publication in Start.
-	m.mu.Lock()
-	coordinator := m.steeringCoordinator(sessionID)
-	if coordinator != nil {
-		coordinator.cancelled.Store(true)
-	}
-	run := m.runs[sessionID]
-	m.mu.Unlock()
-	if run == nil {
-		return false
-	}
-	cancelMainRunPendingUI(run)
-	run.cancel()
-	if coordinator != nil {
-		go func() {
-			select {
-			case <-coordinator.admitted:
-				m.releaseFailedSteering(sessionID, coordinator, context.Canceled)
-			case <-m.ctx.Done():
-			}
-		}()
-	}
-	return true
+	return m.cancelRun(sessionID, "", false)
 }
 
 // Close cancels all runs and waits up to timeout for persistence/cleanup.
@@ -795,6 +783,8 @@ func (m *MainRunManager) Close(timeout time.Duration) {
 	for _, run := range m.runs {
 		runs = append(runs, run)
 	}
+	cleanups := m.agentWakeCleanups
+	m.agentWakeCleanups = nil
 	m.mu.Unlock()
 	for _, run := range runs {
 		cancelMainRunPendingUI(run)
@@ -810,6 +800,9 @@ func (m *MainRunManager) Close(timeout time.Duration) {
 		case <-deadline.C:
 			return
 		}
+	}
+	for _, cleanup := range cleanups {
+		cleanup()
 	}
 }
 
@@ -862,7 +855,7 @@ func snapshotMainRun(run *mainRunState) MainRunSnapshot {
 
 func snapshotMainRunLocked(run *mainRunState) MainRunSnapshot {
 	snapshot := MainRunSnapshot{
-		RunID: run.id, SessionID: run.sessionID, Active: run.active,
+		RunID: run.id, SessionID: run.sessionID, Active: run.active, AgentBarrier: run.agentBarrier,
 		StartedAt: run.startedAt, CompletedAt: run.completedAt,
 		LastSequence: run.nextSeq, AnchorMessageID: run.anchorMessageID, Done: run.done, Err: run.err,
 	}

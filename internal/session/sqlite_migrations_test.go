@@ -459,7 +459,13 @@ func TestAttentionMigrationV65RollbackAndRetry(t *testing.T) {
 	original := migrations
 	defer func() { migrations = original }()
 	migrations = append([]migration(nil), original...)
-	last := len(migrations) - 1
+	last := 0
+	for i := range migrations {
+		if migrations[i].version == 65 {
+			last = i
+			break
+		}
+	}
 	up := migrations[last].up
 	migrations[last].up = func(db schemaExecutor) error {
 		if err := up(db); err != nil {
@@ -481,7 +487,7 @@ func TestAttentionMigrationV65RollbackAndRetry(t *testing.T) {
 	if err := initSchema(db); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 65 {
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("retried marker=%d err=%v", version, err)
 	}
 }

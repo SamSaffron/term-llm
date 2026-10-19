@@ -32,9 +32,9 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 	if !options.agentCompletion && sessionID != "" {
 		defer func() {
 			run.mu.Lock()
-			completed := run.status == "completed" && !run.cancelRequested
+			stopped := run.cancelRequested || run.status == "cancelled"
 			run.mu.Unlock()
-			if completed {
+			if !stopped {
 				s.wakeAgentParent(sessionID)
 			}
 		}()

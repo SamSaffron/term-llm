@@ -520,6 +520,9 @@ func spawnAgentErrorOutput(content string, timedOut bool) core.ToolOutput {
 
 // Execute runs the spawn_agent tool.
 func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	if agentLifecycleRestricted(ctx) {
+		return agentControlError("This host lifecycle turn cannot spawn child work."), nil
+	}
 	var a SpawnAgentArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err)), false), nil
@@ -658,6 +661,61 @@ func withoutLifecycleHints(out core.ToolOutput) core.ToolOutput {
 
 // OutstandingAgentIDs lists unfinished runs for one-shot host exit diagnostics.
 func (t *SpawnAgentTool) OutstandingAgentIDs() []string { return t.manager.outstandingIDs() }
+
+// WaitForChildren waits for all direct children without shutting down spawn.
+// Local work uses done channels; durable remote owners are polled until terminal
+// or provably gone. Unknown owners remain outstanding until ctx is cancelled.
+func (t *SpawnAgentTool) WaitForChildren(ctx context.Context, parent string) error {
+	for {
+		var entries []*agentEntry
+		processAgentEntries.Range(func(_, value any) bool {
+			e := value.(*agentEntry)
+			e.manager.mu.Lock()
+			if e.record.ParentSessionID == parent {
+				select {
+				case <-e.done:
+				default:
+					entries = append(entries, e)
+				}
+			}
+			e.manager.mu.Unlock()
+			return true
+		})
+		if len(entries) == 0 {
+			// snapshot merges local state (including failed terminal writes)
+			// with durable children, classifying only proven-dead owners as
+			// interrupted. Remote/unknown live owners remain nonterminal.
+			records, err := t.manager.snapshot(ctx, parent)
+			if err != nil {
+				return fmt.Errorf("wait for child agents: %w", err)
+			}
+			outstanding := false
+			for _, record := range records {
+				if !agentTerminal(record.Status) {
+					outstanding = true
+					break
+				}
+			}
+			if !outstanding {
+				return ctx.Err()
+			}
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			}
+		}
+		for _, e := range entries {
+			select {
+			case <-e.done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}
 
 func (t *SpawnAgentTool) Drain(ctx context.Context) error { return t.manager.Drain(ctx) }
 
