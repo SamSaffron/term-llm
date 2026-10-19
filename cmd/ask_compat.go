@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
+	runtimeoncomplete "github.com/samsaffron/term-llm/internal/app/runtime/oncomplete"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -28,8 +29,8 @@ func writeGuardianStatus(w io.Writer, event tools.GuardianEvent) {
 	ask.WriteGuardianStatus(w, event)
 }
 
-func runOnCompleteCaptureInDir(command, input, baseDir string) (ask.OnCompleteResult, error) {
-	return ask.RunOnCompleteCaptureInDir(command, input, baseDir)
+func runOnCompleteCaptureInDir(command, input, baseDir string) (runtimeoncomplete.Result, error) {
+	return runtimeoncomplete.RunCaptureInDir(command, input, baseDir)
 }
 
 func init() {
