@@ -1,0 +1,685 @@
+package serve
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/hub"
+)
+
+type hubNodeDiagnostic struct {
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+}
+
+type hubNodeSessionView struct {
+	ID                      string   `json:"id"`
+	Number                  int64    `json:"number,omitempty"`
+	ShortTitle              string   `json:"short_title"`
+	LongTitle               string   `json:"long_title,omitempty"`
+	Pinned                  bool     `json:"pinned,omitempty"`
+	ActiveRun               bool     `json:"active_run,omitempty"`
+	InteractionRequired     bool     `json:"interaction_required,omitempty"`
+	PendingInteractionCount int      `json:"pending_interaction_count,omitempty"`
+	PendingInteractionKinds []string `json:"pending_interaction_kinds,omitempty"`
+	LastMessageAt           int64    `json:"last_message_at,omitempty"`
+	MessageCount            int      `json:"message_count,omitempty"`
+	ResumePath              string   `json:"resume_path"`
+}
+
+type hubNodeSessionsView struct {
+	CountLabel             string               `json:"count_label"`
+	HasMore                bool                 `json:"has_more,omitempty"`
+	ActiveCount            int                  `json:"active_count,omitempty"`
+	InputRequiredCount     int                  `json:"input_required_count,omitempty"`
+	UnseenCount            int                  `json:"unseen_count,omitempty"`
+	AttentionCapability    string               `json:"attention_capability,omitempty"`
+	AttentionLastSuccessAt int64                `json:"attention_last_success_at,omitempty"`
+	Active                 []hubNodeSessionView `json:"active,omitempty"`
+	Recent                 []hubNodeSessionView `json:"recent,omitempty"`
+	ResumePath             string               `json:"resume_path,omitempty"`
+}
+
+// hubNodeView is the public record for one node. It deliberately omits the
+// bearer token: tokens are injected server-side and must never be sent to a
+// hub client.
+type hubNodeView struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Source         string `json:"source"`
+	Connection     string `json:"connection"`
+	URL            string `json:"url"`
+	BasePath       string `json:"base_path"`
+	ProxyPath      string `json:"proxy_path"`
+	NewSessionPath string `json:"new_session_path"`
+	// HasToken reports whether the hub holds a bearer token for this node
+	// (without it, a token-guarded node will answer 401 through the proxy).
+	HasToken    bool                 `json:"has_token"`
+	Status      hub.Status           `json:"status"`
+	Sessions    *hubNodeSessionsView `json:"sessions,omitempty"`
+	Diagnostics []hubNodeDiagnostic  `json:"diagnostics,omitempty"`
+}
+
+func (s *hubServer) handleHubHealth(w http.ResponseWriter, r *http.Request) {
+	staleNodes := 0
+	if s.attentionStore != nil {
+		_, syncs, err := s.attentionStore.List(r.Context())
+		if err == nil {
+			now := time.Now().UTC()
+			for _, state := range syncs {
+				if state.LastSuccessAt.IsZero() || now.Sub(state.LastSuccessAt) > hubAttentionStaleAfter ||
+					(!state.LastErrorAt.IsZero() && state.LastErrorAt.After(state.LastSuccessAt)) {
+					staleNodes++
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "role": "hub", "attention_diagnostics": s.attentionDiagnostics.snapshot(staleNodes),
+	})
+}
+
+// collectNodes resolves all nodes in the saved dashboard order and probes
+// them concurrently. Resolver errors are soft: surviving sources still
+// render, the error is reported alongside.
+func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
+	nodes, err := s.registry.Nodes()
+	nodes = s.arrangeNodes(nodes)
+	collectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	views := make([]hubNodeView, len(nodes))
+	type result struct {
+		index int
+		view  hubNodeView
+	}
+	// Buffer one result per node: even a transport that ignores cancellation
+	// can finish later without blocking or mutating the returned dashboard.
+	results := make(chan result, len(nodes))
+	pending := make([]bool, len(nodes))
+	for i, n := range nodes {
+		views[i] = s.pendingNodeView(n)
+		pending[i] = true
+		go func() {
+			results <- result{index: i, view: s.collectNodeView(collectCtx, n)}
+		}()
+	}
+collect:
+	for range nodes {
+		select {
+		case res := <-results:
+			views[res.index] = res.view
+			pending[res.index] = false
+		case <-collectCtx.Done():
+			// Prefer already completed results over timeout placeholders when
+			// cancellation and a worker's result become ready together.
+		drain:
+			for {
+				select {
+				case res := <-results:
+					views[res.index] = res.view
+					pending[res.index] = false
+				default:
+					break drain
+				}
+			}
+			for i := range views {
+				if pending[i] {
+					views[i].Status.Error = collectCtx.Err().Error()
+				}
+			}
+			break collect
+		}
+	}
+	s.applyHubAttentionViews(ctx, views)
+	for i := range views {
+		views[i].Diagnostics = hubNodeDiagnostics(nodes[i], views[i], nodes)
+	}
+	return views, err
+}
+
+// collectSidebarNodes lists registered agents without contacting their backends.
+// The sidebar needs names, saved order, links, cached health and attention,
+// not live probes that can take the dashboard's full five-second budget.
+func (s *hubServer) collectSidebarNodes(ctx context.Context) ([]hubNodeView, error) {
+	nodes, err := s.registry.Nodes()
+	nodes = s.arrangeNodes(nodes)
+	s.healthCache.retain(nodes)
+	now := time.Now()
+	views := make([]hubNodeView, 0, len(nodes))
+	for _, n := range nodes {
+		proxyPath := s.hubPath("/node/" + n.ID + "/")
+		views = append(views, hubNodeView{
+			ID: n.ID, Name: n.Name, Source: n.Source, Connection: n.Connection,
+			ProxyPath: proxyPath, HasToken: n.Token != "",
+			Status: s.sidebarNodeHealth(n, now),
+			// Opening the node root restores its last selected chat; no live
+			// session request is needed to offer a useful agent link.
+			Sessions: &hubNodeSessionsView{ResumePath: proxyPath},
+		})
+	}
+	s.applyHubAttentionViews(ctx, views)
+	return views, err
+}
+
+const (
+	hubNodeSessionActiveLimit = 2
+	hubNodeSessionRecentLimit = 4
+	hubNodeSessionCountCap    = 100
+	hubNodeSessionsMaxBytes   = 1 << 20
+)
+
+type hubNodeSessionStatus struct {
+	ID                      string   `json:"id"`
+	Number                  int64    `json:"number"`
+	ShortTitle              string   `json:"short_title"`
+	LongTitle               string   `json:"long_title"`
+	Pinned                  bool     `json:"pinned"`
+	ActiveRun               bool     `json:"active_run"`
+	InteractionRequired     bool     `json:"interaction_required"`
+	PendingInteractionCount int      `json:"pending_interaction_count"`
+	PendingInteractionKinds []string `json:"pending_interaction_kinds"`
+	LastMessageAt           int64    `json:"last_message_at"`
+	MessageCount            int      `json:"message_count"`
+}
+
+// pendingNodeView retains node identity and reverse connection state if a
+// worker cannot finish before the dashboard's deadline.
+func (s *hubServer) pendingNodeView(n hub.Node) hubNodeView {
+	proxyPath := s.hubPath("/node/" + n.ID + "/")
+	view := hubNodeView{
+		ID: n.ID, Name: n.Name, Source: n.Source, Connection: n.Connection,
+		URL: n.URL, BasePath: n.BasePath, ProxyPath: proxyPath,
+		NewSessionPath: proxyPath + "?new=1", HasToken: n.Token != "",
+		Status: hub.Status{State: "unreachable"},
+	}
+	if n.UsesReverseConnection() {
+		connected, connectedAt, lastSeen := s.reverse.status(n.ID)
+		view.Status = hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
+		if connected {
+			view.Status = hub.Status{Reachable: true, State: "connected", Details: hubReverseNodeDetails(connectedAt, lastSeen)}
+		}
+	}
+	return view
+}
+
+// collectNodeView gives each node its own bounded health-and-session workflow.
+// A slow node cannot consume another node's budget or delay its session fetch.
+func (s *hubServer) collectNodeView(ctx context.Context, n hub.Node) hubNodeView {
+	nodeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	view := s.pendingNodeView(n)
+	healthCtx, cancelHealth := context.WithTimeout(nodeCtx, 3*time.Second)
+	if n.UsesReverseConnection() {
+		connected, connectedAt, lastSeen := s.reverse.status(n.ID)
+		if connected {
+			view.Status = s.probeReverseNode(healthCtx, n, connectedAt, lastSeen)
+		} else {
+			view.Status = hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
+		}
+	} else {
+		view.Status = s.prober.Probe(healthCtx, n)
+	}
+	cancelHealth()
+	// Session summaries are best-effort. Older nodes may not expose the
+	// endpoint, and a failure must not discard a successful health result.
+	if view.Status.Reachable {
+		sessionCtx, cancelSessions := context.WithTimeout(nodeCtx, 3*time.Second)
+		defer cancelSessions()
+		view.Sessions, _ = s.fetchHubNodeSessions(sessionCtx, n)
+	}
+	return view
+}
+
+func (s *hubServer) fetchHubNodeSessions(ctx context.Context, n hub.Node) (*hubNodeSessionsView, error) {
+	req, err := s.newHubNodeSessionsRequest(ctx, n)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.doHubNodeRequest(ctx, n, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusServiceUnavailable {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sessions status returned %s", resp.Status)
+	}
+	var body struct {
+		Sessions []hubNodeSessionStatus `json:"sessions"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, hubNodeSessionsMaxBytes)).Decode(&body); err != nil {
+		return nil, err
+	}
+	if body.Sessions == nil {
+		return nil, nil
+	}
+	return s.buildHubNodeSessionsView(n, body.Sessions), nil
+}
+
+func (s *hubServer) newHubNodeSessionsRequest(ctx context.Context, n hub.Node) (*http.Request, error) {
+	if n.UsesReverseConnection() {
+		u := &url.URL{
+			Scheme: "http",
+			Host:   "reverse.local",
+			Path:   hubJoinBasePath(n.BasePath, "/v1/sessions/status"),
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		if n.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+n.Token)
+		}
+		return req, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, n.BaseURL()+"/v1/sessions/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	if n.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+n.Token)
+	}
+	return req, nil
+}
+
+func (s *hubServer) doHubNodeRequest(ctx context.Context, n hub.Node, req *http.Request) (*http.Response, error) {
+	if n.UsesReverseConnection() {
+		return s.reverse.do(ctx, n, req)
+	}
+	return s.prober.Client.Do(req)
+}
+
+func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessionStatus) *hubNodeSessionsView {
+	out := &hubNodeSessionsView{
+		CountLabel: hubNodeSessionCountLabel(len(entries)),
+		HasMore:    len(entries) >= hubNodeSessionCountCap,
+	}
+	all := make([]hubNodeSessionView, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		sess := hubNodeSessionView{
+			ID:                      entry.ID,
+			Number:                  entry.Number,
+			ShortTitle:              hubNodeSessionTitle(entry),
+			LongTitle:               strings.TrimSpace(entry.LongTitle),
+			Pinned:                  entry.Pinned,
+			ActiveRun:               entry.ActiveRun,
+			InteractionRequired:     entry.InteractionRequired,
+			PendingInteractionCount: entry.PendingInteractionCount,
+			PendingInteractionKinds: append([]string(nil), entry.PendingInteractionKinds...),
+			LastMessageAt:           entry.LastMessageAt,
+			MessageCount:            entry.MessageCount,
+			ResumePath:              s.hubSessionResumePath(n.ID, entry.ID, entry.Number),
+		}
+		all = append(all, sess)
+		if sess.InteractionRequired {
+			out.InputRequiredCount++
+		}
+		if sess.ActiveRun {
+			out.ActiveCount++
+			if len(out.Active) < hubNodeSessionActiveLimit {
+				out.Active = append(out.Active, sess)
+			}
+		}
+	}
+	out.Recent = hubNodeRecentSessions(all)
+	if len(out.Active) > 0 {
+		out.ResumePath = out.Active[0].ResumePath
+	} else if len(out.Recent) > 0 {
+		out.ResumePath = out.Recent[0].ResumePath
+	}
+	return out
+}
+
+// hubNodeRecentSessions keeps node cards a consistent four rows. Pins already
+// in the recent window move to the front; otherwise the most recently active
+// pin replaces the oldest row so a long-lived pin remains discoverable.
+func hubNodeRecentSessions(sessions []hubNodeSessionView) []hubNodeSessionView {
+	ordered := append([]hubNodeSessionView(nil), sessions...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].LastMessageAt != ordered[j].LastMessageAt {
+			return ordered[i].LastMessageAt > ordered[j].LastMessageAt
+		}
+		return ordered[i].Number > ordered[j].Number
+	})
+	selected := append([]hubNodeSessionView(nil), ordered...)
+	if len(selected) > hubNodeSessionRecentLimit {
+		selected = selected[:hubNodeSessionRecentLimit]
+	}
+
+	hasPinned := false
+	for _, sess := range selected {
+		if sess.Pinned {
+			hasPinned = true
+			break
+		}
+	}
+	if !hasPinned {
+		for _, sess := range ordered {
+			if !sess.Pinned {
+				continue
+			}
+			selected = append([]hubNodeSessionView{sess}, selected...)
+			if len(selected) > hubNodeSessionRecentLimit {
+				selected = selected[:hubNodeSessionRecentLimit]
+			}
+			return selected
+		}
+	}
+
+	pinned := make([]hubNodeSessionView, 0, len(selected))
+	recent := make([]hubNodeSessionView, 0, len(selected))
+	for _, sess := range selected {
+		if sess.Pinned {
+			pinned = append(pinned, sess)
+		} else {
+			recent = append(recent, sess)
+		}
+	}
+	return append(pinned, recent...)
+}
+
+// hubSessionResumePath prefers the stable sequential session number used by
+// the serve UI's canonical /chat/<selector> routes, while retaining the
+// globally unique ID as a compatibility fallback for older nodes that do not
+// expose numbers.
+func (s *hubServer) hubSessionResumePath(nodeID, sessionID string, sessionNumber int64) string {
+	selector := strings.TrimSpace(sessionID)
+	if sessionNumber > 0 {
+		selector = strconv.FormatInt(sessionNumber, 10)
+	}
+	return s.hubPath("/node/" + url.PathEscape(nodeID) + "/chat/" + url.PathEscape(selector))
+}
+
+func hubNodeSessionTitle(entry hubNodeSessionStatus) string {
+	for _, candidate := range []string{entry.ShortTitle, entry.LongTitle, entry.ID} {
+		if title := strings.TrimSpace(candidate); title != "" {
+			return title
+		}
+	}
+	return "Untitled session"
+}
+
+func hubNodeSessionCountLabel(n int) string {
+	if n >= hubNodeSessionCountCap {
+		return "100+ sessions"
+	}
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
+}
+
+func hubReverseNodeDetails(connectedAt, lastSeen time.Time) map[string]string {
+	return map[string]string{
+		"connection":   "reverse",
+		"connected_at": connectedAt.Format(time.RFC3339),
+		"last_seen":    lastSeen.Format(time.RFC3339),
+	}
+}
+
+func (s *hubServer) probeReverseNode(ctx context.Context, n hub.Node, connectedAt, lastSeen time.Time) hub.Status {
+	details := hubReverseNodeDetails(connectedAt, lastSeen)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://reverse.local"+hubJoinBasePath(n.BasePath, "/healthz"), nil)
+	if err != nil {
+		return hub.Status{Reachable: true, State: "connected", Details: details, Error: err.Error()}
+	}
+	if n.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+n.Token)
+	}
+	start := time.Now()
+	resp, err := s.reverse.do(ctx, n, req)
+	if err != nil {
+		return hub.Status{Reachable: true, State: "connected", LatencyMS: time.Since(start).Milliseconds(), Details: details, Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	st := hub.Status{Reachable: true, State: "connected", LatencyMS: time.Since(start).Milliseconds(), Details: details}
+	if resp.StatusCode != http.StatusOK {
+		st.Error = fmt.Sprintf("healthz returned %s", resp.Status)
+		return st
+	}
+	var body struct {
+		Version      string   `json:"version"`
+		Agent        string   `json:"agent"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, hub.HealthResponseMaxBytes)).Decode(&body); err == nil {
+		st.Version = body.Version
+		st.Agent = body.Agent
+		st.Capabilities = body.Capabilities
+	}
+	return st
+}
+
+func hubNodeDiagnostics(n hub.Node, view hubNodeView, all []hub.Node) []hubNodeDiagnostic {
+	diagnostics := []hubNodeDiagnostic{}
+	add := func(severity, code, message string) {
+		diagnostics = append(diagnostics, hubNodeDiagnostic{Severity: severity, Code: code, Message: message})
+	}
+	if n.UsesReverseConnection() && !view.Status.Reachable {
+		add("error", "reverse_disconnected", "Reverse node is waiting for its outbound websocket connection.")
+	}
+	if n.Token == "" {
+		add("warning", "missing_token", "No bearer token is configured; authenticated health, proxy, and delegation calls may fail.")
+	}
+	if n.Delegation != nil && n.Delegation.Enabled {
+		if strings.TrimSpace(n.Delegation.Workdir) == "" {
+			add("warning", "delegation_missing_workdir", "Delegation is enabled, but no workdir is configured; this node cannot accept delegated jobs.")
+		} else if !hubStatusHasCapability(view.Status, "jobs") {
+			if view.Status.Reachable && len(view.Status.Capabilities) > 0 {
+				add("warning", "delegation_jobs_missing", "This node accepts delegation, but its health capabilities do not include jobs; start it with jobs enabled.")
+			} else {
+				add("warning", "delegation_jobs_unknown", "This node accepts delegation, but the Hub cannot verify the jobs capability; check the token and node version.")
+			}
+		}
+	}
+	for _, msg := range hubPolicyMismatchDiagnostics(n, all) {
+		add("warning", "delegation_policy_mismatch", msg)
+		if len(diagnostics) >= 8 {
+			break
+		}
+	}
+	return diagnostics
+}
+
+func hubStatusHasCapability(st hub.Status, capability string) bool {
+	for _, c := range st.Capabilities {
+		if strings.EqualFold(strings.TrimSpace(c), capability) {
+			return true
+		}
+	}
+	return false
+}
+
+func hubPolicyMismatchDiagnostics(n hub.Node, all []hub.Node) []string {
+	if n.Delegation == nil || !n.Delegation.Enabled {
+		return nil
+	}
+	messages := []string{}
+	if len(n.Delegation.To) > 0 {
+		for _, target := range all {
+			if target.ID == n.ID || !n.CanDelegateTo(target.ID) {
+				continue
+			}
+			if target.Delegation == nil || !target.Delegation.Enabled {
+				messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has delegation disabled.", target.ID))
+				continue
+			}
+			if strings.TrimSpace(target.Delegation.Workdir) == "" {
+				messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has no delegation workdir.", target.ID))
+				continue
+			}
+			acceptFrom := target.Delegation.AcceptFrom
+			if len(acceptFrom) == 0 {
+				acceptFrom = []string{"*"}
+			}
+			if !hubNodeListMatches(acceptFrom, n.ID) {
+				messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node does not accept from %q.", target.ID, n.ID))
+			}
+		}
+	}
+	if len(n.Delegation.AcceptFrom) > 0 && !hubNodeListMatches(n.Delegation.AcceptFrom, "*") && strings.TrimSpace(n.Delegation.Workdir) != "" {
+		for _, origin := range all {
+			if origin.ID == n.ID || !hubNodeListMatches(n.Delegation.AcceptFrom, origin.ID) {
+				continue
+			}
+			if !origin.CanDelegateTo(n.ID) {
+				messages = append(messages, fmt.Sprintf("Accepts from %q, but that node is not configured to delegate here.", origin.ID))
+			}
+		}
+	}
+	return messages
+}
+
+func hubNodeListMatches(patterns []string, id string) bool {
+	for _, p := range patterns {
+		p = strings.TrimSpace(p)
+		if p == "*" || p == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *hubServer) handleNodes(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		collect := s.collectNodes
+		if r.URL.Query().Get("view") == "sidebar" {
+			collect = s.collectSidebarNodes
+		}
+		views, err := collect(r.Context())
+		resp := map[string]any{"nodes": views}
+		if err != nil {
+			resp["resolver_error"] = err.Error()
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodPost:
+		if !hubBrowserRequestAllowed(r, true) {
+			http.Error(w, "forbidden cross-site hub request", http.StatusForbidden)
+			return
+		}
+		s.handleAddNode(w, r)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// addNodeRequest is the Add Node form payload. Token is accepted here (over
+// the loopback-only hub) and persisted to the 0600 local store; it is never
+// echoed back.
+type addNodeRequest struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	BasePath string `json:"base_path"`
+	Token    string `json:"token"`
+}
+
+func (s *hubServer) handleAddNode(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "node persistence is disabled", http.StatusForbidden)
+		return
+	}
+	var req addNodeRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	node, err := s.store.Add(hub.Node{
+		ID:       strings.TrimSpace(req.ID),
+		Name:     strings.TrimSpace(req.Name),
+		URL:      req.URL,
+		BasePath: strings.TrimSpace(req.BasePath),
+		Token:    strings.TrimSpace(req.Token),
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Pre-existing config/contain nodes win registry precedence; warn the
+	// caller when the stored node is shadowed by an identical ID elsewhere.
+	if existing, ok := s.registry.Lookup(node.ID); ok && existing.Source != hub.SourceLocal {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id":      node.ID,
+			"warning": fmt.Sprintf("node id %q is shadowed by a %s node with the same id", node.ID, existing.Source),
+		})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": node.ID})
+}
+
+// handleNodeItem handles DELETE /api/nodes/<id> (local-store nodes only).
+func (s *hubServer) handleNodeItem(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !hubBrowserRequestAllowed(r, false) {
+		http.Error(w, "forbidden cross-site hub request", http.StatusForbidden)
+		return
+	}
+	if s.store == nil {
+		http.Error(w, "node persistence is disabled", http.StatusForbidden)
+		return
+	}
+	if err := s.store.Remove(id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": id})
+}
+
+// handleTestNode probes an ad-hoc node spec (the Add Node form's Test
+// connection button) without persisting anything. The supplied token is used
+// for the probe only and never stored or echoed.
+func (s *hubServer) handleTestNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !hubBrowserRequestAllowed(r, true) {
+		http.Error(w, "forbidden cross-site hub request", http.StatusForbidden)
+		return
+	}
+	var req addNodeRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	n := hub.Node{ID: "test", Name: "test", URL: req.URL, BasePath: strings.TrimSpace(req.BasePath), Token: strings.TrimSpace(req.Token)}
+	if err := n.Normalize(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"status": s.prober.Probe(ctx, n)})
+}

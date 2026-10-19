@@ -1,0 +1,374 @@
+package serve
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/tools"
+)
+
+type responsesModelSwapRequest struct {
+	Mode     string `json:"mode,omitempty"`
+	Fallback string `json:"fallback,omitempty"`
+}
+
+type responsesReasoningRequest struct {
+	Effort  string `json:"effort,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Context string `json:"context,omitempty"`
+}
+
+type responsesMultiAgentRequest struct {
+	Enabled                bool `json:"enabled"`
+	MaxConcurrentSubagents int  `json:"max_concurrent_subagents,omitempty"`
+}
+
+type responsesPromptCacheRequest struct {
+	Mode string `json:"mode,omitempty"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+type responsesBranchContextRequest struct {
+	Mode  string `json:"mode,omitempty"`
+	Focus string `json:"focus,omitempty"`
+}
+
+type responsesCreateRequest struct {
+	UIContext           *tools.UIBrowserContext        `json:"ui_context,omitempty"`
+	Agent               string                         `json:"agent,omitempty"`
+	Model               string                         `json:"model"`
+	Provider            string                         `json:"provider"`
+	Input               json.RawMessage                `json:"input"`
+	Tools               []json.RawMessage              `json:"tools,omitempty"`
+	IncludeServerTools  bool                           `json:"include_server_tools,omitempty"`
+	ToolChoice          json.RawMessage                `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool                          `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens     int                            `json:"max_output_tokens,omitempty"`
+	Temperature         *float32                       `json:"temperature,omitempty"`
+	TopP                *float32                       `json:"top_p,omitempty"`
+	Stream              bool                           `json:"stream,omitempty"`
+	PreviousResponseID  string                         `json:"previous_response_id,omitempty"`
+	Branch              bool                           `json:"branch,omitempty"`
+	BranchContext       *responsesBranchContextRequest `json:"branch_context,omitempty"`
+	ExpectedRev         *int64                         `json:"expected_rev,omitempty"`
+	IdempotencyKey      string                         `json:"idempotency_key,omitempty"`
+	ClientMessageID     string                         `json:"client_message_id,omitempty"`
+	ReasoningEffort     string                         `json:"reasoning_effort,omitempty"`
+	ServiceTier         *string                        `json:"service_tier,omitempty"`
+	Reasoning           *responsesReasoningRequest     `json:"reasoning,omitempty"`
+	MultiAgent          *responsesMultiAgentRequest    `json:"multi_agent,omitempty"`
+	PromptCacheOptions  *responsesPromptCacheRequest   `json:"prompt_cache_options,omitempty"`
+	UseDefaultWorkspace bool                           `json:"use_default_workspace,omitempty"`
+	NoProject           bool                           `json:"no_project,omitempty"`
+	ProjectID           string                         `json:"project_id,omitempty"`
+	WorktreeDir         string                         `json:"worktree_dir,omitempty"`
+	ModelSwap           *responsesModelSwapRequest     `json:"model_swap,omitempty"`
+}
+
+func responseRequestFingerprint(req responsesCreateRequest) (string, error) {
+	// The claim key and transport request ID identify the operation; neither is
+	// part of its semantic body.
+	req.IdempotencyKey = ""
+	// Viewport/loaded-extension diagnostics do not change a submitted message's identity.
+	req.UIContext = nil
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("encode response request fingerprint: %w", err)
+	}
+	// Decode and encode once so nested RawMessage objects are normalized too:
+	// insignificant whitespace and object member ordering must not turn a replay
+	// into a conflict.
+	var semantic any
+	if err := json.Unmarshal(encoded, &semantic); err != nil {
+		return "", fmt.Errorf("normalize response request fingerprint: %w", err)
+	}
+	canonical, err := json.Marshal(semantic)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize response request fingerprint: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func parseResponsesInput(input json.RawMessage) ([]core.Message, bool, error) {
+	trimmed := strings.TrimSpace(string(input))
+	if trimmed == "" || trimmed == "null" {
+		return nil, false, fmt.Errorf("input is required")
+	}
+
+	// string shorthand
+	var inputText string
+	if err := json.Unmarshal(input, &inputText); err == nil {
+		if strings.TrimSpace(inputText) == "" {
+			return nil, false, fmt.Errorf("input is empty")
+		}
+		return []core.Message{core.UserText(inputText)}, false, nil
+	}
+
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(input, &items); err != nil {
+		return nil, false, fmt.Errorf("invalid input format")
+	}
+
+	var messages []core.Message
+	callNameByID := map[string]string{}
+	allToolItems := len(items) > 0
+	for _, item := range items {
+		itemType := jsonString(item["type"])
+		if itemType != "function_call" && itemType != "function_call_output" {
+			allToolItems = false
+			break
+		}
+	}
+	replaceHistory := len(items) > 1 && !allToolItems
+	userCount := 0
+
+	for _, item := range items {
+		itemType := jsonString(item["type"])
+		switch itemType {
+		case "message":
+			role := strings.ToLower(strings.TrimSpace(jsonString(item["role"])))
+			switch role {
+			case "developer":
+				messages = append(messages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: extractItemContent(item["content"])}}})
+				replaceHistory = true
+			case "system":
+				messages = append(messages, core.SystemText(extractItemContent(item["content"])))
+				replaceHistory = true
+			case "assistant":
+				messages = append(messages, core.AssistantText(extractItemContent(item["content"])))
+				replaceHistory = true
+			default:
+				msg, err := parseUserMessageContent(item["content"])
+				if err != nil {
+					return nil, false, fmt.Errorf("user message: %w", err)
+				}
+				msg.ClientMessageID = strings.TrimSpace(jsonString(item["client_message_id"]))
+				messages = append(messages, msg)
+				userCount++
+			}
+		case "function_call":
+			id := jsonString(item["call_id"])
+			name := jsonString(item["name"])
+			args := jsonString(item["arguments"])
+			if strings.TrimSpace(args) == "" {
+				args = "{}"
+			}
+			callNameByID[id] = name
+			messages = append(messages, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+				Type:     core.PartToolCall,
+				ToolCall: &core.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)},
+			}}})
+		case "function_call_output":
+			id := jsonString(item["call_id"])
+			out := jsonString(item["output"])
+			messages = append(messages, core.ToolResultMessage(id, callNameByID[id], out, nil))
+		}
+	}
+
+	if userCount > 1 {
+		replaceHistory = true
+	}
+	return messages, replaceHistory, nil
+}
+
+// normalizeReasoningEffort trims whitespace and folds the literal "default"
+// value (sent by older clients and stale localStorage entries) to an empty
+// string so that providers receive "" meaning "use the provider default"
+// rather than a bogus "default" value that would produce an upstream 400.
+func normalizeReasoningEffort(value string) string {
+	v := strings.TrimSpace(value)
+	if strings.EqualFold(v, "default") {
+		return ""
+	}
+	return v
+}
+
+// normalizeProviderModelEffort canonicalizes the web/API split between model
+// identity and reasoning effort. Older URLs, localStorage values, and CLI-style
+// model names may encode effort as a model suffix (for example
+// "gpt-5.5-medium"). The web UI has a separate effort selector, so the server
+// must not echo a suffixed model and a separate reasoning_effort at the same
+// time. Provider-aware parsing avoids false positives such as
+// "gpt-5.1-codex-max", where "max" is part of the model name for GPT-5
+// providers rather than a supported effort level.
+//
+// Precedence: an explicit reasoning_effort wins over a suffix. If no explicit
+// effort is present, a supported suffix is promoted into reasoning_effort.
+func normalizeProviderModelEffort(provider, model, effort string) (string, string) {
+	model = strings.TrimSpace(model)
+	effort = normalizeReasoningEffort(effort)
+	if model == "" {
+		return "", effort
+	}
+
+	base, suffixEffort := llm.BaseModelAndEffortForProvider(provider, model)
+	if base == "" {
+		return model, effort
+	}
+	if suffixEffort == "" {
+		return base, effort
+	}
+	if effort == "" {
+		effort = suffixEffort
+	}
+	return base, effort
+}
+
+func parseRequestedTools(raw []json.RawMessage) (bool, bool, map[string]bool, []core.ToolSpec) {
+	search := false
+	ptc := false
+	toolNames := map[string]bool{}
+	passthrough := make([]core.ToolSpec, 0, len(raw))
+
+	for _, item := range raw {
+		var generic map[string]json.RawMessage
+		if err := json.Unmarshal(item, &generic); err != nil {
+			continue
+		}
+		typeName := strings.ToLower(strings.TrimSpace(jsonString(generic["type"])))
+		switch typeName {
+		case "web_search_preview", "web_search":
+			search = true
+		case "programmatic_tool_calling":
+			ptc = true
+		case "function":
+			spec, ok := parseRequestedFunctionTool(generic)
+			if !ok {
+				continue
+			}
+			toolNames[spec.Name] = true
+			passthrough = append(passthrough, spec)
+		}
+	}
+
+	return search, ptc, toolNames, passthrough
+}
+
+func parseRequestedFunctionTool(generic map[string]json.RawMessage) (core.ToolSpec, bool) {
+	spec := core.ToolSpec{
+		Name:        strings.TrimSpace(jsonString(generic["name"])),
+		Description: strings.TrimSpace(jsonString(generic["description"])),
+	}
+	if rawParams := generic["parameters"]; len(rawParams) > 0 {
+		_ = json.Unmarshal(rawParams, &spec.Schema)
+	}
+	if rawStrict := generic["strict"]; len(rawStrict) > 0 {
+		var strict bool
+		if err := json.Unmarshal(rawStrict, &strict); err == nil {
+			spec.Strict = strict
+		}
+	}
+	if rawCallers := generic["allowed_callers"]; len(rawCallers) > 0 {
+		_ = json.Unmarshal(rawCallers, &spec.AllowedCallers)
+	}
+	if rawOutput := generic["output_schema"]; len(rawOutput) > 0 {
+		_ = json.Unmarshal(rawOutput, &spec.OutputSchema)
+	}
+
+	if rawFunc := generic["function"]; len(rawFunc) > 0 {
+		var fn struct {
+			Name           string                 `json:"name"`
+			Description    string                 `json:"description"`
+			Parameters     map[string]interface{} `json:"parameters"`
+			Strict         *bool                  `json:"strict"`
+			AllowedCallers []string               `json:"allowed_callers"`
+			OutputSchema   map[string]interface{} `json:"output_schema"`
+		}
+		if err := json.Unmarshal(rawFunc, &fn); err == nil {
+			if spec.Name == "" {
+				spec.Name = strings.TrimSpace(fn.Name)
+			}
+			if spec.Description == "" {
+				spec.Description = strings.TrimSpace(fn.Description)
+			}
+			if spec.Schema == nil {
+				spec.Schema = fn.Parameters
+			}
+			if fn.Strict != nil {
+				spec.Strict = *fn.Strict
+			}
+			if spec.AllowedCallers == nil {
+				spec.AllowedCallers = append([]string(nil), fn.AllowedCallers...)
+			}
+			if spec.OutputSchema == nil {
+				spec.OutputSchema = fn.OutputSchema
+			}
+		}
+	}
+
+	if spec.Name == "" {
+		return core.ToolSpec{}, false
+	}
+	if spec.Schema == nil {
+		spec.Schema = map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}
+	}
+	return spec, true
+}
+
+func responsesUsagePayload(usage core.Usage) map[string]any {
+	inputTokens := usage.ProviderRawInputTokens
+	if inputTokens <= 0 {
+		inputTokens = usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens
+	}
+	totalTokens := usage.ProviderTotalTokens
+	if totalTokens <= 0 {
+		totalTokens = inputTokens + usage.OutputTokens
+	}
+	return map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": usage.OutputTokens,
+		"total_tokens":  totalTokens,
+		"input_tokens_details": map[string]any{
+			"cached_tokens":      usage.CachedInputTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
+		},
+		"output_tokens_details": map[string]any{
+			"reasoning_tokens": usage.ReasoningTokens,
+		},
+	}
+}
+
+func responsesFinalResponse(result serveRunResult, model string, respID string, created int64) map[string]any {
+	output := []map[string]any{}
+	if result.Text.Len() > 0 {
+		output = append(output, map[string]any{
+			"id":   "msg_" + randomSuffix(),
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": result.Text.String(),
+			}},
+		})
+	}
+	for _, call := range result.ToolCalls {
+		output = append(output, map[string]any{
+			"id":        "fc_" + call.ID,
+			"type":      "function_call",
+			"call_id":   call.ID,
+			"name":      call.Name,
+			"arguments": string(call.Arguments),
+		})
+	}
+
+	response := map[string]any{
+		"id":            respID,
+		"object":        "response",
+		"created":       created,
+		"model":         model,
+		"output":        output,
+		"usage":         responsesUsagePayload(result.Usage),
+		"session_usage": responsesUsagePayload(result.SessionUsage),
+		"context_usage": result.ContextUsage,
+	}
+	return response
+}

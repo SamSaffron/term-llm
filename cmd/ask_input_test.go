@@ -2,13 +2,12 @@ package cmd
 
 import (
 	"context"
-
 	"path/filepath"
 	"strings"
 	"testing"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/llm/core"
-
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -30,7 +29,7 @@ func TestDeriveAskResumeAutoToolsFromMissingStructuredAttachment(t *testing.T) {
 	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, message, -1)); err != nil {
 		t.Fatal(err)
 	}
-	settings := SessionSettings{Tools: tools.ShellToolName}
+	settings := appserve.SessionSettings{Tools: tools.ShellToolName}
 	deriveAskResumeAutoTools(ctx, store, sess, &settings)
 	if settings.Tools != tools.ShellToolName {
 		t.Fatalf("configured Tools changed to %q", settings.Tools)

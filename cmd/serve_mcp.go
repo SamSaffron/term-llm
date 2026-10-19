@@ -82,12 +82,12 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 			return resolveServeMCPApprovalMode(cmd, cfg, &approvalOptions)
 		},
 	}
-	return RunMCP(cmd.Context(), &serveMCPFlags, args, invocation)
+	return appserve.RunMCP(cmd.Context(), &serveMCPFlags, args, invocation)
 }
 
 // MCPToolsFlagCompletion provides completions for the --tools flag on serve mcp.
 func MCPToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	allTools := MCPAllToolNames()
+	allTools := appserve.MCPAllToolNames()
 	sort.Strings(allTools)
 
 	// Parse comma-separated list.

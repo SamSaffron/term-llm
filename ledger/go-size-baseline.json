@@ -19,48 +19,36 @@
       "lines": 1006
     },
     {
-      "path": "cmd/runner.go",
-      "lines": 1077
-    },
-    {
       "path": "cmd/serve.go",
       "lines": 1832
     },
     {
-      "path": "cmd/serve_handlers.go",
+      "path": "internal/app/serve/serve_handlers.go",
       "lines": 4343
     },
     {
-      "path": "cmd/serve_handlers_responses.go",
+      "path": "internal/app/serve/serve_handlers_responses.go",
       "lines": 1107
     },
     {
-      "path": "cmd/serve_jobs_v2.go",
-      "lines": 3063
-    },
-    {
-      "path": "cmd/serve_live.go",
+      "path": "internal/app/serve/serve_live.go",
       "lines": 2067
     },
     {
-      "path": "cmd/serve_projects.go",
+      "path": "internal/app/serve/serve_projects.go",
       "lines": 1157
     },
     {
-      "path": "cmd/serve_response_run_manager.go",
+      "path": "internal/app/serve/serve_response_run_manager.go",
       "lines": 1169
     },
     {
-      "path": "cmd/serve_runtime.go",
+      "path": "internal/app/serve/serve_runtime.go",
       "lines": 2525
     },
     {
-      "path": "cmd/serve_skills.go",
+      "path": "internal/app/serve/serve_skills.go",
       "lines": 1201
-    },
-    {
-      "path": "cmd/session.go",
-      "lines": 1077
     },
     {
       "path": "cmd/skills.go",
@@ -251,6 +239,10 @@
     {
       "dir": "internal/tui/chat",
       "lines": 33218
+    },
+    {
+      "lines": 59600,
+      "dir": "internal/app/serve"
     }
   ]
 }

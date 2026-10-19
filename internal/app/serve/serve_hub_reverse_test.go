@@ -1,0 +1,1357 @@
+package serve
+
+import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/live"
+	"github.com/samsaffron/term-llm/internal/widgets"
+)
+
+func TestHubReverseConnectionNextRequestIDIsUnique(t *testing.T) {
+	var c hubReverseConnection
+	const goroutines = 32
+	const idsPerGoroutine = 512
+
+	ids := make(chan string, goroutines*idsPerGoroutine)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < idsPerGoroutine; j++ {
+				ids <- c.nextRequestID()
+			}
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := make(map[string]struct{}, goroutines*idsPerGoroutine)
+	for id := range ids {
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate request ID %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) != goroutines*idsPerGoroutine {
+		t.Fatalf("unique IDs = %d, want %d", len(seen), goroutines*idsPerGoroutine)
+	}
+}
+
+func TestHubReverseNodeProxy(t *testing.T) {
+	var projectPath, projectQuery, sessionHeader, forwardedHost, forwardedProto, publicPrefix string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedHost = r.Header.Get("X-Forwarded-Host")
+		forwardedProto = r.Header.Get("X-Forwarded-Proto")
+		publicPrefix = r.Header.Get(widgets.PublicPrefixHeader)
+		switch r.URL.Path {
+		case "/chat/healthz":
+			sessionHeader = r.Header.Get(requestSessionIDHeader)
+		case "/chat/v1/projects/prj_one/worktrees/diff":
+			projectPath, projectQuery = r.URL.Path, r.URL.RawQuery
+		default:
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer node-token" {
+			t.Fatalf("backend auth = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","agent":"artist"}`))
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	req := httptest.NewRequest(http.MethodGet, "/node/artist/healthz", nil)
+	req.Host = "hub.example.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set(requestSessionIDHeader, "sess-safe")
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"agent":"artist"`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if sessionHeader != "sess-safe" {
+		t.Fatalf("reverse backend %s = %q, want sess-safe", requestSessionIDHeader, sessionHeader)
+	}
+	if publicPrefix != "/node/artist" {
+		t.Fatalf("reverse backend %s = %q, want /node/artist", widgets.PublicPrefixHeader, publicPrefix)
+	}
+	if forwardedHost != "hub.example.com" || forwardedProto != "https" {
+		t.Fatalf("reverse backend forwarded origin = %q %q, want hub.example.com https", forwardedHost, forwardedProto)
+	}
+	projectReq := httptest.NewRequest(http.MethodGet, "/node/artist/v1/projects/prj_one/worktrees/diff?dir=%2Fmanaged%2Fone", nil)
+	projectRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(projectRec, projectReq)
+	if projectRec.Code != http.StatusOK || projectPath != "/chat/v1/projects/prj_one/worktrees/diff" || projectQuery != "dir=%2Fmanaged%2Fone" {
+		t.Fatalf("project reverse status=%d path=%q query=%q body=%s", projectRec.Code, projectPath, projectQuery, projectRec.Body.String())
+	}
+}
+
+func TestHubReverseNodeProxyPreservesCompression(t *testing.T) {
+	const html = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";</script></head><body></body></html>`
+	asset := strings.Repeat("console.log('reverse asset');\n", 200)
+	compressedAsset := hubTestGzip(t, asset)
+	compressedHTML := hubTestGzip(t, html)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// With no explicit header the connector's Transport negotiates gzip
+		// itself. With an explicit header it must leave the bytes encoded.
+		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Errorf("node Accept-Encoding = %q, want only gzip", got)
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		body := compressedAsset
+		w.Header().Set("Content-Type", "text/javascript")
+		if r.URL.Path == "/chat/" {
+			body = compressedHTML
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
+	}))
+	defer backend.Close()
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, node.ID, node.Token, backend.URL, node.BasePath, backend.Client())
+	waitForReverseNode(t, s, node.ID)
+
+	for _, encoding := range []string{"gzip, deflate, br", "", "gzip;q=0, br"} {
+		for _, path := range []string{"", "asset.js"} {
+			t.Run(encoding+"/"+path, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodGet, "/node/artist/"+path, nil)
+				req.Header.Set("Accept-Encoding", encoding)
+				rec := httptest.NewRecorder()
+				s.handler().ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+				}
+				body := rec.Body.Bytes()
+				if encoding == "gzip, deflate, br" {
+					if rec.Header().Get("Content-Encoding") != "gzip" {
+						t.Fatalf("lost gzip: %v", rec.Header())
+					}
+					if rec.Header().Get("Content-Length") != strconv.Itoa(len(body)) {
+						t.Fatalf("incorrect compressed Content-Length: %v", rec.Header())
+					}
+					if path != "" && !bytes.Equal(body, compressedAsset) {
+						t.Fatal("non-HTML gzip bytes changed across the reverse tunnel")
+					}
+					reader, err := gzip.NewReader(bytes.NewReader(body))
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer reader.Close()
+					body, err = io.ReadAll(reader)
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if rec.Header().Get("Content-Encoding") != "" {
+					t.Fatalf("non-gzip client received encoded body: %v", rec.Header())
+				}
+				if path != "" {
+					if string(body) != asset {
+						t.Fatal("asset body changed")
+					}
+					return
+				}
+				if !strings.Contains(string(body), `<base href="/node/artist/">`) ||
+					!strings.Contains(string(body), `window.TERM_LLM_UI_PREFIX="/node/artist"`) ||
+					!strings.Contains(string(body), `window.TERM_LLM_HUB=`) {
+					t.Fatalf("HTML not rewritten: %s", body)
+				}
+				if !strings.Contains(rec.Header().Get("Vary"), "Accept-Encoding") {
+					t.Fatalf("missing compression Vary: %v", rec.Header())
+				}
+			})
+		}
+	}
+}
+
+func hubTestGzip(t *testing.T, body string) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := io.WriteString(writer, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return compressed.Bytes()
+}
+
+// Assert the connector's actual frame bytes, not just the final browser body:
+// an explicit encoding disables Go's transparent decompression, while leaving
+// the header absent retains today's identity behavior for non-gzip clients.
+func TestHubReverseConnectorGzipFrameBytes(t *testing.T) {
+	body := strings.Repeat("reverse tunnel payload\n", 200)
+	compressed := hubTestGzip(t, body)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed)
+	}))
+	defer backend.Close()
+	for _, encoding := range []string{"gzip", ""} {
+		t.Run("accept="+encoding, func(t *testing.T) {
+			var frames []hubReverseResponse
+			header := http.Header{}
+			if encoding != "" {
+				header.Set("Accept-Encoding", encoding)
+			}
+			handleHubReverseRequest(t.Context(), hubReverseRequest{
+				ID: "gzip-test", Method: http.MethodGet, Path: "/chat/asset.js", Header: header,
+			}, "", backend.URL, "/chat", &http.Client{}, func(frame hubReverseResponse) error {
+				frames = append(frames, frame)
+				return nil
+			})
+			if len(frames) < 3 || frames[0].Error != "" || frames[0].Status != http.StatusOK || frames[len(frames)-1].Type != hubReverseFrameResponseEnd {
+				t.Fatalf("unexpected reverse frames: %+v", frames)
+			}
+			var got []byte
+			for _, frame := range frames {
+				got = append(got, frame.Body...)
+			}
+			want := []byte(body)
+			if encoding == "gzip" {
+				want = compressed
+			}
+			if !bytes.Equal(got, want) || frames[0].Header.Get("Content-Encoding") != encoding {
+				t.Fatalf("frame encoding = %q, bytes = %d; want encoding %q, bytes %d", frames[0].Header.Get("Content-Encoding"), len(got), encoding, len(want))
+			}
+		})
+	}
+}
+
+func TestHubReverseNodeSessionsSummary(t *testing.T) {
+	var sessionsAuth string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/chat/healthz":
+			_, _ = w.Write([]byte(`{"status":"ok","agent":"artist","capabilities":["web"]}`))
+		case "/chat/v1/sessions/status":
+			sessionsAuth = r.Header.Get("Authorization")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]any{{
+				"id":              "sess_reverse",
+				"short_title":     "Reverse session",
+				"active_run":      true,
+				"last_message_at": 1_800_000_000_000,
+				"message_count":   4,
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if sessionsAuth != "Bearer node-token" {
+		t.Fatalf("sessions Authorization = %q, want node token injection", sessionsAuth)
+	}
+
+	var resp struct {
+		Nodes []hubNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Nodes) != 1 || resp.Nodes[0].Sessions == nil {
+		t.Fatalf("nodes response = %+v", resp.Nodes)
+	}
+	sessions := resp.Nodes[0].Sessions
+	if sessions.CountLabel != "1 session" || sessions.ActiveCount != 1 || sessions.ResumePath != "/node/artist/chat/sess_reverse" {
+		t.Fatalf("sessions summary = %+v", sessions)
+	}
+}
+
+func TestHubReverseNodeProxyStreamsChunkedResponse(t *testing.T) {
+	large := strings.Repeat("0123456789abcdef", (hubReverseChunkSize*3)/16)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/stream" {
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(large))
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	req := httptest.NewRequest(http.MethodGet, "/node/artist/stream", nil)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body len=%d", rec.Code, rec.Body.Len())
+	}
+	if rec.Body.String() != large {
+		t.Fatalf("streamed body mismatch len=%d want=%d", rec.Body.Len(), len(large))
+	}
+}
+
+func TestHubReverseNodeProxyStreamsShellSSEIncrementally(t *testing.T) {
+	firstEvent := "event: ready\ndata: {\"shell_id\":\"sh_one\",\"next_offset\":0}\n\n"
+	secondEvent := "event: output\ndata: {\"offset\":0,\"next_offset\":2,\"data\":\"aGk=\"}\n\n"
+	releaseBackend := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseBackend) }) }
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/v1/sessions/shell-session/shell/stream" || r.URL.Query().Get("shell_id") != "sh_one" || r.URL.Query().Get("offset") != "0" {
+			t.Errorf("backend target = %q", r.URL.RequestURI())
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, firstEvent)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-releaseBackend
+		_, _ = io.WriteString(w, secondEvent)
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+	defer release()
+
+	connectorCtx, stopConnector := context.WithCancel(context.Background())
+	defer stopConnector()
+	go runHubReverseConnector(connectorCtx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRequest()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, hubTS.URL+"/node/artist/v1/sessions/shell-session/shell/stream?shell_id=sh_one&offset=0", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	request.Header.Set("Accept-Encoding", "gzip")
+	type readResult struct {
+		body string
+		err  error
+	}
+	firstRead := make(chan readResult, 1)
+	go func() {
+		resp, err := hubTS.Client().Do(request)
+		if err != nil {
+			firstRead <- readResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			firstRead <- readResult{err: errors.New(resp.Status + ": " + string(body))}
+			return
+		}
+		if encoding := resp.Header.Get("Content-Encoding"); encoding != "" {
+			firstRead <- readResult{err: errors.New("SSE unexpectedly compressed: " + encoding)}
+			return
+		}
+		buf := make([]byte, len(firstEvent))
+		if _, err := io.ReadFull(resp.Body, buf); err != nil {
+			firstRead <- readResult{err: err}
+			return
+		}
+		firstRead <- readResult{body: string(buf)}
+	}()
+
+	select {
+	case result := <-firstRead:
+		if result.err != nil {
+			t.Fatalf("read first SSE event: %v", result.err)
+		}
+		if result.body != firstEvent {
+			t.Fatalf("first SSE event = %q, want %q", result.body, firstEvent)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first reverse SSE event was buffered until the backend response completed")
+	}
+}
+
+func TestHubReverseNodeProxyStreamsGeminiHTTPAudioRoundTrip(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	nodeServer := newTestServeServer()
+	nodeServer.cfg.ui = true
+	nodeServer.cfg.requireAuth = true
+	nodeServer.cfg.token = "node-token"
+	nodeServer.cfg.basePath = "/chat"
+	nodeServer.shutdownCh = make(chan struct{})
+	nodeServer.cfgRef = &config.Config{Live: config.LiveConfig{Enabled: true, Provider: config.LiveProviderGemini}}
+	nodeServer.liveProviderFactory = func(config.LiveConfig) (live.Provider, error) {
+		return &stubPCMProvider{session: pcm}, nil
+	}
+	nodeTS := httptest.NewServer(nodeServer.httpHandler())
+	defer nodeTS.Close()
+	defer nodeServer.closeLiveSessions(context.Background())
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	hubServer := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(hubServer.handler())
+	defer hubTS.Close()
+	connectorCtx, stopConnector := context.WithCancel(context.Background())
+	defer stopConnector()
+	go runHubReverseConnector(connectorCtx, hubTS.URL, node.ID, node.Token, nodeTS.URL, node.BasePath, nodeTS.Client())
+	waitForReverseNode(t, hubServer, node.ID)
+
+	startBody := `{"session_id":"hub-live","audio_transport":"http_pcm"}`
+	startReq, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions", strings.NewReader(startBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	startReq.Header.Set("Content-Type", "application/json")
+	startResp, err := hubTS.Client().Do(startReq)
+	if err != nil {
+		t.Fatalf("start through reverse Hub: %v", err)
+	}
+	defer startResp.Body.Close()
+	if startResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(startResp.Body)
+		t.Fatalf("start status=%d body=%s", startResp.StatusCode, body)
+	}
+	var started struct {
+		LiveID          string `json:"live_id"`
+		Transport       string `json:"transport"`
+		AudioCapability string `json:"audio_capability"`
+		AudioURL        string `json:"audio_url"`
+	}
+	if err := json.NewDecoder(startResp.Body).Decode(&started); err != nil {
+		t.Fatal(err)
+	}
+	if started.LiveID == "" || started.Transport != "http_pcm" || started.AudioCapability == "" || started.AudioURL != "" {
+		t.Fatalf("start response = %+v", started)
+	}
+
+	inputPCM := []byte{1, 0, 2, 0}
+	expectedInputPCM := inputPCM
+	prematureInput, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/input", strings.NewReader(string(inputPCM)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prematureInput.Header.Set("Content-Type", "application/octet-stream")
+	prematureResp, err := hubTS.Client().Do(prematureInput)
+	if err != nil {
+		t.Fatalf("premature input through reverse Hub: %v", err)
+	}
+	_ = prematureResp.Body.Close()
+	if prematureResp.StatusCode != http.StatusConflict {
+		t.Fatalf("input before output attach status=%d, want 409", prematureResp.StatusCode)
+	}
+
+	outputCtx, stopOutput := context.WithCancel(context.Background())
+	defer stopOutput()
+	outputReq, err := http.NewRequestWithContext(outputCtx, http.MethodGet, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/output", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputReq.Header.Set("Accept", "text/event-stream")
+	outputReq.Header.Set("X-Term-LLM-Live-Audio-Capability", started.AudioCapability)
+	outputResp, err := hubTS.Client().Do(outputReq)
+	if err != nil {
+		t.Fatalf("attach output through reverse Hub: %v", err)
+	}
+	defer outputResp.Body.Close()
+	if outputResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(outputResp.Body)
+		t.Fatalf("output status=%d body=%s", outputResp.StatusCode, body)
+	}
+
+	// The one-use capability permits exactly one media consumer, including when
+	// the competing consumer also traverses the reverse Hub path.
+	secondReq, err := http.NewRequest(http.MethodGet, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/output", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReq.Header.Set("X-Term-LLM-Live-Audio-Capability", started.AudioCapability)
+	secondResp, err := hubTS.Client().Do(secondReq)
+	if err != nil {
+		t.Fatalf("second output attach: %v", err)
+	}
+	_ = secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("second output status=%d, want 401", secondResp.StatusCode)
+	}
+
+	inputReq, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/input", strings.NewReader(string(inputPCM)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputReq.Header.Set("Content-Type", "application/octet-stream")
+	inputResp, err := hubTS.Client().Do(inputReq)
+	if err != nil {
+		t.Fatalf("send input through reverse Hub: %v", err)
+	}
+	_ = inputResp.Body.Close()
+	if inputResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("input status=%d, want 204", inputResp.StatusCode)
+	}
+	select {
+	case got := <-pcm.received:
+		if string(got) != string(expectedInputPCM) {
+			t.Fatalf("provider input=%v want=%v", got, expectedInputPCM)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reverse Hub did not forward complete microphone PCM samples")
+	}
+
+	followupInputPCM := []byte{7, 0, 8, 0}
+	followupInput, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/input", strings.NewReader(string(followupInputPCM)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	followupInput.Header.Set("Content-Type", "application/octet-stream")
+	followupResp, err := hubTS.Client().Do(followupInput)
+	if err != nil {
+		t.Fatalf("send follow-up input through reverse Hub: %v", err)
+	}
+	_ = followupResp.Body.Close()
+	if followupResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("follow-up input status=%d, want 204", followupResp.StatusCode)
+	}
+	select {
+	case got := <-pcm.received:
+		if string(got) != string(followupInputPCM) {
+			t.Fatalf("provider follow-up input=%v want=%v", got, followupInputPCM)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reverse Hub did not forward subsequent microphone PCM")
+	}
+
+	scanner := bufio.NewScanner(outputResp.Body)
+	event, data, ok := readSSEEvent(t, scanner)
+	if !ok || event != "ready" {
+		t.Fatalf("initial output event=%q data=%q ok=%t", event, data, ok)
+	}
+	outputPCM := []byte{3, 0, 4, 0, 0xff}
+	expectedOutputPCM := outputPCM[:len(outputPCM)-1]
+	pcm.frames <- live.PCMFrame{Audio: outputPCM}
+	event, data, ok = readSSEEvent(t, scanner)
+	if !ok || event != "audio" {
+		t.Fatalf("output event=%q data=%q ok=%t", event, data, ok)
+	}
+	var audioFrame struct {
+		Audio string `json:"audio"`
+	}
+	if err := json.Unmarshal([]byte(data), &audioFrame); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(audioFrame.Audio)
+	if err != nil || string(decoded) != string(expectedOutputPCM) {
+		t.Fatalf("output PCM=%v want=%v err=%v", decoded, expectedOutputPCM, err)
+	}
+
+	followupOutputPCM := []byte{5, 0, 6, 0}
+	pcm.frames <- live.PCMFrame{Audio: followupOutputPCM}
+	event, data, ok = readSSEEvent(t, scanner)
+	if !ok || event != "audio" {
+		t.Fatalf("follow-up output event=%q data=%q ok=%t", event, data, ok)
+	}
+	if err := json.Unmarshal([]byte(data), &audioFrame); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err = base64.StdEncoding.DecodeString(audioFrame.Audio)
+	if err != nil || string(decoded) != string(followupOutputPCM) {
+		t.Fatalf("follow-up output PCM=%v want=%v err=%v", decoded, followupOutputPCM, err)
+	}
+
+	stopOutput()
+	_ = outputResp.Body.Close()
+	select {
+	case <-pcm.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP audio disconnect did not close the provider session")
+	}
+}
+
+func TestHubReverseNodeProxyRejectsOversizedRequestBody(t *testing.T) {
+	backendCalled := make(chan struct{}, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case backendCalled <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	payload := strings.Repeat("a", hubReverseMaxRequestBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/node/artist/upload", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reverse request body exceeds") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	select {
+	case <-backendCalled:
+		t.Fatal("backend received oversized reverse request body")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestHubReverseResponseCancellation(t *testing.T) {
+	backendCanceled := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/slow" {
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("hello"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		close(backendCanceled)
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	connectorCtx, stopConnector := context.WithCancel(context.Background())
+	defer stopConnector()
+	go runHubReverseConnector(connectorCtx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/slow", nil).WithContext(reqCtx)
+	resp, err := s.reverse.do(reqCtx, node, req)
+	if err != nil {
+		t.Fatalf("reverse do: %v", err)
+	}
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(resp.Body, buf); err != nil {
+		t.Fatalf("read first chunk: %v", err)
+	}
+	cancelReq()
+	_, err = io.ReadAll(resp.Body)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("read after cancel err = %v", err)
+	}
+	select {
+	case <-backendCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("backend request was not canceled")
+	}
+}
+
+func TestHubReverseReadLoopIsolatesUnreadResponseOverflow(t *testing.T) {
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(hubTS.URL, "http") + "/api/connect?node_id=artist"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer node-token")
+	header.Set(hubNodeIDHeader, "artist")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+	waitForReverseNode(t, s, "artist")
+
+	frames := make(chan hubReverseRequest, 32)
+	go func() {
+		for {
+			var frame hubReverseRequest
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			frames <- frame
+		}
+	}()
+
+	firstResult := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/unread-stream", nil)
+		resp, err := s.reverse.do(context.Background(), node, req)
+		firstResult <- reverseDoResult{resp: resp, err: err}
+	}()
+	firstReq := waitForReverseRequest(t, frames, "/chat/unread-stream")
+	if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: firstReq.ID, Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}}); err != nil {
+		t.Fatalf("write first response_start: %v", err)
+	}
+	first := waitForReverseDoResult(t, firstResult)
+	if first.err != nil {
+		t.Fatalf("first reverse do: %v", first.err)
+	}
+	defer first.resp.Body.Close()
+
+	// Leave the first body unread and overflow only its bounded response queue.
+	// The hub must cancel that request without blocking the tunnel's sole reader.
+	for i := 0; i < hubReversePendingBuffer+2; i++ {
+		if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte("chunk")}); err != nil {
+			t.Fatalf("write unread response body frame %d: %v", i, err)
+		}
+	}
+
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelSecond()
+	secondResult := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/healthz", nil).WithContext(secondCtx)
+		resp, err := s.reverse.do(secondCtx, node, req)
+		secondResult <- reverseDoResult{resp: resp, err: err}
+	}()
+
+	// Start the sibling before waiting for cancellation. Seeing both frames proves
+	// the sole websocket reader and writer remain live while overflow is handled.
+	var secondReq hubReverseRequest
+	gotCancel := false
+	deadline := time.After(2 * time.Second)
+	for !gotCancel || secondReq.ID == "" {
+		select {
+		case frame := <-frames:
+			switch {
+			case frame.Type == hubReverseFrameCancel && frame.ID == firstReq.ID:
+				gotCancel = true
+			case frame.Type == hubReverseFrameRequest && frame.Path == "/chat/healthz":
+				secondReq = frame
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for overflow cancel and sibling request (cancel=%v sibling=%q)", gotCancel, secondReq.ID)
+		}
+	}
+	if err := conn.WriteJSON(hubReverseResponse{ID: secondReq.ID, Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: []byte("ok")}); err != nil {
+		t.Fatalf("write second response: %v", err)
+	}
+	second := waitForReverseDoResult(t, secondResult)
+	if second.err != nil {
+		t.Fatalf("second reverse do after unread stream overflow: %v", second.err)
+	}
+	defer second.resp.Body.Close()
+	body, err := io.ReadAll(second.resp.Body)
+	if err != nil {
+		t.Fatalf("read second body: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("second body = %q", body)
+	}
+	if !s.reverse.isConnected("artist") {
+		t.Fatal("reverse tunnel disconnected after isolating unread response")
+	}
+
+	_, err = io.ReadAll(first.resp.Body)
+	if !errors.Is(err, errHubReverseSlowConsumer) {
+		t.Fatalf("first body error = %v, want %v", err, errHubReverseSlowConsumer)
+	}
+}
+
+func TestHubReverseReadLoopCompletesLargeActivelyDrainedStream(t *testing.T) {
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(hubTS.URL, "http") + "/api/connect?node_id=artist"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer node-token")
+	header.Set(hubNodeIDHeader, "artist")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+	waitForReverseNode(t, s, "artist")
+
+	frames := make(chan hubReverseRequest, 8)
+	go func() {
+		for {
+			var frame hubReverseRequest
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			frames <- frame
+		}
+	}()
+
+	result := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/large-stream", nil)
+		resp, err := s.reverse.do(context.Background(), node, req)
+		result <- reverseDoResult{resp: resp, err: err}
+	}()
+	request := waitForReverseRequest(t, frames, "/chat/large-stream")
+	if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: request.ID, Status: http.StatusOK}); err != nil {
+		t.Fatalf("write response_start: %v", err)
+	}
+	response := waitForReverseDoResult(t, result)
+	if response.err != nil {
+		t.Fatalf("reverse do: %v", response.err)
+	}
+	defer response.resp.Body.Close()
+
+	s.reverse.mu.RLock()
+	reverseConn := s.reverse.conns[node.ID]
+	s.reverse.mu.RUnlock()
+	if reverseConn == nil {
+		t.Fatal("reverse connection disappeared")
+	}
+	reverseConn.pendingMu.Lock()
+	pending := reverseConn.pending[request.ID]
+	reverseConn.pendingMu.Unlock()
+	if pending == nil {
+		t.Fatal("large stream request is not pending")
+	}
+
+	bodyResult := make(chan reverseBodyResult, 1)
+	var consumed atomic.Int64
+	progress := make(chan struct{}, 1)
+	go func() {
+		var body []byte
+		buf := make([]byte, 4*1024)
+		for {
+			n, readErr := response.resp.Body.Read(buf)
+			if n > 0 {
+				body = append(body, buf[:n]...)
+				consumed.Add(int64(n))
+				select {
+				case progress <- struct{}{}:
+				default:
+				}
+			}
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					readErr = nil
+				}
+				bodyResult <- reverseBodyResult{body: body, err: readErr}
+				return
+			}
+		}
+	}()
+	const frameCount = 4 * hubReversePendingBuffer
+	for i := 0; i < frameCount; i++ {
+		// Limit all frames in flight, including frames buffered by the websocket
+		// transport but not yet reflected in pending.ch. This test is about an
+		// actively drained response, not whether a loaded runner can transfer the
+		// entire stream within one absolute deadline.
+		for int64(i)-consumed.Load() >= hubReversePendingBuffer/2 {
+			select {
+			case <-progress:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("active response consumer stopped making progress at frame %d", i)
+			}
+		}
+		if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: request.ID, Body: []byte("x")}); err != nil {
+			t.Fatalf("write body frame %d: %v", i, err)
+		}
+	}
+	if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: request.ID}); err != nil {
+		t.Fatalf("write response_end: %v", err)
+	}
+
+	select {
+	case got := <-bodyResult:
+		if got.err != nil {
+			t.Fatalf("read large response body: %v", got.err)
+		}
+		if len(got.body) != frameCount || strings.Trim(string(got.body), "x") != "" {
+			t.Fatalf("large response body length/content mismatch: len=%d want=%d", len(got.body), frameCount)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out draining large reverse response")
+	}
+}
+
+type reverseBodyResult struct {
+	body []byte
+	err  error
+}
+
+func TestHubReversePendingDefersTerminalBehindFullBodyQueue(t *testing.T) {
+	pending := newHubReversePending()
+	for i := 0; i < hubReversePendingBuffer; i++ {
+		queued, full := pending.enqueue(hubReverseResponse{Type: hubReverseFrameResponseBody, Body: []byte("x")})
+		if !queued || full {
+			t.Fatalf("enqueue body frame %d = (%v, %v)", i, queued, full)
+		}
+	}
+	if !pending.deferTerminal(hubReverseResponse{Type: hubReverseFrameResponseEnd}) {
+		t.Fatal("failed to defer terminal frame")
+	}
+	pr, pw := io.Pipe()
+	go (&hubReverseConnection{}).copyReverseResponseBody(context.Background(), "request", pending, pw)
+	body, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatalf("read deferred-terminal body: %v", err)
+	}
+	if len(body) != hubReversePendingBuffer {
+		t.Fatalf("body length = %d, want %d", len(body), hubReversePendingBuffer)
+	}
+}
+
+func TestHubReversePendingEnforcesBodyByteLimit(t *testing.T) {
+	pending := newHubReversePending()
+	queued, full := pending.enqueue(hubReverseResponse{
+		Type: hubReverseFrameResponseBody,
+		Body: make([]byte, hubReversePendingBodyBytes+1),
+	})
+	if queued || !full {
+		t.Fatalf("oversized enqueue = (%v, %v), want (false, true)", queued, full)
+	}
+	if got := pending.queuedBytes.Load(); got != 0 {
+		t.Fatalf("queued bytes = %d after rejected frame, want 0", got)
+	}
+
+	pending = newHubReversePending()
+	connection := &hubReverseConnection{pending: map[string]*hubReversePending{"request": pending}}
+	connection.dispatchResponse(hubReverseResponse{
+		ID:   "request",
+		Type: hubReverseFrameResponseBody,
+		Body: make([]byte, hubReversePendingBodyBytes+1),
+	})
+	if err := pending.errValue(); !errors.Is(err, errHubReverseResponseTooLarge) {
+		t.Fatalf("oversized dispatch error = %v, want %v", err, errHubReverseResponseTooLarge)
+	}
+}
+
+func TestHubReverseDispatchFullTerminalPreservesNodeOutcome(t *testing.T) {
+	t.Run("node error", func(t *testing.T) {
+		pending := newHubReversePending()
+		for i := 0; i < hubReversePendingBuffer; i++ {
+			queued, full := pending.enqueue(hubReverseResponse{Type: hubReverseFrameResponseBody, Body: []byte("x")})
+			if !queued || full {
+				t.Fatalf("enqueue body frame %d = (%v, %v)", i, queued, full)
+			}
+		}
+		connection := &hubReverseConnection{pending: map[string]*hubReversePending{"request": pending}}
+		connection.dispatchResponse(hubReverseResponse{ID: "request", Error: "node failed", Body: []byte("terminal metadata")})
+		if pending.doneClosed() {
+			t.Fatal("node error aborted before queued body frames drained")
+		}
+		if _, ok := connection.pending["request"]; ok {
+			t.Fatal("errored request remained pending")
+		}
+		pr, pw := io.Pipe()
+		go connection.copyReverseResponseBody(context.Background(), "request", pending, pw)
+		body, err := io.ReadAll(pr)
+		if err == nil || err.Error() != "node failed" {
+			t.Fatalf("body error = %v, want node failure", err)
+		}
+		if len(body) != hubReversePendingBuffer {
+			t.Fatalf("body length = %d, want %d queued bytes", len(body), hubReversePendingBuffer)
+		}
+		if got := pending.queuedBytes.Load(); got != 0 {
+			t.Fatalf("queued bytes after terminal error = %d, want 0", got)
+		}
+	})
+
+	t.Run("clean response end", func(t *testing.T) {
+		pending := newHubReversePending()
+		for i := 0; i < hubReversePendingBuffer; i++ {
+			queued, full := pending.enqueue(hubReverseResponse{Type: hubReverseFrameResponseBody})
+			if !queued || full {
+				t.Fatalf("enqueue body frame %d = (%v, %v)", i, queued, full)
+			}
+		}
+		connection := &hubReverseConnection{pending: map[string]*hubReversePending{"request": pending}}
+		connection.dispatchResponse(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: "request"})
+		select {
+		case terminal := <-pending.terminal:
+			if terminal.Type != hubReverseFrameResponseEnd {
+				t.Fatalf("terminal frame = %#v", terminal)
+			}
+		default:
+			t.Fatal("clean terminal frame was not deferred")
+		}
+		if pending.doneClosed() {
+			t.Fatal("clean terminal frame aborted pending request")
+		}
+		if _, ok := connection.pending["request"]; ok {
+			t.Fatal("completed request remained pending")
+		}
+	})
+}
+
+func TestHubReverseReadLoopSurvivesCanceledUndrainedStream(t *testing.T) {
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(hubTS.URL, "http") + "/api/connect?node_id=artist"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer node-token")
+	header.Set(hubNodeIDHeader, "artist")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+	waitForReverseNode(t, s, "artist")
+
+	requests := make(chan hubReverseRequest, 8)
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			var frame hubReverseRequest
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			if frame.Type == hubReverseFrameRequest {
+				requests <- frame
+			}
+		}
+	}()
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstResult := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/stream", nil).WithContext(firstCtx)
+		resp, err := s.reverse.do(firstCtx, node, req)
+		firstResult <- reverseDoResult{resp: resp, err: err}
+	}()
+	firstReq := waitForReverseRequest(t, requests, "/chat/stream")
+	if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: firstReq.ID, Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}}); err != nil {
+		t.Fatalf("write first response_start: %v", err)
+	}
+	first := waitForReverseDoResult(t, firstResult)
+	if first.err != nil {
+		t.Fatalf("first reverse do: %v", first.err)
+	}
+	defer first.resp.Body.Close()
+
+	// Queue several frames behind the unread body without overflowing its buffer.
+	// Explicit cancellation must still release that request so later multiplexed
+	// requests on the same websocket continue to work.
+	writerDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < hubReversePendingBuffer/2; i++ {
+			if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte("chunk")}); err != nil {
+				writerDone <- err
+				return
+			}
+		}
+		writerDone <- nil
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancelFirst()
+	_ = first.resp.Body.Close()
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatalf("write queued body frames: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reverse writer")
+	}
+
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelSecond()
+	secondResult := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/healthz", nil).WithContext(secondCtx)
+		resp, err := s.reverse.do(secondCtx, node, req)
+		secondResult <- reverseDoResult{resp: resp, err: err}
+	}()
+	secondReq := waitForReverseRequest(t, requests, "/chat/healthz")
+	if err := conn.WriteJSON(hubReverseResponse{ID: secondReq.ID, Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: []byte("ok")}); err != nil {
+		t.Fatalf("write second response: %v", err)
+	}
+	second := waitForReverseDoResult(t, secondResult)
+	if second.err != nil {
+		t.Fatalf("second reverse do after canceled stream: %v", second.err)
+	}
+	defer second.resp.Body.Close()
+	body, err := io.ReadAll(second.resp.Body)
+	if err != nil {
+		t.Fatalf("read second body: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("second body = %q", body)
+	}
+}
+
+type reverseDoResult struct {
+	resp *http.Response
+	err  error
+}
+
+func waitForReverseDoResult(t *testing.T, ch <-chan reverseDoResult) reverseDoResult {
+	t.Helper()
+	select {
+	case res := <-ch:
+		return res
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for reverse response")
+		return reverseDoResult{}
+	}
+}
+
+func waitForReverseRequest(t *testing.T, ch <-chan hubReverseRequest, wantPath string) hubReverseRequest {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case req := <-ch:
+			if req.Type != hubReverseFrameRequest {
+				continue
+			}
+			if req.Path == wantPath {
+				return req
+			}
+			t.Fatalf("reverse request path = %q, want %q", req.Path, wantPath)
+		case <-deadline:
+			t.Fatalf("timed out waiting for reverse request %s", wantPath)
+		}
+	}
+}
+
+func withFastHubReverseReconnect(t *testing.T) {
+	t.Helper()
+	orig := hubReverseReconnectDelay
+	hubReverseReconnectDelay = time.Millisecond
+	t.Cleanup(func() { hubReverseReconnectDelay = orig })
+}
+
+func TestHubReverseConnectorReconnectsAfterDroppedWebsocket(t *testing.T) {
+	withFastHubReverseReconnect(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/healthz" {
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","agent":"artist"}`))
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+
+	first := waitForReverseNodeConnection(t, s, "artist")
+	assertReverseProxyContains(t, s, "/node/artist/healthz", `"agent":"artist"`)
+
+	// Simulate a long-lived tunnel dying. The node-side connector should notice
+	// the websocket read error, retry, and attach a fresh hub-side connection.
+	_ = first.conn.Close()
+	second := waitForReverseNodeReconnect(t, s, "artist", first)
+	if second == first {
+		t.Fatal("reverse connection pointer did not change after reconnect")
+	}
+	assertReverseProxyContains(t, s, "/node/artist/healthz", `"agent":"artist"`)
+}
+
+func TestHubReverseConnectorFailsInFlightRequestAndRecoversAfterDrop(t *testing.T) {
+	withFastHubReverseReconnect(t)
+	slowStarted := make(chan struct{})
+	slowCanceled := make(chan struct{})
+	var slowStartedOnce, slowCanceledOnce sync.Once
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/chat/slow":
+			slowStartedOnce.Do(func() { close(slowStarted) })
+			<-r.Context().Done()
+			slowCanceledOnce.Do(func() { close(slowCanceled) })
+		case "/chat/healthz":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok","agent":"artist"}`))
+		default:
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+
+	first := waitForReverseNodeConnection(t, s, "artist")
+	inFlight := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/slow", nil)
+		resp, err := s.reverse.do(ctx, node, req)
+		inFlight <- reverseDoResult{resp: resp, err: err}
+	}()
+	waitForClosed(t, slowStarted, "slow backend request to start")
+
+	_ = first.conn.Close()
+	res := waitForReverseDoResult(t, inFlight)
+	if res.err == nil {
+		if res.resp != nil {
+			_ = res.resp.Body.Close()
+		}
+		t.Fatal("in-flight reverse request succeeded after tunnel drop; want error")
+	}
+	waitForClosed(t, slowCanceled, "slow backend request to be canceled")
+
+	waitForReverseNodeReconnect(t, s, "artist", first)
+	assertReverseProxyContains(t, s, "/node/artist/healthz", `"agent":"artist"`)
+}
+
+func TestHubReverseDelegationNodeJSON(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/v2/jobs" {
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer node-token" {
+			t.Fatalf("backend auth = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"job_reverse"}`))
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := s.doNodeJSON(ctx, node, http.MethodPost, "/v2/jobs", map[string]string{"name": "demo"}, &out); err != nil {
+		t.Fatalf("doNodeJSON: %v", err)
+	}
+	if out.ID != "job_reverse" {
+		t.Fatalf("id = %q", out.ID)
+	}
+}
+
+func assertReverseProxyContains(t *testing.T, s *hubServer, path, want string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s status = %d body=%q", path, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("%s body = %q, want substring %q", path, rec.Body.String(), want)
+	}
+}
+
+func waitForClosed(t *testing.T, ch <-chan struct{}, desc string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", desc)
+	}
+}
+
+func waitForReverseNodeConnection(t *testing.T, s *hubServer, nodeID string) *hubReverseConnection {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s.reverse.mu.RLock()
+		c := s.reverse.conns[nodeID]
+		s.reverse.mu.RUnlock()
+		if c != nil {
+			return c
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("node %q did not connect", nodeID)
+	return nil
+}
+
+func waitForReverseNodeReconnect(t *testing.T, s *hubServer, nodeID string, old *hubReverseConnection) *hubReverseConnection {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		s.reverse.mu.RLock()
+		c := s.reverse.conns[nodeID]
+		s.reverse.mu.RUnlock()
+		if c != nil && c != old {
+			return c
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("node %q did not reconnect", nodeID)
+	return nil
+}
+
+func waitForReverseNode(t *testing.T, s *hubServer, nodeID string) {
+	t.Helper()
+	_ = waitForReverseNodeConnection(t, s, nodeID)
+}

@@ -1,0 +1,742 @@
+package serve
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
+	"github.com/samsaffron/term-llm/internal/session"
+)
+
+type webBranchSnapshotTestStore struct {
+	session.Store
+	getMessagesCalls int
+	afterGetMessages func()
+}
+
+func (s *webBranchSnapshotTestStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
+	messages, err := s.Store.GetMessages(ctx, sessionID, limit, offset)
+	s.getMessagesCalls++
+	if s.afterGetMessages != nil {
+		s.afterGetMessages()
+	}
+	return messages, err
+}
+
+func (s *webBranchSnapshotTestStore) CreateBranch(ctx context.Context, sourceSessionID string, opts session.CreateBranchOptions) (session.BranchResult, error) {
+	return s.Store.(session.ConversationBranchStore).CreateBranch(ctx, sourceSessionID, opts)
+}
+
+func (s *webBranchSnapshotTestStore) GetBranchTree(ctx context.Context, sessionID string) (session.BranchTree, error) {
+	return s.Store.(session.ConversationBranchStore).GetBranchTree(ctx, sessionID)
+}
+
+func TestWebBranchTreePointsIncludeEveryVisibleUserMessage(t *testing.T) {
+	message := func(id int64, sequence int, value core.Message) session.Message {
+		result := *session.NewMessage("source", value, sequence)
+		result.ID = id
+		return result
+	}
+	messages := []session.Message{
+		message(10, 0, core.UserText("first request")),
+		message(20, 1, core.AssistantText("first answer")),
+		message(30, 2, core.ToolResultMessage("call-1", "read_file", "done", nil)),
+		message(40, 3, core.UserText("second request")),
+		message(50, 4, core.UserText("consecutive correction")),
+		message(60, 5, core.AssistantText("second answer")),
+		message(70, 6, core.UserText("third request")),
+		message(80, 7, core.UserText("hidden compaction duplicate")),
+	}
+	messages[len(messages)-1].CompactionTail = true
+
+	points := webBranchTreePoints(messages)
+	if len(points) != 4 {
+		t.Fatalf("branch points = %#v, want one for each of 4 visible user messages", points)
+	}
+	wantIDs := []int64{10, 40, 50, 70}
+	wantAnchors := []int64{0, 20, 20, 60}
+	for i, point := range points {
+		if point.MessageID != wantIDs[i] || point.AnchorMessageID != wantAnchors[i] || point.Role != string(core.RoleUser) || point.Prefill == "" {
+			t.Fatalf("branch point %d = %#v, want message %d anchored at %d", i, point, wantIDs[i], wantAnchors[i])
+		}
+	}
+}
+
+func TestActiveWebBranchSafetyAcceptsPublishedCompletedToolBoundary(t *testing.T) {
+	const responseID = "resp-moving-boundary"
+	messages := []session.Message{
+		{ID: 1, Sequence: 0, Role: core.RoleUser},
+		{ID: 2, Sequence: 1, Role: core.RoleAssistant, ResponseID: responseID},
+		{ID: 3, Sequence: 2, Role: core.RoleTool, ResponseID: responseID},
+		{ID: 4, Sequence: 3, Role: core.RoleAssistant, ResponseID: responseID},
+	}
+	published := activeWebBranchRun{responseID: responseID, anchorRowID: 3}
+	if status := activeWebBranchAnchorSafety(messages, published, 3); status != activeWebBranchAnchorSafe {
+		t.Fatalf("published tool boundary status = %v, want safe", status)
+	}
+	if status := activeWebBranchAnchorSafety(messages, published, 4); status != activeWebBranchAnchorUnstable {
+		t.Fatalf("partial row status = %v, want unstable", status)
+	}
+	messages = append(messages, session.Message{ID: 5, Sequence: 4, Role: core.RoleSystem})
+	if status := activeWebBranchAnchorSafety(messages, published, 5); status != activeWebBranchAnchorInvalid {
+		t.Fatalf("system row status = %v, want invalid", status)
+	}
+	pruned := pruneActiveWebBranchOutput(messages, responseID, 3)
+	if len(pruned) != 3 || pruned[len(pruned)-1].ID != 3 {
+		t.Fatalf("active prefix = %#v", pruned)
+	}
+}
+
+func TestWebBranchContextSnapshotLimitedOnlyWhenRowsAreOmitted(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "snapshot-limited-source"
+		responseID = "resp-snapshot-limited"
+	)
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, core.UserText("request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("durable answer"), -1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.GetMessages(ctx, sourceID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.anchorRowID = messages[1].ID
+	run.anchorAvailable = true
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	srv := &serveServer{store: store, responseRuns: manager}
+
+	snapshot, err := srv.loadWebBranchContextSnapshot(ctx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.limited || len(snapshot.messages) != 2 {
+		t.Fatalf("active snapshot without omitted rows = %#v, want full unlimited snapshot", snapshot)
+	}
+
+	partial := session.NewMessage(sourceID, core.AssistantText("unsafe partial output"), -1)
+	partial.ResponseID = responseID
+	if err := store.AddMessage(ctx, sourceID, partial); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = srv.loadWebBranchContextSnapshot(ctx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.limited || len(snapshot.messages) != 2 || snapshot.messages[1].TextContent != "durable answer" {
+		t.Fatalf("active snapshot with omitted row = %#v, want limited durable prefix", snapshot)
+	}
+}
+
+func TestWebBranchContextSnapshotStopsAfterBoundedInconsistentSamples(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const sourceID = "snapshot-moving-source"
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	for _, responseID := range []string{"resp-snapshot-a", "resp-snapshot-b"} {
+		run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+		if err := manager.create(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager.setActiveRun(sourceID, "resp-snapshot-a")
+	wrapped := &webBranchSnapshotTestStore{Store: store}
+	wrapped.afterGetMessages = func() {
+		if manager.activeRunID(sourceID) == "resp-snapshot-a" {
+			manager.setActiveRun(sourceID, "resp-snapshot-b")
+		} else {
+			manager.setActiveRun(sourceID, "resp-snapshot-a")
+		}
+	}
+	srv := &serveServer{store: wrapped, responseRuns: manager}
+
+	_, err = srv.loadWebBranchContextSnapshot(ctx, sourceID)
+	if !errors.Is(err, errWebBranchSnapshotUnstable) {
+		t.Fatalf("moving snapshot error = %v, want %v", err, errWebBranchSnapshotUnstable)
+	}
+	if wrapped.getMessagesCalls != webBranchSnapshotMaxAttempts {
+		t.Fatalf("moving snapshot reads = %d, want bounded %d", wrapped.getMessagesCalls, webBranchSnapshotMaxAttempts)
+	}
+
+	wrapped.getMessagesCalls = 0
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sourceID+"/tree?include_branch_points=1", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "branch points are changing") {
+		t.Fatalf("moving branch-point response = %d %s, want visible conflict", rr.Code, rr.Body.String())
+	}
+	if wrapped.getMessagesCalls != webBranchSnapshotMaxAttempts {
+		t.Fatalf("moving endpoint snapshot reads = %d, want bounded %d", wrapped.getMessagesCalls, webBranchSnapshotMaxAttempts)
+	}
+}
+
+func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeSteering(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "active-tree-source"
+		responseID = "resp-active-tree"
+	)
+	fallbackMessages := []session.Message{
+		{ID: 1, Role: core.RoleAssistant},
+		{ID: 2, Role: core.RoleUser},
+		{ID: 3, Role: core.RoleUser},
+		{ID: 4, Role: core.RoleAssistant, ResponseID: responseID},
+	}
+	for _, tc := range []struct {
+		name string
+		run  activeWebBranchRun
+		want int64
+	}{
+		{"published anchor", activeWebBranchRun{responseID: responseID, anchorRowID: 4, startAnchorRowID: 3}, 4},
+		{"withdrawn anchor uses start anchor", activeWebBranchRun{responseID: responseID, startAnchorRowID: 3}, 3},
+		{"vanished anchor uses start anchor", activeWebBranchRun{responseID: responseID, anchorRowID: 999, startAnchorRowID: 3}, 3},
+		{"no start anchor fails closed", activeWebBranchRun{responseID: responseID}, -1},
+		{"vanished start anchor fails closed", activeWebBranchRun{responseID: responseID, startAnchorRowID: 999}, -1},
+		{"no active run", activeWebBranchRun{}, 0},
+	} {
+		if got := activeWebBranchAnchorRowID(fallbackMessages, tc.run); got != tc.want {
+			t.Fatalf("%s: active anchor = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	if points := webBranchTreePointsForActiveRun(fallbackMessages, 999); len(points) != 0 {
+		t.Fatalf("missing active anchor exposed branch points: %#v", points)
+	}
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	partialAssistant := *session.NewMessage(sourceID, core.AssistantText("unfinished answer"), -1)
+	partialAssistant.ResponseID = responseID
+	partialTool := *session.NewMessage(sourceID, core.ToolResultMessage("call-active", "read_file", "unfinished tool output", nil), -1)
+	partialTool.ResponseID = responseID
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, core.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("completed answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("active request"), -1),
+		partialAssistant,
+		partialTool,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.GetMessages(ctx, sourceID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.anchorRowID = messages[2].ID
+	run.anchorAvailable = true
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	srv := &serveServer{store: store, responseRuns: manager}
+
+	loadPoints := func() []webBranchTreePoint {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sourceID+"/tree?include_branch_points=1", nil)
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("tree status/body = %d %s", rr.Code, rr.Body.String())
+		}
+		var response webBranchTreeResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response.BranchPoints
+	}
+
+	points := loadPoints()
+	if len(points) != 2 || points[1].MessageID != messages[2].ID || points[1].AnchorMessageID != messages[1].ID || points[1].Prefill != "active request" || points[1].LaterMessageCount != 0 {
+		t.Fatalf("active branch points = %#v, want active user anchored at completed answer with no partial suffix", points)
+	}
+
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, core.UserText("mid-run steering"), -1)); err != nil {
+		t.Fatal(err)
+	}
+	points = loadPoints()
+	if len(points) != 2 || points[1].MessageID != messages[2].ID || points[1].LaterMessageCount != 0 {
+		t.Fatalf("steering affected the safe active branch snapshot: %#v", points)
+	}
+}
+
+func TestSessionBranchEndpointAllowsActiveSourceAtStableAnchor(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "active-branch-source"
+		responseID = "resp-active-branch"
+	)
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Name: "Active parent", Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	partial := *session.NewMessage(sourceID, core.AssistantText("still streaming"), -1)
+	partial.ResponseID = responseID
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, core.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("stable answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("active request"), -1),
+		partial,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.GetMessages(ctx, sourceID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.anchorRowID = messages[2].ID
+	run.anchorAvailable = true
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	srv := &serveServer{store: store, responseRuns: manager}
+
+	// expected_rev is intentionally stale. Active output may advance the full
+	// transcript head, but it cannot mutate the completed anchor copied below.
+	body := fmt.Sprintf(`{"anchor_message_id":%d,"expected_rev":0,"idempotency_key":"active-stable-anchor"}`, messages[1].ID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("active branch status/body = %d %s", rr.Code, rr.Body.String())
+	}
+	var created createSessionBranchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	childMessages, err := store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childMessages) != 2 || childMessages[1].TextContent != "stable answer" {
+		t.Fatalf("active branch copied messages = %#v, want completed prefix only", childMessages)
+	}
+	if manager.activeRunID(sourceID) != responseID {
+		t.Fatalf("branch detached active response ownership: %q", manager.activeRunID(sourceID))
+	}
+
+	body = fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-partial-anchor"}`, messages[3].ID)
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
+		t.Fatalf("partial active anchor status/body = %d %s", rr.Code, rr.Body.String())
+	}
+
+	steering := session.NewMessage(sourceID, core.UserText("mid-run steering"), -1)
+	if err := store.AddMessage(ctx, sourceID, steering); err != nil {
+		t.Fatal(err)
+	}
+	body = fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-steering-anchor"}`, steering.ID)
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
+		t.Fatalf("steering anchor status/body = %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionBranchEndpointAllowsPreRunAnchorWhileBoundaryUnavailable(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "unavailable-boundary-source"
+		responseID = "resp-unavailable-boundary"
+	)
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	// Mid-run snapshot rewrites and compaction rebuild run output from engine
+	// messages, so these rows carry no response ID.
+	tool := *session.NewMessage(sourceID, core.ToolResultMessage("call-active", "shell", "done", nil), -1)
+	partial := *session.NewMessage(sourceID, core.AssistantText("still streaming"), -1)
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, core.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("stable answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("active request"), -1),
+		tool,
+		partial,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.GetMessages(ctx, sourceID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.setInitialDurableBoundary(messages[2].ID)
+	// Mid-run snapshot rewrites and compaction withdraw the published boundary
+	// until the next durable turn completes.
+	run.invalidateDurableBoundary()
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	wrapped := &webBranchSnapshotTestStore{Store: store}
+	srv := &serveServer{store: wrapped, responseRuns: manager}
+
+	branch := func(anchorID int64, key string) *httptest.ResponseRecorder {
+		t.Helper()
+		body := fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":%q}`, anchorID, key)
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		return rr
+	}
+
+	rr := branch(messages[1].ID, "pre-run-anchor")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("pre-run anchor status/body = %d %s, want created", rr.Code, rr.Body.String())
+	}
+	var created createSessionBranchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	childMessages, err := store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childMessages) != 2 || childMessages[1].TextContent != "stable answer" {
+		t.Fatalf("pre-run branch copied messages = %#v, want completed prefix only", childMessages)
+	}
+
+	for i, id := range []int64{messages[3].ID, messages[4].ID} {
+		rr = branch(id, fmt.Sprintf("run-output-anchor-%d", i))
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
+			t.Fatalf("run output anchor %d status/body = %d %s, want conflict", id, rr.Code, rr.Body.String())
+		}
+	}
+
+	// Durable progress within the same run during the read is resampled rather
+	// than rejected.
+	advanced := false
+	wrapped.afterGetMessages = func() {
+		if advanced {
+			return
+		}
+		advanced = true
+		run.mu.Lock()
+		run.anchorRowID, run.anchorAvailable = messages[3].ID, true
+		run.mu.Unlock()
+	}
+	rr = branch(messages[1].ID, "boundary-advanced-anchor")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("same-run boundary advance status/body = %d %s, want created", rr.Code, rr.Body.String())
+	}
+	if !advanced {
+		t.Fatal("boundary advance hook did not run")
+	}
+
+	// A different run taking over while validation reads the transcript makes
+	// the sampled boundary meaningless for the rows that were read.
+	next := newResponseRun("resp-unavailable-boundary-next", sourceID, "", "mock-model", time.Now().Unix(), nil)
+	if err := manager.create(next); err != nil {
+		t.Fatal(err)
+	}
+	wrapped.afterGetMessages = func() { manager.setActiveRun(sourceID, next.id) }
+	rr = branch(messages[1].ID, "run-changed-anchor")
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "boundary changed") {
+		t.Fatalf("run change status/body = %d %s, want conflict", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionBranchEndpointUsesAnchorDespiteLegacyExpectedRev(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const sourceID = "idle-drift-branch-source"
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, core.UserText("stable request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("stable answer"), -1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, _ := store.GetMessages(ctx, sourceID, 0, 0)
+	staleState, err := store.(session.TranscriptUndoRedoStore).TranscriptMutationState(ctx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, core.UserText("unrelated later suffix"), -1)); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &serveServer{store: store}
+	body := fmt.Sprintf(`{"anchor_message_id":%d,"expected_rev":%d,"idempotency_key":"idle-drift"}`, messages[1].ID, staleState.Rev)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("idle drift branch status/body = %d %s", rr.Code, rr.Body.String())
+	}
+	var created createSessionBranchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	childMessages, err := store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childMessages) != 2 || childMessages[1].TextContent != "stable answer" {
+		t.Fatalf("idle drift branch copied messages = %#v", childMessages)
+	}
+}
+
+func TestSessionPathNotesUseLatestDurableActivePrefix(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "active-notes-source"
+		responseID = "resp-active-notes"
+	)
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	partial := *session.NewMessage(sourceID, core.AssistantText("unsafe partial output"), -1)
+	partial.ResponseID = responseID
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, core.UserText("first request"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("first answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("later durable finding"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("later durable answer"), -1),
+		partial,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, _ := store.GetMessages(ctx, sourceID, 0, 0)
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.anchorRowID = messages[3].ID
+	run.anchorAvailable = true
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- Keep the durable finding.")
+	srv := &serveServer{
+		store:                    store,
+		responseRuns:             manager,
+		pathNotesProviderFactory: func(_, _ string) (core.Provider, error) { return provider, nil },
+	}
+
+	branchBody := fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-notes-branch"}`, messages[1].ID)
+	branchReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(branchBody))
+	branchReq.Header.Set("Content-Type", "application/json")
+	branchRR := httptest.NewRecorder()
+	srv.handleSessionByID(branchRR, branchReq)
+	if branchRR.Code != http.StatusCreated {
+		t.Fatalf("active notes branch status/body = %d %s", branchRR.Code, branchRR.Body.String())
+	}
+	var created createSessionBranchResponse
+	if err := json.Unmarshal(branchRR.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	notesReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+created.Session.ID+"/path-notes", strings.NewReader(`{"mode":"notes"}`))
+	notesReq.Header.Set("Content-Type", "application/json")
+	notesRR := httptest.NewRecorder()
+	srv.handleSessionByID(notesRR, notesReq)
+	if notesRR.Code != http.StatusOK {
+		t.Fatalf("active path notes status/body = %d %s", notesRR.Code, notesRR.Body.String())
+	}
+	var notes prepareSessionPathNotesResponse
+	if err := json.Unmarshal(notesRR.Body.Bytes(), &notes); err != nil {
+		t.Fatal(err)
+	}
+	if !notes.Ready || !notes.Limited || !strings.Contains(notes.Message, "in-progress output was omitted") {
+		t.Fatalf("active path notes response = %#v", notes)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("path note requests = %d, want 1", len(provider.Requests))
+	}
+	requestText := ""
+	for _, message := range provider.Requests[0].Messages {
+		requestText += core.MessageText(message)
+	}
+	if !strings.Contains(requestText, "later durable finding") || strings.Contains(requestText, "unsafe partial output") {
+		t.Fatalf("path notes source = %q", requestText)
+	}
+	childMessages, err := store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childMessages) != 3 {
+		t.Fatalf("child messages after active notes = %#v", childMessages)
+	}
+}
+
+func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const sourceID = "immediate-branch-source"
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Name: "Parent chat", Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, core.UserText("first"), -1),
+		*session.NewMessage(sourceID, core.AssistantText("first answer"), -1),
+		*session.NewMessage(sourceID, core.UserText("later finding"), -1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, _ := store.GetMessages(ctx, sourceID, 0, 0)
+	points := webBranchTreePoints(messages)
+	if len(points) != 2 || points[0].Role != "user" || points[0].AnchorMessageID != 0 || points[0].LaterMessageCount != 2 ||
+		points[1].Role != "user" || points[1].Prefill != "later finding" || points[1].AnchorMessageID != messages[1].ID || points[1].LaterMessageCount != 0 {
+		t.Fatalf("web branch points = %#v", points)
+	}
+	state, _ := store.(session.TranscriptUndoRedoStore).TranscriptMutationState(ctx, sourceID)
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- Keep the later finding.")
+	srv := &serveServer{
+		store:                    store,
+		pathNotesProviderFactory: func(_, _ string) (core.Provider, error) { return provider, nil },
+	}
+	treeReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sourceID+"/tree?include_branch_points=1", nil)
+	treeRR := httptest.NewRecorder()
+	srv.handleSessionByID(treeRR, treeReq)
+	var treeResponse webBranchTreeResponse
+	if treeRR.Code != http.StatusOK || json.Unmarshal(treeRR.Body.Bytes(), &treeResponse) != nil || len(treeResponse.BranchPoints) != 2 {
+		t.Fatalf("tree branch points status/body = %d %s", treeRR.Code, treeRR.Body.String())
+	}
+	branchBody := fmt.Sprintf(`{"anchor_message_id":%d,"expected_rev":%d,"idempotency_key":"immediate-branch"}`, messages[1].ID, state.Rev)
+	branchReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(branchBody))
+	branchReq.Header.Set("Content-Type", "application/json")
+	branchRR := httptest.NewRecorder()
+	srv.handleSessionByID(branchRR, branchReq)
+	if branchRR.Code != http.StatusCreated {
+		t.Fatalf("branch status/body = %d %s", branchRR.Code, branchRR.Body.String())
+	}
+	var created createSessionBranchResponse
+	if err := json.Unmarshal(branchRR.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Session.ID == "" || created.Session.ID == sourceID || created.ParentSessionID != sourceID || created.ParentTitle != "Parent chat" || created.CopiedAnchorMessageID == 0 {
+		t.Fatalf("created branch = %#v", created)
+	}
+	childMessages, _ := store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if len(childMessages) != 2 || len(provider.Requests) != 0 {
+		t.Fatalf("child should exist before helper: messages=%#v requests=%d", childMessages, len(provider.Requests))
+	}
+
+	branchReplayReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(branchBody))
+	branchReplayReq.Header.Set("Content-Type", "application/json")
+	branchReplayRR := httptest.NewRecorder()
+	srv.handleSessionByID(branchReplayRR, branchReplayReq)
+	var replayed createSessionBranchResponse
+	if branchReplayRR.Code != http.StatusOK || json.Unmarshal(branchReplayRR.Body.Bytes(), &replayed) != nil || !replayed.Reused || replayed.ForkAfterMessageID != messages[1].ID {
+		t.Fatalf("branch replay status/body = %d %s", branchReplayRR.Code, branchReplayRR.Body.String())
+	}
+	mismatchBody := fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"immediate-branch"}`, messages[0].ID)
+	mismatchReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(mismatchBody))
+	mismatchReq.Header.Set("Content-Type", "application/json")
+	mismatchRR := httptest.NewRecorder()
+	srv.handleSessionByID(mismatchRR, mismatchReq)
+	if mismatchRR.Code != http.StatusConflict || !strings.Contains(mismatchRR.Body.String(), "different branch point") {
+		t.Fatalf("mismatched replay status/body = %d %s", mismatchRR.Code, mismatchRR.Body.String())
+	}
+
+	notesReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+created.Session.ID+"/path-notes", strings.NewReader(`{"mode":"notes"}`))
+	notesReq.Header.Set("Content-Type", "application/json")
+	notesRR := httptest.NewRecorder()
+	srv.handleSessionByID(notesRR, notesReq)
+	if notesRR.Code != http.StatusOK {
+		t.Fatalf("notes status/body = %d %s", notesRR.Code, notesRR.Body.String())
+	}
+	childMessages, _ = store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if len(childMessages) != 3 || len(provider.Requests) != 1 {
+		t.Fatalf("path notes not appended once: messages=%#v requests=%d", childMessages, len(provider.Requests))
+	}
+	provenance, ok := childMessages[2].PathNoteProvenance()
+	if !ok || provenance.SourceSessionID != sourceID || provenance.AnchorMessageID != messages[1].ID {
+		t.Fatalf("path note provenance = %#v", provenance)
+	}
+
+	replayReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+created.Session.ID+"/path-notes", strings.NewReader(`{"mode":"notes"}`))
+	replayReq.Header.Set("Content-Type", "application/json")
+	replayRR := httptest.NewRecorder()
+	srv.handleSessionByID(replayRR, replayReq)
+	if replayRR.Code != http.StatusOK || len(provider.Requests) != 1 {
+		t.Fatalf("replay status/requests = %d/%d body=%s", replayRR.Code, len(provider.Requests), replayRR.Body.String())
+	}
+
+	tree, err := store.(session.ConversationBranchStore).GetBranchTree(ctx, created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge, ok := directBranchNode(tree, created.Session.ID)
+	if !ok || edge.CopiedAnchorMessageID != created.CopiedAnchorMessageID {
+		t.Fatalf("tree copied anchor = %#v", edge)
+	}
+}

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +9,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
-
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 )
 
@@ -46,7 +45,7 @@ func TestResolveSettings_AppendsInsightsToSystemPrompt(t *testing.T) {
 		},
 	}
 
-	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{MemoryPaths: appmemory.Paths{DBPath: dbPath, DefaultDBPath: defaultPath}}, "", "", "", 0, 20)
+	settings, err := appserve.ResolveSettings(&config.Config{}, agent, appserve.CLIFlags{MemoryPaths: appmemory.Paths{DBPath: dbPath, DefaultDBPath: defaultPath}}, "", "", "", 0, 20)
 	if err != nil {
 		t.Fatalf("ResolveSettings() error = %v", err)
 	}

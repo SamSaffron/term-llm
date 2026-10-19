@@ -19,11 +19,11 @@ import (
 // Roots must name declarations directly, not cmd compatibility aliases: an alias
 // can emit a duplicate, self-referential wire name after its declaration moves.
 var Registry = []string{
-	"cmd.childRunProjection", "cmd.webSessionEntry", "cmd.webSelectedSessionEntry", "cmd.createWebSessionRequest", "cmd.serveEvent", "cmd.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "cmd.hubNodeView", "cmd.webSessionMetrics",
-	"cmd.serveMentionSearchRequest", "cmd.serveMentionSearchResponse",
-	"cmd.sessionShareRequest", "cmd.sessionShareResponse", "cmd.sharingCapabilitiesResponse",
-	"cmd.serveShellCreateRequest", "cmd.serveShellInputRequest", "cmd.sessionInterruptRequest", "cmd.sessionRuntimeGoalRequest",
-	"cmd.sessionMessagesResponse",
+	"internal/app/serve.childRunProjection", "internal/app/serve.webSessionEntry", "internal/app/serve.webSelectedSessionEntry", "internal/app/serve.createWebSessionRequest", "internal/app/serve.serveEvent", "internal/app/serve.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "internal/app/serve.hubNodeView", "internal/app/serve.webSessionMetrics",
+	"internal/app/serve.serveMentionSearchRequest", "internal/app/serve.serveMentionSearchResponse",
+	"internal/app/serve.sessionShareRequest", "internal/app/serve.sessionShareResponse", "internal/app/serve.sharingCapabilitiesResponse",
+	"internal/app/serve.serveShellCreateRequest", "internal/app/serve.serveShellInputRequest", "internal/app/serve.sessionInterruptRequest", "internal/app/serve.sessionRuntimeGoalRequest",
+	"internal/app/serve.sessionMessagesResponse",
 }
 
 const module = "github.com/samsaffron/term-llm/"

@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"testing"
+
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 )
 
 func TestApplyChatSearchDefaultEnablesNewBareChats(t *testing.T) {
-	settings := SessionSettings{}
+	settings := appserve.SessionSettings{}
 
 	applyChatSearchDefault(&settings, false, nil, false)
 
@@ -15,7 +17,7 @@ func TestApplyChatSearchDefaultEnablesNewBareChats(t *testing.T) {
 }
 
 func TestApplyChatSearchDefaultHonorsAgentSearchSetting(t *testing.T) {
-	settings := SessionSettings{}
+	settings := appserve.SessionSettings{}
 
 	applyChatSearchDefault(&settings, false, nil, true)
 
@@ -25,7 +27,7 @@ func TestApplyChatSearchDefaultHonorsAgentSearchSetting(t *testing.T) {
 }
 
 func TestApplyChatSearchDefaultHonorsNoSearch(t *testing.T) {
-	settings := SessionSettings{}
+	settings := appserve.SessionSettings{}
 
 	applyChatSearchDefault(&settings, true, nil, false)
 

@@ -2,16 +2,14 @@ package cmd
 
 import (
 	"context"
-
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-
 	"path/filepath"
 	"strings"
 	"testing"
 
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
-
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -25,9 +23,9 @@ func TestJobsExecutorParentSelectionAndPolicyPersistence(t *testing.T) {
 	cfg := &config.Config{DefaultProvider: "other", Providers: map[string]config.ProviderConfig{"other": {Model: "wrong"}, "debug": {Model: "allowed"}}, Sessions: config.SessionsConfig{Enabled: true, Path: filepath.Join(t.TempDir(), "jobs.db")}}
 	policy := modelpolicy.Policy{}.With("boss", []string{"debug:allowed"})
 	parent := runpkg.ParentModel{Provider: "debug", Model: "allowed"}
-	executor := newServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{}, serveRuntimeFixtureOptions(), false)
+	executor := appserve.NewServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{}, serveRuntimeFixtureOptions(), false)
 	id := session.NewID()
-	request := jobsV2LLMConfig{Instructions: "hello", Cwd: t.TempDir(), ParentModel: &parent, ModelPolicy: &policy, SessionID: id}
+	request := appserve.JobsV2LLMConfig{Instructions: "hello", Cwd: t.TempDir(), ParentModel: &parent, ModelPolicy: &policy, SessionID: id}
 	if _, err := executor(context.Background(), request, nil); err != nil {
 		t.Fatalf("parent selection was overridden by serve flag: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/spf13/cobra"
 )
 
@@ -171,10 +172,10 @@ func TestRunJobsActive_JSONFiltersActiveRunsAndUsesPagedRequests(t *testing.T) {
 	if len(runs) != 2 {
 		t.Fatalf("len(runs) = %d, want 2", len(runs))
 	}
-	if runs[0].RunID != "run_running" || runs[0].Status != jobsV2RunRunning || runs[0].JobName != "alpha" {
+	if runs[0].RunID != "run_running" || runs[0].Status != servejobs.RunRunning || runs[0].JobName != "alpha" {
 		t.Fatalf("unexpected first active run: %+v", runs[0])
 	}
-	if runs[1].RunID != "run_queued" || runs[1].Status != jobsV2RunQueued || runs[1].JobName != "alpha" {
+	if runs[1].RunID != "run_queued" || runs[1].Status != servejobs.RunQueued || runs[1].JobName != "alpha" {
 		t.Fatalf("unexpected second active run: %+v", runs[1])
 	}
 
@@ -265,15 +266,15 @@ func TestRelativeTime(t *testing.T) {
 
 func TestShortRunStatus(t *testing.T) {
 	cases := []struct {
-		status jobsV2RunStatus
+		status servejobs.RunStatus
 		want   string
 	}{
-		{jobsV2RunSucceeded, "ok"},
-		{jobsV2RunFailed, "FAIL"},
-		{jobsV2RunCancelled, "cancelled"},
-		{jobsV2RunTimedOut, "timeout"},
-		{jobsV2RunSkipped, "skipped"},
-		{jobsV2RunRunning, "running"},
+		{servejobs.RunSucceeded, "ok"},
+		{servejobs.RunFailed, "FAIL"},
+		{servejobs.RunCancelled, "cancelled"},
+		{servejobs.RunTimedOut, "timeout"},
+		{servejobs.RunSkipped, "skipped"},
+		{servejobs.RunRunning, "running"},
 	}
 	for _, c := range cases {
 		got := shortRunStatus(c.status)

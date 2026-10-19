@@ -178,7 +178,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/goal_runtime.go|cmd|*serveRuntime|runActiveGoalLoop",
+      "key": ".|internal/app/serve/goal_runtime.go|serve|*serveRuntime|runActiveGoalLoop",
       "complexity": 57,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -186,7 +186,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/goal_runtime.go|cmd|*serveRuntime|runActiveGoalLoop.func4",
+      "key": ".|internal/app/serve/goal_runtime.go|serve|*serveRuntime|runActiveGoalLoop.func4",
       "complexity": 21,
       "owner": "cmd",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",
@@ -274,7 +274,7 @@
       "origin": "moved"
     },
     {
-      "key": ".|cmd/runner.go|cmd|*cmdRunner|prepare",
+      "key": ".|internal/app/serve/runner.go|serve|*cmdRunner|prepare",
       "complexity": 79,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -282,7 +282,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/runner.go|cmd|*cmdRunner|resolveSettings",
+      "key": ".|internal/app/serve/runner.go|serve|*cmdRunner|resolveSettings",
       "complexity": 21,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -290,7 +290,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/runner.go|cmd|*cmdRunner|runProgressive",
+      "key": ".|internal/app/serve/runner.go|serve|*cmdRunner|runProgressive",
       "complexity": 27,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -298,7 +298,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_platforms.go|cmd||runPlatformSupervisor",
+      "key": ".|internal/app/serve/serve_platforms.go|serve||runPlatformSupervisor",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -306,7 +306,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_start.go|cmd||runServeWith",
+      "key": ".|internal/app/serve/serve_start.go|serve||runServeWith",
       "complexity": 88,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -314,7 +314,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_approval_handler.go|cmd|*serveServer|handleSessionApproval",
+      "key": ".|internal/app/serve/serve_approval_handler.go|serve|*serveServer|handleSessionApproval",
       "complexity": 23,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -322,7 +322,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_approval_mode_handler.go|cmd|*serveServer|handleSessionApprovalMode",
+      "key": ".|internal/app/serve/serve_approval_mode_handler.go|serve|*serveServer|handleSessionApprovalMode",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -330,7 +330,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_ask_user_handler.go|cmd|*serveServer|handleSessionAskUser",
+      "key": ".|internal/app/serve/serve_ask_user_handler.go|serve|*serveServer|handleSessionAskUser",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -338,7 +338,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_ask_user_state_handler.go|cmd|*serveServer|addSessionStateRush",
+      "key": ".|internal/app/serve/serve_ask_user_state_handler.go|serve|*serveServer|addSessionStateRush",
       "complexity": 23,
       "owner": "cmd/serve",
       "rationale": "extracted from a function above 100 so each unit owns one responsibility; further reduction is tracked by M7",
@@ -346,7 +346,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_ask_user_state_handler.go|cmd|*serveServer|loadSessionStatePersistedMetadata",
+      "key": ".|internal/app/serve/serve_ask_user_state_handler.go|serve|*serveServer|loadSessionStatePersistedMetadata",
       "complexity": 34,
       "owner": "cmd/serve",
       "rationale": "extracted from a function above 100 so each unit owns one responsibility; further reduction is tracked by M7",
@@ -354,7 +354,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_branch.go|cmd|*serveServer|handleCreateSessionBranch",
+      "key": ".|internal/app/serve/serve_branch.go|serve|*serveServer|handleCreateSessionBranch",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -362,7 +362,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_branch.go|cmd|*serveServer|handleSessionPathNotes",
+      "key": ".|internal/app/serve/serve_branch.go|serve|*serveServer|handleSessionPathNotes",
       "complexity": 26,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -370,7 +370,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_branch.go|cmd||webBranchTreePointsForActiveRun",
+      "key": ".|internal/app/serve/serve_branch.go|serve||webBranchTreePointsForActiveRun",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -378,7 +378,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_children.go|cmd|*serveServer|handleSessionChildren",
+      "key": ".|internal/app/serve/serve_children.go|serve|*serveServer|handleSessionChildren",
       "complexity": 61,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -386,7 +386,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_commit.go|cmd|*serveServer|commitBlocker",
+      "key": ".|internal/app/serve/serve_commit.go|serve|*serveServer|commitBlocker",
       "complexity": 44,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -394,7 +394,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_commit.go|cmd|*serveServer|handleCreateCommitOperation",
+      "key": ".|internal/app/serve/serve_commit.go|serve|*serveServer|handleCreateCommitOperation",
       "complexity": 33,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -402,7 +402,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_commit.go|cmd|*serveServer|handleCreateCommitRun",
+      "key": ".|internal/app/serve/serve_commit.go|serve|*serveServer|handleCreateCommitRun",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -410,7 +410,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_compaction.go|cmd|*serveRuntime|compactSession",
+      "key": ".|internal/app/serve/serve_compaction.go|serve|*serveRuntime|compactSession",
       "complexity": 34,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -418,7 +418,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_events.go|cmd|*serveServer|handleEventPoll",
+      "key": ".|internal/app/serve/serve_events.go|serve|*serveServer|handleEventPoll",
       "complexity": 40,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -426,7 +426,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_events.go|cmd|*serveServer|handleEvents",
+      "key": ".|internal/app/serve/serve_events.go|serve|*serveServer|handleEvents",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -434,7 +434,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_file_changes.go|cmd|*serveServer|handleSessionFileChangeContent",
+      "key": ".|internal/app/serve/serve_file_changes.go|serve|*serveServer|handleSessionFileChangeContent",
       "complexity": 36,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -442,7 +442,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_file_changes.go|cmd|*serveServer|handleSessionFileChanges",
+      "key": ".|internal/app/serve/serve_file_changes.go|serve|*serveServer|handleSessionFileChanges",
       "complexity": 49,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -450,7 +450,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_file_changes.go|cmd|*serveServer|sessionGitRepo",
+      "key": ".|internal/app/serve/serve_file_changes.go|serve|*serveServer|sessionGitRepo",
       "complexity": 23,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -458,7 +458,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|createRequestRuntime",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|createRequestRuntime",
       "complexity": 27,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -466,7 +466,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|ensureFileServeable",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|ensureFileServeable",
       "complexity": 30,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -474,7 +474,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|ensureImageServeable",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|ensureImageServeable",
       "complexity": 31,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -482,7 +482,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|ensureRuntimeBaseDirForSession",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|ensureRuntimeBaseDirForSession",
       "complexity": 32,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -490,7 +490,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleModels",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handleModels",
       "complexity": 55,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -498,7 +498,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handlePushSubscribe",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handlePushSubscribe",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -506,7 +506,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionInterrupt",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handleSessionInterrupt",
       "complexity": 50,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -514,7 +514,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionRuntimeGoal",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handleSessionRuntimeGoal",
       "complexity": 47,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -522,7 +522,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionSteeringCancel",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handleSessionSteeringCancel",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -530,7 +530,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionTitleRefine",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handleSessionTitleRefine",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -538,7 +538,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessions",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handleSessions",
       "complexity": 58,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -546,7 +546,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionsSearch",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|handleSessionsSearch",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -554,7 +554,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|selectedWebSession",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|selectedWebSession",
       "complexity": 30,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -562,7 +562,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|syncPersistedSessionRuntime",
+      "key": ".|internal/app/serve/serve_handlers.go|serve|*serveServer|syncPersistedSessionRuntime",
       "complexity": 83,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -570,7 +570,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers_anthropic.go|cmd|*serveServer|handleAnthropicMessages",
+      "key": ".|internal/app/serve/serve_handlers_anthropic.go|serve|*serveServer|handleAnthropicMessages",
       "complexity": 43,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -578,7 +578,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers_chat.go|cmd|*serveServer|handleChatCompletions",
+      "key": ".|internal/app/serve/serve_handlers_chat.go|serve|*serveServer|handleChatCompletions",
       "complexity": 44,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -586,7 +586,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|handleResolvedResponses",
+      "key": ".|internal/app/serve/serve_handlers_responses.go|serve|*serveServer|handleResolvedResponses",
       "complexity": 90,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -594,7 +594,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|resolveResponsesSession",
+      "key": ".|internal/app/serve/serve_handlers_responses.go|serve|*serveServer|resolveResponsesSession",
       "complexity": 31,
       "owner": "cmd/serve",
       "rationale": "extracted from a function above 100 so each unit owns one responsibility; further reduction is tracked by M7",
@@ -602,7 +602,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|validateResponsesAdmissionRequest",
+      "key": ".|internal/app/serve/serve_handlers_responses.go|serve|*serveServer|validateResponsesAdmissionRequest",
       "complexity": 45,
       "owner": "cmd/serve",
       "rationale": "extracted from a function above 100 so each unit owns one responsibility; further reduction is tracked by M7",
@@ -610,7 +610,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_handlers_responses.go|cmd||prepareResponseClientMessageIDs",
+      "key": ".|internal/app/serve/serve_handlers_responses.go|serve||prepareResponseClientMessageIDs",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -618,7 +618,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_handlers_status.go|cmd|*serveServer|handleSessionsStatus",
+      "key": ".|internal/app/serve/serve_handlers_status.go|serve|*serveServer|handleSessionsStatus",
       "complexity": 83,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -626,7 +626,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_hub_attention.go|cmd|*hubServer|collectNodeAttentionOnce",
+      "key": ".|internal/app/serve/serve_hub_attention.go|serve|*hubServer|collectNodeAttentionOnce",
       "complexity": 35,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -634,7 +634,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_hub_attention.go|cmd|*hubServer|handleHubAttention",
+      "key": ".|internal/app/serve/serve_hub_attention.go|serve|*hubServer|handleHubAttention",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -642,7 +642,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_hub_cmd.go|cmd||runServeHubWith",
+      "key": ".|internal/app/serve/serve_hub_start.go|serve||runServeHubWith",
       "complexity": 48,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -650,7 +650,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_hub_delegations.go|cmd|*hubServer|handleCreateDelegation",
+      "key": ".|internal/app/serve/serve_hub_delegations.go|serve|*hubServer|handleCreateDelegation",
       "complexity": 29,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -658,7 +658,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_hub_delegations.go|cmd|*hubServer|handleDelegations",
+      "key": ".|internal/app/serve/serve_hub_delegations.go|serve|*hubServer|handleDelegations",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -666,7 +666,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_hub_nodes.go|cmd||hubPolicyMismatchDiagnostics",
+      "key": ".|internal/app/serve/serve_hub_nodes.go|serve||hubPolicyMismatchDiagnostics",
       "complexity": 26,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -674,7 +674,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_hub_reverse_connector.go|cmd||handleHubReverseRequest",
+      "key": ".|internal/app/serve/serve_hub_reverse_connector.go|serve||handleHubReverseRequest",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -682,7 +682,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/jobs_v2_adapter.go|cmd|*jobsV2LLMRunner|Run.func1",
+      "key": ".|internal/app/serve/jobs_v2_adapter.go|serve|*jobsV2LLMRunner|Run.func1",
       "complexity": 39,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -690,7 +690,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_jobs_v2.go|cmd|*serveServer|handleJobV2ByID",
+      "key": ".|internal/app/serve/serve_jobs_v2.go|serve|*serveServer|handleJobV2ByID",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -698,7 +698,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_jobs_v2.go|cmd|*serveServer|handleRunV2ByID",
+      "key": ".|internal/app/serve/serve_jobs_v2.go|serve|*serveServer|handleRunV2ByID",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -714,7 +714,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_live.go|cmd|*serveServer|handleLiveSessions",
+      "key": ".|internal/app/serve/serve_live.go|serve|*serveServer|handleLiveSessions",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -722,7 +722,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_live_classify.go|cmd|*serveServer|liveClassifyState",
+      "key": ".|internal/app/serve/serve_live_classify.go|serve|*serveServer|liveClassifyState",
       "complexity": 27,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -730,7 +730,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_live_classify.go|cmd|*serveServer|liveClassifyStatus",
+      "key": ".|internal/app/serve/serve_live_classify.go|serve|*serveServer|liveClassifyStatus",
       "complexity": 38,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -738,7 +738,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_live_context.go|cmd|*serveServer|liveSessionOptions",
+      "key": ".|internal/app/serve/serve_live_context.go|serve|*serveServer|liveSessionOptions",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -746,7 +746,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_mcp.go|cmd||runServeMCPWithOptions",
+      "key": ".|internal/app/serve/serve_mcp_host.go|serve||runServeMCPWithOptions",
       "complexity": 37,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M7",
@@ -754,7 +754,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_mcp_handler.go|cmd|*serveServer|handleSessionMCP",
+      "key": ".|internal/app/serve/serve_mcp_handler.go|serve|*serveServer|handleSessionMCP",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -762,7 +762,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_mcp_handler.go|cmd||buildServeMCPState",
+      "key": ".|internal/app/serve/serve_mcp_handler.go|serve||buildServeMCPState",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -770,7 +770,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_mcp_oauth.go|cmd|*serveServer|handleSessionMCPOAuth",
+      "key": ".|internal/app/serve/serve_mcp_oauth.go|serve|*serveServer|handleSessionMCPOAuth",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -778,7 +778,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_media.go|cmd|*serveMediaPublisher|PublishMedia",
+      "key": ".|internal/app/serve/serve_media.go|serve|*serveMediaPublisher|PublishMedia",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -786,7 +786,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_mentions.go|cmd|*serveServer|resolveMentionSearchRoot",
+      "key": ".|internal/app/serve/serve_mentions.go|serve|*serveServer|resolveMentionSearchRoot",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -794,7 +794,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_model_swap.go|cmd|*serveServer|executeResponseRunModelSwap",
+      "key": ".|internal/app/serve/serve_model_swap.go|serve|*serveServer|executeResponseRunModelSwap",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -802,7 +802,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_capabilities.go|cmd|*serveServer|handleCapabilities",
+      "key": ".|internal/app/serve/serve_capabilities.go|serve|*serveServer|handleCapabilities",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -810,7 +810,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleProjectByID",
+      "key": ".|internal/app/serve/serve_projects.go|serve|*serveServer|handleProjectByID",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -818,7 +818,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleProjects",
+      "key": ".|internal/app/serve/serve_projects.go|serve|*serveServer|handleProjects",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -826,7 +826,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleSessionProjectAssignment",
+      "key": ".|internal/app/serve/serve_projects.go|serve|*serveServer|handleSessionProjectAssignment",
       "complexity": 47,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -834,7 +834,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleSidebar",
+      "key": ".|internal/app/serve/serve_projects.go|serve|*serveServer|handleSidebar",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -842,7 +842,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd||listProjectDirectories",
+      "key": ".|internal/app/serve/serve_projects.go|serve||listProjectDirectories",
       "complexity": 27,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -858,7 +858,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_protocol.go|cmd||parseDiffCommentPart",
+      "key": ".|internal/app/serve/serve_protocol.go|serve||parseDiffCommentPart",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -866,7 +866,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_protocol.go|cmd||parseUserMessageContent",
+      "key": ".|internal/app/serve/serve_protocol.go|serve||parseUserMessageContent",
       "complexity": 63,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -874,7 +874,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_protocol_anthropic.go|cmd||parseAnthropicMessages",
+      "key": ".|internal/app/serve/serve_protocol_anthropic.go|serve||parseAnthropicMessages",
       "complexity": 73,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -882,7 +882,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_protocol_chat.go|cmd||parseChatMessages",
+      "key": ".|internal/app/serve/serve_protocol_chat.go|serve||parseChatMessages",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -890,7 +890,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_protocol_responses.go|cmd||parseRequestedFunctionTool",
+      "key": ".|internal/app/serve/serve_protocol_responses.go|serve||parseRequestedFunctionTool",
       "complexity": 30,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -898,7 +898,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_protocol_responses.go|cmd||parseResponsesInput",
+      "key": ".|internal/app/serve/serve_protocol_responses.go|serve||parseResponsesInput",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -906,7 +906,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_response_followup.go|cmd|*serveServer|claimUIFollowUp",
+      "key": ".|internal/app/serve/serve_response_followup.go|serve|*serveServer|claimUIFollowUp",
       "complexity": 29,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
@@ -914,7 +914,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_response_request.go|cmd|*serveServer|buildResponsesLLMRequest",
+      "key": ".|internal/app/serve/serve_response_request.go|serve|*serveServer|buildResponsesLLMRequest",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M5",
@@ -922,7 +922,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_response_run_event_projection.go|cmd|*serveServer|appendResponseToolExecEnd",
+      "key": ".|internal/app/serve/serve_response_run_event_projection.go|serve|*serveServer|appendResponseToolExecEnd",
       "complexity": 32,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
@@ -930,7 +930,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_response_run_events.go|cmd|*responseRun|appendEventLocked",
+      "key": ".|internal/app/serve/serve_response_run_events.go|serve|*responseRun|appendEventLocked",
       "complexity": 41,
       "owner": "cmd/serve",
       "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*responseRun|appendEventLocked while preserving its named responsibility",
@@ -938,7 +938,7 @@
       "origin": "moved"
     },
     {
-      "key": ".|cmd/serve_response_run_execution.go|cmd|*serveServer|executeResponseRun",
+      "key": ".|internal/app/serve/serve_response_run_execution.go|serve|*serveServer|executeResponseRun",
       "complexity": 41,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
@@ -946,7 +946,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_response_run_persistence.go|cmd||responseRunOwnedOutputKeys",
+      "key": ".|internal/app/serve/serve_response_run_persistence.go|serve||responseRunOwnedOutputKeys",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M5",
@@ -954,7 +954,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_response_run_recovery.go|cmd|*responseRun|recoveryPayloadLocked",
+      "key": ".|internal/app/serve/serve_response_run_recovery.go|serve|*responseRun|recoveryPayloadLocked",
       "complexity": 27,
       "owner": "cmd/serve",
       "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*responseRun|recoveryPayloadLocked while preserving its named responsibility",
@@ -962,7 +962,7 @@
       "origin": "moved"
     },
     {
-      "key": ".|cmd/serve_response_run_recovery_events.go|cmd|*responseRun|applyRecoveryResponseToolExecEnd",
+      "key": ".|internal/app/serve/serve_response_run_recovery_events.go|serve|*responseRun|applyRecoveryResponseToolExecEnd",
       "complexity": 37,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
@@ -970,7 +970,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_response_run_stream.go|cmd|*serveServer|configureResponseRunRevision",
+      "key": ".|internal/app/serve/serve_response_run_stream.go|serve|*serveServer|configureResponseRunRevision",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M5",
@@ -978,7 +978,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_response_run_stream.go|cmd|*serveServer|startResponseRun",
+      "key": ".|internal/app/serve/serve_response_run_stream.go|serve|*serveServer|startResponseRun",
       "complexity": 63,
       "owner": "cmd/serve",
       "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*serveServer|startResponseRun while preserving its named responsibility",
@@ -986,7 +986,7 @@
       "origin": "moved"
     },
     {
-      "key": ".|cmd/serve_response_run_stream.go|cmd|*serveServer|streamResponseRunEvents",
+      "key": ".|internal/app/serve/serve_response_run_stream.go|serve|*serveServer|streamResponseRunEvents",
       "complexity": 29,
       "owner": "cmd/serve",
       "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*serveServer|streamResponseRunEvents while preserving its named responsibility",
@@ -994,7 +994,7 @@
       "origin": "moved"
     },
     {
-      "key": ".|cmd/serve_responses_durable.go|cmd|*serveServer|resolveDurableBranch",
+      "key": ".|internal/app/serve/serve_responses_durable.go|serve|*serveServer|resolveDurableBranch",
       "complexity": 36,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1002,7 +1002,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_run_finalize.go|cmd|*serveRunPersistence|finalizeSuccess",
+      "key": ".|internal/app/serve/serve_run_finalize.go|serve|*serveRunPersistence|finalizeSuccess",
       "complexity": 27,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M3",
@@ -1010,7 +1010,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_run_history.go|cmd|*serveRuntime|prepareRunHistory",
+      "key": ".|internal/app/serve/serve_run_history.go|serve|*serveRuntime|prepareRunHistory",
       "complexity": 26,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M3",
@@ -1018,7 +1018,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_run_persistence.go|cmd|*serveRunPersistence|applyCompaction",
+      "key": ".|internal/app/serve/serve_run_persistence.go|serve|*serveRunPersistence|applyCompaction",
       "complexity": 30,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M3",
@@ -1026,7 +1026,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|InterruptMessage",
+      "key": ".|internal/app/serve/serve_runtime.go|serve|*serveRuntime|InterruptMessage",
       "complexity": 52,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1034,7 +1034,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|appendMessagesDetailed",
+      "key": ".|internal/app/serve/serve_runtime.go|serve|*serveRuntime|appendMessagesDetailed",
       "complexity": 27,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M3",
@@ -1042,7 +1042,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|ensurePersistedSession",
+      "key": ".|internal/app/serve/serve_runtime.go|serve|*serveRuntime|ensurePersistedSession",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1050,7 +1050,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|persistSnapshotWithInitialBoundary",
+      "key": ".|internal/app/serve/serve_runtime.go|serve|*serveRuntime|persistSnapshotWithInitialBoundary",
       "complexity": 40,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1058,7 +1058,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|runOnce",
+      "key": ".|internal/app/serve/serve_runtime.go|serve|*serveRuntime|runOnce",
       "complexity": 52,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1066,7 +1066,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_session.go|cmd|*serveSessionManager|BeginSwap",
+      "key": ".|internal/app/serve/serve_session.go|serve|*serveSessionManager|BeginSwap",
       "complexity": 39,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1074,7 +1074,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_session.go|cmd|*serveSessionManager|ReplaceIdleWith",
+      "key": ".|internal/app/serve/serve_session.go|serve|*serveSessionManager|ReplaceIdleWith",
       "complexity": 31,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1082,7 +1082,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_session.go|cmd|*serveSessionManager|UnresolvedInteractionSummaries",
+      "key": ".|internal/app/serve/serve_session.go|serve|*serveSessionManager|UnresolvedInteractionSummaries",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M5",
@@ -1090,7 +1090,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_session_directory.go|cmd|*serveServer|sessionDirectory",
+      "key": ".|internal/app/serve/serve_session_directory.go|serve|*serveServer|sessionDirectory",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M5",
@@ -1098,7 +1098,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_session_inputs.go|cmd|*serveServer|prepareUIRuntime",
+      "key": ".|internal/app/serve/serve_session_inputs.go|serve|*serveServer|prepareUIRuntime",
       "complexity": 64,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1106,7 +1106,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_session_routes.go|cmd|*serveServer|handleSessionMessagesRoute",
+      "key": ".|internal/app/serve/serve_session_routes.go|serve|*serveServer|handleSessionMessagesRoute",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M5",
@@ -1114,7 +1114,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_session_routes.go|cmd|*serveServer|routeSessionResources",
+      "key": ".|internal/app/serve/serve_session_routes.go|serve|*serveServer|routeSessionResources",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
@@ -1122,7 +1122,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_session_routes.go|cmd|*serveServer|routeSessionRuntime",
+      "key": ".|internal/app/serve/serve_session_routes.go|serve|*serveServer|routeSessionRuntime",
       "complexity": 27,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
@@ -1130,7 +1130,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_share.go|cmd|*serveServer|handleCreateSessionShare",
+      "key": ".|internal/app/serve/serve_share.go|serve|*serveServer|handleCreateSessionShare",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1138,7 +1138,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_shell.go|cmd|*serveServer|handleShellStream",
+      "key": ".|internal/app/serve/serve_shell.go|serve|*serveServer|handleShellStream",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1146,7 +1146,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_side_question.go|cmd|*serveServer|handleSideQuestion",
+      "key": ".|internal/app/serve/serve_side_question.go|serve|*serveServer|handleSideQuestion",
       "complexity": 40,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1154,7 +1154,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_skills.go|cmd|*serveServer|skillsForServeSession",
+      "key": ".|internal/app/serve/serve_skills.go|serve|*serveServer|skillsForServeSession",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -1162,7 +1162,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_stats_endpoint.go|cmd||appendStatsContextSections",
+      "key": ".|internal/app/serve/serve_stats_endpoint.go|serve||appendStatsContextSections",
       "complexity": 37,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -1170,7 +1170,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_steering_rush.go|cmd|*serveServer|handleSteeringRush",
+      "key": ".|internal/app/serve/serve_steering_rush.go|serve|*serveServer|handleSteeringRush",
       "complexity": 34,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1186,7 +1186,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_transcribe.go|cmd|*serveServer|handleTranscribe",
+      "key": ".|internal/app/serve/serve_transcribe.go|serve|*serveServer|handleTranscribe",
       "complexity": 34,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1194,7 +1194,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_undo_redo.go|cmd|*serveServer|handleSessionUndoRedo",
+      "key": ".|internal/app/serve/serve_undo_redo.go|serve|*serveServer|handleSessionUndoRedo",
       "complexity": 23,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1202,7 +1202,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_workspace_resolver.go|cmd|*serveServer|bindResolvedWorkspace",
+      "key": ".|internal/app/serve/serve_workspace_resolver.go|serve|*serveServer|bindResolvedWorkspace",
       "complexity": 26,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1210,7 +1210,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_workspace_resolver.go|cmd|*serveServer|resolveWorkspace",
+      "key": ".|internal/app/serve/serve_workspace_resolver.go|serve|*serveServer|resolveWorkspace",
       "complexity": 53,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1218,7 +1218,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_workspace_resolver.go|cmd||persistedProjectWorkspaceBinding",
+      "key": ".|internal/app/serve/serve_workspace_resolver.go|serve||persistedProjectWorkspaceBinding",
       "complexity": 22,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1226,7 +1226,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_worktrees.go|cmd|*serveServer|activeRootRunsForWorktreeMerge",
+      "key": ".|internal/app/serve/serve_worktrees.go|serve|*serveServer|activeRootRunsForWorktreeMerge",
       "complexity": 31,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1234,7 +1234,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_worktrees.go|cmd|*serveServer|handleWorktreeSwitch",
+      "key": ".|internal/app/serve/serve_worktrees.go|serve|*serveServer|handleWorktreeSwitch",
       "complexity": 28,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1242,7 +1242,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/session.go|cmd||ResolveSettingsInDir",
+      "key": ".|internal/app/serve/session.go|serve||ResolveSettingsInDir",
       "complexity": 36,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1250,7 +1250,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/session.go|cmd||ResolveSessionPromptTools",
+      "key": ".|internal/app/serve/session.go|serve||ResolveSessionPromptTools",
       "complexity": 46,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1282,7 +1282,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/spawn_runner.go|cmd|*SpawnAgentRunner|runChildInternal",
+      "key": ".|internal/app/serve/spawn_runner.go|serve|*SpawnAgentRunner|runChildInternal",
       "complexity": 24,
       "owner": "cmd",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd reduction is tracked by M7",

@@ -1,0 +1,777 @@
+package serve
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	bootstrap "github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/tools"
+)
+
+var (
+	builtinAgentFileIncludePattern = regexp.MustCompile(`\{\{\s*file\s*:`)
+	builtinAgentResourceDirPattern = regexp.MustCompile(`\{\{\s*resource_dir\s*\}\}`)
+)
+
+// activeLLMFlags returns the ActiveProvider/ActiveModel pair for cfg once the
+// caller has applied its provider overrides.
+func activeLLMFlags(cfg *config.Config) (string, string) {
+	return appruntime.ActiveLLMFlags(cfg)
+}
+
+// applyActiveLLM replaces provider/model with the caller's resolved pair when
+// one is known. The model travels with its provider: a preferred model name is
+// never paired with a different provider.
+func (cli CLIFlags) applyActiveLLM(provider, model string) (string, string) {
+	if active := strings.TrimSpace(cli.ActiveProvider); active != "" {
+		return active, strings.TrimSpace(cli.ActiveModel)
+	}
+	return provider, model
+}
+
+// ResolveSettings merges config, agent, and CLI flags into final settings.
+// Priority: CLI > agent > config
+func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) (SessionSettings, error) {
+	return ResolveSettingsInDir(cfg, agent, cli, configProvider, configModel, configInstructions, configMaxTurns, defaultMaxTurns, "")
+}
+
+// ResolveSettingsInDir resolves settings using runtimeDir for project-sensitive
+// template values and instruction discovery without changing process CWD.
+func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int, runtimeDir string) (SessionSettings, error) {
+	var err error
+	runtimeDir, err = CanonicalRuntimeDir(runtimeDir)
+	if err != nil {
+		return SessionSettings{}, err
+	}
+	s := SessionSettings{MemoryPaths: cli.MemoryPaths}
+	if agent != nil {
+		s.AgentName = agent.Name
+		s.Workspace = agent.Workspace
+		s.PlanGuidance = agent.Name == "developer" && agent.Source == agents.SourceBuiltin
+		s.TimeGrounding = agent.TimeGroundingEnabled()
+	}
+
+	// Provider/model: CLI > agent > config
+	s.Provider = configProvider
+	s.Model = configModel
+	if agent != nil {
+		if agent.Provider != "" {
+			s.Provider = agent.Provider
+		}
+		if agent.Model != "" {
+			s.Model = agent.Model
+		}
+	}
+	// The CLI provider flag itself is applied to cfg by
+	// applyProviderOverridesWithAgent; callers report the result here.
+	s.Provider, s.Model = cli.applyActiveLLM(s.Provider, s.Model)
+
+	// Read/Write/Shell dirs: CLI > agent
+	if len(cli.ReadDirs) > 0 {
+		s.ReadDirs = cli.ReadDirs
+	} else if agent != nil {
+		s.ReadDirs = agent.Read.Dirs
+	}
+
+	if len(cli.WriteDirs) > 0 {
+		s.WriteDirs = cli.WriteDirs
+	}
+	// Note: agents don't have write dirs currently
+
+	if len(cli.ShellAllow) > 0 {
+		s.ShellAllow = cli.ShellAllow
+	} else if agent != nil {
+		s.ShellAllow = agent.Shell.Allow
+	}
+
+	// Shell auto-run, scripts, and spawn settings from agent only
+	if agent != nil {
+		s.ShellAutoRun = agent.Shell.AutoRun
+		// Extract script commands from map (sorted for determinism)
+		keys := make([]string, 0, len(agent.Shell.Scripts))
+		for k := range agent.Shell.Scripts {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			s.Scripts = append(s.Scripts, agent.Shell.Scripts[k])
+		}
+		s.Spawn = tools.SpawnConfig{
+			MaxParallel:    agent.Spawn.MaxParallel,
+			MaxDepth:       agent.Spawn.MaxDepth,
+			DefaultTimeout: agent.Spawn.DefaultTimeout,
+			AllowedAgents:  append([]string(nil), agent.Spawn.AllowedAgents...),
+			AgentModels:    appruntime.CloneStringMap(agent.Spawn.AgentModels),
+		}
+		s.AgentDir = agent.SourcePath
+		s.CustomTools = agent.Tools.Custom
+	}
+
+	// MCP: CLI > agent
+	if cli.MCP != "" {
+		s.MCP = cli.MCP
+	} else if agent != nil {
+		mcpServers := agent.GetMCPServerNames()
+		if len(mcpServers) > 0 {
+			s.MCP = strings.Join(mcpServers, ",")
+		}
+	}
+
+	// Max turns: CLI (if set) > agent > config > default
+	if cli.MaxTurnsSet {
+		s.MaxTurns = cli.MaxTurns
+	} else if agent != nil && agent.MaxTurns > 0 {
+		s.MaxTurns = agent.MaxTurns
+	} else if configMaxTurns > 0 {
+		s.MaxTurns = configMaxTurns
+	} else {
+		s.MaxTurns = defaultMaxTurns
+	}
+
+	// MaxOutputTokens: CLI only (no agent/config fallback — provider defaults are fine)
+	s.MaxOutputTokens = cli.MaxOutputTokens
+
+	// Search: --no-search disables agent defaults; otherwise CLI or agent enables it.
+	if cli.NoSearch {
+		s.Search = false
+	} else {
+		s.Search = cli.Search || (agent != nil && agent.Search)
+	}
+
+	// Memory / insights — only configurable via agent.yaml (no CLI override)
+	if agent != nil {
+		s.InsightsExpansion = agent.Memory.InsightsExpansion
+		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
+	}
+	if cli.Inputs != nil {
+		s.SystemPrompt, s.Tools = cli.Inputs.BasePrompt, cli.Inputs.Tools
+	} else {
+		s.SystemPrompt, s.Tools, err = ResolveSessionPromptTools(cfg, agent, cli, configInstructions, runtimeDir, s.Provider, s.Model)
+		if err != nil {
+			return s, err
+		}
+	}
+
+	// Keep a canonical runtime directory for relative paths and shell cwd, but do
+	// not turn it into authority here. Local launchers and explicit request/session
+	// binders set PrimaryWorkspace deliberately; serve must not trust daemon CWD.
+	s.BaseDir = runtimeDir
+	s.ShellWorkingDir = runtimeDir
+
+	return s, nil
+}
+
+// ResolveSessionPromptTools resolves only the two refreshable inputs. Callers
+// resuming durable history must supply the saved agent and canonical directory.
+func ResolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configInstructions, runtimeDir, provider, model string) (string, string, error) {
+	s := SessionSettings{Provider: provider, Model: model, MemoryPaths: cli.MemoryPaths}
+	if agent != nil {
+		if agent.Provider != "" {
+			s.Provider = agent.Provider
+		}
+		if agent.Model != "" {
+			s.Model = agent.Model
+		}
+	}
+	s.Provider, s.Model = cli.applyActiveLLM(s.Provider, s.Model)
+	fileTrackingEnabled := cfg != nil && cfg.FileTracking.Enabled
+	if agent != nil {
+		s.AgentName = agent.Name
+		s.InsightsExpansion = agent.Memory.InsightsExpansion
+		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
+	}
+	// Tools: CLI > agent
+	if cli.ToolsSet || cli.Tools != "" {
+		s.Tools = cli.Tools
+	} else if agent != nil {
+		if agent.HasEnabledList() {
+			s.Tools = strings.Join(agent.Tools.Enabled, ",")
+		} else if agent.HasDisabledList() {
+			allTools := tools.StandardToolNames()
+			enabledTools := agent.GetEnabledTools(allTools, tools.LegacyDisabledName)
+			s.Tools = strings.Join(enabledTools, ",")
+		}
+	}
+
+	// System prompt: CLI > agent > config
+	if cli.SystemMessageSet || cli.SystemMessage != "" {
+		templateCtx := agents.NewTemplateContextForTemplateInDir(cli.SystemMessage, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
+		expanded, err := expandSystemPromptWithIncludes(cli.SystemMessage, templateCtx, runtimeDir, runtimeDir)
+		if err != nil {
+			return "", "", fmt.Errorf("expand --system prompt: %w", err)
+		}
+		s.SystemPrompt = expanded
+	} else {
+		usedAgentPrompt := false
+		if agent != nil {
+			projectInstructions := ""
+			if agent.ShouldLoadProjectInstructions() {
+				projectInstructions = agents.DiscoverProjectInstructionsInDir(runtimeDir, s.Provider, s.Model)
+			}
+
+			// Use the agent branch only when it can actually produce a prompt. This
+			// lets agents_md:true agents without system.md use AGENTS.md as their prompt,
+			// while preserving the config fallback when auto agents request project
+			// instructions but none exist.
+			if strings.TrimSpace(agent.SystemPrompt) != "" || projectInstructions != "" {
+				usedAgentPrompt = true
+				if strings.TrimSpace(agent.SystemPrompt) != "" {
+					templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDirInDir(agent, cli.Files, runtimeDir)
+					if err != nil {
+						return "", "", fmt.Errorf("prepare agent system prompt context: %w", err)
+					}
+					templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
+					expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir, runtimeDir)
+					if err != nil {
+						return "", "", fmt.Errorf("expand agent system prompt: %w", err)
+					}
+					s.SystemPrompt = expanded
+				}
+
+				if projectInstructions != "" {
+					if strings.TrimSpace(s.SystemPrompt) == "" {
+						s.SystemPrompt = projectInstructions
+					} else {
+						s.SystemPrompt += "\n\n---\n\n" + projectInstructions
+					}
+				}
+			}
+		}
+
+		if !usedAgentPrompt {
+			templateCtx := agents.NewTemplateContextForTemplateInDir(configInstructions, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
+			expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, runtimeDir, runtimeDir)
+			if err != nil {
+				return "", "", fmt.Errorf("expand config system prompt: %w", err)
+			}
+			s.SystemPrompt = expanded
+		}
+	}
+
+	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens, s.MemoryPaths)
+	return s.SystemPrompt, s.Tools, nil
+}
+
+func injectInsightsMetadata(instructions, agentName string, enabled bool, maxTokens int, paths appmemory.Paths) string {
+	if !enabled || strings.TrimSpace(agentName) == "" {
+		return instructions
+	}
+
+	store, err := appmemory.OpenStore(paths)
+	if err != nil {
+		return instructions
+	}
+	defer store.Close()
+
+	expander := memorydb.NewInsightsExpander(store, agentName, maxTokens)
+	insights := strings.TrimSpace(expander.Expand(context.Background(), ""))
+	if insights == "" {
+		return instructions
+	}
+	if strings.TrimSpace(instructions) == "" {
+		return insights
+	}
+	return strings.TrimRight(instructions, "\n") + "\n\n" + insights
+}
+
+func splitTrailingInsightsBlock(instructions string) (head, insights string) {
+	idx := strings.LastIndex(instructions, "<insights>\n")
+	if idx == -1 {
+		return instructions, ""
+	}
+	candidate := instructions[idx:]
+	end := strings.LastIndex(candidate, "</insights>")
+	if end == -1 {
+		return instructions, ""
+	}
+	end += len("</insights>")
+	if strings.TrimSpace(candidate[end:]) != "" {
+		return instructions, ""
+	}
+	return strings.TrimRight(instructions[:idx], "\n"), candidate[:end]
+}
+
+func expandSystemPromptWithIncludes(prompt string, templateCtx agents.TemplateContext, baseDir string, runtimeDirs ...string) (string, error) {
+	withIncludes, err := agents.ExpandFileIncludes(prompt, agents.IncludeOptions{
+		BaseDir:       baseDir,
+		MaxDepth:      agents.DefaultIncludeMaxDepth,
+		AllowAbsolute: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	runtimeDir := ""
+	if len(runtimeDirs) > 0 {
+		runtimeDir = runtimeDirs[0]
+	}
+	templateCtx = templateContextForExpandedPrompt(withIncludes, templateCtx, runtimeDir)
+	return agents.ExpandTemplate(withIncludes, templateCtx), nil
+}
+
+func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext, runtimeDirs ...string) agents.TemplateContext {
+	runtimeDir := ""
+	if len(runtimeDirs) > 0 {
+		runtimeDir = runtimeDirs[0]
+	}
+	var ctx agents.TemplateContext
+	if strings.TrimSpace(runtimeDir) == "" {
+		ctx = agents.NewTemplateContextForTemplate(prompt)
+	} else {
+		ctx = agents.NewTemplateContextForTemplateInDir(prompt, runtimeDir)
+	}
+	ctx.Files = base.Files
+	ctx.FileCount = base.FileCount
+	ctx.ResourceDir = base.ResourceDir
+	ctx.Platform = base.Platform
+	ctx.Provider = base.Provider
+	ctx.Model = base.Model
+	ctx.ProviderModel = base.ProviderModel
+	ctx.FileTracking = base.FileTracking
+	return ctx
+}
+
+func CanonicalRuntimeDir(runtimeDir string) (string, error) {
+	runtimeDir = strings.TrimSpace(runtimeDir)
+	if runtimeDir == "" {
+		var err error
+		runtimeDir, err = systemPromptCWDBaseDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	abs, err := filepath.Abs(runtimeDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve session working directory %q: %w", runtimeDir, err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve session working directory %q: %w", abs, err)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func systemPromptCWDBaseDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory for system prompt includes: %w", err)
+	}
+	return cwd, nil
+}
+
+func builtinAgentPromptNeedsExtractedResources(prompt string) bool {
+	return builtinAgentResourceDirPattern.MatchString(prompt) || builtinAgentFileIncludePattern.MatchString(prompt)
+}
+
+func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (agents.TemplateContext, string, error) {
+	cwd, err := systemPromptCWDBaseDir()
+	if err != nil {
+		return agents.TemplateContext{}, "", err
+	}
+	return agentPromptTemplateContextAndBaseDirInDir(agent, files, cwd)
+}
+
+func agentPromptTemplateContextAndBaseDirInDir(agent *agents.Agent, files []string, runtimeDir string) (agents.TemplateContext, string, error) {
+	templateCtx := agents.NewTemplateContextForTemplateInDir(agent.SystemPrompt, runtimeDir).WithFiles(files)
+
+	if agent.Source == agents.SourceBuiltin {
+		if !builtinAgentPromptNeedsExtractedResources(agent.SystemPrompt) {
+			return templateCtx, runtimeDir, nil
+		}
+
+		resourceDir, err := agents.ExtractBuiltinResources(agent.Name)
+		if err != nil {
+			return agents.TemplateContext{}, "", fmt.Errorf("extract builtin resources for %q: %w", agent.Name, err)
+		}
+		return templateCtx.WithResourceDir(resourceDir), resourceDir, nil
+	}
+
+	baseDir := strings.TrimSpace(agent.SourcePath)
+	if baseDir == "" {
+		return templateCtx, runtimeDir, nil
+	}
+
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return agents.TemplateContext{}, "", fmt.Errorf("resolve agent source path %q: %w", baseDir, err)
+	}
+	return templateCtx, absBase, nil
+}
+
+// SetupToolManager creates and configures a ToolManager from settings.
+// Returns nil if no tools are enabled.
+func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *engine.Engine) (*tools.ToolManager, error) {
+	visionTarget := indirectVisionTarget(cfg, s.Provider, s.Model)
+	if s.Tools == "" && len(s.AutoTools) == 0 && visionTarget == "" {
+		return nil, nil
+	}
+
+	toolConfig := s.toolConfig(cfg, visionTarget)
+
+	if errs := toolConfig.Validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("invalid tool config: %v", errs[0])
+	}
+
+	toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize tools: %w", err)
+	}
+	if visionTarget != "" {
+		visionProvider, visionModel, err := newVisionProviderForTarget(cfg, visionTarget)
+		if err != nil {
+			return nil, err
+		}
+		if uploadsDir := uploadsReadDir(); uploadsDir != "" {
+			if err := toolMgr.ApprovalMgr.AddToolReadDir(tools.ViewImageToolName, uploadsDir); err != nil {
+				return nil, fmt.Errorf("allow view_image uploads directory: %w", err)
+			}
+		}
+		toolMgr.Registry.SetViewImageVisionProvider(visionProvider, visionModel)
+		if engine != nil {
+			engine.SetIndirectVision(true)
+		}
+	}
+	appmemory.WireImageRecorder(toolMgr.Registry, s.MemoryPaths, s.AgentName, s.SessionID)
+	appruntime.WireFileRecorder(toolMgr.Registry, cfg)
+
+	// Register any custom script-backed tools declared in agent.yaml
+	if len(s.CustomTools) > 0 {
+		if err := toolMgr.Registry.RegisterCustomTools(s.CustomTools, s.AgentDir); err != nil {
+			return nil, fmt.Errorf("custom tools: %w", err)
+		}
+	}
+
+	toolMgr.SetupEngine(engine)
+	return toolMgr, nil
+}
+
+func (s *SessionSettings) toolConfig(cfg *config.Config, visionTarget string) tools.ToolConfig {
+	toolConfig := appruntime.BuildToolConfig(s.Tools, s.ReadDirs, s.WriteDirs, s.ShellAllow, cfg)
+	// AutoTools are input-scoped capabilities, not a reason to activate the
+	// global default tool set on an otherwise tool-less ask session.
+	if s.Tools == "" && len(s.AutoTools) > 0 {
+		toolConfig.Enabled = nil
+	}
+	for _, toolName := range s.AutoTools {
+		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, toolName)
+	}
+	if visionTarget != "" {
+		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
+	}
+	toolConfig.AgentDir = s.AgentDir
+	toolConfig.PlanGuidance = s.PlanGuidance
+	toolConfig.Workspace = s.Workspace
+	toolConfig.RequireExplicitWorkingDir = s.RequireExplicitWorkingDir
+	if strings.TrimSpace(s.BaseDir) != "" {
+		toolConfig.BaseDir = s.BaseDir
+		if s.Workspace != "none" {
+			toolConfig.PrimaryWorkspace = strings.TrimSpace(s.PrimaryWorkspace)
+		}
+		if s.ShellWorkingDir == "" {
+			s.ShellWorkingDir = s.BaseDir
+		}
+	}
+	if s.ShellAutoRun {
+		toolConfig.ShellAutoRun = true
+	}
+	appruntime.ApplySpawnConfig(&toolConfig, s.Spawn)
+	if len(s.Scripts) > 0 {
+		toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, s.Scripts...)
+	}
+	if s.ShellWorkingDir != "" {
+		toolConfig.ShellWorkingDir = s.ShellWorkingDir
+	}
+	return toolConfig
+}
+
+func indirectVisionTarget(cfg *config.Config, providerName, modelName string) string {
+	if cfg == nil {
+		return ""
+	}
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		providerName = strings.TrimSpace(cfg.DefaultProvider)
+	}
+	if providerName == "" {
+		return ""
+	}
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		if pc, ok := cfg.Providers[providerName]; ok {
+			modelName = strings.TrimSpace(pc.Model)
+		}
+	}
+	return config.VisionViaForProviderModel(cfg, providerName, modelName)
+}
+
+func newVisionProviderForTarget(cfg *config.Config, target string) (core.Provider, string, error) {
+	providerName, modelName, err := llm.ParseProviderModel(target, cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid vision_via %q: %w", target, err)
+	}
+	if modelName == "" && cfg != nil {
+		if pc, ok := cfg.Providers[providerName]; ok {
+			modelName = strings.TrimSpace(pc.Model)
+		}
+	}
+	provider, err := llm.NewProviderByName(cfg, providerName, modelName)
+	if err != nil {
+		return nil, "", fmt.Errorf("initialize vision_via provider %q: %w", target, err)
+	}
+	return provider, modelName, nil
+}
+
+func uploadsReadDir() string { return uploads.ReadDir() }
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func AlignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider core.Provider) {
+	if settings == nil || cfg == nil {
+		return
+	}
+	settings.Provider = strings.TrimSpace(cfg.DefaultProvider)
+	if settings.Provider == "" && provider != nil {
+		settings.Provider = strings.TrimSpace(provider.Name())
+	}
+	settings.Model = strings.TrimSpace(bootstrap.ActiveModel(cfg))
+	if settings.Model == "" && provider != nil {
+		settings.Model = strings.TrimSpace(appruntime.ExtractModelFromProviderName(provider.Name()))
+	}
+}
+
+// WireSpawnAgentRunner sets up the spawn_agent runner if the tool is enabled.
+// This should be called after SetupToolManager.
+// The toolMgr's ApprovalMgr is passed to sub-agents so they inherit session approvals
+// and can use the parent's prompt function for interactive approvals.
+func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
+	_, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, yoloMode, nil, "")
+	return err
+}
+
+// WireSpawnAgentRunnerWithStore sets up the spawn_agent runner with session tracking.
+// store is used to save subagent turns, parentSessionID links child sessions to parent.
+// Returns the runner so callers can call Wait() to drain in-flight runs before closing the store.
+// Uses default persistence/memory inputs. Custom WireSpawn callbacks must capture
+// invocation inputs and call WireSpawnAgentRunnerWithInputs to preserve overrides.
+func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) (*SpawnAgentRunner, error) {
+	return WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, 0)
+}
+
+// wireSpawnAgentWithBudget wires a child runner and caps its spawn allowance.
+func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, remaining *int, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
+	runner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, yoloMode, store, parentSessionID, depth, sessionStore, paths)
+	if err == nil && remaining != nil && toolMgr != nil {
+		if spawn := toolMgr.GetSpawnAgentTool(); spawn != nil {
+			spawn.SetRemainingDepth(*remaining)
+		}
+	}
+	return runner, err
+}
+
+// WireSpawnAgentRunnerWithStoreAndDepth is WireSpawnAgentRunnerWithStore with an
+// explicit current depth for nested spawn_agent tools.
+// It uses default persistence/memory inputs; use WithInputs for captured overrides.
+func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int) (*SpawnAgentRunner, error) {
+	return WireSpawnAgentRunnerWithInputs(cfg, toolMgr, yoloMode, store, parentSessionID, depth, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
+}
+
+// WireSpawnAgentRunnerWithInputs constructs a child runner with invocation-local
+// persistence and memory inputs before exposing it through the spawn tool.
+func WireSpawnAgentRunnerWithInputs(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
+	if toolMgr == nil {
+		return nil, nil
+	}
+	spawnTool := toolMgr.GetSpawnAgentTool()
+	if spawnTool == nil {
+		return nil, nil
+	}
+	runner, err := NewSpawnAgentRunnerWithStore(cfg, yoloMode, toolMgr.ApprovalMgr, store, parentSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("setup spawn_agent: %w", err)
+	}
+	runner.SetRuntimeInputs(sessionStore, paths)
+	// Keep a snapshot for legacy callers and as a fallback if the live resolver
+	// cannot provide a directory.
+	runner.SetBaseDir(toolMgr.BaseDir())
+	runner.SetBaseDirFunc(toolMgr.BaseDir)
+	runner.SetMediaPublisher(toolMgr.Registry.MediaPublisher())
+	spawnTool.SetDepth(depth)
+	spawnTool.SetRunner(runner)
+	return runner, nil
+}
+
+// EnsureRequestSessionID returns a stable request/session key for provider-side
+// continuity and prompt caching. This is intentionally independent of the local
+// session store so --no-session only disables DB persistence, not upstream cache hints.
+func EnsureRequestSessionID(sessionID string, resuming bool) string {
+	if sessionID != "" || resuming {
+		return sessionID
+	}
+	return session.NewID()
+}
+
+// applyPersistedContextEstimate seeds the engine's context-estimate baseline from
+// persisted session state so resumed runs can use the last real provider-observed
+// context size instead of falling back to heuristic-only estimation.
+func applyPersistedContextEstimate(engine *engine.Engine, sess *session.Session) {
+	if engine == nil || sess == nil {
+		return
+	}
+	if sess.LastTotalTokens <= 0 {
+		return
+	}
+	engine.SetContextEstimateBaseline(sess.LastTotalTokens, sess.LastMessageCount)
+}
+
+// SetupSkills initializes the skills system if enabled.
+// Returns the setup (may be nil) and logs warnings to errWriter on errors.
+// Precedence: CLI --skills flag > agent skills config > global config.
+func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, agentSkills string, errWriter io.Writer) *skills.Setup {
+	return SetupSkillsInDir(cfg, skillsFlag, agentSkills, errWriter, "")
+}
+
+// SetupSkillsInDir initializes skills relative to projectDir without changing CWD.
+func SetupSkillsInDir(cfg *config.SkillsConfig, skillsFlag string, agentSkills string, errWriter io.Writer, projectDir string) *skills.Setup {
+	effectiveFlag := skillsFlag
+	if effectiveFlag == "" {
+		effectiveFlag = agentSkills
+	}
+	skillsCfg := appruntime.ApplySkillsFlag(cfg, effectiveFlag)
+	if !skillsCfg.Enabled {
+		return nil
+	}
+
+	promptMetadataSuppressed := skills.CheckAgentsMdForSkillsInDir(projectDir)
+	if strings.TrimSpace(projectDir) == "" {
+		promptMetadataSuppressed = skills.CheckAgentsMdForSkills()
+	}
+	setup, err := skills.NewSetupWithOptions(skillsCfg, skills.SetupOptions{
+		PromptMetadataSuppressed:       promptMetadataSuppressed,
+		PromptMetadataSuppressionKnown: true,
+		ProjectDir:                     projectDir,
+	})
+	if err != nil {
+		fmt.Fprintf(errWriter, "warning: skills initialization failed: %v\n", err)
+		return nil
+	}
+	return setup
+}
+
+func intersectAllowedToolNames(left, right []string) []string {
+	allowed := make(map[string]bool, len(right))
+	for _, name := range right {
+		allowed[name] = true
+	}
+	result := make([]string, 0, len(left))
+	for _, name := range left {
+		if allowed[name] {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+// RegisterSkillToolWithEngine registers activate_skill on the engine when skills are available.
+// This is independent of local tool manager setup so skills work in both agent-only and tools modes.
+func RegisterSkillToolWithEngine(engine *engine.Engine, toolMgr *tools.ToolManager, skillsSetup *skills.Setup) {
+	if skillsSetup == nil || skillsSetup.Registry == nil {
+		return
+	}
+
+	var skillTool *tools.ActivateSkillTool
+	if toolMgr != nil {
+		skillTool = toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
+	} else {
+		skillTool = tools.NewActivateSkillTool(skillsSetup.Registry, nil)
+	}
+	if skillTool == nil {
+		return
+	}
+
+	// Model activation loads instructions and may add skill-declared tools, but it
+	// must not narrow the parent session's tool policy. Direct and isolated skill
+	// invocations apply their scoped allowed-tools restrictions in their own
+	// runtime paths, where the filter has a defined lifetime and is restored.
+	if toolMgr != nil {
+		skillTool.SetOnToolsActivated(func(defs []skills.SkillToolDef, skillDir string) {
+			if err := toolMgr.Registry.RegisterSkillTools(defs, skillDir); err != nil {
+				runtimeoutput.Printf("warning: skill tools registration failed: %v\n", err)
+				return
+			}
+			// Register the newly added tools with the engine so the LLM can call them.
+			// AddDynamicTool queues the spec for injection into the active agentic loop
+			// so the LLM sees the tools immediately on the very next turn.
+			for _, def := range defs {
+				if tool, ok := toolMgr.Registry.Get(def.Name); ok {
+					engine.AddDynamicTool(tool)
+				}
+			}
+		})
+	}
+	engine.Tools().Register(skillTool)
+
+	// Register search_skills whenever the skills system is available. This avoids
+	// eager startup discovery just to determine whether the prompt metadata will
+	// overflow, while still letting the model search the catalog on demand.
+	searchTool := tools.NewSearchSkillsTool(skillsSetup.Registry)
+	engine.Tools().Register(searchTool)
+}
+
+// InjectSkillsMetadata appends <available_skills> metadata to instructions when available.
+func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string {
+	if skillsSetup == nil {
+		return instructions
+	}
+	if strings.Contains(instructions, "<available_skills>") {
+		return instructions
+	}
+	if suppressed, known := skillsSetup.PromptMetadataSuppressed(); suppressed || (!known && skills.CheckAgentsMdForSkills()) {
+		return instructions
+	}
+	if err := skillsSetup.EnsurePromptMetadata(); err != nil {
+		runtimeoutput.Printf("warning: skills metadata generation failed: %v\n", err)
+		return instructions
+	}
+	if !skillsSetup.HasSkillsXML() {
+		return instructions
+	}
+
+	head, insights := splitTrailingInsightsBlock(instructions)
+	if strings.TrimSpace(head) != "" {
+		head += "\n\n" + skillsSetup.XML
+	} else {
+		head = skillsSetup.XML
+	}
+	if insights != "" {
+		return head + "\n\n" + insights
+	}
+	return head
+}

@@ -32,7 +32,7 @@ var layeringRules = []rule{
 	{pkgPrefix: "internal/app/serve/server", forbidden: []string{"internal/app/serve"}, exact: true},
 	{pkgPrefix: "internal/app/serve/jobs", forbidden: []string{"internal/app/serve"}, exact: true},
 	{pkgPrefix: "internal", excludePrefix: "internal/app", forbidden: []string{"internal/app"}},
-	// The serve Cobra/pflag prohibition belongs to C2, not this baseline.
+	{pkgPrefix: "internal/app/serve", forbidden: []string{"github.com/spf13/cobra", "github.com/spf13/pflag"}},
 }
 
 func hasPackagePrefix(pkg, prefix string) bool {
@@ -91,9 +91,6 @@ func checkLayering(repoRoot, modulePath string) ([]string, error) {
 			if err != nil {
 				return fmt.Errorf("unquote import path in %s: %w", path, err)
 			}
-			if !strings.HasPrefix(importPath, modulePath+"/") {
-				continue
-			}
 			importPkg := strings.TrimPrefix(importPath, modulePath+"/")
 			for _, r := range layeringRules {
 				if !hasPackagePrefix(pkg, r.pkgPrefix) || (r.excludePrefix != "" && hasPackagePrefix(pkg, r.excludePrefix)) {
@@ -117,6 +114,10 @@ func TestLayeringGuardSelfTest(t *testing.T) {
 		file, imported string
 		forbidden      bool
 	}{
+		{"internal/app/serve/probe.go", "github.com/spf13/cobra", true},
+		{"internal/app/serve/sub/probe_test.go", "github.com/spf13/pflag", true},
+		{"internal/app/serve-extra/probe.go", "github.com/spf13/cobra", false},
+		{"internal/app/ask/probe.go", "github.com/spf13/cobra", false},
 		{"internal/core/probe.go", "cmd", true},
 		{"internal/core/probe_test.go", "cmd/sub", true},
 		{"internal/app/runtime/probe.go", "internal/app/serve", true},
@@ -151,7 +152,11 @@ func TestLayeringGuardSelfTest(t *testing.T) {
 				t.Fatal(err)
 			}
 			// An unsatisfied tag proves direct guards scan every source file.
-			source := "//go:build depguard_synthetic\n\npackage probe\nimport _ " + strconv.Quote(modulePath+"/"+tc.imported) + "\n"
+			importPath := modulePath + "/" + tc.imported
+			if strings.HasPrefix(tc.imported, "github.com/") {
+				importPath = tc.imported
+			}
+			source := "//go:build depguard_synthetic\n\npackage probe\nimport _ " + strconv.Quote(importPath) + "\n"
 			if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -166,7 +171,7 @@ func TestLayeringGuardSelfTest(t *testing.T) {
 			if len(violations) != want {
 				t.Fatalf("got violations %v, want %d", violations, want)
 			}
-			if want == 1 && violations[0] != tc.file+" imports "+modulePath+"/"+tc.imported {
+			if want == 1 && violations[0] != tc.file+" imports "+importPath {
 				t.Fatalf("unexpected diagnostic: %s", violations[0])
 			}
 		})

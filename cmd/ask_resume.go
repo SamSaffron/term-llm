@@ -8,6 +8,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/ask"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -15,23 +16,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *SessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
+func finalizeAskSessionSettings(settings *appserve.SessionSettings, sess *session.Session, selected *appserve.SessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
 	}
-	sessionID = EnsureRequestSessionID(sessionID, resuming)
+	sessionID = appserve.EnsureRequestSessionID(sessionID, resuming)
 	settings.SessionID = sessionID
 	baseInputPrompt := settings.SystemPrompt
-	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, setup)
+	settings.SystemPrompt = appserve.InjectSkillsMetadata(settings.SystemPrompt, setup)
 	if selected != nil {
 		settings.SystemPrompt = selected.Prompt
 	}
-	AlignSettingsToActiveProvider(settings, cfg, provider)
+	appserve.AlignSettingsToActiveProvider(settings, cfg, provider)
 	return sessionID, baseInputPrompt
 }
 
-func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *SessionSettings) (*session.Session, *SessionInputTicket, *SessionInputSelection, bool, error) {
+func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *appserve.SessionSettings) (*session.Session, *appserve.SessionInputTicket, *appserve.SessionInputSelection, bool, error) {
 	resuming := cmd.Flags().Changed("resume")
 	if !resuming {
 		return nil, nil, nil, false, nil
@@ -67,7 +68,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
 	if _, supported := session.AsSessionInputRefresher(store); !supported {
 		var err error
-		settings.SystemPrompt, settings.Tools, err = ResolveSessionPromptTools(cfg, agent, CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
+		settings.SystemPrompt, settings.Tools, err = appserve.ResolveSessionPromptTools(cfg, agent, appserve.CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
@@ -85,22 +86,22 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 			settings.Workspace = resumedAgent.Workspace
 		}
 	}
-	if err := RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
+	if err := appserve.RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore session directory: %v\n", err)
 	}
 	if dir := effectiveSessionDirectory(sess); dir != "" {
-		if canonical, err := CanonicalRuntimeDir(dir); err == nil {
+		if canonical, err := appserve.CanonicalRuntimeDir(dir); err == nil {
 			settings.BaseDir = canonical
 			settings.ShellWorkingDir = canonical
 			settings.PrimaryWorkspace = canonical
 		}
 	}
 
-	var ticket *SessionInputTicket
-	var selected *SessionInputSelection
+	var ticket *appserve.SessionInputTicket
+	var selected *appserve.SessionInputSelection
 	if _, supported := session.AsSessionInputRefresher(store); supported {
 		var err error
-		ticket, err = ProcessSessionInputs().Acquire(ctx, store, sess.ID, InputBinding(sess.Agent, settings.BaseDir))
+		ticket, err = appserve.ProcessSessionInputs().Acquire(ctx, store, sess.ID, appserve.InputBinding(sess.Agent, settings.BaseDir))
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
@@ -113,7 +114,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 				ticket.Fail()
 				return nil, ticket, nil, true, err
 			}
-			settings.SystemPrompt, settings.Tools, err = ResolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
+			settings.SystemPrompt, settings.Tools, err = appserve.ResolveSessionPromptTools(cfg, resumedAgent, appserve.CLIFlags{
 				Provider: askProvider, ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
 				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths,
 			}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
@@ -126,7 +127,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	return sess, ticket, selected, true, nil
 }
 
-func deriveAskResumeAutoTools(ctx context.Context, store session.Store, sess *session.Session, settings *SessionSettings) {
+func deriveAskResumeAutoTools(ctx context.Context, store session.Store, sess *session.Session, settings *appserve.SessionSettings) {
 	if store == nil || sess == nil || settings == nil {
 		return
 	}

@@ -10,6 +10,7 @@ import (
 
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/diagnostics"
 	"github.com/samsaffron/term-llm/internal/edit"
@@ -168,7 +169,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editTools != "" {
 		engine := newEngine(provider, cfg)
 		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
-		runtimeDir, err := CanonicalRuntimeDir("")
+		runtimeDir, err := appserve.CanonicalRuntimeDir("")
 		if err != nil {
 			return err
 		}
@@ -207,7 +208,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		toolMgr.SetupEngine(engine)
 
 		// Wire spawn_agent runner if enabled
-		spawnRunner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, nil, "", 0, runtimeSessionStore, runtimeMemoryPaths)
+		spawnRunner, err := appserve.WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, nil, "", 0, runtimeSessionStore, runtimeMemoryPaths)
 		if err != nil {
 			return err
 		}

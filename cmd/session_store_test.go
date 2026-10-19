@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -110,7 +111,7 @@ func TestProductionSessionStorePersistsAgentRuns(t *testing.T) {
 	if store == nil {
 		t.Fatal("production session store unavailable")
 	}
-	runner, err := NewSpawnAgentRunnerWithStore(cfg, false, tools.NewApprovalManager(tools.NewToolPermissions()), store, "parent")
+	runner, err := appserve.NewSpawnAgentRunnerWithStore(cfg, false, tools.NewApprovalManager(tools.NewToolPermissions()), store, "parent")
 	if err != nil {
 		t.Fatal(err)
 	}

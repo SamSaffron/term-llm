@@ -1,8 +1,8 @@
 package cmd
 
 import (
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-
 	"github.com/spf13/cobra"
 )
 
@@ -54,7 +54,7 @@ development.`,
 }
 
 func runServeHub(cmd *cobra.Command, args []string) error {
-	return RunHub(cmd.Context(), serveHubFlags, apphub.Invocation{Flags: apphub.FlagState{BasePath: cmd.Flags().Changed("base-path")}, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr()})
+	return appserve.RunHub(cmd.Context(), serveHubFlags, apphub.Invocation{Flags: apphub.FlagState{BasePath: cmd.Flags().Changed("base-path")}, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr()})
 }
 
 func init() {

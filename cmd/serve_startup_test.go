@@ -2,13 +2,13 @@ package cmd
 
 import (
 	"context"
-
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/spf13/cobra"
 )
 
@@ -73,7 +73,7 @@ func TestServeStartupErrorOrderContract(t *testing.T) {
 			writeServeContractConfig(t, tc.config)
 			cmd, opts := bindServeContractArgs(t, append([]string{"--token=contract-token"}, tc.args...)...)
 			// An invalid platform must not mask any of the earlier errors.
-			err := Run(context.Background(), opts, []string{"invalid-platform"}, captureServeInvocation(cmd, opts))
+			err := appserve.Run(context.Background(), opts, []string{"invalid-platform"}, captureServeInvocation(cmd, opts))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("startup error = %v, want %q", err, tc.want)
 			}

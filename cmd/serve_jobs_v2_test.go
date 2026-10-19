@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-
 	"testing"
 
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -20,7 +20,7 @@ func TestServeJobsRunnerOptionsUseCapturedResolvedApproval(t *testing.T) {
 	source.Search = true
 	sessionStore := appruntime.SessionStoreOverrides{NoSession: true, DBPath: "sessions.db"}
 	paths := appmemory.Paths{DBPath: "memory.db", DefaultDBPath: "default.db"}
-	opts := serveJobsRunnerOptions(source, true, resolved, sessionStore, paths)
+	opts := appserve.ServeJobsRunnerOptions(source, true, resolved, sessionStore, paths)
 	if opts.ApprovalMode != tools.ModeAuto || opts.ApprovalSource != approvalModeSourceSurfaceConfig || !opts.ApprovalModeSet || !opts.ApprovalHeadless {
 		t.Fatalf("serve jobs approval options = mode:%v source:%s set:%t headless:%t", opts.ApprovalMode, opts.ApprovalSource, opts.ApprovalModeSet, opts.ApprovalHeadless)
 	}

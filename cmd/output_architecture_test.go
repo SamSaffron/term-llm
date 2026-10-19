@@ -17,21 +17,30 @@ import (
 func TestInteractiveWorkersDoNotBypassDiagnosticSink(t *testing.T) {
 	packages := []string{"../internal/llm", "../internal/agents", "../internal/skills", "../internal/mcp", "../internal/session", "../internal/tools", "../internal/termhost"}
 	cmdFiles := map[string]bool{
-		"chat.go": true, "chat_warnings.go": true, "runner.go": true, "session.go": true,
+		"chat.go":   true,
 		"skills.go": true, "mcp.go": true, "sessions.go": true, "config_theme.go": true,
-		"filetrack.go": true, "goal_runtime.go": true, "guardian_wiring.go": true,
-		"process_reload.go": true, "spawn_runner.go": true, "tools.go": true,
+		"filetrack.go": true, "guardian_wiring.go": true,
+		"tools.go":                   true,
 		"interactive_diagnostics.go": true,
 	}
+	const hostDir = "../internal/app/serve"
+	hostFiles := map[string]bool{"runner.go": true, "session.go": true, "goal_runtime.go": true, "spawn_runner.go": true}
+	for dir, files := range map[string]map[string]bool{".": cmdFiles, hostDir: hostFiles} {
+		for name := range files {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+				t.Fatalf("guarded worker missing: %s/%s: %v", dir, name, err)
+			}
+		}
+	}
 	var violations []string
-	for _, dir := range append(packages, ".") {
+	for _, dir := range append(packages, ".", hostDir) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || (dir == "." && !cmdFiles[name]) {
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || (dir == "." && !cmdFiles[name]) || (dir == hostDir && !hostFiles[name]) {
 				continue
 			}
 			path := filepath.Join(dir, name)
@@ -76,7 +85,7 @@ func TestInteractiveWorkersDoNotBypassDiagnosticSink(t *testing.T) {
 							kind = "log." + sel.Sel.Name
 						}
 					case "fmt":
-						if strings.HasPrefix(sel.Sel.Name, "Print") && dir != "." {
+						if strings.HasPrefix(sel.Sel.Name, "Print") && dir != "." && dir != hostDir {
 							kind = "fmt." + sel.Sel.Name
 						}
 						if strings.HasPrefix(sel.Sel.Name, "Fprint") && len(call.Args) > 0 {
