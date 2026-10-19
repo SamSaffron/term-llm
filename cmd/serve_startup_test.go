@@ -11,13 +11,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
 
@@ -107,8 +107,7 @@ func TestServeStartupErrorOrderContract(t *testing.T) {
 			writeServeContractConfig(t, tc.config)
 			cmd, opts := bindServeContractArgs(t, append([]string{"--token=contract-token"}, tc.args...)...)
 			// An invalid platform must not mask any of the earlier errors.
-			deps := serveDeps{Invocation: captureServeInvocation(cmd, opts)}
-			err := runServeWith(context.Background(), deps, opts, []string{"invalid-platform"})
+			err := Run(context.Background(), opts, []string{"invalid-platform"}, captureServeInvocation(cmd, opts))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("startup error = %v, want %q", err, tc.want)
 			}
@@ -193,11 +192,17 @@ func TestServeStartupConfigFallbackContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, basePath, title, timeout string
 		locationEnabled                bool
-		args                           []string
+		mutate                         func(*ServeOptions, *serveFlagState)
 	}{
 		{"config fallbacks", "/configured", "Configured title", "7 minutes", false, nil},
-		{"explicit defaults override config", "/ui", "", "30 minutes", true, []string{"--base-path=/ui", "--title=", "--disable-location-sharing=false", "--response-timeout=30m"}},
-		{"explicit values override config", "/chat", "CLI title", "1 hour", false, []string{"--base-path=/chat/", "--title= CLI title ", "--disable-location-sharing", "--response-timeout=1h"}},
+		{"explicit defaults override config", "/ui", "", "30 minutes", true, func(opts *ServeOptions, flags *serveFlagState) {
+			opts.BasePath, opts.Title, opts.DisableLocationSharing, opts.ResponseTimeout = "/ui", "", false, 30*time.Minute
+			flags.BasePath, flags.Title, flags.DisableLocationSharing, flags.ResponseTimeout = true, true, true, true
+		}},
+		{"explicit values override config", "/chat", "CLI title", "1 hour", false, func(opts *ServeOptions, flags *serveFlagState) {
+			opts.BasePath, opts.Title, opts.DisableLocationSharing, opts.ResponseTimeout = "/chat/", " CLI title ", true, time.Hour
+			flags.BasePath, flags.Title, flags.DisableLocationSharing, flags.ResponseTimeout = true, true, true, true
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			writeServeContractConfig(t, `default_provider: debug
@@ -224,14 +229,18 @@ serve:
 					t.Fatal(err)
 				}
 				port := listener.Addr().(*net.TCPAddr).Port
-				args := append([]string{"--port=" + strconv.Itoa(port), "--token=contract-token", "--approval=prompt", "--disable-widgets", "--disable-extensions"}, tc.args...)
-				cmd, opts := bindServeContractArgs(t, args...)
+				opts := serveRuntimeFixtureOptions()
+				opts.Port, opts.Token, opts.DisableWidgets, opts.DisableExtensions = port, "contract-token", true, true
+				flags := serveFlagState{}
+				if tc.mutate != nil {
+					tc.mutate(&opts, &flags)
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				var output strings.Builder
 				var html string
 				var observed bool
 				var requestErr error
-				cmd.SetErr(serveContractWriter(func(p []byte) (int, error) {
+				stderr := serveContractWriter(func(p []byte) (int, error) {
 					output.Write(p)
 					if strings.Contains(string(p), "response timeout:") {
 						observed = true
@@ -258,9 +267,14 @@ serve:
 						}
 					}
 					return len(p), nil
-				}))
-				deps := serveDeps{Invocation: captureServeInvocation(cmd, opts), Listener: listener}
-				err = runServeWith(ctx, deps, opts, []string{"web"})
+				})
+				deps := serveDeps{Invocation: appserve.Invocation{
+					Flags: flags, Stdout: io.Discard, Stderr: stderr,
+					ResolveApproval: func(*config.Config) (resolvedApprovalMode, error) {
+						return resolvedApprovalMode{Mode: tools.ModePrompt}, nil
+					},
+				}, Listener: listener}
+				err = runServeWith(ctx, deps, &opts, []string{"web"})
 				cancel()
 				if err != nil && strings.Contains(err.Error(), "address already in use") && attempt < 2 {
 					continue
@@ -293,10 +307,16 @@ func TestServeStartupEmptyBasePathContract(t *testing.T) {
 	} {
 		t.Run("path="+tc.value, func(t *testing.T) {
 			writeServeContractConfig(t, "default_provider: debug\n")
-			cmd, opts := bindServeContractArgs(t, "--base-path="+tc.value, "--token=contract-token", "--approval=prompt")
+			opts := serveRuntimeFixtureOptions()
+			opts.BasePath, opts.Token = tc.value, "contract-token"
+			invocation := appserve.Invocation{
+				Flags: serveFlagState{BasePath: true}, Stdout: io.Discard, Stderr: io.Discard,
+				ResolveApproval: func(*config.Config) (resolvedApprovalMode, error) {
+					return resolvedApprovalMode{Mode: tools.ModePrompt}, nil
+				},
+			}
 			// api avoids Web Push setup and fails before listener creation.
-			deps := serveDeps{Invocation: captureServeInvocation(cmd, opts)}
-			err := runServeWith(context.Background(), deps, opts, []string{"api"})
+			err := Run(context.Background(), &opts, []string{"api"}, invocation)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("startup error = %v, want %q", err, tc.want)
 			}
@@ -309,24 +329,27 @@ func TestServeProjectsExplicitFalseContract(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(oldLogOutput) })
 	for _, tc := range []struct {
 		name, diagnostic, wantErr string
-		args                      []string
+		mutate                    func(*ServeOptions, *serveFlagState)
 		configEnabled, warning    bool
 	}{
 		{"unset uses config", "projects auto-disabled", "", nil, true, true},
-		{"false no-projects uses config but diagnostic is explicit", "projects explicitly disabled", "", []string{"--no-projects=false"}, true, true},
-		{"true no-projects disables", "projects explicitly disabled", "", []string{"--no-projects"}, true, false},
-		{"false projects overrides config", "projects auto-disabled", "", []string{"--projects=false"}, true, false},
-		{"true projects is strict", "", "--projects requires a writable SQLite session store", []string{"--projects"}, false, false},
+		{"false no-projects uses config but diagnostic is explicit", "projects explicitly disabled", "", func(opts *ServeOptions, flags *serveFlagState) { flags.NoProjects = true }, true, true},
+		{"true no-projects disables", "projects explicitly disabled", "", func(opts *ServeOptions, flags *serveFlagState) { opts.NoProjects, flags.NoProjects = true, true }, true, false},
+		{"false projects overrides config", "projects auto-disabled", "", func(opts *ServeOptions, flags *serveFlagState) { flags.Projects = true }, true, false},
+		{"true projects is strict", "", "--projects requires a writable SQLite session store", func(opts *ServeOptions, flags *serveFlagState) { opts.Projects, flags.Projects = true, true }, false, false},
 		{"disabled config", "projects explicitly disabled", "", nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, opts := bindServeContractArgs(t, tc.args...)
+			opts := ServeOptions{}
+			flags := serveFlagState{}
+			if tc.mutate != nil {
+				tc.mutate(&opts, &flags)
+			}
 			cfg := &config.Config{}
 			cfg.Serve.Projects.Enabled = tc.configEnabled
 			var stderr, diagnostics bytes.Buffer
 			log.SetOutput(&diagnostics)
-			invocation := captureServeInvocation(cmd, opts)
-			enabled, bootstrap, err := initializeServeProjectRuntime(context.Background(), invocation.Flags, opts, cfg, nil, t.TempDir(), true, &stderr)
+			enabled, bootstrap, err := initializeServeProjectRuntime(context.Background(), flags, &opts, cfg, nil, t.TempDir(), true, &stderr)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("project error = %v, want %q", err, tc.wantErr)

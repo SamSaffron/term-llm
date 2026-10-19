@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/diagnostics"
 	"github.com/samsaffron/term-llm/internal/edit"
@@ -167,7 +168,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editTools != "" {
 		engine := newEngine(provider, cfg)
 		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
-		runtimeDir, err := canonicalRuntimeDir("")
+		runtimeDir, err := CanonicalRuntimeDir("")
 		if err != nil {
 			return err
 		}
@@ -210,7 +211,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		selected, policy, err := selectRunModel(cloneConfigForServeJob(cfg), modelSelectionInput{})
+		selected, policy, err := selectRunModel(appruntime.CloneConfig(cfg), modelSelectionInput{})
 		if err != nil {
 			return err
 		}

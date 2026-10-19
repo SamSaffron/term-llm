@@ -127,13 +127,13 @@ func (s *serveServer) commitRepository(ctx context.Context, sessionID string) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	repo, err := gitcommit.OpenWithCoordinator(ctx, dir, commitRootCoordinator{})
+	repo, err := gitcommit.OpenWithCoordinator(ctx, dir, CommitRootCoordinator{})
 	return sess, repo, err
 }
 
-type commitRootCoordinator struct{}
+type CommitRootCoordinator struct{}
 
-func (commitRootCoordinator) Acquire(ctx context.Context, root string) (func(), error) {
+func (CommitRootCoordinator) Acquire(ctx context.Context, root string) (func(), error) {
 	main, mainErr := worktree.MainRepoRoot(root)
 	checkout, checkoutErr := worktree.CheckoutRoot(root)
 	if mainErr != nil {

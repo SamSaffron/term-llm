@@ -273,7 +273,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	// Resolve all settings: CLI > agent > config
 	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
-	promptProvider, promptModel := activeLLMFlags(cfg)
+	promptProvider, promptModel := appruntime.ActiveLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Inputs:           deferredInputs,
 		Provider:         askProvider,
@@ -317,13 +317,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				if len(ids) > 0 {
 					fmt.Fprintf(cmd.ErrOrStderr(), "interrupting child agents (resumable): %s\n", strings.Join(ids, ", "))
 				}
-				shutdownSpawnAgentRunner(spawnRunner)
+				ShutdownSpawnAgentRunner(spawnRunner)
 			default:
 				if len(ids) > 0 {
 					fmt.Fprintf(cmd.ErrOrStderr(), "waiting for child agents: %s\n", strings.Join(ids, ", "))
 				}
 				if err := spawnRunner.Drain(ctx); err != nil {
-					shutdownSpawnAgentRunner(spawnRunner)
+					ShutdownSpawnAgentRunner(spawnRunner)
 				}
 			}
 		}

@@ -28,9 +28,9 @@ func TestServeMCPOptionsValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := runServeMCPWithOptions(context.Background(), appserve.MCPInvocation{}, nil, &tc.opts)
+			err := RunMCP(context.Background(), &tc.opts, nil, appserve.MCPInvocation{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("runServeMCPWithOptions() = %v, want %q", err, tc.want)
+				t.Fatalf("RunMCP() = %v, want %q", err, tc.want)
 			}
 		})
 	}
@@ -70,7 +70,7 @@ func TestServeMCPValidationConfigApprovalOrder(t *testing.T) {
 				return tc.resolve(cfg)
 			}}
 			opts := serveMCPOptions{Tools: tc.tools, Host: "127.0.0.1", Port: 8080, EditFormat: "edit_file"}
-			err := runServeMCPWithOptions(context.Background(), invocation, nil, &opts)
+			err := RunMCP(context.Background(), &opts, nil, invocation)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("MCP startup error = %v, want %q", err, tc.want)
 			}
@@ -230,12 +230,12 @@ func TestParseMCPToolsFlag(t *testing.T) {
 		{
 			name:     "all expands to full list",
 			input:    "all",
-			expected: mcpAllToolNames(),
+			expected: MCPAllToolNames(),
 		},
 		{
 			name:     "star expands to full list",
 			input:    "*",
-			expected: mcpAllToolNames(),
+			expected: MCPAllToolNames(),
 		},
 		{
 			name:     "single tool",
@@ -265,7 +265,7 @@ func TestParseMCPToolsFlag(t *testing.T) {
 		{
 			name:     "all with whitespace",
 			input:    " all ",
-			expected: mcpAllToolNames(),
+			expected: MCPAllToolNames(),
 		},
 	}
 
@@ -392,7 +392,7 @@ func TestSwapEditTool(t *testing.T) {
 
 func TestMCPAllToolNamesAreValid(t *testing.T) {
 	// Ensure every name in the "all" list is in the allowlist.
-	for _, name := range mcpAllToolNames() {
+	for _, name := range MCPAllToolNames() {
 		if !mcpAllowedTools[name] {
 			t.Errorf("tool %q is in mcpAllToolNames() but not in mcpAllowedTools", name)
 		}

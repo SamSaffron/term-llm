@@ -116,7 +116,7 @@ func TestAlignSettingsToActiveProviderUsesResolvedConfig(t *testing.T) {
 	cfg.Providers["text"] = config.ProviderConfig{Model: "resolved-model"}
 	settings := SessionSettings{Provider: "stale", Model: "stale-model"}
 
-	alignSettingsToActiveProvider(&settings, cfg, mockprovider.NewMockProvider("primary"))
+	AlignSettingsToActiveProvider(&settings, cfg, mockprovider.NewMockProvider("primary"))
 
 	if settings.Provider != "text" || settings.Model != "resolved-model" {
 		t.Fatalf("settings provider/model = %q/%q, want text/resolved-model", settings.Provider, settings.Model)

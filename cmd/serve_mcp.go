@@ -61,8 +61,8 @@ func init() {
 	mcpAllowedTools[tools.UnifiedDiffToolName] = true
 }
 
-// mcpAllToolNames returns every tool name the MCP server can expose (for "all").
-func mcpAllToolNames() []string {
+// MCPAllToolNames returns every tool name the MCP server can expose (for "all").
+func MCPAllToolNames() []string {
 	all := make([]string, 0, len(mcpAllLocalTools)+len(mcpAllWebTools))
 	all = append(all, mcpAllLocalTools...)
 	all = append(all, mcpAllWebTools...)
@@ -138,7 +138,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 			return resolveServeMCPApprovalMode(cmd, cfg, &approvalOptions)
 		},
 	}
-	return runServeMCPWithOptions(cmd.Context(), invocation, args, &serveMCPFlags)
+	return RunMCP(cmd.Context(), &serveMCPFlags, args, invocation)
 }
 
 func runServeMCPWithOptions(ctx context.Context, invocation appserve.MCPInvocation, args []string, opts *serveMCPOptions) error {
@@ -375,7 +375,7 @@ func serveMCPToolResult(out core.ToolOutput) mcphttp.ToolResult {
 func parseMCPToolsFlag(value string) []string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "all" || trimmed == "*" {
-		return mcpAllToolNames()
+		return MCPAllToolNames()
 	}
 	parts := strings.Split(value, ",")
 	var result []string
@@ -399,7 +399,7 @@ func validateMCPToolNames(names []string) error {
 		}
 	}
 	if len(invalid) > 0 {
-		allowed := mcpAllToolNames()
+		allowed := MCPAllToolNames()
 		sort.Strings(allowed)
 		return fmt.Errorf("unknown tool(s) for serve mcp: %s\nallowed: %s",
 			strings.Join(invalid, ", "), strings.Join(allowed, ", "))
@@ -422,7 +422,7 @@ func swapEditTool(names []string, oldTool, newTool string) []string {
 
 // MCPToolsFlagCompletion provides completions for the --tools flag on serve mcp.
 func MCPToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	allTools := mcpAllToolNames()
+	allTools := MCPAllToolNames()
 	sort.Strings(allTools)
 
 	// Parse comma-separated list.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -277,7 +278,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 	// Resolve all settings: CLI > agent > config
 	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
-	promptProvider, promptModel := activeLLMFlags(cfg)
+	promptProvider, promptModel := appruntime.ActiveLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:        loopProvider,
 		ActiveProvider:  promptProvider,
@@ -321,7 +322,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize tools
-	alignSettingsToActiveProvider(&settings, cfg, provider)
+	AlignSettingsToActiveProvider(&settings, cfg, provider)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
 		return err

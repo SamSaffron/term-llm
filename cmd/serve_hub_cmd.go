@@ -102,7 +102,7 @@ func lockHubPasskeyState(authFile string) (func() error, error) {
 }
 
 func runServeHub(cmd *cobra.Command, args []string) error {
-	return runServeHubWith(cmd.Context(), hubDeps{Flags: apphub.FlagState{BasePath: cmd.Flags().Changed("base-path")}, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr()}, &serveHubFlags)
+	return RunHub(cmd.Context(), serveHubFlags, apphub.Invocation{Flags: apphub.FlagState{BasePath: cmd.Flags().Changed("base-path")}, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr()})
 }
 
 func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Options) error {

@@ -100,7 +100,9 @@ func TestReloadHostProviderOrder(t *testing.T) {
 		want = append(want, process.HandoffEnviron()...)
 		want = append(want, "C1_EXTRA=last")
 		if got := reload.Environ("C1_EXTRA=last"); !reflect.DeepEqual(got, want) {
-			t.Fatalf("handoff order mismatch\ngot %q\nwant %q", got, want)
+			// The inherited environment may contain unrelated credentials. Keep
+			// the full equality assertion without printing its secret values.
+			t.Fatalf("handoff environment order differs (got %d entries, want %d)", len(got), len(want))
 		}
 		return
 	}

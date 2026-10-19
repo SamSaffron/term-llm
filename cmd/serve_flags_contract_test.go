@@ -86,13 +86,20 @@ func TestServeFlagsContract(t *testing.T) {
 
 func TestServeRuntimeFixtureOptionsMatchRegisteredDefaults(t *testing.T) {
 	_, registered := bindServeContractArgs(t)
-	fixture := serveRuntimeFixtureOptions()
-	if fixture.Host != registered.Host || fixture.Port != registered.Port || fixture.AuthMode != registered.AuthMode ||
-		fixture.BasePath != registered.BasePath || fixture.SessionTTL != registered.SessionTTL || fixture.SessionMax != registered.SessionMax ||
-		fixture.TelegramCarryoverChars != registered.TelegramCarryoverChars || fixture.JobsWorkers != registered.JobsWorkers ||
-		fixture.SidebarSessions != registered.SidebarSessions || fixture.ResponseTimeout != registered.ResponseTimeout ||
-		fixture.MaxTurns != registered.MaxTurns || fixture.HubConnect != registered.HubConnect {
-		t.Fatalf("plain runtime fixture defaults = %#v, registered = %#v", fixture, *registered)
+	neutral := serveContractDefaultOptions()
+	if neutral.Host != registered.Host || neutral.Port != registered.Port || neutral.AuthMode != registered.AuthMode ||
+		neutral.BasePath != registered.BasePath || neutral.SessionTTL != registered.SessionTTL || neutral.SessionMax != registered.SessionMax ||
+		neutral.TelegramCarryoverChars != registered.TelegramCarryoverChars || neutral.JobsWorkers != registered.JobsWorkers ||
+		neutral.SidebarSessions != registered.SidebarSessions || neutral.ResponseTimeout != registered.ResponseTimeout ||
+		neutral.MaxTurns != registered.MaxTurns || neutral.HubConnect != registered.HubConnect {
+		t.Fatalf("neutral runtime fixture defaults = %#v, registered = %#v", neutral, *registered)
+	}
+}
+
+func TestServeRuntimeFixtureOptionsMatchContractDefaults(t *testing.T) {
+	neutral := serveContractDefaultOptions()
+	if host := serveRuntimeFixtureOptions(); !reflect.DeepEqual(host, neutral) {
+		t.Fatalf("host runtime fixture defaults = %#v, neutral = %#v", host, neutral)
 	}
 }
 
@@ -131,30 +138,29 @@ func TestCaptureServeInvocationFreezesFlagAndRootInputs(t *testing.T) {
 
 func TestServeAuthAliasContract(t *testing.T) {
 	for _, tc := range []struct {
-		name, want, wantErr string
-		args, changed       []string
+		name, auth, want, wantErr string
+		allowNoAuth, authSet      bool
+		noAuthSet                 bool
 	}{
-		{name: "unset", want: "bearer"},
-		{name: "explicit default", args: []string{"--auth=bearer"}, changed: []string{"auth"}, want: "bearer"},
-		{name: "no auth", args: []string{"--no-auth"}, changed: []string{"no-auth"}, want: "none"},
-		{name: "hidden alias", args: []string{"--allow-no-auth"}, changed: []string{"allow-no-auth"}, want: "none"},
-		{name: "explicit false", args: []string{"--no-auth=false"}, changed: []string{"no-auth"}, want: "bearer"},
-		{name: "hidden explicit false", args: []string{"--allow-no-auth=false"}, changed: []string{"allow-no-auth"}, want: "bearer"},
-		{name: "last hidden alias false wins", args: []string{"--no-auth", "--allow-no-auth=false"}, changed: []string{"no-auth", "allow-no-auth"}, want: "bearer"},
-		{name: "last visible alias true wins", args: []string{"--allow-no-auth=false", "--no-auth"}, changed: []string{"no-auth", "allow-no-auth"}, want: "none"},
-		{name: "last visible alias false wins", args: []string{"--allow-no-auth", "--no-auth=false"}, changed: []string{"no-auth", "allow-no-auth"}, want: "bearer"},
-		{name: "last hidden alias true wins", args: []string{"--no-auth=false", "--allow-no-auth"}, changed: []string{"no-auth", "allow-no-auth"}, want: "none"},
-		{name: "matching auth", args: []string{"--auth=none", "--no-auth"}, changed: []string{"auth", "no-auth"}, want: "none"},
-		{name: "auth conflicts with alias", args: []string{"--auth=bearer", "--no-auth"}, changed: []string{"auth", "no-auth"}, wantErr: "--auth bearer conflicts with --no-auth=true"},
-		{name: "alias conflicts with auth", args: []string{"--allow-no-auth", "--auth=bearer"}, changed: []string{"auth", "allow-no-auth"}, wantErr: "--auth bearer conflicts with --no-auth=true"},
-		{name: "false alias conflicts", args: []string{"--auth=none", "--allow-no-auth=false"}, changed: []string{"auth", "allow-no-auth"}, wantErr: "--auth none conflicts with --no-auth=false"},
+		{name: "unset", auth: "bearer", want: "bearer"},
+		{name: "explicit default", auth: "bearer", authSet: true, want: "bearer"},
+		{name: "no auth", auth: "bearer", allowNoAuth: true, noAuthSet: true, want: "none"},
+		{name: "hidden alias", auth: "bearer", allowNoAuth: true, noAuthSet: true, want: "none"},
+		{name: "explicit false", auth: "bearer", noAuthSet: true, want: "bearer"},
+		{name: "hidden explicit false", auth: "bearer", noAuthSet: true, want: "bearer"},
+		{name: "last hidden alias false wins", auth: "bearer", noAuthSet: true, want: "bearer"},
+		{name: "last visible alias true wins", auth: "bearer", allowNoAuth: true, noAuthSet: true, want: "none"},
+		{name: "last visible alias false wins", auth: "bearer", noAuthSet: true, want: "bearer"},
+		{name: "last hidden alias true wins", auth: "bearer", allowNoAuth: true, noAuthSet: true, want: "none"},
+		{name: "matching auth", auth: "none", allowNoAuth: true, authSet: true, noAuthSet: true, want: "none"},
+		{name: "auth conflicts with alias", auth: "bearer", allowNoAuth: true, authSet: true, noAuthSet: true, wantErr: "--auth bearer conflicts with --no-auth=true"},
+		{name: "alias conflicts with auth", auth: "bearer", allowNoAuth: true, authSet: true, noAuthSet: true, wantErr: "--auth bearer conflicts with --no-auth=true"},
+		{name: "false alias conflicts", auth: "none", authSet: true, noAuthSet: true, wantErr: "--auth none conflicts with --no-auth=false"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"--token=contract-token"}, tc.args...)
-			cmd, opts := bindServeContractArgs(t, args...)
-			assertServeContractChanged(t, cmd, tc.changed)
-			invocation := captureServeInvocation(cmd, opts)
-			got, err := resolveServeStartup(invocation.Flags, opts)
+			opts := serveRuntimeFixtureOptions()
+			opts.Token, opts.AuthMode, opts.AllowNoAuth = "contract-token", tc.auth, tc.allowNoAuth
+			got, err := resolveServeStartup(serveFlagState{Auth: tc.authSet, NoAuth: tc.noAuthSet}, &opts)
 			if tc.wantErr != "" {
 				if err == nil || err.Error() != tc.wantErr {
 					t.Fatalf("startup error = %v, want %q", err, tc.wantErr)
@@ -168,27 +174,58 @@ func TestServeAuthAliasContract(t *testing.T) {
 	}
 }
 
+func TestServeAuthAliasFlagBindingContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, auth    string
+		args, changed []string
+		allowNoAuth   bool
+	}{
+		{name: "unset", auth: "bearer"},
+		{name: "explicit default", args: []string{"--auth=bearer"}, changed: []string{"auth"}, auth: "bearer"},
+		{name: "no auth", args: []string{"--no-auth"}, changed: []string{"no-auth"}, auth: "bearer", allowNoAuth: true},
+		{name: "hidden alias", args: []string{"--allow-no-auth"}, changed: []string{"allow-no-auth"}, auth: "bearer", allowNoAuth: true},
+		{name: "explicit false", args: []string{"--no-auth=false"}, changed: []string{"no-auth"}, auth: "bearer"},
+		{name: "hidden explicit false", args: []string{"--allow-no-auth=false"}, changed: []string{"allow-no-auth"}, auth: "bearer"},
+		{name: "last hidden alias false wins", args: []string{"--no-auth", "--allow-no-auth=false"}, changed: []string{"no-auth", "allow-no-auth"}, auth: "bearer"},
+		{name: "last visible alias true wins", args: []string{"--allow-no-auth=false", "--no-auth"}, changed: []string{"no-auth", "allow-no-auth"}, auth: "bearer", allowNoAuth: true},
+		{name: "last visible alias false wins", args: []string{"--allow-no-auth", "--no-auth=false"}, changed: []string{"no-auth", "allow-no-auth"}, auth: "bearer"},
+		{name: "last hidden alias true wins", args: []string{"--no-auth=false", "--allow-no-auth"}, changed: []string{"no-auth", "allow-no-auth"}, auth: "bearer", allowNoAuth: true},
+		{name: "matching auth", args: []string{"--auth=none", "--no-auth"}, changed: []string{"auth", "no-auth"}, auth: "none", allowNoAuth: true},
+		{name: "auth conflicts with alias", args: []string{"--auth=bearer", "--no-auth"}, changed: []string{"auth", "no-auth"}, auth: "bearer", allowNoAuth: true},
+		{name: "alias conflicts with auth", args: []string{"--allow-no-auth", "--auth=bearer"}, changed: []string{"auth", "allow-no-auth"}, auth: "bearer", allowNoAuth: true},
+		{name: "false alias conflicts", args: []string{"--auth=none", "--allow-no-auth=false"}, changed: []string{"auth", "allow-no-auth"}, auth: "none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, opts := bindServeContractArgs(t, tc.args...)
+			assertServeContractChanged(t, cmd, tc.changed)
+			if opts.AuthMode != tc.auth || opts.AllowNoAuth != tc.allowNoAuth {
+				t.Fatalf("bound auth=%q no-auth=%v, want %q %v", opts.AuthMode, opts.AllowNoAuth, tc.auth, tc.allowNoAuth)
+			}
+		})
+	}
+}
+
 // The registered flag is system-message, but today the runner reads Changed("system").
 // Explicit system-message values therefore do NOT set SystemMessageSet. Freeze
 // that discrepancy here; correcting it is outside this behavior-preserving step.
 func TestServeRuntimeExplicitEmptyContract(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
-		args          []string
-		set           bool
+		toolsSet      bool
 		tools, system string
 	}{
-		{"unset", nil, false, "", ""},
-		{"explicit empty", []string{"--tools", "", "--system-message", ""}, true, "", ""},
-		{"explicit values", []string{"--tools=read_file", "--system-message=be brief"}, true, "read_file", "be brief"},
+		{"unset", false, "", ""},
+		{"explicit empty", true, "", ""},
+		{"explicit values", true, "read_file", "be brief"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, opts := bindServeContractArgs(t, tc.args...)
-			invocation := captureServeInvocation(cmd, opts)
+			opts := serveRuntimeFixtureOptions()
+			opts.Tools, opts.SystemMessage = tc.tools, tc.system
+			flags := serveFlagState{Tools: tc.toolsSet, System: false}
 			got := serveRuntimeRunnerDefaults(serveAgentRuntimeOptions{
-				flags: *opts, toolsSet: invocation.Flags.Tools, systemMessageSet: invocation.Flags.System,
+				flags: opts, toolsSet: flags.Tools, systemMessageSet: flags.System,
 			}, serveRuntimeRequest{}, tools.ModePrompt)
-			if got.ToolsSet != tc.set || got.SystemMessageSet || got.Tools != tc.tools || got.SystemMessage != tc.system || got.MaxTurns != 200 {
+			if got.ToolsSet != tc.toolsSet || got.SystemMessageSet || got.Tools != tc.tools || got.SystemMessage != tc.system || got.MaxTurns != 200 {
 				t.Fatalf("runner inputs: tools=%q set=%v system=%q set=%v maxTurns=%d", got.Tools, got.ToolsSet, got.SystemMessage, got.SystemMessageSet, got.MaxTurns)
 			}
 		})

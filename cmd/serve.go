@@ -101,7 +101,7 @@ func bindServeFlags(cmd *cobra.Command, opts *ServeOptions) {
 	cmd.Flags().StringVar(&opts.ExtensionsDir, "extensions-dir", "", "Directory containing web extension sub-directories")
 	cmd.Flags().BoolVar(&opts.DisableExtensions, "disable-extensions", false, "Disable all web extension code for this process")
 	cmd.Flags().StringVar(&opts.WidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
-	cmd.Flags().DurationVar(&opts.ResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
+	cmd.Flags().DurationVar(&opts.ResponseTimeout, "response-timeout", DefaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
 	cmd.Flags().BoolVar(&opts.EnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
 	cmd.Flags().BoolVar(&opts.Projects, "projects", false, "Strictly enable Web UI project selection")
 	cmd.Flags().BoolVar(&opts.NoProjects, "no-projects", false, "Use the single-workspace Web UI for dedicated agent deployments")
@@ -170,7 +170,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Title:     serveFlags.Title,
 		Platforms: append([]string(nil), args...),
 		Runner: func(ctx context.Context) error {
-			return runServeWith(ctx, serveDeps{Invocation: invocation}, &serveFlags, args)
+			return Run(ctx, &serveFlags, args, invocation)
 		},
 	})
 	if err != nil {

@@ -24,7 +24,9 @@ func TestServeWidgetsAreOptOut(t *testing.T) {
 	if enableFlag.DefValue != "false" {
 		t.Fatalf("serve --enable-widgets default = %q, want false", enableFlag.DefValue)
 	}
+}
 
+func TestServeWidgetsEnabledContract(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		hasWeb   bool

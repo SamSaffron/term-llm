@@ -7,7 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/app/ask"
+	runtimeprogressive "github.com/samsaffron/term-llm/internal/app/runtime/progressive"
 	"github.com/samsaffron/term-llm/internal/config"
+	jobcore "github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -67,7 +69,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 		e.applyResult(runResult)
 		progressive := progressiveRunResult{}
 		if runResult.Progressive != nil {
-			progressive = *progressiveFromRunResult(runResult.Progressive)
+			progressive = *runtimeprogressive.FromRunResult(runResult.Progressive)
 		}
 		if err != nil {
 			bridge.CloseError(err)
@@ -144,7 +146,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	}
 	status := session.StatusComplete
 	switch result.progressive.ExitReason {
-	case exitReasonTimeout, exitReasonCancelled:
+	case jobcore.ExitReasonTimeout, jobcore.ExitReasonCancelled:
 		status = session.StatusInterrupted
 	}
 	if e.store != nil && e.session != nil {

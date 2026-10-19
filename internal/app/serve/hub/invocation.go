@@ -15,5 +15,9 @@ type Dependencies struct {
 	Stdout, Stderr io.Writer
 }
 
+// Invocation names the plain captured values accepted by the Hub host entrypoint.
+// Dependencies remains the existing leaf name used by bootstrap helpers.
+type Invocation = Dependencies
+
 // OutputIsTerminal reports whether the output destination is interactive.
 var OutputIsTerminal = func(w any) bool { f, ok := w.(interface{ Fd() uintptr }); return ok && term.IsTerminal(int(f.Fd())) }

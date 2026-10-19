@@ -241,7 +241,7 @@ func (r *SpawnAgentRunner) waitContext(ctx context.Context) error {
 	}
 }
 
-func shutdownSpawnAgentRunner(r *SpawnAgentRunner) {
+func ShutdownSpawnAgentRunner(r *SpawnAgentRunner) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = r.Shutdown(ctx)

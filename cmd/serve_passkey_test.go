@@ -11,7 +11,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	"github.com/samsaffron/term-llm/internal/widgets"
-	"github.com/spf13/cobra"
 )
 
 func TestWebPasskeyAuthenticationBoundary(t *testing.T) {
@@ -120,13 +119,12 @@ func TestBrowserPasskeyStartupFailureReleasesLocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := &cobra.Command{}
-	cmd.SetErr(&bytes.Buffer{})
+	var stderr bytes.Buffer
 	authFile := filepath.Join(t.TempDir(), "auth", "auth.json")
 	failure := errors.New("bootstrap unavailable")
 	opts := browserPasskeyOptions{userName: "Web operator", bootstrap: func(bool) ([]byte, string, error) { return nil, "", failure }}
 	for i := 0; i < 2; i++ {
-		_, _, _, err := openBrowserPasskeys(cmd.ErrOrStderr(), endpoint, authFile, opts)
+		_, _, _, err := openBrowserPasskeys(&stderr, endpoint, authFile, opts)
 		if !errors.Is(err, failure) {
 			t.Fatalf("attempt %d: %v", i, err)
 		}

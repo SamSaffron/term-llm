@@ -1250,7 +1250,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/session.go|cmd||resolveSessionPromptTools",
+      "key": ".|cmd/session.go|cmd||ResolveSessionPromptTools",
       "complexity": 46,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",

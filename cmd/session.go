@@ -56,7 +56,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 // template values and instruction discovery without changing process CWD.
 func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int, runtimeDir string) (SessionSettings, error) {
 	var err error
-	runtimeDir, err = canonicalRuntimeDir(runtimeDir)
+	runtimeDir, err = CanonicalRuntimeDir(runtimeDir)
 	if err != nil {
 		return SessionSettings{}, err
 	}
@@ -163,7 +163,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	if cli.Inputs != nil {
 		s.SystemPrompt, s.Tools = cli.Inputs.BasePrompt, cli.Inputs.Tools
 	} else {
-		s.SystemPrompt, s.Tools, err = resolveSessionPromptTools(cfg, agent, cli, configInstructions, runtimeDir, s.Provider, s.Model)
+		s.SystemPrompt, s.Tools, err = ResolveSessionPromptTools(cfg, agent, cli, configInstructions, runtimeDir, s.Provider, s.Model)
 		if err != nil {
 			return s, err
 		}
@@ -178,9 +178,9 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	return s, nil
 }
 
-// resolveSessionPromptTools resolves only the two refreshable inputs. Callers
+// ResolveSessionPromptTools resolves only the two refreshable inputs. Callers
 // resuming durable history must supply the saved agent and canonical directory.
-func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configInstructions, runtimeDir, provider, model string) (string, string, error) {
+func ResolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configInstructions, runtimeDir, provider, model string) (string, string, error) {
 	s := SessionSettings{Provider: provider, Model: model, MemoryPaths: cli.MemoryPaths}
 	if agent != nil {
 		if agent.Provider != "" {
@@ -347,7 +347,7 @@ func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext
 	return ctx
 }
 
-func canonicalRuntimeDir(runtimeDir string) (string, error) {
+func CanonicalRuntimeDir(runtimeDir string) (string, error) {
 	runtimeDir = strings.TrimSpace(runtimeDir)
 	if runtimeDir == "" {
 		var err error
@@ -552,7 +552,7 @@ func appendUniqueString(values []string, value string) []string {
 	return append(values, value)
 }
 
-func alignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider core.Provider) {
+func AlignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider core.Provider) {
 	if settings == nil || cfg == nil {
 		return
 	}
@@ -624,10 +624,10 @@ func WireSpawnAgentRunnerWithInputs(cfg *config.Config, toolMgr *tools.ToolManag
 	return runner, nil
 }
 
-// ensureRequestSessionID returns a stable request/session key for provider-side
+// EnsureRequestSessionID returns a stable request/session key for provider-side
 // continuity and prompt caching. This is intentionally independent of the local
 // session store so --no-session only disables DB persistence, not upstream cache hints.
-func ensureRequestSessionID(sessionID string, resuming bool) string {
+func EnsureRequestSessionID(sessionID string, resuming bool) string {
 	if sessionID != "" || resuming {
 		return sessionID
 	}

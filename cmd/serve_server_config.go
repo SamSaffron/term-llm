@@ -126,7 +126,7 @@ func resolveServeResponseTimeout(flagSet bool, flagVal time.Duration, configVal 
 		return flagVal, nil
 	}
 	if strings.TrimSpace(configVal) == "" {
-		return defaultServeRequestTimeout, nil
+		return DefaultServeRequestTimeout, nil
 	}
 	timeout, err := time.ParseDuration(strings.TrimSpace(configVal))
 	if err != nil {
@@ -140,7 +140,7 @@ func resolveServeResponseTimeout(flagSet bool, flagVal time.Duration, configVal 
 
 func (s *serveServer) responseTimeout() time.Duration {
 	if s == nil || s.cfg.responseTimeout <= 0 {
-		return defaultServeRequestTimeout
+		return DefaultServeRequestTimeout
 	}
 	return s.cfg.responseTimeout
 }

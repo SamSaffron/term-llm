@@ -638,7 +638,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	})
 
 	// Initialize tools if enabled (using possibly-updated settings from resume)
-	alignSettingsToActiveProvider(&settings, cfg, provider)
+	AlignSettingsToActiveProvider(&settings, cfg, provider)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
@@ -888,7 +888,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		ParentApprovalMgr:  approvalMgr,
 	}))
 	model.SetChildRunner(spawnRunner)
-	model.SetCommitMutationCoordinator(commitRootCoordinator{})
+	model.SetCommitMutationCoordinator(CommitRootCoordinator{})
 	model.SetMainRunManager(mainRuns)
 
 	// Wire handover auto-send if pending from previous iteration
@@ -947,7 +947,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	cleanupResources := func() {
 		cleanupOnce.Do(func() {
 			if spawnRunner != nil {
-				shutdownSpawnAgentRunner(spawnRunner)
+				ShutdownSpawnAgentRunner(spawnRunner)
 			}
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = agentOwner.Shutdown(shutdownCtx)

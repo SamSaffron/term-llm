@@ -302,7 +302,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			return nil, fmt.Errorf("create selected provider %s:%s: %w", selected.Provider, selected.Model, err)
 		}
 	}
-	alignSettingsToActiveProvider(&settings, cfg, provider)
+	AlignSettingsToActiveProvider(&settings, cfg, provider)
 
 	var store session.Store
 	var closeStore func()
@@ -321,7 +321,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if runtime != nil {
 			runtime.Close()
 		} else if spawnRunner != nil {
-			shutdownSpawnAgentRunner(spawnRunner)
+			ShutdownSpawnAgentRunner(spawnRunner)
 		}
 		if closeStore != nil {
 			closeStore()
