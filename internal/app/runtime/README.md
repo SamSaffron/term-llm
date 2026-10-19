@@ -25,3 +25,8 @@ not import that host (directly or transitively). Guardian callback installation
 is owned by `guardian/`. Cobra changed-flag interpretation remains in `cmd`,
 which captures explicit memory/session inputs for the host. Ask/chat command
 bodies intentionally remain in `cmd` pending C3 and call the concrete host APIs.
+
+`LoadTitleMessages` owns bounded head/tail selection shared by serve and
+`sessions autotitle`; keeping it here avoids a serve-to-Cobra dependency through
+the sessions command application. The selection algorithm and paging limit are
+unchanged.

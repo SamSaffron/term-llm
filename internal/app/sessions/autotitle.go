@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
@@ -135,7 +136,7 @@ func (a App) Autotitle(cmd *cobra.Command, args []string) error {
 	for _, c := range candidates {
 		sess := c.sess
 
-		messages, err := LoadTitleMessages(ctx, store, sess.ID)
+		messages, err := runtime.LoadTitleMessages(ctx, store, sess.ID)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "#%d messages failed: %v\n", sess.Number, err)
 			continue

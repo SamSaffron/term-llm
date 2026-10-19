@@ -2677,7 +2677,7 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 	previousTitle := sess.PreferredShortTitle()
 	previousLongTitle := sess.PreferredLongTitle()
 
-	messages, err := loadSessionTitleMessages(r.Context(), s.store, sess.ID)
+	messages, err := appruntime.LoadTitleMessages(r.Context(), s.store, sess.ID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load session messages")
 		return

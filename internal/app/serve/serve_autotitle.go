@@ -92,7 +92,7 @@ func (s *serveServer) runAutoTitle(ctx context.Context, sessionID, providerKey s
 	if err != nil || !serveSessionNeedsAutoTitle(sess) {
 		return
 	}
-	messages, err := loadSessionTitleMessages(ctx, s.store, sessionID)
+	messages, err := appruntime.LoadTitleMessages(ctx, s.store, sessionID)
 	if err != nil || len(messages) == 0 {
 		return
 	}

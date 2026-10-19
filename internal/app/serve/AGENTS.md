@@ -7,6 +7,9 @@ root-checkout coordination, jobs composition/notifications, live voice, and medi
 `ResolveApproval` is required, deferred until validation and configuration succeed.
 
 - Keep **all** `internal/app/serve/**` production and test code free of Cobra/pflag.
+  The transitive dependency check also forbids a Cobra/pflag path through a
+  different application package. Shared title-message selection belongs to
+  `internal/app/runtime`, not the Cobra-bearing sessions application.
   Flag binding, Changed interpretation, MCP parent/child arbitration, and CLI
   completion stay in `cmd`. The depguard scans tests and inactive build tags too.
 - Runtime/private listener and platform seams stay private. Do not expose fields

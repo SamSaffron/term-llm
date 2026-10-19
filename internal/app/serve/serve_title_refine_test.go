@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
@@ -45,7 +46,7 @@ func TestSessionTitleRefineIncludesLatestMessageAfterPrefixLimit(t *testing.T) {
 	const sessionID = "title-refine-head-tail"
 	store := newTitleRefineTestStore(t, sessionID)
 	addTitleRefineMessage(t, store, sessionID, core.UserText("Two things in this screenshot are annoying"))
-	for i := 0; i < sessionTitleMessagePageSize-1; i++ {
+	for i := 0; i < runtime.TitleMessagePageSize-1; i++ {
 		addTitleRefineMessage(t, store, sessionID, core.ToolResultMessage(
 			fmt.Sprintf("call-%d", i),
 			"inspect",

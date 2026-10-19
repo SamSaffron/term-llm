@@ -240,3 +240,21 @@ func readModulePath(repoRoot string) (string, error) {
 
 	return "", fmt.Errorf("module declaration not found in go.mod")
 }
+
+func TestServeDoesNotTransitivelyImportCLI(t *testing.T) {
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "./internal/app/serve/...")
+	cmd.Dir = repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list serve dependencies: %v\n%s", err, output)
+	}
+	for _, dependency := range strings.Fields(string(output)) {
+		if hasPackagePrefix(dependency, "github.com/spf13/cobra") || hasPackagePrefix(dependency, "github.com/spf13/pflag") {
+			t.Errorf("serve transitively imports CLI dependency %s", dependency)
+		}
+	}
+}
