@@ -1,4 +1,4 @@
-package cmd
+package runtime
 
 import (
 	"context"
@@ -18,7 +18,7 @@ func TestDefaultToolRegistryExaMCPSearchKeepsDefaultJinaReader(t *testing.T) {
 	cfg.Search.Provider = "exa_mcp"
 	cfg.Search.FetchProvider = "jina"
 
-	registry := defaultToolRegistry(cfg)
+	registry := DefaultToolRegistry(cfg)
 	tool, ok := registry.Get(core.ReadURLToolName)
 	if !ok {
 		t.Fatalf("read_url tool not registered")
@@ -37,7 +37,7 @@ func TestDefaultToolRegistryCanUseExaMCPForFetch(t *testing.T) {
 	cfg.Search.Provider = "duckduckgo"
 	cfg.Search.FetchProvider = "exa_mcp"
 
-	registry := defaultToolRegistry(cfg)
+	registry := DefaultToolRegistry(cfg)
 	tool, ok := registry.Get(core.ReadURLToolName)
 	if !ok {
 		t.Fatalf("read_url tool not registered")
@@ -56,7 +56,7 @@ func TestDefaultToolRegistryCanDisableFetch(t *testing.T) {
 	cfg.Search.Provider = "duckduckgo"
 	cfg.Search.FetchProvider = "none"
 
-	registry := defaultToolRegistry(cfg)
+	registry := DefaultToolRegistry(cfg)
 	if _, ok := registry.Get(core.ReadURLToolName); ok {
 		t.Fatalf("read_url tool registered with fetch_provider none")
 	}
@@ -71,7 +71,7 @@ func TestDefaultToolRegistrySearchFallbackOnlyForAbsentCredentials(t *testing.T)
 	t.Setenv("BRAVE_API_KEY", "")
 	cfg := &config.Config{}
 	cfg.Search.Provider = "brave"
-	registry := defaultToolRegistry(cfg)
+	registry := DefaultToolRegistry(cfg)
 	tool, ok := registry.Get("web_search")
 	if !ok {
 		t.Fatal("search tool absent")
@@ -82,7 +82,7 @@ func TestDefaultToolRegistrySearchFallbackOnlyForAbsentCredentials(t *testing.T)
 		t.Fatalf("unconfigured searcher = %s", got)
 	}
 	cfg.Search.Brave.APIKey = "file://" + filepath.Join(t.TempDir(), "missing")
-	registry = defaultToolRegistry(cfg)
+	registry = DefaultToolRegistry(cfg)
 	tool, _ = registry.Get("web_search")
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"query":""}`)); err == nil || !strings.Contains(err.Error(), "search.brave.api_key") {
 		t.Fatalf("configured credential failure must not fall back: %v", err)

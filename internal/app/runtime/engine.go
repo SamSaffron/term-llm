@@ -1,0 +1,137 @@
+package runtime
+
+import (
+	"fmt"
+
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/samsaffron/term-llm/internal/search"
+	"github.com/samsaffron/term-llm/internal/tools"
+)
+
+func DefaultToolRegistry(cfg *config.Config) *engine.ToolRegistry {
+	registry := engine.NewToolRegistry()
+	var searcher search.Searcher = search.NewLazySearcher(cfg)
+	if err := search.Available(cfg); err != nil {
+		// Preserve the existing fallback for absent configuration, but never
+		// substitute a provider when an explicitly deferred secret fails.
+		runtimeoutput.Logf("Warning: search provider error: %v, falling back to DuckDuckGo", err)
+		searcher = search.NewDuckDuckGoLite(nil)
+	}
+	registry.Register(llm.NewWebSearchTool(searcher))
+	if readURLTool := NewReadURLToolForConfig(cfg); readURLTool != nil {
+		registry.Register(readURLTool)
+	}
+	return registry
+}
+
+func NewReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
+	switch cfg.Search.FetchProvider {
+	case "", "jina":
+		return llm.NewReadURLTool()
+	case "exa_mcp":
+		return llm.NewReadURLToolWithFetcher(search.NewLazyExaMCPClient(func() (string, string, error) {
+			url, err := cfg.Search.ExaMCPURLRef().Resolve()
+			if err != nil {
+				return "", "", fmt.Errorf("search.exa_mcp.url: %w", err)
+			}
+			apiKey, err := cfg.Search.ExaMCPKey(url).Resolve()
+			if err != nil {
+				return "", "", fmt.Errorf("search.exa_mcp.api_key: %w", err)
+			}
+			return url, apiKey, nil
+		}))
+	case "none":
+		return nil
+	default:
+		runtimeoutput.Logf("Warning: unknown fetch provider %q, falling back to Jina", cfg.Search.FetchProvider)
+		return llm.NewReadURLTool()
+	}
+}
+
+// NewEngine creates an Engine with the default tool registry and global config
+// applied (e.g., tool output truncation). All command entry points should use
+// this instead of calling llm.NewEngine directly.
+func NewEngine(provider core.Provider, cfg *config.Config) *engine.Engine {
+	engine := engine.NewEngine(provider, DefaultToolRegistry(cfg))
+	engine.SetMaxToolOutputChars(cfg.Tools.MaxToolOutputChars)
+	return engine
+}
+
+// BuildToolConfig creates a ToolConfig from CLI flags and config defaults.
+func BuildToolConfig(toolsFlag string, readDirs, writeDirs, shellAllow []string, cfg *config.Config) tools.ToolConfig {
+	// Start with config defaults
+	tc := tools.ToolConfig{
+		Enabled:         cfg.Tools.Enabled,
+		ReadDirs:        cfg.Tools.ReadDirs,
+		WriteDirs:       cfg.Tools.WriteDirs,
+		ShellAllow:      cfg.Tools.ShellAllow,
+		ShellAutoRun:    cfg.Tools.ShellAutoRun,
+		ShellAutoRunEnv: cfg.Tools.ShellAutoRunEnv,
+		ShellNonTTYEnv:  cfg.Tools.ShellNonTTYEnv,
+		ImageProvider:   cfg.Tools.ImageProvider,
+	}
+
+	// Override with CLI flags
+	if toolsFlag != "" {
+		tc.Enabled = tools.ParseToolsFlag(toolsFlag)
+	}
+	if len(readDirs) > 0 {
+		tc.ReadDirs = append(tc.ReadDirs, readDirs...)
+	}
+	if len(writeDirs) > 0 {
+		tc.WriteDirs = append(tc.WriteDirs, writeDirs...)
+	}
+	if len(shellAllow) > 0 {
+		tc.ShellAllow = append(tc.ShellAllow, shellAllow...)
+	}
+
+	return tc
+}
+
+func ApplySpawnConfig(toolConfig *tools.ToolConfig, spawn tools.SpawnConfig) {
+	if spawn.MaxParallel > 0 {
+		toolConfig.Spawn.MaxParallel = spawn.MaxParallel
+	}
+	if spawn.MaxDepth > 0 {
+		toolConfig.Spawn.MaxDepth = spawn.MaxDepth
+	}
+	if spawn.DefaultTimeout > 0 {
+		toolConfig.Spawn.DefaultTimeout = spawn.DefaultTimeout
+	}
+	if len(spawn.AllowedAgents) > 0 {
+		toolConfig.Spawn.AllowedAgents = append([]string(nil), spawn.AllowedAgents...)
+	}
+	if len(spawn.AgentModels) > 0 {
+		toolConfig.Spawn.AgentModels = CloneStringMap(spawn.AgentModels)
+	}
+}
+
+func CloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for k, v := range values {
+		clone[k] = v
+	}
+	return clone
+}
+
+// FilterOutTools removes specified tools from the enabled list.
+func FilterOutTools(enabled []string, exclude ...string) []string {
+	excludeSet := make(map[string]bool)
+	for _, e := range exclude {
+		excludeSet[e] = true
+	}
+	var filtered []string
+	for _, t := range enabled {
+		if !excludeSet[t] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
