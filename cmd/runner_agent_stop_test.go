@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,7 +90,7 @@ func runStopScenarioWith(t *testing.T, stop bool) (string, *session.SQLiteStore,
 		parentID = "finish-parent"
 	}
 	provider := &stopScriptProvider{MockProvider: mockprovider.NewMockProvider("mock"), blockTurn: stop}
-	runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store, Tools: "spawn_agent", ToolsSet: true, AgentOwner: &agentHostOwner{}}).(*cmdRunner)
+	runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store, Tools: "spawn_agent", ToolsSet: true, AgentOwner: &runtime.AgentHostOwner{}}).(*cmdRunner)
 	baseCtx := core.ContextWithSessionID(context.Background(), parentID)
 	env, err := runner.prepare(baseCtx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: parentID, ProviderInstance: provider, Cwd: t.TempDir(), DeferSession: true}, nil)
 	if err != nil {

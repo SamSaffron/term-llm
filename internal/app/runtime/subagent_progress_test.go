@@ -1,4 +1,4 @@
-package cmd
+package runtime
 
 import (
 	"sync"
@@ -14,7 +14,7 @@ func TestSubagentProgressDispatcherDoesNotBlockWhenSendStalls(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseSend) }) }
 	t.Cleanup(release)
-	dispatcher := newSubagentProgressDispatcher(func(string, tools.SubagentEvent) {
+	dispatcher := NewSubagentProgressDispatcher(func(string, tools.SubagentEvent) {
 		select {
 		case enteredSend <- struct{}{}:
 		default:
@@ -51,7 +51,7 @@ func TestSubagentProgressDispatcherDoesNotBlockWhenSendStalls(t *testing.T) {
 
 func TestSubagentProgressDispatcherCoalescesTextBeforeBoundaryEvent(t *testing.T) {
 	var got []tools.SubagentEvent
-	dispatcher := newSubagentProgressDispatcherForTest(func(_ string, event tools.SubagentEvent) {
+	dispatcher := NewSubagentProgressDispatcherForTest(func(_ string, event tools.SubagentEvent) {
 		got = append(got, event)
 	})
 	dispatcher.maxQueue = 1

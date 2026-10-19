@@ -40,11 +40,4 @@ func init() {
 		Dir:                serveUploadsDir,
 		MaxImagePixels:     maxLLMImagePixels,
 	}
-	ask.Usage = ask.UsageRecorder{
-		RecordTurn:   recordStoreTurnUsage,
-		RecordHelper: recordStoreHelperUsage,
-	}
-	ask.SubagentProgressCallback = func(send func(string, tools.SubagentEvent)) func(string, tools.SubagentEvent) {
-		return newSubagentProgressDispatcher(send).Callback
-	}
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"testing"
 	"time"
 
@@ -125,7 +126,7 @@ func TestRunEnvironmentWithoutOwnerDrainsDetachedChild(t *testing.T) {
 }
 
 func TestAgentHostOwnerRejectsAdoptionAfterShutdown(t *testing.T) {
-	owner := &agentHostOwner{}
+	owner := &runtime.AgentHostOwner{}
 	if err := owner.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +150,7 @@ func TestRunEnvironmentHandsOffDetachedChildAcrossTurns(t *testing.T) {
 	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(child)
-	owner := &agentHostOwner{}
+	owner := &runtime.AgentHostOwner{}
 	runner := &SpawnAgentRunner{lifecycle: tool}
 	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	res, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))

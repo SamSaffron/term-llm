@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -126,10 +127,7 @@ type CLIFlags struct {
 // activeLLMFlags returns the ActiveProvider/ActiveModel pair for cfg once the
 // caller has applied its provider overrides.
 func activeLLMFlags(cfg *config.Config) (string, string) {
-	if cfg == nil {
-		return "", ""
-	}
-	return strings.TrimSpace(cfg.DefaultProvider), strings.TrimSpace(activeModel(cfg))
+	return appruntime.ActiveLLMFlags(cfg)
 }
 
 // applyActiveLLM replaces provider/model with the caller's resolved pair when

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -86,12 +87,10 @@ func newAskTurnCompletedCallback(persistence *AssistantPersistence, store sessio
 			_ = store.AddMessage(ctx, current.ID, stored)
 		}
 		persistence.reset()
-		if Usage.RecordTurn != nil {
-			Usage.RecordTurn(ctx, store, current.ID, current.Model, session.ModelUsageMain, core.Usage{
-				InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
-				CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
-			}, metrics.ToolCalls)
-		}
+		runtime.RecordStoreTurnUsage(ctx, store, current.ID, current.Model, session.ModelUsageMain, core.Usage{
+			InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
+			CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
+		}, metrics.ToolCalls)
 		if total, count := engine.ContextEstimateBaseline(); total > 0 {
 			_ = store.UpdateContextEstimate(ctx, current.ID, total, count)
 			current.LastTotalTokens, current.LastMessageCount = total, count
@@ -161,9 +160,7 @@ func newAskCompactionCallback(store session.Store, sess **session.Session, hooks
 		}
 		if result != nil && !result.Usage.BillableCountersZero() {
 			current := *sess
-			if Usage.RecordHelper != nil {
-				Usage.RecordHelper(ctx, store, current.ID, result.Model, session.ModelUsageCompaction, result.Usage)
-			}
+			runtime.RecordStoreHelperUsage(ctx, store, current.ID, result.Model, session.ModelUsageCompaction, result.Usage)
 		}
 		return nil
 	}

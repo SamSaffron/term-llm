@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/app/ask"
+	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -720,18 +720,5 @@ func grantAskResumedUploadedFileReads(ctx context.Context, store session.Store, 
 }
 
 func progressiveOutputText(result progressiveRunResult) string {
-	if strings.TrimSpace(result.FinalResponse) != "" {
-		return result.FinalResponse
-	}
-	if strings.TrimSpace(result.FallbackText) != "" {
-		return result.FallbackText
-	}
-	if len(result.Progress) == 0 {
-		return ""
-	}
-	data, err := json.Marshal(result.Progress)
-	if err != nil {
-		return ""
-	}
-	return string(data)
+	return progressive.OutputText(result)
 }

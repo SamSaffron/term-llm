@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -226,11 +227,7 @@ func NewRendererProgram(cfg *config.Config, toolMgr *tools.ToolManager, store se
 		send := func(callID string, event tools.SubagentEvent) {
 			teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
 		}
-		if SubagentProgressCallback != nil {
-			spawnTool.SetEventCallback(SubagentProgressCallback(send))
-		} else {
-			spawnTool.SetEventCallback(send)
-		}
+		spawnTool.SetEventCallback(runtime.NewSubagentProgressDispatcher(send).Callback)
 	}
 
 	toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {

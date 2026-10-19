@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -1013,20 +1014,7 @@ func progressiveToRunResult(result progressiveRunResult) *runpkg.ProgressiveResu
 }
 
 func progressiveFromRunResult(result *runpkg.ProgressiveResult) *progressiveRunResult {
-	if result == nil {
-		return nil
-	}
-	return &progressiveRunResult{
-		ExitReason:    result.ExitReason,
-		Finalized:     result.Finalized,
-		SessionID:     result.SessionID,
-		Sequence:      result.Sequence,
-		Reason:        result.Reason,
-		Message:       result.Message,
-		Progress:      result.Progress,
-		FinalResponse: result.FinalResponse,
-		FallbackText:  result.FallbackText,
-	}
+	return progressive.FromRunResult(result)
 }
 
 type eventSinkFunc func(core.Event)

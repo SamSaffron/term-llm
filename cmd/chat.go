@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	appchat "github.com/samsaffron/term-llm/internal/app/chat"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -22,7 +23,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/providerspec"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -854,7 +854,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		model.SetFooterWarning("agent output_tool is ignored in chat; use ask for tool-captured output")
 	}
 	model.SetRootContext(ctx)
-	agentOwner := &agentHostOwner{}
+	agentOwner := &runtime.AgentHostOwner{}
 	model.SetRunner(newCmdRunner(cfg, cmdRunnerOptions{
 		AgentOwner:         agentOwner,
 		Provider:           chatProvider,
@@ -1496,20 +1496,7 @@ func skillContextApplier(setup *skills.Setup) func(*engine.Engine, *tools.ToolMa
 }
 
 func effectiveSessionDirectory(sess *session.Session) string {
-	if sess != nil {
-		if dir := strings.TrimSpace(sess.WorktreeDir); dir != "" {
-			return dir
-		}
-		// Web/telegram sessions historically recorded the daemon process CWD.
-		// A local interactive resume must not treat that as user-selected state.
-		if sess.Origin != session.OriginWeb && sess.Origin != session.OriginTelegram {
-			if dir := strings.TrimSpace(sess.CWD); dir != "" {
-				return dir
-			}
-		}
-	}
-	cwd, _ := os.Getwd()
-	return cwd
+	return runtime.EffectiveSessionDirectory(sess)
 }
 
 func printChatResumeHint(w io.Writer, store session.Store, sessionID string) {
@@ -1575,62 +1562,7 @@ func resolveChatResumeSession(ctx context.Context, store session.Store, resumeID
 }
 
 func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string {
-	if sess == nil || cfg == nil {
-		return ""
-	}
-
-	resolveKnownProvider := func(candidate string) string {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			return ""
-		}
-		if candidate == "debug" {
-			return candidate
-		}
-		for key := range cfg.Providers {
-			if strings.EqualFold(candidate, key) {
-				return key
-			}
-		}
-		for _, builtIn := range config.GetBuiltInProviderNames() {
-			if strings.EqualFold(candidate, builtIn) {
-				return builtIn
-			}
-		}
-		return ""
-	}
-
-	if known := resolveKnownProvider(sess.ProviderKey); known != "" {
-		return known
-	}
-
-	display := strings.TrimSpace(sess.Provider)
-	if display == "" {
-		return ""
-	}
-	lower := strings.ToLower(display)
-
-	// Custom providers include the provider key in Name() prefix: "<key> (<model>)"
-	for key := range cfg.Providers {
-		lowerKey := strings.ToLower(key)
-		if lower == lowerKey || strings.HasPrefix(lower, lowerKey+" (") {
-			return key
-		}
-	}
-	for _, builtIn := range config.GetBuiltInProviderNames() {
-		lowerBuiltIn := strings.ToLower(builtIn)
-		if lower == lowerBuiltIn || strings.HasPrefix(lower, lowerBuiltIn+" (") {
-			return builtIn
-		}
-	}
-
-	if spec, ok := providerspec.LookupSessionAlias(lower); ok {
-		return spec.Name
-	}
-	if strings.HasPrefix(lower, "debug") {
-		return "debug"
-	}
-	return ""
+	return runtime.ResolveSessionProviderKey(cfg, sess)
 }
 
 // getModelName returns the configured model; "" means caller should fall back to extractModelFromProviderName(provider.Name()).
@@ -1643,24 +1575,5 @@ func getModelName(cfg *config.Config) string {
 
 // extractModelFromProviderName parses "<Provider> (<model>[, ...])" Name() strings shared by all providers.
 func extractModelFromProviderName(name string) string {
-	if strings.EqualFold(strings.TrimSpace(name), "agy CLI") {
-		// Unlike the other CLI providers, agy intentionally leaves its model empty
-		// so the CLI can select its own default. Do not treat the display label as
-		// a model name and pass `--model "agy CLI"` back to agy.
-		return ""
-	}
-	open := strings.Index(name, "(")
-	if open < 0 {
-		return name
-	}
-	rest := name[open+1:]
-	close := strings.Index(rest, ")")
-	if close < 0 {
-		return name
-	}
-	inner := rest[:close]
-	if comma := strings.Index(inner, ","); comma >= 0 {
-		inner = inner[:comma]
-	}
-	return strings.TrimSpace(inner)
+	return runtime.ExtractModelFromProviderName(name)
 }

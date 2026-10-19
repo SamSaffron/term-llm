@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,8 +35,8 @@ func TestFreshCmdRunnerWaitsForDetachedResultOnNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := &agentHostOwner{}
-	prepare := func(store session.Store, own *agentHostOwner) *cmdRunEnvironment {
+	owner := &runtime.AgentHostOwner{}
+	prepare := func(store session.Store, own *runtime.AgentHostOwner) *cmdRunEnvironment {
 		t.Helper()
 		runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store, Tools: "spawn_agent", ToolsSet: true, AgentOwner: own}).(*cmdRunner)
 		env, err := runner.prepare(ctx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: "parent", ProviderInstance: mockprovider.NewMockProvider("mock"), Cwd: t.TempDir(), DeferSession: true}, nil)
