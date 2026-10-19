@@ -1,0 +1,194 @@
+package cmd
+
+import (
+	"bytes"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
+)
+
+// These are the 17 distinct Changed bits read by serve startup/runtime and
+// serve mcp approval arbitration. Keep the aliases separate: they share a value,
+// not a Changed bit. Fresh bindings avoid leaking global Cobra state between rows.
+var serveContractFlags = []string{
+	"projects", "no-projects", "response-timeout", "auth", "no-auth", "allow-no-auth",
+	"base-path", "title", "disable-location-sharing", "max-turns", "tools", "system",
+	"extensions", "enable-widgets", "approval", "auto", "yolo",
+}
+
+func bindServeContractArgs(t *testing.T, args ...string) (*cobra.Command, *ServeOptions) {
+	t.Helper()
+	cmd, opts := &cobra.Command{}, &ServeOptions{}
+	bindServeFlags(cmd, opts)
+	if err := cmd.ParseFlags(args); err != nil {
+		t.Fatal(err)
+	}
+	return cmd, opts
+}
+
+func assertServeContractChanged(t *testing.T, cmd *cobra.Command, names []string) {
+	t.Helper()
+	want := make(map[string]bool, len(names))
+	for _, name := range names {
+		want[name] = true
+	}
+	for _, name := range append(append([]string(nil), serveContractFlags...), "system-message") {
+		if got := cmd.Flags().Changed(name); got != want[name] {
+			t.Errorf("Changed(%q) = %v, want %v", name, got, want[name])
+		}
+	}
+}
+
+type serveContractValues struct {
+	Projects, NoProjects, AllowNoAuth, DisableLocationSharing, EnableWidgets, Auto, Yolo bool
+	ResponseTimeout                                                                      time.Duration
+	Auth, BasePath, Title, Tools, System, Approval                                       string
+	MaxTurns                                                                             int
+	Extensions                                                                           []string
+}
+
+func TestServeFlagsContract(t *testing.T) {
+	// AddCommonFlags updates a shared registry, so these bindings are serial.
+	defaults := serveContractValues{ResponseTimeout: 30 * time.Minute, Auth: "bearer", BasePath: "/ui", MaxTurns: 200}
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		changed []string
+		want    serveContractValues
+	}{
+		{"unset", nil, nil, defaults},
+		{"explicit defaults", []string{"--projects=false", "--no-projects=false", "--response-timeout=30m", "--auth=bearer", "--no-auth=false", "--allow-no-auth=false", "--base-path=/ui", "--title=", "--disable-location-sharing=false", "--max-turns=200", "--tools=", "--system-message=", "--extensions=", "--enable-widgets=false", "--auto=false", "--yolo=false"}, []string{"projects", "no-projects", "response-timeout", "auth", "no-auth", "allow-no-auth", "base-path", "title", "disable-location-sharing", "max-turns", "tools", "system-message", "extensions", "enable-widgets", "auto", "yolo"}, defaults},
+		{"non defaults", []string{"--projects", "--response-timeout=1h", "--auth=none", "--no-auth", "--base-path=/chat", "--title= Lab ", "--disable-location-sharing", "--max-turns=7", "--tools=read_file", "--system-message=be brief", "--extensions=one,two", "--enable-widgets", "--approval=prompt", "--auto", "--yolo"}, []string{"projects", "response-timeout", "auth", "no-auth", "base-path", "title", "disable-location-sharing", "max-turns", "tools", "system-message", "extensions", "enable-widgets", "approval", "auto", "yolo"}, serveContractValues{Projects: true, AllowNoAuth: true, DisableLocationSharing: true, EnableWidgets: true, Auto: true, Yolo: true, ResponseTimeout: time.Hour, Auth: "none", BasePath: "/chat", Title: " Lab ", Tools: "read_file", System: "be brief", Approval: "prompt", MaxTurns: 7, Extensions: []string{"one", "two"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, opts := bindServeContractArgs(t, tc.args...)
+			assertServeContractChanged(t, cmd, tc.changed)
+			widgets, err := cmd.Flags().GetBool("enable-widgets")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := serveContractValues{opts.Projects, opts.NoProjects, opts.AllowNoAuth, opts.DisableLocationSharing, widgets, opts.Auto, opts.Yolo, opts.ResponseTimeout, opts.AuthMode, opts.BasePath, opts.Title, opts.Tools, opts.SystemMessage, opts.Approval, opts.MaxTurns, opts.ExtensionIDs}
+			// pflag distinguishes nil from explicit empty slices; the contract is
+			// no extension IDs in both cases, with Changed carrying precedence.
+			if len(got.Extensions) == 0 {
+				got.Extensions = nil
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("bound values = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServeAuthAliasContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, want, wantErr string
+		args, changed       []string
+	}{
+		{name: "unset", want: "bearer"},
+		{name: "explicit default", args: []string{"--auth=bearer"}, changed: []string{"auth"}, want: "bearer"},
+		{name: "no auth", args: []string{"--no-auth"}, changed: []string{"no-auth"}, want: "none"},
+		{name: "hidden alias", args: []string{"--allow-no-auth"}, changed: []string{"allow-no-auth"}, want: "none"},
+		{name: "explicit false", args: []string{"--no-auth=false"}, changed: []string{"no-auth"}, want: "bearer"},
+		{name: "hidden explicit false", args: []string{"--allow-no-auth=false"}, changed: []string{"allow-no-auth"}, want: "bearer"},
+		{name: "last hidden alias false wins", args: []string{"--no-auth", "--allow-no-auth=false"}, changed: []string{"no-auth", "allow-no-auth"}, want: "bearer"},
+		{name: "last visible alias true wins", args: []string{"--allow-no-auth=false", "--no-auth"}, changed: []string{"no-auth", "allow-no-auth"}, want: "none"},
+		{name: "last visible alias false wins", args: []string{"--allow-no-auth", "--no-auth=false"}, changed: []string{"no-auth", "allow-no-auth"}, want: "bearer"},
+		{name: "last hidden alias true wins", args: []string{"--no-auth=false", "--allow-no-auth"}, changed: []string{"no-auth", "allow-no-auth"}, want: "none"},
+		{name: "matching auth", args: []string{"--auth=none", "--no-auth"}, changed: []string{"auth", "no-auth"}, want: "none"},
+		{name: "auth conflicts with alias", args: []string{"--auth=bearer", "--no-auth"}, changed: []string{"auth", "no-auth"}, wantErr: "--auth bearer conflicts with --no-auth=true"},
+		{name: "alias conflicts with auth", args: []string{"--allow-no-auth", "--auth=bearer"}, changed: []string{"auth", "allow-no-auth"}, wantErr: "--auth bearer conflicts with --no-auth=true"},
+		{name: "false alias conflicts", args: []string{"--auth=none", "--allow-no-auth=false"}, changed: []string{"auth", "allow-no-auth"}, wantErr: "--auth none conflicts with --no-auth=false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"--token=contract-token"}, tc.args...)
+			cmd, opts := bindServeContractArgs(t, args...)
+			assertServeContractChanged(t, cmd, tc.changed)
+			got, err := resolveServeStartup(cmd, opts)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("startup error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got.authMode != tc.want || got.requireAuth != (tc.want != "none") {
+				t.Fatalf("startup auth = %q required=%v, error=%v; want %q", got.authMode, got.requireAuth, err, tc.want)
+			}
+		})
+	}
+}
+
+// The registered flag is system-message, but today the runner reads Changed("system").
+// Explicit system-message values therefore do NOT set SystemMessageSet. Freeze
+// that discrepancy here; correcting it is outside this behavior-preserving step.
+func TestServeRuntimeExplicitEmptyContract(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		args          []string
+		set           bool
+		tools, system string
+	}{
+		{"unset", nil, false, "", ""},
+		{"explicit empty", []string{"--tools", "", "--system-message", ""}, true, "", ""},
+		{"explicit values", []string{"--tools=read_file", "--system-message=be brief"}, true, "read_file", "be brief"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, opts := bindServeContractArgs(t, tc.args...)
+			got := serveRuntimeRunnerDefaults(serveAgentRuntimeOptions{cmd: cmd, flags: opts}, serveRuntimeRequest{}, tools.ModePrompt)
+			if got.ToolsSet != tc.set || got.SystemMessageSet || got.Tools != tc.tools || got.SystemMessage != tc.system || got.MaxTurns != 200 {
+				t.Fatalf("runner inputs: tools=%q set=%v system=%q set=%v maxTurns=%d", got.Tools, got.ToolsSet, got.SystemMessage, got.SystemMessageSet, got.MaxTurns)
+			}
+		})
+	}
+}
+
+func TestServeDeprecatedWidgetsExplicitFalseContract(t *testing.T) {
+	for _, args := range [][]string{nil, {"--enable-widgets"}, {"--enable-widgets=false"}} {
+		cmd, _ := bindServeContractArgs(t, args...)
+		var stderr bytes.Buffer
+		cmd.SetErr(&stderr)
+		warnDeprecatedEnableWidgets(cmd)
+		if got, want := strings.Contains(stderr.String(), "deprecated and has no effect"), len(args) != 0; got != want {
+			t.Fatalf("args=%v warning=%q, want warning=%v", args, stderr.String(), want)
+		}
+	}
+}
+
+func TestServeFlagParseErrorsContract(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		want    string
+		execute bool
+	}{
+		{"empty approval", []string{"--port=0", "--approval="}, `invalid approval mode ""`, false},
+		{"invalid approval before startup validation", []string{"--approval=invalid", "--port=0"}, `invalid approval mode "invalid"`, false},
+		{"system is not a flag", []string{"--system="}, "unknown flag: --system", false},
+		{"Cobra approval group before startup", []string{"--port=0", "--auto", "--yolo"}, "if any flags in the group [approval yolo auto]", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, opts := &cobra.Command{}, &ServeOptions{}
+			bindServeFlags(cmd, opts)
+			var err error
+			if tc.execute {
+				cmd.RunE = func(*cobra.Command, []string) error {
+					t.Error("RunE must not execute before Cobra rejects the flag group")
+					return nil
+				}
+				cmd.SetOut(&bytes.Buffer{})
+				cmd.SetErr(&bytes.Buffer{})
+				cmd.SetArgs(tc.args)
+				err = cmd.Execute()
+			} else {
+				err = cmd.ParseFlags(tc.args)
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("flag error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
