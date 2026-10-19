@@ -4,12 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/spf13/cobra"
 
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -45,29 +44,36 @@ func shutdownServe(ctx context.Context, server *serveServer, wg *sync.WaitGroup,
 	wg.Wait()
 }
 
-func resolveServeStartup(cmd *cobra.Command, opts *ServeOptions) (serveStartupResolution, error) {
+func closeServeListener(listener net.Listener) func() {
+	if listener == nil {
+		return func() {}
+	}
+	return func() { _ = listener.Close() }
+}
+
+func resolveServeStartup(flags serveFlagState, opts *ServeOptions) (serveStartupResolution, error) {
 	var out serveStartupResolution
 	var err error
 	out.startupDir, err = os.Getwd()
 	if err != nil {
 		return out, fmt.Errorf("resolve serve startup directory: %w", err)
 	}
-	if cmd.Flags().Changed("projects") && cmd.Flags().Changed("no-projects") {
+	if flags.Projects && flags.NoProjects {
 		return out, fmt.Errorf("--projects and --no-projects cannot be used together")
 	}
-	if err := opts.Validate(cmd.Flags().Changed("response-timeout")); err != nil {
+	if err := opts.Validate(flags.ResponseTimeout); err != nil {
 		return out, err
 	}
 	out.sidebarSessions, err = parseSidebarSessionCategories(opts.SidebarSessions, true)
 	if err != nil {
 		return out, err
 	}
-	out.authMode, err = resolveServeAuthMode(cmd.Flags().Changed("auth"), opts.AuthMode, cmd.Flags().Changed("no-auth") || cmd.Flags().Changed("allow-no-auth"), opts.AllowNoAuth)
+	out.authMode, err = resolveServeAuthMode(flags.Auth, opts.AuthMode, flags.NoAuth, opts.AllowNoAuth)
 	if err != nil {
 		return out, err
 	}
 	if out.authMode == "passkey" {
-		out.passkeyEndpoint, err = resolveWebPasskeyEndpoint(cmd, *opts)
+		out.passkeyEndpoint, err = resolveWebPasskeyEndpoint(flags.BasePath, *opts)
 		if err != nil {
 			return out, err
 		}

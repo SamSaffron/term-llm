@@ -84,6 +84,51 @@ func TestServeFlagsContract(t *testing.T) {
 	}
 }
 
+func TestServeRuntimeFixtureOptionsMatchRegisteredDefaults(t *testing.T) {
+	_, registered := bindServeContractArgs(t)
+	fixture := serveRuntimeFixtureOptions()
+	if fixture.Host != registered.Host || fixture.Port != registered.Port || fixture.AuthMode != registered.AuthMode ||
+		fixture.BasePath != registered.BasePath || fixture.SessionTTL != registered.SessionTTL || fixture.SessionMax != registered.SessionMax ||
+		fixture.TelegramCarryoverChars != registered.TelegramCarryoverChars || fixture.JobsWorkers != registered.JobsWorkers ||
+		fixture.SidebarSessions != registered.SidebarSessions || fixture.ResponseTimeout != registered.ResponseTimeout ||
+		fixture.MaxTurns != registered.MaxTurns || fixture.HubConnect != registered.HubConnect {
+		t.Fatalf("plain runtime fixture defaults = %#v, registered = %#v", fixture, *registered)
+	}
+}
+
+func TestCaptureServeInvocationFreezesFlagAndRootInputs(t *testing.T) {
+	oldNoSession, oldSessionPath := noSession, sessionDBPath
+	oldMemoryPath, oldMemoryDefault := memoryDBPath, defaultMemoryDBPath
+	t.Cleanup(func() {
+		noSession, sessionDBPath = oldNoSession, oldSessionPath
+		memoryDBPath, defaultMemoryDBPath = oldMemoryPath, oldMemoryDefault
+	})
+	noSession, sessionDBPath = true, "captured-sessions.db"
+	memoryDBPath, defaultMemoryDBPath = "captured-memory.db", "default-memory.db"
+	cmd, opts := bindServeContractArgs(t,
+		"--projects", "--no-projects=false", "--response-timeout=1h", "--auth=bearer",
+		"--no-auth=false", "--base-path=/chat", "--title=Lab", "--disable-location-sharing",
+		"--max-turns=7", "--tools=read_file", "--system-message=brief", "--extensions=one", "--enable-widgets=false",
+	)
+	invocation := captureServeInvocation(cmd, opts)
+	want := serveFlagState{
+		Projects: true, NoProjects: true, ResponseTimeout: true, Auth: true, NoAuth: true,
+		BasePath: true, Title: true, DisableLocationSharing: true, MaxTurns: true,
+		Tools: true, System: false, Extensions: true, EnableWidgets: true,
+	}
+	if !reflect.DeepEqual(invocation.Flags, want) {
+		t.Fatalf("captured flags = %#v, want %#v", invocation.Flags, want)
+	}
+	if !invocation.SessionStore.NoSession || invocation.SessionStore.DBPath != "captured-sessions.db" ||
+		invocation.MemoryPaths.DBPath != "captured-memory.db" || invocation.MemoryPaths.DefaultDBPath != "default-memory.db" {
+		t.Fatalf("captured roots = %#v / %#v", invocation.SessionStore, invocation.MemoryPaths)
+	}
+	noSession, sessionDBPath, memoryDBPath = false, "mutated.db", "mutated-memory.db"
+	if !invocation.SessionStore.NoSession || invocation.SessionStore.DBPath != "captured-sessions.db" || invocation.MemoryPaths.DBPath != "captured-memory.db" {
+		t.Fatalf("invocation changed with root globals: %#v / %#v", invocation.SessionStore, invocation.MemoryPaths)
+	}
+}
+
 func TestServeAuthAliasContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, want, wantErr string
@@ -108,7 +153,8 @@ func TestServeAuthAliasContract(t *testing.T) {
 			args := append([]string{"--token=contract-token"}, tc.args...)
 			cmd, opts := bindServeContractArgs(t, args...)
 			assertServeContractChanged(t, cmd, tc.changed)
-			got, err := resolveServeStartup(cmd, opts)
+			invocation := captureServeInvocation(cmd, opts)
+			got, err := resolveServeStartup(invocation.Flags, opts)
 			if tc.wantErr != "" {
 				if err == nil || err.Error() != tc.wantErr {
 					t.Fatalf("startup error = %v, want %q", err, tc.wantErr)
@@ -138,7 +184,10 @@ func TestServeRuntimeExplicitEmptyContract(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd, opts := bindServeContractArgs(t, tc.args...)
-			got := serveRuntimeRunnerDefaults(serveAgentRuntimeOptions{cmd: cmd, flags: opts}, serveRuntimeRequest{}, tools.ModePrompt)
+			invocation := captureServeInvocation(cmd, opts)
+			got := serveRuntimeRunnerDefaults(serveAgentRuntimeOptions{
+				flags: *opts, toolsSet: invocation.Flags.Tools, systemMessageSet: invocation.Flags.System,
+			}, serveRuntimeRequest{}, tools.ModePrompt)
 			if got.ToolsSet != tc.set || got.SystemMessageSet || got.Tools != tc.tools || got.SystemMessage != tc.system || got.MaxTurns != 200 {
 				t.Fatalf("runner inputs: tools=%q set=%v system=%q set=%v maxTurns=%d", got.Tools, got.ToolsSet, got.SystemMessage, got.SystemMessageSet, got.MaxTurns)
 			}
@@ -148,10 +197,10 @@ func TestServeRuntimeExplicitEmptyContract(t *testing.T) {
 
 func TestServeDeprecatedWidgetsExplicitFalseContract(t *testing.T) {
 	for _, args := range [][]string{nil, {"--enable-widgets"}, {"--enable-widgets=false"}} {
-		cmd, _ := bindServeContractArgs(t, args...)
+		cmd, opts := bindServeContractArgs(t, args...)
+		invocation := captureServeInvocation(cmd, opts)
 		var stderr bytes.Buffer
-		cmd.SetErr(&stderr)
-		warnDeprecatedEnableWidgets(cmd)
+		warnDeprecatedEnableWidgets(invocation.Flags.EnableWidgets, &stderr)
 		if got, want := strings.Contains(stderr.String(), "deprecated and has no effect"), len(args) != 0; got != want {
 			t.Fatalf("args=%v warning=%q, want warning=%v", args, stderr.String(), want)
 		}

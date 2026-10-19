@@ -211,8 +211,8 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	return res, err
 }
 
-func newServeJobsV2Manager(cfg *config.Config, workers int, approval resolvedApprovalMode, notifyDone jobsV2RunDoneNotifier, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths) (*jobsV2Manager, error) {
-	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg, approval, sessionStore, paths), notifyDone)
+func newServeJobsV2Manager(cfg *config.Config, workers int, approval resolvedApprovalMode, notifyDone jobsV2RunDoneNotifier, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths, opts ServeOptions, debugRaw bool) (*jobsV2Manager, error) {
+	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg, approval, sessionStore, paths, opts, debugRaw), notifyDone)
 }
 
 func cloneConfigForServeJob(src *config.Config) *config.Config {
@@ -318,25 +318,25 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 	return settings, cfg.Instructions, nil
 }
 
-func serveJobsRunnerOptions(approval resolvedApprovalMode, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths) cmdRunnerOptions {
+func serveJobsRunnerOptions(opts ServeOptions, debugRaw bool, approval resolvedApprovalMode, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths) cmdRunnerOptions {
 	return cmdRunnerOptions{
-		Provider:         serveFlags.Provider,
-		Tools:            serveFlags.Tools,
-		ReadDirs:         append([]string(nil), serveFlags.ReadDirs...),
-		WriteDirs:        append([]string(nil), serveFlags.WriteDirs...),
-		ShellAllow:       append([]string(nil), serveFlags.ShellAllow...),
-		MCP:              serveFlags.MCP,
-		SystemMessage:    serveFlags.SystemMessage,
-		MaxTurns:         serveFlags.MaxTurns,
-		Search:           serveFlags.Search,
-		NoSearch:         serveFlags.NoSearch,
-		NativeSearch:     serveFlags.NativeSearch,
-		NoNativeSearch:   serveFlags.NoNativeSearch,
+		Provider:         opts.Provider,
+		Tools:            opts.Tools,
+		ReadDirs:         append([]string(nil), opts.ReadDirs...),
+		WriteDirs:        append([]string(nil), opts.WriteDirs...),
+		ShellAllow:       append([]string(nil), opts.ShellAllow...),
+		MCP:              opts.MCP,
+		SystemMessage:    opts.SystemMessage,
+		MaxTurns:         opts.MaxTurns,
+		Search:           opts.Search,
+		NoSearch:         opts.NoSearch,
+		NativeSearch:     opts.NativeSearch,
+		NoNativeSearch:   opts.NoNativeSearch,
 		ApprovalMode:     approval.Mode,
 		ApprovalModeSet:  true,
 		ApprovalSource:   approval.Source,
 		ApprovalHeadless: true,
-		Debug:            serveFlags.Debug,
+		Debug:            opts.Debug,
 		DebugRaw:         debugRaw,
 		ErrWriter:        io.Discard,
 		SessionStore:     sessionStore,
@@ -344,7 +344,7 @@ func serveJobsRunnerOptions(approval resolvedApprovalMode, sessionStore runtime.
 	}
 }
 
-func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths) serveJobsExecutor {
+func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths, opts ServeOptions, debugRaw bool) serveJobsExecutor {
 	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		var search *bool
 		if cfg.Search {
@@ -360,7 +360,7 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode,
 			}
 		}
 
-		runner := NewCmdRunner(baseCfg, serveJobsRunnerOptions(approval, sessionStore, paths))
+		runner := NewCmdRunner(baseCfg, serveJobsRunnerOptions(opts, debugRaw, approval, sessionStore, paths))
 
 		result, err := runner.Run(ctx, runpkg.Request{
 			Platform:        runpkg.PlatformJob,

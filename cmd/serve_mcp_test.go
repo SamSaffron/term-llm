@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -24,9 +28,54 @@ func TestServeMCPOptionsValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := runServeMCPWithOptions(&cobra.Command{}, nil, &tc.opts)
+			err := runServeMCPWithOptions(context.Background(), appserve.MCPInvocation{}, nil, &tc.opts)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("runServeMCPWithOptions() = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestServeMCPValidationConfigApprovalOrder(t *testing.T) {
+	approvalFailure := errors.New("deferred approval failure")
+	for _, tc := range []struct {
+		name, config, tools, want string
+		resolve                   func(*config.Config) (resolvedApprovalMode, error)
+		wantResolver              bool
+	}{
+		{
+			name: "validation before config", config: "serve: [", want: "--tools is required",
+			resolve: func(*config.Config) (resolvedApprovalMode, error) {
+				t.Fatal("resolver called after validation failure")
+				return resolvedApprovalMode{}, nil
+			},
+		},
+		{
+			name: "config before approval", config: "serve: [", tools: "all", want: "failed to read config:",
+			resolve: func(*config.Config) (resolvedApprovalMode, error) {
+				t.Fatal("resolver called after config failure")
+				return resolvedApprovalMode{}, nil
+			},
+		},
+		{
+			name: "approval after config", config: "default_provider: debug\n", tools: "all", want: approvalFailure.Error(), wantResolver: true,
+			resolve: func(*config.Config) (resolvedApprovalMode, error) { return resolvedApprovalMode{}, approvalFailure },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeServeContractConfig(t, tc.config)
+			called := false
+			invocation := appserve.MCPInvocation{Stdout: io.Discard, Stderr: io.Discard, ResolveApproval: func(cfg *config.Config) (resolvedApprovalMode, error) {
+				called = true
+				return tc.resolve(cfg)
+			}}
+			opts := serveMCPOptions{Tools: tc.tools, Host: "127.0.0.1", Port: 8080, EditFormat: "edit_file"}
+			err := runServeMCPWithOptions(context.Background(), invocation, nil, &opts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("MCP startup error = %v, want %q", err, tc.want)
+			}
+			if called != tc.wantResolver {
+				t.Fatalf("approval resolver called = %v, want %v", called, tc.wantResolver)
 			}
 		})
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
-	"github.com/spf13/cobra"
 )
 
 func TestServeStatsRuntimeStreamAndIdleSnapshot(t *testing.T) {
@@ -273,13 +272,9 @@ func TestServeStatsActualWebRunnerSpawnWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{DefaultProvider: "debug", Providers: map[string]config.ProviderConfig{"debug": {Model: "fast", FastModel: "fast"}}, Agents: config.AgentsConfig{SearchPaths: []string{root}}}
-	flags := &ServeOptions{Tools: "spawn_agent"}
-	command := &cobra.Command{}
-	command.Flags().String("tools", "spawn_agent", "")
-	if err := command.Flags().Set("tools", "spawn_agent"); err != nil {
-		t.Fatal(err)
-	}
-	rt, err := newServeAgentRuntime(context.Background(), serveRuntimeRequest{SessionID: "stats-parent", Provider: "debug", Model: "fast", RuntimeDir: t.TempDir()}, serveAgentRuntimeOptions{flags: flags, cfg: cfg, cmd: command, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
+	flags := serveRuntimeFixtureOptions()
+	flags.Tools = "spawn_agent"
+	rt, err := newServeAgentRuntime(context.Background(), serveRuntimeRequest{SessionID: "stats-parent", Provider: "debug", Model: "fast", RuntimeDir: t.TempDir()}, serveAgentRuntimeOptions{flags: flags, toolsSet: true, cfg: cfg, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
 	if err != nil {
 		t.Fatal(err)
 	}

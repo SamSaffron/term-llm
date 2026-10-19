@@ -306,7 +306,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve.go|cmd||runServeLegacy",
+      "key": ".|cmd/serve.go|cmd||runServeWith",
       "complexity": 88,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",

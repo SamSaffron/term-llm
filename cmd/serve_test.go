@@ -806,6 +806,7 @@ func TestQueueAgentCombinedWebJobsCreatesJob(t *testing.T) {
 	}
 	runtime := &serveRuntime{toolMgr: toolMgr}
 	configureServeRuntimeTools(runtime, serveAgentRuntimeOptions{
+		flags:  serveRuntimeFixtureOptions(),
 		hasWeb: true, jobsServerURL: server.URL + "/ui", jobsServerToken: "local-token",
 		approval: resolvedApprovalMode{Mode: tools.ModeYolo},
 	})

@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"log"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -13,13 +16,40 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/cobra"
 )
 
+func withServeSessionLogging(store session.Store) session.Store {
+	if store == nil {
+		return nil
+	}
+	if logged, ok := store.(*session.LoggingStore); ok {
+		store = logged.Store
+	}
+	return session.NewLoggingStore(store, func(format string, args ...any) {
+		log.Printf("[serve] "+format, args...)
+	})
+}
+
+func resolveServeAgentMetadata(cfg *config.Config, agent *agents.Agent, hasWeb bool) (string, []string, agents.PlatformMessagesConfig, error) {
+	if agent != nil {
+		return agent.Name, nil, agent.PlatformMessages, nil
+	}
+	if hasWeb {
+		names, err := ListAgentNames(cfg)
+		if err != nil {
+			return "", nil, agents.PlatformMessagesConfig{}, fmt.Errorf("list web agents: %w", err)
+		}
+		return "", names, agents.PlatformMessagesConfig{}, nil
+	}
+	return "", nil, agents.PlatformMessagesConfig{}, nil
+}
+
 type serveAgentRuntimeOptions struct {
-	flags                   *ServeOptions
+	flags                   ServeOptions
+	toolsSet                bool
+	systemMessageSet        bool
+	debugRaw                bool
 	cfg                     *config.Config
-	cmd                     *cobra.Command
 	store                   session.Store
 	sessionStore            runtime.SessionStoreOverrides
 	memoryPaths             appmemory.Paths
@@ -37,15 +67,6 @@ type serveAgentRuntimeOptions struct {
 	agentOwner      *runtime.AgentHostOwner
 }
 
-// Tests that build a runtime directly without command binding retain the
-// registered defaults; production passes its command's options explicitly.
-func (opts serveAgentRuntimeOptions) serveOptions() *ServeOptions {
-	if opts.flags != nil {
-		return opts.flags
-	}
-	return &serveFlags
-}
-
 func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *serveServer) func(context.Context, serveRuntimeRequest) (*serveRuntime, error) {
 	return func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
 		// runServe creates this factory before the HTTP server. Resolve its
@@ -58,7 +79,7 @@ func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *s
 }
 
 func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts serveAgentRuntimeOptions) (*serveRuntime, error) {
-	flags := opts.serveOptions()
+	flags := &opts.flags
 	runtimeAgent := strings.TrimSpace(flags.Agent)
 	if runtimeAgent == "" {
 		runtimeAgent = strings.TrimSpace(request.Agent)
@@ -98,16 +119,16 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 }
 
 func serveRuntimeRunnerDefaults(opts serveAgentRuntimeOptions, request serveRuntimeRequest, approvalMode tools.ApprovalMode) cmdRunnerOptions {
-	flags := opts.serveOptions()
+	flags := &opts.flags
 	// Leave WireSpawn unset: cmdRunner binds child persistence to this store and session.
 	return cmdRunnerOptions{
 		Inputs: request.Inputs, RestoreSettings: request.settings, RestoreAgentSkills: request.agentSkills,
-		ToolsSet: opts.cmd.Flags().Changed("tools"), SystemMessageSet: opts.cmd.Flags().Changed("system"),
+		ToolsSet: opts.toolsSet, SystemMessageSet: opts.systemMessageSet,
 		Provider: flags.Provider, Tools: flags.Tools, ReadDirs: append([]string(nil), flags.ReadDirs...), WriteDirs: append([]string(nil), flags.WriteDirs...), ShellAllow: append([]string(nil), flags.ShellAllow...),
 		MCP: flags.MCP, SystemMessage: flags.SystemMessage, MaxTurns: flags.MaxTurns, Search: flags.Search, NoSearch: flags.NoSearch,
 		NativeSearch: flags.NativeSearch, NoNativeSearch: flags.NoNativeSearch, ApprovalMode: approvalMode, ApprovalModeSet: true,
 		ApprovalSource: opts.approval.Source, ApprovalHeadless: true, ApprovalPrepare: true, ApprovalDiagnostics: flags.Verbose,
-		Debug: flags.Debug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, Store: opts.store,
+		Debug: flags.Debug, DebugRaw: opts.debugRaw, ErrWriter: opts.approvalErrWriter, Store: opts.store,
 		SessionStore: opts.sessionStore, MemoryPaths: opts.memoryPaths,
 		ChildRunObserver: childRunObserverOrNil(opts.childRuns), AgentOwner: opts.agentOwner,
 	}

@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"github.com/samsaffron/term-llm/internal/app/reload"
 	"log"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -69,20 +69,7 @@ func mcpAllToolNames() []string {
 	return all
 }
 
-type serveMCPOptions struct {
-	Host       string
-	Port       int
-	Token      string
-	Tools      string
-	EditFormat string
-	ReadDirs   []string
-	WriteDirs  []string
-	ShellAllow []string
-	Approval   string
-	Yolo       bool
-	Auto       bool
-	Debug      bool
-}
+type serveMCPOptions = appserve.MCPOptions
 
 var serveMCPFlags serveMCPOptions
 var serveMCPCmd = &cobra.Command{
@@ -143,10 +130,18 @@ func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config, opts *s
 }
 
 func runServeMCP(cmd *cobra.Command, args []string) error {
-	return runServeMCPWithOptions(cmd, args, &serveMCPFlags)
+	approvalOptions := serveMCPFlags
+	invocation := appserve.MCPInvocation{
+		Stdout: cmd.OutOrStdout(),
+		Stderr: cmd.ErrOrStderr(),
+		ResolveApproval: func(cfg *config.Config) (resolvedApprovalMode, error) {
+			return resolveServeMCPApprovalMode(cmd, cfg, &approvalOptions)
+		},
+	}
+	return runServeMCPWithOptions(cmd.Context(), invocation, args, &serveMCPFlags)
 }
 
-func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOptions) error {
+func runServeMCPWithOptions(ctx context.Context, invocation appserve.MCPInvocation, args []string, opts *serveMCPOptions) error {
 	if opts.Tools == "" {
 		return fmt.Errorf("--tools is required\n\nExamples:\n  term-llm serve mcp --tools all\n  term-llm serve mcp --tools read_file,grep,glob,shell")
 	}
@@ -161,7 +156,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	resolvedApproval, err := resolveServeMCPApprovalMode(cmd, cfg, opts)
+	resolvedApproval, err := invocation.ResolveApproval(cfg)
 	if err != nil {
 		return err
 	}
@@ -213,7 +208,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{Headless: true}); err != nil {
 		return err
 	}
-	reportApprovalMode(cmd.ErrOrStderr(), opts.Debug, resolvedApproval, approvalMgr)
+	reportApprovalMode(invocation.Stderr, opts.Debug, resolvedApproval, approvalMgr)
 
 	registry, err := tools.NewLocalToolRegistry(&toolConfig, cfg, approvalMgr)
 	if err != nil {
@@ -329,7 +324,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	server.HandlerMiddleware = restart.Default.Handler
 	server.ConnState = restart.Default.HTTPConnections()
 
-	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
+	runCtx, stop := signal.NotifyContextWithParent(ctx)
 	defer stop()
 
 	url, actualToken, err := server.StartOnAddress(opts.Host, opts.Port, token, mcpTools)
@@ -339,7 +334,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 
 	// MCP HTTP is stateless. Keep listeners live until exec (Go sockets are
 	// close-on-exec), so a failed exec leaves the original service usable.
-	stopReload, err := reload.Bind(ctx, "TERM_LLM_MCP_RELOAD_TOKEN="+actualToken)
+	stopReload, err := reload.Bind(runCtx, "TERM_LLM_MCP_RELOAD_TOKEN="+actualToken)
 	if err != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -355,16 +350,16 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	}
 	sort.Strings(toolNames)
 
-	fmt.Fprintf(os.Stderr, "MCP server listening on %s\n", url)
-	fmt.Fprintf(os.Stderr, "auth token: %s\n", actualToken)
-	fmt.Fprintf(os.Stderr, "tools: %s\n", strings.Join(toolNames, ", "))
+	fmt.Fprintf(invocation.Stderr, "MCP server listening on %s\n", url)
+	fmt.Fprintf(invocation.Stderr, "auth token: %s\n", actualToken)
+	fmt.Fprintf(invocation.Stderr, "tools: %s\n", strings.Join(toolNames, ", "))
 	if opts.Yolo {
-		fmt.Fprintf(os.Stderr, "yolo: true (all operations auto-approved)\n")
+		fmt.Fprintln(invocation.Stderr, "yolo: true (all operations auto-approved)")
 	} else if opts.Auto {
-		fmt.Fprintf(os.Stderr, "auto: true (unmatched shell and file operations require guardian approval; unavailable reviewer denies)\n")
+		fmt.Fprintln(invocation.Stderr, "auto: true (unmatched shell and file operations require guardian approval; unavailable reviewer denies)")
 	}
 
-	<-ctx.Done()
+	<-runCtx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

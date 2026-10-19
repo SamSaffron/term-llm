@@ -6,19 +6,17 @@ import (
 	"log"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/samsaffron/term-llm/internal/config"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func initializeServeProjectRuntime(ctx context.Context, cmd *cobra.Command, cfg *config.Config, store session.Store, startupDir string, hasWeb bool, errWriter io.Writer) (bool, string, error) {
+func initializeServeProjectRuntime(ctx context.Context, flags serveFlagState, opts *ServeOptions, cfg *config.Config, store session.Store, startupDir string, hasWeb bool, errWriter io.Writer) (bool, string, error) {
 	projectsRequested, projectsStrict := resolveServeProjectsRequested(
-		cmd.Flags().Changed("projects"),
-		serveFlags.Projects,
-		cmd.Flags().Changed("no-projects") && serveFlags.NoProjects,
+		flags.Projects,
+		opts.Projects,
+		flags.NoProjects && opts.NoProjects,
 		cfg.Serve.Projects.Enabled,
 		hasWeb,
 	)
@@ -40,7 +38,7 @@ func initializeServeProjectRuntime(ctx context.Context, cmd *cobra.Command, cfg 
 				bootstrapCount = 1
 			}
 			log.Printf("projects enabled (projects=%d bootstrap=%d bootstrap_id=%s)", projectCount, bootstrapCount, bootstrapProjectID)
-		case cmd.Flags().Changed("no-projects") || !cfg.Serve.Projects.Enabled:
+		case flags.NoProjects || !cfg.Serve.Projects.Enabled:
 			log.Printf("projects explicitly disabled")
 		default:
 			log.Printf("projects auto-disabled")

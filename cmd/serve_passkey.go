@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,7 +12,6 @@ import (
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/spf13/cobra"
 )
 
 func init() {
@@ -23,7 +23,7 @@ func init() {
 	f.StringSliceVar(&serveFlags.PasskeyTrustedProxies, "passkey-trusted-proxy", nil, "Trusted proxy IP/CIDR for passkey rate limits (repeatable; never determines the public origin)")
 }
 
-func resolveWebPasskeyEndpoint(cmd *cobra.Command, opts ServeOptions) (passkeyauth.Endpoint, error) {
+func resolveWebPasskeyEndpoint(basePathExplicit bool, opts ServeOptions) (passkeyauth.Endpoint, error) {
 	if opts.Token != "" || os.Getenv("TERM_LLM_SERVE_TOKEN") != "" {
 		return passkeyauth.Endpoint{}, fmt.Errorf("--auth passkey does not accept --token or TERM_LLM_SERVE_TOKEN; use bearer mode for API clients")
 	}
@@ -34,7 +34,7 @@ func resolveWebPasskeyEndpoint(cmd *cobra.Command, opts ServeOptions) (passkeyau
 	if publicURL == "" {
 		publicURL = strings.TrimSpace(os.Getenv("TERM_LLM_SERVE_PUBLIC_URL"))
 	}
-	endpoint, err := passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: opts.BasePath, BasePathExplicit: cmd.Flags().Changed("base-path")})
+	endpoint, err := passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: opts.BasePath, BasePathExplicit: basePathExplicit})
 	if err != nil {
 		return endpoint, fmt.Errorf("invalid Web passkey --public-url/--base-path configuration: %w", err)
 	}
@@ -44,8 +44,8 @@ func resolveWebPasskeyEndpoint(cmd *cobra.Command, opts ServeOptions) (passkeyau
 	return endpoint, nil
 }
 
-func validateWebPasskeyConfigPath(cmd *cobra.Command, endpoint passkeyauth.Endpoint, configured string) error {
-	if !cmd.Flags().Changed("base-path") && configured != "" {
+func validateWebPasskeyConfigPath(basePathExplicit bool, endpoint passkeyauth.Endpoint, configured string) error {
+	if !basePathExplicit && configured != "" {
 		_, err := passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: endpoint.URL.String(), BasePath: configured, BasePathExplicit: true})
 		if err != nil {
 			return fmt.Errorf("serve.base_path conflicts with passkey --public-url: %w", err)
@@ -54,7 +54,7 @@ func validateWebPasskeyConfigPath(cmd *cobra.Command, endpoint passkeyauth.Endpo
 	return nil
 }
 
-func openWebPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint, opts *ServeOptions) (*browserPasskeyHandler, string, func() error, error) {
+func openWebPasskeys(stderr io.Writer, endpoint passkeyauth.Endpoint, opts *ServeOptions) (*browserPasskeyHandler, string, func() error, error) {
 	authFile := strings.TrimSpace(opts.PasskeyAuthFile)
 	if authFile == "" {
 		dir, err := appdata.GetDataDir()
@@ -63,10 +63,10 @@ func openWebPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint, opts *Se
 		}
 		authFile = filepath.Join(dir, "web-auth", "auth.json")
 	}
-	runtime, display, cleanup, err := openBrowserPasskeys(cmd.ErrOrStderr(), endpoint, authFile, browserPasskeyOptions{
+	runtime, display, cleanup, err := openBrowserPasskeys(stderr, endpoint, authFile, browserPasskeyOptions{
 		userName: "Web operator", displayName: "term-llm Web", trustedProxies: opts.PasskeyTrustedProxies,
 		bootstrap: func(needed bool) ([]byte, string, error) {
-			return resolveBrowserBootstrapSecret(cmd.ErrOrStderr(), needed, opts.PasskeyBootstrapFile, "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", opts.PrintPasskeyBootstrap, cmd.ErrOrStderr())
+			return resolveBrowserBootstrapSecret(stderr, needed, opts.PasskeyBootstrapFile, "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", opts.PrintPasskeyBootstrap, stderr)
 		},
 		recovery: func(enabled bool) ([]byte, error) {
 			return resolveBrowserRecoverySecret(enabled, opts.PasskeyRecoveryFile, "TERM_LLM_SERVE_RECOVERY_TOKEN")
@@ -100,8 +100,7 @@ func (s *browserPasskeyHandler) handleSecurityPage(w http.ResponseWriter, r *htt
 	s.writeHubShell(w, r, http.StatusOK, "Security - term-llm", hubPageConfig{Page: "security", AuthMode: "passkey", BasePath: s.basePath, PasskeyAuth: true, FormAction: s.passkey.endpoint.SafeReturnPath(r.URL.Query().Get("return"))})
 }
 
-func printWebPasskeyStatus(cmd *cobra.Command, auth *browserPasskeyHandler, display string) {
-	out := cmd.ErrOrStderr()
+func printWebPasskeyStatus(out io.Writer, auth *browserPasskeyHandler, display string) {
 	fmt.Fprintln(out, "auth: passkey")
 	fmt.Fprintf(out, "Web UI: %s\n", auth.passkey.endpoint.URL.String())
 	if auth.passkey.store.CredentialCount() == 0 {

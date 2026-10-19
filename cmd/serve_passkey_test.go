@@ -93,17 +93,17 @@ func TestWebPasskeyModeValidation(t *testing.T) {
 	t.Setenv("TERM_LLM_SERVE_TOKEN", "")
 	opts.Token = ""
 	opts.PublicURL = "http://localhost:8080/ui/"
-	endpoint, err := resolveWebPasskeyEndpoint(serveCmd, opts)
+	endpoint, err := resolveWebPasskeyEndpoint(false, opts)
 	if err != nil || endpoint.BasePath != "/ui" {
 		t.Fatalf("endpoint=%+v err=%v", endpoint, err)
 	}
 	opts.Token = "explicit"
-	if _, err := resolveWebPasskeyEndpoint(serveCmd, opts); err == nil {
+	if _, err := resolveWebPasskeyEndpoint(false, opts); err == nil {
 		t.Fatal("accepted bearer compatibility")
 	}
 	opts.Token = ""
 	opts.PublicURL = "http://127.0.0.1:8080/ui/"
-	if _, err := resolveWebPasskeyEndpoint(serveCmd, opts); err == nil {
+	if _, err := resolveWebPasskeyEndpoint(false, opts); err == nil {
 		t.Fatal("accepted loopback IP")
 	}
 	mode, err := resolveServeAuthMode(true, "passkey", false, false)
@@ -135,12 +135,11 @@ func TestBrowserPasskeyStartupFailureReleasesLocks(t *testing.T) {
 
 func TestWebPasskeyMountAndReturnPaths(t *testing.T) {
 	auth := newWebPasskeyHandler(newTestPasskeyHub(t, "/ui").passkey)
-	cmd := &cobra.Command{}
 	for _, tc := range []struct {
 		path  string
 		valid bool
 	}{{"", true}, {"/ui", true}, {"/ui/", true}, {"/chat", false}} {
-		if err := validateWebPasskeyConfigPath(cmd, auth.passkey.endpoint, tc.path); (err == nil) != tc.valid {
+		if err := validateWebPasskeyConfigPath(false, auth.passkey.endpoint, tc.path); (err == nil) != tc.valid {
 			t.Errorf("config path %q: %v", tc.path, err)
 		}
 	}
@@ -208,7 +207,7 @@ func TestWebPasskeyUnsupportedTransports(t *testing.T) {
 			opts.HubRegister = false
 			opts.CORSOrigins = nil
 			tc.setup(&opts)
-			if _, err := resolveWebPasskeyEndpoint(serveCmd, opts); err == nil {
+			if _, err := resolveWebPasskeyEndpoint(false, opts); err == nil {
 				t.Fatal("accepted incompatible transport")
 			}
 		})

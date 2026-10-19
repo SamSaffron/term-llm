@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -62,7 +64,7 @@ func TestServeStartupOptionsValidation(t *testing.T) {
 			t.Parallel()
 			opts := base
 			tc.change(&opts)
-			_, err := resolveServeStartup(&cobra.Command{}, &opts)
+			_, err := resolveServeStartup(serveFlagState{}, &opts)
 			if err == nil || !strings.Contains(err.Error(), tc.errorText) {
 				t.Fatalf("resolveServeStartup() error = %v, want %q", err, tc.errorText)
 			}
@@ -105,7 +107,8 @@ func TestServeStartupErrorOrderContract(t *testing.T) {
 			writeServeContractConfig(t, tc.config)
 			cmd, opts := bindServeContractArgs(t, append([]string{"--token=contract-token"}, tc.args...)...)
 			// An invalid platform must not mask any of the earlier errors.
-			err := runServeLegacy(context.Background(), cmd, []string{"invalid-platform"}, opts)
+			deps := serveDeps{Invocation: captureServeInvocation(cmd, opts)}
+			err := runServeWith(context.Background(), deps, opts, []string{"invalid-platform"})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("startup error = %v, want %q", err, tc.want)
 			}
@@ -116,6 +119,71 @@ func TestServeStartupErrorOrderContract(t *testing.T) {
 type serveContractWriter func([]byte) (int, error)
 
 func (w serveContractWriter) Write(p []byte) (int, error) { return w(p) }
+
+func TestRunServeWithOwnsInjectedListenerAcrossEarlyFailures(t *testing.T) {
+	approvalFailure := errors.New("approval failed after config")
+	for _, tc := range []struct {
+		name       string
+		config     string
+		mutate     func(*ServeOptions)
+		resolve    func(*config.Config) (resolvedApprovalMode, error)
+		want       string
+		wantCalled bool
+	}{
+		{
+			name: "validation", config: "serve: [", want: "invalid --port 0",
+			mutate: func(opts *ServeOptions) { opts.Port = 0 },
+			resolve: func(*config.Config) (resolvedApprovalMode, error) {
+				t.Fatal("approval resolver called before validation")
+				return resolvedApprovalMode{}, nil
+			},
+		},
+		{
+			name: "config", config: "serve: [", want: "failed to load config:",
+			resolve: func(*config.Config) (resolvedApprovalMode, error) {
+				t.Fatal("approval resolver called before config failure")
+				return resolvedApprovalMode{}, nil
+			},
+		},
+		{
+			name: "approval", config: "default_provider: debug\n", want: approvalFailure.Error(), wantCalled: true,
+			resolve: func(*config.Config) (resolvedApprovalMode, error) { return resolvedApprovalMode{}, approvalFailure },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeServeContractConfig(t, tc.config)
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			opts := serveRuntimeFixtureOptions()
+			opts.Token = "contract-token"
+			if tc.mutate != nil {
+				tc.mutate(&opts)
+			}
+			called := false
+			deps := serveDeps{Invocation: appserve.Invocation{
+				Flags: serveFlagState{}, Stdout: io.Discard, Stderr: io.Discard,
+				ResolveApproval: func(cfg *config.Config) (resolvedApprovalMode, error) {
+					called = true
+					return tc.resolve(cfg)
+				},
+			}, Listener: listener}
+			err = runServeWith(context.Background(), deps, &opts, []string{"invalid-platform"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("startup error = %v, want %q", err, tc.want)
+			}
+			if called != tc.wantCalled {
+				t.Fatalf("approval resolver called = %v, want %v", called, tc.wantCalled)
+			}
+			tcpListener := listener.(*net.TCPListener)
+			if deadlineErr := tcpListener.SetDeadline(time.Now()); !errors.Is(deadlineErr, net.ErrClosed) {
+				t.Fatalf("listener SetDeadline error = %v, want net.ErrClosed", deadlineErr)
+			}
+		})
+	}
+}
 
 func TestServeStartupConfigFallbackContract(t *testing.T) {
 	// Title and location sharing are local startup values, not written back to
@@ -148,9 +216,8 @@ serve:
     vapid_public_key: fixture-public
     vapid_private_key: fixture-private
 `)
-			// Today's startup has no listener injection seam. Reserve an OS-picked
-			// loopback port and release it just before startup; retry only an actual
-			// bind collision, never a failed assertion or a different startup error.
+			// Inject an OS-picked listener while retaining a valid nonzero Options
+			// port. Startup owns the listener as soon as runServeWith begins.
 			for attempt := 0; attempt < 3; attempt++ {
 				listener, err := net.Listen("tcp", "127.0.0.1:0")
 				if err != nil {
@@ -192,11 +259,8 @@ serve:
 					}
 					return len(p), nil
 				}))
-				if err := listener.Close(); err != nil {
-					cancel()
-					t.Fatal(err)
-				}
-				err = runServeLegacy(ctx, cmd, []string{"web"}, opts)
+				deps := serveDeps{Invocation: captureServeInvocation(cmd, opts), Listener: listener}
+				err = runServeWith(ctx, deps, opts, []string{"web"})
 				cancel()
 				if err != nil && strings.Contains(err.Error(), "address already in use") && attempt < 2 {
 					continue
@@ -231,7 +295,8 @@ func TestServeStartupEmptyBasePathContract(t *testing.T) {
 			writeServeContractConfig(t, "default_provider: debug\n")
 			cmd, opts := bindServeContractArgs(t, "--base-path="+tc.value, "--token=contract-token", "--approval=prompt")
 			// api avoids Web Push setup and fails before listener creation.
-			err := runServeLegacy(context.Background(), cmd, []string{"api"}, opts)
+			deps := serveDeps{Invocation: captureServeInvocation(cmd, opts)}
+			err := runServeWith(context.Background(), deps, opts, []string{"api"})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("startup error = %v, want %q", err, tc.want)
 			}
@@ -240,8 +305,8 @@ func TestServeStartupEmptyBasePathContract(t *testing.T) {
 }
 
 func TestServeProjectsExplicitFalseContract(t *testing.T) {
-	oldFlags, oldLogOutput := serveFlags, log.Writer()
-	t.Cleanup(func() { serveFlags = oldFlags; log.SetOutput(oldLogOutput) })
+	oldLogOutput := log.Writer()
+	t.Cleanup(func() { log.SetOutput(oldLogOutput) })
 	for _, tc := range []struct {
 		name, diagnostic, wantErr string
 		args                      []string
@@ -256,13 +321,12 @@ func TestServeProjectsExplicitFalseContract(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd, opts := bindServeContractArgs(t, tc.args...)
-			// This helper still reads serveFlags rather than the passed options.
-			serveFlags = *opts
 			cfg := &config.Config{}
 			cfg.Serve.Projects.Enabled = tc.configEnabled
 			var stderr, diagnostics bytes.Buffer
 			log.SetOutput(&diagnostics)
-			enabled, bootstrap, err := initializeServeProjectRuntime(context.Background(), cmd, cfg, nil, t.TempDir(), true, &stderr)
+			invocation := captureServeInvocation(cmd, opts)
+			enabled, bootstrap, err := initializeServeProjectRuntime(context.Background(), invocation.Flags, opts, cfg, nil, t.TempDir(), true, &stderr)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("project error = %v, want %q", err, tc.wantErr)

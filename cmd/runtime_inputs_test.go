@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
@@ -16,8 +17,16 @@ import (
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/cobra"
 )
+
+func serveRuntimeFixtureOptions() ServeOptions {
+	return ServeOptions{
+		Host: "127.0.0.1", Port: 8080, AuthMode: "bearer", BasePath: "/ui",
+		SessionTTL: 30 * time.Minute, SessionMax: 1000, TelegramCarryoverChars: 4000,
+		JobsWorkers: 4, SidebarSessions: "all", ResponseTimeout: 30 * time.Minute,
+		MaxTurns: 200, HubConnect: "direct",
+	}
+}
 
 func runtimeInputsTestConfig() *config.Config {
 	return &config.Config{
@@ -180,7 +189,7 @@ func TestServeRuntimeRunnerDefaultsCarryRuntimeInputs(t *testing.T) {
 	sessionStore := appruntime.SessionStoreOverrides{NoSession: true, DBPath: "session.db"}
 	paths := appmemory.Paths{DBPath: "memory.db", DefaultDBPath: "default.db"}
 	got := serveRuntimeRunnerDefaults(serveAgentRuntimeOptions{
-		cmd: &cobra.Command{}, sessionStore: sessionStore, memoryPaths: paths,
+		flags: serveRuntimeFixtureOptions(), sessionStore: sessionStore, memoryPaths: paths,
 	}, serveRuntimeRequest{}, tools.ModePrompt)
 	if got.SessionStore != sessionStore || got.MemoryPaths != paths {
 		t.Fatalf("runtime inputs = %#v / %#v, want %#v / %#v", got.SessionStore, got.MemoryPaths, sessionStore, paths)

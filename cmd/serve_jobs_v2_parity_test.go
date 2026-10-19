@@ -448,7 +448,7 @@ func TestJobsV2LLMJobCwdRootsShellExecutionWithoutChdir(t *testing.T) {
 	}
 
 	persist := false
-	executor := newServeJobsExecutor(&config.Config{}, resolvedApprovalMode{Mode: tools.ModeYolo, Source: approvalModeSourceCLI}, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
+	executor := newServeJobsExecutor(&config.Config{}, resolvedApprovalMode{Mode: tools.ModeYolo, Source: approvalModeSourceCLI}, appruntime.SessionStoreOverrides{}, appmemory.Paths{}, serveRuntimeFixtureOptions(), false)
 	if _, err := executor(context.Background(), jobsV2LLMConfig{
 		AgentName:      agentDir, // contains a path separator → loaded from disk
 		Instructions:   "shell touch " + sentinel,

@@ -19,7 +19,6 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/cobra"
 )
 
 func TestCheckAgentModelResolvesFastAlias(t *testing.T) {
@@ -108,7 +107,7 @@ func TestSpawnAgentRejectsOverridesOutsideProviderWildcard(t *testing.T) {
 
 func TestJobsExecutorRejectsOverrideOutsideProviderWildcard(t *testing.T) {
 	cfg, agentDir := modelAllowlistFixture(t, "debug:*")
-	execute := newServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
+	execute := newServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{}, serveRuntimeFixtureOptions(), false)
 	_, err := execute(context.Background(), jobsV2LLMConfig{AgentName: agentDir, Model: "other:denied", Instructions: "hello"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "allowed: debug:*") {
 		t.Fatalf("job execution error = %v, want allowlist denial", err)
@@ -126,7 +125,7 @@ func TestWebModelSwapRejectsDisallowedModelAndKeepsRuntime(t *testing.T) {
 	srv := &serveServer{cfgRef: cfg, sessionMgr: manager}
 	srv.cfg.agentName = agentDir
 	srv.agentRuntimeFactory = func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
-		return newServeAgentRuntime(ctx, request, serveAgentRuntimeOptions{cfg: cfg, cmd: &cobra.Command{}, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
+		return newServeAgentRuntime(ctx, request, serveAgentRuntimeOptions{flags: serveRuntimeFixtureOptions(), cfg: cfg, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
 	}
 	srv.runtimeFactory = srv.agentRuntimeFactory
 	plan := responseModelSwapPlan{enabled: true, previousProvider: "debug", previousModel: "allowed", requestedProvider: "debug", requestedModel: "denied"}

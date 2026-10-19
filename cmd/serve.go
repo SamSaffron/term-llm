@@ -198,7 +198,8 @@ func servePlatformCompletion(cmd *cobra.Command, args []string, toComplete strin
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	warnDeprecatedEnableWidgets(cmd)
+	invocation := captureServeInvocation(cmd, &serveFlags)
+	warnDeprecatedEnableWidgets(invocation.Flags.EnableWidgets, invocation.Stderr)
 
 	svc, err := serve.NewService(serve.Options{
 		Host:      serveFlags.Host,
@@ -207,7 +208,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Title:     serveFlags.Title,
 		Platforms: append([]string(nil), args...),
 		Runner: func(ctx context.Context) error {
-			return runServeLegacy(ctx, cmd, args, &serveFlags)
+			return runServeWith(ctx, serveDeps{Invocation: invocation}, &serveFlags, args)
 		},
 	})
 	if err != nil {
@@ -216,36 +217,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return svc.Run(cmd.Context())
 }
 
-func warnDeprecatedEnableWidgets(cmd *cobra.Command) {
-	if cmd.Flags().Changed("enable-widgets") {
-		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: --enable-widgets is deprecated and has no effect; widgets are enabled by default. Use --disable-widgets to opt out.")
+func warnDeprecatedEnableWidgets(changed bool, stderr io.Writer) {
+	if changed {
+		fmt.Fprintln(stderr, "Warning: --enable-widgets is deprecated and has no effect; widgets are enabled by default. Use --disable-widgets to opt out.")
 	}
-}
-
-func withServeSessionLogging(store session.Store) session.Store {
-	if store == nil {
-		return nil
-	}
-	if logged, ok := store.(*session.LoggingStore); ok {
-		store = logged.Store
-	}
-	return session.NewLoggingStore(store, func(format string, args ...any) {
-		log.Printf("[serve] "+format, args...)
-	})
-}
-
-func resolveServeAgentMetadata(cfg *config.Config, agent *agents.Agent, hasWeb bool) (string, []string, agents.PlatformMessagesConfig, error) {
-	if agent != nil {
-		return agent.Name, nil, agent.PlatformMessages, nil
-	}
-	if hasWeb {
-		names, err := ListAgentNames(cfg)
-		if err != nil {
-			return "", nil, agents.PlatformMessagesConfig{}, fmt.Errorf("list web agents: %w", err)
-		}
-		return "", names, agents.PlatformMessagesConfig{}, nil
-	}
-	return "", nil, agents.PlatformMessagesConfig{}, nil
 }
 
 func serveJobsToolURL(host string, port int, basePath string, mountedUnderBasePath bool) string {
@@ -285,7 +260,7 @@ func validateServeRuntimeToolMap(runtime *serveRuntime, toolMap map[string]strin
 }
 
 func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOptions) {
-	flags := opts.serveOptions()
+	flags := &opts.flags
 	if runtime.toolMgr == nil {
 		return
 	}
@@ -321,8 +296,9 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 	}
 }
 
-func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string, opts *ServeOptions) error {
-	startup, err := resolveServeStartup(cmd, opts)
+func runServeWith(parentCtx context.Context, deps serveDeps, opts *ServeOptions, args []string) error {
+	defer closeServeListener(deps.Listener)()
+	startup, err := resolveServeStartup(deps.Flags, opts)
 	if err != nil {
 		return err
 	}
@@ -342,8 +318,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return err
 	}
 	applyServeFileTrackingOverride(cfg, opts.EnableFileTracking)
-	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
-	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceServe, cfg, nil, opts.Approval, opts.Auto, opts.Yolo)
+	resolvedApproval, err := deps.ResolveApproval(cfg)
 	if err != nil {
 		return err
 	}
@@ -366,11 +341,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		if !hasWeb || len(platformNames) != 1 {
 			return fmt.Errorf("--auth passkey supports serve web only (no additional platforms)")
 		}
-		if err := validateWebPasskeyConfigPath(cmd, passkeyEndpoint, cfg.Serve.BasePath); err != nil {
+		if err := validateWebPasskeyConfigPath(deps.Flags.BasePath, passkeyEndpoint, cfg.Serve.BasePath); err != nil {
 			return err
 		}
 		var closePasskeys func() error
-		browserAuth, bootstrapDisplay, closePasskeys, err = openWebPasskeys(cmd, passkeyEndpoint, opts)
+		browserAuth, bootstrapDisplay, closePasskeys, err = openWebPasskeys(deps.Stderr, passkeyEndpoint, opts)
 		if err != nil {
 			return err
 		}
@@ -400,7 +375,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 
 	// Apply config fallback for base-path if not set via flag
-	if authMode != "passkey" && !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
+	if authMode != "passkey" && !deps.Flags.BasePath && cfg.Serve.BasePath != "" {
 		opts.BasePath = cfg.Serve.BasePath
 	}
 	opts.BasePath, err = normalizeBasePath(opts.BasePath)
@@ -416,15 +391,15 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 
 	resolvedTitle := strings.TrimSpace(opts.Title)
-	if !cmd.Flags().Changed("title") {
+	if !deps.Flags.Title {
 		resolvedTitle = strings.TrimSpace(cfg.Serve.Title)
 	}
 	locationSharingDisabled := opts.DisableLocationSharing
-	if !cmd.Flags().Changed("disable-location-sharing") {
+	if !deps.Flags.DisableLocationSharing {
 		locationSharingDisabled = cfg.Serve.DisableLocationSharing
 	}
 
-	responseTimeout, err := resolveServeResponseTimeout(cmd.Flags().Changed("response-timeout"), opts.ResponseTimeout, cfg.Serve.ResponseTimeout)
+	responseTimeout, err := resolveServeResponseTimeout(deps.Flags.ResponseTimeout, opts.ResponseTimeout, cfg.Serve.ResponseTimeout)
 	if err != nil {
 		return err
 	}
@@ -459,11 +434,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		MCP:            opts.MCP,
 		SystemMessage:  opts.SystemMessage,
 		MaxTurns:       opts.MaxTurns,
-		MaxTurnsSet:    cmd.Flags().Changed("max-turns"),
+		MaxTurnsSet:    deps.Flags.MaxTurns,
 		Search:         opts.Search,
 		NoSearch:       opts.NoSearch,
 		Platform:       singleServeTemplatePlatform(platformNames),
-		MemoryPaths:    runtimeMemoryPaths,
+		MemoryPaths:    deps.MemoryPaths,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return err
@@ -480,7 +455,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 	effectiveSkillsConfig := applySkillsFlag(&cfg.Skills, agentSkills)
 	baseSystemPrompt := settings.SystemPrompt
-	skillsSetup := SetupSkills(effectiveSkillsConfig, "", "", cmd.ErrOrStderr())
+	skillsSetup := SetupSkills(effectiveSkillsConfig, "", "", deps.Stderr)
 	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
 
 	agentName, availableAgentNames, agentPlatformMsgs, err := resolveServeAgentMetadata(cfg, agent, hasWeb)
@@ -488,11 +463,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return err
 	}
 
-	store, storeCleanup := runtime.InitSessionStoreWith(cfg, cmd.ErrOrStderr(), runtimeSessionStore)
+	store, storeCleanup := runtime.InitSessionStoreWith(cfg, deps.Stderr, deps.SessionStore)
 	defer storeCleanup()
 	store = withServeSessionLogging(store)
 
-	projectsEnabled, bootstrapProjectID, err := initializeServeProjectRuntime(ctx, cmd, cfg, store, startupDir, hasWeb, cmd.ErrOrStderr())
+	projectsEnabled, bootstrapProjectID, err := initializeServeProjectRuntime(ctx, deps.Flags, opts, cfg, store, startupDir, hasWeb, deps.Stderr)
 	if err != nil {
 		return err
 	}
@@ -514,11 +489,20 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 	var approvalErrWriter io.Writer = io.Discard
 	if opts.Debug || opts.Verbose {
-		approvalErrWriter = cmd.ErrOrStderr()
+		approvalErrWriter = deps.Stderr
 	}
 	// The runner below is built before the server; share one owner pointer.
 	agentOwner := &runtime.AgentHostOwner{}
 	var s *serveServer
+	serverStarted := false
+	defer func() {
+		if !serverStarted || s == nil {
+			return
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = s.Stop(shutdownCtx)
+	}()
 	collaborationController := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) {
 		if s == nil {
 			return nil, errServeShellClosed
@@ -526,7 +510,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return s.shellManager()
 	}}
 	runtimeOptions := serveAgentRuntimeOptions{
-		flags: opts, cfg: cfg, cmd: cmd, store: store, sessionStore: runtimeSessionStore, memoryPaths: runtimeMemoryPaths, approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
+		flags: *opts, toolsSet: deps.Flags.Tools, systemMessageSet: deps.Flags.System, debugRaw: deps.DebugRaw,
+		cfg: cfg, store: store, sessionStore: deps.SessionStore, memoryPaths: deps.MemoryPaths, approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
 		toolMap: toolMap, mediaPublisher: mediaPublisher, collaborationController: collaborationController,
 		hasWeb: hasWeb,
 	}
@@ -547,7 +532,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}()
 
 	if hasJobs && strings.TrimSpace(opts.Agent) != "" {
-		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
+		fmt.Fprintln(deps.Stderr, "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
 	}
 
 	// Build the serve.Settings used by non-web platforms.
@@ -557,7 +542,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		TelegramCarryoverChars: opts.TelegramCarryoverChars,
 		MaxTurns:               settings.MaxTurns,
 		Debug:                  opts.Debug,
-		DebugRaw:               debugRaw,
+		DebugRaw:               deps.DebugRaw,
 		Search:                 settings.Search,
 		ForceExternalSearch:    forceExternalSearch,
 		Tools:                  settings.Tools,
@@ -586,11 +571,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			ApprovalHeadless:    true,
 			ApprovalDiagnostics: opts.Verbose,
 			Debug:               opts.Debug,
-			DebugRaw:            debugRaw,
+			DebugRaw:            deps.DebugRaw,
 			ErrWriter:           approvalErrWriter,
 			Store:               store,
-			SessionStore:        runtimeSessionStore,
-			MemoryPaths:         runtimeMemoryPaths,
+			SessionStore:        deps.SessionStore,
+			MemoryPaths:         deps.MemoryPaths,
 		}),
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
@@ -658,6 +643,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		s = &serveServer{
 			agentOwner:  agentOwner,
 			browserAuth: browserAuth,
+			listener:    deps.Listener,
 			cfg: serveServerConfig{
 				host:                    opts.Host,
 				port:                    opts.Port,
@@ -668,7 +654,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				suppressServerTools:     opts.FilterServerTools,
 				verbose:                 opts.Verbose,
 				debug:                   opts.Debug,
-				debugRaw:                debugRaw,
+				debugRaw:                deps.DebugRaw,
 				basePath:                opts.BasePath,
 				publicURL:               opts.PublicURL,
 				uiTitle:                 resolvedTitle,
@@ -688,8 +674,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			jobsV2:              jobsV2,
 			cfgRef:              cfg,
 			store:               store,
-			sessionStore:        runtimeSessionStore,
-			memoryPaths:         runtimeMemoryPaths,
+			sessionStore:        deps.SessionStore,
+			memoryPaths:         deps.MemoryPaths,
 			liveClassifier:      liveClassifier,
 			liveDecisionStore:   liveDecisionStore,
 			mediaPublisher:      mediaPublisher,
@@ -712,13 +698,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}),
 		}
 		if hasWeb {
-			s.extensions, err = newServeExtensions(opts.ExtensionsDir, opts.ExtensionIDs, cmd.Flags().Changed("extensions"), opts.DisableExtensions)
+			s.extensions, err = newServeExtensions(opts.ExtensionsDir, opts.ExtensionIDs, deps.Flags.Extensions, opts.DisableExtensions)
 			if err != nil {
 				return fmt.Errorf("extensions: %w", err)
 			}
 		}
 		if hasJobs {
-			jobsV2, err = newServeJobsV2Manager(cfg, opts.JobsWorkers, resolvedApproval, s.notifyJobsV2RunDone, runtimeSessionStore, runtimeMemoryPaths)
+			jobsV2, err = newServeJobsV2Manager(cfg, opts.JobsWorkers, resolvedApproval, s.notifyJobsV2RunDone, deps.SessionStore, deps.MemoryPaths, *opts, deps.DebugRaw)
 			if err != nil {
 				return fmt.Errorf("initialize jobs v2 manager: %w", err)
 			}
@@ -747,6 +733,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		if err := s.Start(); err != nil {
 			return err
 		}
+		serverStarted = true
 
 		if opts.HubRegister {
 			if err := registerServeHubNode(ctx, nil, reverseHubURL, hubRegistrationToken, hubRegisterNodeRequest{
@@ -756,54 +743,55 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				BasePath:   opts.BasePath,
 				Token:      token,
 			}); err != nil {
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				_ = s.Stop(shutdownCtx)
-				cancel()
 				return err
 			}
 			registeredHubURL = reverseHubURL
 			registeredHubNodeID = reverseHubNodeID
-			fmt.Fprintf(cmd.ErrOrStderr(), "hub registration: registered %s with %s\n", reverseHubNodeID, reverseHubURL)
+			fmt.Fprintf(deps.Stderr, "hub registration: registered %s with %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
 		if opts.HubConnect == "reverse" {
 			localBase := localHubConnectBase(opts.Host, opts.Port)
 			go runHubReverseConnector(ctx, reverseHubURL, reverseHubNodeID, token, localBase, opts.BasePath, newHubReverseLocalClient())
-			fmt.Fprintf(cmd.ErrOrStderr(), "hub reverse: connecting %s to %s\n", reverseHubNodeID, reverseHubURL)
+			fmt.Fprintf(deps.Stderr, "hub reverse: connecting %s to %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
-		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s\n", net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port)))
+		fmt.Fprintf(deps.Stderr, "term-llm serve listening on http://%s\n", net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port)))
 		if browserAuth == nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
+			fmt.Fprintf(deps.Stderr, "auth: %s\n", authSummary(requireAuth))
 		}
 		if authMode == "bearer" {
 			switch tokenSource {
 			case tokenSourceGenerated:
-				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s (auto-generated; export TERM_LLM_SERVE_TOKEN to persist)\n", token)
+				fmt.Fprintf(deps.Stderr, "token: %s (auto-generated; export TERM_LLM_SERVE_TOKEN to persist)\n", token)
 			case tokenSourceEnv:
-				fmt.Fprintln(cmd.ErrOrStderr(), "token: configured via $TERM_LLM_SERVE_TOKEN (redacted)")
+				fmt.Fprintln(deps.Stderr, "token: configured via $TERM_LLM_SERVE_TOKEN (redacted)")
 			default:
-				fmt.Fprintln(cmd.ErrOrStderr(), "token: configured via --token (redacted)")
+				fmt.Fprintln(deps.Stderr, "token: configured via --token (redacted)")
 			}
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", s.cfg.ui)
+		fmt.Fprintf(deps.Stderr, "ui: %v\n", s.cfg.ui)
 		if warning := plainHTTPConnectionWarning(s.cfg.ui, opts.Host, opts.PublicURL); warning != "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), warning)
+			fmt.Fprintln(deps.Stderr, warning)
 		}
 		if hasJobs {
-			fmt.Fprintf(cmd.ErrOrStderr(), "jobs workers: %d\n", opts.JobsWorkers)
+			fmt.Fprintf(deps.Stderr, "jobs workers: %d\n", opts.JobsWorkers)
 		}
 		if modelName != "" {
-			fmt.Fprintf(cmd.ErrOrStderr(), "model: %s\n", modelName)
+			fmt.Fprintf(deps.Stderr, "model: %s\n", modelName)
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "response timeout: %s\n", humanDuration(responseTimeout))
+		fmt.Fprintf(deps.Stderr, "response timeout: %s\n", humanDuration(responseTimeout))
 		if browserAuth != nil {
-			printWebPasskeyStatus(cmd, browserAuth, bootstrapDisplay)
+			printWebPasskeyStatus(deps.Stderr, browserAuth, bootstrapDisplay)
 		}
 	}
 
 	// Start non-web platforms concurrently.
 	var wg sync.WaitGroup
+	defer func() {
+		stop()
+		wg.Wait()
+	}()
 	for _, p := range platforms {
 		platformCtx, startingDone, err := restart.Default.Root(ctx)
 		if err != nil {
@@ -826,6 +814,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 	defer stopReload()
 	shutdownServe(ctx, s, &wg, registeredHubURL, registeredHubNodeID, hubRegistrationToken)
+	serverStarted = false
 
 	return nil
 }
@@ -1279,6 +1268,7 @@ type serveServer struct {
 	projectStatusMu          sync.Mutex
 	projectStatuses          map[string]projectStatusCacheEntry
 	server                   *http.Server
+	listener                 net.Listener
 	shutdownCh               chan struct{}
 	shutdownOnce             sync.Once
 	modelsMu                 sync.Mutex
@@ -1437,7 +1427,12 @@ func (s *serveServer) Start() (startErr error) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		err := s.server.ListenAndServe()
+		var err error
+		if s.listener != nil {
+			err = s.server.Serve(s.listener)
+		} else {
+			err = s.server.ListenAndServe()
+		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
