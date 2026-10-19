@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/serve"
+	platform "github.com/samsaffron/term-llm/internal/serve"
 )
 
 type transientFailurePlatform struct {
@@ -20,7 +20,7 @@ func (p *transientFailurePlatform) Name() string     { return "test" }
 func (p *transientFailurePlatform) NeedsSetup() bool { return false }
 func (p *transientFailurePlatform) RunSetup() error  { return nil }
 
-func (p *transientFailurePlatform) Run(ctx context.Context, _ *config.Config, _ serve.Settings) error {
+func (p *transientFailurePlatform) Run(ctx context.Context, _ *config.Config, _ platform.Settings) error {
 	switch p.runCalls.Add(1) {
 	case 1:
 		return errors.New("transient startup failure")
@@ -35,20 +35,20 @@ func (p *transientFailurePlatform) Run(ctx context.Context, _ *config.Config, _ 
 
 func TestRunPlatformSupervisorRetriesAndStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	platform := &transientFailurePlatform{connected: make(chan struct{})}
+	testPlatform := &transientFailurePlatform{connected: make(chan struct{})}
 	done := make(chan struct{})
 	go func() {
-		runPlatformSupervisor(ctx, &config.Config{}, serve.Settings{}, platform, time.Millisecond)
+		runPlatformSupervisor(ctx, &config.Config{}, platform.Settings{}, testPlatform, time.Millisecond)
 		close(done)
 	}()
 
 	select {
-	case <-platform.connected:
+	case <-testPlatform.connected:
 	case <-time.After(time.Second):
 		cancel()
 		t.Fatal("platform was not restarted after transient failure")
 	}
-	if calls := platform.runCalls.Load(); calls != 2 {
+	if calls := testPlatform.runCalls.Load(); calls != 2 {
 		cancel()
 		t.Fatalf("Run calls = %d, want 2", calls)
 	}
@@ -59,7 +59,7 @@ func TestRunPlatformSupervisorRetriesAndStopsOnCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("supervisor did not stop promptly after cancellation")
 	}
-	if calls := platform.runCalls.Load(); calls != 2 {
+	if calls := testPlatform.runCalls.Load(); calls != 2 {
 		t.Fatalf("Run calls after cancellation = %d, want 2", calls)
 	}
 }

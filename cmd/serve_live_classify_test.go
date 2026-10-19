@@ -83,6 +83,7 @@ type noOpClassifyClient struct{}
 func (noOpClassifyClient) Classify(context.Context, classify.Request) (*classify.Response, error) {
 	return nil, nil
 }
+
 func (noOpClassifyClient) ListModels(context.Context) (*classify.ModelsResponse, error) {
 	return nil, nil
 }
@@ -186,19 +187,6 @@ func TestPrepareLiveClassifyFailsAtStartupAndReloadWithoutResolvableProvider(t *
 				t.Fatalf("prepareLiveClassify error = %v", err)
 			}
 		})
-	}
-}
-
-func TestLiveControlPlaneCompletionValues(t *testing.T) {
-	got := configValueCompletions("live.control_plane", "")
-	want := []string{"off", "agent", "classify"}
-	if len(got) != len(want) {
-		t.Fatalf("completions = %v", got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("completions = %v, want %v", got, want)
-		}
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/serve"
+	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/spf13/cobra"
 )
 
@@ -163,7 +163,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	invocation := captureServeInvocation(cmd, &serveFlags)
 	warnDeprecatedEnableWidgets(invocation.Flags.EnableWidgets, invocation.Stderr)
 
-	svc, err := serve.NewService(serve.Options{
+	svc, err := platform.NewService(platform.Options{
 		Host:      serveFlags.Host,
 		Port:      serveFlags.Port,
 		BasePath:  serveFlags.BasePath,

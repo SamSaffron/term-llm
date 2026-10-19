@@ -21,7 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/serve"
+	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -131,7 +131,7 @@ type compositionRetryPlatform struct {
 func (*compositionRetryPlatform) Name() string     { return "composition-retry" }
 func (*compositionRetryPlatform) NeedsSetup() bool { return false }
 func (*compositionRetryPlatform) RunSetup() error  { return nil }
-func (p *compositionRetryPlatform) Run(_ context.Context, _ *config.Config, settings serve.Settings) error {
+func (p *compositionRetryPlatform) Run(_ context.Context, _ *config.Config, settings platform.Settings) error {
 	p.runs.Add(1)
 	settings.Ready()
 	settings.Ready()
@@ -141,10 +141,10 @@ func (p *compositionRetryPlatform) Run(_ context.Context, _ *config.Config, sett
 func TestRunPlatformSupervisorInjectedBackoffReadyAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	platform := &compositionRetryPlatform{}
+	testPlatform := &compositionRetryPlatform{}
 	var ready atomic.Int32
 	var delays []time.Duration
-	runPlatformSupervisor(ctx, &config.Config{}, serve.Settings{Ready: func() { ready.Add(1) }}, platform, time.Second,
+	runPlatformSupervisor(ctx, &config.Config{}, platform.Settings{Ready: func() { ready.Add(1) }}, testPlatform, time.Second,
 		func(_ context.Context, delay time.Duration) bool {
 			delays = append(delays, delay)
 			if len(delays) == 3 {
@@ -153,7 +153,7 @@ func TestRunPlatformSupervisorInjectedBackoffReadyAndCancellation(t *testing.T) 
 			}
 			return true
 		})
-	if got := platform.runs.Load(); got != 3 {
+	if got := testPlatform.runs.Load(); got != 3 {
 		t.Fatalf("platform runs = %d, want 3", got)
 	}
 	if got := ready.Load(); got != 9 {
@@ -168,8 +168,8 @@ func TestRunPlatformSupervisorInjectedBackoffReadyAndCancellation(t *testing.T) 
 }
 
 type compositionRootResult struct {
-	settings serve.Settings
-	runtime  *serve.SessionRuntime
+	settings platform.Settings
+	runtime  *platform.SessionRuntime
 	jobs     core.ToolOutput
 	err      error
 }
@@ -182,7 +182,7 @@ type compositionRootPlatform struct {
 func (*compositionRootPlatform) Name() string     { return "telegram" }
 func (*compositionRootPlatform) NeedsSetup() bool { return false }
 func (*compositionRootPlatform) RunSetup() error  { return nil }
-func (p *compositionRootPlatform) Run(ctx context.Context, _ *config.Config, settings serve.Settings) error {
+func (p *compositionRootPlatform) Run(ctx context.Context, _ *config.Config, settings platform.Settings) error {
 	settings.Ready()
 	settings.Ready()
 	runtime, err := settings.NewSession(ctx)
@@ -261,7 +261,7 @@ serve:
 		},
 	}, Listener: listener,
 		PlatformReady: func() { readyCalls.Add(1) },
-		PlatformFactory: func(name string, _ *config.Config) (serve.Platform, error) {
+		PlatformFactory: func(name string, _ *config.Config) (platform.Platform, error) {
 			if name != "telegram" {
 				return nil, errors.New("unexpected platform " + name)
 			}
@@ -315,4 +315,4 @@ serve:
 }
 
 var _ runpkg.Runner = (*compositionFakeRunner)(nil)
-var _ serve.Platform = (*compositionRootPlatform)(nil)
+var _ platform.Platform = (*compositionRootPlatform)(nil)

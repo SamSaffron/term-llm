@@ -19,7 +19,7 @@ import (
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/serve"
+	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -476,7 +476,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *ServeOptions,
 		settings := serveSettings
 		settings.Ready = composeServePlatformReady(startingDone, deps.PlatformReady)
 		wg.Add(1)
-		go func(p serve.Platform) {
+		go func(p platform.Platform) {
 			defer wg.Done()
 			defer settings.Ready()
 			runPlatformSupervisor(platformCtx, cfg, settings, p, servePlatformInitialRetryDelay, deps.PlatformDelay)

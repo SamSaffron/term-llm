@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
+
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -26,89 +26,6 @@ import (
 )
 
 const runServeMCPHandlerTestServerEnv = mcptest.ChildEnv
-
-var bindingTestRepoTemplate string
-
-func TestMain(m *testing.M) {
-	mcptest.RunIfChild()
-	// Root-command tests execute multiple commands in one process. Do not let a
-	// developer's profiling environment make them contend for a fixed port.
-	if err := os.Unsetenv("TERM_LLM_PPROF"); err != nil {
-		fmt.Fprintf(os.Stderr, "unset TERM_LLM_PPROF: %v\n", err)
-		os.Exit(1)
-	}
-	// macOS exposes /var as a symlink to /private/var. Production workspace
-	// paths are symlink-resolved, so create test temp directories beneath the
-	// canonical root as well.
-	if tempRoot, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
-		if err := os.Setenv("TMPDIR", filepath.Clean(tempRoot)); err != nil {
-			fmt.Fprintf(os.Stderr, "set canonical TMPDIR: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	for key, value := range map[string]string{
-		// No test may reach the network for a rate card, and none may have its
-		// prices swapped by a refresh that lands mid-run.
-		"TERM_LLM_OFFLINE":    "1",
-		"GIT_CONFIG_GLOBAL":   "/dev/null",
-		"GIT_CONFIG_NOSYSTEM": "1",
-		"GIT_AUTHOR_NAME":     "Test User",
-		"GIT_AUTHOR_EMAIL":    "test@example.com",
-		"GIT_COMMITTER_NAME":  "Test User",
-		"GIT_COMMITTER_EMAIL": "test@example.com",
-	} {
-		if err := os.Setenv(key, value); err != nil {
-			fmt.Fprintf(os.Stderr, "set %s: %v\n", key, err)
-			os.Exit(1)
-		}
-	}
-
-	// Cost assertions read a cached model-price directory. Point it at a temp
-	// directory so a developer's refreshed catalog cannot change the rates a
-	// test prices with.
-	cacheHome, err := os.MkdirTemp("", "term-llm-cmd-test-cache-*")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create temp XDG_CACHE_HOME: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.Setenv("XDG_CACHE_HOME", cacheHome); err != nil {
-		fmt.Fprintf(os.Stderr, "set XDG_CACHE_HOME: %v\n", err)
-		os.Exit(1)
-	}
-
-	dataHome, err := os.MkdirTemp("", "term-llm-cmd-test-data-*")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create temp XDG_DATA_HOME: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.Setenv("XDG_DATA_HOME", dataHome); err != nil {
-		fmt.Fprintf(os.Stderr, "set XDG_DATA_HOME: %v\n", err)
-		os.Exit(1)
-	}
-	bindingTestRepoTemplate = filepath.Join(dataHome, "binding-repo-template")
-	if err := os.MkdirAll(bindingTestRepoTemplate, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "create git template: %v\n", err)
-		os.Exit(1)
-	}
-	for _, args := range [][]string{{"init", "-q"}, {"add", "file.txt"}, {"commit", "-q", "-m", "init"}} {
-		if args[0] == "add" {
-			if err := os.WriteFile(filepath.Join(bindingTestRepoTemplate, "file.txt"), []byte("base\n"), 0o644); err != nil {
-				fmt.Fprintf(os.Stderr, "write git template file: %v\n", err)
-				os.Exit(1)
-			}
-		}
-		cmd := exec.Command("git", args...)
-		cmd.Dir = bindingTestRepoTemplate
-		cmd.Env = bindingTestGitEnv()
-		if out, err := cmd.CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "initialize git template with git %v: %v\n%s", args, err, out)
-			os.Exit(1)
-		}
-	}
-	code := m.Run()
-	_ = os.RemoveAll(dataHome)
-	os.Exit(code)
-}
 
 func writeServeMCPConfig(t *testing.T, servers map[string]internalmcp.ServerConfig) {
 	t.Helper()

@@ -11,7 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/serve"
+	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -22,7 +22,7 @@ const (
 	servePlatformRetryResetAfter   = time.Minute
 )
 
-func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings serve.Settings, platform serve.Platform, initialRetryDelay time.Duration, injectedDelay ...servePlatformDelay) {
+func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings platform.Settings, platform platform.Platform, initialRetryDelay time.Duration, injectedDelay ...servePlatformDelay) {
 	delay := waitServePlatformRetry
 	if len(injectedDelay) > 0 && injectedDelay[0] != nil {
 		delay = injectedDelay[0]
@@ -139,11 +139,11 @@ func newServeEngineWithToolsMode(cfg *config.Config, settings SessionSettings, p
 // take precedence; if none are given, configPlatforms (from config.yaml
 // serve.platforms) is used as fallback.
 func resolvePlatforms(args []string, configPlatforms []string) ([]string, error) {
-	return serve.ResolvePlatforms(args, configPlatforms)
+	return platform.ResolvePlatforms(args, configPlatforms)
 }
 
 func platformContains(platforms []string, name string) bool {
-	return serve.PlatformContains(platforms, name)
+	return platform.PlatformContains(platforms, name)
 }
 
 // singleServeTemplatePlatform returns a stable platform token for serve prompts.

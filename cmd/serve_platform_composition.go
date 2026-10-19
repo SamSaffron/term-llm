@@ -12,11 +12,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/serve"
+	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-type servePlatformFactory func(string, *config.Config) (serve.Platform, error)
+type servePlatformFactory func(string, *config.Config) (platform.Platform, error)
 type servePlatformDelay func(context.Context, time.Duration) bool
 
 func composeServePlatformReady(ready, observer func()) func() {
@@ -49,7 +49,7 @@ type servePlatformCompositionOptions struct {
 	newRuntime          func(context.Context) (*serveRuntime, error)
 }
 
-func composeServePlatformSettings(opts servePlatformCompositionOptions) serve.Settings {
+func composeServePlatformSettings(opts servePlatformCompositionOptions) platform.Settings {
 	runnerOptions := cmdRunnerOptions{
 		AgentOwner: opts.agentOwner, Provider: opts.flags.Provider, Tools: opts.flags.Tools,
 		ReadDirs: append([]string(nil), opts.flags.ReadDirs...), WriteDirs: append([]string(nil), opts.flags.WriteDirs...),
@@ -66,7 +66,7 @@ func composeServePlatformSettings(opts servePlatformCompositionOptions) serve.Se
 	if newRunner == nil {
 		newRunner = newCmdRunner
 	}
-	return serve.Settings{
+	return platform.Settings{
 		SystemPrompt: opts.resolved.SystemPrompt, IdleTimeout: opts.flags.SessionTTL,
 		TelegramCarryoverChars: opts.flags.TelegramCarryoverChars, MaxTurns: opts.resolved.MaxTurns,
 		Debug: opts.flags.Debug, DebugRaw: opts.debugRaw, Search: opts.resolved.Search,
@@ -78,13 +78,13 @@ func composeServePlatformSettings(opts servePlatformCompositionOptions) serve.Se
 	}
 }
 
-func composeServePlatformSessionFactory(factory func(context.Context) (*serveRuntime, error)) func(context.Context) (*serve.SessionRuntime, error) {
-	return func(ctx context.Context) (*serve.SessionRuntime, error) {
+func composeServePlatformSessionFactory(factory func(context.Context) (*serveRuntime, error)) func(context.Context) (*platform.SessionRuntime, error) {
+	return func(ctx context.Context) (*platform.SessionRuntime, error) {
 		runtime, err := factory(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return &serve.SessionRuntime{
+		return &platform.SessionRuntime{
 			Engine: runtime.engine, Provider: runtime.provider,
 			ProviderName: runtime.provider.Name(), ModelName: runtime.defaultModel,
 			Cleanup: runtime.Close,
@@ -92,11 +92,11 @@ func composeServePlatformSessionFactory(factory func(context.Context) (*serveRun
 	}
 }
 
-func composeServePlatforms(names []string, cfg *config.Config, factory servePlatformFactory) ([]serve.Platform, error) {
+func composeServePlatforms(names []string, cfg *config.Config, factory servePlatformFactory) ([]platform.Platform, error) {
 	if factory == nil {
 		factory = defaultServePlatformFactory
 	}
-	platforms := make([]serve.Platform, 0, len(names))
+	platforms := make([]platform.Platform, 0, len(names))
 	for _, name := range names {
 		switch name {
 		case "web", "api", "jobs":
@@ -112,9 +112,9 @@ func composeServePlatforms(names []string, cfg *config.Config, factory servePlat
 	return platforms, nil
 }
 
-func defaultServePlatformFactory(name string, cfg *config.Config) (serve.Platform, error) {
+func defaultServePlatformFactory(name string, cfg *config.Config) (platform.Platform, error) {
 	if name == "telegram" {
-		return serve.NewTelegramPlatform(cfg.Serve.Telegram), nil
+		return platform.NewTelegramPlatform(cfg.Serve.Telegram), nil
 	}
 	return nil, fmt.Errorf("unknown platform: %s", name)
 }
