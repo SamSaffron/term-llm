@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/app/reload"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/reload"
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/hub"
@@ -25,26 +26,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
-var (
-	serveHubHost                  string
-	serveHubPort                  int
-	serveHubConfig                string
-	serveHubContain               bool
-	serveHubNodesFile             string
-	serveHubAuthMode              string
-	serveHubToken                 string
-	serveHubRegistrationTokenFlag string
-	serveHubBasePath              string
-	serveHubPublicURL             string
-	serveHubPasskeyAuthFile       string
-	serveHubBootstrapTokenFile    string
-	serveHubRecoveryTokenFile     string
-	serveHubPrintBootstrapToken   bool
-	serveHubPasskeyTrustedProxies []string
-)
+var serveHubFlags apphub.Options
 
 var serveHubCmd = &cobra.Command{
 	Use:   "hub",
@@ -162,26 +146,30 @@ func lockHubPasskeyState(authFile string) (func() error, error) {
 }
 
 func runServeHub(cmd *cobra.Command, args []string) error {
-	authMode, err := resolveHubAuthMode(serveHubAuthMode)
+	return runServeHubWith(cmd.Context(), hubDeps{Flags: apphub.FlagState{BasePath: cmd.Flags().Changed("base-path")}, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr()}, &serveHubFlags)
+}
+
+func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Options) error {
+	authMode, err := resolveHubAuthMode(opts.AuthMode)
 	if err != nil {
 		return err
 	}
 	requireAuth := authMode != "none"
-	if err := validateHubBind(serveHubHost, serveHubPort, requireAuth); err != nil {
+	if err := validateHubBind(opts.Host, opts.Port, requireAuth); err != nil {
 		return err
 	}
 	var endpoint passkeyauth.Endpoint
 	if authMode == "passkey" {
-		publicURL := strings.TrimSpace(serveHubPublicURL)
+		publicURL := strings.TrimSpace(opts.PublicURL)
 		if publicURL == "" {
 			publicURL = strings.TrimSpace(os.Getenv("TERM_LLM_HUB_PUBLIC_URL"))
 		}
-		endpoint, err = passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: serveHubBasePath, BasePathExplicit: cmd.Flags().Changed("base-path")})
+		endpoint, err = passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: opts.BasePath, BasePathExplicit: deps.Flags.BasePath})
 		if err != nil {
 			return fmt.Errorf("invalid Hub passkey --public-url/--base-path configuration: %w", err)
 		}
 	}
-	hubBasePath, err := normalizeHubBasePath(serveHubBasePath)
+	hubBasePath, err := normalizeHubBasePath(opts.BasePath)
 	if authMode == "passkey" {
 		hubBasePath = endpoint.BasePath
 	}
@@ -194,23 +182,23 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 	var token, tokenSource string
 	if authMode == "passkey" {
-		if t := strings.TrimSpace(serveHubToken); t != "" {
+		if t := strings.TrimSpace(opts.Token); t != "" {
 			token, tokenSource = t, tokenSourceFlag
 		} else if hubTokenEnv != "" {
 			token, tokenSource = hubTokenEnv, tokenSourceEnv
 		}
 	} else {
-		token, tokenSource, err = resolveServeToken(serveHubToken, hubTokenEnv, requireAuth, generateServeToken)
+		token, tokenSource, err = resolveServeToken(opts.Token, hubTokenEnv, requireAuth, generateServeToken)
 		if err != nil {
 			return err
 		}
 	}
 
 	var resolvers []hub.Resolver
-	if strings.TrimSpace(serveHubConfig) != "" {
-		resolvers = append(resolvers, hub.NewStaticResolver(serveHubConfig))
+	if strings.TrimSpace(opts.Config) != "" {
+		resolvers = append(resolvers, hub.NewStaticResolver(opts.Config))
 	}
-	nodesFile := strings.TrimSpace(serveHubNodesFile)
+	nodesFile := strings.TrimSpace(opts.NodesFile)
 	if nodesFile == "" {
 		var err error
 		nodesFile, err = defaultHubNodesFile()
@@ -220,7 +208,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 	store := hub.NewStore(nodesFile)
 	resolvers = append(resolvers, store)
-	if serveHubContain {
+	if opts.Contain {
 		resolvers = append(resolvers, hub.NewContainResolver())
 	}
 
@@ -228,7 +216,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	s.requireAuth = requireAuth
 	s.authMode = authMode
 	s.token = token
-	s.registrationToken = resolveServeHubRegistrationToken(serveHubRegistrationTokenFlag)
+	s.registrationToken = resolveServeHubRegistrationToken(opts.RegistrationToken)
 	s.basePath = hubBasePath
 	// The delegation ledger and the dashboard node order live beside the
 	// node store (same private dir).
@@ -254,7 +242,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}()
 	bootstrapDisplay := ""
 	if authMode == "passkey" {
-		authFile := strings.TrimSpace(serveHubPasskeyAuthFile)
+		authFile := strings.TrimSpace(opts.PasskeyAuthFile)
 		if authFile == "" {
 			authFile, err = defaultHubAuthFile()
 			if err != nil {
@@ -262,24 +250,27 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 			}
 		}
 		var closePasskeys func() error
-		s.passkey, bootstrapDisplay, closePasskeys, err = openBrowserPasskeys(cmd, endpoint, authFile, browserPasskeyOptions{
-			userName: hubPasskeyUserName, trustedProxies: serveHubPasskeyTrustedProxies,
-			bootstrap: resolveHubBootstrapSecret, recovery: resolveHubRecoverySecret,
+		s.passkey, bootstrapDisplay, closePasskeys, err = openBrowserPasskeys(deps.Stderr, endpoint, authFile, browserPasskeyOptions{
+			userName: hubPasskeyUserName, trustedProxies: opts.PasskeyTrustedProxies,
+			bootstrap: func(needed bool) ([]byte, string, error) { return resolveHubBootstrapSecret(deps, opts, needed) },
+			recovery: func(enabled bool) ([]byte, error) {
+				return resolveBrowserRecoverySecret(enabled, opts.RecoveryTokenFile, "TERM_LLM_HUB_RECOVERY_TOKEN")
+			},
 		})
 		if err != nil {
 			return err
 		}
 		defer func() {
 			if err := closePasskeys(); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "passkey state close: %v\n", err)
+				fmt.Fprintf(deps.Stderr, "passkey state close: %v\n", err)
 			}
 		}()
 	}
-	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
+	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	transport := &restart.HTTPTransport{Coordinator: restart.Default}
 	srv := &http.Server{Addr: addr, Handler: transport.Handler(s.handler()), ConnContext: transport.ConnContext, ConnState: transport.ConnState}
 
-	out := cmd.OutOrStdout()
+	out := deps.Stdout
 	if authMode == "passkey" {
 		fmt.Fprintf(out, "term-llm Hub backend listening on http://%s%s\n", addr, s.hubPath("/"))
 	} else {
@@ -320,7 +311,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	if s.registrationToken != "" {
 		fmt.Fprintln(out, "  registration: enabled")
 	}
-	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
+	ctx, stop := signal.NotifyContextWithParent(parentCtx)
 	defer stop()
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -354,7 +345,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 }
 
-var hubOutputIsTerminal = func(w any) bool { f, ok := w.(interface{ Fd() uintptr }); return ok && term.IsTerminal(int(f.Fd())) }
+func hubOutputIsTerminal(w any) bool { return apphub.OutputIsTerminal(w) }
 
 func hubPasskeyBearerCompatibilitySummary(source string) string {
 	switch source {
@@ -377,10 +368,10 @@ func resolveHubAuthMode(raw string) (string, error) {
 	}
 	return mode, nil
 }
-func resolveHubBootstrapSecret(cmd *cobra.Command, needed bool) ([]byte, string, error) {
-	return resolveBrowserBootstrapSecret(cmd, needed, serveHubBootstrapTokenFile, "TERM_LLM_HUB_BOOTSTRAP_TOKEN", serveHubPrintBootstrapToken, cmd.OutOrStdout())
+func resolveHubBootstrapSecret(deps hubDeps, opts *apphub.Options, needed bool) ([]byte, string, error) {
+	return resolveBrowserBootstrapSecret(deps.Stderr, needed, opts.BootstrapTokenFile, "TERM_LLM_HUB_BOOTSTRAP_TOKEN", opts.PrintBootstrapToken, deps.Stdout)
 }
-func resolveBrowserBootstrapSecret(cmd *cobra.Command, needed bool, file, envName string, printSecret bool, output io.Writer) ([]byte, string, error) {
+func resolveBrowserBootstrapSecret(stderr io.Writer, needed bool, file, envName string, printSecret bool, output io.Writer) ([]byte, string, error) {
 	env := os.Getenv(envName)
 	_ = os.Unsetenv(envName)
 	if !needed {
@@ -406,12 +397,9 @@ func resolveBrowserBootstrapSecret(cmd *cobra.Command, needed bool, file, envNam
 		return nil, "", err
 	}
 	if !interactive {
-		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: printing a passkey bootstrap code to non-interactive output; service logs are temporary enrollment credentials")
+		fmt.Fprintln(stderr, "WARNING: printing a passkey bootstrap code to non-interactive output; service logs are temporary enrollment credentials")
 	}
 	return secret, display, nil
-}
-func resolveHubRecoverySecret(enabled bool) ([]byte, error) {
-	return resolveBrowserRecoverySecret(enabled, serveHubRecoveryTokenFile, "TERM_LLM_HUB_RECOVERY_TOKEN")
 }
 func resolveBrowserRecoverySecret(enabled bool, file, envName string) ([]byte, error) {
 	env := os.Getenv(envName)
@@ -434,19 +422,19 @@ func resolveBrowserRecoverySecret(enabled bool, file, envName string) ([]byte, e
 
 func init() {
 	serveCmd.AddCommand(serveHubCmd)
-	serveHubCmd.Flags().StringVar(&serveHubHost, "host", "127.0.0.1", "Host to bind")
-	serveHubCmd.Flags().IntVar(&serveHubPort, "port", 8090, "Port to bind")
-	serveHubCmd.Flags().StringVar(&serveHubConfig, "config", "", "Path to a static nodes config file (YAML or JSON)")
-	serveHubCmd.Flags().BoolVar(&serveHubContain, "contain", true, "Discover nodes from local contain workspaces")
-	serveHubCmd.Flags().StringVar(&serveHubNodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
-	serveHubCmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer, passkey, or none (none is loopback-only)")
-	serveHubCmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (auto-generated in bearer mode; optional explicit API token in passkey mode)")
-	serveHubCmd.Flags().StringVar(&serveHubBasePath, "base-path", "/", "URL prefix for the Hub dashboard/API when mounted behind a reverse proxy (e.g. /hub)")
-	serveHubCmd.Flags().StringVar(&serveHubPublicURL, "public-url", "", "Stable browser-visible URL required for passkey auth (or $TERM_LLM_HUB_PUBLIC_URL)")
-	serveHubCmd.Flags().StringVar(&serveHubPasskeyAuthFile, "passkey-auth-file", "", "Passkey credential store (default: <data-dir>/hub/auth.json)")
-	serveHubCmd.Flags().StringVar(&serveHubBootstrapTokenFile, "passkey-bootstrap-token-file", "", "Private file containing the first-passkey setup secret")
-	serveHubCmd.Flags().StringVar(&serveHubRecoveryTokenFile, "passkey-recovery-token-file", "", "Private file containing a short-lived passkey recovery secret")
-	serveHubCmd.Flags().BoolVar(&serveHubPrintBootstrapToken, "print-passkey-bootstrap-token", false, "Print a generated first-passkey setup code even when output is not interactive (unsafe for service logs)")
-	serveHubCmd.Flags().StringSliceVar(&serveHubPasskeyTrustedProxies, "passkey-trusted-proxy", nil, "Trusted reverse-proxy IP or CIDR allowed to supply X-Forwarded-For (repeatable)")
-	serveHubCmd.Flags().StringVar(&serveHubRegistrationTokenFlag, "registration-token", "", "Token that allows reverse nodes to self-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN; empty disables registration)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.Host, "host", "127.0.0.1", "Host to bind")
+	serveHubCmd.Flags().IntVar(&serveHubFlags.Port, "port", 8090, "Port to bind")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.Config, "config", "", "Path to a static nodes config file (YAML or JSON)")
+	serveHubCmd.Flags().BoolVar(&serveHubFlags.Contain, "contain", true, "Discover nodes from local contain workspaces")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.NodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.AuthMode, "auth", "bearer", "Hub auth mode: bearer, passkey, or none (none is loopback-only)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.Token, "token", "", "Hub bearer token (auto-generated in bearer mode; optional explicit API token in passkey mode)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.BasePath, "base-path", "/", "URL prefix for the Hub dashboard/API when mounted behind a reverse proxy (e.g. /hub)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.PublicURL, "public-url", "", "Stable browser-visible URL required for passkey auth (or $TERM_LLM_HUB_PUBLIC_URL)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.PasskeyAuthFile, "passkey-auth-file", "", "Passkey credential store (default: <data-dir>/hub/auth.json)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.BootstrapTokenFile, "passkey-bootstrap-token-file", "", "Private file containing the first-passkey setup secret")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.RecoveryTokenFile, "passkey-recovery-token-file", "", "Private file containing a short-lived passkey recovery secret")
+	serveHubCmd.Flags().BoolVar(&serveHubFlags.PrintBootstrapToken, "print-passkey-bootstrap-token", false, "Print a generated first-passkey setup code even when output is not interactive (unsafe for service logs)")
+	serveHubCmd.Flags().StringSliceVar(&serveHubFlags.PasskeyTrustedProxies, "passkey-trusted-proxy", nil, "Trusted reverse-proxy IP or CIDR allowed to supply X-Forwarded-For (repeatable)")
+	serveHubCmd.Flags().StringVar(&serveHubFlags.RegistrationToken, "registration-token", "", "Token that allows reverse nodes to self-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN; empty disables registration)")
 }

@@ -124,9 +124,9 @@ func TestBrowserPasskeyStartupFailureReleasesLocks(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	authFile := filepath.Join(t.TempDir(), "auth", "auth.json")
 	failure := errors.New("bootstrap unavailable")
-	opts := browserPasskeyOptions{userName: "Web operator", bootstrap: func(*cobra.Command, bool) ([]byte, string, error) { return nil, "", failure }}
+	opts := browserPasskeyOptions{userName: "Web operator", bootstrap: func(bool) ([]byte, string, error) { return nil, "", failure }}
 	for i := 0; i < 2; i++ {
-		_, _, _, err := openBrowserPasskeys(cmd, endpoint, authFile, opts)
+		_, _, _, err := openBrowserPasskeys(cmd.ErrOrStderr(), endpoint, authFile, opts)
 		if !errors.Is(err, failure) {
 			t.Fatalf("attempt %d: %v", i, err)
 		}

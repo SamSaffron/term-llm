@@ -642,7 +642,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_hub_cmd.go|cmd||runServeHub",
+      "key": ".|cmd/serve_hub_cmd.go|cmd||runServeHubWith",
       "complexity": 48,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",

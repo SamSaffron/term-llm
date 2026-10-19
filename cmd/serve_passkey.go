@@ -62,10 +62,10 @@ func openWebPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint, opts *Se
 		}
 		authFile = filepath.Join(dir, "web-auth", "auth.json")
 	}
-	runtime, display, cleanup, err := openBrowserPasskeys(cmd, endpoint, authFile, browserPasskeyOptions{
+	runtime, display, cleanup, err := openBrowserPasskeys(cmd.ErrOrStderr(), endpoint, authFile, browserPasskeyOptions{
 		userName: "Web operator", displayName: "term-llm Web", trustedProxies: opts.PasskeyTrustedProxies,
-		bootstrap: func(cmd *cobra.Command, needed bool) ([]byte, string, error) {
-			return resolveBrowserBootstrapSecret(cmd, needed, opts.PasskeyBootstrapFile, "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", opts.PrintPasskeyBootstrap, cmd.ErrOrStderr())
+		bootstrap: func(needed bool) ([]byte, string, error) {
+			return resolveBrowserBootstrapSecret(cmd.ErrOrStderr(), needed, opts.PasskeyBootstrapFile, "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", opts.PrintPasskeyBootstrap, cmd.ErrOrStderr())
 		},
 		recovery: func(enabled bool) ([]byte, error) {
 			return resolveBrowserRecoverySecret(enabled, opts.PasskeyRecoveryFile, "TERM_LLM_SERVE_RECOVERY_TOKEN")
