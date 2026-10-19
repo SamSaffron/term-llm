@@ -578,6 +578,8 @@ func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMo
 // WireSpawnAgentRunnerWithStore sets up the spawn_agent runner with session tracking.
 // store is used to save subagent turns, parentSessionID links child sessions to parent.
 // Returns the runner so callers can call Wait() to drain in-flight runs before closing the store.
+// Uses default persistence/memory inputs. Custom WireSpawn callbacks must capture
+// invocation inputs and call WireSpawnAgentRunnerWithInputs to preserve overrides.
 func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) (*SpawnAgentRunner, error) {
 	return WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, 0)
 }
@@ -595,6 +597,7 @@ func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yo
 
 // WireSpawnAgentRunnerWithStoreAndDepth is WireSpawnAgentRunnerWithStore with an
 // explicit current depth for nested spawn_agent tools.
+// It uses default persistence/memory inputs; use WithInputs for captured overrides.
 func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int) (*SpawnAgentRunner, error) {
 	return WireSpawnAgentRunnerWithInputs(cfg, toolMgr, yoloMode, store, parentSessionID, depth, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
 }

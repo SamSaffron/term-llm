@@ -190,6 +190,9 @@ func TestPrepareAskInputResizesLargeImageWithProviderDimensions(t *testing.T) {
 		t.Fatalf("PrepareInput: %v", err)
 	}
 	t.Cleanup(func() { CleanupPreparedInput(got) })
+	if len(got.Message.Parts) != 2 || got.Message.Parts[0].Type != core.PartImage {
+		t.Fatalf("expected image followed by prompt, got parts: %+v", got.Message.Parts)
+	}
 	part := got.Message.Parts[0]
 	if part.ImageData == nil {
 		t.Fatal("missing provider image metadata")
