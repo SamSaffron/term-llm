@@ -27,6 +27,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -148,65 +149,15 @@ func uiGetOrBuildEntry(data []byte, compressible bool) *uiAssetCacheEntry {
 	return actual.(*uiAssetCacheEntry)
 }
 
-func uiETagMatches(headerValue, etag string) bool {
-	if headerValue == "" || etag == "" {
-		return false
-	}
-	for _, part := range strings.Split(headerValue, ",") {
-		candidate := strings.TrimSpace(part)
-		if candidate == "*" || candidate == etag || candidate == "W/"+etag {
-			return true
-		}
-	}
-	return false
-}
+func uiETagMatches(headerValue, etag string) bool { return wire.ETagMatches(headerValue, etag) }
 
-func uiAcceptsGzip(headerValue string) bool {
-	for _, part := range strings.Split(headerValue, ",") {
-		pieces := strings.Split(part, ";")
-		if strings.TrimSpace(strings.ToLower(pieces[0])) != "gzip" {
-			continue
-		}
-		accepted := true
-		for _, param := range pieces[1:] {
-			param = strings.TrimSpace(strings.ToLower(param))
-			if strings.HasPrefix(param, "q=") {
-				q, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(param, "q=")), 64)
-				if err == nil && q <= 0 {
-					accepted = false
-				}
-			}
-		}
-		return accepted
-	}
-	return false
-}
+func uiAcceptsGzip(headerValue string) bool { return wire.AcceptsGzip(headerValue) }
 
 func uiCompressibleContentType(contentType string) bool {
-	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	if strings.HasPrefix(mediaType, "text/") {
-		return true
-	}
-	switch mediaType {
-	case "application/javascript", "application/json", "application/manifest+json", "application/x-javascript", "image/svg+xml":
-		return true
-	default:
-		return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
-	}
+	return wire.CompressibleContentType(contentType)
 }
 
-func uiAddVary(header http.Header, value string) {
-	for _, existing := range strings.Split(header.Get("Vary"), ",") {
-		if strings.EqualFold(strings.TrimSpace(existing), value) {
-			return
-		}
-	}
-	if current := header.Get("Vary"); current != "" {
-		header.Set("Vary", current+", "+value)
-		return
-	}
-	header.Set("Vary", value)
-}
+func uiAddVary(header http.Header, value string) { wire.AddVary(header, value) }
 
 func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, contentType, cacheControl string, conditional bool) {
 	entry := uiGetOrBuildEntry(data, uiCompressibleContentType(contentType))
@@ -3081,7 +3032,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
 			w.Header().Add("Vary", steeringProtocolHeader)
-			w = &steeringWireWriter{ResponseWriter: w, canonical: version == "1" || strings.Contains(r.URL.Path, "/steering")}
+			w = wire.NewSteeringWriter(w, version == "1" || strings.Contains(r.URL.Path, "/steering"))
 		}
 		next(w, r)
 	}

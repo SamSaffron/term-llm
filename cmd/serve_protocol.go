@@ -2,12 +2,8 @@ package cmd
 
 import (
 	"bytes"
-	"compress/gzip"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -18,9 +14,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/filemime"
@@ -49,31 +45,13 @@ type sessionRuntimeGoalRequest struct {
 }
 
 func writeChatStreamChunk(w io.Writer, payload any) error {
-	b, err := steeringWireJSON(w, payload)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", b)
-	return err
+	return wire.WriteChatStreamChunk(w, payload)
 }
 
-func setSSEHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-}
+func setSSEHeaders(w http.ResponseWriter) { wire.SetSSEHeaders(w) }
 
 func writeSSEEvent(w io.Writer, event string, payload any) error {
-	b, err := steeringWireJSON(w, payload)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", steeringWireEvent(w, event)); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", b)
-	return err
+	return wire.WriteSSEEvent(w, event, payload)
 }
 
 func extractMessageText(content json.RawMessage) string {
@@ -725,99 +703,28 @@ func jsonString(raw json.RawMessage) string {
 }
 
 func writeOpenAIError(w http.ResponseWriter, status int, errorType, message string) {
-	writeJSON(w, status, map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    errorType,
-		},
-	})
+	wire.WriteOpenAIError(w, status, errorType, message)
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	b, _ := steeringWireJSON(w, payload)
-	_, _ = w.Write(append(b, '\n'))
-}
+func writeJSON(w http.ResponseWriter, status int, payload any) { wire.WriteJSON(w, status, payload) }
 
-const jsonGzipMinBytes = 512
+const jsonGzipMinBytes = wire.JSONGzipMinBytes
 
-// writeJSONGzip writes payload as JSON and gzip-compresses the response when
-// the client advertises gzip support and the marshaled payload is larger than
-// jsonGzipMinBytes. Small responses stay uncompressed to avoid gzip overhead.
 func writeJSONGzip(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	body, err := steeringWireJSON(w, payload)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSONGzipBody(w, r, status, body)
+	wire.WriteJSONGzip(w, r, status, payload)
 }
 
 func writeJSONGzipBody(w http.ResponseWriter, r *http.Request, status int, body []byte) {
-	h := w.Header()
-	h.Set("Content-Type", "application/json")
-	uiAddVary(h, "Accept-Encoding")
-
-	if len(body) > jsonGzipMinBytes && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
-		var buf bytes.Buffer
-		gz, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
-		if err == nil {
-			_, err = gz.Write(body)
-			if closeErr := gz.Close(); err == nil {
-				err = closeErr
-			}
-		}
-		if err == nil {
-			body = buf.Bytes()
-			h.Set("Content-Encoding", "gzip")
-		}
-	}
-
-	h.Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	wire.WriteJSONGzipBody(w, r, status, body)
 }
 
-// writeJSONConditional marshals payload, sets an ETag, and returns 304 Not
-// Modified when the client's If-None-Match header already holds the current
-// ETag. Cache-Control: no-cache tells browsers to always revalidate, so they
-// issue a conditional GET rather than skipping the request entirely.
-func jsonPayloadETag(body []byte) string {
-	sum := sha256.Sum256(body)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
-}
+func jsonPayloadETag(body []byte) string { return wire.JSONPayloadETag(body) }
 
 func writeJSONConditional(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	body, err := steeringWireJSON(w, payload)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	h := w.Header()
-	h.Set("Cache-Control", "no-cache")
-	etag := jsonPayloadETag(body)
-	h.Set("ETag", etag)
-	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
-		h.Set("Content-Type", "application/json")
-		uiAddVary(h, "Accept-Encoding")
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	writeJSONGzipBody(w, r, status, body)
+	wire.WriteJSONConditional(w, r, status, payload)
 }
 
-func decodeJSONBody(r *http.Request, dst any) error {
-	defer r.Body.Close()
-	dec := json.NewDecoder(io.LimitReader(r.Body, 50<<20))
-	if err := dec.Decode(dst); err != nil {
-		return err
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return fmt.Errorf("request body must contain a single JSON object")
-	}
-	return nil
-}
+func decodeJSONBody(r *http.Request, dst any) error { return wire.DecodeJSONBody(r, dst) }
 
 const (
 	requestSessionIDHeader        = "X-Term-LLM-Session-ID"
@@ -845,20 +752,7 @@ func setSessionNumberHeader(w http.ResponseWriter, rt *serveRuntime) {
 	}
 }
 
-func requireJSONContentType(r *http.Request) error {
-	contentType := r.Header.Get("Content-Type")
-	if strings.TrimSpace(contentType) == "" {
-		return fmt.Errorf("Content-Type must be application/json")
-	}
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return fmt.Errorf("invalid Content-Type header")
-	}
-	if mediaType != "application/json" {
-		return fmt.Errorf("Content-Type must be application/json")
-	}
-	return nil
-}
+func requireJSONContentType(r *http.Request) error { return wire.RequireJSONContentType(r) }
 
 func sessionOrRandomID(sessionID string) string {
 	if sessionID != "" {
@@ -880,13 +774,7 @@ func sanitizeID(s string) string {
 	return b.String()
 }
 
-func randomSuffix() string {
-	buf := make([]byte, 9)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return base64.RawURLEncoding.EncodeToString(buf)
-}
+func randomSuffix() string { return wire.RandomSuffix() }
 
 // parseUploadedFilePart stores any file independently of provider comprehension.
 // Providers decide whether FileData can travel natively; Text is the safe fallback.

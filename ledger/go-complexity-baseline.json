@@ -1178,7 +1178,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_steering_wire.go|cmd||normalizeSteeringObject",
+      "key": ".|internal/app/serve/wire/steering.go|wire||NormalizeSteeringObject",
       "complexity": 51,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
