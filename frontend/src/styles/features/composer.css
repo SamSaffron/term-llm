@@ -2,7 +2,7 @@
 
 .composer {
   background: var(--bg);
-  padding: 0.75rem calc(1rem + var(--safe-right)) max(0.3rem, calc(var(--safe-bottom) * 0.35))
+  padding: 0.75rem calc(1rem + var(--safe-right)) max(1rem, var(--safe-bottom))
     calc(1rem + var(--safe-left));
   position: relative;
   z-index: var(--z-local-raised);
@@ -357,8 +357,10 @@
 }
 
 .composer-box {
+  --composer-control-size: 36px;
+
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: end;
   border: 1px solid var(--border);
   border-radius: 24px;
@@ -439,15 +441,14 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  width: 36px;
-  height: 36px;
+  width: var(--composer-control-size);
+  height: var(--composer-control-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   border-radius: 50%;
   flex-shrink: 0;
-  margin-bottom: 6px;
   transition:
     background 0.15s ease,
     color 0.15s ease;
@@ -460,6 +461,7 @@
 
 .interaction-attention-banner {
   width: 100%;
+  margin-bottom: 0.45rem;
   padding: 0.55rem 0.75rem;
   color: var(--text);
   background: color-mix(in srgb, var(--accent) 16%, var(--surface));
@@ -495,6 +497,7 @@
 }
 
 .approval-mode-chip {
+  margin-bottom: 0.45rem;
   border-color: rgb(245 158 11 / 45%);
   background: rgb(245 158 11 / 13%);
 }
@@ -599,10 +602,6 @@
   outline: none;
 }
 
-.voice-btn {
-  margin-bottom: 6px;
-}
-
 .voice-btn.recording {
   background: rgb(248 113 113 / 14%);
   color: var(--danger);
@@ -619,6 +618,7 @@
 
 .prompt {
   resize: none;
+  min-width: 0;
   min-height: 36px;
   max-height: min(300px, max(200px, 45dvh));
   border: none;
@@ -644,12 +644,19 @@
   flex-shrink: 0;
 }
 
+/* Center controls on the last line, including after the input grows. The
+   touch size changes without leaving Stop or the microphone off baseline. */
+.attach-btn,
+.composer-actions {
+  margin-bottom: calc((1.5rem + 28px - var(--composer-control-size)) / 2);
+}
+
 .stop-btn {
   border: 1px solid rgb(248 113 113 / 30%);
   background: rgb(248 113 113 / 8%);
   color: var(--stop-btn-text);
   border-radius: 999px;
-  height: 36px;
+  height: var(--composer-control-size);
   padding: 0 14px;
   cursor: pointer;
   display: none;
@@ -668,8 +675,8 @@
 }
 
 .send-btn {
-  width: 36px;
-  height: 36px;
+  width: var(--composer-control-size);
+  height: var(--composer-control-size);
   border: none;
   border-radius: 999px;
   background: var(--gradient-accent-strong);
@@ -680,8 +687,6 @@
   font-weight: 700;
   cursor: pointer;
   flex-shrink: 0;
-  margin-bottom: 7px;
-  margin-right: 4px;
   transition: opacity 0.15s ease;
 }
 
@@ -752,7 +757,7 @@
 
 @media (width <= 700px) {
   .composer {
-    padding: 0.45rem calc(0.5rem + var(--safe-right)) max(0.1rem, calc(var(--safe-bottom) * 0.2))
+    padding: 0.45rem calc(0.5rem + var(--safe-right)) max(1rem, var(--safe-bottom))
       calc(0.5rem + var(--safe-left));
   }
 
@@ -793,25 +798,14 @@
   }
 
   .composer-box {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    --composer-control-size: 44px;
+
     border-radius: 22px;
     padding: 5px;
   }
 
-  .composer-icon-btn,
-  .send-btn,
-  .stop-btn {
-    min-height: 44px;
-  }
-
-  .composer-icon-btn,
-  .send-btn {
-    width: 44px;
-    height: 44px;
-  }
-
   .prompt {
-    padding: 12px 6px;
+    padding-inline: 6px;
   }
 }
 

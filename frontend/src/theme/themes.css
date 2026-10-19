@@ -1,0 +1,255 @@
+/* Optional Personal Bot palettes for core chat. The unthemed root keeps the
+   original system light/dark colors. :where keeps token specificity low so
+   extension styles loaded later can still customize the selected palette.
+
+   Named palette sources:
+   https://catppuccin.com/palette/ (Mocha)
+   https://draculatheme.com/spec (Classic)
+   https://www.nordtheme.com/docs/colors-and-palettes/
+   https://github.com/folke/tokyonight.nvim/tree/main/lua/tokyonight/colors
+   Muted, error and syntax colors are strengthened where needed for contrast
+   on chat controls and tinted diff lines. */
+
+:root:where([data-chat-theme]) {
+  --bg-accent: color-mix(in srgb, var(--accent) 4%, transparent);
+  --bg-accent-2: color-mix(in srgb, var(--accent) 2%, transparent);
+  --surface-strong: var(--surface);
+  --accent-strong: color-mix(in srgb, var(--accent) 90%, var(--text));
+  --error-text: var(--danger);
+  --stop-btn-text: color-mix(in srgb, var(--danger) 30%, var(--text));
+  --gradient-accent: var(--surface-2);
+  --gradient-accent-strong: var(--accent-strong);
+  --backdrop: color-mix(in srgb, var(--theme-shadow) 45%, transparent);
+  --overlay: color-mix(in srgb, var(--theme-shadow) 65%, transparent);
+  --spinner-ring: color-mix(in srgb, var(--btn-accent-text) 35%, transparent);
+  --shadow-soft: 0 2px 6px color-mix(in srgb, var(--theme-shadow) 8%, transparent);
+  --shadow-strong: 0 12px 36px color-mix(in srgb, var(--theme-shadow) 22%, transparent);
+  --diff-add-bg: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  --diff-add-ln-bg: color-mix(in srgb, var(--accent-green) 20%, transparent);
+  --diff-del-bg: color-mix(in srgb, var(--danger) 12%, transparent);
+  --diff-del-ln-bg: color-mix(in srgb, var(--danger) 20%, transparent);
+  --diff-file-del-bg: color-mix(in srgb, var(--danger) 6%, transparent);
+  --diff-file-del-ln-bg: color-mix(in srgb, var(--danger) 10%, transparent);
+  --startup-bg: var(--bg);
+  --startup-bg-accent: var(--bg-accent);
+  --startup-surface: var(--surface);
+  --startup-surface-2: var(--surface-2);
+  --startup-border: var(--border);
+  --startup-text: var(--text);
+  --startup-text-muted: var(--text-muted);
+  --startup-accent: var(--accent);
+  --startup-shadow: var(--shadow-strong);
+
+  accent-color: var(--accent);
+}
+
+:root:where([data-chat-theme='sage-light']) {
+  color-scheme: light;
+
+  --bg: #fbfaf7;
+  --surface: #fff;
+  --surface-2: #edf1e7;
+  --surface-3: #e0e7d9;
+  --text: #28372e;
+  --text-muted: #59665a;
+  --border: #d5dccd;
+  --border-strong: #81917c;
+  --accent: #4f6b42;
+  --btn-accent-text: #fff;
+  --accent-green: #3e6b48;
+  --accent-amber: #8c5b16;
+  --danger: #b3413c;
+  --link: #34658b;
+  --theme-code-bg: #f0f2eb;
+  --theme-shadow: #28372e;
+  --syntax-text: #28372e;
+  --syntax-keyword: #94415f;
+  --syntax-entity: #725092;
+  --syntax-constant: #34658b;
+  --syntax-string: #3e6b48;
+  --syntax-variable: #8b5229;
+  --syntax-comment: #606d61;
+  --syntax-tag: #4f6b42;
+  --syntax-heading: #34658b;
+  --syntax-bullet: #8c5b16;
+  --stop-btn-text: #991b1b;
+}
+
+:root:where([data-chat-theme='sage-dark']) {
+  color-scheme: dark;
+
+  --bg: #171c1b;
+  --surface: #242e28;
+  --surface-2: #2d3930;
+  --surface-3: #3a493c;
+  --text: #eef1e9;
+  --text-muted: #aebbad;
+  --border: #3c4a3e;
+  --border-strong: #71876c;
+  --accent: #b8d3a4;
+  --btn-accent-text: #203023;
+  --accent-green: #a5cf9d;
+  --accent-amber: #e0bb79;
+  --danger: #efa398;
+  --link: #a9c9e1;
+  --theme-code-bg: #1c2420;
+  --theme-shadow: #090f0b;
+  --syntax-text: #eef1e9;
+  --syntax-keyword: #d5b2cd;
+  --syntax-entity: #d2bce7;
+  --syntax-constant: #a9c9e1;
+  --syntax-string: #b8d3a4;
+  --syntax-variable: #dfb893;
+  --syntax-comment: #aebbad;
+  --syntax-tag: #a5cf9d;
+  --syntax-heading: #a9c9e1;
+  --syntax-bullet: #e0bb79;
+}
+
+:root:where([data-chat-theme='catppuccin']) {
+  color-scheme: dark;
+
+  --bg: #1e1e2e;
+  --surface: #313244;
+  --surface-2: #45475a;
+  --surface-3: #585b70;
+  --text: #cdd6f4;
+  --text-muted: #cbd4f2;
+  --border: #45475a;
+  --border-strong: #7f849c;
+  --accent: #cba6f7;
+  --btn-accent-text: #1e1e2e;
+  --accent-green: #a6e3a1;
+  --accent-amber: #f9e2af;
+  --danger: #f38ba8;
+  --link: #89b4fa;
+  --theme-code-bg: #181825;
+  --theme-shadow: #11111b;
+  --syntax-text: #cdd6f4;
+  --syntax-keyword: #cba6f7;
+  --syntax-entity: color-mix(in srgb, #89b4fa 95%, var(--text));
+  --syntax-constant: #fab387;
+  --syntax-string: #a6e3a1;
+  --syntax-variable: #f2cdcd;
+  --syntax-comment: #bac2de;
+  --syntax-tag: #94e2d5;
+  --syntax-heading: #b4befe;
+  --syntax-bullet: #f9e2af;
+}
+
+:root:where([data-chat-theme='dracula']) {
+  color-scheme: dark;
+
+  --bg: #282a36;
+  --surface: #343746;
+  --surface-2: #44475a;
+  --surface-3: #424450;
+  --text: #f8f8f2;
+  --text-muted: color-mix(in srgb, #f8f8f2 70%, #6272a4);
+  --border: #44475a;
+  --border-strong: #6272a4;
+  --accent: #bd93f9;
+  --btn-accent-text: #282a36;
+  --accent-green: #50fa7b;
+  --accent-amber: #ffb86c;
+  --danger: #ff8b8b;
+  --link: #8be9fd;
+  --theme-code-bg: #21222c;
+  --theme-shadow: #191a21;
+  --syntax-text: #f8f8f2;
+  --syntax-keyword: color-mix(in srgb, #ff79c6 70%, var(--text));
+  --syntax-entity: #50fa7b;
+  --syntax-constant: #ffb86c;
+  --syntax-string: #f1fa8c;
+  --syntax-variable: #f8f8f2;
+  --syntax-comment: var(--text-muted);
+  --syntax-tag: #8be9fd;
+  --syntax-heading: color-mix(in srgb, #bd93f9 70%, var(--text));
+  --syntax-bullet: #f1fa8c;
+}
+
+:root:where([data-chat-theme='nord']) {
+  color-scheme: dark;
+
+  --bg: #2e3440;
+  --surface: #3b4252;
+  --surface-2: #434c5e;
+  --surface-3: #4c566a;
+  --text: #eceff4;
+  --text-muted: #d8dee9;
+  --border: #4c566a;
+  --border-strong: #81a1c1;
+  --accent: #88c0d0;
+  --btn-accent-text: #2e3440;
+  --accent-green: #a3be8c;
+  --accent-amber: #ebcb8b;
+  --danger: color-mix(in srgb, #bf616a 45%, #eceff4);
+  --link: #88c0d0;
+  --theme-code-bg: #2e3440;
+  --theme-shadow: #2e3440;
+  --syntax-text: #eceff4;
+  --syntax-keyword: color-mix(in srgb, #81a1c1 50%, var(--text));
+  --syntax-entity: color-mix(in srgb, #88c0d0 80%, var(--text));
+  --syntax-constant: color-mix(in srgb, #b48ead 50%, var(--text));
+  --syntax-string: color-mix(in srgb, #a3be8c 75%, var(--text));
+  --syntax-variable: #d8dee9;
+  --syntax-comment: #d8dee9;
+  --syntax-tag: color-mix(in srgb, #8fbcbb 70%, var(--text));
+  --syntax-heading: color-mix(in srgb, #88c0d0 80%, var(--text));
+  --syntax-bullet: #ebcb8b;
+}
+
+:root:where([data-chat-theme='tokyo-night']) {
+  color-scheme: dark;
+
+  --bg: #1a1b26;
+  --surface: #24283b;
+  --surface-2: #292e42;
+  --surface-3: #3b4261;
+  --text: #c0caf5;
+  --text-muted: #a9b1d6;
+  --border: #3b4261;
+  --border-strong: #737aa2;
+  --accent: #7aa2f7;
+  --btn-accent-text: #1a1b26;
+  --accent-green: #9ece6a;
+  --accent-amber: #e0af68;
+  --danger: #f7768e;
+  --link: #7dcfff;
+  --theme-code-bg: #16161e;
+  --theme-shadow: #0c0e14;
+  --syntax-text: #c0caf5;
+  --syntax-keyword: #bb9af7;
+  --syntax-entity: color-mix(in srgb, #7aa2f7 90%, var(--text));
+  --syntax-constant: #ff9e64;
+  --syntax-string: #9ece6a;
+  --syntax-variable: #c0caf5;
+  --syntax-comment: #a9b1d6;
+  --syntax-tag: #7dcfff;
+  --syntax-heading: color-mix(in srgb, #7aa2f7 90%, var(--text));
+  --syntax-bullet: #e0af68;
+}
+
+:root:where([data-chat-theme]) ::selection {
+  background: var(--accent);
+  color: var(--btn-accent-text);
+}
+
+:root:where([data-chat-theme]) :is(input, textarea)::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+/* Audio otherwise explicitly follows the operating system's color scheme. */
+:root:where([data-chat-theme]) .audio-media-card audio {
+  color-scheme: inherit;
+}
+
+:root:where([data-chat-theme]) .markdown-body :is(pre, .hljs) {
+  background: var(--theme-code-bg);
+}
+
+:root:where([data-chat-theme]) .message.error .message-body {
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg));
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}

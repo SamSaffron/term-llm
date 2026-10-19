@@ -585,7 +585,7 @@
 .worktree-modal .btn.danger {
   border-color: var(--danger);
   background: var(--danger);
-  color: white;
+  color: var(--btn-accent-text);
 }
 
 .worktree-muted-note {

@@ -8,6 +8,7 @@ import {
   type ExtensionStatus,
 } from '../stores/extension-runtime';
 import { errorMessage } from '../domain/text';
+import { ThemePicker } from '../theme/ThemePicker';
 
 export function ExtensionSettings() {
   const store = useStore();
@@ -89,6 +90,7 @@ export function ExtensionSettings() {
     : [];
   return (
     <section class="extension-settings" aria-label="Extensions">
+      <ThemePicker />
       {store.config.agentNames.includes('extension-builder') && (
         <button type="button" class="btn extension-builder" onClick={startExtensionBuilder}>
           ✦ Make UI Mine
