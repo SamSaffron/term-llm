@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"context"
@@ -7,16 +7,18 @@ import (
 	"github.com/samsaffron/term-llm/internal/jobs"
 )
 
-type jobsV2ProgramRunner struct{}
+// ProgramRunner executes program-backed jobs.
+type ProgramRunner struct{}
 
 var (
 	jobsV2ProgramOutputLimit int64         = jobs.ProgramOutputLimit
 	jobsV2ProgramWaitDelay   time.Duration = jobs.ProgramWaitDelay
 )
 
-type jobsV2ProgramConfig = jobs.ProgramConfig
+// ProgramConfig is the configuration accepted by ProgramRunner.
+type ProgramConfig = jobs.ProgramConfig
 
-func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+func (r *ProgramRunner) Run(ctx context.Context, job Job, pw ProgressWriter) (RunResult, error) {
 	result, err := (&jobs.ProgramRunner{
 		OutputLimit: jobsV2ProgramOutputLimit,
 		WaitDelay:   jobsV2ProgramWaitDelay,
@@ -39,7 +41,7 @@ func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progres
 		CreatedAt:         job.CreatedAt,
 		UpdatedAt:         job.UpdatedAt,
 	}, jobs.ProgressWriter(pw))
-	return jobsV2RunResult{
+	return RunResult{
 		ExitCode:     result.ExitCode,
 		Stdout:       result.Stdout,
 		Stderr:       result.Stderr,

@@ -41,6 +41,7 @@ type jobsV2RunResult = servejobs.RunResult
 type jobsV2RunDoneNotifier = servejobs.RunDoneNotifier
 type jobsV2Runner = servejobs.Runner
 type jobsV2Run = servejobs.Run
+type jobsV2Manager = servejobs.Manager
 
 const jobsV2RunnerLLM = servejobs.RunnerLLM
 const jobsV2RunnerProgram = servejobs.RunnerProgram

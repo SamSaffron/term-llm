@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"context"
@@ -10,16 +10,16 @@ import (
 	"github.com/samsaffron/term-llm/internal/restart"
 )
 
-func jobsV2NotifyTerminalStatus(status jobsV2RunStatus) bool {
+func jobsV2NotifyTerminalStatus(status RunStatus) bool {
 	switch status {
-	case jobsV2RunSucceeded, jobsV2RunFailed, jobsV2RunCancelled, jobsV2RunTimedOut:
+	case RunSucceeded, RunFailed, RunCancelled, RunTimedOut:
 		return true
 	default:
 		return false
 	}
 }
 
-func (m *jobsV2Manager) enqueueRunDoneNotification(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
+func (m *Manager) enqueueRunDoneNotification(run Run, status RunStatus, result RunResult, exitReason string, truncated bool, errText string) {
 	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
@@ -39,7 +39,7 @@ const (
 	jobsV2NotifyInitialRetryDelay = time.Second
 )
 
-func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
+func (m *Manager) notifyRunDone(run Run, status RunStatus, result RunResult, exitReason string, truncated bool, errText string) {
 	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
@@ -72,11 +72,11 @@ func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, res
 		if notifyCtx.Err() != nil {
 			return
 		}
-		if attempt == jobsV2NotifyMaxAttempts || !jobsV2NotifyErrorRetryable(notifyErr) {
+		if attempt == jobsV2NotifyMaxAttempts || !NotifyErrorRetryable(notifyErr) {
 			break
 		}
 
-		timer := time.NewTimer(jobsV2NotifyRetryDelay(notifyErr, attempt))
+		timer := time.NewTimer(NotifyRetryDelay(notifyErr, attempt))
 		select {
 		case <-timer.C:
 		case <-notifyCtx.Done():
@@ -87,7 +87,8 @@ func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, res
 	_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": notifyErr.Error()})
 }
 
-func jobsV2NotifyErrorRetryable(err error) bool {
+// NotifyErrorRetryable reports whether a completion notification error should be retried.
+func NotifyErrorRetryable(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
@@ -100,7 +101,8 @@ func jobsV2NotifyErrorRetryable(err error) bool {
 	return true
 }
 
-func jobsV2NotifyRetryDelay(err error, failedAttempt int) time.Duration {
+// NotifyRetryDelay returns the delay before the next notification attempt.
+func NotifyRetryDelay(err error, failedAttempt int) time.Duration {
 	var retryAfterErr interface {
 		RetryAfterDelay() (time.Duration, bool)
 	}

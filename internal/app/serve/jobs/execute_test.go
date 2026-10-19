@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"context"
@@ -17,12 +17,12 @@ func TestJobsV2CancelRunAfterClaimedToRunningTransition(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "cancel-claimed-race",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -32,7 +32,7 @@ func TestJobsV2CancelRunAfterClaimedToRunningTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerJob failed: %v", err)
 	}
-	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunClaimed, run.ID, jobsV2RunQueued); err != nil {
+	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, RunClaimed, run.ID, RunQueued); err != nil {
 		t.Fatalf("mark run claimed: %v", err)
 	}
 
@@ -47,12 +47,12 @@ func TestJobsV2CancelRunAfterClaimedToRunningTransition(t *testing.T) {
 			close(releaseRunner)
 		}
 	}()
-	mgr.runners[jobsV2RunnerProgram] = jobsV2RunnerFunc(func(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+	mgr.runners[RunnerProgram] = jobsV2RunnerFunc(func(ctx context.Context, job Job, pw ProgressWriter) (RunResult, error) {
 		close(runnerStarted)
 		<-ctx.Done()
 		close(cancelObserved)
 		<-releaseRunner
-		return jobsV2RunResult{}, ctx.Err()
+		return RunResult{}, ctx.Err()
 	})
 
 	go func() {
@@ -69,8 +69,8 @@ func TestJobsV2CancelRunAfterClaimedToRunningTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CancelRun failed: %v", err)
 	}
-	if cancelled.Status != jobsV2RunCancelRequested {
-		t.Fatalf("cancelled status = %s, want %s", cancelled.Status, jobsV2RunCancelRequested)
+	if cancelled.Status != RunCancelRequested {
+		t.Fatalf("cancelled status = %s, want %s", cancelled.Status, RunCancelRequested)
 	}
 	select {
 	case <-cancelObserved:
@@ -88,8 +88,8 @@ func TestJobsV2CancelRunAfterClaimedToRunningTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun failed: %v", err)
 	}
-	if finished.Status != jobsV2RunCancelled {
-		t.Fatalf("finished status = %s, want %s", finished.Status, jobsV2RunCancelled)
+	if finished.Status != RunCancelled {
+		t.Fatalf("finished status = %s, want %s", finished.Status, RunCancelled)
 	}
 }
 
@@ -100,12 +100,12 @@ func TestJobsV2CancelRunDoesNotOverrideCompletedRun(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "cancel-completion-race",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestJobsV2CancelRunDoesNotOverrideCompletedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerJob failed: %v", err)
 	}
-	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, time.Now().UTC(), run.ID, jobsV2RunQueued); err != nil {
+	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, RunRunning, time.Now().UTC(), run.ID, RunQueued); err != nil {
 		t.Fatalf("mark run running: %v", err)
 	}
 
@@ -124,15 +124,15 @@ func TestJobsV2CancelRunDoesNotOverrideCompletedRun(t *testing.T) {
 	mgr.cancels[run.ID] = func() { cancelCalled = true }
 	mgr.mu.Unlock()
 
-	if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
+	if err := mgr.finishRun(run.ID, RunSucceeded, RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
 		t.Fatalf("finish run: %v", err)
 	}
 	completed, err := mgr.CancelRun(run.ID)
 	if err != nil {
 		t.Fatalf("CancelRun failed: %v", err)
 	}
-	if completed.Status != jobsV2RunSucceeded {
-		t.Fatalf("completed status = %s, want %s", completed.Status, jobsV2RunSucceeded)
+	if completed.Status != RunSucceeded {
+		t.Fatalf("completed status = %s, want %s", completed.Status, RunSucceeded)
 	}
 	if cancelCalled {
 		t.Fatal("cancel function called after run completed")
@@ -146,12 +146,12 @@ func TestJobsV2FinishRunDoesNotOverrideCancelRequested(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "cancel-authoritative",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 		RetryPolicy:   json.RawMessage(`{"max_attempts":2}`),
 	})
@@ -168,7 +168,7 @@ func TestJobsV2FinishRunDoesNotOverrideCancelRequested(t *testing.T) {
 	}
 
 	started := time.Now().UTC()
-	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunRunning, started, run.ID); err != nil {
+	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, RunRunning, started, run.ID); err != nil {
 		t.Fatalf("mark run running: %v", err)
 	}
 
@@ -176,12 +176,12 @@ func TestJobsV2FinishRunDoesNotOverrideCancelRequested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CancelRun failed: %v", err)
 	}
-	if cancelled.Status != jobsV2RunCancelRequested {
-		t.Fatalf("cancelled status = %s, want %s", cancelled.Status, jobsV2RunCancelRequested)
+	if cancelled.Status != RunCancelRequested {
+		t.Fatalf("cancelled status = %s, want %s", cancelled.Status, RunCancelRequested)
 	}
 
-	result := jobsV2RunResult{Response: "partial output", ExitCode: 17}
-	if err := mgr.finishRun(run.ID, jobsV2RunFailed, result, errors.New("runner failed after cancel request"), run.Attempt); err != nil {
+	result := RunResult{Response: "partial output", ExitCode: 17}
+	if err := mgr.finishRun(run.ID, RunFailed, result, errors.New("runner failed after cancel request"), run.Attempt); err != nil {
 		t.Fatalf("finishRun failed: %v", err)
 	}
 
@@ -189,8 +189,8 @@ func TestJobsV2FinishRunDoesNotOverrideCancelRequested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun failed: %v", err)
 	}
-	if current.Status != jobsV2RunCancelled {
-		t.Fatalf("run status = %s, want %s", current.Status, jobsV2RunCancelled)
+	if current.Status != RunCancelled {
+		t.Fatalf("run status = %s, want %s", current.Status, RunCancelled)
 	}
 	if current.ExitReason != exitReasonCancelled {
 		t.Fatalf("exit reason = %q, want %q", current.ExitReason, exitReasonCancelled)
@@ -221,12 +221,12 @@ func TestJobsV2ClaimNextRunSkipsFutureScheduledQueuedRuns(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:           "claim-next-run",
 		Enabled:        true,
-		RunnerType:     jobsV2RunnerProgram,
+		RunnerType:     RunnerProgram,
 		RunnerConfig:   json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:    jobsV2TriggerManual,
+		TriggerType:    TriggerManual,
 		TriggerConfig:  json.RawMessage(`{}`),
 		TimeoutSeconds: 30,
 	})
@@ -236,12 +236,12 @@ func TestJobsV2ClaimNextRunSkipsFutureScheduledQueuedRuns(t *testing.T) {
 
 	now := time.Now().UTC()
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'retry', ?, ?, ?, ?)`,
-		"run_future", job.ID, now.Add(5*time.Minute), jobsV2RunQueued, now, now)
+		"run_future", job.ID, now.Add(5*time.Minute), RunQueued, now, now)
 	if err != nil {
 		t.Fatalf("insert future queued run: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
-		"run_ready", job.ID, now.Add(-time.Second), jobsV2RunQueued, now, now)
+		"run_ready", job.ID, now.Add(-time.Second), RunQueued, now, now)
 	if err != nil {
 		t.Fatalf("insert ready queued run: %v", err)
 	}
@@ -261,8 +261,8 @@ func TestJobsV2ClaimNextRunSkipsFutureScheduledQueuedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun failed: %v", err)
 	}
-	if futureRun.Status != jobsV2RunQueued {
-		t.Fatalf("future run status = %s, want %s", futureRun.Status, jobsV2RunQueued)
+	if futureRun.Status != RunQueued {
+		t.Fatalf("future run status = %s, want %s", futureRun.Status, RunQueued)
 	}
 
 	_, ok, err = mgr.claimNextRun()
@@ -287,13 +287,13 @@ func TestJobsV2ExecuteRunRequeuesClaimWhenManagerClosed(t *testing.T) {
 	}()
 
 	runner := &testJobsV2Runner{}
-	mgr.runners[jobsV2RunnerProgram] = runner
-	job, err := mgr.CreateJob(jobsV2Job{
+	mgr.runners[RunnerProgram] = runner
+	job, err := mgr.CreateJob(Job{
 		Name:           "closed-execute-run",
 		Enabled:        true,
-		RunnerType:     jobsV2RunnerProgram,
+		RunnerType:     RunnerProgram,
 		RunnerConfig:   json.RawMessage(`{}`),
-		TriggerType:    jobsV2TriggerManual,
+		TriggerType:    TriggerManual,
 		TriggerConfig:  json.RawMessage(`{}`),
 		TimeoutSeconds: 30,
 	})
@@ -352,8 +352,8 @@ func TestJobsV2ExecuteRunRequeuesClaimWhenManagerClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun after reopen failed: %v", err)
 	}
-	if recovered.Status != jobsV2RunQueued {
-		t.Fatalf("status after reopen = %s, want %s", recovered.Status, jobsV2RunQueued)
+	if recovered.Status != RunQueued {
+		t.Fatalf("status after reopen = %s, want %s", recovered.Status, RunQueued)
 	}
 	if recovered.WorkerID != "" {
 		t.Fatalf("worker_id after reopen = %q, want empty", recovered.WorkerID)
@@ -377,7 +377,7 @@ func TestJobsV2ExecuteRunRequeuesClaimWhenManagerClosed(t *testing.T) {
 	}
 
 	reopenedRunner := &testJobsV2Runner{}
-	reopened.runners[jobsV2RunnerProgram] = reopenedRunner
+	reopened.runners[RunnerProgram] = reopenedRunner
 	reclaimed, ok, err := reopened.claimNextRun()
 	if err != nil {
 		t.Fatalf("claimNextRun after reopen failed: %v", err)
@@ -393,8 +393,8 @@ func TestJobsV2ExecuteRunRequeuesClaimWhenManagerClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun after execution failed: %v", err)
 	}
-	if finished.Status != jobsV2RunSucceeded {
-		t.Fatalf("finished status = %s, want %s", finished.Status, jobsV2RunSucceeded)
+	if finished.Status != RunSucceeded {
+		t.Fatalf("finished status = %s, want %s", finished.Status, RunSucceeded)
 	}
 }
 
@@ -408,32 +408,32 @@ func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if err := execJobsV2Schema(db); err != nil {
+	if err := InitSchema(context.Background(), db); err != nil {
 		t.Fatalf("execJobsV2Schema failed: %v", err)
 	}
 
 	lockReleased := make(chan struct{})
 	var runID string
-	mgr := &jobsV2Manager{
+	mgr := &Manager{
 		db:       db,
 		workerID: "worker_test",
-		runners: map[jobsV2RunnerType]jobsV2Runner{
-			jobsV2RunnerProgram: jobsV2RunnerFunc(func(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+		runners: map[RunnerType]Runner{
+			RunnerProgram: jobsV2RunnerFunc(func(ctx context.Context, job Job, pw ProgressWriter) (RunResult, error) {
 				lockDB, err := sql.Open("sqlite", dsn)
 				if err != nil {
-					return jobsV2RunResult{}, err
+					return RunResult{}, err
 				}
 				lockDB.SetMaxOpenConns(1)
 				lockDB.SetMaxIdleConns(1)
 				tx, err := lockDB.Begin()
 				if err != nil {
 					_ = lockDB.Close()
-					return jobsV2RunResult{}, err
+					return RunResult{}, err
 				}
 				if _, err := tx.Exec(`INSERT INTO job_run_events_v2 (run_id, event_type, message, created_at) VALUES (?, 'lock', 'transient lock', CURRENT_TIMESTAMP)`, runID); err != nil {
 					_ = tx.Rollback()
 					_ = lockDB.Close()
-					return jobsV2RunResult{}, err
+					return RunResult{}, err
 				}
 				go func() {
 					time.Sleep(70 * time.Millisecond)
@@ -441,18 +441,18 @@ func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
 					_ = lockDB.Close()
 					close(lockReleased)
 				}()
-				return jobsV2RunResult{Stdout: "ok"}, nil
+				return RunResult{Stdout: "ok"}, nil
 			}),
 		},
 		cancels: make(map[string]context.CancelFunc),
 	}
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:           "retry-finish-run",
 		Enabled:        true,
-		RunnerType:     jobsV2RunnerProgram,
+		RunnerType:     RunnerProgram,
 		RunnerConfig:   json.RawMessage(`{}`),
-		TriggerType:    jobsV2TriggerManual,
+		TriggerType:    TriggerManual,
 		TriggerConfig:  json.RawMessage(`{}`),
 		TimeoutSeconds: 30,
 	})
@@ -483,8 +483,8 @@ func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun after executeRun failed: %v", err)
 	}
-	if updated.Status != jobsV2RunSucceeded {
-		t.Fatalf("status = %s, want %s", updated.Status, jobsV2RunSucceeded)
+	if updated.Status != RunSucceeded {
+		t.Fatalf("status = %s, want %s", updated.Status, RunSucceeded)
 	}
 	active, err := mgr.countActiveRuns(job.ID)
 	if err != nil {

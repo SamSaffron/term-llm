@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ func BenchmarkJobsV2ListRuns(b *testing.B) {
 
 	now := time.Now().UTC()
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
-		"job_bench_runs", "bench-runs", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerManual, `{}`, now, now)
+		"job_bench_runs", "bench-runs", RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerManual, `{}`, now, now)
 	if err != nil {
 		b.Fatalf("insert job: %v", err)
 	}
@@ -27,7 +27,7 @@ func BenchmarkJobsV2ListRuns(b *testing.B) {
 	for i := 0; i < rows; i++ {
 		created := now.Add(-time.Duration(i) * time.Second)
 		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, started_at, finished_at, exit_code, stdout, stderr, thinking, response, exit_reason, turn_count, input_tokens, output_tokens, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 2, 100, 20, ?, ?)`,
-			fmt.Sprintf("run_bench_%03d", i), "job_bench_runs", created, jobsV2RunSucceeded, created, created, payload, payload, payload, payload, exitReasonNatural, created, created)
+			fmt.Sprintf("run_bench_%03d", i), "job_bench_runs", created, RunSucceeded, created, created, payload, payload, payload, payload, exitReasonNatural, created, created)
 		if err != nil {
 			b.Fatalf("insert run %d: %v", i, err)
 		}
@@ -79,7 +79,7 @@ func BenchmarkJobsV2ListRunSummariesGlobal(b *testing.B) {
 	const limit = 100
 	for j := 0; j < jobs; j++ {
 		_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
-			fmt.Sprintf("job_bench_global_%03d", j), fmt.Sprintf("bench-global-%03d", j), jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerManual, `{}`, now, now)
+			fmt.Sprintf("job_bench_global_%03d", j), fmt.Sprintf("bench-global-%03d", j), RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerManual, `{}`, now, now)
 		if err != nil {
 			b.Fatalf("insert job %d: %v", j, err)
 		}
@@ -97,7 +97,7 @@ func BenchmarkJobsV2ListRunSummariesGlobal(b *testing.B) {
 	for i := 0; i < rows; i++ {
 		created := now.Add(-time.Duration(i) * time.Second)
 		jobID := fmt.Sprintf("job_bench_global_%03d", i%jobs)
-		_, err = stmt.Exec(fmt.Sprintf("run_bench_global_%06d", i), jobID, created, jobsV2RunSucceeded, created, created, payload, payload, payload, payload, exitReasonNatural, created, created)
+		_, err = stmt.Exec(fmt.Sprintf("run_bench_global_%06d", i), jobID, created, RunSucceeded, created, created, payload, payload, payload, payload, exitReasonNatural, created, created)
 		if err != nil {
 			_ = stmt.Close()
 			_ = tx.Rollback()
@@ -137,12 +137,12 @@ func BenchmarkJobsV2ListRunEventsSince(b *testing.B) {
 
 	now := time.Now().UTC()
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
-		"job_bench_events", "bench-events", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerManual, `{}`, now, now)
+		"job_bench_events", "bench-events", RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerManual, `{}`, now, now)
 	if err != nil {
 		b.Fatalf("insert job: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
-		"run_bench_events", "job_bench_events", now, jobsV2RunRunning, now, now)
+		"run_bench_events", "job_bench_events", now, RunRunning, now, now)
 	if err != nil {
 		b.Fatalf("insert run: %v", err)
 	}

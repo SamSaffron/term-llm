@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
-func testJobsV2ProgramJob(t *testing.T, cfg jobsV2ProgramConfig) jobsV2Job {
+func testJobsV2ProgramJob(t *testing.T, cfg ProgramConfig) Job {
 	t.Helper()
 
 	raw, err := json.Marshal(cfg)
@@ -24,12 +24,12 @@ func testJobsV2ProgramJob(t *testing.T, cfg jobsV2ProgramConfig) jobsV2Job {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	return jobsV2Job{RunnerConfig: raw}
+	return Job{RunnerConfig: raw}
 }
 
 func TestJobsV2ProgramRunner_ShellArgsBecomePositionalParameters(t *testing.T) {
-	runner := &jobsV2ProgramRunner{}
-	job := testJobsV2ProgramJob(t, jobsV2ProgramConfig{
+	runner := &ProgramRunner{}
+	job := testJobsV2ProgramJob(t, ProgramConfig{
 		Command: `printf '%s %s' "$1" "$2"`,
 		Args:    []string{"alpha", "beta"},
 		Shell:   true,
@@ -46,8 +46,8 @@ func TestJobsV2ProgramRunner_ShellArgsBecomePositionalParameters(t *testing.T) {
 }
 
 func TestJobsV2ProgramRunner_TimeoutKillsBackgroundChildrenPromptly(t *testing.T) {
-	runner := &jobsV2ProgramRunner{}
-	job := testJobsV2ProgramJob(t, jobsV2ProgramConfig{
+	runner := &ProgramRunner{}
+	job := testJobsV2ProgramJob(t, ProgramConfig{
 		Command: `sleep 1 & wait`,
 		Shell:   true,
 	})
@@ -70,8 +70,8 @@ func TestJobsV2ProgramRunner_CleansUpBackgroundChildOnSuccess(t *testing.T) {
 	}
 
 	pidPath := filepath.Join(t.TempDir(), "child.pid")
-	runner := &jobsV2ProgramRunner{}
-	job := testJobsV2ProgramJob(t, jobsV2ProgramConfig{
+	runner := &ProgramRunner{}
+	job := testJobsV2ProgramJob(t, ProgramConfig{
 		Command: fmt.Sprintf(`sleep 30 >/dev/null 2>&1 & echo $! > %s`, jobsV2ProgramTestShellQuote(pidPath)),
 		Shell:   true,
 	})
@@ -98,8 +98,8 @@ func TestJobsV2ProgramRunner_TruncatesCapturedOutput(t *testing.T) {
 		jobsV2ProgramOutputLimit = origLimit
 	}()
 
-	runner := &jobsV2ProgramRunner{}
-	job := testJobsV2ProgramJob(t, jobsV2ProgramConfig{
+	runner := &ProgramRunner{}
+	job := testJobsV2ProgramJob(t, ProgramConfig{
 		Command: `i=0; while [ $i -lt 200 ]; do printf x; i=$((i+1)); done`,
 		Shell:   true,
 	})

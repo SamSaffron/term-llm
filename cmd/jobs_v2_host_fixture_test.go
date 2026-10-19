@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 )
 
 type jobsV2HostRunnerFunc func(context.Context, jobsV2Job, progressWriter) (jobsV2RunResult, error)
@@ -14,9 +16,9 @@ func (fn jobsV2HostRunnerFunc) Run(ctx context.Context, job jobsV2Job, pw progre
 
 func newJobsV2HostManager(t testing.TB, workers int, runners map[jobsV2RunnerType]jobsV2Runner, notify jobsV2RunDoneNotifier) *jobsV2Manager {
 	t.Helper()
-	mgr, err := newJobsV2ManagerWithRunners(":memory:", workers, runners, notify)
+	mgr, err := servejobs.NewManager(":memory:", workers, runners, notify)
 	if err != nil {
-		t.Fatalf("newJobsV2ManagerWithRunners: %v", err)
+		t.Fatalf("jobs.NewManager: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := mgr.Close(); err != nil {

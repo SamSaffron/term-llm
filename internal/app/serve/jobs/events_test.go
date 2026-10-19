@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"testing"
@@ -10,12 +10,12 @@ func TestJobsV2ListRunEventsSinceIDOrdersByInsertion(t *testing.T) {
 	now := time.Now().UTC()
 
 	_, err := mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
-		"job_events_since", "events-since", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerManual, `{}`, now, now)
+		"job_events_since", "events-since", RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerManual, `{}`, now, now)
 	if err != nil {
 		t.Fatalf("insert job: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
-		"run_events_since", "job_events_since", now, jobsV2RunRunning, now, now)
+		"run_events_since", "job_events_since", now, RunRunning, now, now)
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}

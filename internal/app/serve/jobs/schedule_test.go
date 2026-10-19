@@ -1,6 +1,7 @@
-package cmd
+package jobs
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -20,24 +21,24 @@ func TestJobsV2ReconcileMisfiredSchedulesHonorsPolicyAndTrigger(t *testing.T) {
 	tests := []struct {
 		id            string
 		enabled       bool
-		triggerType   jobsV2TriggerType
+		triggerType   TriggerType
 		triggerConfig string
 		policy        string
 		nextRun       time.Time
 		wantEnabled   bool
 		wantNext      *time.Time
 	}{
-		{id: "skip_cron", enabled: true, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: past, wantEnabled: true, wantNext: timePointer(time.Date(2026, time.July, 22, 12, 10, 0, 0, time.UTC))},
-		{id: "skip_once", enabled: true, triggerType: jobsV2TriggerOnce, triggerConfig: `{"run_at":"2026-07-22T11:57:00Z"}`, policy: "skip", nextRun: past, wantEnabled: false},
-		{id: "run_cron", enabled: true, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "run", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
-		{id: "run_once", enabled: true, triggerType: jobsV2TriggerOnce, triggerConfig: `{"run_at":"2026-07-22T11:57:00Z"}`, policy: "run", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
-		{id: "future_skip", enabled: true, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: future, wantEnabled: true, wantNext: timePointer(future)},
-		{id: "disabled_skip", enabled: false, triggerType: jobsV2TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: past, wantEnabled: false, wantNext: timePointer(past)},
-		{id: "manual_skip", enabled: true, triggerType: jobsV2TriggerManual, triggerConfig: `{}`, policy: "skip", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
+		{id: "skip_cron", enabled: true, triggerType: TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: past, wantEnabled: true, wantNext: timePointer(time.Date(2026, time.July, 22, 12, 10, 0, 0, time.UTC))},
+		{id: "skip_once", enabled: true, triggerType: TriggerOnce, triggerConfig: `{"run_at":"2026-07-22T11:57:00Z"}`, policy: "skip", nextRun: past, wantEnabled: false},
+		{id: "run_cron", enabled: true, triggerType: TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "run", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
+		{id: "run_once", enabled: true, triggerType: TriggerOnce, triggerConfig: `{"run_at":"2026-07-22T11:57:00Z"}`, policy: "run", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
+		{id: "future_skip", enabled: true, triggerType: TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: future, wantEnabled: true, wantNext: timePointer(future)},
+		{id: "disabled_skip", enabled: false, triggerType: TriggerCron, triggerConfig: `{"expression":"*/5 * * * *","timezone":"UTC"}`, policy: "skip", nextRun: past, wantEnabled: false, wantNext: timePointer(past)},
+		{id: "manual_skip", enabled: true, triggerType: TriggerManual, triggerConfig: `{}`, policy: "skip", nextRun: past, wantEnabled: true, wantNext: timePointer(past)},
 	}
 	for _, tc := range tests {
 		_, err := mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'UTC', 'forbid', 1, 30, ?, ?, ?, ?)`,
-			tc.id, tc.id, boolToInt(tc.enabled), jobsV2RunnerProgram, `{"command":"true"}`, tc.triggerType, tc.triggerConfig, tc.policy, tc.nextRun, cutoff, cutoff)
+			tc.id, tc.id, boolToInt(tc.enabled), RunnerProgram, `{"command":"true"}`, tc.triggerType, tc.triggerConfig, tc.policy, tc.nextRun, cutoff, cutoff)
 		if err != nil {
 			t.Fatalf("insert %s: %v", tc.id, err)
 		}
@@ -83,12 +84,12 @@ func TestJobsV2CronValidation(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	_, err = mgr.CreateJob(jobsV2Job{
+	_, err = mgr.CreateJob(Job{
 		Name:         "cron-job",
 		Enabled:      true,
-		RunnerType:   jobsV2RunnerProgram,
+		RunnerType:   RunnerProgram,
 		RunnerConfig: json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:  jobsV2TriggerCron,
+		TriggerType:  TriggerCron,
 		TriggerConfig: json.RawMessage(`{
 			"expression":"0 0 * * *",
 			"timezone":"America/Los_Angeles"
@@ -98,12 +99,12 @@ func TestJobsV2CronValidation(t *testing.T) {
 		t.Fatalf("CreateJob cron failed: %v", err)
 	}
 
-	_, err = mgr.CreateJob(jobsV2Job{
+	_, err = mgr.CreateJob(Job{
 		Name:         "bad-cron-job",
 		Enabled:      true,
-		RunnerType:   jobsV2RunnerProgram,
+		RunnerType:   RunnerProgram,
 		RunnerConfig: json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:  jobsV2TriggerCron,
+		TriggerType:  TriggerCron,
 		TriggerConfig: json.RawMessage(`{
 			"expression":"bad expr",
 			"timezone":"America/Los_Angeles"
@@ -115,7 +116,7 @@ func TestJobsV2CronValidation(t *testing.T) {
 }
 
 func TestParseTriggerConfigCronUsesScheduleTimezone(t *testing.T) {
-	cfg, err := parseTriggerConfig(jobsV2TriggerCron, json.RawMessage(`{
+	cfg, err := parseTriggerConfig(TriggerCron, json.RawMessage(`{
 		"expression":"0 0 * * *",
 		"timezone":"UTC"
 	}`), "America/Los_Angeles")
@@ -134,12 +135,12 @@ func TestJobsV2CronCreateUsesScheduleTimezoneField(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:             "cron-with-schedule-timezone",
 		Enabled:          true,
-		RunnerType:       jobsV2RunnerProgram,
+		RunnerType:       RunnerProgram,
 		RunnerConfig:     json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:      jobsV2TriggerCron,
+		TriggerType:      TriggerCron,
 		TriggerConfig:    json.RawMessage(`{"expression":"0 0 * * *"}`),
 		ScheduleTimezone: "America/Los_Angeles",
 	})
@@ -171,18 +172,18 @@ func TestJobsV2RetentionPrunesOldData(t *testing.T) {
 	recent := now.Add(-1 * time.Hour)
 
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
-		"job_retention_1", "retention-job", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerManual, `{}`, now, now)
+		"job_retention_1", "retention-job", RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerManual, `{}`, now, now)
 	if err != nil {
 		t.Fatalf("insert job: %v", err)
 	}
 
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
-		"run_old", "job_retention_1", old, jobsV2RunSucceeded, old, old, old)
+		"run_old", "job_retention_1", old, RunSucceeded, old, old, old)
 	if err != nil {
 		t.Fatalf("insert old run: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
-		"run_recent", "job_retention_1", recent, jobsV2RunSucceeded, recent, recent, recent)
+		"run_recent", "job_retention_1", recent, RunSucceeded, recent, recent, recent)
 	if err != nil {
 		t.Fatalf("insert recent run: %v", err)
 	}
@@ -234,62 +235,62 @@ func TestJobsV2RetentionPrunesOldQueueAgentJobs(t *testing.T) {
 	var err error
 
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
-		"job_queue_agent_old", "queue-agent-old", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"old","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, old, old)
+		"job_queue_agent_old", "queue-agent-old", RunnerLLM, `{"agent_name":"developer","instructions":"old","cwd":"/tmp"}`, TriggerManual, `{}`, labels, old, old)
 	if err != nil {
 		t.Fatalf("insert old queue_agent job: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
-		"run_queue_agent_old", "job_queue_agent_old", old, jobsV2RunSucceeded, old, old, old)
+		"run_queue_agent_old", "job_queue_agent_old", old, RunSucceeded, old, old, old)
 	if err != nil {
 		t.Fatalf("insert old queue_agent run: %v", err)
 	}
 
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
-		"job_queue_agent_recent", "queue-agent-recent", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"recent","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, recent, recent)
+		"job_queue_agent_recent", "queue-agent-recent", RunnerLLM, `{"agent_name":"developer","instructions":"recent","cwd":"/tmp"}`, TriggerManual, `{}`, labels, recent, recent)
 	if err != nil {
 		t.Fatalf("insert recent queue_agent job: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
-		"run_queue_agent_recent", "job_queue_agent_recent", recent, jobsV2RunSucceeded, recent, recent, recent)
+		"run_queue_agent_recent", "job_queue_agent_recent", recent, RunSucceeded, recent, recent, recent)
 	if err != nil {
 		t.Fatalf("insert recent queue_agent run: %v", err)
 	}
 
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
-		"job_queue_agent_running", "queue-agent-running", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"running","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, old, old)
+		"job_queue_agent_running", "queue-agent-running", RunnerLLM, `{"agent_name":"developer","instructions":"running","cwd":"/tmp"}`, TriggerManual, `{}`, labels, old, old)
 	if err != nil {
 		t.Fatalf("insert running queue_agent job: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
-		"run_queue_agent_running", "job_queue_agent_running", old, jobsV2RunRunning, old, old)
+		"run_queue_agent_running", "job_queue_agent_running", old, RunRunning, old, old)
 	if err != nil {
 		t.Fatalf("insert running queue_agent run: %v", err)
 	}
 
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
-		"job_queue_agent_untriggered", "queue-agent-untriggered", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"untriggered","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, labels, old, old)
+		"job_queue_agent_untriggered", "queue-agent-untriggered", RunnerLLM, `{"agent_name":"developer","instructions":"untriggered","cwd":"/tmp"}`, TriggerManual, `{}`, labels, old, old)
 	if err != nil {
 		t.Fatalf("insert untriggered queue_agent job: %v", err)
 	}
 
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, labels, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'allow', 1, 60, 'run', ?, ?, ?)`,
-		"job_queue_agent_extra_labels", "queue-agent-extra-labels", jobsV2RunnerLLM, `{"agent_name":"developer","instructions":"old","cwd":"/tmp"}`, jobsV2TriggerManual, `{}`, `{"other":true,"term_llm_queue_agent":"ephemeral"}`, old, old)
+		"job_queue_agent_extra_labels", "queue-agent-extra-labels", RunnerLLM, `{"agent_name":"developer","instructions":"old","cwd":"/tmp"}`, TriggerManual, `{}`, `{"other":true,"term_llm_queue_agent":"ephemeral"}`, old, old)
 	if err != nil {
 		t.Fatalf("insert extra-label queue_agent job: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
-		"run_queue_agent_extra_labels", "job_queue_agent_extra_labels", old, jobsV2RunSucceeded, old, old, old)
+		"run_queue_agent_extra_labels", "job_queue_agent_extra_labels", old, RunSucceeded, old, old, old)
 	if err != nil {
 		t.Fatalf("insert extra-label queue_agent run: %v", err)
 	}
 
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
-		"job_manual_old", "manual-old", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerManual, `{}`, old, old)
+		"job_manual_old", "manual-old", RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerManual, `{}`, old, old)
 	if err != nil {
 		t.Fatalf("insert manual control job: %v", err)
 	}
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, finished_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, ?)`,
-		"run_manual_old", "job_manual_old", old, jobsV2RunSucceeded, old, old, old)
+		"run_manual_old", "job_manual_old", old, RunSucceeded, old, old, old)
 	if err != nil {
 		t.Fatalf("insert manual control run: %v", err)
 	}
@@ -339,12 +340,12 @@ func TestJobsV2TriggerJobRespectsMaxConcurrentRuns(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:              "manual-bounded-concurrency",
 		Enabled:           true,
-		RunnerType:        jobsV2RunnerProgram,
+		RunnerType:        RunnerProgram,
 		RunnerConfig:      json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:       jobsV2TriggerManual,
+		TriggerType:       TriggerManual,
 		TriggerConfig:     json.RawMessage(`{}`),
 		ConcurrencyPolicy: "allow",
 		MaxConcurrentRuns: 2,
@@ -357,7 +358,7 @@ func TestJobsV2TriggerJobRespectsMaxConcurrentRuns(t *testing.T) {
 	now := time.Now().UTC()
 	for _, runID := range []string{"run_existing_1", "run_existing_2"} {
 		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
-			runID, job.ID, now, jobsV2RunRunning, now, now)
+			runID, job.ID, now, RunRunning, now, now)
 		if err != nil {
 			t.Fatalf("insert active run %s: %v", runID, err)
 		}
@@ -383,12 +384,12 @@ func TestJobsV2EnqueueRunWithConcurrencyLimitSerializesConcurrentEnqueues(t *tes
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:              "serialized-concurrency-gate",
 		Enabled:           true,
-		RunnerType:        jobsV2RunnerProgram,
+		RunnerType:        RunnerProgram,
 		RunnerConfig:      json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:       jobsV2TriggerManual,
+		TriggerType:       TriggerManual,
 		TriggerConfig:     json.RawMessage(`{}`),
 		ConcurrencyPolicy: "forbid",
 		MaxConcurrentRuns: 1,
@@ -490,23 +491,23 @@ func TestJobsV2ScheduledEnqueueRollsBackWhenScheduleAdvancementFails(t *testing.
 		t.Fatalf("sql.Open failed: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := execJobsV2Schema(db); err != nil {
+	if err := InitSchema(context.Background(), db); err != nil {
 		_ = db.Close()
 		t.Fatalf("execJobsV2Schema failed: %v", err)
 	}
 
-	mgr := &jobsV2Manager{db: db}
+	mgr := &Manager{db: db}
 	runAt := time.Now().UTC().Add(-time.Minute)
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:              "atomic-scheduled-enqueue",
 		Enabled:           true,
-		RunnerType:        jobsV2RunnerProgram,
+		RunnerType:        RunnerProgram,
 		RunnerConfig:      json.RawMessage(`{"command":"true"}`),
-		TriggerType:       jobsV2TriggerOnce,
+		TriggerType:       TriggerOnce,
 		TriggerConfig:     json.RawMessage(`{"run_at":"` + runAt.Format(time.RFC3339Nano) + `"}`),
 		ConcurrencyPolicy: "forbid",
 		MaxConcurrentRuns: 1,
-		MisfirePolicy:     jobsV2MisfireRun,
+		MisfirePolicy:     MisfireRun,
 		TimeoutSeconds:    30,
 	})
 	if err != nil {
@@ -532,7 +533,7 @@ func TestJobsV2ScheduledEnqueueRollsBackWhenScheduleAdvancementFails(t *testing.
 	}
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
-	mgr = &jobsV2Manager{db: db}
+	mgr = &Manager{db: db}
 
 	var runs int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM job_runs_v2 WHERE job_id = ?`, job.ID).Scan(&runs); err != nil {
@@ -574,12 +575,12 @@ func TestJobsV2ScheduleOneRespectsMaxConcurrentRuns(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:              "cron-bounded-concurrency",
 		Enabled:           true,
-		RunnerType:        jobsV2RunnerProgram,
+		RunnerType:        RunnerProgram,
 		RunnerConfig:      json.RawMessage(`{"command":"echo","args":["x"]}`),
-		TriggerType:       jobsV2TriggerCron,
+		TriggerType:       TriggerCron,
 		TriggerConfig:     json.RawMessage(`{"expression":"* * * * *","timezone":"UTC"}`),
 		ConcurrencyPolicy: "allow",
 		MaxConcurrentRuns: 2,
@@ -592,7 +593,7 @@ func TestJobsV2ScheduleOneRespectsMaxConcurrentRuns(t *testing.T) {
 	now := time.Now().UTC()
 	for _, runID := range []string{"run_existing_1", "run_existing_2"} {
 		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'schedule', ?, ?, ?, ?)`,
-			runID, job.ID, now, jobsV2RunRunning, now, now)
+			runID, job.ID, now, RunRunning, now, now)
 		if err != nil {
 			t.Fatalf("insert active run %s: %v", runID, err)
 		}
@@ -624,7 +625,7 @@ func TestJobsV2SchedulerAndWorkerDelayUseTimers(t *testing.T) {
 
 	nextJobRun := now.Add(2500 * time.Millisecond)
 	_, err := mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, next_run_at, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 30, 'skip', ?, ?, ?)`,
-		"job_timer_delay", "timer-delay", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerOnce, `{}`, nextJobRun, now, now)
+		"job_timer_delay", "timer-delay", RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerOnce, `{}`, nextJobRun, now, now)
 	if err != nil {
 		t.Fatalf("insert scheduled job: %v", err)
 	}
@@ -641,7 +642,7 @@ func TestJobsV2SchedulerAndWorkerDelayUseTimers(t *testing.T) {
 
 	nextQueuedRun := now.Add(1500 * time.Millisecond)
 	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'retry', ?, ?, ?, ?)`,
-		"run_timer_delay", "job_timer_delay", nextQueuedRun, jobsV2RunQueued, now, now)
+		"run_timer_delay", "job_timer_delay", nextQueuedRun, RunQueued, now, now)
 	if err != nil {
 		t.Fatalf("insert queued run: %v", err)
 	}

@@ -11,7 +11,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -81,10 +80,6 @@ func (c jobsV2LLMConfig) effectiveSessionID() string {
 		return id
 	}
 	return session.NewID()
-}
-
-func validateJobsV2RunnerConfig(runnerType jobsV2RunnerType, raw json.RawMessage) error {
-	return jobs.ValidateRunnerConfig(jobs.RunnerType(runnerType), raw)
 }
 
 func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {

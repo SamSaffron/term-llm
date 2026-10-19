@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"errors"
@@ -20,7 +20,7 @@ func TestTelegramAPIResponseErrorUsesHTTPStatusWhenErrorCodeMissing(t *testing.T
 	if got := statusErr.HTTPStatusCode(); got != http.StatusOK {
 		t.Fatalf("HTTP status = %d, want %d", got, http.StatusOK)
 	}
-	if jobsV2NotifyErrorRetryable(err) {
+	if NotifyErrorRetryable(err) {
 		t.Fatal("Telegram API rejection without error_code classified as retryable")
 	}
 }
@@ -40,7 +40,7 @@ func TestTelegramAPIResponseErrorPreservesRetryAfter(t *testing.T) {
 	if delay, ok := retryAfterErr.RetryAfterDelay(); !ok || delay != 7*time.Second {
 		t.Fatalf("Retry-After = %v, %v; want 7s, true", delay, ok)
 	}
-	if !jobsV2NotifyErrorRetryable(err) {
+	if !NotifyErrorRetryable(err) {
 		t.Fatal("Telegram 429 classified as permanent")
 	}
 }

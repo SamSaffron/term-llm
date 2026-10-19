@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"database/sql"
@@ -8,30 +8,35 @@ import (
 	"strings"
 	"time"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	corejobs "github.com/samsaffron/term-llm/internal/jobs"
 )
+
+func validateJobsV2RunnerConfig(runnerType RunnerType, raw json.RawMessage) error {
+	return corejobs.ValidateRunnerConfig(corejobs.RunnerType(runnerType), raw)
+}
 
 func validateJobsV2MisfirePolicy(policy string) error {
 	switch policy {
-	case jobsV2MisfireSkip, jobsV2MisfireRun:
+	case MisfireSkip, MisfireRun:
 		return nil
 	default:
 		return fmt.Errorf("misfire_policy must be one of: skip, run")
 	}
 }
 
-func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
+func (m *Manager) CreateJob(req Job) (Job, error) {
 	if strings.TrimSpace(req.Name) == "" {
-		return jobsV2Job{}, fmt.Errorf("name is required")
+		return Job{}, fmt.Errorf("name is required")
 	}
-	if req.RunnerType != jobsV2RunnerLLM && req.RunnerType != jobsV2RunnerProgram {
-		return jobsV2Job{}, fmt.Errorf("runner_type must be one of: llm, program")
+	if req.RunnerType != RunnerLLM && req.RunnerType != RunnerProgram {
+		return Job{}, fmt.Errorf("runner_type must be one of: llm, program")
 	}
 	if err := validateJobsV2RunnerConfig(req.RunnerType, req.RunnerConfig); err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
-	if req.TriggerType != jobsV2TriggerManual && req.TriggerType != jobsV2TriggerOnce && req.TriggerType != jobsV2TriggerCron {
-		return jobsV2Job{}, fmt.Errorf("trigger_type must be one of: manual, once, cron")
+	if req.TriggerType != TriggerManual && req.TriggerType != TriggerOnce && req.TriggerType != TriggerCron {
+		return Job{}, fmt.Errorf("trigger_type must be one of: manual, once, cron")
 	}
 	if req.MaxConcurrentRuns <= 0 {
 		req.MaxConcurrentRuns = 1
@@ -44,20 +49,20 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 	}
 	req.MisfirePolicy = strings.TrimSpace(req.MisfirePolicy)
 	if req.MisfirePolicy == "" {
-		req.MisfirePolicy = jobsV2MisfireSkip
+		req.MisfirePolicy = MisfireSkip
 	}
 	if err := validateJobsV2MisfirePolicy(req.MisfirePolicy); err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 
 	cfg, err := parseTriggerConfig(req.TriggerType, req.TriggerConfig, req.ScheduleTimezone)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	next := initialNextRun(req.TriggerType, cfg, req.ScheduleTimezone)
 
 	now := time.Now().UTC()
-	id := "job_" + randomSuffix()
+	id := "job_" + wire.RandomSuffix()
 	_, err = m.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, retry_policy, timeout_seconds, misfire_policy, labels, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id,
 		req.Name,
@@ -66,7 +71,7 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 		stringOrEmptyRaw(req.RunnerConfig, "{}"),
 		req.TriggerType,
 		stringOrEmptyRaw(req.TriggerConfig, "{}"),
-		servejobs.NormalizeTZ(req.ScheduleTimezone),
+		NormalizeTZ(req.ScheduleTimezone),
 		req.ConcurrencyPolicy,
 		req.MaxConcurrentRuns,
 		nullableRaw(req.RetryPolicy),
@@ -78,29 +83,29 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 		now,
 	)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	created, err := m.GetJob(id)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	m.notifyScheduler()
 	return created, nil
 }
 
-func (m *jobsV2Manager) GetJob(id string) (jobsV2Job, error) {
+func (m *Manager) GetJob(id string) (Job, error) {
 	row := m.db.QueryRow(`SELECT id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, retry_policy, timeout_seconds, misfire_policy, labels, next_run_at, created_at, updated_at FROM jobs_v2 WHERE id = ?`, id)
 	job, err := scanJobV2(row)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
-	if err := m.attachLastRuns([]*jobsV2Job{&job}); err != nil {
-		return jobsV2Job{}, err
+	if err := m.attachLastRuns([]*Job{&job}); err != nil {
+		return Job{}, err
 	}
 	return job, nil
 }
 
-func (m *jobsV2Manager) ListJobs(limit, offset int) ([]jobsV2Job, int, error) {
+func (m *Manager) ListJobs(limit, offset int) ([]Job, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -118,7 +123,7 @@ func (m *jobsV2Manager) ListJobs(limit, offset int) ([]jobsV2Job, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	jobs := make([]jobsV2Job, 0)
+	jobs := make([]Job, 0)
 	for rows.Next() {
 		job, err := scanJobV2(rows)
 		if err != nil {
@@ -134,7 +139,7 @@ func (m *jobsV2Manager) ListJobs(limit, offset int) ([]jobsV2Job, int, error) {
 	if err := rows.Close(); err != nil {
 		return nil, 0, err
 	}
-	jobPtrs := make([]*jobsV2Job, 0, len(jobs))
+	jobPtrs := make([]*Job, 0, len(jobs))
 	for i := range jobs {
 		jobPtrs = append(jobPtrs, &jobs[i])
 	}
@@ -144,9 +149,9 @@ func (m *jobsV2Manager) ListJobs(limit, offset int) ([]jobsV2Job, int, error) {
 	return jobs, total, nil
 }
 
-func (m *jobsV2Manager) attachLastRuns(jobs []*jobsV2Job) error {
+func (m *Manager) attachLastRuns(jobs []*Job) error {
 	ids := make([]string, 0, len(jobs))
-	byID := make(map[string]*jobsV2Job, len(jobs))
+	byID := make(map[string]*Job, len(jobs))
 	for _, job := range jobs {
 		if job == nil || strings.TrimSpace(job.ID) == "" {
 			continue
@@ -165,8 +170,8 @@ func (m *jobsV2Manager) attachLastRuns(jobs []*jobsV2Job) error {
 		args[i] = id
 	}
 
-	query := `SELECT ` + servejobs.RunSummaryColumns + ` FROM (
-		SELECT ` + servejobs.RunSummaryColumns + `,
+	query := `SELECT ` + RunSummaryColumns + ` FROM (
+		SELECT ` + RunSummaryColumns + `,
 			ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY created_at DESC, id DESC) AS rn
 		FROM job_runs_v2
 		WHERE job_id IN (` + strings.Join(placeholders, ",") + `)
@@ -189,14 +194,14 @@ func (m *jobsV2Manager) attachLastRuns(jobs []*jobsV2Job) error {
 	return rows.Err()
 }
 
-func (m *jobsV2Manager) UpdateJob(id string, req jobsV2Job) (jobsV2Job, error) {
-	return m.UpdateJobPatch(id, jobsV2JobToRequest(req))
+func (m *Manager) UpdateJob(id string, req Job) (Job, error) {
+	return m.UpdateJobPatch(id, JobToRequest(req))
 }
 
-func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2Job, error) {
+func (m *Manager) UpdateJobPatch(id string, req JobRequest) (Job, error) {
 	current, err := m.GetJob(id)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	if strings.TrimSpace(req.Name) != "" {
 		current.Name = req.Name
@@ -240,13 +245,13 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 
 	cfg, err := parseTriggerConfig(current.TriggerType, current.TriggerConfig, current.ScheduleTimezone)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	if err := validateJobsV2MisfirePolicy(current.MisfirePolicy); err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	if err := validateJobsV2RunnerConfig(current.RunnerType, current.RunnerConfig); err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	next := initialNextRun(current.TriggerType, cfg, current.ScheduleTimezone)
 
@@ -257,7 +262,7 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 		stringOrEmptyRaw(current.RunnerConfig, "{}"),
 		current.TriggerType,
 		stringOrEmptyRaw(current.TriggerConfig, "{}"),
-		servejobs.NormalizeTZ(current.ScheduleTimezone),
+		NormalizeTZ(current.ScheduleTimezone),
 		current.ConcurrencyPolicy,
 		current.MaxConcurrentRuns,
 		nullableRaw(current.RetryPolicy),
@@ -268,22 +273,22 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 		id,
 	)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	updated, err := m.GetJob(id)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	m.notifyScheduler()
 	return updated, nil
 }
 
-func (m *jobsV2Manager) DeleteJob(id string, cancelActive bool) error {
+func (m *Manager) DeleteJob(id string, cancelActive bool) error {
 	if cancelActive {
 		runs, _, err := m.ListRunSummaries(id, 200, 0)
 		if err == nil {
 			for _, run := range runs {
-				if run.Status == jobsV2RunRunning || run.Status == jobsV2RunClaimed || run.Status == jobsV2RunQueued {
+				if run.Status == RunRunning || run.Status == RunClaimed || run.Status == RunQueued {
 					_, _ = m.CancelRun(run.ID)
 				}
 			}
@@ -296,25 +301,25 @@ func (m *jobsV2Manager) DeleteJob(id string, cancelActive bool) error {
 	return err
 }
 
-func (m *jobsV2Manager) TriggerJob(id string) (jobsV2Run, error) {
+func (m *Manager) TriggerJob(id string) (Run, error) {
 	job, err := m.GetJob(id)
 	if err != nil {
-		return jobsV2Run{}, err
+		return Run{}, err
 	}
 	if !job.Enabled {
-		return jobsV2Run{}, fmt.Errorf("job is disabled")
+		return Run{}, fmt.Errorf("job is disabled")
 	}
 
 	runID, active, queued, err := m.enqueueRunWithConcurrencyLimit(job, "manual", time.Now().UTC(), nil, nil)
 	if err != nil {
-		return jobsV2Run{}, err
+		return Run{}, err
 	}
 	if !queued {
 		limit := jobsV2ConcurrencyLimit(job)
 		if limit == 1 {
-			return jobsV2Run{}, fmt.Errorf("job already has an active run")
+			return Run{}, fmt.Errorf("job already has an active run")
 		}
-		return jobsV2Run{}, fmt.Errorf("job already has %d active runs (max %d)", active, limit)
+		return Run{}, fmt.Errorf("job already has %d active runs (max %d)", active, limit)
 	}
 
 	_ = m.addRunEvent(runID, "queued", "manual run queued", map[string]any{"trigger": "manual", "attempt": 1})
@@ -322,25 +327,25 @@ func (m *jobsV2Manager) TriggerJob(id string) (jobsV2Run, error) {
 	return m.GetRun(runID)
 }
 
-func (m *jobsV2Manager) GetRun(id string) (jobsV2Run, error) {
+func (m *Manager) GetRun(id string) (Run, error) {
 	row := m.db.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE id = ?`, id)
 	return scanRunV2(row)
 }
 
-func (m *jobsV2Manager) GetRunSummary(id string) (jobsV2Run, error) {
-	row := m.db.QueryRow(`SELECT `+servejobs.RunSummaryColumns+` FROM job_runs_v2 INDEXED BY `+servejobs.RunByIDSummaryIndexName+` WHERE id = ?`, id)
+func (m *Manager) GetRunSummary(id string) (Run, error) {
+	row := m.db.QueryRow(`SELECT `+RunSummaryColumns+` FROM job_runs_v2 INDEXED BY `+RunByIDSummaryIndexName+` WHERE id = ?`, id)
 	return scanRunSummaryV2(row)
 }
 
-func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, int, error) {
+func (m *Manager) ListRuns(jobID string, limit, offset int) ([]Run, int, error) {
 	return m.listRuns(jobID, limit, offset, true)
 }
 
-func (m *jobsV2Manager) ListRunSummaries(jobID string, limit, offset int) ([]jobsV2Run, int, error) {
+func (m *Manager) ListRunSummaries(jobID string, limit, offset int) ([]Run, int, error) {
 	return m.listRuns(jobID, limit, offset, false)
 }
 
-func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput bool) ([]jobsV2Run, int, error) {
+func (m *Manager) listRuns(jobID string, limit, offset int, includeOutput bool) ([]Run, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -361,9 +366,9 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 	if err := m.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	columns := servejobs.RunSummaryColumns
+	columns := RunSummaryColumns
 	if includeOutput {
-		columns = servejobs.RunFullColumns
+		columns = RunFullColumns
 	}
 	query := "SELECT " + columns + " FROM job_runs_v2" + where + " ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
@@ -372,9 +377,9 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 		return nil, 0, err
 	}
 	defer rows.Close()
-	runs := make([]jobsV2Run, 0, limit)
+	runs := make([]Run, 0, limit)
 	for rows.Next() {
-		var run jobsV2Run
+		var run Run
 		var err error
 		if includeOutput {
 			run, err = scanRunV2(rows)
@@ -392,9 +397,9 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 	return runs, total, nil
 }
 
-func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
+func (m *Manager) CancelRun(id string) (Run, error) {
 	now := time.Now().UTC()
-	var transitioned jobsV2RunStatus
+	var transitioned RunStatus
 	err := m.db.QueryRow(`
 		UPDATE job_runs_v2
 		SET status = CASE
@@ -408,10 +413,10 @@ func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND status IN (?, ?, ?)
 		RETURNING status`,
-		jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunCancelled,
-		jobsV2RunCancelRequested,
-		jobsV2RunQueued, jobsV2RunClaimed, now,
-		id, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning,
+		RunQueued, RunClaimed, RunCancelled,
+		RunCancelRequested,
+		RunQueued, RunClaimed, now,
+		id, RunQueued, RunClaimed, RunRunning,
 	).Scan(&transitioned)
 	if errors.Is(err, sql.ErrNoRows) {
 		// A concurrent worker completed the run, or it was already terminal.
@@ -419,13 +424,13 @@ func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
 		return m.GetRun(id)
 	}
 	if err != nil {
-		return jobsV2Run{}, fmt.Errorf("cancel run: %w", err)
+		return Run{}, fmt.Errorf("cancel run: %w", err)
 	}
 
 	switch transitioned {
-	case jobsV2RunCancelled:
+	case RunCancelled:
 		_ = m.addRunEvent(id, "cancelled", "run cancelled before start", nil)
-	case jobsV2RunCancelRequested:
+	case RunCancelRequested:
 		_ = m.addRunEvent(id, "cancel_requested", "cancellation requested", nil)
 		m.mu.Lock()
 		cancel := m.cancels[id]
@@ -437,8 +442,8 @@ func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
 	return m.GetRun(id)
 }
 
-func scanJobV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Job, error) {
-	var job jobsV2Job
+func scanJobV2(scanner interface{ Scan(dest ...any) error }) (Job, error) {
+	var job Job
 	var enabled int
 	var runnerType, triggerType string
 	var runnerConfig string
@@ -466,11 +471,11 @@ func scanJobV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Job, error) 
 		&job.UpdatedAt,
 	)
 	if err != nil {
-		return jobsV2Job{}, err
+		return Job{}, err
 	}
 	job.Enabled = enabled == 1
-	job.RunnerType = jobsV2RunnerType(runnerType)
-	job.TriggerType = jobsV2TriggerType(triggerType)
+	job.RunnerType = RunnerType(runnerType)
+	job.TriggerType = TriggerType(triggerType)
 	job.RunnerConfig = json.RawMessage(runnerConfig)
 	job.TriggerConfig = json.RawMessage(triggerConfig)
 	if scheduleTZ.Valid {
@@ -489,8 +494,8 @@ func scanJobV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Job, error) 
 	return job, nil
 }
 
-func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) {
-	var run jobsV2Run
+func scanRunV2(scanner interface{ Scan(dest ...any) error }) (Run, error) {
+	var run Run
 	var status string
 	var workerID sql.NullString
 	var sessionID sql.NullString
@@ -533,7 +538,7 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 		&run.UpdatedAt,
 	)
 	if err != nil {
-		return jobsV2Run{}, err
+		return Run{}, err
 	}
 	applyRunV2NullableFields(&run, status, workerID, sessionID, startedAt, finishedAt, exitCode, errText, exitReason, truncatedInt, turnCount, inputTokens, outputTokens)
 	if stdout.Valid {
@@ -551,8 +556,8 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	return run, nil
 }
 
-func scanRunSummaryV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) {
-	var run jobsV2Run
+func scanRunSummaryV2(scanner interface{ Scan(dest ...any) error }) (Run, error) {
+	var run Run
 	var status string
 	var workerID sql.NullString
 	var sessionID sql.NullString
@@ -587,14 +592,14 @@ func scanRunSummaryV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, 
 		&run.UpdatedAt,
 	)
 	if err != nil {
-		return jobsV2Run{}, err
+		return Run{}, err
 	}
 	applyRunV2NullableFields(&run, status, workerID, sessionID, startedAt, finishedAt, exitCode, errText, exitReason, truncatedInt, turnCount, inputTokens, outputTokens)
 	return run, nil
 }
 
-func applyRunV2NullableFields(run *jobsV2Run, status string, workerID, sessionID sql.NullString, startedAt, finishedAt sql.NullTime, exitCode sql.NullInt64, errText, exitReason sql.NullString, truncatedInt, turnCount, inputTokens, outputTokens sql.NullInt64) {
-	run.Status = jobsV2RunStatus(status)
+func applyRunV2NullableFields(run *Run, status string, workerID, sessionID sql.NullString, startedAt, finishedAt sql.NullTime, exitCode sql.NullInt64, errText, exitReason sql.NullString, truncatedInt, turnCount, inputTokens, outputTokens sql.NullInt64) {
+	run.Status = RunStatus(status)
 	if workerID.Valid {
 		run.WorkerID = workerID.String
 	}

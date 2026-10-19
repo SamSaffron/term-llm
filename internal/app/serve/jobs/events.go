@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"database/sql"
@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func (m *jobsV2Manager) addRunEvent(runID, eventType, message string, payload any) error {
+func (m *Manager) addRunEvent(runID, eventType, message string, payload any) error {
 	if strings.TrimSpace(runID) == "" || strings.TrimSpace(eventType) == "" {
 		return nil
 	}
@@ -24,7 +24,7 @@ func (m *jobsV2Manager) addRunEvent(runID, eventType, message string, payload an
 	return err
 }
 
-func (m *jobsV2Manager) ListRunEvents(runID string, sinceID int64, limit, offset int) ([]jobsV2RunEvent, int, error) {
+func (m *Manager) ListRunEvents(runID string, sinceID int64, limit, offset int) ([]RunEvent, int, error) {
 	if strings.TrimSpace(runID) == "" {
 		return nil, 0, fmt.Errorf("run_id is required")
 	}
@@ -65,9 +65,9 @@ func (m *jobsV2Manager) ListRunEvents(runID string, sinceID int64, limit, offset
 	}
 	defer rows.Close()
 
-	events := make([]jobsV2RunEvent, 0)
+	events := make([]RunEvent, 0)
 	for rows.Next() {
-		var ev jobsV2RunEvent
+		var ev RunEvent
 		var message sql.NullString
 		var data sql.NullString
 		if err := rows.Scan(&ev.ID, &ev.RunID, &ev.EventType, &message, &data, &ev.CreatedAt); err != nil {

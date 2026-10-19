@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func (jobsV2NotifyTransientTestError) RetryAfterDelay() (time.Duration, bool) {
 
 func TestJobsV2NotifyRetriesTransientFailures(t *testing.T) {
 	attempts := 0
-	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, Run, Job, RunStatus, RunResult, string, bool, string) error {
 		attempts++
 		if attempts < jobsV2NotifyMaxAttempts {
 			return jobsV2NotifyTransientTestError{}
@@ -35,12 +35,12 @@ func TestJobsV2NotifyRetriesTransientFailures(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "notify-retry-success",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestJobsV2NotifyRetriesTransientFailures(t *testing.T) {
 		t.Fatalf("TriggerJob: %v", err)
 	}
 
-	mgr.notifyRunDone(run, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, exitReasonNatural, false, "")
+	mgr.notifyRunDone(run, RunSucceeded, RunResult{Stdout: "ok"}, exitReasonNatural, false, "")
 	if attempts != jobsV2NotifyMaxAttempts {
 		t.Fatalf("notification attempts = %d, want %d", attempts, jobsV2NotifyMaxAttempts)
 	}
@@ -68,7 +68,7 @@ func TestJobsV2NotifyRetriesTransientFailures(t *testing.T) {
 
 func TestJobsV2NotifyPermanentHTTPFailureDoesNotRetry(t *testing.T) {
 	attempts := 0
-	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, Run, Job, RunStatus, RunResult, string, bool, string) error {
 		attempts++
 		return providerhttp.NewStatusErrorString("Telegram", http.StatusBadRequest, "400 Bad Request", nil, "bad chat")
 	})
@@ -77,12 +77,12 @@ func TestJobsV2NotifyPermanentHTTPFailureDoesNotRetry(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "notify-permanent-failure",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ func TestJobsV2NotifyPermanentHTTPFailureDoesNotRetry(t *testing.T) {
 		t.Fatalf("TriggerJob: %v", err)
 	}
 
-	mgr.notifyRunDone(run, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, exitReasonNatural, false, "")
+	mgr.notifyRunDone(run, RunSucceeded, RunResult{Stdout: "ok"}, exitReasonNatural, false, "")
 	if attempts != 1 {
 		t.Fatalf("notification attempts = %d, want 1 for permanent HTTP failure", attempts)
 	}
@@ -114,7 +114,7 @@ func TestJobsV2NotifyPermanentHTTPFailureDoesNotRetry(t *testing.T) {
 
 func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
 	var attempts atomic.Int32
-	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, Run, Job, RunStatus, RunResult, string, bool, string) error {
 		attempts.Add(1)
 		return jobsV2NotifyTransientTestError{}
 	})
@@ -123,12 +123,12 @@ func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "notify-failure",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -139,17 +139,17 @@ func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
 		t.Fatalf("TriggerJob: %v", err)
 	}
 
-	if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
+	if err := mgr.finishRun(run.ID, RunSucceeded, RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
 		t.Fatalf("finishRun: %v", err)
 	}
 	updated, err := mgr.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
-	if updated.Status != jobsV2RunSucceeded {
+	if updated.Status != RunSucceeded {
 		t.Fatalf("status = %s, want succeeded", updated.Status)
 	}
-	var events []jobsV2RunEvent
+	var events []RunEvent
 	waitForServeCondition(t, 2*time.Second, func() bool {
 		var err error
 		events, _, err = mgr.ListRunEvents(run.ID, 0, 20, 0)
@@ -180,7 +180,7 @@ func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
 func TestJobsV2FinishRunDoesNotBlockOnCompletionNotification(t *testing.T) {
 	notifyStarted := make(chan struct{})
 	releaseNotify := make(chan struct{})
-	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(ctx context.Context, run jobsV2Run, job jobsV2Job, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) error {
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(ctx context.Context, run Run, job Job, status RunStatus, result RunResult, exitReason string, truncated bool, errText string) error {
 		close(notifyStarted)
 		select {
 		case <-releaseNotify:
@@ -195,12 +195,12 @@ func TestJobsV2FinishRunDoesNotBlockOnCompletionNotification(t *testing.T) {
 	defer func() { _ = mgr.Close() }()
 	defer close(releaseNotify)
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "notify-nonblocking",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -212,7 +212,7 @@ func TestJobsV2FinishRunDoesNotBlockOnCompletionNotification(t *testing.T) {
 	}
 
 	started := time.Now()
-	if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
+	if err := mgr.finishRun(run.ID, RunSucceeded, RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
 		t.Fatalf("finishRun: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
@@ -229,7 +229,7 @@ func TestJobsV2FinishRunDoesNotBlockOnCompletionNotification(t *testing.T) {
 func TestJobsV2CloseCancelsCompletionNotification(t *testing.T) {
 	notifyStarted := make(chan struct{}, 1)
 	var attempts atomic.Int32
-	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(ctx context.Context, _ jobsV2Run, _ jobsV2Job, _ jobsV2RunStatus, _ jobsV2RunResult, _ string, _ bool, _ string) error {
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(ctx context.Context, _ Run, _ Job, _ RunStatus, _ RunResult, _ string, _ bool, _ string) error {
 		attempts.Add(1)
 		notifyStarted <- struct{}{}
 		<-ctx.Done()
@@ -239,12 +239,12 @@ func TestJobsV2CloseCancelsCompletionNotification(t *testing.T) {
 		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
 	}
 
-	job, err := mgr.CreateJob(jobsV2Job{
+	job, err := mgr.CreateJob(Job{
 		Name:          "notify-shutdown",
 		Enabled:       true,
-		RunnerType:    jobsV2RunnerProgram,
+		RunnerType:    RunnerProgram,
 		RunnerConfig:  json.RawMessage(`{}`),
-		TriggerType:   jobsV2TriggerManual,
+		TriggerType:   TriggerManual,
 		TriggerConfig: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -254,7 +254,7 @@ func TestJobsV2CloseCancelsCompletionNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerJob: %v", err)
 	}
-	if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
+	if err := mgr.finishRun(run.ID, RunSucceeded, RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
 		t.Fatalf("finishRun: %v", err)
 	}
 

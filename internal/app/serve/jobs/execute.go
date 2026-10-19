@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
@@ -22,7 +23,7 @@ const (
 	jobsV2FinishRunMaxDelay    = time.Second
 )
 
-func classifyRunError(err error, result jobsV2RunResult) (exitReason string, truncated bool) {
+func classifyRunError(err error, result RunResult) (exitReason string, truncated bool) {
 	return jobs.ClassifyRunError(err, jobs.RunResult{
 		ExitCode:     result.ExitCode,
 		Stdout:       result.Stdout,
@@ -38,7 +39,7 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 	})
 }
 
-func (m *jobsV2Manager) workerLoop() {
+func (m *Manager) workerLoop() {
 	defer m.wg.Done()
 	for {
 		select {
@@ -67,7 +68,7 @@ func (m *jobsV2Manager) workerLoop() {
 	}
 }
 
-func (m *jobsV2Manager) runNextOwned() (bool, error) {
+func (m *Manager) runNextOwned() (bool, error) {
 	ctx, release, err := restart.Default.Root(context.Background())
 	if err != nil {
 		return false, err
@@ -82,7 +83,7 @@ func (m *jobsV2Manager) runNextOwned() (bool, error) {
 	return ok, err
 }
 
-func (m *jobsV2Manager) waitForWorkerWake(delay time.Duration) bool {
+func (m *Manager) waitForWorkerWake(delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer stopTimer(timer)
 	select {
@@ -95,7 +96,7 @@ func (m *jobsV2Manager) waitForWorkerWake(delay time.Duration) bool {
 	}
 }
 
-func (m *jobsV2Manager) nextWorkerDelay(now time.Time) time.Duration {
+func (m *Manager) nextWorkerDelay(now time.Time) time.Duration {
 	delay, err := m.nextWorkerDelayWithError(now)
 	if err != nil {
 		return jobsV2WorkerErrorDelay
@@ -103,7 +104,7 @@ func (m *jobsV2Manager) nextWorkerDelay(now time.Time) time.Duration {
 	return delay
 }
 
-func (m *jobsV2Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, error) {
+func (m *Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, error) {
 	idleDelay := m.workerIdleDelay
 	if idleDelay <= 0 {
 		idleDelay = jobsV2WorkerIdleDelay
@@ -111,7 +112,7 @@ func (m *jobsV2Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, 
 	delay := idleDelay
 
 	var nextRun sql.NullTime
-	err := m.db.QueryRow(`SELECT scheduled_for FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued).Scan(&nextRun)
+	err := m.db.QueryRow(`SELECT scheduled_for FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, RunQueued).Scan(&nextRun)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
@@ -122,43 +123,43 @@ func (m *jobsV2Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, 
 	return clampJobsV2Delay(delay, jobsV2WorkerMinDelay, idleDelay), nil
 }
 
-func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
+func (m *Manager) claimNextRun() (Run, bool, error) {
 	tx, err := m.db.Begin()
 	if err != nil {
-		return jobsV2Run{}, false, err
+		return Run{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().UTC()
-	row := tx.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status = ? AND scheduled_for <= ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued, now)
+	row := tx.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status = ? AND scheduled_for <= ? ORDER BY scheduled_for ASC LIMIT 1`, RunQueued, now)
 	run, err := scanRunV2(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return jobsV2Run{}, false, nil
+			return Run{}, false, nil
 		}
-		return jobsV2Run{}, false, err
+		return Run{}, false, err
 	}
 
-	res, err := tx.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunClaimed, m.workerID, run.ID, jobsV2RunQueued)
+	res, err := tx.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, RunClaimed, m.workerID, run.ID, RunQueued)
 	if err != nil {
-		return jobsV2Run{}, false, err
+		return Run{}, false, err
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return jobsV2Run{}, false, nil
+		return Run{}, false, nil
 	}
 
 	if err := tx.Commit(); err != nil {
-		return jobsV2Run{}, false, err
+		return Run{}, false, err
 	}
-	run.Status = jobsV2RunClaimed
+	run.Status = RunClaimed
 	run.WorkerID = m.workerID
 	_ = m.addRunEvent(run.ID, "claimed", "run claimed by worker", map[string]any{"worker_id": m.workerID})
 	return run, true, nil
 }
 
-func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, jobsV2RunQueued, runID, jobsV2RunClaimed, m.workerID)
+func (m *Manager) requeueClaimedRunAfterShutdown(runID string) {
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, RunQueued, runID, RunClaimed, m.workerID)
 	if err != nil {
 		log.Printf("jobs v2: failed to requeue unstarted run %q during shutdown: %v", runID, err)
 		return
@@ -176,9 +177,9 @@ func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
 	}
 }
 
-func (m *jobsV2Manager) executeRun(run jobsV2Run) { m.executeRunContext(context.Background(), run) }
+func (m *Manager) executeRun(run Run) { m.executeRunContext(context.Background(), run) }
 
-func (m *jobsV2Manager) executeRunContext(parent context.Context, run jobsV2Run) {
+func (m *Manager) executeRunContext(parent context.Context, run Run) {
 	// Avoid turning a claim into a terminal failure when shutdown had already won
 	// before this worker began admission. Keep the check below as well: shutdown
 	// can still race with loading the job and preparing its context.
@@ -189,13 +190,13 @@ func (m *jobsV2Manager) executeRunContext(parent context.Context, run jobsV2Run)
 
 	job, err := m.GetJob(run.JobID)
 	if err != nil {
-		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("load job: %w", err), run.Attempt)
+		m.finishRunWithRetry(run.ID, RunFailed, RunResult{}, fmt.Errorf("load job: %w", err), run.Attempt)
 		return
 	}
 
 	runner, ok := m.runners[job.RunnerType]
 	if !ok {
-		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("unknown runner type: %s", job.RunnerType), run.Attempt)
+		m.finishRunWithRetry(run.ID, RunFailed, RunResult{}, fmt.Errorf("unknown runner type: %s", job.RunnerType), run.Attempt)
 		return
 	}
 
@@ -221,9 +222,9 @@ func (m *jobsV2Manager) executeRunContext(parent context.Context, run jobsV2Run)
 	}()
 
 	started := time.Now().UTC()
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, RunRunning, started, run.ID, RunClaimed)
 	if err != nil {
-		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
+		m.finishRunWithRetry(run.ID, RunFailed, RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
 		return
 	}
 	affected, _ := res.RowsAffected()
@@ -251,29 +252,29 @@ func (m *jobsV2Manager) executeRunContext(parent context.Context, run jobsV2Run)
 	}
 	result, runErr := runner.Run(ctx, job, pw)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		m.finishRunWithRetry(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
+		m.finishRunWithRetry(run.ID, RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		m.finishRunWithRetry(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
+		m.finishRunWithRetry(run.ID, RunCancelled, result, context.Canceled, run.Attempt)
 		return
 	}
 	if result.ExitReason == exitReasonTimeout {
-		m.finishRunWithRetry(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
+		m.finishRunWithRetry(run.ID, RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
 		return
 	}
 	if result.ExitReason == exitReasonCancelled {
-		m.finishRunWithRetry(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
+		m.finishRunWithRetry(run.ID, RunCancelled, result, context.Canceled, run.Attempt)
 		return
 	}
 	if runErr != nil {
-		m.finishRunWithRetry(run.ID, jobsV2RunFailed, result, runErr, run.Attempt)
+		m.finishRunWithRetry(run.ID, RunFailed, result, runErr, run.Attempt)
 		return
 	}
-	m.finishRunWithRetry(run.ID, jobsV2RunSucceeded, result, nil, run.Attempt)
+	m.finishRunWithRetry(run.ID, RunSucceeded, result, nil, run.Attempt)
 }
 
-func (m *jobsV2Manager) finishRunWithRetry(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, policyAttempt int) {
+func (m *Manager) finishRunWithRetry(runID string, status RunStatus, result RunResult, runErr error, policyAttempt int) {
 	deadline := time.Now().Add(jobsV2FinishRunRetryWindow)
 	delay := jobsV2FinishRunRetryDelay
 	attempts := 0
@@ -314,7 +315,7 @@ func (m *jobsV2Manager) finishRunWithRetry(runID string, status jobsV2RunStatus,
 	log.Printf("jobs v2: failed to finish run %q as %s for %s after %d attempts; run may remain active until restart recovery: %v", runID, status, jobsV2FinishRunRetryWindow, attempts, lastErr)
 }
 
-func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int) error {
+func (m *Manager) finishRun(runID string, status RunStatus, result RunResult, runErr error, attempt int) error {
 	now := time.Now().UTC()
 	exitReason, truncated := classifyRunError(runErr, result)
 	var errText string
@@ -323,13 +324,13 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	}
 	cancelledErrText := context.Canceled.Error()
 	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?)`,
-		jobsV2RunCancelRequested, jobsV2RunCancelled, status,
+		RunCancelRequested, RunCancelled, status,
 		now, result.ExitCode,
-		jobsV2RunCancelRequested, cancelledErrText, errText,
+		RunCancelRequested, cancelledErrText, errText,
 		result.Stdout, result.Stderr, result.Thinking, result.Response, result.SessionID,
-		jobsV2RunCancelRequested, exitReasonCancelled, exitReason,
+		RunCancelRequested, exitReasonCancelled, exitReason,
 		boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens,
-		runID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
+		runID, RunQueued, RunClaimed, RunRunning, RunCancelRequested)
 	if err != nil {
 		return err
 	}
@@ -361,7 +362,7 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	})
 	m.enqueueRunDoneNotification(run, status, result, exitReason, truncated, errText)
 
-	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
+	if status == RunFailed || status == RunTimedOut {
 		job, err := m.GetJob(run.JobID)
 		if err != nil {
 			return nil
@@ -369,8 +370,8 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		policy := decodeRetryPolicy(job.RetryPolicy)
 		if attempt < policy.MaxAttempts {
 			delay := computeRetryDelay(policy, attempt)
-			retryID := "run_" + randomSuffix()
-			_, _ = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, retryID, job.ID, attempt+1, "retry", now.Add(delay), jobsV2RunQueued)
+			retryID := "run_" + wire.RandomSuffix()
+			_, _ = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, retryID, job.ID, attempt+1, "retry", now.Add(delay), RunQueued)
 			_ = m.addRunEvent(runID, "retry_scheduled", "retry run scheduled", map[string]any{
 				"retry_run_id": retryID,
 				"next_attempt": attempt + 1,
@@ -387,8 +388,8 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	return nil
 }
 
-func decodeRetryPolicy(raw json.RawMessage) jobsV2RetryPolicy {
-	policy := jobsV2RetryPolicy{MaxAttempts: 1, Backoff: "fixed", InitialDelay: "10s", MaxDelay: "5m"}
+func decodeRetryPolicy(raw json.RawMessage) RetryPolicy {
+	policy := RetryPolicy{MaxAttempts: 1, Backoff: "fixed", InitialDelay: "10s", MaxDelay: "5m"}
 	if len(raw) == 0 {
 		return policy
 	}
@@ -408,7 +409,7 @@ func decodeRetryPolicy(raw json.RawMessage) jobsV2RetryPolicy {
 	return policy
 }
 
-func computeRetryDelay(policy jobsV2RetryPolicy, attempt int) time.Duration {
+func computeRetryDelay(policy RetryPolicy, attempt int) time.Duration {
 	base, err := time.ParseDuration(policy.InitialDelay)
 	if err != nil || base <= 0 {
 		base = 10 * time.Second

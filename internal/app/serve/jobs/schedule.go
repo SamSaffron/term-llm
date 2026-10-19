@@ -1,4 +1,4 @@
-package cmd
+package jobs
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -31,7 +31,7 @@ type jobsV2MisfiredCron struct {
 // reconcileMisfiredSchedules applies startup-only misfire semantics before the
 // scheduler can observe overdue rows. Policies set to run remain overdue so the
 // normal scheduler queues one catch-up run.
-func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
+func (m *Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
 	cutoff = cutoff.UTC()
 	rows, err := m.db.Query(`
 		SELECT id, trigger_config, schedule_timezone, next_run_at
@@ -41,7 +41,7 @@ func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
 			AND trigger_type = ?
 			AND next_run_at IS NOT NULL
 			AND next_run_at <= ?
-		ORDER BY next_run_at, id`, jobsV2MisfireSkip, jobsV2TriggerCron, cutoff)
+		ORDER BY next_run_at, id`, MisfireSkip, TriggerCron, cutoff)
 	if err != nil {
 		return fmt.Errorf("load skipped cron misfires: %w", err)
 	}
@@ -55,12 +55,12 @@ func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
 			return fmt.Errorf("scan skipped cron misfire: %w", err)
 		}
 		cron.scheduleTimezone = timezone.String
-		cfg, err := parseTriggerConfig(jobsV2TriggerCron, json.RawMessage(cron.triggerConfig), cron.scheduleTimezone)
+		cfg, err := parseTriggerConfig(TriggerCron, json.RawMessage(cron.triggerConfig), cron.scheduleTimezone)
 		if err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("parse skipped cron misfire %s: %w", cron.id, err)
 		}
-		cron.nextRun, err = servejobs.NextCronTime(cfg.Expression, servejobs.EffectiveCronTimezone(cfg.Timezone, cron.scheduleTimezone), cutoff)
+		cron.nextRun, err = NextCronTime(cfg.Expression, EffectiveCronTimezone(cfg.Timezone, cron.scheduleTimezone), cutoff)
 		if err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("advance skipped cron misfire %s: %w", cron.id, err)
@@ -96,7 +96,7 @@ func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
 				AND COALESCE(schedule_timezone, '') = ?
 				AND next_run_at = ?
 				AND next_run_at <= ?`,
-			cron.nextRun, cron.id, jobsV2MisfireSkip, jobsV2TriggerCron,
+			cron.nextRun, cron.id, MisfireSkip, TriggerCron,
 			cron.triggerConfig, cron.scheduleTimezone, cron.observedNextRun.UTC(), cutoff); err != nil {
 			return fmt.Errorf("advance skipped cron misfire %s: %w", cron.id, err)
 		}
@@ -108,7 +108,7 @@ func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
 			AND misfire_policy = ?
 			AND trigger_type = ?
 			AND next_run_at IS NOT NULL
-			AND next_run_at <= ?`, jobsV2MisfireSkip, jobsV2TriggerOnce, cutoff); err != nil {
+			AND next_run_at <= ?`, MisfireSkip, TriggerOnce, cutoff); err != nil {
 		return fmt.Errorf("disable skipped once misfires: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -117,7 +117,7 @@ func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
 	return nil
 }
 
-func (m *jobsV2Manager) schedulerLoop() {
+func (m *Manager) schedulerLoop() {
 	defer m.wg.Done()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
@@ -184,7 +184,7 @@ func clampJobsV2Delay(delay, minDelay, idleDelay time.Duration) time.Duration {
 	return delay
 }
 
-func (m *jobsV2Manager) nextSchedulerDelay(now time.Time) time.Duration {
+func (m *Manager) nextSchedulerDelay(now time.Time) time.Duration {
 	delay, err := m.nextSchedulerDelayWithError(now)
 	if err != nil {
 		return jobsV2SchedulerErrorDelay
@@ -192,7 +192,7 @@ func (m *jobsV2Manager) nextSchedulerDelay(now time.Time) time.Duration {
 	return delay
 }
 
-func (m *jobsV2Manager) nextSchedulerDelayWithError(now time.Time) (time.Duration, error) {
+func (m *Manager) nextSchedulerDelayWithError(now time.Time) (time.Duration, error) {
 	idleDelay := m.schedulerIdleDelay
 	if idleDelay <= 0 {
 		idleDelay = jobsV2SchedulerIdleDelay
@@ -229,7 +229,7 @@ func minDuration(a, b time.Duration) time.Duration {
 	return a
 }
 
-func (m *jobsV2Manager) maybeRunCleanup(now time.Time) error {
+func (m *Manager) maybeRunCleanup(now time.Time) error {
 	_, release, reloadErr := restart.Default.Root(context.Background())
 	if reloadErr != nil {
 		return reloadErr
@@ -263,8 +263,8 @@ func (m *jobsV2Manager) maybeRunCleanup(now time.Time) error {
 	return nil
 }
 
-func (m *jobsV2Manager) pruneOldData(now time.Time) error {
-	terminalStatuses := []any{jobsV2RunSucceeded, jobsV2RunFailed, jobsV2RunCancelled, jobsV2RunTimedOut, jobsV2RunSkipped}
+func (m *Manager) pruneOldData(now time.Time) error {
+	terminalStatuses := []any{RunSucceeded, RunFailed, RunCancelled, RunTimedOut, RunSkipped}
 
 	if m.retentionRunDays > 0 {
 		cutoff := now.Add(-time.Duration(m.retentionRunDays) * 24 * time.Hour)
@@ -340,14 +340,14 @@ func (m *jobsV2Manager) pruneOldData(now time.Time) error {
 	return nil
 }
 
-func (m *jobsV2Manager) notifyScheduler() {
+func (m *Manager) notifyScheduler() {
 	select {
 	case m.schedulerWake <- struct{}{}:
 	default:
 	}
 }
 
-func (m *jobsV2Manager) notifyWorkers(n int) {
+func (m *Manager) notifyWorkers(n int) {
 	if n <= 0 {
 		n = 1
 	}
@@ -360,7 +360,7 @@ func (m *jobsV2Manager) notifyWorkers(n int) {
 	}
 }
 
-func (m *jobsV2Manager) scheduleDueRuns(now time.Time) error {
+func (m *Manager) scheduleDueRuns(now time.Time) error {
 	_, release, reloadErr := restart.Default.Root(context.Background())
 	if reloadErr != nil {
 		return reloadErr
@@ -372,7 +372,7 @@ func (m *jobsV2Manager) scheduleDueRuns(now time.Time) error {
 	}
 	defer rows.Close()
 
-	var jobs []jobsV2Job
+	var jobs []Job
 	for rows.Next() {
 		job, err := scanJobV2(rows)
 		if err != nil {
@@ -392,7 +392,7 @@ func (m *jobsV2Manager) scheduleDueRuns(now time.Time) error {
 	return nil
 }
 
-func jobsV2ConcurrencyLimit(job jobsV2Job) int {
+func jobsV2ConcurrencyLimit(job Job) int {
 	if job.ConcurrencyPolicy == "forbid" {
 		return 1
 	}
@@ -402,16 +402,16 @@ func jobsV2ConcurrencyLimit(job jobsV2Job) int {
 	return 1
 }
 
-func (m *jobsV2Manager) countActiveRuns(jobID string) (int, error) {
+func (m *Manager) countActiveRuns(jobID string) (int, error) {
 	var active int
-	err := m.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, jobID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning).Scan(&active)
+	err := m.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, jobID, RunQueued, RunClaimed, RunRunning).Scan(&active)
 	if err != nil {
 		return 0, err
 	}
 	return active, nil
 }
 
-func (m *jobsV2Manager) enqueueRunWithConcurrencyLimit(job jobsV2Job, trigger string, scheduledFor time.Time, onLimit func(*sql.Tx) error, afterInsert func(*sql.Tx, string) error) (string, int, bool, error) {
+func (m *Manager) enqueueRunWithConcurrencyLimit(job Job, trigger string, scheduledFor time.Time, onLimit func(*sql.Tx) error, afterInsert func(*sql.Tx, string) error) (string, int, bool, error) {
 	m.enqueueMu.Lock()
 	defer m.enqueueMu.Unlock()
 
@@ -422,7 +422,7 @@ func (m *jobsV2Manager) enqueueRunWithConcurrencyLimit(job jobsV2Job, trigger st
 	defer func() { _ = tx.Rollback() }()
 
 	var active int
-	err = tx.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, job.ID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning).Scan(&active)
+	err = tx.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, job.ID, RunQueued, RunClaimed, RunRunning).Scan(&active)
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -439,8 +439,8 @@ func (m *jobsV2Manager) enqueueRunWithConcurrencyLimit(job jobsV2Job, trigger st
 		return "", active, false, nil
 	}
 
-	runID := "run_" + randomSuffix()
-	_, err = tx.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, job.ID, trigger, scheduledFor.UTC(), jobsV2RunQueued)
+	runID := "run_" + wire.RandomSuffix()
+	_, err = tx.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, job.ID, trigger, scheduledFor.UTC(), RunQueued)
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -455,7 +455,7 @@ func (m *jobsV2Manager) enqueueRunWithConcurrencyLimit(job jobsV2Job, trigger st
 	return runID, active + 1, true, nil
 }
 
-func (m *jobsV2Manager) scheduleOne(job jobsV2Job, now time.Time) error {
+func (m *Manager) scheduleOne(job Job, now time.Time) error {
 	next, err := computeNextRunAt(job, now)
 	if err != nil {
 		return err
@@ -465,7 +465,7 @@ func (m *jobsV2Manager) scheduleOne(job jobsV2Job, now time.Time) error {
 		_, err := tx.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
 		return err
 	}, func(tx *sql.Tx, _ string) error {
-		if job.TriggerType == jobsV2TriggerOnce {
+		if job.TriggerType == TriggerOnce {
 			_, err := tx.Exec(`UPDATE jobs_v2 SET enabled = 0, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, job.ID)
 			return err
 		}
@@ -482,17 +482,17 @@ func (m *jobsV2Manager) scheduleOne(job jobsV2Job, now time.Time) error {
 	return nil
 }
 
-func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage, scheduleTZ string) (jobsV2TriggerConfig, error) {
-	cfg := jobsV2TriggerConfig{}
+func parseTriggerConfig(tt TriggerType, raw json.RawMessage, scheduleTZ string) (TriggerConfig, error) {
+	cfg := TriggerConfig{}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return cfg, fmt.Errorf("invalid trigger_config: %w", err)
 		}
 	}
 	switch tt {
-	case jobsV2TriggerManual:
+	case TriggerManual:
 		return cfg, nil
-	case jobsV2TriggerOnce:
+	case TriggerOnce:
 		if strings.TrimSpace(cfg.RunAt) == "" {
 			return cfg, fmt.Errorf("trigger_config.run_at is required for once trigger")
 		}
@@ -500,18 +500,18 @@ func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage, scheduleTZ st
 			return cfg, fmt.Errorf("trigger_config.run_at must be RFC3339")
 		}
 		return cfg, nil
-	case jobsV2TriggerCron:
+	case TriggerCron:
 		if strings.TrimSpace(cfg.Expression) == "" {
 			return cfg, fmt.Errorf("trigger_config.expression is required for cron trigger")
 		}
-		cfg.Timezone = servejobs.EffectiveCronTimezone(cfg.Timezone, scheduleTZ)
+		cfg.Timezone = EffectiveCronTimezone(cfg.Timezone, scheduleTZ)
 		if cfg.Timezone == "" {
 			return cfg, fmt.Errorf("trigger_config.timezone is required for cron trigger")
 		}
 		if _, err := time.LoadLocation(cfg.Timezone); err != nil {
 			return cfg, fmt.Errorf("invalid cron timezone: %w", err)
 		}
-		if err := servejobs.ValidateCronExpression(cfg.Expression); err != nil {
+		if err := ValidateCronExpression(cfg.Expression); err != nil {
 			return cfg, err
 		}
 		return cfg, nil
@@ -520,20 +520,20 @@ func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage, scheduleTZ st
 	}
 }
 
-func initialNextRun(tt jobsV2TriggerType, cfg jobsV2TriggerConfig, scheduleTZ string) *time.Time {
+func initialNextRun(tt TriggerType, cfg TriggerConfig, scheduleTZ string) *time.Time {
 	now := time.Now().UTC()
 	switch tt {
-	case jobsV2TriggerManual:
+	case TriggerManual:
 		return nil
-	case jobsV2TriggerOnce:
+	case TriggerOnce:
 		t, err := time.Parse(time.RFC3339, cfg.RunAt)
 		if err != nil {
 			return nil
 		}
 		u := t.UTC()
 		return &u
-	case jobsV2TriggerCron:
-		next, err := servejobs.NextCronTime(cfg.Expression, servejobs.EffectiveCronTimezone(cfg.Timezone, scheduleTZ), now)
+	case TriggerCron:
+		next, err := NextCronTime(cfg.Expression, EffectiveCronTimezone(cfg.Timezone, scheduleTZ), now)
 		if err != nil {
 			return nil
 		}
@@ -544,7 +544,7 @@ func initialNextRun(tt jobsV2TriggerType, cfg jobsV2TriggerConfig, scheduleTZ st
 	}
 }
 
-func computeNextRunAt(job jobsV2Job, now time.Time) (*time.Time, error) {
+func computeNextRunAt(job Job, now time.Time) (*time.Time, error) {
 	cfg, err := parseTriggerConfig(job.TriggerType, job.TriggerConfig, job.ScheduleTimezone)
 	if err != nil {
 		return nil, err
