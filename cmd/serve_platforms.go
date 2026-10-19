@@ -22,7 +22,11 @@ const (
 	servePlatformRetryResetAfter   = time.Minute
 )
 
-func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings serve.Settings, platform serve.Platform, initialRetryDelay time.Duration) {
+func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings serve.Settings, platform serve.Platform, initialRetryDelay time.Duration, injectedDelay ...servePlatformDelay) {
+	delay := waitServePlatformRetry
+	if len(injectedDelay) > 0 && injectedDelay[0] != nil {
+		delay = injectedDelay[0]
+	}
 	retryDelay := initialRetryDelay
 	for {
 		startedAt := time.Now()
@@ -55,17 +59,8 @@ func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings ser
 			log.Printf("[%s] stopped unexpectedly; retrying in %s", platform.Name(), retryDelay)
 		}
 
-		timer := time.NewTimer(retryDelay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+		if !delay(ctx, retryDelay) {
 			return
-		case <-timer.C:
 		}
 
 		if retryDelay < servePlatformMaxRetryDelay {
@@ -74,6 +69,22 @@ func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings ser
 				retryDelay = servePlatformMaxRetryDelay
 			}
 		}
+	}
+}
+
+func waitServePlatformRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

@@ -263,78 +263,21 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *ServeOptions,
 		fmt.Fprintln(deps.Stderr, "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
 	}
 
-	// Build the serve.Settings used by non-web platforms.
-	serveSettings := serve.Settings{
-		SystemPrompt:           settings.SystemPrompt,
-		IdleTimeout:            opts.SessionTTL,
-		TelegramCarryoverChars: opts.TelegramCarryoverChars,
-		MaxTurns:               settings.MaxTurns,
-		Debug:                  opts.Debug,
-		DebugRaw:               deps.DebugRaw,
-		Search:                 settings.Search,
-		ForceExternalSearch:    forceExternalSearch,
-		Tools:                  settings.Tools,
-		MCP:                    settings.MCP,
-		Agent:                  agentName,
-		TimeGrounding:          settings.TimeGrounding,
-		PlatformMessages:       agentPlatformMsgs,
-		Store:                  store,
-		Runner: newCmdRunner(cfg, cmdRunnerOptions{
-			AgentOwner:          agentOwner,
-			Provider:            opts.Provider,
-			Tools:               opts.Tools,
-			ReadDirs:            append([]string(nil), opts.ReadDirs...),
-			WriteDirs:           append([]string(nil), opts.WriteDirs...),
-			ShellAllow:          append([]string(nil), opts.ShellAllow...),
-			MCP:                 opts.MCP,
-			SystemMessage:       opts.SystemMessage,
-			MaxTurns:            opts.MaxTurns,
-			Search:              opts.Search,
-			NoSearch:            opts.NoSearch,
-			NativeSearch:        opts.NativeSearch,
-			NoNativeSearch:      opts.NoNativeSearch,
-			ApprovalMode:        resolvedApproval.Mode,
-			ApprovalModeSet:     true,
-			ApprovalSource:      resolvedApproval.Source,
-			ApprovalHeadless:    true,
-			ApprovalDiagnostics: opts.Verbose,
-			Debug:               opts.Debug,
-			DebugRaw:            deps.DebugRaw,
-			ErrWriter:           approvalErrWriter,
-			Store:               store,
-			SessionStore:        deps.SessionStore,
-			MemoryPaths:         deps.MemoryPaths,
-		}),
-		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
-			rt, err := factory(ctx)
-			if err != nil {
-				return nil, err
-			}
-			return &serve.SessionRuntime{
-				Engine:       rt.engine,
-				Provider:     rt.provider,
-				ProviderName: rt.provider.Name(),
-				ModelName:    rt.defaultModel,
-				Cleanup:      rt.Close,
-			}, nil
-		},
-	}
+	// Build the serve.Settings used by non-web platforms. Resolved settings feed
+	// the platform while raw flags remain the defaults for its generic runner.
+	serveSettings := composeServePlatformSettings(servePlatformCompositionOptions{
+		cfg: cfg, flags: *opts, resolved: settings, debugRaw: deps.DebugRaw,
+		forceExternalSearch: forceExternalSearch, agentName: agentName,
+		platformMessages: agentPlatformMsgs, store: store, agentOwner: agentOwner,
+		approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
+		sessionStore: deps.SessionStore, memoryPaths: deps.MemoryPaths,
+		newRunner: deps.RunnerFactory, newRuntime: factory,
+	})
 
 	// Instantiate non-web platforms.
-	var platforms []serve.Platform
-	for _, name := range platformNames {
-		switch name {
-		case "web":
-			// Handled by the existing serveServer below.
-		case "api":
-			// Handled by the HTTP serveServer below (no UI).
-		case "jobs":
-			// Handled by the HTTP serveServer below.
-		case "telegram":
-			platforms = append(platforms, serve.NewTelegramPlatform(cfg.Serve.Telegram))
-		default:
-			return fmt.Errorf("unknown platform: %s", name)
-		}
+	platforms, err := composeServePlatforms(platformNames, cfg, deps.PlatformFactory)
+	if err != nil {
+		return err
 	}
 
 	// Run setup wizard for platforms that need it (or --setup flag).
@@ -526,13 +469,12 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *ServeOptions,
 			return err
 		}
 		settings := serveSettings
-		var readyOnce sync.Once
-		settings.Ready = func() { readyOnce.Do(startingDone) }
+		settings.Ready = composeServePlatformReady(startingDone, deps.PlatformReady)
 		wg.Add(1)
 		go func(p serve.Platform) {
 			defer wg.Done()
 			defer settings.Ready()
-			runPlatformSupervisor(platformCtx, cfg, settings, p, servePlatformInitialRetryDelay)
+			runPlatformSupervisor(platformCtx, cfg, settings, p, servePlatformInitialRetryDelay, deps.PlatformDelay)
 		}(p)
 	}
 
