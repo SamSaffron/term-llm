@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/app/reload"
 	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
@@ -75,57 +73,15 @@ development.`,
 	RunE: runServeHub,
 }
 
-// validateHubBind rejects unauthenticated public binds. A Hub with bearer auth
-// may bind publicly for use behind a reverse proxy, but --auth none stays
-// loopback-only because the Hub injects node tokens server-side.
 func validateHubBind(host string, port int, requireAuth bool) error {
-	if port <= 0 || port > 65535 {
-		return fmt.Errorf("invalid --port %d (must be 1-65535)", port)
-	}
-	if !requireAuth && !isLoopbackHost(host) {
-		return fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", host)
-	}
-	return nil
+	return apphub.ValidateBind(host, port, requireAuth)
 }
 
-func normalizeHubBasePath(raw string) (string, error) {
-	p := strings.TrimSpace(raw)
-	if p == "" || p == "/" {
-		return "", nil
-	}
-	if strings.Contains(p, "://") || strings.ContainsAny(p, "?#") {
-		return "", fmt.Errorf("--base-path must be a URL path such as /hub, not %q", raw)
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	if hubHasDotDotSegment(p) {
-		return "", fmt.Errorf("--base-path must not contain .. segments")
-	}
-	p = path.Clean(p)
-	if p == "/" || p == "." {
-		return "", nil
-	}
-	return p, nil
-}
+func normalizeHubBasePath(raw string) (string, error) { return apphub.NormalizeBasePath(raw) }
 
-// defaultHubNodesFile is where dashboard-added nodes persist when
-// --nodes-file is not given.
-func defaultHubNodesFile() (string, error) {
-	dir, err := appdata.GetDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "hub", "nodes.json"), nil
-}
+func defaultHubNodesFile() (string, error) { return apphub.DefaultNodesFile() }
 
-func defaultHubAuthFile() (string, error) {
-	dir, err := appdata.GetDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "hub", "auth.json"), nil
-}
+func defaultHubAuthFile() (string, error) { return apphub.DefaultAuthFile() }
 
 func lockHubPasskeyState(authFile string) (func() error, error) {
 	dir := filepath.Dir(authFile)
@@ -358,16 +314,7 @@ func hubPasskeyBearerCompatibilitySummary(source string) string {
 	}
 }
 
-func resolveHubAuthMode(raw string) (string, error) {
-	mode := strings.ToLower(strings.TrimSpace(raw))
-	if mode == "" {
-		mode = "bearer"
-	}
-	if mode != "bearer" && mode != "none" && mode != "passkey" {
-		return "", fmt.Errorf("invalid --auth %q (must be bearer, passkey, or none)", raw)
-	}
-	return mode, nil
-}
+func resolveHubAuthMode(raw string) (string, error) { return apphub.ResolveAuthMode(raw) }
 func resolveHubBootstrapSecret(deps hubDeps, opts *apphub.Options, needed bool) ([]byte, string, error) {
 	return resolveBrowserBootstrapSecret(deps.Stderr, needed, opts.BootstrapTokenFile, "TERM_LLM_HUB_BOOTSTRAP_TOKEN", opts.PrintBootstrapToken, deps.Stdout)
 }

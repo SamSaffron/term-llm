@@ -2,11 +2,8 @@ package cmd
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/app/reload"
 	"io"
 	"log"
 	"net"
@@ -21,8 +18,10 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/agents"
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/live"
@@ -34,7 +33,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
-	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/share"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -1021,10 +1019,7 @@ func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool
 	return appserve.ResolveAuthMode(authFlagSet, authMode, allowNoAuthSet, allowNoAuth)
 }
 
-func isLoopbackHost(host string) bool {
-	h := strings.TrimSpace(strings.ToLower(host))
-	return h == "127.0.0.1" || h == "localhost" || h == "::1"
-}
+func isLoopbackHost(host string) bool { return appserver.IsLoopbackHost(host) }
 
 // plainHTTPConnectionWarning explains the browser connection limit when
 // browsers are likely to reach the web UI directly over plain HTTP. Browsers
@@ -1067,13 +1062,7 @@ func resolveServeToken(flagValue, envValue string, requireAuth bool, generate fu
 	return t, tokenSourceGenerated, nil
 }
 
-func generateServeToken() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
+func generateServeToken() (string, error) { return appserve.GenerateToken() }
 
 type serveServerConfig struct {
 	host                    string
@@ -1257,12 +1246,7 @@ func normalizeServePublicURL(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
-// normalizeBasePath validates and normalizes a base-path value.
-// It ensures a leading slash, strips trailing slashes, and rejects
-// empty or root-only paths (use the default "/ui" instead of "/").
-func normalizeBasePath(raw string) (string, error) {
-	return servehttp.NormalizeBasePath(raw)
-}
+func normalizeBasePath(raw string) (string, error) { return appserve.NormalizeBasePath(raw) }
 
 type serveServer struct {
 	mcpRegistry              mcpRegistrySearcher

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	"github.com/spf13/cobra"
@@ -112,10 +113,6 @@ func printWebPasskeyStatus(cmd *cobra.Command, auth *browserPasskeyHandler, disp
 	}
 }
 
-// Shared by foreground serve and the native-service launch validator.
 func validateWebPasskeyTransport(hubURL string, register bool, connect string, cors []string) error {
-	if hubURL != "" || register || strings.EqualFold(strings.TrimSpace(connect), "reverse") || len(cors) > 0 {
-		return fmt.Errorf("--auth passkey supports direct, same-origin Web access only; Hub and --cors-origin are not supported")
-	}
-	return nil
+	return appserve.ValidateWebPasskeyTransport(hubURL, register, connect, cors)
 }
