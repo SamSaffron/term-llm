@@ -2,10 +2,11 @@ package cmd
 
 import (
 	"errors"
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 	"net/http"
 	"testing"
 	"time"
+
+	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 )
 
 func TestTelegramAPIResponseErrorUsesHTTPStatusWhenErrorCodeMissing(t *testing.T) {

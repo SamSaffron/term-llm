@@ -3,10 +3,12 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
@@ -122,4 +124,151 @@ func newJobsV2ManagerWithRunners(dbPath string, workers int, runners map[jobsV2R
 
 	adopted = true
 	return mgr, nil
+}
+
+type jobsV2Manager struct {
+	releaseOwner func() error
+	db           *sql.DB
+	workers      int
+	workerID     string
+	runners      map[jobsV2RunnerType]jobsV2Runner
+	notifyDone   jobsV2RunDoneNotifier
+	// Idle timers are only fallbacks; job/run mutations wake the loops immediately.
+	schedulerIdleDelay time.Duration
+	workerIdleDelay    time.Duration
+	// Retention settings for protecting disk usage.
+	retentionRunDays     int
+	retentionEventDays   int
+	retentionMaxRunsJob  int
+	cleanupInterval      time.Duration
+	lastCleanupCompleted time.Time
+	cleanupRunning       bool
+
+	enqueueMu     sync.Mutex
+	mu            sync.Mutex
+	closed        bool
+	done          chan struct{}
+	schedulerWake chan struct{}
+	workerWake    chan struct{}
+	wg            sync.WaitGroup
+	cancels       map[string]context.CancelFunc
+	notifyCtx     context.Context
+	notifyCancel  context.CancelFunc
+}
+
+func (m *jobsV2Manager) recoverRuns() error {
+	rows, err := m.db.Query(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status IN (?, ?) ORDER BY created_at ASC`, jobsV2RunClaimed, jobsV2RunRunning)
+	if err != nil {
+		return fmt.Errorf("load interrupted runs: %w", err)
+	}
+
+	var interrupted []jobsV2Run
+	for rows.Next() {
+		run, err := scanRunV2(rows)
+		if err != nil {
+			return fmt.Errorf("scan interrupted run: %w", err)
+		}
+		interrupted = append(interrupted, run)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("scan interrupted runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close interrupted runs query: %w", err)
+	}
+
+	if _, err := m.db.Exec(`
+		UPDATE job_runs_v2
+		SET status = ?,
+			finished_at = CURRENT_TIMESTAMP,
+			exit_reason = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE status = ?`,
+		jobsV2RunCancelled,
+		exitReasonCancelled,
+		jobsV2RunCancelRequested); err != nil {
+		return fmt.Errorf("recover cancel requested runs: %w", err)
+	}
+
+	for _, run := range interrupted {
+		exitCode := 0
+		if run.ExitCode != nil {
+			exitCode = *run.ExitCode
+		}
+		result := jobsV2RunResult{
+			ExitCode:     exitCode,
+			Stdout:       run.Stdout,
+			Stderr:       run.Stderr,
+			Thinking:     run.Thinking,
+			Response:     run.Response,
+			SessionID:    run.SessionID,
+			ExitReason:   exitReasonWorkerLost,
+			Truncated:    run.Truncated,
+			TurnCount:    run.TurnCount,
+			InputTokens:  run.InputTokens,
+			OutputTokens: run.OutputTokens,
+		}
+		if err := m.finishRun(run.ID, jobsV2RunFailed, result, errors.New("worker lost before run could finish"), run.Attempt); err != nil {
+			return fmt.Errorf("recover interrupted run %s: %w", run.ID, err)
+		}
+	}
+
+	return nil
+}
+
+func (m *jobsV2Manager) Close() error {
+	return m.CloseContext(context.Background())
+}
+
+func (m *jobsV2Manager) CloseContext(ctx context.Context) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closed = true
+	if m.done != nil {
+		close(m.done)
+	}
+	if m.notifyCancel != nil {
+		m.notifyCancel()
+	}
+	cancels := make([]context.CancelFunc, 0, len(m.cancels))
+	for _, cancel := range m.cancels {
+		cancels = append(cancels, cancel)
+	}
+	m.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	waitDone := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		err := m.db.Close()
+		if m.releaseOwner != nil {
+			err = errors.Join(err, m.releaseOwner())
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *jobsV2Manager) doneChan() <-chan struct{} {
+	if m.done == nil {
+		return nil
+	}
+	return m.done
+}
+
+func (m *jobsV2Manager) isClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed
 }

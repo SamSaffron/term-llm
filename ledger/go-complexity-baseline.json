@@ -682,7 +682,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_jobs_v2.go|cmd|*jobsV2LLMRunner|Run.func1",
+      "key": ".|cmd/jobs_v2_adapter.go|cmd|*jobsV2LLMRunner|Run.func1",
       "complexity": 39,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",

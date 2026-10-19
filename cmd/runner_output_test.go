@@ -76,7 +76,15 @@ func TestResultCollectorsDiscardAbandonedAttempts(t *testing.T) {
 				t.Errorf("job result = %q / %q, flush = %q; want %q / %q", res.Response, res.Thinking, flushed, wantText, wantThinking)
 			}
 
-			mgr := newJobsV2ManagerWithoutLoops(t)
+			completions := make(chan jobsV2Run, 1)
+			mgr := newJobsV2HostManager(t, 1, map[jobsV2RunnerType]jobsV2Runner{
+				jobsV2RunnerLLM: jobsV2HostRunnerFunc(func(context.Context, jobsV2Job, progressWriter) (jobsV2RunResult, error) {
+					return res, nil
+				}),
+			}, func(_ context.Context, run jobsV2Run, _ jobsV2Job, _ jobsV2RunStatus, _ jobsV2RunResult, _ string, _ bool, _ string) error {
+				completions <- run
+				return nil
+			})
 			storedJob, err := mgr.CreateJob(jobsV2Job{Name: "retry-result", Enabled: true, RunnerType: jobsV2RunnerLLM, RunnerConfig: job.RunnerConfig, TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`)})
 			if err != nil {
 				t.Fatal(err)
@@ -85,15 +93,16 @@ func TestResultCollectorsDiscardAbandonedAttempts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, res, nil, run.Attempt); err != nil {
+			completed := waitJobsV2HostCompletion(t, completions)
+			if completed.ID != run.ID {
+				t.Fatalf("completed run ID = %q, want %q", completed.ID, run.ID)
+			}
+			stored, err := mgr.GetRun(run.ID)
+			if err != nil {
 				t.Fatal(err)
 			}
-			var response, thinking string
-			if err := mgr.db.QueryRow(`SELECT response, thinking FROM job_runs_v2 WHERE id = ?`, run.ID).Scan(&response, &thinking); err != nil {
-				t.Fatal(err)
-			}
-			if response != wantText || thinking != wantThinking {
-				t.Errorf("persisted result = %q / %q; want %q / %q", response, thinking, wantText, wantThinking)
+			if stored.Response != wantText || stored.Thinking != wantThinking {
+				t.Errorf("persisted result = %q / %q; want %q / %q", stored.Response, stored.Thinking, wantText, wantThinking)
 			}
 		})
 	}

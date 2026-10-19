@@ -792,7 +792,7 @@ func TestServeHTTPHandler_MountsJobsOnlyAtRoot(t *testing.T) {
 }
 
 func TestQueueAgentCombinedWebJobsCreatesJob(t *testing.T) {
-	mgr := newJobsV2ManagerWithoutLoops(t)
+	mgr := newJobsV2HostManager(t, 0, map[jobsV2RunnerType]jobsV2Runner{}, nil)
 	srv := &serveServer{
 		cfg:    serveServerConfig{ui: true, basePath: "/ui", requireAuth: true, token: "local-token"},
 		jobsV2: mgr,
