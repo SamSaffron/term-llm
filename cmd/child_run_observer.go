@@ -24,7 +24,7 @@ type childRunInfo struct {
 }
 
 type childRunSession interface {
-	Execute(ctx context.Context, env *cmdRunEnvironment, sink runpkg.EventSink) (runpkg.Result, error)
+	Execute(ctx context.Context, env *PreparedRun, sink runpkg.EventSink) (runpkg.Result, error)
 	AskUser(ctx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
 	AskUserAvailable() bool
 	Finish(status session.SessionStatus, err error)

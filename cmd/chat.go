@@ -824,9 +824,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	if toolMgr != nil && toolMgr.Registry != nil {
 		toolMgr.Registry.SetAgentModelAdmission(liveState, func(ctx context.Context, name, override string, inherited modelpolicy.Policy, parent runpkg.ParentModel) error {
-			checker := &cmdRunner{baseCfg: cfg}
-			_, _, _, _, err := checker.resolveRunModel(ctx, runpkg.Request{AgentName: name, Model: override, ModelPolicy: inherited, ParentModel: parent})
-			return err
+			return NewRunner(cfg, RunnerOptions{}).CheckAgentModel(ctx, runpkg.Request{AgentName: name, Model: override, ModelPolicy: inherited, ParentModel: parent})
 		})
 	}
 	model.SetModelSwitchHook(func(key, name string) {
@@ -855,7 +853,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	model.SetRootContext(ctx)
 	agentOwner := &runtime.AgentHostOwner{}
-	model.SetRunner(newCmdRunner(cfg, cmdRunnerOptions{
+	model.SetRunner(NewCmdRunner(cfg, RunnerOptions{
 		AgentOwner:         agentOwner,
 		Provider:           chatProvider,
 		ConfigSet:          true,

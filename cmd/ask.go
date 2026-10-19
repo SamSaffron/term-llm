@@ -547,7 +547,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if toolMgr != nil {
 		parentApprovalMgr = toolMgr.ApprovalMgr
 	}
-	askRunner := newCmdRunner(cfg, cmdRunnerOptions{
+	askRunner := NewCmdRunner(cfg, RunnerOptions{
 		Provider:           askProvider,
 		Fast:               askFast,
 		ConfigSet:          true,

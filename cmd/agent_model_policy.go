@@ -37,9 +37,7 @@ func wireStaticAgentModelAdmission(cfg *config.Config, mgr *tools.ToolManager, s
 	}
 	if mgr != nil && mgr.Registry != nil {
 		mgr.Registry.SetAgentModelAdmission(state, func(ctx context.Context, name, model string, inherited modelpolicy.Policy, parent runpkg.ParentModel) error {
-			checker := &cmdRunner{baseCfg: cfg}
-			_, _, _, _, err := checker.resolveRunModel(ctx, runpkg.Request{AgentName: name, Model: model, ModelPolicy: inherited, ParentModel: parent})
-			return err
+			return NewRunner(cfg, RunnerOptions{}).CheckAgentModel(ctx, runpkg.Request{AgentName: name, Model: model, ModelPolicy: inherited, ParentModel: parent})
 		})
 	}
 }
