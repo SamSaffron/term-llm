@@ -25,7 +25,7 @@ type preparedAskConversation struct {
 
 // prepareAskConversation establishes/refreshes durable session inputs and then
 // projects system, active history, grounding, and the new user message in order.
-func prepareAskConversation(ctx context.Context, cfg *config.Config, provider core.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings SessionSettings, ticket *sessionInputTicket, basePrompt string, userMessage core.Message, approval tools.ApprovalMode) (preparedAskConversation, error) {
+func prepareAskConversation(ctx context.Context, cfg *config.Config, provider core.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings SessionSettings, ticket *SessionInputTicket, basePrompt string, userMessage core.Message, approval tools.ApprovalMode) (preparedAskConversation, error) {
 	if !resuming && store != nil {
 		if sessionID == "" {
 			sessionID = session.NewID()
@@ -47,9 +47,9 @@ func prepareAskConversation(ctx context.Context, cfg *config.Config, provider co
 		_ = store.Create(ctx, sess)
 	}
 	if ticket != nil {
-		if ticket.owner {
+		if ticket.Owner() {
 			refresher, _ := session.AsSessionInputRefresher(store)
-			refreshed, err := refresher.RefreshSessionInputs(ctx, sess.ID, settings.SystemPrompt, settings.Tools, equalSessionTools)
+			refreshed, err := refresher.RefreshSessionInputs(ctx, sess.ID, settings.SystemPrompt, settings.Tools, EqualSessionTools)
 			if err != nil {
 				return preparedAskConversation{}, err
 			}
@@ -58,7 +58,7 @@ func prepareAskConversation(ctx context.Context, cfg *config.Config, provider co
 		sess.Tools = settings.Tools
 	}
 	if !resuming && sess != nil {
-		registerOwnedSessionInputs(store, sess, sessionInputSelection{BasePrompt: basePrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
+		RegisterOwnedSessionInputs(store, sess, SessionInputSelection{BasePrompt: basePrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
 	}
 	var history []core.Message
 	if resuming {
@@ -72,8 +72,8 @@ func prepareAskConversation(ctx context.Context, cfg *config.Config, provider co
 		}
 	}
 	if ticket != nil {
-		if ticket.owner {
-			ticket.finish(sessionInputSelection{BasePrompt: basePrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
+		if ticket.Owner() {
+			ticket.Finish(SessionInputSelection{BasePrompt: basePrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
 		}
 		history = session.ProjectSelectedSessionPrompt(history, settings.SystemPrompt)
 	}

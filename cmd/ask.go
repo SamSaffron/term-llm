@@ -267,15 +267,15 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Durable identity must be known before expanding the two refreshable
 	// inputs. In particular, includes must not resolve against the launch CWD.
-	var deferredInputs *sessionInputSelection
+	var deferredInputs *SessionInputSelection
 	if cmd.Flags().Changed("resume") {
-		deferredInputs = &sessionInputSelection{}
+		deferredInputs = &SessionInputSelection{}
 	}
 	// Resolve all settings: CLI > agent > config
 	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
 	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
-		inputs:           deferredInputs,
+		Inputs:           deferredInputs,
 		Provider:         askProvider,
 		ActiveProvider:   promptProvider,
 		ActiveModel:      promptModel,
@@ -356,7 +356,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if inputTicket != nil {
-		defer inputTicket.fail()
+		defer inputTicket.Fail()
 	}
 
 	defaultQuestion := ""

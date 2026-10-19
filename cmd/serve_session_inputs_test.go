@@ -13,17 +13,16 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
 // Regression for the saved-prompt/retired-local-tools shape seen in 7835.
 // This uses synthetic SQLite only, through the production logging decorator.
 func TestSessionInputUIWrappedSQLiteRealRegistry(t *testing.T) {
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 	ctx := context.Background()
 	dir := t.TempDir()
-	raw := inputTestStore(t, filepath.Join(t.TempDir(), "sessions.db"))
+	raw := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "sessions.db"))
 	store := &session.LoggingStore{Store: raw}
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 	sess := &session.Session{ID: session.NewID(), Provider: "mock", ProviderKey: "mock", Model: "mock-model", Mode: session.ModeChat, CWD: dir, Tools: "read_file", Search: true, LastTotalTokens: 321, LastMessageCount: 2}
@@ -65,7 +64,7 @@ func TestSessionInputUIWrappedSQLiteRealRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if processSessionInputs.ready(store, sess.ID) != nil {
+	if ProcessSessionInputs().Ready(store, sess.ID) != nil {
 		t.Fatal("compat initiated refresh")
 	}
 	rows, _ := store.GetMessages(ctx, sess.ID, 0, 0)
@@ -81,7 +80,7 @@ func TestSessionInputUIWrappedSQLiteRealRegistry(t *testing.T) {
 	if current, _ := srv.sessionMgr.Get(sess.ID); current != compat {
 		t.Fatal("failed candidate displaced runtime")
 	}
-	if processSessionInputs.ready(store, sess.ID) != nil {
+	if ProcessSessionInputs().Ready(store, sess.ID) != nil {
 		t.Fatal("failed preparation marked ready")
 	}
 	failFactory = false
@@ -178,11 +177,9 @@ func (s inputRefreshHistoryFailure) GetMessages(context.Context, string, int, in
 }
 
 func TestSessionInputPostCommitFailureRetiresOldRuntime(t *testing.T) {
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 	ctx := context.Background()
-	store := inputTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+	store := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "test.db"))
 	sess := &session.Session{ID: session.NewID(), Tools: "", Provider: "mock", ProviderKey: "mock", Model: "mock"}
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
@@ -213,7 +210,7 @@ func TestSessionInputPostCommitFailureRetiresOldRuntime(t *testing.T) {
 	if _, ok := srv.sessionMgr.Get(sess.ID); ok {
 		t.Fatal("obsolete runtime survived committed refresh failure")
 	}
-	if processSessionInputs.ready(store, sess.ID) != nil {
+	if ProcessSessionInputs().Ready(store, sess.ID) != nil {
 		t.Fatal("failed publication marked ready")
 	}
 	rows, _ := store.GetMessages(ctx, sess.ID, 0, 0)
@@ -231,11 +228,9 @@ func TestSessionInputPostCommitFailureRetiresOldRuntime(t *testing.T) {
 }
 
 func TestSessionInputBusyAndCancelledPreparationDoesNotDisplaceRuntime(t *testing.T) {
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 	ctx := context.Background()
-	store := inputTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+	store := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "test.db"))
 	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock"}
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
@@ -277,7 +272,7 @@ func TestSessionInputBusyAndCancelledPreparationDoesNotDisplaceRuntime(t *testin
 			if current, _ := srv.sessionMgr.Get(sess.ID); current != old {
 				t.Fatal("busy runtime displaced")
 			}
-			if processSessionInputs.ready(store, sess.ID) != nil {
+			if ProcessSessionInputs().Ready(store, sess.ID) != nil {
 				t.Fatal("busy session marked ready")
 			}
 		})
@@ -290,11 +285,9 @@ func TestSessionInputBusyAndCancelledPreparationDoesNotDisplaceRuntime(t *testin
 }
 
 func TestSessionInputNoopKeepsLiveProviderAndEstimate(t *testing.T) {
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 	ctx := context.Background()
-	store := inputTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+	store := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "test.db"))
 	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock"}
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)

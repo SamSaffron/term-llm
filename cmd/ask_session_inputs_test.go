@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/testutil"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +38,7 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 	if err := os.WriteFile(include, []byte("resumed workspace include"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	store := inputTestStore(t, path)
+	store := testutil.NewSessionInputStore(t, path)
 	ctx := context.Background()
 	sess := &session.Session{ID: session.NewID(), CWD: workspace, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Tools: "read_file", Mode: session.ModeAsk}
 	if err := store.Create(ctx, sess); err != nil {
@@ -56,9 +57,7 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 	oldFactory := newAskProvider
 	newAskProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
 	t.Cleanup(func() { newAskProvider = oldFactory })
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 	oldResume, oldTools, oldSystem, oldAgent := askResume, askTools, askSystemMessage, askAgent
 	oldText, oldPorcelain, oldApproval, oldYolo, oldAuto := askText, askPorcelain, askApproval, askYolo, askAuto
 	oldDB, oldNoSession := sessionDBPath, noSession

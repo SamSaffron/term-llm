@@ -507,22 +507,22 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		return nil, err
 	}
 
-	var inputTicket *sessionInputTicket
-	var selectedInputs *sessionInputSelection
+	var inputTicket *SessionInputTicket
+	var selectedInputs *SessionInputSelection
 	if sess != nil {
 		if _, supported := session.AsSessionInputRefresher(store); supported {
-			inputTicket, err = processSessionInputs.acquire(ctx, store, sess.ID, inputBinding(effectiveAgent, runtimeDir))
+			inputTicket, err = ProcessSessionInputs().Acquire(ctx, store, sess.ID, InputBinding(effectiveAgent, runtimeDir))
 			if err != nil {
 				return nil, err
 			}
-			defer inputTicket.fail()
-			selectedInputs = inputTicket.selected()
+			defer inputTicket.Fail()
+			selectedInputs = inputTicket.Selected()
 		}
 	}
 	// Resolve all settings: CLI > agent > config (resume overrides applied below).
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
 		Provider:         chatProvider,
-		inputs:           selectedInputs,
+		Inputs:           selectedInputs,
 		ToolsSet:         cmd.Flags().Changed("tools"),
 		SystemMessageSet: cmd.Flags().Changed("system"),
 		Tools:            chatTools,
@@ -759,10 +759,10 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	providerKey := cfg.DefaultProvider
 
 	if inputTicket != nil {
-		if inputTicket.owner {
+		if inputTicket.Owner() {
 			result, refreshErr := func() (session.SessionInputRefreshResult, error) {
 				refresher, _ := session.AsSessionInputRefresher(store)
-				return refresher.RefreshSessionInputs(ctx, sess.ID, cfg.Chat.Instructions, settings.Tools, equalSessionTools)
+				return refresher.RefreshSessionInputs(ctx, sess.ID, cfg.Chat.Instructions, settings.Tools, EqualSessionTools)
 			}()
 			if refreshErr != nil {
 				return nil, refreshErr
@@ -964,12 +964,12 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 
 	built = true
-	if inputTicket != nil && inputTicket.owner {
-		inputTicket.finish(sessionInputSelection{BasePrompt: settings.SystemPrompt, Prompt: cfg.Chat.Instructions, Tools: settings.Tools})
+	if inputTicket != nil && inputTicket.Owner() {
+		inputTicket.Finish(SessionInputSelection{BasePrompt: settings.SystemPrompt, Prompt: cfg.Chat.Instructions, Tools: settings.Tools})
 	}
 	if _, supported := session.AsSessionInputRefresher(store); supported {
 		model.SetSessionInputsObserver(func(bound *session.Session, prompt, toolsSetting string) {
-			registerOwnedSessionInputs(store, bound, sessionInputSelection{BasePrompt: prompt, Prompt: prompt, Tools: toolsSetting})
+			RegisterOwnedSessionInputs(store, bound, SessionInputSelection{BasePrompt: prompt, Prompt: prompt, Tools: toolsSetting})
 		})
 	}
 	return &chatSessionRuntime{

@@ -160,8 +160,8 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		s.InsightsExpansion = agent.Memory.InsightsExpansion
 		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
 	}
-	if cli.inputs != nil {
-		s.SystemPrompt, s.Tools = cli.inputs.BasePrompt, cli.inputs.Tools
+	if cli.Inputs != nil {
+		s.SystemPrompt, s.Tools = cli.Inputs.BasePrompt, cli.Inputs.Tools
 	} else {
 		s.SystemPrompt, s.Tools, err = resolveSessionPromptTools(cfg, agent, cli, configInstructions, runtimeDir, s.Provider, s.Model)
 		if err != nil {

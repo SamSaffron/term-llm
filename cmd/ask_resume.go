@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *sessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
+func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *SessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
@@ -30,7 +30,7 @@ func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session
 	return sessionID, baseInputPrompt
 }
 
-func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *SessionSettings) (*session.Session, *sessionInputTicket, *sessionInputSelection, bool, error) {
+func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *SessionSettings) (*session.Session, *SessionInputTicket, *SessionInputSelection, bool, error) {
 	resuming := cmd.Flags().Changed("resume")
 	if !resuming {
 		return nil, nil, nil, false, nil
@@ -95,21 +95,21 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		}
 	}
 
-	var ticket *sessionInputTicket
-	var selected *sessionInputSelection
+	var ticket *SessionInputTicket
+	var selected *SessionInputSelection
 	if _, supported := session.AsSessionInputRefresher(store); supported {
 		var err error
-		ticket, err = processSessionInputs.acquire(ctx, store, sess.ID, inputBinding(sess.Agent, settings.BaseDir))
+		ticket, err = ProcessSessionInputs().Acquire(ctx, store, sess.ID, InputBinding(sess.Agent, settings.BaseDir))
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
-		selected = ticket.selected()
+		selected = ticket.Selected()
 		if selected != nil {
 			settings.SystemPrompt, settings.Tools = selected.BasePrompt, selected.Tools
 		} else {
 			resumedAgent, err := LoadAgent(sess.Agent, cfg)
 			if err != nil {
-				ticket.fail()
+				ticket.Fail()
 				return nil, ticket, nil, true, err
 			}
 			settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
@@ -117,7 +117,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths,
 			}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
 			if err != nil {
-				ticket.fail()
+				ticket.Fail()
 				return nil, ticket, nil, true, err
 			}
 		}

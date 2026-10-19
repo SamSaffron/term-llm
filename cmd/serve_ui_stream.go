@@ -12,7 +12,7 @@ import (
 func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone, onAdmissionDone func()) {
 	// Eligibility was handled before factory/tool selection. This is only a
 	// consistency check for a pointer that could have been retired meanwhile.
-	if selected := processSessionInputs.ready(s.store, sessionID); selected != nil && runtime.selectedSessionInputs() != selected {
+	if selected := ProcessSessionInputs().Ready(s.store, sessionID); selected != nil && runtime.selectedSessionInputs() != selected {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session runtime changed before admission")
 		return
 	}

@@ -3442,7 +3442,7 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRun
 		if keyErr != nil {
 			return nil, keyErr
 		}
-		c := processSessionInputs
+		c := ProcessSessionInputs()
 		c.mu.Lock()
 		entry := c.entries[key]
 		if entry != nil && entry.selection != nil {
@@ -3569,7 +3569,7 @@ func (s *serveServer) persistedRuntimeIdentity(ctx context.Context, sessionID st
 //
 // The manager only ever applies this to idle runtimes, so an in-flight turn,
 // side question or compaction is never yanked out from under its run.
-func runtimeReplacementPredicate(agentName string, selectedInputs *sessionInputSelection, provider string) func(*serveRuntime) bool {
+func runtimeReplacementPredicate(agentName string, selectedInputs *SessionInputSelection, provider string) func(*serveRuntime) bool {
 	return func(existing *serveRuntime) bool {
 		if !runtimeHasAgent(existing, agentName) || !runtimeHasSelectedInputs(existing, selectedInputs) {
 			return true
@@ -3621,7 +3621,7 @@ func (s *serveServer) metadataRuntime(ctx context.Context, sessionID string) (*s
 
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
 	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
-	selectedInputs := processSessionInputs.ready(s.store, sessionID)
+	selectedInputs := ProcessSessionInputs().Ready(s.store, sessionID)
 	provider, model := s.persistedRuntimeIdentity(ctx, sessionID)
 	create := func(ctx context.Context) (*serveRuntime, error) {
 		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: provider, Model: model, Agent: agentName})
@@ -3760,7 +3760,7 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	providerName = strings.TrimSpace(providerName)
 	modelName = strings.TrimSpace(modelName)
 	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
-	selectedInputs := processSessionInputs.ready(s.store, sessionID)
+	selectedInputs := ProcessSessionInputs().Ready(s.store, sessionID)
 	if sessionID == "" {
 		rt, err := s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: providerName, Model: modelName, Agent: agentName})
 		if err != nil {
@@ -3876,7 +3876,7 @@ func (s *serveServer) runtimeForFreshAgentProviderRequest(ctx context.Context, s
 	}
 	// This is an explicit whole-history replacement, not compatibility access
 	// to an existing conversation. It discards readiness without selecting.
-	processSessionInputs.invalidate(s.store, sessionID)
+	ProcessSessionInputs().Invalidate(s.store, sessionID)
 	return rt, true, nil
 }
 

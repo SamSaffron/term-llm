@@ -18,7 +18,7 @@ import (
 //
 // The caller holds the ticket; this only inspects manager state under the
 // manager lock, exactly as the inline check it replaced did.
-func (s *serveServer) runtimeServingSelection(request serveRuntimeRequest, ticket *sessionInputTicket, durableProvider string) *serveRuntime {
+func (s *serveServer) runtimeServingSelection(request serveRuntimeRequest, ticket *SessionInputTicket, durableProvider string) *serveRuntime {
 	if request.fresh || request.Inputs == nil {
 		return nil
 	}
@@ -57,18 +57,18 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 	defer cancel()
 	request.RuntimeDir = binding.RuntimeDir
 	request.Agent = s.requestedRuntimeAgent(ctx, request.SessionID, request.Agent)
-	var ticket *sessionInputTicket
+	var ticket *SessionInputTicket
 	var err error
 	if request.fresh {
-		ticket, err = processSessionInputs.acquireFresh(ctx, s.store, request.SessionID, inputBinding(request.Agent, request.RuntimeDir))
+		ticket, err = ProcessSessionInputs().AcquireFresh(ctx, s.store, request.SessionID, InputBinding(request.Agent, request.RuntimeDir))
 	} else {
-		ticket, err = processSessionInputs.acquire(ctx, s.store, request.SessionID, inputBinding(request.Agent, request.RuntimeDir))
+		ticket, err = ProcessSessionInputs().Acquire(ctx, s.store, request.SessionID, InputBinding(request.Agent, request.RuntimeDir))
 	}
 	if err != nil {
 		return nil, err
 	}
-	defer ticket.fail()
-	request.Inputs = ticket.selected()
+	defer ticket.Fail()
+	request.Inputs = ticket.Selected()
 	// Reuse is judged against the session's durable provider, never the
 	// requested one: a mid-conversation model swap deliberately asks for a
 	// different provider and owns the transition itself, while a runtime that
@@ -192,9 +192,9 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 	if err = s.ensureRuntimeMCPForSession(ctx, request.SessionID, candidate); err != nil {
 		return nil, err
 	}
-	pair := sessionInputSelection{BasePrompt: candidate.baseSystemPrompt, Prompt: candidate.systemPrompt, Tools: candidate.toolsSetting}
-	if ticket.owner {
-		result, refreshErr := refresher.RefreshSessionInputs(ctx, request.SessionID, pair.Prompt, pair.Tools, equalSessionTools)
+	pair := SessionInputSelection{BasePrompt: candidate.baseSystemPrompt, Prompt: candidate.systemPrompt, Tools: candidate.toolsSetting}
+	if ticket.Owner() {
+		result, refreshErr := refresher.RefreshSessionInputs(ctx, request.SessionID, pair.Prompt, pair.Tools, EqualSessionTools)
 		if refreshErr != nil {
 			return nil, refreshErr
 		}
@@ -203,12 +203,12 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 			ticket.previous = nil
 		}
 		pair.Tools = result.Tools
-		if !request.fresh && !result.Changed() && old != nil && old.store != nil && old.systemPrompt == pair.Prompt && equalSessionTools(old.toolsSetting, pair.Tools) {
+		if !request.fresh && !result.Changed() && old != nil && old.store != nil && old.systemPrompt == pair.Prompt && EqualSessionTools(old.toolsSetting, pair.Tools) {
 			old.toolsSetting = pair.Tools
 			if old.sessionMeta != nil {
 				old.sessionMeta.Tools = pair.Tools
 			}
-			old.inputs.Store(ticket.finish(pair))
+			old.inputs.Store(ticket.Finish(pair))
 			// The existing executable registry and prompt already match. Keep
 			// its live provider continuation and context-estimate baseline.
 			return old, nil
@@ -238,8 +238,8 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 		m.mu.Unlock()
 		return nil, errServeSessionManagerClosed
 	}
-	if ticket.owner {
-		candidate.inputs.Store(ticket.finish(pair))
+	if ticket.Owner() {
+		candidate.inputs.Store(ticket.Finish(pair))
 	} else if ticket.current() {
 		candidate.inputs.Store(request.Inputs)
 	}

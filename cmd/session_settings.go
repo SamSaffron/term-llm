@@ -78,7 +78,7 @@ type CLIFlags struct {
 	Tools            string
 	ToolsSet         bool
 	SystemMessageSet bool
-	inputs           *sessionInputSelection
+	Inputs           *SessionInputSelection
 	ReadDirs         []string
 	WriteDirs        []string
 	ShellAllow       []string

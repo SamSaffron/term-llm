@@ -35,7 +35,7 @@ type serveRuntime struct {
 	retiredInputs        atomic.Bool      // obsolete after committed input replacement
 	settings             *SessionSettings // immutable construction settings, for idle refresh replacement only
 	agentSkills          string
-	inputs               atomic.Pointer[sessionInputSelection]
+	inputs               atomic.Pointer[SessionInputSelection]
 	mu                   sync.Mutex
 	goalMu               sync.Mutex
 	interruptMu          sync.Mutex
@@ -2507,4 +2507,4 @@ func lastUserText(messages []core.Message) string {
 
 // selectedSessionInputs snapshots immutable preparation metadata for candidate
 // construction without racing explicit workspace controls.
-func (rt *serveRuntime) selectedSessionInputs() *sessionInputSelection { return rt.inputs.Load() }
+func (rt *serveRuntime) selectedSessionInputs() *SessionInputSelection { return rt.inputs.Load() }

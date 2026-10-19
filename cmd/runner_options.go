@@ -13,7 +13,7 @@ import (
 type cmdRunnerOptions struct {
 	RestoreSettings    *SessionSettings
 	RestoreAgentSkills *string
-	Inputs             *sessionInputSelection
+	Inputs             *SessionInputSelection
 	ToolsSet           bool
 	SystemMessageSet   bool
 	Provider           string
