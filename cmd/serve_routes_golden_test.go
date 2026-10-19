@@ -29,7 +29,7 @@ import (
 // enumerate a ServeMux's registered patterns or its middleware chain.
 func TestServeRoutesGolden(t *testing.T) {
 	sources := map[string]string{
-		"web":        "serve.go",
+		"web":        "serve_http.go",
 		"hub":        "serve_hub_auth.go",
 		"passkey":    "serve_hub_passkey.go",
 		"widgets":    "serve_widgets.go",

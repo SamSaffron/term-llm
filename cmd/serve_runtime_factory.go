@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -141,4 +143,77 @@ func childRunObserverOrNil(registry *childRunRegistry) childRunObserver {
 		return nil
 	}
 	return registry
+}
+
+func serveJobsToolURL(host string, port int, basePath string, mountedUnderBasePath bool) string {
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		if ip.To4() != nil {
+			host = "127.0.0.1"
+		} else {
+			host = "::1"
+		}
+	}
+	baseURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	if mountedUnderBasePath {
+		baseURL += basePath
+	}
+	return baseURL
+}
+
+func serveJobsToolClientConfig(hasJobs, hasWeb, hasAPI bool, host string, port int, basePath, token string) (string, string) {
+	if !hasJobs {
+		return "", ""
+	}
+	return serveJobsToolURL(host, port, basePath, hasWeb || hasAPI), token
+}
+
+func validateServeRuntimeToolMap(runtime *serveRuntime, toolMap map[string]string) error {
+	for clientName, serverName := range toolMap {
+		if _, ok := runtime.engine.Tools().Get(serverName); ok {
+			continue
+		}
+		names := make([]string, 0)
+		for _, spec := range runtime.engine.Tools().AllSpecs() {
+			names = append(names, spec.Name)
+		}
+		return fmt.Errorf("--tool-map %s:%s: server tool %q not found (registered tools: %v)", clientName, serverName, serverName, names)
+	}
+	return nil
+}
+
+func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOptions) {
+	flags := &opts.flags
+	if runtime.toolMgr == nil {
+		return
+	}
+	runtime.toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
+	if spawn := runtime.toolMgr.GetSpawnAgentTool(); spawn != nil {
+		spawn.SetEventCallback(runtime.recordSubagentStats)
+	}
+
+	imageBaseURL := ""
+	if opts.hasWeb {
+		imageBaseURL = strings.TrimRight(flags.BasePath, "/") + "/images/"
+	}
+	runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
+	runtime.toolMgr.Registry.SetMediaPublisher(opts.mediaPublisher)
+	if opts.jobsServerURL != "" {
+		runtime.toolMgr.Registry.SetJobsServer(opts.jobsServerURL, opts.jobsServerToken)
+	}
+	if opts.hasWeb {
+		runtime.toolMgr.Registry.SetCollaborativeShellController(opts.collaborationController, tools.ShellRoutingControllerRequired)
+	} else {
+		runtime.toolMgr.Registry.SetCollaborativeShellController(nil, tools.ShellRoutingLocalOnly)
+	}
+	if opts.approval.Mode != tools.ModeYolo {
+		runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
+		runtime.toolMgr.ApprovalMgr.DebugApproval = flags.Debug
+		runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite, isShell bool, workDir string) (tools.ApprovalResult, error) {
+			return runtime.awaitApproval(path, isWrite, isShell, workDir)
+		}
+		runtime.toolMgr.ApprovalMgr.SharedShellPromptUIFunc = runtime.awaitSharedShellApproval
+	}
+	if opts.hasWeb {
+		runtime.toolMgr.ApprovalMgr.WorkspacePromptFunc = runtime.awaitWorkspaceApproval
+	}
 }

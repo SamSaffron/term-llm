@@ -298,7 +298,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve.go|cmd||runPlatformSupervisor",
+      "key": ".|cmd/serve_platforms.go|cmd||runPlatformSupervisor",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -306,7 +306,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve.go|cmd||runServeWith",
+      "key": ".|cmd/serve_start.go|cmd||runServeWith",
       "complexity": 88,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
