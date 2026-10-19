@@ -29,6 +29,8 @@ type FlagState struct {
 // Invocation contains command-owned values needed by serve startup. It is
 // deliberately free of Cobra and listener state so application startup can be
 // called without a command object while the host retains its private test seam.
+// ResolveApproval is required; a missing resolver returns an error after options
+// validation and configuration loading, preserving their diagnostic precedence.
 type Invocation struct {
 	Flags           FlagState
 	Stdout          io.Writer
@@ -41,7 +43,8 @@ type Invocation struct {
 
 // MCPInvocation contains command-owned values needed by the MCP server body.
 // ResolveApproval stays deferred so validation and config loading keep their
-// established precedence over parent/child approval arbitration.
+// established precedence over parent/child approval arbitration. A nil resolver
+// returns an explicit error at that same point; it does not imply an approval mode.
 type MCPInvocation struct {
 	Stdout          io.Writer
 	Stderr          io.Writer

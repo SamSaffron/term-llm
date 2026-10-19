@@ -46,6 +46,9 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *ServeOptions,
 		return err
 	}
 	applyServeFileTrackingOverride(cfg, opts.EnableFileTracking)
+	if deps.ResolveApproval == nil {
+		return fmt.Errorf("serve approval resolver is required")
+	}
 	resolvedApproval, err := deps.ResolveApproval(cfg)
 	if err != nil {
 		return err
@@ -223,14 +226,6 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *ServeOptions,
 	agentOwner := &runtime.AgentHostOwner{}
 	var s *serveServer
 	serverStarted := false
-	defer func() {
-		if !serverStarted || s == nil {
-			return
-		}
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = s.Stop(shutdownCtx)
-	}()
 	collaborationController := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) {
 		if s == nil {
 			return nil, errServeShellClosed
@@ -400,6 +395,16 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *ServeOptions,
 		if opts.HubConnect == "reverse" && (reverseHubURL == "" || reverseHubNodeID == "" || token == "") {
 			return fmt.Errorf("--hub-connect reverse requires --hub-url, --hub-node-id, and a bearer --token")
 		}
+
+		// Register after dependency cleanup so a failed startup stops HTTP first.
+		defer func() {
+			if !serverStarted || s == nil {
+				return
+			}
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = s.Stop(shutdownCtx)
+		}()
 
 		if err := s.Start(); err != nil {
 			return err

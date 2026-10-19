@@ -156,6 +156,9 @@ func runServeMCPWithOptions(ctx context.Context, invocation appserve.MCPInvocati
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if invocation.ResolveApproval == nil {
+		return fmt.Errorf("serve mcp approval resolver is required")
+	}
 	resolvedApproval, err := invocation.ResolveApproval(cfg)
 	if err != nil {
 		return err
