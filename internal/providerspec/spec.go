@@ -110,6 +110,7 @@ const (
 	ModelListingGrokBin    ModelListing = "grok-bin"
 	ModelListingCursorBin  ModelListing = "cursor-bin"
 	ModelListingAgyBin     ModelListing = "agy-bin"
+	ModelListingClaudeBin  ModelListing = "claude-bin"
 	ModelListingOllama     ModelListing = "ollama"
 	ModelListingCompatible ModelListing = "compatible"
 )
@@ -336,7 +337,7 @@ var specs = []Spec{
 		Credential:  CredentialOAuth, Setup: "run term-llm auth login copilot",
 	},
 	{
-		Name: "claude-bin", ModelListing: ModelListingCurated, FixedToolBridge: true, CredentialLabel: "claude-bin CLI (no key needed)", Aliases: []string{"claude cli"}, Type: TypeClaudeBin, Availability: AvailabilityClaude, Wizard: WizardSpec{Order: 5, Label: "Claude Code CLI - local credentials", Hint: "install Claude Code CLI"},
+		Name: "claude-bin", ModelListing: ModelListingClaudeBin, ModelListTimeoutSeconds: 45, FixedToolBridge: true, CredentialLabel: "claude-bin CLI (no key needed)", Aliases: []string{"claude cli"}, Type: TypeClaudeBin, Availability: AvailabilityClaude, Wizard: WizardSpec{Order: 5, Label: "Claude Code CLI - local credentials", Hint: "install Claude Code CLI"},
 		Defaults:    []DefaultField{{"model", "sonnet"}, {"fast_model", "haiku"}},
 		Description: "Local Claude Code credentials (claude-bin CLI)",
 		Credential:  CredentialNone, Setup: "install Claude Code (claude on PATH)",

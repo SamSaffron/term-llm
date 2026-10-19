@@ -689,45 +689,6 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 	}
 }
 
-func TestParseClaudeEffort(t *testing.T) {
-	tests := []struct {
-		input      string
-		wantModel  string
-		wantEffort string
-	}{
-		{"opus-max", "opus", "max"},
-		{"opus-xhigh", "opus", "xhigh"},
-		{"opus-low", "opus", "low"},
-		{"opus-medium", "opus", "medium"},
-		{"opus-high", "opus", "high"},
-		{"opus", "opus", ""},
-		{"sonnet-low", "sonnet", "low"},
-		{"sonnet-medium", "sonnet", "medium"},
-		{"sonnet-high", "sonnet", "high"},
-		{"sonnet-xhigh", "sonnet-xhigh", ""}, // xhigh is opus/fable-only
-		{"sonnet", "sonnet", ""},
-		{"fable-max", "fable", "max"},
-		{"fable-xhigh", "fable", "xhigh"},
-		{"fable-high", "fable", "high"},
-		{"fable-medium", "fable", "medium"},
-		{"fable-low", "fable", "low"},
-		{"fable", "fable", ""},
-		{"haiku", "haiku", ""},
-		{"", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			model, effort := parseClaudeEffort(tt.input)
-			if model != tt.wantModel {
-				t.Errorf("parseClaudeEffort(%q) model = %q, want %q", tt.input, model, tt.wantModel)
-			}
-			if effort != tt.wantEffort {
-				t.Errorf("parseClaudeEffort(%q) effort = %q, want %q", tt.input, effort, tt.wantEffort)
-			}
-		})
-	}
-}
-
 func TestValidateClaudeBinModel(t *testing.T) {
 	tests := []struct {
 		model   string
@@ -1466,26 +1427,6 @@ func TestClaudeBinProvider_CommandErrorTruncatesDiagnostics(t *testing.T) {
 	}
 	if got := fields["stdout_tail"].(string); len(got) <= claudeDiagnosticLineMaxBytes || !strings.Contains(got, "...[truncated 10 bytes]") {
 		t.Fatalf("stdout tail truncation missing: len=%d", len(got))
-	}
-}
-
-func TestMapModelToClaudeArg(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"opus", "opus"},
-		{"sonnet", "sonnet"},
-		{"haiku", "haiku"},
-		{"fable", "fable"},
-		{"claude-fable-5", "fable"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			if got := mapModelToClaudeArg(tt.input); got != tt.want {
-				t.Errorf("mapModelToClaudeArg(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
 	}
 }
 

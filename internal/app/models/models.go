@@ -194,6 +194,9 @@ var modelListerConstructors = map[providerspec.ModelListing]modelListerConstruct
 	providerspec.ModelListingAgyBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return clibin.NewAgyBinProvider(providerCfg.Model, providerCfg.Env), nil
 	},
+	providerspec.ModelListingClaudeBin: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+		return claudeBinModelLister{list: clibin.NewClaudeBinProvider(providerCfg.Model, providerCfg.Env).ListModels, providerName: providerName}, nil
+	},
 	providerspec.ModelListingCompatible: func(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
 		return newOpenAICompatibleModelLister(providerName, providerCfg)
 	},
@@ -236,6 +239,30 @@ func newAnthropicModelLister(providerCfg config.ProviderConfig) (ModelLister, er
 		return nil, fmt.Errorf("anthropic: %w", err)
 	}
 	return provider, nil
+}
+
+// claudeBinModelLister asks Claude Code for its live catalog and falls back to
+// the last cached or curated list when the CLI is missing or cannot answer.
+type claudeBinModelLister struct {
+	list         func(context.Context) ([]core.ModelInfo, error)
+	providerName string
+}
+
+func (l claudeBinModelLister) ListModels(ctx context.Context) ([]core.ModelInfo, error) {
+	models, err := l.list(ctx)
+	if err == nil {
+		return models, nil
+	}
+	ids := llm.DedupeEffortVariantsForProvider(l.providerName, llm.ResolveProviderModelIDs(l.providerName))
+	if len(ids) == 0 {
+		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "Warning: %v; showing the last known model list\n\n", err)
+	fallback := make([]core.ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		fallback = append(fallback, core.ModelInfo{ID: id, InputPrice: -1, OutputPrice: -1, ReasoningEfforts: llm.ReasoningEffortsForProviderModel(l.providerName, id)})
+	}
+	return fallback, nil
 }
 
 func newChatGPTModelLister(model string) (ModelLister, error) {

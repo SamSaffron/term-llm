@@ -126,53 +126,6 @@ const (
 
 var claudeToolLineDrainGrace = loadCLIToolLineDrainGrace(claudeToolLineDrainGraceEnv, claudeToolLineDrainGraceDefault)
 
-// claudeEffortLevels lists the reasoning-effort suffixes recognised on
-// opus/sonnet/fable model names (e.g. "opus-max", "sonnet-high"). "max" and
-// "xhigh" are accepted only on opus and fable; see parseClaudeEffort.
-var claudeEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
-
-// parseClaudeEffort extracts effort suffix from opus, sonnet, or fable model names.
-// "opus-max" -> ("opus", "max"), "opus-low" -> ("opus", "low")
-// "sonnet-high" -> ("sonnet", "high"), "fable-max" -> ("fable", "max")
-// "haiku" -> ("haiku", "") — other models are not modified.
-// Note: "max" and "xhigh" efforts are only supported for opus and fable.
-func parseClaudeEffort(model string) (string, string) {
-	isOpus := strings.HasPrefix(model, "opus")
-	isSonnet := strings.HasPrefix(model, "sonnet")
-	isFable := strings.HasPrefix(model, "fable")
-	if !isOpus && !isSonnet && !isFable {
-		return model, ""
-	}
-	efforts := []string{"medium", "high", "low"}
-	if isOpus || isFable {
-		efforts = append(efforts, "max", "xhigh")
-	}
-	for _, effort := range efforts {
-		suffix := "-" + effort
-		if strings.HasSuffix(model, suffix) {
-			return strings.TrimSuffix(model, suffix), effort
-		}
-	}
-	return model, ""
-}
-
-// ValidateClaudeBinModel rejects model strings that are bare effort levels
-// (e.g. "claude-bin:max"). Without this check the effort would be silently
-// treated as the model name and CLAUDE_CODE_EFFORT_LEVEL would never be set.
-func ValidateClaudeBinModel(model string) error {
-	for _, effort := range claudeEffortLevels {
-		if model == effort {
-			return fmt.Errorf(
-				"claude-bin model %q is an effort level, not a model; "+
-					"did you mean \"claude-bin:opus-%s\"? "+
-					"(max/xhigh require opus or fable; low/medium/high also work with sonnet)",
-				model, model,
-			)
-		}
-	}
-	return nil
-}
-
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
 func NewClaudeBinProvider(model string, env map[string]string) *ClaudeBinProvider {
 	actualModel, effort := parseClaudeEffort(model)
@@ -1755,22 +1708,6 @@ func (p *ClaudeBinProvider) renderConversationParts(messages []core.Message) []s
 	}
 
 	return conversationParts
-}
-
-// mapModelToClaudeArg converts a model name to claude CLI argument.
-func mapModelToClaudeArg(model string) string {
-	model = strings.ToLower(model)
-	if strings.Contains(model, "opus") {
-		return "opus"
-	}
-	if strings.Contains(model, "fable") {
-		return "fable"
-	}
-	if strings.Contains(model, "haiku") {
-		return "haiku"
-	}
-	// Default to sonnet
-	return "sonnet"
 }
 
 // mapClaudeToolName converts claude tool names back to term-llm names.

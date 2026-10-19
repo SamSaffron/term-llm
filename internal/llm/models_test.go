@@ -5,6 +5,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
@@ -332,6 +333,38 @@ func TestReasoningEffortsForProviderModel(t *testing.T) {
 				t.Fatalf("ReasoningEffortsForProviderModel(%q, %q) = %v, want %v", tt.provider, tt.model, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClaudeBinLiveCatalogDrivesModelsAndEfforts(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	all := []string{"low", "medium", "high", "xhigh", "max"}
+	clibin.RefreshClaudeBinCacheSync([]core.ModelInfo{
+		{ID: "opus", ReasoningEfforts: all},
+		{ID: "sonnet", ReasoningEfforts: all},
+		{ID: "claude-haiku-4-5-20251001"},
+		{ID: "claude-mythos-5-1", ReasoningEfforts: all},
+	})
+
+	if ids := ProviderModelIDs("claude-bin"); !containsModelID(ids, "claude-mythos-5-1") {
+		t.Fatalf("claude-bin model IDs = %v, want live claude-mythos-5-1", ids)
+	}
+	if got := ReasoningEffortsForProviderModel("claude-bin", "claude-mythos-5-1-high"); !equalSlice(got, all) {
+		t.Fatalf("mythos efforts = %v, want %v", got, all)
+	}
+	// Live efforts override the curated sonnet row.
+	if got := ReasoningEffortsForProviderModel("claude-bin", "sonnet"); !equalSlice(got, all) {
+		t.Fatalf("sonnet efforts = %v, want live %v", got, all)
+	}
+	if got := ReasoningEffortsForProviderModel("claude-bin", "claude-haiku-4-5-20251001"); got != nil {
+		t.Fatalf("haiku 4.5 efforts = %v, want none", got)
+	}
+	if base, effort := BaseModelAndEffortForProvider("claude-bin", "claude-mythos-5-1-max"); base != "claude-mythos-5-1" || effort != "max" {
+		t.Fatalf("BaseModelAndEffortForProvider = %q/%q", base, effort)
+	}
+	completions := GetProviderCompletions("claude-bin:claude-mythos-5-1", false, nil)
+	if !containsModelID(completions, "claude-bin:claude-mythos-5-1-xhigh") {
+		t.Fatalf("completions = %v, want mythos effort variants", completions)
 	}
 }
 

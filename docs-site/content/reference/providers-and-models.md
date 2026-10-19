@@ -24,7 +24,7 @@ term-llm models --provider zen
 term-llm models --provider opencode-go --json
 ```
 
-`providers` describes term-llm's integrations and local configuration. It is not a connectivity or account-entitlement check. `models` queries the selected backend when its adapter supports discovery; the default provider is used when `--provider` is omitted. `gemini`, `bedrock`, and `claude-bin` currently show curated model names rather than a live account catalog. Other adapters may use cached or fallback metadata when offline.
+`providers` describes term-llm's integrations and local configuration. It is not a connectivity or account-entitlement check. `models` queries the selected backend when its adapter supports discovery; the default provider is used when `--provider` is omitted. `gemini` and `bedrock` currently show curated model names rather than a live account catalog. Other adapters may use cached or fallback metadata when offline.
 
 `term-llm providers` lists **configured** providers first, with where their setup came from: `config.yaml` (named under `providers:`), `default` (`default_provider`), `$ENV_VAR` (an API-key variable such as `OPENROUTER_API_KEY`), `signed in` (term-llm OAuth or a logged-in companion CLI), or `CLI installed` (`claude` on `PATH`). Built-ins that are not set up follow with the step that would set them up. The web UI provider picker and the chat `/model` picker show only configured providers.
 
@@ -119,7 +119,7 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `zen` | `zen` | api_key; `ZEN_API_KEY` | zen (upstream listing) |
 | `opencode-go` | `opencode-go` | api_key; `OPENCODE_API_KEY` | opencode-go (upstream listing) |
 | `copilot` | `copilot` | oauth; run term-llm auth login copilot | copilot (upstream listing) |
-| `claude-bin` | `claude-bin` | none; install Claude Code (claude on PATH) | curated (local catalog) |
+| `claude-bin` | `claude-bin` | none; install Claude Code (claude on PATH) | claude-bin (upstream listing) |
 | `grok-bin` | `grok-bin` | oauth; install the Grok Build CLI and log in | grok-bin (upstream listing) |
 | `cursor-bin` | `cursor-bin` | oauth; `CURSOR_API_KEY`; run cursor-agent login or set CURSOR_API_KEY | cursor-bin (upstream listing) |
 | `agy-bin` | `agy-bin` | oauth; install agy and complete its login | agy-bin (upstream listing) |
@@ -199,7 +199,7 @@ term-llm models --provider agy-bin
 term-llm models --provider grok-bin
 ```
 
-Install and authenticate the corresponding CLI first. These are local subprocess integrations with their own version, account, and model constraints—not local inference. Prompts and tool context can still be sent to the companion service. `claude-bin` offers aliases such as `sonnet`, `opus`, `fable`, and `haiku`; the other integrations can discover models through their CLI.
+Install and authenticate the corresponding CLI first. These are local subprocess integrations with their own version, account, and model constraints—not local inference. Prompts and tool context can still be sent to the companion service. Each integration discovers models through its CLI. For `claude-bin`, `term-llm models --provider claude-bin` asks Claude Code for your account's catalog: aliases such as `opus`, `fable`, `sonnet`, and `haiku`, full model IDs such as `claude-opus-4-7`, and each model's effort levels (`claude-bin:opus-max`). If `claude` is missing or cannot answer, the last cached list, or else the built-in aliases, is shown instead.
 
 term-llm supplies its agent instructions and tool/approval flow to these integrations. Do not assume every companion CLI feature or setting is inherited unchanged. Claude Code hooks are disabled by default; `providers.claude-bin.enable_hooks: true` is an explicit opt-in. For provider-specific environment overrides and setup, see [Provider setup details](/reference/provider-setup-details/#option-11-use-claude-code-claude-bin).
 

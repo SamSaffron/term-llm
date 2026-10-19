@@ -23,6 +23,7 @@ import (
 const (
 	agyBinCompletionRefreshTimeout    = 5 * time.Second
 	grokBinCompletionRefreshTimeout   = 5 * time.Second
+	claudeBinCompletionRefreshTimeout = 5 * time.Second
 	ollamaCompletionRefreshTimeout    = 2 * time.Second
 	zenCompletionRefreshTimeout       = 2 * time.Second
 	endpointCompletionRefreshTimeout  = 2 * time.Second
@@ -32,6 +33,7 @@ const (
 var (
 	refreshAgyBinModelsForCompletion    = clibin.RefreshAgyBinModelsIfStale
 	refreshGrokBinModelsForCompletion   = clibin.RefreshGrokBinModelsIfStale
+	refreshClaudeBinModelsForCompletion = clibin.RefreshClaudeBinModelsIfStale
 	refreshOllamaModelsForCompletion    = ollama.RefreshOllamaModelsIfStale
 	refreshZenModelsForCompletion       = responsesproviders.RefreshZenModelsIfStale
 	refreshEndpointModelsForCompletion  = llm.RefreshEndpointModelsIfStale
@@ -69,6 +71,7 @@ func refreshProviderCompletionCaches(toComplete string, cfg *config.Config) {
 	}
 	refreshAgyBinCompletionCache(toComplete, cfg)
 	refreshGrokBinCompletionCache(toComplete, cfg)
+	refreshClaudeBinCompletionCache(toComplete, cfg)
 	refreshOllamaCompletionCache(toComplete, cfg)
 	refreshZenCompletionCache(toComplete, cfg)
 	refreshEndpointCompletionCache(toComplete, cfg)
@@ -126,28 +129,21 @@ func refreshAnthropicCompletionCache(toComplete string, cfg *config.Config) {
 }
 
 func refreshAgyBinCompletionCache(toComplete string, cfg *config.Config) {
-	provider, _, completingModel := strings.Cut(toComplete, ":")
-	if !completingModel {
-		return
-	}
-
-	var providerCfg config.ProviderConfig
-	if cfg != nil {
-		providerCfg = cfg.Providers[provider]
-		if len(providerCfg.Models) > 0 {
-			return
-		}
-	}
-	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeAgyBin {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), agyBinCompletionRefreshTimeout)
-	defer cancel()
-	_ = refreshAgyBinModelsForCompletion(ctx, providerCfg.Model, providerCfg.Env)
+	refreshCLIBinCompletionCache(toComplete, cfg, config.ProviderTypeAgyBin, agyBinCompletionRefreshTimeout, refreshAgyBinModelsForCompletion)
 }
 
 func refreshGrokBinCompletionCache(toComplete string, cfg *config.Config) {
+	refreshCLIBinCompletionCache(toComplete, cfg, config.ProviderTypeGrokBin, grokBinCompletionRefreshTimeout, refreshGrokBinModelsForCompletion)
+}
+
+func refreshClaudeBinCompletionCache(toComplete string, cfg *config.Config) {
+	refreshCLIBinCompletionCache(toComplete, cfg, config.ProviderTypeClaudeBin, claudeBinCompletionRefreshTimeout, refreshClaudeBinModelsForCompletion)
+}
+
+// refreshCLIBinCompletionCache refreshes a local CLI's model catalog when
+// completing <provider>:<model> for a provider of providerType that has no
+// configured models list.
+func refreshCLIBinCompletionCache(toComplete string, cfg *config.Config, providerType config.ProviderType, timeout time.Duration, refresh func(context.Context, string, map[string]string) error) {
 	provider, _, completingModel := strings.Cut(toComplete, ":")
 	if !completingModel {
 		return
@@ -160,13 +156,13 @@ func refreshGrokBinCompletionCache(toComplete string, cfg *config.Config) {
 			return
 		}
 	}
-	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeGrokBin {
+	if config.InferProviderType(provider, providerCfg.Type) != providerType {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), grokBinCompletionRefreshTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_ = refreshGrokBinModelsForCompletion(ctx, providerCfg.Model, providerCfg.Env)
+	_ = refresh(ctx, providerCfg.Model, providerCfg.Env)
 }
 
 func refreshZenCompletionCache(toComplete string, cfg *config.Config) {

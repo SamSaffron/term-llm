@@ -90,6 +90,43 @@ func TestRefreshAgyBinCompletionCache(t *testing.T) {
 	}
 }
 
+func TestRefreshClaudeBinCompletionCache(t *testing.T) {
+	original := refreshClaudeBinModelsForCompletion
+	t.Cleanup(func() { refreshClaudeBinModelsForCompletion = original })
+
+	var calls int
+	var gotModel string
+	refreshClaudeBinModelsForCompletion = func(ctx context.Context, model string, env map[string]string) error {
+		calls++
+		gotModel = model
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("completion refresh context has no deadline")
+		}
+		return nil
+	}
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"my-claude":     {Type: config.ProviderTypeClaudeBin, Model: "opus-max"},
+		"pinned-claude": {Type: config.ProviderTypeClaudeBin, Models: []string{"opus"}},
+	}}
+
+	refreshClaudeBinCompletionCache("my-claude:op", cfg)
+	if calls != 1 || gotModel != "opus-max" {
+		t.Fatalf("refresh calls/model = %d/%q, want 1/opus-max", calls, gotModel)
+	}
+	refreshClaudeBinCompletionCache("claude-bin:", nil)
+	if calls != 2 || gotModel != "" {
+		t.Fatalf("built-in refresh calls/model = %d/%q, want 2/\"\"", calls, gotModel)
+	}
+
+	refreshClaudeBinCompletionCache("my-claude", cfg)
+	refreshClaudeBinCompletionCache("pinned-claude:", cfg)
+	refreshClaudeBinCompletionCache("grok-bin:gro", cfg)
+	if calls != 2 {
+		t.Fatalf("inapplicable completion unexpectedly refreshed: calls = %d", calls)
+	}
+}
+
 func TestRefreshGrokBinCompletionCache(t *testing.T) {
 	original := refreshGrokBinModelsForCompletion
 	t.Cleanup(func() { refreshGrokBinModelsForCompletion = original })
@@ -404,6 +441,10 @@ func TestProviderFlagCompletionDirectiveFinishesConfiguredEffortProfile(t *testi
 func TestProviderFlagCompletionProgressiveSpacing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	original := refreshClaudeBinModelsForCompletion
+	t.Cleanup(func() { refreshClaudeBinModelsForCompletion = original })
+	refreshClaudeBinModelsForCompletion = func(context.Context, string, map[string]string) error { return nil }
 	for _, tc := range []struct {
 		prefix  string
 		noSpace bool

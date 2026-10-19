@@ -1,7 +1,9 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,13 +20,36 @@ import (
 func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
 	t.Parallel()
 	got := SupportedModelListProviderTypes()
-	for _, want := range []string{"agy-bin", "cursor-bin", "grok-bin"} {
+	for _, want := range []string{"agy-bin", "claude-bin", "cursor-bin", "grok-bin"} {
 		if !slices.Contains(got, want) {
 			t.Fatalf("supported provider types %v missing %q", got, want)
 		}
 	}
 	if !slices.IsSorted(got) {
 		t.Fatalf("supported provider types are not sorted: %v", got)
+	}
+}
+
+func TestClaudeBinModelListerFallsBackToCuratedList(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	lister := claudeBinModelLister{providerName: "claude-bin", list: func(context.Context) ([]core.ModelInfo, error) {
+		return nil, errors.New("claude not installed")
+	}}
+	models, err := lister.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	var opus *core.ModelInfo
+	for i := range models {
+		if models[i].ID == "opus-max" {
+			t.Fatal("fallback should collapse effort variants into their base model")
+		}
+		if models[i].ID == "opus" {
+			opus = &models[i]
+		}
+	}
+	if opus == nil || !slices.Contains(opus.ReasoningEfforts, "max") {
+		t.Fatalf("fallback opus entry = %+v, want efforts including max", opus)
 	}
 }
 

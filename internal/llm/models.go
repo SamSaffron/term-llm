@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
 	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
@@ -376,23 +378,34 @@ func resolveProviderModelEntries(provider string) []ModelEntry {
 	if len(entries) == 0 {
 		entries = ProviderModels[resolved]
 	}
-	if resolved == "chatgpt" {
+	switch resolved {
+	case "chatgpt":
 		if models, _, err := rp.CachedChatGPTModelFacts(); err == nil {
-			merged := make([]ModelEntry, 0, len(models)+len(entries))
-			seen := make(map[string]bool, len(models))
-			for _, model := range models {
-				merged = append(merged, ModelEntry{ID: model.ID, InputLimit: model.InputLimit, OutputLimit: model.OutputLimit, ReasoningEfforts: model.ReasoningEfforts})
-				seen[model.ID] = true
-			}
-			for _, entry := range entries {
-				if !seen[entry.ID] {
-					merged = append(merged, entry)
-				}
-			}
-			return merged
+			return mergeLiveModelEntries(models, entries)
+		}
+	case "claude-bin":
+		// Claude Code reports per-model effort levels; they override the
+		// curated alias rows, which remain for models the CLI did not list.
+		if models := clibin.GetCachedClaudeBinModelInfos(); len(models) > 0 {
+			return mergeLiveModelEntries(models, entries)
 		}
 	}
 	return entries
+}
+
+func mergeLiveModelEntries(models []core.ModelInfo, entries []ModelEntry) []ModelEntry {
+	merged := make([]ModelEntry, 0, len(models)+len(entries))
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		merged = append(merged, ModelEntry{ID: model.ID, InputLimit: model.InputLimit, OutputLimit: model.OutputLimit, ReasoningEfforts: model.ReasoningEfforts})
+		seen[model.ID] = true
+	}
+	for _, entry := range entries {
+		if !seen[entry.ID] {
+			merged = append(merged, entry)
+		}
+	}
+	return merged
 }
 
 func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {

@@ -47,6 +47,12 @@ var cachedProviderModels = map[string]func(string) []string{
 		}
 		return nil
 	},
+	"claude-bin": func(provider string) []string {
+		if ids := clibin.GetCachedClaudeBinModels(); len(ids) > 0 {
+			return ids
+		}
+		return nil
+	},
 	"cursor-bin": func(provider string) []string {
 		if ids := clibin.GetCachedCursorBinModels(); len(ids) > 0 {
 			return ids
