@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -93,18 +92,13 @@ func fileTrackingStore(cfg *config.Config) *filetrack.Store {
 	fileTrackStore = store
 	fileTrackKey = key
 
-	// Best-effort sweep of history for deleted sessions; async so opening the
-	// store never delays startup. Capture config values now because cfg may be
-	// reloaded or mutated later in a long-lived process.
-	maxAgeDays := cfg.Sessions.MaxAgeDays
-	sessionsCfgPath := cfg.Sessions.Path
-	go func() {
-		sessionsPath, err := session.ResolveDBPath(sessionsCfgPath)
-		if err != nil {
-			sessionsPath = ""
-		}
-		_ = store.GC(context.Background(), sessionsPath, maxAgeDays)
-	}()
+	// Register startup maintenance before exposing the store. Foreground
+	// recording cancels and drains it instead of racing its SQLite writes.
+	sessionsPath, err := session.ResolveDBPath(cfg.Sessions.Path)
+	if err != nil {
+		sessionsPath = ""
+	}
+	store.StartBackgroundGC(sessionsPath, cfg.Sessions.MaxAgeDays)
 
 	return fileTrackStore
 }

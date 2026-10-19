@@ -203,6 +203,7 @@ type recordSessionLock struct {
 
 // Store persists file-change history in a dedicated SQLite database.
 type Store struct {
+	backgroundGC               backgroundGC
 	db                         *sql.DB
 	observationDB              *sql.DB
 	observationPath            string
@@ -762,6 +763,7 @@ func runFiletrackMigration(db *sql.DB, migration filetrackMigration) error {
 
 // Close closes both attributed and observation databases.
 func (s *Store) Close() error {
+	_ = s.backgroundGC.stop(context.Background())
 	var first error
 	if s.observationDB != nil {
 		first = s.observationDB.Close()
@@ -1092,6 +1094,10 @@ func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttri
 	kind, skip := changeKindForRecord(rec)
 	if skip {
 		return nil, nil
+	}
+
+	if err := s.backgroundGC.stop(ctx); err != nil {
+		return nil, fmt.Errorf("stop background file tracking gc: %w", err)
 	}
 
 	// Sequence and per-session budget decisions need ordering only within the
@@ -1791,7 +1797,7 @@ func (s *Store) GC(ctx context.Context, sessionsDBPath string, maxAgeDays int) e
 			}
 			_, delErr := conn.ExecContext(ctx,
 				"DELETE FROM file_changes WHERE session_id NOT IN (SELECT id FROM sess.sessions)")
-			if _, err := conn.ExecContext(ctx, "DETACH DATABASE sess"); err != nil && delErr == nil {
+			if _, err := conn.ExecContext(context.WithoutCancel(ctx), "DETACH DATABASE sess"); err != nil && delErr == nil {
 				delErr = err
 			}
 			if delErr != nil {

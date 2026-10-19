@@ -188,6 +188,9 @@ func allocateEventSeqTx(ctx context.Context, tx *sql.Tx, sessionID string) (int6
 }
 
 func (s *Store) allocateEventSeq(ctx context.Context, sessionID, runID string) (int64, error) {
+	if err := s.backgroundGC.stop(ctx); err != nil {
+		return 0, fmt.Errorf("stop background file tracking gc: %w", err)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -293,6 +296,9 @@ func (s *Store) pruneObservations(ctx context.Context, sessionID string) error {
 func (s *Store) RecordRunStart(ctx context.Context, run RunRecord) error {
 	if run.SessionID == "" || run.RunID == "" {
 		return nil
+	}
+	if err := s.backgroundGC.stop(ctx); err != nil {
+		return fmt.Errorf("stop background file tracking gc: %w", err)
 	}
 	if run.StartedAt.IsZero() {
 		run.StartedAt = time.Now().UTC()
@@ -402,7 +408,7 @@ func (s *Store) gcObservations(ctx context.Context, sessionsDBPath string, maxAg
 				return err
 			}
 			_, delErr := conn.ExecContext(ctx, "DELETE FROM filesystem_observations WHERE session_id NOT IN (SELECT id FROM sess.sessions)")
-			_, detachErr := conn.ExecContext(ctx, "DETACH DATABASE sess")
+			_, detachErr := conn.ExecContext(context.WithoutCancel(ctx), "DETACH DATABASE sess")
 			if delErr != nil {
 				return fmt.Errorf("gc stale observations: %w", delErr)
 			}
