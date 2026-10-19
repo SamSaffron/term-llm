@@ -12,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -1436,9 +1437,9 @@ func capabilityConfigValueCompletions(cfg *config.Config, key, toComplete string
 	// Image model completions. Venice distinguishes generation from editing.
 	switch key {
 	case "image.venice.model":
-		return filterPrefix(llm.GetVeniceImageModelIDs(cfg, "image"), toComplete)
+		return filterPrefix(opencompat.GetVeniceImageModelIDs(cfg, "image"), toComplete)
 	case "image.venice.edit_model":
-		return filterPrefix(llm.GetVeniceImageModelIDs(cfg, "inpaint"), toComplete)
+		return filterPrefix(opencompat.GetVeniceImageModelIDs(cfg, "inpaint"), toComplete)
 	case "image.gemini.model", "image.openai.model", "image.chatgpt.model", "image.flux.model":
 		provider := strings.Split(key, ".")[1]
 		return filterPrefix(llm.GetImageModelIDs(provider, cfg), toComplete)

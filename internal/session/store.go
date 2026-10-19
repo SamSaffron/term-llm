@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
@@ -685,17 +686,17 @@ func (s *loggingWorkspaceGrantStore) DeleteWorkspaceGrant(ctx context.Context, s
 // outside the transcript until the engine consumes it, so restoring a session
 // cannot accidentally send the same user message to a provider early.
 type PendingSteering struct {
-	SessionID          string             `json:"session_id"`
-	ID                 string             `json:"id"`
-	Message            llm.Message        `json:"message"`
-	DisplayText        string             `json:"display_text"`
-	AttachmentSummary  string             `json:"attachment_summary"`
-	CreatedAt          time.Time          `json:"created_at"`
-	AcceptanceSequence int64              `json:"acceptance_sequence"`
-	Origin             llm.SteeringOrigin `json:"origin"`
-	OwnerKind          string             `json:"owner_kind"`
-	OwnerID            string             `json:"owner_id"`
-	OwnerFence         int64              `json:"owner_fence"`
+	SessionID          string                `json:"session_id"`
+	ID                 string                `json:"id"`
+	Message            core.Message          `json:"message"`
+	DisplayText        string                `json:"display_text"`
+	AttachmentSummary  string                `json:"attachment_summary"`
+	CreatedAt          time.Time             `json:"created_at"`
+	AcceptanceSequence int64                 `json:"acceptance_sequence"`
+	Origin             engine.SteeringOrigin `json:"origin"`
+	OwnerKind          string                `json:"owner_kind"`
+	OwnerID            string                `json:"owner_id"`
+	OwnerFence         int64                 `json:"owner_fence"`
 }
 
 // PendingSteeringStore persists queued steering intents across tabs and
@@ -1078,7 +1079,7 @@ type CreateBranchOptions struct {
 // prefix in the same transaction that materializes a conversation branch.
 type BranchPathNote struct {
 	Text       string
-	Provenance llm.PathNoteProvenance
+	Provenance core.PathNoteProvenance
 }
 
 // BranchResult is the newly materialized (or idempotently reused) linear child.

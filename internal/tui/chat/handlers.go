@@ -13,7 +13,8 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
@@ -1011,8 +1012,8 @@ func (m *Model) expandPastePlaceholders(content string) string {
 	return content
 }
 
-func (m *Model) currentInterruptActivity() llm.InterruptActivity {
-	activity := llm.InterruptActivity{
+func (m *Model) currentInterruptActivity() engine.InterruptActivity {
+	activity := engine.InterruptActivity{
 		CurrentTask: m.phase,
 		ProseLen:    m.currentResponse.Len(),
 	}
@@ -1124,20 +1125,20 @@ func (m *Model) cancelSelectedPendingSteering() bool {
 	return true
 }
 
-func (m *Model) applyInterruptAction(steeringID, content string, action llm.InterruptAction) {
+func (m *Model) applyInterruptAction(steeringID, content string, action engine.InterruptAction) {
 	m.applyInterruptActionWithParts(steeringID, content, nil, action)
 }
 
-func (m *Model) applyInterruptActionWithParts(steeringID, content string, parts []llm.Part, action llm.InterruptAction) {
+func (m *Model) applyInterruptActionWithParts(steeringID, content string, parts []core.Part, action engine.InterruptAction) {
 	m.setTextareaValue("")
 
 	summary := content
 	if strings.TrimSpace(summary) == "" && len(parts) > 0 {
-		summary = llm.MessageAttachmentSummary(llm.Message{Role: llm.RoleUser, Parts: parts})
+		summary = core.MessageAttachmentSummary(core.Message{Role: core.RoleUser, Parts: parts})
 	}
 
 	switch action {
-	case llm.InterruptCancel:
+	case engine.InterruptCancel:
 		if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
 			m.mainRunManager.DiscardSteering(m.SessionID())
 		} else if m.engine != nil {
@@ -1145,7 +1146,7 @@ func (m *Model) applyInterruptActionWithParts(steeringID, content string, parts 
 		}
 		m.clearPendingSteering()
 		m.phase = "Stopping..."
-		if immediate, ok := llm.ClassifyInterruptImmediate(content); ok && immediate == llm.InterruptCancel {
+		if immediate, ok := engine.ClassifyInterruptImmediate(content); ok && immediate == engine.InterruptCancel {
 			m.interruptNotice = "✕ cancelled current response"
 			m.setTextareaValue("")
 		} else {
@@ -1161,33 +1162,33 @@ func (m *Model) applyInterruptActionWithParts(steeringID, content string, parts 
 			m.setStreamCancelRequested(true)
 			m.streamCancelFunc()
 		}
-	case llm.InterruptSteer:
+	case engine.InterruptSteer:
 		leadingImages := 0
-		for leadingImages < len(parts) && parts[leadingImages].Type == llm.PartImage {
+		for leadingImages < len(parts) && parts[leadingImages].Type == core.PartImage {
 			leadingImages++
 		}
-		msg := llm.Message{Role: llm.RoleUser, Parts: make([]llm.Part, 0, len(parts)+1)}
+		msg := core.Message{Role: core.RoleUser, Parts: make([]core.Part, 0, len(parts)+1)}
 		msg.Parts = append(msg.Parts, parts[:leadingImages]...)
 		if content != "" {
-			msg.Parts = append(msg.Parts, llm.Part{Type: llm.PartText, Text: content})
+			msg.Parts = append(msg.Parts, core.Part{Type: core.PartText, Text: content})
 		}
 		msg.Parts = append(msg.Parts, parts[leadingImages:]...)
 		if len(msg.Parts) == 0 {
-			msg = llm.UserText(content)
+			msg = core.UserText(content)
 		}
-		steering := llm.QueuedSteering{ID: steeringID, Message: msg, DisplayText: summary, Origin: llm.SteeringOriginForMessage(msg)}
-		queueStatus := llm.SteeringQueueRunFinished
+		steering := engine.QueuedSteering{ID: steeringID, Message: msg, DisplayText: summary, Origin: engine.SteeringOriginForMessage(msg)}
+		queueStatus := engine.SteeringQueueRunFinished
 		if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
 			queueStatus = m.mainRunManager.QueueSteering(m.SessionID(), steering)
 		} else if m.engine != nil {
 			_, queueStatus = m.engine.QueueSteeringWithStatus(steering)
 		}
 		switch queueStatus {
-		case llm.SteeringQueueQueued, llm.SteeringQueueAlreadyQueued:
+		case engine.SteeringQueueQueued, engine.SteeringQueueAlreadyQueued:
 			m.setPendingSteering(steeringID, summary)
 			m.images = nil
 			m.selectedImage = -1
-		case llm.SteeringQueueRunFinished:
+		case engine.SteeringQueueRunFinished:
 			m.interruptNotice = "response cannot consume steering — draft kept below"
 			m.setTextareaValue(content)
 		default:
@@ -1197,7 +1198,7 @@ func (m *Model) applyInterruptActionWithParts(steeringID, content string, parts 
 	}
 }
 
-func (m *Model) listPendingSteering() []llm.QueuedSteering {
+func (m *Model) listPendingSteering() []engine.QueuedSteering {
 	if m.mainRunManager != nil && (m.streaming || m.mainRunManager.HasActive(m.SessionID())) {
 		return m.mainRunManager.ListSteering(m.SessionID())
 	}
@@ -1207,7 +1208,7 @@ func (m *Model) listPendingSteering() []llm.QueuedSteering {
 	return m.engine.ListPendingSteering()
 }
 
-func (m *Model) drainPendingSteering() []llm.QueuedSteering {
+func (m *Model) drainPendingSteering() []engine.QueuedSteering {
 	if m.mainRunManager != nil && (m.streaming || m.mainRunManager.HasActive(m.SessionID())) {
 		return m.mainRunManager.DrainSteering(m.SessionID())
 	}
@@ -1242,9 +1243,9 @@ func (m *Model) restorePendingSteeringDraft() {
 			hasTextPart := false
 			for _, part := range entry.Message.Parts {
 				switch part.Type {
-				case llm.PartText:
+				case core.PartText:
 					hasTextPart = true
-				case llm.PartImage:
+				case core.PartImage:
 					if part.ImageData != nil && part.ImageData.Base64 != "" {
 						data, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
 						if err == nil {

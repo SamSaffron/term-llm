@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -37,7 +38,7 @@ func debugRawHTTPErrorResponse(enabled bool, label string, resp *http.Response, 
 }
 
 // DebugToolCall prints a tool call in debug mode with readable formatting.
-func DebugToolCall(enabled bool, call ToolCall) {
+func DebugToolCall(enabled bool, call core.ToolCall) {
 	if !enabled {
 		return
 	}
@@ -62,7 +63,7 @@ func DebugToolResult(enabled bool, id, name, content string) {
 }
 
 // DebugRawRequest prints the raw request with all message parts in debug mode.
-func DebugRawRequest(enabled bool, providerName, credential string, req Request, label string) {
+func DebugRawRequest(enabled bool, providerName, credential string, req core.Request, label string) {
 	if !enabled {
 		return
 	}
@@ -113,12 +114,12 @@ func DebugRawRequest(enabled bool, providerName, credential string, req Request,
 			fmt.Fprintf(&b, "[%d] role=%s\n", i+1, msg.Role)
 			for _, part := range msg.Parts {
 				switch part.Type {
-				case PartText, PartFile:
+				case core.PartText, core.PartFile:
 					b.WriteString("text:\n")
 					b.WriteString(part.Text)
 					b.WriteString("\n")
 					if hasReasoningMetadata(part) {
-						fmt.Fprintf(&b, "reasoning_kind: %s\n", NormalizeReasoningKind(part.ReasoningKind))
+						fmt.Fprintf(&b, "reasoning_kind: %s\n", core.NormalizeReasoningKind(part.ReasoningKind))
 						if part.ReasoningSummaryTitle != "" {
 							fmt.Fprintf(&b, "reasoning_summary_title: %s\n", part.ReasoningSummaryTitle)
 						}
@@ -133,18 +134,18 @@ func DebugRawRequest(enabled bool, providerName, credential string, req Request,
 							fmt.Fprintf(&b, "reasoning_encrypted_content_hash: %s\n", shortDebugHash(part.ReasoningEncryptedContent))
 						}
 					}
-				case PartToolCall:
+				case core.PartToolCall:
 					if part.ToolCall != nil {
 						fmt.Fprintf(&b, "tool_call name=%s id=%s\n", part.ToolCall.Name, part.ToolCall.ID)
 						b.WriteString("args:\n")
 						b.WriteString(rawJSON(part.ToolCall.Arguments))
 						b.WriteString("\n")
 					}
-				case PartImage:
+				case core.PartImage:
 					if part.ImageData != nil {
 						fmt.Fprintf(&b, "[image %s len=%d]\n", part.ImageData.MediaType, len(part.ImageData.Base64))
 					}
-				case PartToolResult:
+				case core.PartToolResult:
 					if part.ToolResult != nil {
 						fmt.Fprintf(&b, "tool_result name=%s id=%s\n", part.ToolResult.Name, part.ToolResult.ID)
 						b.WriteString("result:\n")
@@ -161,7 +162,7 @@ func DebugRawRequest(enabled bool, providerName, credential string, req Request,
 }
 
 // DebugRawToolCall prints a tool call with raw JSON arguments and a timestamp.
-func DebugRawToolCall(enabled bool, call ToolCall) {
+func DebugRawToolCall(enabled bool, call core.ToolCall) {
 	if !enabled {
 		return
 	}
@@ -189,21 +190,21 @@ func DebugRawToolResult(enabled bool, id, name, content string) {
 }
 
 // DebugRawEvent prints each stream event with a timestamp.
-func DebugRawEvent(enabled bool, event Event) {
+func DebugRawEvent(enabled bool, event core.Event) {
 	if !enabled {
 		return
 	}
 
 	switch event.Type {
-	case EventTextDelta:
+	case core.EventTextDelta:
 		DebugRawSection(enabled, "Event Text Delta", event.Text)
-	case EventToolCall:
+	case core.EventToolCall:
 		if event.Tool != nil {
 			DebugRawToolCall(enabled, *event.Tool)
 		} else {
 			DebugRawSection(enabled, "Event Tool Call", "(nil)")
 		}
-	case EventUsage:
+	case core.EventUsage:
 		if event.Use != nil {
 			providerInputTokens := event.Use.ProviderRawInputTokens
 			if providerInputTokens == 0 {
@@ -229,9 +230,9 @@ func DebugRawEvent(enabled bool, event Event) {
 		} else {
 			DebugRawSection(enabled, "Event Usage", "(nil)")
 		}
-	case EventReasoningDelta:
+	case core.EventReasoningDelta:
 		var body strings.Builder
-		fmt.Fprintf(&body, "reasoning_kind: %s\n", NormalizeReasoningKind(event.ReasoningKind))
+		fmt.Fprintf(&body, "reasoning_kind: %s\n", core.NormalizeReasoningKind(event.ReasoningKind))
 		if event.ReasoningIndex != 0 {
 			fmt.Fprintf(&body, "reasoning_index: %d\n", event.ReasoningIndex)
 		}
@@ -256,13 +257,13 @@ func DebugRawEvent(enabled bool, event Event) {
 			fmt.Fprintf(&body, "encrypted_content_hash: %s\n", shortDebugHash(event.ReasoningEncryptedContent))
 		}
 		DebugRawSection(enabled, "Event Reasoning Delta", strings.TrimRight(body.String(), "\n"))
-	case EventToolExecStart:
+	case core.EventToolExecStart:
 		info := event.ToolName
 		if event.ToolInfo != "" {
 			info = event.ToolName + ": " + event.ToolInfo
 		}
 		DebugRawSection(enabled, "Event Tool Exec Start", info)
-	case EventToolExecEnd:
+	case core.EventToolExecEnd:
 		status := "success"
 		if !event.ToolSuccess {
 			status = "error"
@@ -272,9 +273,9 @@ func DebugRawEvent(enabled bool, event Event) {
 			info = fmt.Sprintf("%s: %s (%s)", event.ToolName, event.ToolInfo, status)
 		}
 		DebugRawSection(enabled, "Event Tool Exec End", info)
-	case EventDone:
+	case core.EventDone:
 		DebugRawSection(enabled, "Event Done", "")
-	case EventError:
+	case core.EventError:
 		if event.Err != nil {
 			DebugRawSection(enabled, "Event Error", event.Err.Error())
 		} else {
@@ -309,18 +310,18 @@ func DebugRawSection(enabled bool, label, body string) {
 }
 
 type debugStream struct {
-	inner   Stream
+	inner   core.Stream
 	enabled bool
 }
 
-func WrapDebugStream(enabled bool, inner Stream) Stream {
+func WrapDebugStream(enabled bool, inner core.Stream) core.Stream {
 	if !enabled {
 		return inner
 	}
 	return &debugStream{inner: inner, enabled: enabled}
 }
 
-func (s *debugStream) Recv() (Event, error) {
+func (s *debugStream) Recv() (core.Event, error) {
 	event, err := s.inner.Recv()
 	if err != nil && err != io.EOF {
 		DebugRawSection(s.enabled, "Stream Recv Error", err.Error())

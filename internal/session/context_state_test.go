@@ -7,21 +7,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestCompactionMessagePredicates(t *testing.T) {
 	ackText := syntheticCompactionAckText
-	persistedAck := NewMessage("session", llm.AssistantText(ackText), -1)
+	persistedAck := NewMessage("session", core.AssistantText(ackText), -1)
 	if !IsSyntheticCompactionAckMessage(*persistedAck) {
 		t.Fatalf("ack predicate rejected NewMessage-derived row %#v", persistedAck)
 	}
 	for _, msg := range []Message{
-		{Role: llm.RoleUser, TextContent: ackText},
-		{Role: llm.RoleAssistant, TextContent: "ordinary answer"},
+		{Role: core.RoleUser, TextContent: ackText},
+		{Role: core.RoleAssistant, TextContent: "ordinary answer"},
 		// Persistence historically keys this predicate from TextContent. Keep a
 		// parts-only row from widening compaction-tail marking behavior.
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: ackText}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: ackText}}},
 	} {
 		if IsSyntheticCompactionAckMessage(msg) {
 			t.Fatalf("ack predicate accepted %#v", msg)
@@ -32,7 +33,7 @@ func TestCompactionMessagePredicates(t *testing.T) {
 	if !IsInternalCompactionSummaryMessage(Message{TextContent: summary}) {
 		t.Fatal("internal summary TextContent was not recognized")
 	}
-	if !IsInternalCompactionSummaryMessage(Message{Parts: []llm.Part{{Type: llm.PartText, Text: summary}}}) {
+	if !IsInternalCompactionSummaryMessage(Message{Parts: []core.Part{{Type: core.PartText, Text: summary}}}) {
 		t.Fatal("internal summary part was not recognized")
 	}
 }
@@ -45,9 +46,9 @@ func TestApplyCompactionDoesNotPersistEphemeralMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := &llm.CompactionResult{
-		NewMessages:       []llm.Message{llm.UserText("durable summary"), llm.AssistantText("ack")},
-		EphemeralMessages: []llm.Message{{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "restored plan"}}}},
+	result := &engine.CompactionResult{
+		NewMessages:       []core.Message{core.UserText("durable summary"), core.AssistantText("ack")},
+		EphemeralMessages: []core.Message{{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "restored plan"}}}},
 	}
 	if _, _, _, err := ApplyCompaction(ctx, store, sess, full, result); err != nil {
 		t.Fatal(err)
@@ -83,10 +84,10 @@ func seedContextStateSession(t *testing.T, ctx context.Context, store Store) *Se
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	msgs := []llm.Message{
-		llm.SystemText("system"),
-		llm.UserText("old user"),
-		llm.AssistantText("old assistant"),
+	msgs := []core.Message{
+		core.SystemText("system"),
+		core.UserText("old user"),
+		core.AssistantText("old assistant"),
 	}
 	for _, msg := range msgs {
 		if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, msg, -1)); err != nil {
@@ -101,7 +102,7 @@ func TestLoadActiveMessagesUsesCompactionBoundary(t *testing.T) {
 	store := newContextStateTestStore(t)
 	sess := seedContextStateSession(t, ctx, store)
 
-	compactRows := []Message{*NewMessage(sess.ID, llm.UserText("summary"), -1), *NewMessage(sess.ID, llm.AssistantText("ack"), -1)}
+	compactRows := []Message{*NewMessage(sess.ID, core.UserText("summary"), -1), *NewMessage(sess.ID, core.AssistantText("ack"), -1)}
 	if err := store.CompactMessages(ctx, sess.ID, compactRows); err != nil {
 		t.Fatalf("CompactMessages: %v", err)
 	}
@@ -125,8 +126,8 @@ func TestLoadActiveMessagesUsesLatestCompactionBoundary(t *testing.T) {
 	sess := seedContextStateSession(t, ctx, store)
 
 	if err := store.CompactMessages(ctx, sess.ID, []Message{
-		*NewMessage(sess.ID, llm.UserText("first summary"), -1),
-		*NewMessage(sess.ID, llm.AssistantText("first ack"), -1),
+		*NewMessage(sess.ID, core.UserText("first summary"), -1),
+		*NewMessage(sess.ID, core.AssistantText("first ack"), -1),
 	}); err != nil {
 		t.Fatalf("first CompactMessages: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestLoadActiveMessagesUsesLatestCompactionBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadActiveMessages first: %v", err)
 	}
-	result := &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("second summary"), llm.AssistantText("second ack")}}
+	result := &engine.CompactionResult{NewMessages: []core.Message{core.UserText("second summary"), core.AssistantText("second ack")}}
 	if _, _, _, err := ApplyCompaction(ctx, store, first, activeAfterFirst, result); err != nil {
 		t.Fatalf("second ApplyCompaction: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestLoadInitialScrollbackWithBoundaryStartsAtCompactionSeq(t *testing.T) {
 	t.Cleanup(func() { _ = sqliteStore.Close() })
 	store := &initialScrollbackCountingStore{SQLiteStore: sqliteStore}
 	sess := seedContextStateSession(t, ctx, store)
-	if err := store.CompactMessages(ctx, sess.ID, []Message{*NewMessage(sess.ID, llm.UserText("summary"), -1)}); err != nil {
+	if err := store.CompactMessages(ctx, sess.ID, []Message{*NewMessage(sess.ID, core.UserText("summary"), -1)}); err != nil {
 		t.Fatalf("CompactMessages: %v", err)
 	}
 	refreshed, err := store.Get(ctx, sess.ID)
@@ -231,7 +232,7 @@ func TestLoadScrollbackWithBoundary(t *testing.T) {
 	ctx := context.Background()
 	store := newContextStateTestStore(t)
 	sess := seedContextStateSession(t, ctx, store)
-	if err := store.CompactMessages(ctx, sess.ID, []Message{*NewMessage(sess.ID, llm.UserText("summary"), -1)}); err != nil {
+	if err := store.CompactMessages(ctx, sess.ID, []Message{*NewMessage(sess.ID, core.UserText("summary"), -1)}); err != nil {
 		t.Fatalf("CompactMessages: %v", err)
 	}
 	refreshed, err := store.Get(ctx, sess.ID)
@@ -260,7 +261,7 @@ func TestApplyCompactionPersistsAppendsRefreshesAndClearsEstimate(t *testing.T) 
 		t.Fatalf("GetMessages: %v", err)
 	}
 
-	result := &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("compact summary"), llm.AssistantText("ack")}}
+	result := &engine.CompactionResult{NewMessages: []core.Message{core.UserText("compact summary"), core.AssistantText("ack")}}
 	updated, activeStart, refreshed, err := ApplyCompaction(ctx, store, sess, full, result)
 	if err != nil {
 		t.Fatalf("ApplyCompaction: %v", err)
@@ -295,10 +296,10 @@ func TestApplyCompactionDropsPersistedSystemAndReinjectsCurrentPrompt(t *testing
 		t.Fatalf("GetMessages: %v", err)
 	}
 
-	result := &llm.CompactionResult{NewMessages: []llm.Message{
-		llm.SystemText("old compaction-time instructions"),
-		llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"),
-		llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."),
+	result := &engine.CompactionResult{NewMessages: []core.Message{
+		core.SystemText("old compaction-time instructions"),
+		core.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"),
+		core.AssistantText("I've reviewed the context summary. I'll continue from where we left off."),
 	}}
 	updated, activeStart, refreshed, err := ApplyCompaction(ctx, store, sess, full, result)
 	if err != nil {
@@ -318,11 +319,11 @@ func TestApplyCompactionDropsPersistedSystemAndReinjectsCurrentPrompt(t *testing
 	if err != nil {
 		t.Fatalf("LoadActiveMessages: %v", err)
 	}
-	if len(active) != 2 || active[0].Role != llm.RoleUser || !llm.IsInternalCompactionSummaryText(active[0].TextContent) {
+	if len(active) != 2 || active[0].Role != core.RoleUser || !engine.IsInternalCompactionSummaryText(active[0].TextContent) {
 		t.Fatalf("persisted active rows = %#v, want summary + ack without pinned system", active)
 	}
 	llmActive := LLMActiveMessages(active, 0, "new current instructions")
-	if len(llmActive) < 2 || llmActive[0].Role != llm.RoleSystem || llm.MessageText(llmActive[0]) != "new current instructions" {
+	if len(llmActive) < 2 || llmActive[0].Role != core.RoleSystem || core.MessageText(llmActive[0]) != "new current instructions" {
 		t.Fatalf("LLMActiveMessages did not inject current system prompt: %#v", llmActive)
 	}
 	if !llmActive[1].CacheAnchor {
@@ -332,15 +333,15 @@ func TestApplyCompactionDropsPersistedSystemAndReinjectsCurrentPrompt(t *testing
 
 func TestApplyCompactionMarksRetainedRawSuffixHiddenFromDisplay(t *testing.T) {
 	full := []Message{
-		*NewMessage("s", llm.UserText("old user"), 0),
-		*NewMessage("s", llm.AssistantText("old assistant"), 1),
-		*NewMessage("s", llm.UserText("recent user"), 2),
-		*NewMessage("s", llm.AssistantText("recent assistant"), 3),
+		*NewMessage("s", core.UserText("old user"), 0),
+		*NewMessage("s", core.AssistantText("old assistant"), 1),
+		*NewMessage("s", core.UserText("recent user"), 2),
+		*NewMessage("s", core.AssistantText("recent assistant"), 3),
 	}
-	result := &llm.CompactionResult{NewMessages: []llm.Message{
-		llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"),
-		llm.UserText("recent user"),
-		llm.AssistantText("recent assistant"),
+	result := &engine.CompactionResult{NewMessages: []core.Message{
+		core.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"),
+		core.UserText("recent user"),
+		core.AssistantText("recent assistant"),
 	}}
 
 	updated, activeStart, _, err := ApplyCompaction(context.Background(), nil, nil, full, result)
@@ -367,19 +368,19 @@ func TestLoadScrollbackWithBoundaryMarksRetainedRawSuffixHiddenFromDisplay(t *te
 	ctx := context.Background()
 	store := newContextStateTestStore(t)
 	sess := seedContextStateSession(t, ctx, store)
-	for _, msg := range []llm.Message{
-		llm.UserText("recent user"),
-		llm.AssistantText("recent assistant"),
+	for _, msg := range []core.Message{
+		core.UserText("recent user"),
+		core.AssistantText("recent assistant"),
 	} {
 		if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, msg, -1)); err != nil {
 			t.Fatalf("AddMessage recent: %v", err)
 		}
 	}
 	if err := store.CompactMessages(ctx, sess.ID, []Message{
-		*NewMessage(sess.ID, llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), -1),
-		*NewMessage(sess.ID, llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), -1),
-		*NewMessage(sess.ID, llm.UserText("recent user"), -1),
-		*NewMessage(sess.ID, llm.AssistantText("recent assistant"), -1),
+		*NewMessage(sess.ID, core.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), -1),
+		*NewMessage(sess.ID, core.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), -1),
+		*NewMessage(sess.ID, core.UserText("recent user"), -1),
+		*NewMessage(sess.ID, core.AssistantText("recent assistant"), -1),
 	}); err != nil {
 		t.Fatalf("CompactMessages: %v", err)
 	}
@@ -425,11 +426,11 @@ func TestLoadScrollbackWithBoundaryMarksRetainedRawSuffixHiddenFromDisplay(t *te
 }
 
 func TestMarkCompactionDisplayTailsPersistsSyntheticAckWhenTailAlreadyMarked(t *testing.T) {
-	summary := *NewMessage("s", llm.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), 0)
+	summary := *NewMessage("s", core.UserText("[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>"), 0)
 	summary.ID = 1
-	ack := *NewMessage("s", llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), 1)
+	ack := *NewMessage("s", core.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), 1)
 	ack.ID = 2
-	tail := *NewMessage("s", llm.UserText("recent user"), 2)
+	tail := *NewMessage("s", core.UserText("recent user"), 2)
 	tail.ID = 3
 	tail.CompactionTail = true
 	messages := []Message{summary, ack, tail}
@@ -481,7 +482,7 @@ func TestApplyCompactionReturnsUpdatedStateAfterBestEffortFailures(t *testing.T)
 	}
 	store := failingAfterCompactStore{Store: base, failUpdateContext: true, failGet: true}
 
-	result := &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("compact summary"), llm.AssistantText("ack")}}
+	result := &engine.CompactionResult{NewMessages: []core.Message{core.UserText("compact summary"), core.AssistantText("ack")}}
 	updated, activeStart, refreshed, err := ApplyCompaction(ctx, store, sess, full, result)
 	if err != nil {
 		t.Fatalf("ApplyCompaction returned error after CompactMessages succeeded: %v", err)
@@ -503,10 +504,10 @@ func TestApplyCompactionReturnsUpdatedStateAfterBestEffortFailures(t *testing.T)
 
 func TestLLMActiveMessagesExcludesPreBoundary(t *testing.T) {
 	messages := []Message{
-		*NewMessage("s", llm.UserText("old user"), 0),
-		*NewMessage("s", llm.AssistantText("old assistant"), 1),
-		*NewMessage("s", llm.UserText("summary"), 2),
-		*NewMessage("s", llm.AssistantText("ack"), 3),
+		*NewMessage("s", core.UserText("old user"), 0),
+		*NewMessage("s", core.AssistantText("old assistant"), 1),
+		*NewMessage("s", core.UserText("summary"), 2),
+		*NewMessage("s", core.AssistantText("ack"), 3),
 	}
 	llmMsgs := LLMActiveMessages(messages, 2, "system")
 	joined := ""
@@ -524,17 +525,17 @@ func TestLLMActiveMessagesExcludesPreBoundary(t *testing.T) {
 }
 
 func TestLLMActiveMessagesRetainsPathNotesAcrossCompactionBoundary(t *testing.T) {
-	provenance := llm.PathNoteProvenance{SourceSessionID: "source", AnchorMessageID: 7}
+	provenance := core.PathNoteProvenance{SourceSessionID: "source", AnchorMessageID: 7}
 	messages := []Message{
 		*NewPathNoteMessage("child", "- Useful parser finding.", provenance, 0),
-		*NewMessage("child", llm.UserText("old child prompt"), 1),
-		*NewMessage("child", llm.UserText("[Context Compaction]\nsummary"), 2),
-		*NewMessage("child", llm.AssistantText("ack"), 3),
+		*NewMessage("child", core.UserText("old child prompt"), 1),
+		*NewMessage("child", core.UserText("[Context Compaction]\nsummary"), 2),
+		*NewMessage("child", core.AssistantText("ack"), 3),
 	}
 	active := LLMActiveMessages(messages, 2, "system")
 	joined := ""
 	for _, message := range active {
-		joined += "\n" + llm.MessageText(message)
+		joined += "\n" + core.MessageText(message)
 	}
 	if !strings.Contains(joined, "Useful parser finding") || strings.Contains(joined, "old child prompt") {
 		t.Fatalf("active context = %q", joined)

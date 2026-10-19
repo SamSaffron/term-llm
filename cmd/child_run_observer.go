@@ -3,7 +3,7 @@ package cmd
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -24,7 +24,7 @@ type childRunInfo struct {
 }
 
 type childRunSession interface {
-	Execute(ctx context.Context, env *cmdRunEnvironment, onEvent func(llm.Event) error) (serveRunResult, error)
+	Execute(ctx context.Context, env *cmdRunEnvironment, onEvent func(core.Event) error) (serveRunResult, error)
 	AskUser(ctx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
 	AskUserAvailable() bool
 	Finish(status session.SessionStatus, err error)

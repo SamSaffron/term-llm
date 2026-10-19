@@ -12,7 +12,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -104,7 +105,7 @@ func TestDirectShellSuccessPersistsResultAndStartsModelResponse(t *testing.T) {
 		t.Fatalf("persisted messages = %d, want 1", len(store.added))
 	}
 	got := store.added[0]
-	if got.Role != llm.RoleUser || !strings.Contains(got.TextContent, "! printf success") ||
+	if got.Role != core.RoleUser || !strings.Contains(got.TextContent, "! printf success") ||
 		!strings.Contains(got.TextContent, "success") || !strings.Contains(got.TextContent, "exit status: 0") {
 		t.Fatalf("persisted shell result = %#v", got)
 	}
@@ -117,12 +118,12 @@ func TestDirectShellSuccessPersistsResultAndStartsModelResponse(t *testing.T) {
 		t.Fatalf("model follow-up command = %T, want batch", followup())
 	}
 	_ = followBatch[0]()
-	provider := m.provider.(*llm.MockProvider)
+	provider := m.provider.(*mockprovider.MockProvider)
 	requests := provider.RecordedRequests()
 	if len(requests) != 1 || len(requests[0].Messages) == 0 {
 		t.Fatalf("model follow-up requests = %#v", requests)
 	}
-	if contextText := llm.MessageText(requests[0].Messages[len(requests[0].Messages)-1]); contextText != got.TextContent {
+	if contextText := core.MessageText(requests[0].Messages[len(requests[0].Messages)-1]); contextText != got.TextContent {
 		t.Fatalf("model context shell result = %q, want %q", contextText, got.TextContent)
 	}
 }
@@ -279,7 +280,7 @@ func TestDirectShellPasteCannotConvertExistingDraft(t *testing.T) {
 func TestDirectShellHistoryCompletionAndRecallStripOutput(t *testing.T) {
 	m := directShellTestModel(t)
 	result := formatDirectShellResult("git status --short", "/tmp/project", "M shell.go", 0, false, false, nil)
-	m.messages = append(m.messages, *session.NewMessage(m.sess.ID, llm.UserText(result), -1))
+	m.messages = append(m.messages, *session.NewMessage(m.sess.ID, core.UserText(result), -1))
 
 	m.setDirectShellComposerValue("! git st")
 	updated, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -381,20 +382,20 @@ func TestDirectShellVisibleResultHidesInternalMetadata(t *testing.T) {
 
 func TestDirectShellVisibleMessagesKeepStructuredContentInternal(t *testing.T) {
 	structured := formatDirectShellResult("ls", "/tmp/project", "file-a", 0, false, false, nil)
-	messages := []session.Message{{Role: llm.RoleUser, TextContent: structured, Parts: []llm.Part{{Type: llm.PartText, Text: structured}}}}
+	messages := []session.Message{{Role: core.RoleUser, TextContent: structured, Parts: []core.Part{{Type: core.PartText, Text: structured}}}}
 	visible := visibleDirectShellMessages(messages)
 
 	if strings.Contains(visible[0].TextContent, directShellResultMarker) || strings.Contains(visible[0].TextContent, "exit status: 0") {
 		t.Fatalf("visible message leaked metadata: %q", visible[0].TextContent)
 	}
-	if messages[0].TextContent != structured || llm.MessageText(messages[0].ToLLMMessage()) != structured {
+	if messages[0].TextContent != structured || core.MessageText(messages[0].ToLLMMessage()) != structured {
 		t.Fatal("visible transformation mutated durable/model content")
 	}
 }
 
 func TestDirectShellHistoryRecallDoesNotArmOrdinaryBangPrompt(t *testing.T) {
 	m := directShellTestModel(t)
-	m.messages = append(m.messages, *session.NewMessage(m.sess.ID, llm.UserText("!important: explain this"), -1))
+	m.messages = append(m.messages, *session.NewMessage(m.sess.ID, core.UserText("!important: explain this"), -1))
 
 	handled, _ := m.recallPreviousPrompt()
 	if !handled || m.directShellComposerActive() || m.textarea.Value() != "!important: explain this" {
@@ -606,7 +607,7 @@ func TestDirectShellCompletionDoesNotBlockAfterTUIExit(t *testing.T) {
 
 func TestDirectShellRunningOwnsPromptHistory(t *testing.T) {
 	m := directShellTestModel(t)
-	m.messages = append(m.messages, *session.NewMessage(m.sess.ID, llm.UserText("older prompt"), -1))
+	m.messages = append(m.messages, *session.NewMessage(m.sess.ID, core.UserText("older prompt"), -1))
 	m.directShellRun = &directShellRun{cancel: func() {}}
 
 	updated, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})

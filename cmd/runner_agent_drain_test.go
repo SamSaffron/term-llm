@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -47,7 +47,7 @@ func TestSpawnRunnerShutdownHonorsDeadlineWithBlockedPrompt(t *testing.T) {
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(child)
 	runner := &SpawnAgentRunner{lifecycle: tool}
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRunEnvironmentDrainsDetachedChild(t *testing.T) {
 	tool.SetRunner(child)
 	runner := &SpawnAgentRunner{lifecycle: tool}
 	env := &cmdRunEnvironment{req: runpkg.Request{IsSubagent: true}, runtime: &serveRuntime{spawnRunner: runner}, runCtx: context.Background()}
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	result, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestRunEnvironmentWithoutOwnerDrainsDetachedChild(t *testing.T) {
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(child)
 	runner := &SpawnAgentRunner{lifecycle: tool}
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -133,13 +133,13 @@ func TestAgentHostOwnerRejectsAdoptionAfterShutdown(t *testing.T) {
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(child)
 	runner := &SpawnAgentRunner{lifecycle: tool}
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`)); err != nil {
 		t.Fatal(err)
 	}
 	<-child.entered
 	closed := false
-	owner.adopt(&serveRuntime{spawnRunner: runner}, func() { closed = true })
+	owner.Adopt(&serveRuntime{spawnRunner: runner}, func() { closed = true })
 	if !closed || len(runner.OutstandingAgentIDs()) != 0 {
 		t.Fatalf("late child survived shutdown: store closed=%t outstanding=%v", closed, runner.OutstandingAgentIDs())
 	}
@@ -151,7 +151,7 @@ func TestRunEnvironmentHandsOffDetachedChildAcrossTurns(t *testing.T) {
 	tool.SetRunner(child)
 	owner := &agentHostOwner{}
 	runner := &SpawnAgentRunner{lifecycle: tool}
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	res, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestSubagentDrainCancellationShutsDownGrandchild(t *testing.T) {
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(child)
 	runner := &SpawnAgentRunner{lifecycle: tool}
-	ctx, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), "child"))
+	ctx, cancel := context.WithCancel(core.ContextWithSessionID(context.Background(), "child"))
 	defer cancel()
 	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"grandchild","wait":0}`)); err != nil {
 		t.Fatal(err)

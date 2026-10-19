@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mediatype"
 )
 
@@ -55,7 +55,7 @@ func newExportAudio(opts ExportOptions) *exportAudio {
 	return &exportAudio{include: opts.IncludeAudio, paths: make(map[string]exportAudioResult), content: make(map[[32]byte]string), players: make(map[string]string), omitted: make(map[string]bool)}
 }
 
-func (e *exportAudio) resolve(item llm.MediaArtifact) exportAudioResult {
+func (e *exportAudio) resolve(item core.MediaArtifact) exportAudioResult {
 	if !e.include {
 		return exportAudioResult{Reason: "not included in export"}
 	}
@@ -117,7 +117,7 @@ func (e *exportAudio) resolveFile(path string, declared mediatype.Format) export
 	return exportAudioResult{URL: url}
 }
 
-func buildHTMLAudio(audio *exportAudio, item llm.MediaArtifact, label string) htmlExportAudio {
+func buildHTMLAudio(audio *exportAudio, item core.MediaArtifact, label string) htmlExportAudio {
 	name := exportAudioName(item)
 	label = exportAudioText(label, item)
 	caption := exportAudioText(item.Caption, item)
@@ -150,7 +150,7 @@ func buildHTMLAudio(audio *exportAudio, item llm.MediaArtifact, label string) ht
 
 // Never use private paths/URLs as display fallbacks, including metadata which
 // happens to repeat the artifact's private locations.
-func exportAudioText(value string, item llm.MediaArtifact) string {
+func exportAudioText(value string, item core.MediaArtifact) string {
 	for _, private := range []string{item.SourcePath, item.StoredPath} {
 		if private != "" {
 			value = strings.ReplaceAll(value, private, "")
@@ -167,7 +167,7 @@ func (e *exportAudio) result() ExportResult {
 }
 
 // exportAudioName is shared by HTML cards and text-only Markdown placeholders.
-func exportAudioName(item llm.MediaArtifact) string {
+func exportAudioName(item core.MediaArtifact) string {
 	name := filepath.Base(strings.ReplaceAll(item.Name, `\`, "/"))
 	name = exportAudioText(name, item)
 	if name == "" || name == "." || name == "/" {

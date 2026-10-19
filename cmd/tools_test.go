@@ -10,6 +10,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestDefaultToolRegistryExaMCPSearchKeepsDefaultJinaReader(t *testing.T) {
@@ -18,7 +19,7 @@ func TestDefaultToolRegistryExaMCPSearchKeepsDefaultJinaReader(t *testing.T) {
 	cfg.Search.FetchProvider = "jina"
 
 	registry := defaultToolRegistry(cfg)
-	tool, ok := registry.Get(llm.ReadURLToolName)
+	tool, ok := registry.Get(core.ReadURLToolName)
 	if !ok {
 		t.Fatalf("read_url tool not registered")
 	}
@@ -37,7 +38,7 @@ func TestDefaultToolRegistryCanUseExaMCPForFetch(t *testing.T) {
 	cfg.Search.FetchProvider = "exa_mcp"
 
 	registry := defaultToolRegistry(cfg)
-	tool, ok := registry.Get(llm.ReadURLToolName)
+	tool, ok := registry.Get(core.ReadURLToolName)
 	if !ok {
 		t.Fatalf("read_url tool not registered")
 	}
@@ -56,7 +57,7 @@ func TestDefaultToolRegistryCanDisableFetch(t *testing.T) {
 	cfg.Search.FetchProvider = "none"
 
 	registry := defaultToolRegistry(cfg)
-	if _, ok := registry.Get(llm.ReadURLToolName); ok {
+	if _, ok := registry.Get(core.ReadURLToolName); ok {
 		t.Fatalf("read_url tool registered with fetch_provider none")
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -18,9 +18,9 @@ func TestSessionMessageEntriesProjectsAgentLifecycleLinks(t *testing.T) {
 	store.sessions["child-2"] = &session.Session{ID: "child-2", ParentID: "parent"}
 	store.sessions["foreign"] = &session.Session{ID: "foreign", ParentID: "other"}
 	messages := []session.Message{
-		*session.NewMessage("parent", llm.ToolResultMessage("wait", tools.WaitAgentToolName, `[{"agent_id":"child-1","status":"running"},{"session_id":"child-2"},{"agent_id":"foreign"},{"agent_id":"child-1"}]`, nil), 0),
-		*session.NewMessage("parent", llm.ToolResultMessage("resume", tools.ContinueAgentToolName, `{"agent_id":"child-2","status":"running"}`, nil), 1),
-		*session.NewMessage("parent", llm.ToolResultMessage("malformed", tools.WaitAgentToolName, `not JSON`, nil), 2),
+		*session.NewMessage("parent", core.ToolResultMessage("wait", tools.WaitAgentToolName, `[{"agent_id":"child-1","status":"running"},{"session_id":"child-2"},{"agent_id":"foreign"},{"agent_id":"child-1"}]`, nil), 0),
+		*session.NewMessage("parent", core.ToolResultMessage("resume", tools.ContinueAgentToolName, `{"agent_id":"child-2","status":"running"}`, nil), 1),
+		*session.NewMessage("parent", core.ToolResultMessage("malformed", tools.WaitAgentToolName, `not JSON`, nil), 2),
 	}
 	entries := (&serveServer{store: store}).sessionMessageEntries(messages)
 	if len(entries) != 3 || len(entries[0].Parts) != 1 || len(entries[1].Parts) != 1 || len(entries[2].Parts) != 0 {
@@ -42,10 +42,10 @@ func TestSessionMessageEntriesProjectsSuccessfulSpawnAgentResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	messages := []session.Message{
-		*session.NewMessage("parent", llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-			Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "spawn-1", Name: tools.SpawnAgentToolName},
+		*session.NewMessage("parent", core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+			Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "spawn-1", Name: tools.SpawnAgentToolName},
 		}}}, 0),
-		*session.NewMessage("parent", llm.ToolResultMessage("spawn-1", tools.SpawnAgentToolName, string(content), nil), 1),
+		*session.NewMessage("parent", core.ToolResultMessage("spawn-1", tools.SpawnAgentToolName, string(content), nil), 1),
 	}
 	store := newServeRuntimeTestStore()
 	store.sessions["child-1"] = &session.Session{ID: "child-1", ParentID: "parent", ToolCalls: 12}
@@ -72,8 +72,8 @@ func TestSessionMessageEntriesOmitsUnvalidatedSpawnChildLinks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			content, _ := json.Marshal(tools.SpawnAgentResult{Output: "safe output", SessionID: tc.childID})
 			messages := []session.Message{
-				*session.NewMessage("parent", llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "spawn", Name: tools.SpawnAgentToolName}}}}, 0),
-				*session.NewMessage("parent", llm.ToolResultMessage("spawn", tools.SpawnAgentToolName, string(content), nil), 1),
+				*session.NewMessage("parent", core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "spawn", Name: tools.SpawnAgentToolName}}}}, 0),
+				*session.NewMessage("parent", core.ToolResultMessage("spawn", tools.SpawnAgentToolName, string(content), nil), 1),
 			}
 			store := newServeRuntimeTestStore()
 			store.sessions[tc.childID] = &session.Session{ID: tc.childID, ParentID: tc.childParent}
@@ -88,7 +88,7 @@ func TestSessionMessageEntriesOmitsUnvalidatedSpawnChildLinks(t *testing.T) {
 
 func TestSessionMessageEntriesMarksStructuredSpawnErrorAndBoundsOutput(t *testing.T) {
 	content, _ := json.Marshal(tools.SpawnAgentResult{Output: strings.Repeat("界", maxWebSpawnAgentOutputBytes/3+100), Error: strings.Repeat("error", 4000), Type: "timeout", SessionID: "child-2"})
-	messages := []session.Message{*session.NewMessage("parent", llm.ToolResultMessage("spawn-2", tools.SpawnAgentToolName, string(content), nil), 0)}
+	messages := []session.Message{*session.NewMessage("parent", core.ToolResultMessage("spawn-2", tools.SpawnAgentToolName, string(content), nil), 0)}
 	store := newServeRuntimeTestStore()
 	store.sessions["child-2"] = &session.Session{ID: "child-2", ParentID: "parent"}
 	entries := (&serveServer{store: store}).sessionMessageEntries(messages)

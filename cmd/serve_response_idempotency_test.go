@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestResponsesConcurrentIdempotencyAdmission(t *testing.T) {
@@ -23,7 +23,7 @@ func TestResponsesConcurrentIdempotencyAdmission(t *testing.T) {
 			provider := newStagedProvider("hello ", "world")
 			release := sync.OnceFunc(func() { close(provider.releaseSecond) })
 			srv.sessionMgr = newServeSessionManager(time.Minute, 8, func(context.Context) (*serveRuntime, error) {
-				rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), defaultModel: "mock-model"}
+				rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), defaultModel: "mock-model"}
 				rt.Touch()
 				return rt, nil
 			})

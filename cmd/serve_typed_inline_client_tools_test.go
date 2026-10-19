@@ -14,26 +14,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 type typedInlinePageProvider struct {
-	result chan llm.ToolExecutionResponse
+	result chan core.ToolExecutionResponse
 }
 
 func (p *typedInlinePageProvider) Name() string       { return "typed-inline-page" }
 func (p *typedInlinePageProvider) Credential() string { return "test" }
-func (p *typedInlinePageProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true, InlineToolLoop: true}
+func (p *typedInlinePageProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true, InlineToolLoop: true}
 }
-func (p *typedInlinePageProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	stream := &pendingTestStream{events: make(chan llm.Event)}
+func (p *typedInlinePageProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	stream := &pendingTestStream{events: make(chan core.Event)}
 	go func() {
 		defer close(stream.events)
-		call := llm.ToolCall{ID: "call_phone", Name: "webmcp__ping", Arguments: json.RawMessage(`{"message":"hello"}`)}
-		response := make(chan llm.ToolExecutionResponse, 1)
+		call := core.ToolCall{ID: "call_phone", Name: "webmcp__ping", Arguments: json.RawMessage(`{"message":"hello"}`)}
+		response := make(chan core.ToolExecutionResponse, 1)
 		select {
-		case stream.events <- llm.Event{Type: llm.EventToolCall, Tool: &call, ToolResponse: response}:
+		case stream.events <- core.Event{Type: core.EventToolCall, Tool: &call, ToolResponse: response}:
 		case <-ctx.Done():
 			return
 		}
@@ -48,7 +49,7 @@ func (p *typedInlinePageProvider) Stream(ctx context.Context, req llm.Request) (
 			return
 		}
 		select {
-		case stream.events <- llm.Event{Type: llm.EventDone}:
+		case stream.events <- core.Event{Type: core.EventDone}:
 		case <-ctx.Done():
 		}
 	}()
@@ -56,10 +57,10 @@ func (p *typedInlinePageProvider) Stream(ctx context.Context, req llm.Request) (
 }
 
 func TestTypedInlinePageToolResponseProtocol(t *testing.T) {
-	provider := &typedInlinePageProvider{result: make(chan llm.ToolExecutionResponse, 1)}
+	provider := &typedInlinePageProvider{result: make(chan core.ToolExecutionResponse, 1)}
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 	srv.sessionMgr = newServeSessionManager(time.Minute, 8, func(context.Context) (*serveRuntime, error) {
-		rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: llm.NewEngine(provider, nil), defaultModel: "mock-model", maxTurns: 4}
+		rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine.NewEngine(provider, nil), defaultModel: "mock-model", maxTurns: 4}
 		rt.Touch()
 		return rt, nil
 	})
@@ -141,7 +142,7 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runner.RunClientTool(ctx, llm.ToolCall{ID: "call/scoped", Name: "webmcp__ping"})
+		_, err := runner.RunClientTool(ctx, core.ToolCall{ID: "call/scoped", Name: "webmcp__ping"})
 		done <- err
 	}()
 	// The response's durable SSE event exposes this call only after registration.
@@ -212,7 +213,7 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 	parallel := make(chan string, 2)
 	for _, callID := range []string{"parallel_1", "parallel_2"} {
 		go func(callID string) {
-			output, err := runner.RunClientTool(ctx, llm.ToolCall{ID: callID, Name: "webmcp__ping"})
+			output, err := runner.RunClientTool(ctx, core.ToolCall{ID: callID, Name: "webmcp__ping"})
 			if err != nil {
 				parallel <- err.Error()
 				return
@@ -253,7 +254,7 @@ func TestTypedInlinePageToolCancellationAndScope(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	cancelled := make(chan error, 1)
 	go func() {
-		_, err := runner.RunClientTool(ctx2, llm.ToolCall{ID: "call_cancel", Name: "webmcp__ping"})
+		_, err := runner.RunClientTool(ctx2, core.ToolCall{ID: "call_cancel", Name: "webmcp__ping"})
 		cancelled <- err
 	}()
 	cancel2()

@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -26,7 +26,7 @@ const (
 type SubagentUsageCall struct {
 	Provider string
 	Model    string
-	Usage    llm.Usage
+	Usage    core.Usage
 	Guardian bool
 }
 
@@ -555,9 +555,9 @@ func (t *SubagentTracker) HandleUsageEvent(callID string, event tools.SubagentEv
 	if p == nil {
 		return
 	}
-	p.addUsage(event.Model, event.Provider, llm.Usage{InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, CachedInputTokens: event.CachedInputTokens, CacheWriteTokens: event.CacheWriteTokens}, false)
+	p.addUsage(event.Model, event.Provider, core.Usage{InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, CachedInputTokens: event.CachedInputTokens, CacheWriteTokens: event.CacheWriteTokens}, false)
 }
-func (p *SubagentProgress) addUsage(model, provider string, u llm.Usage, guardian bool) {
+func (p *SubagentProgress) addUsage(model, provider string, u core.Usage, guardian bool) {
 	if u.BillableCountersZero() {
 		return
 	}

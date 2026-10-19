@@ -3,11 +3,11 @@ package tools
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestFilterToolSpecsForApprovalModeOmitsManageWorkspaceOnlyInYolo(t *testing.T) {
-	specs := []llm.ToolSpec{
+	specs := []core.ToolSpec{
 		{Name: ReadFileToolName},
 		{Name: ManageWorkspaceToolName},
 		{Name: ShellToolName},
@@ -33,7 +33,7 @@ func TestFilterToolSpecsForApprovalModeOmitsManageWorkspaceOnlyInYolo(t *testing
 	}
 }
 
-func toolSpecNames(specs []llm.ToolSpec) []string {
+func toolSpecNames(specs []core.ToolSpec) []string {
 	names := make([]string, len(specs))
 	for i, spec := range specs {
 		names[i] = spec.Name
@@ -41,7 +41,7 @@ func toolSpecNames(specs []llm.ToolSpec) []string {
 	return names
 }
 
-func equalToolSpecNames(specs []llm.ToolSpec, want []string) bool {
+func equalToolSpecNames(specs []core.ToolSpec, want []string) bool {
 	got := toolSpecNames(specs)
 	if len(got) != len(want) {
 		return false

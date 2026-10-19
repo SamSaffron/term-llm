@@ -15,7 +15,8 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/app/ask"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"golang.org/x/oauth2"
@@ -46,7 +47,7 @@ func TestWaitForMCPStartupBounded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := tc.context()
 			defer cancel()
-			err := waitForMCPStartup(ctx, stuckMCPStartup{}, []string{"slow", "stuck"}, io.Discard, false, 20*time.Millisecond)
+			err := ask.WaitForMCPStartup(ctx, stuckMCPStartup{}, []string{"slow", "stuck"}, io.Discard, false, 20*time.Millisecond)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || (tc.wantErr != nil && !errors.Is(err, tc.wantErr)) {
 				t.Fatalf("error = %v, want %q (cause %v)", err, tc.want, tc.wantErr)
 			}
@@ -93,7 +94,7 @@ func TestAskMCPStartup(t *testing.T) {
 			}()
 			writeServeMCPConfig(t, map[string]mcp.ServerConfig{"slow": {Type: "http", URL: httpServer.URL}})
 			var feedback bytes.Buffer
-			manager, err := enableMCPServersWithFeedback(ctx, "slow", llm.NewEngine(nil, nil), &feedback, nil)
+			manager, err := ask.EnableMCPServersWithFeedback(ctx, "slow", engine.NewEngine(nil, nil), &feedback, nil)
 			if got := feedback.String(); strings.ContainsAny(got, "\r⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") || !strings.HasPrefix(got, "Starting MCP: slow\n") {
 				t.Fatalf("non-terminal startup feedback = %q", got)
 			}
@@ -149,7 +150,7 @@ func TestCheckMCPServerFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := waitForMCPStartup(ctx, manager, manager.AvailableServers(), io.Discard, false, 5*time.Second); err != nil {
+	if err := ask.WaitForMCPStartup(ctx, manager, manager.AvailableServers(), io.Discard, false, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -166,7 +167,7 @@ func TestCheckMCPServerFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var feedback bytes.Buffer
-			err := checkMCPServerFailures(manager, tc.servers, &feedback, true)
+			err := ask.CheckMCPServerFailures(manager, tc.servers, &feedback, true)
 			if len(tc.want) == 0 {
 				if err != nil || feedback.Len() != 0 {
 					t.Fatalf("ready check: err=%v feedback=%q", err, feedback.String())
@@ -201,7 +202,7 @@ func TestEnableMCPServersWithFeedbackRequiresSignIn(t *testing.T) {
 				"greeter":   {Command: os.Args[0], Env: map[string]string{runServeMCPHandlerTestServerEnv: "1"}},
 			})
 			var feedback bytes.Buffer
-			manager, err := enableMCPServersWithFeedback(t.Context(), selection, llm.NewEngine(nil, llm.NewToolRegistry()), &feedback, nil)
+			manager, err := ask.EnableMCPServersWithFeedback(t.Context(), selection, engine.NewEngine(nil, engine.NewToolRegistry()), &feedback, nil)
 			if manager != nil {
 				defer manager.StopAll()
 				t.Error("startup with missing authorization returned a manager")
@@ -242,13 +243,13 @@ func TestCheckMCPServerFailuresInsufficientScope(t *testing.T) {
 	if err := manager.Enable(ctx, "protected"); err != nil {
 		t.Fatal(err)
 	}
-	if err := waitForMCPStartup(ctx, manager, []string{"protected"}, io.Discard, false, 5*time.Second); err != nil {
+	if err := ask.WaitForMCPStartup(ctx, manager, []string{"protected"}, io.Discard, false, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if manager.AuthStatuses()["protected"].State != mcpoauth.AuthSignedIn {
 		t.Fatal("scope challenge invalidated stored grant")
 	}
-	err = checkMCPServerFailures(manager, []string{"protected"}, io.Discard, false)
+	err = ask.CheckMCPServerFailures(manager, []string{"protected"}, io.Discard, false)
 	if err == nil || !strings.Contains(err.Error(), "term-llm mcp login --force protected") {
 		t.Fatalf("scope step-up hint = %v", err)
 	}

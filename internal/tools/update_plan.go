@@ -7,7 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -219,7 +220,7 @@ func (c *PlanController) clearTransientState(sessionID string) {
 	c.mu.Unlock()
 }
 
-func (c *PlanController) prepareRequestContext(ctx context.Context, sessionID string, messages []llm.Message) ([]llm.Message, error) {
+func (c *PlanController) prepareRequestContext(ctx context.Context, sessionID string, messages []core.Message) ([]core.Message, error) {
 	historySnapshot, historyRepresented := planpkg.LatestSuccessfulSnapshot(messages)
 	if strings.TrimSpace(sessionID) == "" && !historyRepresented && !containsPlanContextMarker(messages) {
 		// Blank session IDs identify one-shot runs rather than resumable sessions.
@@ -252,7 +253,7 @@ func (c *PlanController) prepareRequestContext(ctx context.Context, sessionID st
 	return insertPlanContextAtStablePrefix(messages, planContextMessage(strings.Join(contextParts, "\n\n"))), nil
 }
 
-func (c *PlanController) prepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error {
+func (c *PlanController) prepareCompactionContext(ctx context.Context, sessionID string, result *engine.CompactionResult) error {
 	if result == nil {
 		return nil
 	}
@@ -284,37 +285,37 @@ func (c *PlanController) prepareCompactionContext(ctx context.Context, sessionID
 	return nil
 }
 
-func containsPlanContextMarker(messages []llm.Message) bool {
+func containsPlanContextMarker(messages []core.Message) bool {
 	for _, message := range messages {
-		if message.Role == llm.RoleDeveloper && strings.Contains(llm.MessageText(message), "<current_execution_plan>") {
+		if message.Role == core.RoleDeveloper && strings.Contains(core.MessageText(message), "<current_execution_plan>") {
 			return true
 		}
 	}
 	return false
 }
 
-func containsPlanContext(messages []llm.Message, text string) bool {
+func containsPlanContext(messages []core.Message, text string) bool {
 	for _, message := range messages {
-		if message.Role != llm.RoleDeveloper {
+		if message.Role != core.RoleDeveloper {
 			continue
 		}
-		if strings.Contains(strings.TrimSpace(llm.MessageText(message)), strings.TrimSpace(text)) {
+		if strings.Contains(strings.TrimSpace(core.MessageText(message)), strings.TrimSpace(text)) {
 			return true
 		}
 	}
 	return false
 }
 
-func containsPromptGuidance(messages []llm.Message) bool {
+func containsPromptGuidance(messages []core.Message) bool {
 	for _, message := range messages {
-		if message.Role == llm.RoleDeveloper && strings.Contains(llm.MessageText(message), "<update_plan_guidance>") {
+		if message.Role == core.RoleDeveloper && strings.Contains(core.MessageText(message), "<update_plan_guidance>") {
 			return true
 		}
 	}
 	return false
 }
 
-func insertPlanContextAtStablePrefix(messages []llm.Message, contextMessage llm.Message) []llm.Message {
+func insertPlanContextAtStablePrefix(messages []core.Message, contextMessage core.Message) []core.Message {
 	// Request context is ephemeral and is rebuilt from durable history on every
 	// run. Keep it beside the leading system/developer context so stateful
 	// providers see the same delivered prefix on follow-up turns. Inserting it
@@ -323,21 +324,21 @@ func insertPlanContextAtStablePrefix(messages []llm.Message, contextMessage llm.
 	insertAt := 0
 	for insertAt < len(messages) {
 		role := messages[insertAt].Role
-		if role != llm.RoleSystem && role != llm.RoleDeveloper {
+		if role != core.RoleSystem && role != core.RoleDeveloper {
 			break
 		}
 		insertAt++
 	}
 
-	out := make([]llm.Message, 0, len(messages)+1)
+	out := make([]core.Message, 0, len(messages)+1)
 	out = append(out, messages[:insertAt]...)
 	out = append(out, contextMessage)
 	out = append(out, messages[insertAt:]...)
 	return out
 }
 
-func planContextMessage(text string) llm.Message {
-	return llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: text}}}
+func planContextMessage(text string) core.Message {
+	return core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: text}}}
 }
 
 // UpdatePlanTool atomically replaces a session's current execution-plan snapshot.
@@ -353,8 +354,8 @@ func NewUpdatePlanTool(controller *PlanController) *UpdatePlanTool {
 	return &UpdatePlanTool{controller: controller}
 }
 
-func (t *UpdatePlanTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *UpdatePlanTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: UpdatePlanToolName,
 		Description: "Publish the complete current execution plan. Each call replaces the previous ordered checklist; pass an empty plan array to clear it. " +
 			`Use exactly {"plan":[{"step":"...","status":"pending|in_progress|completed"}],"explanation":"optional"}. ` +
@@ -402,18 +403,18 @@ func (t *UpdatePlanTool) ResetSessionState(sessionID string) {
 	t.controller.clearTransientState(sessionID)
 }
 
-func (t *UpdatePlanTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *UpdatePlanTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	snapshot, err := planpkg.Parse(args)
 	if err != nil {
-		return llm.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid update_plan arguments: %v. %s", err, updatePlanShapeGuidance)
+		return core.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid update_plan arguments: %v. %s", err, updatePlanShapeGuidance)
 	}
-	if err := t.controller.update(ctx, llm.SessionIDFromContext(ctx), snapshot); err != nil {
-		return llm.ToolOutput{}, NewToolErrorf(ErrExecutionFailed, "%v", err)
+	if err := t.controller.update(ctx, core.SessionIDFromContext(ctx), snapshot); err != nil {
+		return core.ToolOutput{}, NewToolErrorf(ErrExecutionFailed, "%v", err)
 	}
 	if len(snapshot.Plan) == 0 {
-		return llm.TextOutput("Plan cleared"), nil
+		return core.TextOutput("Plan cleared"), nil
 	}
-	return llm.TextOutput("Plan updated"), nil
+	return core.TextOutput("Plan updated"), nil
 }
 
 func (t *UpdatePlanTool) Preview(args json.RawMessage) string {
@@ -432,11 +433,11 @@ func (t *UpdatePlanTool) Preview(args json.RawMessage) string {
 }
 
 // PrepareRequestContext implements llm.RequestContextTool.
-func (t *UpdatePlanTool) PrepareRequestContext(ctx context.Context, sessionID string, messages []llm.Message) ([]llm.Message, error) {
+func (t *UpdatePlanTool) PrepareRequestContext(ctx context.Context, sessionID string, messages []core.Message) ([]core.Message, error) {
 	return t.controller.prepareRequestContext(ctx, sessionID, messages)
 }
 
 // PrepareCompactionContext implements llm.RequestContextTool.
-func (t *UpdatePlanTool) PrepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error {
+func (t *UpdatePlanTool) PrepareCompactionContext(ctx context.Context, sessionID string, result *engine.CompactionResult) error {
 	return t.controller.prepareCompactionContext(ctx, sessionID, result)
 }

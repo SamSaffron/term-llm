@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -46,12 +47,12 @@ func (r *persistedStopChildRunner) AgentRunStore() session.AgentRunStore { retur
 // stopScriptProvider spawns a background child, then either finishes the turn
 // or blocks in a second, waited spawn so the test can stop the turn mid-tool.
 type stopScriptProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	turn      int
 	blockTurn bool
 }
 
-func (p *stopScriptProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *stopScriptProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.turn++
 	switch {
 	case p.turn == 1:
@@ -87,9 +88,9 @@ func runStopScenarioWith(t *testing.T, stop bool) (string, *session.SQLiteStore,
 	if !stop {
 		parentID = "finish-parent"
 	}
-	provider := &stopScriptProvider{MockProvider: llm.NewMockProvider("mock"), blockTurn: stop}
+	provider := &stopScriptProvider{MockProvider: mockprovider.NewMockProvider("mock"), blockTurn: stop}
 	runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store, Tools: "spawn_agent", ToolsSet: true, AgentOwner: &agentHostOwner{}}).(*cmdRunner)
-	baseCtx := llm.ContextWithSessionID(context.Background(), parentID)
+	baseCtx := core.ContextWithSessionID(context.Background(), parentID)
 	env, err := runner.prepare(baseCtx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: parentID, ProviderInstance: provider, Cwd: t.TempDir(), DeferSession: true}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -115,15 +116,15 @@ func runStopScenarioWith(t *testing.T, stop bool) (string, *session.SQLiteStore,
 	req := env.llmReq
 	req.SessionID = parentID
 	req.MaxTurns = 5
-	onEvent := func(ev llm.Event) error {
+	onEvent := func(ev core.Event) error {
 		// A client that disconnects as soon as the turn's final event arrives
 		// cancels the request context after the turn completed normally.
-		if !stop && ev.Type == llm.EventDone {
+		if !stop && ev.Type == core.EventDone {
 			stopTurn()
 		}
 		return nil
 	}
-	_, runErr := env.runtime.RunWithEvents(turnCtx, false, false, []llm.Message{llm.UserText("delegate")}, req, onEvent)
+	_, runErr := env.runtime.RunWithEvents(turnCtx, false, false, []core.Message{core.UserText("delegate")}, req, onEvent)
 	if stop && runErr == nil {
 		t.Fatal("stopped turn returned no error")
 	}
@@ -183,11 +184,11 @@ func TestStoppedLaterTurnInterruptsEarlierTurnsChildren(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("background child never started")
 	}
-	stopped, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), parent))
+	stopped, cancel := context.WithCancel(core.ContextWithSessionID(context.Background(), parent))
 	cancel()
 	req := env.llmReq
 	req.SessionID = parent
-	if _, err := env.runtime.RunWithEvents(stopped, false, false, []llm.Message{llm.UserText("next")}, req, func(llm.Event) error { return nil }); err == nil {
+	if _, err := env.runtime.RunWithEvents(stopped, false, false, []core.Message{core.UserText("next")}, req, func(core.Event) error { return nil }); err == nil {
 		t.Fatal("stopped invocation returned no error")
 	}
 	if run := agentRunsByPrompt(t, store, parent)["background"]; run.Status != "interrupted" {
@@ -205,11 +206,11 @@ func TestBusyCancelledInvocationLeavesOwnersChildrenRunning(t *testing.T) {
 		t.Fatal("background child never started")
 	}
 	env.runtime.mu.Lock() // another turn owns the session
-	stopped, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), parent))
+	stopped, cancel := context.WithCancel(core.ContextWithSessionID(context.Background(), parent))
 	cancel()
 	req := env.llmReq
 	req.SessionID = parent
-	_, err := env.runtime.RunWithEvents(stopped, false, false, []llm.Message{llm.UserText("next")}, req, func(llm.Event) error { return nil })
+	_, err := env.runtime.RunWithEvents(stopped, false, false, []core.Message{core.UserText("next")}, req, func(core.Event) error { return nil })
 	env.runtime.mu.Unlock()
 	if !errors.Is(err, errServeSessionBusy) {
 		t.Fatalf("err = %v, want errServeSessionBusy", err)

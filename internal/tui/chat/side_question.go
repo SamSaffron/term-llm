@@ -12,7 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -34,7 +34,7 @@ type SideQuestionState struct {
 	Cancel       context.CancelFunc
 	Done         chan struct{}
 	Generation   uint64
-	Usage        llm.Usage
+	Usage        core.Usage
 	Err          error
 	Scroll       int
 	ConfirmClear bool
@@ -48,12 +48,12 @@ type SideQuestionState struct {
 
 type sideQuestionEventMsg struct {
 	generation uint64
-	event      llm.Event
+	event      core.Event
 	result     *sidequestion.Result
 	err        error
 }
 
-func (m *Model) SetSideQuestionProviderFactory(factory func(providerKey, model string) (llm.Provider, error)) {
+func (m *Model) SetSideQuestionProviderFactory(factory func(providerKey, model string) (core.Provider, error)) {
 	m.sideProviderFactory = factory
 }
 
@@ -101,7 +101,7 @@ func (m *Model) sideBoundaryAnchor() sidequestion.Anchor {
 	m.contextEstimateMu.Lock()
 	if m.streaming && len(m.streamingContextMessages) > 0 {
 		messages := sidequestion.CloneMessages(m.streamingContextMessages)
-		if m.streamingContextPendingAssistant && len(messages) > 0 && messages[len(messages)-1].Role == llm.RoleAssistant {
+		if m.streamingContextPendingAssistant && len(messages) > 0 && messages[len(messages)-1].Role == core.RoleAssistant {
 			messages = messages[:len(messages)-1]
 		}
 		m.contextEstimateMu.Unlock()
@@ -306,7 +306,7 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 		defer close(events)
 		// The lane owns its provider across turns and releases it itself: on a
 		// replay turn, on a failed lane turn, and on teardown.
-		result, runErr := turn.Run(ctx, func(event llm.Event) {
+		result, runErr := turn.Run(ctx, func(event core.Event) {
 			if len(events) >= cap(events)-1 {
 				return
 			}
@@ -376,15 +376,15 @@ func (m *Model) updateSideQuestion(msg sideQuestionEventMsg) tea.Cmd {
 		return nil
 	}
 	switch msg.event.Type {
-	case llm.EventTextDelta:
+	case core.EventTextDelta:
 		m.sideQuestion.Response.WriteString(msg.event.Text)
-	case llm.EventAttemptDiscard:
+	case core.EventAttemptDiscard:
 		m.sideQuestion.Response.Reset()
-	case llm.EventUsage:
+	case core.EventUsage:
 		if msg.event.Use != nil {
 			m.sideQuestion.Usage.Add(*msg.event.Use)
 		}
-	case llm.EventRetry:
+	case core.EventRetry:
 		m.sideQuestion.Err = fmt.Errorf("retrying side question (attempt %d)", msg.event.RetryAttempt)
 	}
 	return m.listenSideQuestion(m.sideQuestion.events)
@@ -417,7 +417,7 @@ func (m *Model) clearSideQuestionHistory() {
 	m.sideQuestion.Question = ""
 	m.sideQuestion.Response.Reset()
 	m.sideQuestion.Synthetic = false
-	m.sideQuestion.Usage = llm.Usage{}
+	m.sideQuestion.Usage = core.Usage{}
 	m.sideQuestion.Err = nil
 	m.sideQuestion.Scroll = 0
 	m.sideQuestion.Visible = false

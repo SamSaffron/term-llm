@@ -17,7 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/gitcommit"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -40,7 +40,7 @@ func commitTUIModel(t *testing.T) (*Model, string) {
 	commitTUIGit(t, dir, "add", "-A")
 	commitTUIGit(t, dir, "commit", "-qm", "base")
 	sess := &session.Session{ID: "tui-commit", CWD: dir}
-	model := New(&config.Config{}, llm.NewMockProvider("mock"), nil, "", "", nil, 0, false, false, false, nil, "", "", false, "", nil, sess, false, nil, false, true, "", "", false)
+	model := New(&config.Config{}, mockprovider.NewMockProvider("mock"), nil, "", "", nil, 0, false, false, false, nil, "", "", false, "", nil, sess, false, nil, false, true, "", "", false)
 	model.SetRootContext(context.Background())
 	return model, dir
 }

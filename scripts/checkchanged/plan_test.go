@@ -158,3 +158,27 @@ func TestDeletedPackageIsConservative(t *testing.T) {
 		t.Fatalf("expected ./..., got %v", got)
 	}
 }
+
+func TestAPITypesDriftSelection(t *testing.T) {
+	covered := func(p Plan) bool {
+		for _, s := range p.Steps {
+			if s.Name == "api types drift" {
+				return true
+			}
+			if s.Name == "go test" && hasTarget(s.Args[2:], "gentsapi") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, file := range []string{"cmd/serve_handlers.go", "internal/app/serve/jobs/schema.go", "frontend/src/api/endpoints.ts", "internal/tsgen/generate.go", "internal/share/share.go", "internal/session/rush.go", "internal/hub/probe.go"} {
+		if p := plan(false, file); !covered(p) {
+			t.Errorf("%s: %s", file, names(p))
+		}
+	}
+	for _, file := range []string{"cmd/chat.go", "frontend/src/hub/app.tsx"} {
+		if p := plan(false, file); strings.Contains(names(p), "api types drift") {
+			t.Errorf("%s: %s", file, names(p))
+		}
+	}
+}

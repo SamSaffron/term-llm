@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 )
 
@@ -41,7 +41,7 @@ func mediaReferenceInFence(content string, offset int) bool {
 // RenderMediaMarkdown renders registered term-llm media references at their
 // position in assistant Markdown. Unknown references become an explicit
 // unavailable placeholder rather than leaking the opaque URI.
-func RenderMediaMarkdown(content string, media map[string]llm.MediaArtifact, renderMarkdown func(string) string, imageRenderer ImageArtifactRenderer) string {
+func RenderMediaMarkdown(content string, media map[string]core.MediaArtifact, renderMarkdown func(string) string, imageRenderer ImageArtifactRenderer) string {
 	if content == "" || !strings.Contains(strings.ToLower(content), "term-llm-media://") {
 		return renderMarkdown(content)
 	}
@@ -140,7 +140,7 @@ func renderMediaImageWithRenderer(path string, renderer ImageArtifactRenderer) s
 
 // ReplaceMediaMarkdown replaces registered references without rendering the
 // surrounding Markdown, for plain streaming output.
-func ReplaceMediaMarkdown(content string, media map[string]llm.MediaArtifact) string {
+func ReplaceMediaMarkdown(content string, media map[string]core.MediaArtifact) string {
 	return RenderMediaMarkdown(content, media, func(value string) string { return value }, func(string) ImageArtifact { return ImageArtifact{} })
 }
 
@@ -150,7 +150,7 @@ type MediaMarkdownStream struct {
 
 // Write emits text that cannot be part of an unfinished Markdown media token,
 // retaining only the small ambiguous suffix across provider deltas.
-func (s *MediaMarkdownStream) Write(chunk string, media map[string]llm.MediaArtifact) string {
+func (s *MediaMarkdownStream) Write(chunk string, media map[string]core.MediaArtifact) string {
 	if chunk == "" {
 		return ""
 	}
@@ -172,7 +172,7 @@ func (s *MediaMarkdownStream) Write(chunk string, media map[string]llm.MediaArti
 	return ReplaceMediaMarkdown(ready, media)
 }
 
-func (s *MediaMarkdownStream) Finish(media map[string]llm.MediaArtifact) string {
+func (s *MediaMarkdownStream) Finish(media map[string]core.MediaArtifact) string {
 	value := s.pending.String()
 	s.pending.Reset()
 	return ReplaceMediaMarkdown(value, media)
@@ -221,16 +221,16 @@ func terminalFileHyperlink(label, path string) string {
 
 // RenderMediaLink renders a clickable terminal link with a visible file URI
 // fallback. Audio and video are file links, not terminal playback controls.
-func RenderMediaLink(item llm.MediaArtifact) string { return renderMediaLink(item, "") }
+func RenderMediaLink(item core.MediaArtifact) string { return renderMediaLink(item, "") }
 
-func mediaDisplayItem(item llm.MediaArtifact, alt string) llm.MediaArtifact {
+func mediaDisplayItem(item core.MediaArtifact, alt string) core.MediaArtifact {
 	if alt != "" && !strings.HasPrefix(strings.ToLower(item.MediaType), "audio/") {
 		item.Name = alt
 	}
 	return item
 }
 
-func renderMediaLink(item llm.MediaArtifact, displayLabel string) string {
+func renderMediaLink(item core.MediaArtifact, displayLabel string) string {
 	path := strings.TrimSpace(item.Path())
 	if path == "" {
 		return ""
@@ -261,7 +261,7 @@ func renderMediaLink(item llm.MediaArtifact, displayLabel string) string {
 	return result
 }
 
-func renderAudioLink(item llm.MediaArtifact, name, label, path string) string {
+func renderAudioLink(item core.MediaArtifact, name, label, path string) string {
 	label = terminaltext.SanitizeSingleLine(strings.TrimSpace(label))
 	caption := terminaltext.SanitizeSingleLine(strings.TrimSpace(item.Caption))
 	if label == "" {

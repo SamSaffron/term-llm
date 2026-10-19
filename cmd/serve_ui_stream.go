@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
-func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone, onAdmissionDone func()) {
+func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone, onAdmissionDone func()) {
 	// Eligibility was handled before factory/tool selection. This is only a
 	// consistency check for a pointer that could have been retired meanwhile.
 	if selected := processSessionInputs.ready(s.store, sessionID); selected != nil && runtime.selectedSessionInputs() != selected {
@@ -41,7 +41,7 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
-func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) bool {
+func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, options startResponseRunOptions) bool {
 	run, err := s.startResponseRun(runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, options)
 	if err != nil {
 		if options.modelSwap != nil && options.modelSwap.plan.enabled {

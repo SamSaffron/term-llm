@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/testutil"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -31,7 +32,7 @@ func TestAskViewImage_ScreenStates(t *testing.T) {
 	toolDone := make(chan struct{})
 
 	blockingViewTool := &testutil.MockTool{
-		SpecData: llm.ToolSpec{
+		SpecData: core.ToolSpec{
 			Name:        "view_image",
 			Description: "View an image file",
 			Schema: map[string]interface{}{
@@ -42,13 +43,13 @@ func TestAskViewImage_ScreenStates(t *testing.T) {
 				"required": []string{"file_path"},
 			},
 		},
-		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 			// Signal that tool execution started (after approval would have happened)
 			close(toolStarted)
 			// Wait for signal to continue
 			<-toolContinue
 			close(toolDone)
-			return llm.TextOutput("Image loaded: abc.png\nFormat: image/png\nSize: 12345 bytes"), nil
+			return core.TextOutput("Image loaded: abc.png\nFormat: image/png\nSize: 12345 bytes"), nil
 		},
 		PreviewFn: func(args json.RawMessage) string {
 			var a struct {
@@ -61,8 +62,8 @@ func TestAskViewImage_ScreenStates(t *testing.T) {
 	h.AddTool(blockingViewTool)
 
 	// Turn 1: LLM requests view_image tool
-	h.Provider.AddTurn(llm.MockTurn{
-		ToolCalls: []llm.ToolCall{{
+	h.Provider.AddTurn(mockprovider.MockTurn{
+		ToolCalls: []core.ToolCall{{
 			ID:        "call_1",
 			Name:      "view_image",
 			Arguments: json.RawMessage(`{"file_path": "abc.png"}`),
@@ -83,8 +84,8 @@ func TestAskViewImage_ScreenStates(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		output, streamErr = h.Run(ctx, llm.Request{
-			Messages: []llm.Message{llm.UserText("describe abc.png")},
+		output, streamErr = h.Run(ctx, core.Request{
+			Messages: []core.Message{core.UserText("describe abc.png")},
 			Tools:    h.Registry.AllSpecs(),
 		})
 	}()

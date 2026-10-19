@@ -71,6 +71,9 @@ function fixture(data: SessionStats = runtime, fail = false, childSessions = chi
     children: childSessions.map((child) => ({
       ...metrics,
       session_id: child.id,
+      parent_session_id: 's1',
+      attention: false,
+      revision: 1,
       cost_usd: child.cost,
       title: 'Prompt-bearing agent title',
       model: 'shared-model',

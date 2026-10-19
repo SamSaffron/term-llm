@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 )
 
@@ -1287,7 +1288,7 @@ func (s *SQLiteStore) reconcilePlanProjection(ctx context.Context, q sqliteQuery
 	if closeErr != nil {
 		return closeErr
 	}
-	llmMessages := make([]llm.Message, 0, len(messages))
+	llmMessages := make([]core.Message, 0, len(messages))
 	for i := range messages {
 		llmMessages = append(llmMessages, messages[i].ToLLMMessage())
 	}
@@ -1380,9 +1381,9 @@ func (s *SQLiteStore) UndoLastUserTurn(ctx context.Context, sessionID string, ex
 	var composerText strings.Builder
 	for _, part := range suffix[0].Parts {
 		switch part.Type {
-		case llm.PartText:
+		case core.PartText:
 			composerText.WriteString(part.Text)
-		case llm.PartImage, llm.PartFile:
+		case core.PartImage, core.PartFile:
 			attachmentsOmitted = true
 		}
 	}
@@ -1518,10 +1519,10 @@ func (s *SQLiteStore) RedoLastUserTurn(ctx context.Context, sessionID string, ex
 	return TranscriptMutationResult{TranscriptMutationState: post}, nil
 }
 
-func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls map[string]bool) bool {
-	if role == llm.RoleEvent {
-		msg := llm.Message{Role: role, Parts: parts}
-		if _, ok := llm.ParseModelSwapMarker(msg); ok {
+func transcriptRowHasDisplayBody(role core.Role, parts []core.Part, planToolCalls map[string]bool) bool {
+	if role == core.RoleEvent {
+		msg := core.Message{Role: role, Parts: parts}
+		if _, ok := core.ParseModelSwapMarker(msg); ok {
 			return true
 		}
 		if _, ok := llm.ParseRunErrorMarker(msg); ok {
@@ -1530,25 +1531,25 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 	}
 	for _, part := range parts {
 		switch part.Type {
-		case llm.PartText:
+		case core.PartText:
 			if part.Text != "" {
 				return true
 			}
-		case llm.PartImage:
+		case core.PartImage:
 			return true
-		case llm.PartSkillActivation:
-			if role == llm.RoleEvent && part.SkillActivation != nil {
+		case core.PartSkillActivation:
+			if role == core.RoleEvent && part.SkillActivation != nil {
 				return true
 			}
-		case llm.PartToolActivity:
+		case core.PartToolActivity:
 			if part.ToolActivity != nil {
 				return true
 			}
-		case llm.PartToolCall:
+		case core.PartToolCall:
 			if part.ToolCall != nil {
 				return true
 			}
-		case llm.PartToolResult:
+		case core.PartToolResult:
 			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || len(part.ToolResult.Media) > 0 || len(part.ToolResult.GuardianReviews) > 0 || part.ToolResult.Name == "update_plan" || part.ToolResult.Name == "ask_user" || planToolCalls[part.ToolResult.ID]) {
 				return true
 			}
@@ -1674,7 +1675,7 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 	}
 	defer rows.Close()
 	snapshot.Items = make([]TranscriptIndexItem, 0)
-	partsByItem := make([][]llm.Part, 0)
+	partsByItem := make([][]core.Part, 0)
 	planToolCalls := make(map[string]bool)
 	for rows.Next() {
 		var item TranscriptIndexItem
@@ -1686,16 +1687,16 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 		if compactionTail {
 			item.Flags |= TranscriptFlagCompactionTail
 		}
-		var parts []llm.Part
+		var parts []core.Part
 		if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
 			return TranscriptSnapshot{}, fmt.Errorf("decode transcript index parts: %w", err)
 		}
-		candidate := Message{Role: llm.Role(item.Role), Parts: parts, ClientMessageID: item.ClientMessageID}
+		candidate := Message{Role: core.Role(item.Role), Parts: parts, ClientMessageID: item.ClientMessageID}
 		if candidate.IsGoalSteering() {
 			continue
 		}
 		for _, part := range parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
+			if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
 				planToolCalls[part.ToolCall.ID] = true
 			}
 		}
@@ -1709,7 +1710,7 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 		return TranscriptSnapshot{}, fmt.Errorf("close transcript index: %w", err)
 	}
 	for i := range snapshot.Items {
-		if !transcriptRowHasDisplayBody(llm.Role(snapshot.Items[i].Role), partsByItem[i], planToolCalls) {
+		if !transcriptRowHasDisplayBody(core.Role(snapshot.Items[i].Role), partsByItem[i], planToolCalls) {
 			snapshot.Items[i].Flags |= TranscriptFlagEmptyBody
 		}
 	}
@@ -2024,7 +2025,7 @@ func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID s
 		FROM messages
 		WHERE session_id = ? AND role IN (?, ?)`+compactionTailClause+`
 		ORDER BY sequence DESC, id DESC
-		LIMIT 1`, sessionID, string(llm.RoleUser), string(llm.RoleAssistant)).Scan(&msgID)
+		LIMIT 1`, sessionID, string(core.RoleUser), string(core.RoleAssistant)).Scan(&msgID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}

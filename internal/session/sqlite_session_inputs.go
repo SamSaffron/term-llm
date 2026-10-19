@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // RefreshSessionInputs does not insert history, normalize equal tool settings,
@@ -35,7 +35,7 @@ func (s *SQLiteStore) RefreshSessionInputs(ctx context.Context, id, prompt, sele
 			starts = append(starts, boundary.CompactionSeq)
 		}
 		seen := make(map[int64]bool)
-		parts := llm.SystemText(prompt).Parts
+		parts := core.SystemText(prompt).Parts
 		encoded, err := json.Marshal(parts)
 		if err != nil {
 			return err
@@ -57,7 +57,7 @@ func (s *SQLiteStore) RefreshSessionInputs(ctx context.Context, id, prompt, sele
 			if err != nil {
 				return err
 			}
-			if seen[msg.ID] || msg.Role != llm.RoleSystem {
+			if seen[msg.ID] || msg.Role != core.RoleSystem {
 				continue
 			}
 			seen[msg.ID] = true

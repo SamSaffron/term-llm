@@ -17,6 +17,7 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -2115,7 +2116,7 @@ func visibleHistoryMessages(messages []session.Message) []session.Message {
 func visibleDirectShellMessages(messages []session.Message) []session.Message {
 	var visible []session.Message
 	for i := range messages {
-		if messages[i].Role != llm.RoleUser {
+		if messages[i].Role != core.RoleUser {
 			continue
 		}
 		display, ok := directShellVisibleResult(messages[i].TextContent)
@@ -2126,7 +2127,7 @@ func visibleDirectShellMessages(messages []session.Message) []session.Message {
 			visible = append([]session.Message(nil), messages...)
 		}
 		visible[i].TextContent = display
-		visible[i].Parts = []llm.Part{{Type: llm.PartText, Text: display}}
+		visible[i].Parts = []core.Part{{Type: core.PartText, Text: display}}
 	}
 	if visible != nil {
 		return visible
@@ -2169,7 +2170,7 @@ func (m *Model) renderHistory() string {
 	if m.altScreen && m.viewCache.completedStream != "" && len(messages) > 0 {
 		i := len(messages) - 1
 		// Skip all assistant and tool messages at the end of the list
-		for i >= 0 && (messages[i].Role == llm.RoleAssistant || messages[i].Role == llm.RoleTool) {
+		for i >= 0 && (messages[i].Role == core.RoleAssistant || messages[i].Role == core.RoleTool) {
 			i--
 		}
 		// Include up to the last user message

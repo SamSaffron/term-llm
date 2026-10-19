@@ -7,27 +7,27 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/clipboard"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 func assistantCopyMessage(responseID, text string) session.Message {
 	return session.Message{
-		Role:        llm.RoleAssistant,
+		Role:        core.RoleAssistant,
 		ResponseID:  responseID,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+		Parts:       []core.Part{{Type: core.PartText, Text: text}},
 		TextContent: text,
 	}
 }
 
 func TestResolveCompletedAssistantResponseNoCopyableResponses(t *testing.T) {
 	messages := []session.Message{
-		{Role: llm.RoleUser, TextContent: "question"},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, Text: "tool output"}}},
-		{Role: llm.RoleSystem, TextContent: "system"},
-		{Role: llm.RoleDeveloper, TextContent: "developer"},
-		{Role: llm.RoleEvent, TextContent: "event"},
+		{Role: core.RoleUser, TextContent: "question"},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, Text: "tool output"}}},
+		{Role: core.RoleSystem, TextContent: "system"},
+		{Role: core.RoleDeveloper, TextContent: "developer"},
+		{Role: core.RoleEvent, TextContent: "event"},
 	}
 	got := resolveCompletedAssistantResponse(messages, 1)
 	if got.Found || got.Text != "" || got.LoadedCount != 0 {
@@ -37,18 +37,18 @@ func TestResolveCompletedAssistantResponseNoCopyableResponses(t *testing.T) {
 
 func TestResolveCompletedAssistantResponseGroupsAndOrdersResponses(t *testing.T) {
 	messages := []session.Message{
-		{Role: llm.RoleUser, TextContent: "first question"},
+		{Role: core.RoleUser, TextContent: "first question"},
 		assistantCopyMessage("response-1", "I will inspect."),
-		{Role: llm.RoleTool, ResponseID: "response-1", Parts: []llm.Part{{Type: llm.PartToolResult, Text: "secret tool output"}}, TextContent: "secret tool output"},
+		{Role: core.RoleTool, ResponseID: "response-1", Parts: []core.Part{{Type: core.PartToolResult, Text: "secret tool output"}}, TextContent: "secret tool output"},
 		{
-			Role:       llm.RoleAssistant,
+			Role:       core.RoleAssistant,
 			ResponseID: "response-1",
-			Parts: []llm.Part{
-				{Type: llm.PartText, Text: "Inspection complete."},
-				{Type: llm.PartToolCall, Text: "hidden tool call"},
+			Parts: []core.Part{
+				{Type: core.PartText, Text: "Inspection complete."},
+				{Type: core.PartToolCall, Text: "hidden tool call"},
 			},
 		},
-		{Role: llm.RoleUser, TextContent: "second question"},
+		{Role: core.RoleUser, TextContent: "second question"},
 		assistantCopyMessage("response-2", "| A | B |\n|---|---|\n| 1 | 2 |\n\n```go\nfmt.Println(1)\n```"),
 	}
 
@@ -73,11 +73,11 @@ func TestResolveCompletedAssistantResponseDistinctAndLegacyGroups(t *testing.T) 
 	messages := []session.Message{
 		assistantCopyMessage("a", "response a"),
 		assistantCopyMessage("b", "response b"),
-		{Role: llm.RoleUser, TextContent: "legacy turn"},
+		{Role: core.RoleUser, TextContent: "legacy turn"},
 		assistantCopyMessage("", "legacy first"),
-		{Role: llm.RoleTool, TextContent: "legacy tool", Parts: []llm.Part{{Type: llm.PartToolResult, Text: "legacy tool"}}},
+		{Role: core.RoleTool, TextContent: "legacy tool", Parts: []core.Part{{Type: core.PartToolResult, Text: "legacy tool"}}},
 		assistantCopyMessage("", "legacy second"),
-		{Role: llm.RoleEvent, TextContent: "boundary"},
+		{Role: core.RoleEvent, TextContent: "boundary"},
 		assistantCopyMessage("", "   "),
 	}
 
@@ -92,34 +92,34 @@ func TestResolveCompletedAssistantResponseDistinctAndLegacyGroups(t *testing.T) 
 
 func TestAssistantResponseSourceTextFiltersPartsAndUsesLegacyFallback(t *testing.T) {
 	summary := "[Context Compaction]\nprivate summary"
-	ack := *session.NewMessage("session", llm.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), -1)
-	fileOnly := *session.NewMessage("session", llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartFile, Text: "uploaded file contents"}},
+	ack := *session.NewMessage("session", core.AssistantText("I've reviewed the context summary. I'll continue from where we left off."), -1)
+	fileOnly := *session.NewMessage("session", core.Message{
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartFile, Text: "uploaded file contents"}},
 	}, -1)
 	if fileOnly.TextContent != "uploaded file contents" {
 		t.Fatalf("NewMessage PartFile precondition TextContent = %q", fileOnly.TextContent)
 	}
 	messages := []session.Message{
 		{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{
-				{Type: llm.PartFile, Text: "file content"},
-				{Type: llm.PartImage, Text: "image"},
-				{Type: llm.PartToolCall, Text: "tool"},
-				{Type: llm.PartToolResult, Text: "result"},
-				{Type: llm.PartSkillActivation, Text: "skill"},
-				{Type: llm.PartAgentMention, Text: "mention"},
-				{Type: llm.PartText, Text: ""},
-				{Type: llm.PartText, Text: "visible", ReasoningContent: "hidden reasoning"},
-				{Type: llm.PartText, Text: "second"},
+			Role: core.RoleAssistant,
+			Parts: []core.Part{
+				{Type: core.PartFile, Text: "file content"},
+				{Type: core.PartImage, Text: "image"},
+				{Type: core.PartToolCall, Text: "tool"},
+				{Type: core.PartToolResult, Text: "result"},
+				{Type: core.PartSkillActivation, Text: "skill"},
+				{Type: core.PartAgentMention, Text: "mention"},
+				{Type: core.PartText, Text: ""},
+				{Type: core.PartText, Text: "visible", ReasoningContent: "hidden reasoning"},
+				{Type: core.PartText, Text: "second"},
 			},
 			TextContent: "fallback must not be used",
 		},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText}}, TextContent: "empty text part suppresses fallback"},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText}}, TextContent: "empty text part suppresses fallback"},
 		fileOnly,
-		{Role: llm.RoleAssistant, TextContent: "legacy fallback"},
-		{Role: llm.RoleAssistant, TextContent: summary},
+		{Role: core.RoleAssistant, TextContent: "legacy fallback"},
+		{Role: core.RoleAssistant, TextContent: summary},
 		ack,
 	}
 

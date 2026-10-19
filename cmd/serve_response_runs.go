@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -53,7 +53,7 @@ type responseRunRecoveryMessage struct {
 	CompactionEventSequence int64
 	DurableCompactionSeq    int
 	CompactionCount         int
-	ModelSwap               *llm.ModelSwapMarker
+	ModelSwap               *core.ModelSwapMarker
 	EventSequence           int64
 }
 
@@ -114,7 +114,7 @@ type responseRun struct {
 	reloadContinuation      *webRunContinuation
 	settled                 chan struct{}
 	rushStateful            bool
-	rushRequest             llm.Request
+	rushRequest             core.Request
 	mu                      sync.Mutex
 	terminalMu              sync.Mutex
 	interactionSubmitMu     sync.Mutex
@@ -158,8 +158,8 @@ type responseRun struct {
 	status                  string
 	errorType               string
 	errorMessage            string
-	usage                   llm.Usage
-	sessionUsage            llm.Usage
+	usage                   core.Usage
+	sessionUsage            core.Usage
 	lastSequenceNumber      int64
 	// events[eventStart:] is the retained replay window; dropped prefix slots
 	// are zeroed and reclaimed in batches to avoid per-token slice copies.
@@ -209,12 +209,12 @@ type startResponseRunOptions struct {
 	onDone                     func()
 	onRuntimeDone              func() // detach borrowed runtime before executor-owned close
 	onAdmissionDone            func() // release request preparation before streaming events
-	runtimeSetup               func(*llm.Request) error
+	runtimeSetup               func(*core.Request) error
 	// clientToolRunner answers inline calls to declared client tools for the
-	// run with the given response id; see llm.ClientToolRunner.
-	clientToolRunner func(responseID string) llm.ClientToolRunner
+	// run with the given response id; see core.ClientToolRunner.
+	clientToolRunner func(responseID string) core.ClientToolRunner
 	parentContext    context.Context
-	onEvent          func(llm.Event) error
+	onEvent          func(core.Event) error
 	onResult         func(serveRunResult, error)
 }
 
@@ -246,7 +246,7 @@ func withoutResponseRunOwnership(ctx context.Context) context.Context {
 	return session.WithResponseRunFence(ctx, session.ResponseRunFence{})
 }
 
-func tagResponseRunMessage(ctx context.Context, msg llm.Message, segmentOrdinal int) llm.Message {
+func tagResponseRunMessage(ctx context.Context, msg core.Message, segmentOrdinal int) core.Message {
 	if ctx == nil {
 		return msg
 	}
@@ -254,13 +254,13 @@ func tagResponseRunMessage(ctx context.Context, msg llm.Message, segmentOrdinal 
 	if run == nil {
 		return msg
 	}
-	if msg.Role == llm.RoleUser {
+	if msg.Role == core.RoleUser {
 		msg.ResponseID = ""
 		msg.AssistantSegmentOrdinal = -1
 		return msg
 	}
 	msg.ResponseID = run.id
-	if msg.Role != llm.RoleAssistant {
+	if msg.Role != core.RoleAssistant {
 		msg.AssistantSegmentOrdinal = -1
 		return msg
 	}
@@ -300,7 +300,7 @@ func (r *responseRun) publishDurableBoundary(turnIndex int, rowID int64) bool {
 	return true
 }
 
-func (r *responseRun) commitCompletedBoundary(turnIndex int, messages []llm.Message, rowID int64, durable bool) {
+func (r *responseRun) commitCompletedBoundary(turnIndex int, messages []core.Message, rowID int64, durable bool) {
 	if r == nil {
 		return
 	}

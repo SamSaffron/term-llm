@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func BenchmarkSQLiteStoreReplaceMessagesLargeSnapshot(b *testing.B) {
@@ -27,15 +27,15 @@ func BenchmarkSQLiteStoreReplaceMessagesLargeSnapshot(b *testing.B) {
 	messages := make([]Message, 120)
 	base := time.Now().UTC().Truncate(time.Second)
 	for i := range messages {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		text := fmt.Sprintf("message %03d from benchmark", i)
 		messages[i] = Message{
 			SessionID:   sess.ID,
 			Role:        role,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			TextContent: text,
 			DurationMs:  int64(i),
 			CreatedAt:   base.Add(time.Duration(i) * time.Millisecond),

@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSamplingApprovalFailsClosedInCI(t *testing.T) {
@@ -34,11 +34,11 @@ func (m *mockProvider) Credential() string {
 	return "mock"
 }
 
-func (m *mockProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (m *mockProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 
-func (m *mockProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (m *mockProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	response := "Hello from mock"
 	if m.callCount < len(m.responses) {
 		response = m.responses[m.callCount]
@@ -53,16 +53,16 @@ type mockStream struct {
 	done     bool
 }
 
-func (s *mockStream) Recv() (llm.Event, error) {
+func (s *mockStream) Recv() (core.Event, error) {
 	if !s.sent {
 		s.sent = true
-		return llm.Event{Type: llm.EventTextDelta, Text: s.response}, nil
+		return core.Event{Type: core.EventTextDelta, Text: s.response}, nil
 	}
 	if !s.done {
 		s.done = true
-		return llm.Event{Type: llm.EventDone}, nil
+		return core.Event{Type: core.EventDone}, nil
 	}
-	return llm.Event{}, io.EOF
+	return core.Event{}, io.EOF
 }
 
 func (s *mockStream) Close() error {
@@ -73,15 +73,15 @@ func TestConvertSamplingMessages(t *testing.T) {
 	tests := []struct {
 		name     string
 		msgs     []*mcp.SamplingMessage
-		expected []llm.Message
+		expected []core.Message
 	}{
 		{
 			name: "single user message",
 			msgs: []*mcp.SamplingMessage{
 				{Role: "user", Content: &mcp.TextContent{Text: "Hello"}},
 			},
-			expected: []llm.Message{
-				{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "Hello"}}},
+			expected: []core.Message{
+				{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "Hello"}}},
 			},
 		},
 		{
@@ -90,9 +90,9 @@ func TestConvertSamplingMessages(t *testing.T) {
 				{Role: "user", Content: &mcp.TextContent{Text: "Hello"}},
 				{Role: "assistant", Content: &mcp.TextContent{Text: "Hi there!"}},
 			},
-			expected: []llm.Message{
-				{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "Hello"}}},
-				{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "Hi there!"}}},
+			expected: []core.Message{
+				{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "Hello"}}},
+				{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "Hi there!"}}},
 			},
 		},
 		{
@@ -286,7 +286,7 @@ func TestSamplingHandlerSessionApproval(t *testing.T) {
 }
 
 func TestSamplingHandlerMaxTokensOverride(t *testing.T) {
-	var capturedRequest llm.Request
+	var capturedRequest core.Request
 	provider := &mockProvider{name: "test", responses: []string{"Response"}}
 
 	// Create a wrapper to capture the request
@@ -323,12 +323,12 @@ func TestSamplingHandlerMaxTokensOverride(t *testing.T) {
 
 // requestCapturingProvider wraps a provider to capture requests
 type requestCapturingProvider struct {
-	llm.Provider
-	lastRequest   *llm.Request
+	core.Provider
+	lastRequest   *core.Request
 	shouldCapture bool
 }
 
-func (p *requestCapturingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *requestCapturingProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	if p.shouldCapture && p.lastRequest != nil {
 		*p.lastRequest = req
 	}
@@ -369,7 +369,7 @@ func TestSamplingHandlerNilSamplingConfig(t *testing.T) {
 }
 
 func TestSamplingHandlerSystemPrompt(t *testing.T) {
-	var capturedRequest llm.Request
+	var capturedRequest core.Request
 	provider := &mockProvider{name: "test", responses: []string{"Response"}}
 
 	wrappedProvider := &requestCapturingProvider{
@@ -399,7 +399,7 @@ func TestSamplingHandlerSystemPrompt(t *testing.T) {
 	if len(capturedRequest.Messages) < 2 {
 		t.Fatalf("expected at least 2 messages (system + user), got %d", len(capturedRequest.Messages))
 	}
-	if capturedRequest.Messages[0].Role != llm.RoleSystem {
+	if capturedRequest.Messages[0].Role != core.RoleSystem {
 		t.Errorf("expected first message to be system, got %v", capturedRequest.Messages[0].Role)
 	}
 	if len(capturedRequest.Messages[0].Parts) == 0 || capturedRequest.Messages[0].Parts[0].Text != "You are a helpful assistant." {

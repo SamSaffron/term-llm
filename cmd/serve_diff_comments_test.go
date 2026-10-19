@@ -11,20 +11,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func testDiffComment() *llm.DiffComment {
-	return &llm.DiffComment{
+func testDiffComment() *core.DiffComment {
+	return &core.DiffComment{
 		ID:            "diff-comment-1",
 		Path:          "internal/example.go",
 		Side:          "old",
 		Line:          17,
 		FileChangeSeq: 42,
 		LineText:      "return obsolete",
-		ContextBefore: []llm.DiffCommentContextLine{{Side: "old", Line: 16, Text: "if stale {"}},
-		ContextAfter:  []llm.DiffCommentContextLine{{Side: "old", Line: 18, Text: "}"}},
+		ContextBefore: []core.DiffCommentContextLine{{Side: "old", Line: 16, Text: "if stale {"}},
+		ContextAfter:  []core.DiffCommentContextLine{{Side: "old", Line: 18, Text: "}"}},
 		Instruction:   "Keep the compatibility fallback.",
 	}
 }
@@ -42,7 +44,7 @@ func TestParseUserMessageContentAcceptsDiffCommentMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseUserMessageContent: %v", err)
 	}
-	if len(message.Parts) != 2 || message.Parts[0].Type != llm.PartDiffComment || message.Parts[0].DiffComment == nil {
+	if len(message.Parts) != 2 || message.Parts[0].Type != core.PartDiffComment || message.Parts[0].DiffComment == nil {
 		t.Fatalf("parts = %#v", message.Parts)
 	}
 	if got := message.Parts[0].DiffComment; got.Path != comment.Path || got.Scope != "last_turn" || got.Side != "old" || got.Line != 17 || got.FileChangeSeq != 42 {
@@ -122,7 +124,7 @@ func TestParseUserMessageContentRejectsDiffCommentAggregatePayloadOverCap(t *tes
 		comment.ID = fmt.Sprintf("large-diff-comment-%d", i)
 		comment.LineText = strings.Repeat("a", diffCommentMaxLineBytes)
 		comment.Instruction = strings.Repeat("b", diffCommentMaxInstructionBytes)
-		comment.ContextBefore = []llm.DiffCommentContextLine{{Side: "old", Line: 16, Text: strings.Repeat("c", diffCommentMaxLineBytes)}}
+		comment.ContextBefore = []core.DiffCommentContextLine{{Side: "old", Line: 16, Text: strings.Repeat("c", diffCommentMaxLineBytes)}}
 		comment.ContextAfter = nil
 		parts = append(parts, map[string]any{"type": "diff_comment", "diff_comment": &comment})
 	}
@@ -196,33 +198,33 @@ func TestParseUserMessageContentRejectsInvalidDiffCommentScopeAndSequence(t *tes
 func TestParseUserMessageContentRejectsOversizedDiffCommentPayloads(t *testing.T) {
 	tests := []struct {
 		name    string
-		mutate  func(*llm.DiffComment)
+		mutate  func(*core.DiffComment)
 		wantErr string
 	}{
 		{
 			name: "anchor line",
-			mutate: func(comment *llm.DiffComment) {
+			mutate: func(comment *core.DiffComment) {
 				comment.LineText = strings.Repeat("x", diffCommentMaxLineBytes+1)
 			},
 			wantErr: "line_text",
 		},
 		{
 			name: "context line",
-			mutate: func(comment *llm.DiffComment) {
-				comment.ContextBefore = []llm.DiffCommentContextLine{{Side: "old", Line: 1, Text: strings.Repeat("x", diffCommentMaxLineBytes+1)}}
+			mutate: func(comment *core.DiffComment) {
+				comment.ContextBefore = []core.DiffCommentContextLine{{Side: "old", Line: 1, Text: strings.Repeat("x", diffCommentMaxLineBytes+1)}}
 			},
 			wantErr: "context line text",
 		},
 		{
 			name: "total text",
-			mutate: func(comment *llm.DiffComment) {
+			mutate: func(comment *core.DiffComment) {
 				comment.LineText = strings.Repeat("a", diffCommentMaxLineBytes)
 				comment.Instruction = strings.Repeat("b", diffCommentMaxInstructionBytes)
-				comment.ContextBefore = make([]llm.DiffCommentContextLine, 4)
-				comment.ContextAfter = make([]llm.DiffCommentContextLine, 4)
+				comment.ContextBefore = make([]core.DiffCommentContextLine, 4)
+				comment.ContextAfter = make([]core.DiffCommentContextLine, 4)
 				for i := range comment.ContextBefore {
-					comment.ContextBefore[i] = llm.DiffCommentContextLine{Side: "old", Line: i + 1, Text: strings.Repeat("c", 2200)}
-					comment.ContextAfter[i] = llm.DiffCommentContextLine{Side: "new", Line: i + 1, Text: strings.Repeat("d", 2200)}
+					comment.ContextBefore[i] = core.DiffCommentContextLine{Side: "old", Line: i + 1, Text: strings.Repeat("c", 2200)}
+					comment.ContextAfter[i] = core.DiffCommentContextLine{Side: "new", Line: i + 1, Text: strings.Repeat("d", 2200)}
 				}
 			},
 			wantErr: "text payload",
@@ -246,7 +248,7 @@ func TestParseUserMessageContentRejectsOversizedDiffCommentPayloads(t *testing.T
 func TestHandleSessionInterruptAcceptsTypedDiffComment(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 10, nil)
 	defer manager.Close()
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	runtime := &serveRuntime{engine: engine, providerKey: "mock"}
 	active := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
 	runtime.setActiveInterrupt(active)
@@ -279,19 +281,19 @@ func TestHandleSessionInterruptAcceptsTypedDiffComment(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	pending := engine.ListPendingSteering()
-	if len(pending) != 1 || len(pending[0].Message.Parts) != 2 || pending[0].Message.Parts[0].Type != llm.PartDiffComment {
+	if len(pending) != 1 || len(pending[0].Message.Parts) != 2 || pending[0].Message.Parts[0].Type != core.PartDiffComment {
 		t.Fatalf("pending steering = %#v", pending)
 	}
 }
 
 func TestDiffCommentMetadataIsStrippedFromProviderMessages(t *testing.T) {
 	comment := testDiffComment()
-	stored := session.NewMessage("session-comments", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
-		{Type: llm.PartDiffComment, DiffComment: comment},
-		{Type: llm.PartText, Text: "provider-facing anchored instruction"},
+	stored := session.NewMessage("session-comments", core.Message{Role: core.RoleUser, Parts: []core.Part{
+		{Type: core.PartDiffComment, DiffComment: comment},
+		{Type: core.PartText, Text: "provider-facing anchored instruction"},
 	}}, -1)
 	providerMessage := stored.ToLLMMessage()
-	if len(providerMessage.Parts) != 1 || providerMessage.Parts[0].Type != llm.PartText {
+	if len(providerMessage.Parts) != 1 || providerMessage.Parts[0].Type != core.PartText {
 		t.Fatalf("provider parts = %#v", providerMessage.Parts)
 	}
 }
@@ -307,14 +309,14 @@ func TestHandleSessionDiffCommentsScansTypedTranscriptParts(t *testing.T) {
 	if err := store.Create(ctx, &session.Session{ID: sessionID, Provider: "test", Model: "test", Mode: session.ModeChat}); err != nil {
 		t.Fatal(err)
 	}
-	message := session.NewMessage(sessionID, llm.Message{Role: llm.RoleUser, ClientMessageID: "client-comment-1", Parts: []llm.Part{
-		{Type: llm.PartDiffComment, DiffComment: testDiffComment()},
-		{Type: llm.PartText, Text: "provider-facing anchored instruction"},
+	message := session.NewMessage(sessionID, core.Message{Role: core.RoleUser, ClientMessageID: "client-comment-1", Parts: []core.Part{
+		{Type: core.PartDiffComment, DiffComment: testDiffComment()},
+		{Type: core.PartText, Text: "provider-facing anchored instruction"},
 	}}, -1)
 	if err := store.AddMessage(ctx, sessionID, message); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sessionID, session.NewMessage(sessionID, llm.UserText("prose mentioning diff_comment must not count"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sessionID, session.NewMessage(sessionID, core.UserText("prose mentioning diff_comment must not count"), -1)); err != nil {
 		t.Fatal(err)
 	}
 

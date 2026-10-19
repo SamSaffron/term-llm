@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // recordingEscalationLogger captures escalation records for assertions.
@@ -83,7 +83,7 @@ func deniedAnswers() map[string]classify.Answer {
 
 func TestFallbackReviewerEscalation(t *testing.T) {
 	transportErr := errors.New("transport failed")
-	llmAllow := Decision{Outcome: "allow", RiskLevel: "low", UserAuthorization: "high", Rationale: "safe", Model: "fallback-model", Usage: llm.Usage{InputTokens: 7, OutputTokens: 3}}
+	llmAllow := Decision{Outcome: "allow", RiskLevel: "low", UserAuthorization: "high", Rationale: "safe", Model: "fallback-model", Usage: core.Usage{InputTokens: 7, OutputTokens: 3}}
 	llmDeny := Decision{Outcome: "deny", RiskLevel: "high", UserAuthorization: "low", Rationale: "credential access", Model: "fallback-model"}
 	// The fallback must never run in a fast path or after cancellation. The
 	// constructor takes the subtest's *testing.T so the failure is attributed there.
@@ -312,7 +312,7 @@ func TestFallbackReviewerEscalation(t *testing.T) {
 		minConfidence: 0.5,
 		fallback: func(*testing.T) ReviewFunc {
 			return func(context.Context, Request) (Decision, error) {
-				return Decision{Model: "fallback-model", Usage: llm.Usage{OutputTokens: 4}}, errors.New("fallback unavailable")
+				return Decision{Model: "fallback-model", Usage: core.Usage{OutputTokens: 4}}, errors.New("fallback unavailable")
 			}
 		},
 		logger:            &recordingEscalationLogger{},

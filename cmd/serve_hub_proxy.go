@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/widgets"
@@ -271,20 +272,10 @@ func hubJoinBasePath(base, rest string) string {
 
 // hubContainsEncodedSeparator reports whether an escaped path smuggles an
 // encoded path separator (%2f) or backslash (%5c).
-func hubContainsEncodedSeparator(escapedPath string) bool {
-	lower := strings.ToLower(escapedPath)
-	return strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c")
-}
+func hubContainsEncodedSeparator(path string) bool { return appserver.ContainsEncodedSeparator(path) }
 
 // hubHasDotDotSegment reports whether any segment of the decoded path is "..".
-func hubHasDotDotSegment(p string) bool {
-	for _, seg := range strings.Split(p, "/") {
-		if seg == ".." {
-			return true
-		}
-	}
-	return false
-}
+func hubHasDotDotSegment(path string) bool { return appserver.HasDotDotSegment(path) }
 
 // hubRewriteProxyRequest is the ReverseProxy Rewrite hook. Using Rewrite means
 // ReverseProxy does NOT auto-append X-Forwarded-*; we also explicitly drop
@@ -371,9 +362,7 @@ func hubReadHTMLBodyForRebase(body io.ReadCloser) (data []byte, overLimit bool, 
 // streamResponseRunEvents already detached it from the separately owned producer.
 // Other POST streams may still execute work and must retain their ownership.
 func hubResponseIsPassive(method string, header http.Header) bool {
-	return strings.HasPrefix(strings.ToLower(header.Get("Content-Type")), "text/event-stream") &&
-		(method == http.MethodGet ||
-			(header.Get("X-Response-ID") != "" && header.Get("X-Term-LLM-Response-Status") != ""))
+	return appserver.ResponseIsPassive(method, header)
 }
 
 // hubRebaseProxyResponse rewrites the node's baked-in base path onto the hub

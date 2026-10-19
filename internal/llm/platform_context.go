@@ -1,34 +1,38 @@
 package llm
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+)
 
 // PlatformContextMessage creates a marked developer message describing the
 // active interaction surface. The marker lets compaction retain only the latest
 // mode context while provider projection sends only its text.
-func PlatformContextMessage(text string) Message {
+func PlatformContextMessage(text string) core.Message {
 	return PlatformContextMessageForMode(text, "")
 }
 
 // PlatformContextMessageForMode records an optional interaction mode alongside
 // the context. The mode is persistence metadata, not provider-facing text.
-func PlatformContextMessageForMode(text, mode string) Message {
+func PlatformContextMessageForMode(text, mode string) core.Message {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return Message{}
+		return core.Message{}
 	}
-	return Message{Role: RoleDeveloper, Parts: []Part{
-		{Type: PartPlatformContext, Text: mode},
-		{Type: PartText, Text: text},
+	return core.Message{Role: core.RoleDeveloper, Parts: []core.Part{
+		{Type: core.PartPlatformContext, Text: mode},
+		{Type: core.PartText, Text: text},
 	}}
 }
 
 // PlatformContextMode returns the explicit mode marker without parsing prompts.
-func PlatformContextMode(message Message) string {
+func PlatformContextMode(message core.Message) string {
 	if !IsPlatformContextMessage(message) {
 		return ""
 	}
 	for _, part := range message.Parts {
-		if part.Type == PartPlatformContext {
+		if part.Type == core.PartPlatformContext {
 			return part.Text
 		}
 	}
@@ -36,17 +40,17 @@ func PlatformContextMode(message Message) string {
 }
 
 // IsPlatformContextMessage reports whether message is marked platform context.
-func IsPlatformContextMessage(message Message) bool {
-	if message.Role != RoleDeveloper {
+func IsPlatformContextMessage(message core.Message) bool {
+	if message.Role != core.RoleDeveloper {
 		return false
 	}
 	hasMarker := false
 	hasText := false
 	for _, part := range message.Parts {
 		switch part.Type {
-		case PartPlatformContext:
+		case core.PartPlatformContext:
 			hasMarker = true
-		case PartText:
+		case core.PartText:
 			hasText = hasText || strings.TrimSpace(part.Text) != ""
 		}
 	}
@@ -54,18 +58,18 @@ func IsPlatformContextMessage(message Message) bool {
 }
 
 // PlatformContextFrom returns the latest effective platform context.
-func PlatformContextFrom(messages []Message) (Message, bool) {
+func PlatformContextFrom(messages []core.Message) (core.Message, bool) {
 	for index := len(messages) - 1; index >= 0; index-- {
 		if IsPlatformContextMessage(messages[index]) {
 			return messages[index], true
 		}
 	}
-	return Message{}, false
+	return core.Message{}, false
 }
 
 // InsertPlatformContext carries the latest marked platform context into a
 // reconstructed history unless the destination already contains one.
-func InsertPlatformContext(messages []Message, source []Message) []Message {
+func InsertPlatformContext(messages []core.Message, source []core.Message) []core.Message {
 	if _, exists := PlatformContextFrom(messages); exists {
 		return messages
 	}
@@ -74,10 +78,10 @@ func InsertPlatformContext(messages []Message, source []Message) []Message {
 		return messages
 	}
 	insertAt := 0
-	for insertAt < len(messages) && messages[insertAt].Role == RoleSystem {
+	for insertAt < len(messages) && messages[insertAt].Role == core.RoleSystem {
 		insertAt++
 	}
-	out := make([]Message, 0, len(messages)+1)
+	out := make([]core.Message, 0, len(messages)+1)
 	out = append(out, messages[:insertAt]...)
 	out = append(out, platform)
 	out = append(out, messages[insertAt:]...)

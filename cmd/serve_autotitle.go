@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -120,7 +121,7 @@ func (s *serveServer) runAutoTitle(ctx context.Context, sessionID, providerKey s
 		log.Printf("[serve] auto-title policy unavailable for %s: %v", sessionID, err)
 		return
 	}
-	var provider llm.Provider
+	var provider core.Provider
 	if !policy.Restricted() {
 		provider, err = s.newAutoTitleProvider(providerKey)
 	} else {
@@ -172,7 +173,7 @@ func serveSessionNeedsAutoTitle(sess *session.Session) bool {
 		strings.TrimSpace(sess.GeneratedLongTitle) == ""
 }
 
-func (s *serveServer) newAutoTitleProvider(providerKey string) (llm.Provider, error) {
+func (s *serveServer) newAutoTitleProvider(providerKey string) (core.Provider, error) {
 	providerKey = strings.TrimSpace(providerKey)
 	if s.autoTitleProviderFactory != nil {
 		return s.autoTitleProviderFactory(providerKey)
@@ -184,7 +185,7 @@ func (s *serveServer) newAutoTitleProvider(providerKey string) (llm.Provider, er
 // automatic titles and the live session assistant. The named provider wins, and the
 // configured default is the fallback, so a session pinned to a provider that cannot
 // serve a cheap turn still gets an answer instead of failing.
-func (s *serveServer) fastProvider(providerKey string) (llm.Provider, error) {
+func (s *serveServer) fastProvider(providerKey string) (core.Provider, error) {
 	providerKey = strings.TrimSpace(providerKey)
 	if s.cfgRef == nil {
 		return nil, nil

@@ -11,15 +11,17 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 )
 
 // forkableProvider stands in for a CLI provider that can branch from a captured
 // boundary. It records what it was asked to fork from and what it refused.
 type forkableProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	state        []byte
-	forkRequest  []llm.Message
+	forkRequest  []core.Message
 	forks        int
 	refuse       bool
 	branchErr    error
@@ -29,7 +31,7 @@ type forkableProvider struct {
 }
 
 func newForkableProvider(name string, responses ...string) *forkableProvider {
-	mock := llm.NewMockProvider(name)
+	mock := mockprovider.NewMockProvider(name)
 	for _, response := range responses {
 		mock = mock.AddTextResponse(response)
 	}
@@ -39,7 +41,7 @@ func newForkableProvider(name string, responses ...string) *forkableProvider {
 // ForkConversationAtBoundary mirrors the claude-bin contract closely enough for
 // the lane's assertions to mean something: it refuses whenever the captured
 // offset does not fit inside the request it was handed.
-func (p *forkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []llm.Message) (llm.Provider, bool) {
+func (p *forkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []core.Message) (core.Provider, bool) {
 	p.forks++
 	if p.refuse || len(state) == 0 || len(requestMessages) == 0 {
 		return nil, false
@@ -63,10 +65,10 @@ func (p *forkableProvider) ForkConversationAtBoundary(state []byte, requestMessa
 		return nil, false
 	}
 	p.state = append([]byte(nil), state...)
-	p.forkRequest = append([]llm.Message(nil), requestMessages...)
+	p.forkRequest = append([]core.Message(nil), requestMessages...)
 	branch := newForkableProvider(p.MockProvider.Name()+"-branch", "forked answer", "second forked answer")
 	if p.branchErr != nil {
-		branch = &forkableProvider{MockProvider: llm.NewMockProvider(p.MockProvider.Name() + "-branch").AddError(p.branchErr)}
+		branch = &forkableProvider{MockProvider: mockprovider.NewMockProvider(p.MockProvider.Name() + "-branch").AddError(p.branchErr)}
 	}
 	p.branch = branch
 	return branch, true
@@ -83,17 +85,17 @@ func (p *forkableProvider) CleanupMCP() { p.cleanupCalls++ }
 
 // testTranscriptDigest stands in for claude-bin's transcript fingerprint. Only
 // its sensitivity to the delivered prefix matters here.
-func testTranscriptDigest(messages []llm.Message) string {
+func testTranscriptDigest(messages []core.Message) string {
 	hash := sha256.New()
 	for _, message := range messages {
-		fmt.Fprintf(hash, "%s\x01%s\x02", message.Role, llm.MessageText(message))
+		fmt.Fprintf(hash, "%s\x01%s\x02", message.Role, core.MessageText(message))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // claudeBinAnchor is a boundary whose captured state describes the first two
 // messages of mainTranscript, the way a completed claude-bin turn would.
-func claudeBinAnchor(messages []llm.Message) Anchor {
+func claudeBinAnchor(messages []core.Message) Anchor {
 	const delivered = 2
 	state := fmt.Sprintf(`{"session_id":"S1","messages_sent":%d,"transcript_digest":%q}`,
 		delivered, testTranscriptDigest(mainTranscript()[:delivered]))
@@ -110,15 +112,15 @@ func claudeBinAnchor(messages []llm.Message) Anchor {
 	}
 }
 
-func mainTranscript() []llm.Message {
-	return []llm.Message{
-		llm.SystemText("system prompt"),
-		llm.UserText("Refactor the widget loader."),
-		llm.AssistantText("Extracted loadWidget."),
+func mainTranscript() []core.Message {
+	return []core.Message{
+		core.SystemText("system prompt"),
+		core.UserText("Refactor the widget loader."),
+		core.AssistantText("Extracted loadWidget."),
 	}
 }
 
-func laneTurnRequest(lane *forkableProvider, replay llm.Provider, question string) TurnRequest {
+func laneTurnRequest(lane *forkableProvider, replay core.Provider, question string) TurnRequest {
 	return TurnRequest{
 		Question:    question,
 		Anchor:      claudeBinAnchor(mainTranscript()),
@@ -126,13 +128,13 @@ func laneTurnRequest(lane *forkableProvider, replay llm.Provider, question strin
 		Model:       "opus-max",
 		AllowFork:   true,
 		ForkSource:  lane,
-		NewProvider: func(string, string) (llm.Provider, error) { return replay, nil },
+		NewProvider: func(string, string) (core.Provider, error) { return replay, nil },
 	}
 }
 
 func TestLaneForksWhenEligibleAndDeliversTheWholeAnchor(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	turn, err := lane.PrepareTurn(laneTurnRequest(live, replay, "what changed?"))
@@ -146,7 +148,7 @@ func TestLaneForksWhenEligibleAndDeliversTheWholeAnchor(t *testing.T) {
 	if len(request.Messages) != len(mainTranscript())+2 {
 		t.Fatalf("request carried %d messages, want the whole anchor plus policy and question", len(request.Messages))
 	}
-	if request.Messages[len(request.Messages)-2].Role != llm.RoleDeveloper {
+	if request.Messages[len(request.Messages)-2].Role != core.RoleDeveloper {
 		t.Fatalf("policy message missing: %#v", request.Messages)
 	}
 	if request.WorkingDir != "/workspace" {
@@ -184,7 +186,7 @@ func TestLaneForksWhenEligibleAndDeliversTheWholeAnchor(t *testing.T) {
 
 func TestLaneForkTurnIsNotEphemeralAndReplayTurnIs(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	turn, err := lane.PrepareTurn(laneTurnRequest(live, replay, "first"))
@@ -233,7 +235,7 @@ func TestLaneReplaysWhenIneligible(t *testing.T) {
 		{"model differs", func(r *TurnRequest) { r.Model = "sonnet" }, false, 0},
 		{"no captured state", func(r *TurnRequest) { r.Anchor.Provider.State = nil }, false, 0},
 		{"empty anchor", func(r *TurnRequest) { r.Anchor.Messages = nil }, false, 0},
-		{"provider has no seam", func(r *TurnRequest) { r.ForkSource = llm.NewMockProvider("plain") }, false, 0},
+		{"provider has no seam", func(r *TurnRequest) { r.ForkSource = mockprovider.NewMockProvider("plain") }, false, 0},
 		{"no fork source", func(r *TurnRequest) { r.ForkSource = nil }, false, 0},
 		{"a run started between capture and preparation", func(r *TurnRequest) { r.AllowFork = false }, false, 0},
 		{"captured offset is past the end of the request", func(r *TurnRequest) {
@@ -243,8 +245,8 @@ func TestLaneReplaysWhenIneligible(t *testing.T) {
 			r.Anchor.Provider.State = []byte(`{"session_id":"S1","messages_sent":2}`)
 		}, false, 1},
 		{"digest mismatch after a history rewrite", func(r *TurnRequest) {
-			rewritten := append([]llm.Message(nil), r.Anchor.Messages...)
-			rewritten[1] = llm.UserText("a different question was written into history")
+			rewritten := append([]core.Message(nil), r.Anchor.Messages...)
+			rewritten[1] = core.UserText("a different question was written into history")
 			r.Anchor.Messages = rewritten
 		}, false, 1},
 		{"the seam refuses", nil, true, 1},
@@ -253,7 +255,7 @@ func TestLaneReplaysWhenIneligible(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			live := newForkableProvider("live")
 			live.refuse = tc.refuses
-			replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+			replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 			request := laneTurnRequest(live, replay, "what changed?")
 			if tc.mutate != nil {
 				tc.mutate(&request)
@@ -292,7 +294,7 @@ func TestLaneReplaysWhenIneligible(t *testing.T) {
 // main process is writing.
 func TestLaneDowngradesAPreparedForkWhenARunStarts(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	runActive := false
@@ -336,12 +338,12 @@ func TestLaneDowngradeFailsClosedWhenReplayCannotBeBuilt(t *testing.T) {
 
 	provided := 0
 	request := laneTurnRequest(live, nil, "what changed?")
-	request.NewProvider = func(string, string) (llm.Provider, error) {
+	request.NewProvider = func(string, string) (core.Provider, error) {
 		provided++
 		if provided > 1 {
 			return nil, errors.New("no provider available")
 		}
-		return llm.NewMockProvider("replay").AddTextResponse("replayed answer"), nil
+		return mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer"), nil
 	}
 	runActive := false
 	request.ForkStillAllowed = func() bool { return !runActive }
@@ -377,7 +379,7 @@ func TestLaneDowngradeFailsClosedWhenReplayCannotBeBuilt(t *testing.T) {
 // prepared provider: there is no completion left to do it.
 func TestLaneCloseReleasesATurnThatNeverRan(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	turn, err := lane.PrepareTurn(laneTurnRequest(live, replay, "what changed?"))
@@ -413,7 +415,7 @@ func TestLaneDoesNotResumeAcrossAnIdentityChange(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			live := newForkableProvider("live")
-			replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+			replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 			lane := &Lane{}
 
 			first, err := lane.PrepareTurn(laneTurnRequest(live, replay, "first"))
@@ -453,7 +455,7 @@ func TestLaneDropsItsSessionAfterAnUnusableAnswer(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			live := newForkableProvider("live")
-			replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+			replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 			lane := &Lane{}
 
 			turn, err := lane.PrepareTurn(laneTurnRequest(live, replay, "what changed?"))
@@ -483,7 +485,7 @@ func TestLaneDropsItsSessionAfterAnUnusableAnswer(t *testing.T) {
 // directory moved cannot resume its own session from the new one.
 func TestLaneDoesNotResumeAcrossAWorkingDirectoryChange(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	first, err := lane.PrepareTurn(laneTurnRequest(live, replay, "first"))
@@ -533,7 +535,7 @@ func TestLaneDoesNotResumeAcrossAWorkingDirectoryChange(t *testing.T) {
 
 func TestLaneSecondTurnResumesItsOwnSessionInsteadOfReForking(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	first, err := lane.PrepareTurn(laneTurnRequest(live, replay, "what changed?"))
@@ -570,14 +572,14 @@ func TestLaneSecondTurnResumesItsOwnSessionInsteadOfReForking(t *testing.T) {
 		t.Fatalf("second request = %d messages, want the first plus reply plus question", len(requests[1].Messages))
 	}
 	for i := range requests[0].Messages {
-		if llm.MessageText(requests[1].Messages[i]) != llm.MessageText(requests[0].Messages[i]) {
+		if core.MessageText(requests[1].Messages[i]) != core.MessageText(requests[0].Messages[i]) {
 			t.Fatalf("lane request prefix changed at %d", i)
 		}
 	}
-	if requests[1].Messages[len(requests[0].Messages)].Role != llm.RoleAssistant {
+	if requests[1].Messages[len(requests[0].Messages)].Role != core.RoleAssistant {
 		t.Fatalf("lane transcript lost its own reply: %#v", requests[1].Messages)
 	}
-	if got := llm.MessageText(requests[1].Messages[len(requests[1].Messages)-1]); got != "and the nil case?" {
+	if got := core.MessageText(requests[1].Messages[len(requests[1].Messages)-1]); got != "and the nil case?" {
 		t.Fatalf("last message = %q", got)
 	}
 	if len(lane.RequestPrefix()) != len(requests[1].Messages)+1 {
@@ -591,7 +593,7 @@ func TestLaneSecondTurnResumesItsOwnSessionInsteadOfReForking(t *testing.T) {
 // fresh session that has never seen them.
 func TestLaneWithItsOwnSessionPinsItsAnchor(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	first, err := lane.PrepareTurn(laneTurnRequest(live, replay, "first"))
@@ -605,7 +607,7 @@ func TestLaneWithItsOwnSessionPinsItsAnchor(t *testing.T) {
 
 	// The main conversation moved on.
 	advanced := laneTurnRequest(live, replay, "second")
-	advanced.Anchor.Messages = append(mainTranscript(), llm.UserText("Now handle the nil case."))
+	advanced.Anchor.Messages = append(mainTranscript(), core.UserText("Now handle the nil case."))
 	second, err := lane.PrepareTurn(advanced)
 	if err != nil {
 		t.Fatal(err)
@@ -630,7 +632,7 @@ func TestLaneWithItsOwnSessionPinsItsAnchor(t *testing.T) {
 // side history to carry, the bounded replay path carries it instead.
 func TestLaneReplaysRatherThanBranchingAwayFromPriorSideHistory(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	request := laneTurnRequest(live, replay, "follow up")
@@ -661,7 +663,7 @@ func TestLaneReplaysRatherThanBranchingAwayFromPriorSideHistory(t *testing.T) {
 // what the child already inherits.
 func TestLaneTranscriptHoldsOnlyItsOwnConversation(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	first, err := lane.PrepareTurn(laneTurnRequest(live, replay, "what changed?"))
@@ -680,9 +682,9 @@ func TestLaneTranscriptHoldsOnlyItsOwnConversation(t *testing.T) {
 	}
 
 	transcript := lane.Transcript()
-	wantRoles := []llm.Role{
-		llm.RoleDeveloper, llm.RoleUser, llm.RoleAssistant,
-		llm.RoleUser, llm.RoleAssistant,
+	wantRoles := []core.Role{
+		core.RoleDeveloper, core.RoleUser, core.RoleAssistant,
+		core.RoleUser, core.RoleAssistant,
 	}
 	if len(transcript) != len(wantRoles) {
 		t.Fatalf("lane transcript = %d messages, want policy plus two exchanges: %#v", len(transcript), transcript)
@@ -710,7 +712,7 @@ func TestLaneDropsItsSessionAfterAFailedTurn(t *testing.T) {
 	// deterministic: the mock stream's sends race ctx.Done against a buffered
 	// channel, so the scripted answer can still be delivered.
 	live.branchErr = errors.New("branch turn failed")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	turn, err := lane.PrepareTurn(laneTurnRequest(live, replay, "what changed?"))
@@ -730,7 +732,7 @@ func TestLaneDropsItsSessionAfterAFailedTurn(t *testing.T) {
 
 func TestLaneCloseReleasesTheBranchAndAnchor(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	turn, err := lane.PrepareTurn(laneTurnRequest(live, replay, "what changed?"))
@@ -754,7 +756,7 @@ func TestLaneCloseReleasesTheBranchAndAnchor(t *testing.T) {
 
 func TestLaneRejectsAConcurrentTurn(t *testing.T) {
 	live := newForkableProvider("live")
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 
 	if _, err := lane.PrepareTurn(laneTurnRequest(live, replay, "first")); err != nil {
@@ -767,14 +769,14 @@ func TestLaneRejectsAConcurrentTurn(t *testing.T) {
 }
 
 func TestLaneReplayTurnIsBoundedByTheHelperBudget(t *testing.T) {
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	lane := &Lane{}
 	anchor := claudeBinAnchor(nil)
 	anchor.Provider.State = nil
 	for range 400 {
 		anchor.Messages = append(anchor.Messages,
-			llm.UserText(strings.Repeat("main question detail ", 400)),
-			llm.AssistantText(strings.Repeat("main answer detail ", 400)))
+			core.UserText(strings.Repeat("main question detail ", 400)),
+			core.AssistantText(strings.Repeat("main answer detail ", 400)))
 	}
 	turn, err := lane.PrepareTurn(TurnRequest{
 		Question:    "what changed?",
@@ -782,7 +784,7 @@ func TestLaneReplayTurnIsBoundedByTheHelperBudget(t *testing.T) {
 		ProviderKey: "claude-bin",
 		Model:       "opus-max",
 		AllowFork:   true,
-		NewProvider: func(string, string) (llm.Provider, error) { return replay, nil },
+		NewProvider: func(string, string) (core.Provider, error) { return replay, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -809,7 +811,7 @@ func TestLaneRefusesWithoutAProviderFactory(t *testing.T) {
 	}
 	if _, err := lane.PrepareTurn(TurnRequest{
 		Anchor:      claudeBinAnchor(mainTranscript()),
-		NewProvider: func(string, string) (llm.Provider, error) { return llm.NewMockProvider("m"), nil },
+		NewProvider: func(string, string) (core.Provider, error) { return mockprovider.NewMockProvider("m"), nil },
 	}); err == nil {
 		t.Fatal("expected a refusal for an empty question")
 	}

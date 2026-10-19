@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -173,7 +174,7 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 		if len(m.messages) > 0 {
 			// Use first few words of first user message
 			for _, msg := range m.messages {
-				if msg.Role == llm.RoleUser {
+				if msg.Role == core.RoleUser {
 					words := strings.Fields(msg.TextContent)
 					if len(words) > 5 {
 						words = words[:5]
@@ -380,7 +381,7 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 	rawReasoningOmitted := strings.EqualFold(strings.TrimSpace(exportReasoningCfg.Export), config.ReasoningExportRaw) && !exportReasoningCfg.Raw
 	for _, msg := range m.messages {
 		// Role header
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			b.WriteString("## ❯\n\n")
 		} else {
 			b.WriteString("## 🤖 Assistant")
@@ -391,15 +392,15 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 		}
 
 		// Content - for user messages, extract just the text (not file contents).
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			content := llm.StripEmbeddedFileText(msg.TextContent)
 			b.WriteString(content)
 			b.WriteString("\n---\n\n")
 			continue
 		}
-		if msg.Role == llm.RoleAssistant {
+		if msg.Role == core.RoleAssistant {
 			for _, part := range msg.Parts {
-				if part.Type != llm.PartText {
+				if part.Type != core.PartText {
 					continue
 				}
 				if rendered := session.RenderExportReasoning(part, session.ExportOptions{

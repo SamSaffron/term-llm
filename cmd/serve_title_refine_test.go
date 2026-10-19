@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -33,7 +34,7 @@ func newTitleRefineTestStore(t *testing.T, id string) *session.SQLiteStore {
 	return store
 }
 
-func addTitleRefineMessage(t *testing.T, store session.Store, sessionID string, message llm.Message) {
+func addTitleRefineMessage(t *testing.T, store session.Store, sessionID string, message core.Message) {
 	t.Helper()
 	if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, message, -1)); err != nil {
 		t.Fatal(err)
@@ -43,9 +44,9 @@ func addTitleRefineMessage(t *testing.T, store session.Store, sessionID string, 
 func TestSessionTitleRefineIncludesLatestMessageAfterPrefixLimit(t *testing.T) {
 	const sessionID = "title-refine-head-tail"
 	store := newTitleRefineTestStore(t, sessionID)
-	addTitleRefineMessage(t, store, sessionID, llm.UserText("Two things in this screenshot are annoying"))
+	addTitleRefineMessage(t, store, sessionID, core.UserText("Two things in this screenshot are annoying"))
 	for i := 0; i < sessionTitleMessagePageSize-1; i++ {
-		addTitleRefineMessage(t, store, sessionID, llm.ToolResultMessage(
+		addTitleRefineMessage(t, store, sessionID, core.ToolResultMessage(
 			fmt.Sprintf("call-%d", i),
 			"inspect",
 			"intermediate tool output",
@@ -53,15 +54,15 @@ func TestSessionTitleRefineIncludesLatestMessageAfterPrefixLimit(t *testing.T) {
 		))
 	}
 	const finalAnswer = "Corrected false active-run detection and removed the merge confirmation gate."
-	addTitleRefineMessage(t, store, sessionID, llm.AssistantText(finalAnswer))
+	addTitleRefineMessage(t, store, sessionID, core.AssistantText(finalAnswer))
 
-	provider := llm.NewMockProvider("title").AddTextResponse(
+	provider := mockprovider.NewMockProvider("title").AddTextResponse(
 		`{"short_title":"Fix Worktree Merge Warnings","long_title":"Correct false worktree detection and remove merge confirmation","confidence":0.95}`,
 	)
 	server := &serveServer{
 		cfgRef: &config.Config{},
 		store:  store,
-		titleProviderFactory: func(*config.Config) (llm.Provider, error) {
+		titleProviderFactory: func(*config.Config) (core.Provider, error) {
 			return provider, nil
 		},
 	}
@@ -77,7 +78,7 @@ func TestSessionTitleRefineIncludesLatestMessageAfterPrefixLimit(t *testing.T) {
 	if len(requests) != 1 || len(requests[0].Messages) < 2 {
 		t.Fatalf("recorded requests = %#v", requests)
 	}
-	prompt := llm.MessageText(requests[0].Messages[1])
+	prompt := core.MessageText(requests[0].Messages[1])
 	if !strings.Contains(prompt, finalAnswer) {
 		t.Fatalf("title prompt omitted latest assistant answer: %s", prompt)
 	}
@@ -86,7 +87,7 @@ func TestSessionTitleRefineIncludesLatestMessageAfterPrefixLimit(t *testing.T) {
 func TestSessionTitleRefineReturnsExpectedAbstention(t *testing.T) {
 	const sessionID = "title-refine-abstention"
 	store := newTitleRefineTestStore(t, sessionID)
-	addTitleRefineMessage(t, store, sessionID, llm.UserText("please fix it"))
+	addTitleRefineMessage(t, store, sessionID, core.UserText("please fix it"))
 	sess, err := store.Get(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -96,13 +97,13 @@ func TestSessionTitleRefineReturnsExpectedAbstention(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	provider := llm.NewMockProvider("title").AddTextResponse(
+	provider := mockprovider.NewMockProvider("title").AddTextResponse(
 		`{"short_title":null,"long_title":null,"confidence":0}`,
 	)
 	server := &serveServer{
 		cfgRef: &config.Config{},
 		store:  store,
-		titleProviderFactory: func(*config.Config) (llm.Provider, error) {
+		titleProviderFactory: func(*config.Config) (core.Provider, error) {
 			return provider, nil
 		},
 	}

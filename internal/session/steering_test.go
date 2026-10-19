@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestSteeringFIFOIdentityAndRushTransaction(t *testing.T) {
@@ -14,9 +15,9 @@ func TestSteeringFIFOIdentityAndRushTransaction(t *testing.T) {
 	ctx := context.Background()
 	entries := []PendingSteering{}
 	for _, id := range []string{"z", "a"} {
-		msg := llm.UserText("guidance " + id)
+		msg := core.UserText("guidance " + id)
 		msg.ClientMessageID = id
-		entry := PendingSteering{SessionID: sess.ID, ID: id, Message: msg, DisplayText: llm.MessageText(msg), CreatedAt: time.Unix(1, 0), Origin: llm.SteeringOriginUser}
+		entry := PendingSteering{SessionID: sess.ID, ID: id, Message: msg, DisplayText: core.MessageText(msg), CreatedAt: time.Unix(1, 0), Origin: engine.SteeringOriginUser}
 		if err := store.SavePendingSteering(ctx, entry); err != nil {
 			t.Fatal(err)
 		}
@@ -76,9 +77,9 @@ func TestSteeringFIFOIdentityAndRushTransaction(t *testing.T) {
 func TestRushStopCASPreventsInitialInput(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
-	msg := llm.UserText("keep me")
+	msg := core.UserText("keep me")
 	msg.ClientMessageID = "one"
-	entry := PendingSteering{SessionID: sess.ID, ID: "one", Message: msg, DisplayText: "keep me", Origin: llm.SteeringOriginUser}
+	entry := PendingSteering{SessionID: sess.ID, ID: "one", Message: msg, DisplayText: "keep me", Origin: engine.SteeringOriginUser}
 	if err := store.SavePendingSteering(ctx, entry); err != nil {
 		t.Fatal(err)
 	}

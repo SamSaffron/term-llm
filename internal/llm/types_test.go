@@ -3,15 +3,17 @@ package llm
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestNormalizeMediaCombinesLegacyImagesWithoutDuplicates(t *testing.T) {
-	structured := []MediaArtifact{{SourcePath: "/tmp/a.png", MediaType: "image/png"}, {SourcePath: "/tmp/v.mp4", MediaType: "video/mp4"}}
-	got := NormalizeMedia(structured, []string{"/tmp/a.png", "/tmp/old.png"})
+	structured := []core.MediaArtifact{{SourcePath: "/tmp/a.png", MediaType: "image/png"}, {SourcePath: "/tmp/v.mp4", MediaType: "video/mp4"}}
+	got := core.NormalizeMedia(structured, []string{"/tmp/a.png", "/tmp/old.png"})
 	if len(got) != 3 || got[0].SourcePath != "/tmp/a.png" || got[1].MediaType != "video/mp4" || got[2].SourcePath != "/tmp/old.png" {
 		t.Fatalf("NormalizeMedia() = %#v", got)
 	}
-	withReferences := NormalizeMedia([]MediaArtifact{
+	withReferences := core.NormalizeMedia([]core.MediaArtifact{
 		{Reference: "one", SourcePath: "/tmp/a.png", MediaType: "image/png"},
 		{Reference: "two", SourcePath: "/tmp/a.png", MediaType: "image/png"},
 	}, nil)
@@ -23,13 +25,13 @@ func TestNormalizeMediaCombinesLegacyImagesWithoutDuplicates(t *testing.T) {
 func TestToolResultMessageFromOutput_WithDiffs(t *testing.T) {
 	t.Parallel()
 
-	output := ToolOutput{
+	output := core.ToolOutput{
 		Content: "Edited test.go: replaced 5 lines with 7 lines.",
-		Diffs: []DiffData{
+		Diffs: []core.DiffData{
 			{File: "test.go", Old: "old code", New: "new code", Line: 1},
 		},
 	}
-	msg := ToolResultMessageFromOutput("call-1", "edit_file", output, nil)
+	msg := core.ToolResultMessageFromOutput("call-1", "edit_file", output, nil)
 
 	if len(msg.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(msg.Parts))
@@ -53,7 +55,7 @@ func TestToolResultMessageFromOutput_WithDiffs(t *testing.T) {
 func TestToolResultMessageFromOutput_PreservesErrorStatus(t *testing.T) {
 	t.Parallel()
 
-	msg := ToolResultMessageFromOutput("call-1", "shell", ToolOutput{
+	msg := core.ToolResultMessageFromOutput("call-1", "shell", core.ToolOutput{
 		Content: "exit_code: 7",
 		IsError: true,
 	}, nil)
@@ -71,7 +73,7 @@ func TestToolResultMessage_PlainText(t *testing.T) {
 	t.Parallel()
 
 	raw := "Created new file: /tmp/test.go (10 lines)."
-	msg := ToolResultMessage("call-1", "write_file", raw, nil)
+	msg := core.ToolResultMessage("call-1", "write_file", raw, nil)
 
 	result := msg.Parts[0].ToolResult
 	if result.Content != raw {
@@ -88,11 +90,11 @@ func TestToolResultMessage_PlainText(t *testing.T) {
 func TestToolResultMessageFromOutput_WithImages(t *testing.T) {
 	t.Parallel()
 
-	output := ToolOutput{
+	output := core.ToolOutput{
 		Content: "Generated image successfully.",
 		Images:  []string{"/tmp/generated.png"},
 	}
-	msg := ToolResultMessageFromOutput("call-2", "generate_image", output, nil)
+	msg := core.ToolResultMessageFromOutput("call-2", "generate_image", output, nil)
 
 	result := msg.Parts[0].ToolResult
 	if result.Content != "Generated image successfully." {
@@ -106,26 +108,26 @@ func TestToolResultMessageFromOutput_WithImages(t *testing.T) {
 func TestToolResultMessageFromOutput_WithContentParts(t *testing.T) {
 	t.Parallel()
 
-	output := ToolOutput{
+	output := core.ToolOutput{
 		Content: "Image loaded",
-		ContentParts: []ToolContentPart{
-			{Type: ToolContentPartText, Text: "Image loaded"},
+		ContentParts: []core.ToolContentPart{
+			{Type: core.ToolContentPartText, Text: "Image loaded"},
 			{
-				Type:      ToolContentPartImageData,
-				ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+				Type:      core.ToolContentPartImageData,
+				ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
 			},
 		},
 	}
-	msg := ToolResultMessageFromOutput("call-3", "view_image", output, nil)
+	msg := core.ToolResultMessageFromOutput("call-3", "view_image", output, nil)
 
 	result := msg.Parts[0].ToolResult
 	if len(result.ContentParts) != 2 {
 		t.Fatalf("expected 2 content parts, got %d", len(result.ContentParts))
 	}
-	if result.ContentParts[0].Type != ToolContentPartText {
+	if result.ContentParts[0].Type != core.ToolContentPartText {
 		t.Fatalf("expected first content part type text, got %q", result.ContentParts[0].Type)
 	}
-	if result.ContentParts[1].Type != ToolContentPartImageData || result.ContentParts[1].ImageData == nil {
+	if result.ContentParts[1].Type != core.ToolContentPartImageData || result.ContentParts[1].ImageData == nil {
 		t.Fatalf("expected second content part type image_data with data, got %#v", result.ContentParts[1])
 	}
 }
@@ -133,14 +135,14 @@ func TestToolResultMessageFromOutput_WithContentParts(t *testing.T) {
 func TestToolResult_SessionRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	original := ToolResult{
+	original := core.ToolResult{
 		ID:      "call-1",
 		Name:    "edit_file",
 		Content: "Edited test.go: replaced 5 lines with 7 lines.",
-		Diffs: []DiffData{
+		Diffs: []core.DiffData{
 			{File: "test.go", Old: "old", New: "new", Line: 1},
 		},
-		GuardianReviews: []GuardianReview{{Outcome: "approved", Message: "guardian: approved", Command: "pwd"}},
+		GuardianReviews: []core.GuardianReview{{Outcome: "approved", Message: "guardian: approved", Command: "pwd"}},
 		IsError:         true,
 	}
 
@@ -149,7 +151,7 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	var restored ToolResult
+	var restored core.ToolResult
 	if err := json.Unmarshal(data, &restored); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
@@ -177,15 +179,15 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 func TestToolResult_SessionRoundTrip_WithContentParts(t *testing.T) {
 	t.Parallel()
 
-	original := ToolResult{
+	original := core.ToolResult{
 		ID:      "call-image",
 		Name:    "view_image",
 		Content: "Image loaded",
-		ContentParts: []ToolContentPart{
-			{Type: ToolContentPartText, Text: "Image loaded"},
+		ContentParts: []core.ToolContentPart{
+			{Type: core.ToolContentPartText, Text: "Image loaded"},
 			{
-				Type:      ToolContentPartImageData,
-				ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+				Type:      core.ToolContentPartImageData,
+				ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
 			},
 		},
 	}
@@ -195,7 +197,7 @@ func TestToolResult_SessionRoundTrip_WithContentParts(t *testing.T) {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	var restored ToolResult
+	var restored core.ToolResult
 	if err := json.Unmarshal(data, &restored); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestToolResult_OldSessionWithDisplay(t *testing.T) {
 
 	// Simulate deserializing an old session that has Display but no Diffs
 	jsonData := `{"ID":"call-1","Name":"edit_file","Content":"Edited test.go","Display":"Edited test.go\n__DIFF__:abc123"}`
-	var result ToolResult
+	var result core.ToolResult
 	if err := json.Unmarshal([]byte(jsonData), &result); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
@@ -227,7 +229,7 @@ func TestToolResult_OldSessionWithDisplay(t *testing.T) {
 func TestToolErrorMessage_NoDiffsOrImages(t *testing.T) {
 	t.Parallel()
 
-	msg := ToolErrorMessage("call-1", "edit_file", "file not found", nil)
+	msg := core.ToolErrorMessage("call-1", "edit_file", "file not found", nil)
 
 	result := msg.Parts[0].ToolResult
 	if result.Content != "file not found" {
@@ -247,7 +249,7 @@ func TestToolErrorMessage_NoDiffsOrImages(t *testing.T) {
 func TestTextOutput(t *testing.T) {
 	t.Parallel()
 
-	output := TextOutput("hello world")
+	output := core.TextOutput("hello world")
 	if output.Content != "hello world" {
 		t.Errorf("Content = %q, want %q", output.Content, "hello world")
 	}
@@ -260,15 +262,15 @@ func TestTextOutput(t *testing.T) {
 }
 
 func TestUserImageMessage_WithCaption(t *testing.T) {
-	msg := UserImageMessage("image/jpeg", "base64data", "Look at this")
-	if msg.Role != RoleUser {
-		t.Fatalf("Role = %q, want %q", msg.Role, RoleUser)
+	msg := core.UserImageMessage("image/jpeg", "base64data", "Look at this")
+	if msg.Role != core.RoleUser {
+		t.Fatalf("Role = %q, want %q", msg.Role, core.RoleUser)
 	}
 	if len(msg.Parts) != 2 {
 		t.Fatalf("expected 2 parts, got %d", len(msg.Parts))
 	}
-	if msg.Parts[0].Type != PartImage {
-		t.Fatalf("Parts[0].Type = %q, want %q", msg.Parts[0].Type, PartImage)
+	if msg.Parts[0].Type != core.PartImage {
+		t.Fatalf("Parts[0].Type = %q, want %q", msg.Parts[0].Type, core.PartImage)
 	}
 	if msg.Parts[0].ImageData == nil || msg.Parts[0].ImageData.MediaType != "image/jpeg" {
 		t.Fatalf("Parts[0].ImageData = %v, want image/jpeg", msg.Parts[0].ImageData)
@@ -276,30 +278,30 @@ func TestUserImageMessage_WithCaption(t *testing.T) {
 	if msg.Parts[0].ImageData.Base64 != "base64data" {
 		t.Fatalf("Parts[0].ImageData.Base64 = %q, want %q", msg.Parts[0].ImageData.Base64, "base64data")
 	}
-	if msg.Parts[1].Type != PartText || msg.Parts[1].Text != "Look at this" {
+	if msg.Parts[1].Type != core.PartText || msg.Parts[1].Text != "Look at this" {
 		t.Fatalf("Parts[1] = %+v, want text 'Look at this'", msg.Parts[1])
 	}
 }
 
 func TestUserImageMessage_NoCaption(t *testing.T) {
-	msg := UserImageMessage("image/png", "pngdata", "")
+	msg := core.UserImageMessage("image/png", "pngdata", "")
 	if len(msg.Parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(msg.Parts))
 	}
-	if msg.Parts[0].Type != PartImage {
-		t.Fatalf("Parts[0].Type = %q, want %q", msg.Parts[0].Type, PartImage)
+	if msg.Parts[0].Type != core.PartImage {
+		t.Fatalf("Parts[0].Type = %q, want %q", msg.Parts[0].Type, core.PartImage)
 	}
 }
 
 func TestAudioToolOutputJSONAndHistoryClone(t *testing.T) {
-	audio := MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
-	output := ToolOutput{Content: "ready", Media: []MediaArtifact{audio}}
-	message := ToolResultMessageFromOutput("audio-call", "show_media", output, nil)
+	audio := core.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/tmp/speech.mp3", StoredPath: "/store/speech.mp3", MediaType: "audio/mpeg", Name: "speech.mp3", Caption: "Listen"}
+	output := core.ToolOutput{Content: "ready", Media: []core.MediaArtifact{audio}}
+	message := core.ToolResultMessageFromOutput("audio-call", "show_media", output, nil)
 	encoded, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var restored Message
+	var restored core.Message
 	if err := json.Unmarshal(encoded, &restored); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +309,7 @@ func TestAudioToolOutputJSONAndHistoryClone(t *testing.T) {
 	if len(result.Media) != 1 || result.Media[0] != audio || len(result.ContentParts) != 0 || len(result.Images) != 0 {
 		t.Fatalf("restored=%+v", result)
 	}
-	cloned, ok := clonePart(message.Parts[0])
+	cloned, ok := core.ClonePart(message.Parts[0])
 	if !ok || cloned.ToolResult.Media[0] != audio {
 		t.Fatalf("clone=%+v", cloned)
 	}

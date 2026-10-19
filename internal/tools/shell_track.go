@@ -18,7 +18,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // Bounds for shell file-change snapshots. They cap the cost of a single shell
@@ -69,9 +69,9 @@ type normalizedOutputClaim struct {
 }
 
 type shellTrackingResult struct {
-	FileChanges         []llm.FileChange
-	Observations        []llm.FilesystemObservationSummary
-	Diagnostics         []llm.OutputClaimDiagnostic
+	FileChanges         []core.FileChange
+	Observations        []core.FilesystemObservationSummary
+	Diagnostics         []core.OutputClaimDiagnostic
 	pendingObservations map[string]*filetrack.FilesystemObservation
 }
 
@@ -128,7 +128,7 @@ func preShellSnapshotWithClaims(ctx context.Context, recorder FileChangeRecorder
 	if recorder == nil {
 		return nil
 	}
-	sessionID := llm.SessionIDFromContext(ctx)
+	sessionID := core.SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return nil
 	}
@@ -237,7 +237,7 @@ type shellRepoStatus struct {
 // postShellChanges diffs the filesystem against a pre-exec snapshot and
 // records every detected change. Runs regardless of the command's exit code —
 // partial writes are real changes.
-func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *shellSnapshot) []llm.FileChange {
+func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *shellSnapshot) []core.FileChange {
 	return postShellTracking(ctx, recorder, snap).FileChanges
 }
 
@@ -408,7 +408,7 @@ func shellCandidateCoverageUncertain(snap *shellSnapshot, candidate *shellPostCa
 		effectiveCoverage := worstShellCoverage(snap.claims[index].coverage, snap.coverageStatus)
 		if candidate.postOnlyPattern && effectiveCoverage != filetrack.CoverageComplete {
 			coverageUncertain = true
-			result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{NormalizedPattern: snap.claims[index].pattern, ClaimKind: snap.claims[index].kind, Reason: "claim_unconfirmed_budget", CoverageStatus: effectiveCoverage, MatchingPathCount: 1, Message: "pre-command existence was outside complete claim coverage"})
+			result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{NormalizedPattern: snap.claims[index].pattern, ClaimKind: snap.claims[index].kind, Reason: "claim_unconfirmed_budget", CoverageStatus: effectiveCoverage, MatchingPathCount: 1, Message: "pre-command existence was outside complete claim coverage"})
 		}
 	}
 	return coverageUncertain
@@ -420,7 +420,7 @@ func recordClaimedShellChange(ctx context.Context, recorder FileChangeRecorder, 
 		persistShellObservation(ctx, recorder, rec, filetrack.ObservationMaterialized, result)
 	case filetrack.ClaimTransform, filetrack.ClaimGenerate:
 		if claim.kind == filetrack.ClaimTransform && kind == filetrack.KindCreate {
-			result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_mismatch", CoverageStatus: claim.coverage, MatchingPathCount: 1, Message: "transform claims do not cover creates: " + path})
+			result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_mismatch", CoverageStatus: claim.coverage, MatchingPathCount: 1, Message: "transform claims do not cover creates: " + path})
 			persistShellObservation(ctx, recorder, rec, filetrack.ObservationClaimMismatch, result)
 			return
 		}
@@ -431,12 +431,12 @@ func recordClaimedShellChange(ctx context.Context, recorder FileChangeRecorder, 
 		}
 		explicit, ok := recorder.(AttributedFileRecorder)
 		if !ok {
-			result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: "file recorder does not support classified attribution"})
+			result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: "file recorder does not support classified attribution"})
 			return
 		}
 		fc, err := explicit.RecordAttributedChange(ctx, *rec)
 		if err != nil {
-			result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
+			result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
 		} else if fc != nil {
 			result.FileChanges = append(result.FileChanges, *fc)
 			snap.claims[matchIndex].confirmed++
@@ -450,8 +450,8 @@ func recordShellCandidate(ctx context.Context, recorder FileChangeRecorder, snap
 		return
 	}
 	rec.ToolName = ShellToolName
-	rec.ToolCallID = llm.CallIDFromContext(ctx)
-	rec.RunID = llm.ToolRunIDFromContext(ctx)
+	rec.ToolCallID = core.CallIDFromContext(ctx)
+	rec.RunID = core.ToolRunIDFromContext(ctx)
 	rec.ClaimCoverage = snap.coverageStatus
 	rec.BaselineState = filetrack.BaselineUnknown
 	if snap.gitStatus != nil && snap.gitStatus[path] != "" {
@@ -491,14 +491,14 @@ func reportShellClaimOutcomes(ctx context.Context, recorder FileChangeRecorder, 
 	for _, claim := range snap.claims {
 		coverage := worstShellCoverage(claim.coverage, snap.coverageStatus)
 		if claim.confirmed > 0 {
-			result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_confirmed", CoverageStatus: coverage, MatchingPathCount: claim.confirmed})
+			result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_confirmed", CoverageStatus: coverage, MatchingPathCount: claim.confirmed})
 		}
 		if claim.matched == 0 {
 			reason := "claim_noop"
 			if coverage != filetrack.CoverageComplete {
 				reason = "claim_unconfirmed_budget"
 			}
-			result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: reason, CoverageStatus: coverage})
+			result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: reason, CoverageStatus: coverage})
 			claim.coverage = coverage
 			persistClaimObservation(ctx, recorder, snap, claim, reason, result)
 		}
@@ -656,7 +656,7 @@ func transitionKind(rec filetrack.ChangeRecord) string {
 	return filetrack.KindModify
 }
 
-func claimDiagnosticForPath(claims []normalizedOutputClaim, matches []int, reason, path string) llm.OutputClaimDiagnostic {
+func claimDiagnosticForPath(claims []normalizedOutputClaim, matches []int, reason, path string) core.OutputClaimDiagnostic {
 	patterns := make([]string, 0, len(matches))
 	kinds := make([]string, 0, len(matches))
 	coverage := filetrack.CoverageComplete
@@ -665,7 +665,7 @@ func claimDiagnosticForPath(claims []normalizedOutputClaim, matches []int, reaso
 		kinds = append(kinds, claims[index].kind)
 		coverage = worstShellCoverage(coverage, claims[index].coverage)
 	}
-	return llm.OutputClaimDiagnostic{NormalizedPattern: strings.Join(patterns, ", "), ClaimKind: strings.Join(kinds, ", "), Reason: reason, CoverageStatus: coverage, MatchingPathCount: 1, Message: reason + " for " + path}
+	return core.OutputClaimDiagnostic{NormalizedPattern: strings.Join(patterns, ", "), ClaimKind: strings.Join(kinds, ", "), Reason: reason, CoverageStatus: coverage, MatchingPathCount: 1, Message: reason + " for " + path}
 }
 
 func worstShellCoverage(a, b string) string {
@@ -682,13 +682,13 @@ func persistCoverageObservation(ctx context.Context, recorder FileChangeRecorder
 		return
 	}
 	persisted, err := explicit.RecordFilesystemObservation(ctx, filetrack.FilesystemObservation{
-		SessionID: snap.sessionID, RunID: llm.ToolRunIDFromContext(ctx), ToolName: ShellToolName,
-		ToolCallID: llm.CallIDFromContext(ctx), Classification: filetrack.ObservationIncomplete,
+		SessionID: snap.sessionID, RunID: core.ToolRunIDFromContext(ctx), ToolName: ShellToolName,
+		ToolCallID: core.CallIDFromContext(ctx), Classification: filetrack.ObservationIncomplete,
 		Root: snap.workDir, CoverageStatus: snap.coverageStatus,
 		Details: map[string]any{"version": 1, "reason": "observation_" + snap.coverageStatus},
 	})
 	if err != nil {
-		result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
+		result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
 		return
 	}
 	if persisted != nil {
@@ -702,13 +702,13 @@ func persistClaimObservation(ctx context.Context, recorder FileChangeRecorder, s
 		return
 	}
 	persisted, err := explicit.RecordFilesystemObservation(ctx, filetrack.FilesystemObservation{
-		SessionID: snap.sessionID, RunID: llm.ToolRunIDFromContext(ctx), ToolName: ShellToolName,
-		ToolCallID: llm.CallIDFromContext(ctx), Classification: filetrack.ObservationUnconfirmedClaim,
+		SessionID: snap.sessionID, RunID: core.ToolRunIDFromContext(ctx), ToolName: ShellToolName,
+		ToolCallID: core.CallIDFromContext(ctx), Classification: filetrack.ObservationUnconfirmedClaim,
 		Root: claim.pattern, CoverageStatus: claim.coverage,
 		Details: map[string]any{"version": 1, "reason": reason, "claim_kind": claim.kind, "normalized_pattern": claim.pattern},
 	})
 	if err != nil {
-		result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
+		result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{NormalizedPattern: claim.pattern, ClaimKind: claim.kind, Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
 		return
 	}
 	if persisted != nil {
@@ -756,7 +756,7 @@ func flushShellObservations(ctx context.Context, recorder FileChangeRecorder, re
 	}
 	explicit, ok := recorder.(FilesystemObservationRecorder)
 	if !ok {
-		result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: "file recorder does not support observations"})
+		result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: "file recorder does not support observations"})
 		return
 	}
 	keys := make([]string, 0, len(result.pendingObservations))
@@ -767,7 +767,7 @@ func flushShellObservations(ctx context.Context, recorder FileChangeRecorder, re
 	for _, key := range keys {
 		persisted, err := explicit.RecordFilesystemObservation(ctx, *result.pendingObservations[key])
 		if err != nil {
-			result.Diagnostics = append(result.Diagnostics, llm.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
+			result.Diagnostics = append(result.Diagnostics, core.OutputClaimDiagnostic{Reason: "claim_unconfirmed_tracker_error", CoverageStatus: filetrack.CoverageUnavailable, Message: err.Error()})
 			continue
 		}
 		if persisted != nil {

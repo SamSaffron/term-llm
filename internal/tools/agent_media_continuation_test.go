@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -20,7 +20,7 @@ func TestAgentReviewUncollectedMediaSurvivesLiveContinuation(t *testing.T) {
 			child := &mediaRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, path: filepath.Join(t.TempDir(), "result"), mediaType: mime, reference: "0123456789abcdef0123456789abcdef"}
 			tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 			tool.SetRunner(&mediaPersistentRunner{mediaRunner: child, store: store})
-			ctx := llm.ContextWithSessionID(context.Background(), "astra-parent")
+			ctx := core.ContextWithSessionID(context.Background(), "astra-parent")
 			spawned := lifecycleResult(t, lifecycleCall(t, tool, ctx, `{"agent_name":"developer","prompt":"draw","wait":0}`))
 			<-child.entered
 			close(child.release)

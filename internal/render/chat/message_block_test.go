@@ -7,6 +7,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -16,9 +17,9 @@ func TestMessageBlockRenderer_InternalCompactionUserMessageIsSuppressed(t *testi
 	body := "[Context Compaction]\nInternal context only; not a user command.\n\n<PREVIOUS_TURNS>\n" + strings.Repeat("noisy tool output\n", 20) + "</PREVIOUS_TURNS>\n\n<SUMMARY_AND_NEXT_ACTIONS>\nContinue the task.\nNext: run tests.\n</SUMMARY_AND_NEXT_ACTIONS>"
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: body,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: body}},
+		Parts:       []core.Part{{Type: core.PartText, Text: body}},
 	}
 
 	rendered := ui.StripANSI(renderer.Render(msg).Rendered)
@@ -37,7 +38,7 @@ func TestMessageBlockRenderer_UserMessageBackground_UsesTruecolorTheme(t *testin
 	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: "contrast check",
 	}
 
@@ -52,10 +53,10 @@ func TestMessageBlockRenderer_UserMessageRowsFillRendererWidth(t *testing.T) {
 	renderer := NewMessageBlockRenderer(width, nil, false)
 	msg := &session.Message{
 		ID:   1,
-		Role: llm.RoleUser,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: "alpha beta gamma delta epsilon\n\nwide 😀 text"},
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+		Role: core.RoleUser,
+		Parts: []core.Part{
+			{Type: core.PartText, Text: "alpha beta gamma delta epsilon\n\nwide 😀 text"},
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
 		},
 	}
 
@@ -100,11 +101,11 @@ func TestMessageBlockRenderer_UserMessageWithImageParts_ShowsAttachmentMeta(t *t
 	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: "describe this",
-		Parts: []llm.Part{
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
-			{Type: llm.PartText, Text: "describe this"},
+		Parts: []core.Part{
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+			{Type: core.PartText, Text: "describe this"},
 		},
 	}
 
@@ -121,10 +122,10 @@ func TestMessageBlockRenderer_ImageOnlyUserMessage_ShowsPlaceholderAndAttachment
 	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: "[image 1]",
-		Parts: []llm.Part{
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+		Parts: []core.Part{
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
 		},
 	}
 
@@ -141,12 +142,12 @@ func TestMessageBlockRenderer_MultipleImages_ShowsCountedAttachmentMeta(t *testi
 	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: "compare these",
-		Parts: []llm.Part{
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Base64: "d29ybGQ="}},
-			{Type: llm.PartText, Text: "compare these"},
+		Parts: []core.Part{
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+			{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/jpeg", Base64: "d29ybGQ="}},
+			{Type: core.PartText, Text: "compare these"},
 		},
 	}
 
@@ -161,10 +162,10 @@ func TestMessageBlockRenderer_UserMessageWithEmbeddedFile_ShowsAttachmentMetaWit
 	text := "what number was in the file\n\n" + llm.EmbeddedFileIntro + "\n\n" + llm.FormatEmbeddedFileText("test.txt", "text/plain", "100\n")
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: text,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: text},
+		Parts: []core.Part{
+			{Type: core.PartText, Text: text},
 		},
 	}
 
@@ -186,9 +187,9 @@ func TestMessageBlockRenderer_FileOnlyUserMessage_ShowsPlaceholderAndAttachmentM
 	text := llm.FormatEmbeddedFileText("test.txt", "text/plain", "100\n")
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: text,
-		Parts:       []llm.Part{{Type: llm.PartFile, Text: text, FileData: &llm.ToolFileData{Filename: "test.txt"}}},
+		Parts:       []core.Part{{Type: core.PartFile, Text: text, FileData: &core.ToolFileData{Filename: "test.txt"}}},
 	}
 
 	rendered := renderer.renderUserMessage(msg)
@@ -204,12 +205,12 @@ func TestMessageBlockRenderer_FileOnlyUserMessage_ShowsPlaceholderAndAttachmentM
 func TestMessageBlockRenderer_RenderReasoningSummaryCollapsedByDefault(t *testing.T) {
 	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:                  llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:                  core.PartText,
 			Text:                  "Final answer.",
 			ReasoningContent:      "**Inspecting repo**\n\nChecking files.",
-			ReasoningKind:         llm.ReasoningKindSummary,
+			ReasoningKind:         core.ReasoningKindSummary,
 			ReasoningSummaryTitle: "Inspecting repo",
 		}},
 	}
@@ -229,9 +230,9 @@ func TestMessageBlockRenderer_RenderReasoningSummaryCollapsedByDefault(t *testin
 func TestMessageBlockRenderer_LegacyEmptyKindReasoningRendersAsSummary(t *testing.T) {
 	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Final answer.",
 			ReasoningContent: "**Legacy summary**\n\nOlder saved content.",
 		}},
@@ -252,12 +253,12 @@ func TestMessageBlockRenderer_RenderReasoningSummaryExpanded(t *testing.T) {
 	cfg.Display = config.ReasoningDisplayExpanded
 	renderer.SetReasoningConfig(cfg)
 	msg := &session.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Answer.",
 			ReasoningContent: "**Planning**\n\nI checked **tests**.",
-			ReasoningKind:    llm.ReasoningKindSummary,
+			ReasoningKind:    core.ReasoningKindSummary,
 		}},
 	}
 
@@ -276,9 +277,9 @@ func TestMessageBlockRenderer_ExpandedReasoningSummaryUsesMarkdown(t *testing.T)
 	cfg.Display = config.ReasoningDisplayExpanded
 	renderer.SetReasoningConfig(cfg)
 	msg := &session.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type: core.PartText,
 			Text: "Answer.",
 			ReasoningContent: strings.Join([]string{
 				"**Planning**",
@@ -286,7 +287,7 @@ func TestMessageBlockRenderer_ExpandedReasoningSummaryUsesMarkdown(t *testing.T)
 				"<!-- abandoned markdown tail -->",
 				"After **bold**.",
 			}, "\n\n"),
-			ReasoningKind: llm.ReasoningKindSummary,
+			ReasoningKind: core.ReasoningKindSummary,
 		}},
 	}
 
@@ -306,12 +307,12 @@ func TestMessageBlockRenderer_ExpandedReasoningSummaryUsesMarkdown(t *testing.T)
 
 func TestMessageBlockRenderer_HidesReasoningWhenOffOrStatusOnly(t *testing.T) {
 	msg := &session.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Answer.",
 			ReasoningContent: "**Planning**\n\nHidden body.",
-			ReasoningKind:    llm.ReasoningKindSummary,
+			ReasoningKind:    core.ReasoningKindSummary,
 		}},
 	}
 	for _, display := range []string{config.ReasoningDisplayOff, config.ReasoningDisplayStatus} {
@@ -331,12 +332,12 @@ func TestMessageBlockRenderer_HidesReasoningWhenOffOrStatusOnly(t *testing.T) {
 
 func TestMessageBlockRenderer_RawReasoningIsCollapsedByDefaultAndExpandedByDetails(t *testing.T) {
 	msg := &session.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role: core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Answer.",
 			ReasoningContent: "raw thinking chain",
-			ReasoningKind:    llm.ReasoningKindRaw,
+			ReasoningKind:    core.ReasoningKindRaw,
 		}},
 	}
 
@@ -359,12 +360,12 @@ func TestMessageBlockRenderer_RawReasoningIsCollapsedByDefaultAndExpandedByDetai
 }
 
 func TestMessageBlockRenderer_NeverRendersUnknownOrEncryptedReasoning(t *testing.T) {
-	for _, kind := range []llm.ReasoningKind{llm.ReasoningKindUnknown, llm.ReasoningKindEncrypted} {
+	for _, kind := range []core.ReasoningKind{core.ReasoningKindUnknown, core.ReasoningKindEncrypted} {
 		renderer := NewMessageBlockRenderer(80, nil, false)
 		msg := &session.Message{
-			Role: llm.RoleAssistant,
-			Parts: []llm.Part{{
-				Type:             llm.PartText,
+			Role: core.RoleAssistant,
+			Parts: []core.Part{{
+				Type:             core.PartText,
 				Text:             "Answer.",
 				ReasoningContent: "do not show",
 				ReasoningKind:    kind,
@@ -382,11 +383,11 @@ func TestMessageBlockRenderer_UserAgentMentionContextIsStructurallyHidden(t *tes
 	const hidden = "<term_llm_agent_mentions>hidden-delegation-sentinel</term_llm_agent_mentions>"
 	msg := &session.Message{
 		ID:          1,
-		Role:        llm.RoleUser,
+		Role:        core.RoleUser,
 		TextContent: visible,
-		Parts: []llm.Part{
-			{Type: llm.PartText, Text: visible},
-			{Type: llm.PartAgentMention, Text: hidden},
+		Parts: []core.Part{
+			{Type: core.PartText, Text: visible},
+			{Type: core.PartAgentMention, Text: hidden},
 		},
 	}
 	renderer := NewMessageBlockRenderer(100, nil, false)
@@ -402,7 +403,7 @@ func TestMessageBlockRenderer_UserAgentMentionContextIsStructurallyHidden(t *tes
 
 func TestMessageBlockRenderer_PathNoteUsesCompactPlaceholder(t *testing.T) {
 	renderer := NewMessageBlockRenderer(100, nil, false)
-	msg := session.NewPathNoteMessage("child", "- Finding one.\n- Finding two.", llm.PathNoteProvenance{
+	msg := session.NewPathNoteMessage("child", "- Finding one.\n- Finding two.", core.PathNoteProvenance{
 		SourceSessionID: "source",
 		ReadFiles:       []string{"a.go"},
 		ModifiedFiles:   []string{"b.go"},

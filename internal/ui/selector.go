@@ -12,7 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"golang.org/x/term"
 )
@@ -292,7 +293,7 @@ func RunWithSpinnerProgressAndHooks(ctx context.Context, debug bool, progress <-
 
 // selectModel is a bubbletea model for command selection with help support
 type selectModel struct {
-	suggestions []llm.CommandSuggestion
+	suggestions []core.CommandSuggestion
 	cursor      int
 	selected    string
 	cancelled   bool
@@ -305,7 +306,7 @@ type selectModel struct {
 	refinement  string // user's refinement text when "something else" is used
 }
 
-func newSelectModel(suggestions []llm.CommandSuggestion, tty *os.File) selectModel {
+func newSelectModel(suggestions []core.CommandSuggestion, tty *os.File) selectModel {
 	width := 80
 	if tty != nil {
 		if w, _, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
@@ -504,7 +505,7 @@ func (m selectModel) View() tea.View {
 // When SomethingElse is returned, the second return value contains the user's refinement text.
 // If engine is non-nil and user presses 'i', shows help for the highlighted command.
 // allowNonTTY permits a non-interactive fallback when no TTY is available.
-func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *llm.Engine, allowNonTTY bool) (selected string, refinement string, err error) {
+func SelectCommand(suggestions []core.CommandSuggestion, shell string, engine *engine.Engine, allowNonTTY bool) (selected string, refinement string, err error) {
 	for {
 		if !terminalpolicy.Interactive(os.Stdin, os.Stderr) {
 			return selectCommandNonInteractive(suggestions, allowNonTTY)
@@ -547,7 +548,7 @@ func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *ll
 	}
 }
 
-func selectCommandNonInteractive(suggestions []llm.CommandSuggestion, allow bool) (string, string, error) {
+func selectCommandNonInteractive(suggestions []core.CommandSuggestion, allow bool) (string, string, error) {
 	if !allow {
 		return "", "", fmt.Errorf("interactive command selection unavailable; use --print-only or --auto-pick")
 	}

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSkillActivationProvenanceRoundTripsAndStaysOutOfProviderParts(t *testing.T) {
@@ -22,9 +22,9 @@ func TestSkillActivationProvenanceRoundTripsAndStaysOutOfProviderParts(t *testin
 	}
 	message := &Message{
 		SessionID: sess.ID,
-		Role:      llm.RoleDeveloper,
-		Parts: []llm.Part{
-			{Type: llm.PartSkillActivation, SkillActivation: &llm.SkillActivationProvenance{
+		Role:      core.RoleDeveloper,
+		Parts: []core.Part{
+			{Type: core.PartSkillActivation, SkillActivation: &core.SkillActivationProvenance{
 				Name:           "review",
 				SourcePath:     "/repo/.skills/review",
 				Origin:         "user",
@@ -33,7 +33,7 @@ func TestSkillActivationProvenanceRoundTripsAndStaysOutOfProviderParts(t *testin
 				RunID:          "skill-1",
 				ChildSessionID: "child-1",
 			}},
-			{Type: llm.PartText, Text: "historical expanded instructions"},
+			{Type: core.PartText, Text: "historical expanded instructions"},
 		},
 		TextContent: "historical expanded instructions",
 		CreatedAt:   time.Now(),
@@ -55,41 +55,41 @@ func TestSkillActivationProvenanceRoundTripsAndStaysOutOfProviderParts(t *testin
 		t.Fatalf("round-tripped provenance = %#v", provenance)
 	}
 	providerMessage := messages[0].ToLLMMessage()
-	if len(providerMessage.Parts) != 1 || providerMessage.Parts[0].Type != llm.PartText || providerMessage.Parts[0].Text != "historical expanded instructions" {
+	if len(providerMessage.Parts) != 1 || providerMessage.Parts[0].Type != core.PartText || providerMessage.Parts[0].Text != "historical expanded instructions" {
 		t.Fatalf("provider message parts = %#v, want only instruction text", providerMessage.Parts)
 	}
 }
 
 func TestLLMActiveMessagesKeepsStoredSystemBeforeRetainedSkillContext(t *testing.T) {
-	provenance := &llm.SkillActivationProvenance{Name: "review", SourcePath: "/repo/.skills/review", Origin: "user", Execution: "main"}
+	provenance := &core.SkillActivationProvenance{Name: "review", SourcePath: "/repo/.skills/review", Origin: "user", Execution: "main"}
 	messages := []Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: "Retained skill instructions"}}, TextContent: "Retained skill instructions"},
-		{Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "Stored system"}}, TextContent: "Stored system"},
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "summary"}}, TextContent: "summary"},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: provenance}, {Type: core.PartText, Text: "Retained skill instructions"}}, TextContent: "Retained skill instructions"},
+		{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "Stored system"}}, TextContent: "Stored system"},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "summary"}}, TextContent: "summary"},
 	}
 
 	active := LLMActiveMessages(messages, 1, "fallback system")
-	if len(active) < 3 || active[0].Role != llm.RoleSystem || llm.MessageText(active[0]) != "Stored system" || active[1].Role != llm.RoleDeveloper {
+	if len(active) < 3 || active[0].Role != core.RoleSystem || core.MessageText(active[0]) != "Stored system" || active[1].Role != core.RoleDeveloper {
 		t.Fatalf("system/retained ordering = %#v", active)
 	}
 }
 
 func TestLLMActiveMessagesKeepsOnlyLatestCompactedSkillContext(t *testing.T) {
-	old := &llm.SkillActivationProvenance{Name: "review", SourcePath: "/repo/.skills/review", Origin: "user", Execution: "main", ActivatedAt: time.Now().Add(-time.Minute).Format(time.RFC3339Nano), RunID: "old"}
-	latest := &llm.SkillActivationProvenance{Name: "review", SourcePath: "/repo/.skills/review", Origin: "user", Execution: "main", ActivatedAt: time.Now().Format(time.RFC3339Nano), RunID: "latest"}
-	other := &llm.SkillActivationProvenance{Name: "explain", SourcePath: "/repo/.skills/explain", Origin: "user", Execution: "main", ActivatedAt: time.Now().Format(time.RFC3339Nano)}
+	old := &core.SkillActivationProvenance{Name: "review", SourcePath: "/repo/.skills/review", Origin: "user", Execution: "main", ActivatedAt: time.Now().Add(-time.Minute).Format(time.RFC3339Nano), RunID: "old"}
+	latest := &core.SkillActivationProvenance{Name: "review", SourcePath: "/repo/.skills/review", Origin: "user", Execution: "main", ActivatedAt: time.Now().Format(time.RFC3339Nano), RunID: "latest"}
+	other := &core.SkillActivationProvenance{Name: "explain", SourcePath: "/repo/.skills/explain", Origin: "user", Execution: "main", ActivatedAt: time.Now().Format(time.RFC3339Nano)}
 	messages := []Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: old}, {Type: llm.PartText, Text: "Old review instructions"}}, TextContent: "Old review instructions"},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "old reply"}}},
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: latest}, {Type: llm.PartText, Text: "Latest review instructions"}}, TextContent: "Latest review instructions"},
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: other}, {Type: llm.PartText, Text: "Explain instructions"}}, TextContent: "Explain instructions"},
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "compacted summary"}}},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: old}, {Type: core.PartText, Text: "Old review instructions"}}, TextContent: "Old review instructions"},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "old reply"}}},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: latest}, {Type: core.PartText, Text: "Latest review instructions"}}, TextContent: "Latest review instructions"},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: other}, {Type: core.PartText, Text: "Explain instructions"}}, TextContent: "Explain instructions"},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "compacted summary"}}},
 	}
 
 	active := LLMActiveMessages(messages, 4, "system")
 	var oldCount, latestCount, otherCount int
 	for _, message := range active {
-		text := llm.MessageText(message)
+		text := core.MessageText(message)
 		if strings.Contains(text, "Old review instructions") {
 			oldCount++
 		}
@@ -106,26 +106,26 @@ func TestLLMActiveMessagesKeepsOnlyLatestCompactedSkillContext(t *testing.T) {
 }
 
 func TestLLMActiveMessagesRetainsSkillInstructionsAcrossCompactionOnce(t *testing.T) {
-	provenance := &llm.SkillActivationProvenance{Name: "review", Origin: "user", Execution: "main", ActivatedAt: time.Now().Format(time.RFC3339Nano)}
+	provenance := &core.SkillActivationProvenance{Name: "review", Origin: "user", Execution: "main", ActivatedAt: time.Now().Format(time.RFC3339Nano)}
 	messages := []Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "old prompt"}}},
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: "Pinned review instructions"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "old reply"}}},
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "compacted summary"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "ack"}}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "old prompt"}}},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: provenance}, {Type: core.PartText, Text: "Pinned review instructions"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "old reply"}}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "compacted summary"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "ack"}}},
 	}
 
 	active := LLMActiveMessages(messages, 3, "system")
 	var count int
 	for _, message := range active {
-		if strings.Contains(llm.MessageText(message), "Pinned review instructions") {
+		if strings.Contains(core.MessageText(message), "Pinned review instructions") {
 			count++
-			if message.Role != llm.RoleDeveloper {
+			if message.Role != core.RoleDeveloper {
 				t.Fatalf("retained skill role = %q", message.Role)
 			}
 		}
 		for _, part := range message.Parts {
-			if part.Type == llm.PartSkillActivation {
+			if part.Type == core.PartSkillActivation {
 				t.Fatal("provider context leaked provenance control part")
 			}
 		}

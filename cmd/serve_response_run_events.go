@@ -11,12 +11,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionUsage llm.Usage) error {
+func (r *responseRun) complete(payload map[string]any, usage core.Usage, sessionUsage core.Usage) error {
 	r.terminalMu.Lock()
 	defer r.terminalMu.Unlock()
 	handoff := r.readDurableHandoff()

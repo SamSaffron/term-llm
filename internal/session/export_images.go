@@ -18,11 +18,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/share"
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register WebP decoding for exported images
-
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/share"
 )
 
 // ExportImageMode controls how transcript images are represented.
@@ -502,7 +501,7 @@ func applyEXIFOrientation(img image.Image, orientation int) image.Image {
 // toolResultDisplayedImages returns image sources that clients display beside
 // a tool result without a Markdown reference: legacy image paths (for example
 // image_generate output) and unreferenced image media artifacts.
-func toolResultDisplayedImages(result *llm.ToolResult) []exportImageSource {
+func toolResultDisplayedImages(result *core.ToolResult) []exportImageSource {
 	if result == nil {
 		return nil
 	}
@@ -533,7 +532,7 @@ func isExportImageMediaType(mediaType string) bool {
 	return mediaType == "" || strings.HasPrefix(mediaType, "image/")
 }
 
-func exportMediaAlt(item llm.MediaArtifact) string {
+func exportMediaAlt(item core.MediaArtifact) string {
 	for _, value := range []string{item.Caption, item.Name} {
 		if value = strings.Join(strings.Fields(value), " "); value != "" {
 			return value
@@ -549,7 +548,7 @@ func exportImageAltForTool(name string) string {
 	return "Image"
 }
 
-func partImageSource(part llm.Part, alt string) exportImageSource {
+func partImageSource(part core.Part, alt string) exportImageSource {
 	source := exportImageSource{Path: part.ImagePath, Alt: alt}
 	if part.ImageData != nil {
 		source.Base64 = part.ImageData.Base64

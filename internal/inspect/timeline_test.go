@@ -4,19 +4,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func swapMessage(id int64, marker llm.ModelSwapMarker) session.Message {
-	msg := llm.ModelSwapEventMessage(marker)
+func swapMessage(id int64, marker core.ModelSwapMarker) session.Message {
+	msg := core.ModelSwapEventMessage(marker)
 	return inspectMessage(id, msg.Role, msg.Parts...)
 }
 
 func TestInspectModelTimelineHeader(t *testing.T) {
 	meta := &session.Session{Provider: "OpenAI label", ProviderKey: "openai", Model: "gpt-5-high", ReasoningMode: "pro", Agent: "dev"}
 	current := ModelInfo{Provider: "openai", Model: "gpt-5", Effort: "high", ReasoningMode: "pro", Agent: "dev"}
-	first := llm.ModelSwapMarker{FromProvider: "claude-bin", FromModel: "opus-max", FromAgent: "source", ToProvider: "openai", ToModel: "gpt-5-high"}
+	first := core.ModelSwapMarker{FromProvider: "claude-bin", FromModel: "opus-max", FromAgent: "source", ToProvider: "openai", ToModel: "gpt-5-high"}
 	for _, tt := range []struct {
 		name     string
 		messages []session.Message
@@ -24,9 +25,9 @@ func TestInspectModelTimelineHeader(t *testing.T) {
 	}{
 		{"no marker", nil, current},
 		{"one marker", []session.Message{swapMessage(1, first)}, ModelInfo{Provider: "claude-bin", Model: "opus", Effort: "max", Agent: "source"}},
-		{"first of multiple", []session.Message{swapMessage(1, first), swapMessage(2, llm.ModelSwapMarker{FromModel: "later"})}, ModelInfo{Provider: "claude-bin", Model: "opus", Effort: "max", Agent: "source"}},
-		{"missing fields stay unknown", []session.Message{swapMessage(1, llm.ModelSwapMarker{FromModel: "old"})}, ModelInfo{Model: "old"}},
-		{"empty from stays unknown", []session.Message{swapMessage(1, llm.ModelSwapMarker{})}, ModelInfo{}},
+		{"first of multiple", []session.Message{swapMessage(1, first), swapMessage(2, core.ModelSwapMarker{FromModel: "later"})}, ModelInfo{Provider: "claude-bin", Model: "opus", Effort: "max", Agent: "source"}},
+		{"missing fields stay unknown", []session.Message{swapMessage(1, core.ModelSwapMarker{FromModel: "old"})}, ModelInfo{Model: "old"}},
+		{"empty from stays unknown", []session.Message{swapMessage(1, core.ModelSwapMarker{})}, ModelInfo{}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d := Project(tt.messages, Options{Session: meta})
@@ -64,10 +65,10 @@ func TestInspectModelChangeBlocks(t *testing.T) {
 		{"naive", "succeeded"}, {"handover", "succeeded"}, {"handover", "failed"}, {"naive", "started"},
 	} {
 		t.Run(tt.strategy+"/"+tt.status, func(t *testing.T) {
-			marker := llm.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5-high", FromAgent: "dev", ToProvider: "claude-bin", ToModel: "opus-max", ToAgent: "reviewer", Strategy: tt.strategy, Status: tt.status, DisplayText: "stale display"}
+			marker := core.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5-high", FromAgent: "dev", ToProvider: "claude-bin", ToModel: "opus-max", ToAgent: "reviewer", Strategy: tt.strategy, Status: tt.status, DisplayText: "stale display"}
 			d := Project([]session.Message{swapMessage(12, marker)}, Options{})
 			block := d.Blocks[0]
-			want := llm.FormatModelSwapMarker(marker)
+			want := core.FormatModelSwapMarker(marker)
 			if block.Kind != "model_change" || block.ID != "m12.p0.model_change" || block.Title != want || !block.HasBody {
 				t.Fatalf("block = %+v", block)
 			}
@@ -87,7 +88,7 @@ func TestInspectModelChangeBlocks(t *testing.T) {
 }
 
 func TestInspectHandoverDocumentAndAcknowledgement(t *testing.T) {
-	history := llm.ReconstructHandoverHistory("system", "briefing\n\nexact body\n", "dev", "reviewer")
+	history := engine.ReconstructHandoverHistory("system", "briefing\n\nexact body\n", "dev", "reviewer")
 	messages := make([]session.Message, len(history))
 	for i, msg := range history {
 		messages[i] = inspectMessage(int64(i+1), msg.Role, msg.Parts...)
@@ -112,7 +113,7 @@ func TestInspectHandoverDocumentAndAcknowledgement(t *testing.T) {
 }
 
 func TestInspectLegacyModelMarker(t *testing.T) {
-	msg := swapMessage(1, llm.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5-high"})
+	msg := swapMessage(1, core.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5-high"})
 	msg.TextContent, msg.Parts = msg.Parts[0].Text, nil
 	d := Project([]session.Message{msg}, Options{})
 	if d.Header.InitialModel.Model != "gpt-5" || d.Blocks[0].Kind != "model_change" {

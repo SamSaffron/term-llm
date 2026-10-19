@@ -6,7 +6,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestSteeringMigrationPreservesLegacyPayloadOrderAndCascade(t *testing.T) {
@@ -32,8 +33,8 @@ func TestSteeringMigrationPreservesLegacyPayloadOrderAndCascade(t *testing.T) {
 			}
 		}
 	}
-	message := llm.UserText("keep full context")
-	message.Parts = append(message.Parts, llm.Part{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "original-bytes"}})
+	message := core.UserText("keep full context")
+	message.Parts = append(message.Parts, core.Part{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "original-bytes"}})
 	payload, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +57,7 @@ func TestSteeringMigrationPreservesLegacyPayloadOrderAndCascade(t *testing.T) {
 	}
 	for _, entry := range pending {
 		encoded, _ := json.Marshal(entry.Message)
-		if string(encoded) != string(payload) || entry.Origin != llm.SteeringOriginLegacy || entry.DisplayText != "visible guidance" {
+		if string(encoded) != string(payload) || entry.Origin != engine.SteeringOriginLegacy || entry.DisplayText != "visible guidance" {
 			t.Fatalf("payload changed: %+v", entry)
 		}
 	}

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestServeServerConfigUploadsRoute(t *testing.T) {
@@ -382,10 +382,10 @@ func TestSessionMessageFilePartDownloadURL(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := &serveServer{}
-			entry := srv.sessionMessageFilePart(llm.Part{
-				Type:     llm.PartFile,
+			entry := srv.sessionMessageFilePart(core.Part{
+				Type:     core.PartFile,
 				FilePath: tt.filePath,
-				FileData: &llm.ToolFileData{MediaType: "text/plain", Filename: "notes.txt", SizeBytes: 4},
+				FileData: &core.ToolFileData{MediaType: "text/plain", Filename: "notes.txt", SizeBytes: 4},
 			})
 			if entry.FileURL != tt.wantURL {
 				t.Errorf("file_url = %q, want %q", entry.FileURL, tt.wantURL)
@@ -405,7 +405,7 @@ func TestSessionMessageFilePartDownloadURL(t *testing.T) {
 	// A nil receiver must never panic: the projection is reached from code paths
 	// that tolerate an unconfigured server.
 	var nilServer *serveServer
-	entry := nilServer.sessionMessageFilePart(llm.Part{Type: llm.PartFile, FilePath: inside})
+	entry := nilServer.sessionMessageFilePart(core.Part{Type: core.PartFile, FilePath: inside})
 	if entry.FileURL != "" {
 		t.Errorf("nil server file_url = %q, want empty", entry.FileURL)
 	}

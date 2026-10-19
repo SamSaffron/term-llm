@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
 )
@@ -127,7 +129,7 @@ func groupedCount(n int64) string {
 
 // appendUsageSection adds a helper-usage section only when the helper actually
 // ran. A wall of all-zero sections buries the counters that do carry data.
-func appendUsageSection(out *serveStatsResponse, title string, n int, u llm.Usage) {
+func appendUsageSection(out *serveStatsResponse, title string, n int, u core.Usage) {
 	if n == 0 && u.BillableCountersZero() {
 		return
 	}
@@ -213,11 +215,11 @@ func statsResponseForRuntime(rt *serveRuntime) *serveStatsResponse {
 }
 
 func estimateStatsMessageTokens(messages []session.Message) int {
-	llmMessages := make([]llm.Message, 0, len(messages))
+	llmMessages := make([]core.Message, 0, len(messages))
 	for _, message := range messages {
 		llmMessages = append(llmMessages, message.ToLLMMessage())
 	}
-	return llm.EstimateMessageTokens(llmMessages)
+	return engine.EstimateMessageTokens(llmMessages)
 }
 
 func appendStatsContextSections(out *serveStatsResponse, meta *session.Session, messages []session.Message, rt *serveRuntime, id string) []session.Message {
@@ -291,16 +293,16 @@ func appendStatsContextSections(out *serveStatsResponse, meta *session.Session, 
 	}
 	out.Sections = append(out.Sections, serveStatsSection{"Current Context / Window Pressure", pressure})
 	usage := out.Metrics
-	appendUsageSection(out, "Cumulative Token Usage · "+out.Scope, usage.LLMTurns, llm.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedInputTokens: usage.CachedInputTokens, CacheWriteTokens: usage.CacheWriteTokens})
+	appendUsageSection(out, "Cumulative Token Usage · "+out.Scope, usage.LLMTurns, core.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedInputTokens: usage.CachedInputTokens, CacheWriteTokens: usage.CacheWriteTokens})
 	return active
 }
 
 func appendStatsActivitySections(out *serveStatsResponse, meta *session.Session, messages, active []session.Message, rt *serveRuntime) {
-	roles := map[llm.Role]int{}
+	roles := map[core.Role]int{}
 	for _, message := range active {
 		roles[message.Role]++
 	}
-	activity := []serveStatsRow{statsRow("Active messages", len(active)), statsRow("User messages", roles[llm.RoleUser]), statsRow("Assistant messages", roles[llm.RoleAssistant]), statsRow("Tool messages", roles[llm.RoleTool])}
+	activity := []serveStatsRow{statsRow("Active messages", len(active)), statsRow("User messages", roles[core.RoleUser]), statsRow("Assistant messages", roles[core.RoleAssistant]), statsRow("Tool messages", roles[core.RoleTool])}
 	if meta != nil {
 		// Session status is left out: "interrupted" describes the last run, not
 		// the session, and a usage report is not where anyone learns it.

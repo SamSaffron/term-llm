@@ -7,7 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -32,7 +33,7 @@ type serveRunPersistence struct {
 	injectedPlatform                    string
 
 	mu                                                      sync.Mutex
-	baseHistory, inputMessages, produced                    []llm.Message
+	baseHistory, inputMessages, produced                    []core.Message
 	systemPromptInjected                                    bool
 	lastAppendedIdx                                         int
 	assistantSnapshotDirty, assistantSnapshotNeedsReconcile bool
@@ -41,19 +42,19 @@ type serveRunPersistence struct {
 	pendingAssistantTextPersisted                           bool
 	compactedActiveHistory                                  bool
 	appendOnlyPersisted, initialPersisted                   bool
-	initialMessages                                         []llm.Message
+	initialMessages                                         []core.Message
 	initialAppendedIdx                                      int
 	lastAppendResult                                        appendMessagesResult
 
 	compactionUsageMu sync.Mutex
-	compactionUsage   llm.Usage
+	compactionUsage   core.Usage
 }
 
-func newServeRunPersistence(rt *serveRuntime, sessionID string, turnIndex int, spec serveRunSpec, baseHistory, inputMessages []llm.Message, systemPromptInjected bool, injectedPlatform string) *serveRunPersistence {
+func newServeRunPersistence(rt *serveRuntime, sessionID string, turnIndex int, spec serveRunSpec, baseHistory, inputMessages []core.Message, systemPromptInjected bool, injectedPlatform string) *serveRunPersistence {
 	p := &serveRunPersistence{rt: rt, sessionID: sessionID, turnIndex: turnIndex, stateful: spec.stateful, persisted: spec.persisted, replaceHistory: spec.replaceHistory, batchInitial: spec.batchInitial, baseHistory: baseHistory, inputMessages: inputMessages, systemPromptInjected: systemPromptInjected, injectedPlatform: injectedPlatform, pendingAssistantIdx: -1}
 	p.appendOnlyPersisted = spec.persisted && !spec.replaceHistory && rt.historyPersisted && (!isIdentifiedUserBatch(inputMessages) || spec.batchInitial)
 	if systemPromptInjected {
-		p.initialMessages = append(p.initialMessages, llm.SystemText(rt.systemPrompt))
+		p.initialMessages = append(p.initialMessages, core.SystemText(rt.systemPrompt))
 	}
 	p.initialMessages = append(p.initialMessages, inputMessages...)
 	return p
@@ -63,17 +64,17 @@ func (p *serveRunPersistence) persistPlatformInjectionLocked() {
 		p.rt.lastInjectedPlatform = p.injectedPlatform
 	}
 }
-func (p *serveRunPersistence) buildSnapshotLocked() []llm.Message {
-	out := make([]llm.Message, 0, len(p.baseHistory)+len(p.inputMessages)+len(p.produced)+1)
+func (p *serveRunPersistence) buildSnapshotLocked() []core.Message {
+	out := make([]core.Message, 0, len(p.baseHistory)+len(p.inputMessages)+len(p.produced)+1)
 	if p.systemPromptInjected {
-		out = append(out, llm.SystemText(p.rt.systemPrompt))
+		out = append(out, core.SystemText(p.rt.systemPrompt))
 	}
 	out = append(out, p.baseHistory...)
 	out = append(out, p.inputMessages...)
 	out = append(out, p.produced...)
 	return out
 }
-func (p *serveRunPersistence) snapshot() []llm.Message {
+func (p *serveRunPersistence) snapshot() []core.Message {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.buildSnapshotLocked()
@@ -129,9 +130,9 @@ func (p *serveRunPersistence) persistInitial(ctx context.Context, replacingExist
 		p.appendInitialLocked(ctx)
 		return
 	}
-	initial := make([]llm.Message, 0, len(p.baseHistory)+len(p.inputMessages)+1)
+	initial := make([]core.Message, 0, len(p.baseHistory)+len(p.inputMessages)+1)
 	if p.systemPromptInjected {
-		initial = append(initial, llm.SystemText(p.rt.systemPrompt))
+		initial = append(initial, core.SystemText(p.rt.systemPrompt))
 	}
 	initial = append(initial, p.baseHistory...)
 	initial = append(initial, p.inputMessages...)
@@ -163,9 +164,9 @@ func (p *serveRunPersistence) updateStateAndAppendLocked(ctx context.Context) {
 			return
 		}
 		if !p.initialPersisted {
-			initial := make([]llm.Message, 0, len(p.baseHistory)+len(p.inputMessages)+1)
+			initial := make([]core.Message, 0, len(p.baseHistory)+len(p.inputMessages)+1)
 			if p.systemPromptInjected {
-				initial = append(initial, llm.SystemText(p.rt.systemPrompt))
+				initial = append(initial, core.SystemText(p.rt.systemPrompt))
 			}
 			initial = append(initial, p.baseHistory...)
 			initial = append(initial, p.inputMessages...)
@@ -179,7 +180,7 @@ func (p *serveRunPersistence) updateStateAndAppendLocked(ctx context.Context) {
 	}
 	p.persistPlatformInjectionLocked()
 }
-func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assistant llm.Message, finalize bool) {
+func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assistant core.Message, finalize bool) {
 	if p.pendingAssistantIdx < 0 {
 		p.pendingAssistantIdx = len(p.produced)
 		p.produced = append(p.produced, assistant)
@@ -204,9 +205,9 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 			return
 		}
 	} else if !p.initialPersisted {
-		initial := make([]llm.Message, 0, len(p.baseHistory)+len(p.inputMessages)+1)
+		initial := make([]core.Message, 0, len(p.baseHistory)+len(p.inputMessages)+1)
 		if p.systemPromptInjected {
-			initial = append(initial, llm.SystemText(p.rt.systemPrompt))
+			initial = append(initial, core.SystemText(p.rt.systemPrompt))
 		}
 		initial = append(initial, p.baseHistory...)
 		initial = append(initial, p.inputMessages...)
@@ -222,7 +223,7 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 	message.TurnIndex = p.turnIndex
 	if p.pendingAssistantMsgID != 0 {
 		message.ID = p.pendingAssistantMsgID
-		_, err := runResponseRunPersistence(ctx, []llm.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
+		_, err := runResponseRunPersistence(ctx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
 			return updateResponseRunStreamingMessage(session.WithResponseRunFence(dbCtx, fence), p.rt.store, p.sessionID, message, finalize)
 		})
 		if err == nil {
@@ -246,7 +247,7 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 		message = session.NewMessage(p.sessionID, assistant, -1)
 		message.TurnIndex = p.turnIndex
 	}
-	_, err := runResponseRunPersistence(ctx, []llm.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
+	_, err := runResponseRunPersistence(ctx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
 		return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), p.rt.store, p.sessionID, message)
 	})
 	if err != nil {
@@ -265,25 +266,25 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 	}
 	p.persistPlatformInjectionLocked()
 }
-func (p *serveRunPersistence) addCompactionUsage(usage llm.Usage) {
+func (p *serveRunPersistence) addCompactionUsage(usage core.Usage) {
 	p.compactionUsageMu.Lock()
 	p.compactionUsage.Add(usage)
 	p.compactionUsageMu.Unlock()
 }
-func (p *serveRunPersistence) compactionUsageSnapshot() llm.Usage {
+func (p *serveRunPersistence) compactionUsageSnapshot() core.Usage {
 	p.compactionUsageMu.Lock()
 	defer p.compactionUsageMu.Unlock()
 	return p.compactionUsage
 }
 
-func (p *serveRunPersistence) recordCompactionStats(result *llm.CompactionResult) {
+func (p *serveRunPersistence) recordCompactionStats(result *engine.CompactionResult) {
 	p.rt.recordHelperStats("compaction", result.Model, result.Usage)
 	if p.rt.statsCompactionCB != nil {
 		p.rt.statsCompactionCB(result)
 	}
 }
 
-func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm.CompactionResult) error {
+func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *engine.CompactionResult) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if result == nil {
@@ -310,7 +311,7 @@ func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm
 			}
 		}
 	}
-	var compacted []llm.Message
+	var compacted []core.Message
 	if handledByPlatform {
 		// Platform callbacks persist only durable replacement history. Keep the
 		// runtime snapshot durable too; Engine keeps ActiveMessages in its
@@ -324,7 +325,7 @@ func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm
 		if refreshed != nil {
 			p.rt.sessionMeta = refreshed
 		}
-		compacted = make([]llm.Message, 0, len(updated))
+		compacted = make([]core.Message, 0, len(updated))
 		for _, msg := range updated {
 			compacted = append(compacted, msg.ToLLMMessage())
 		}
@@ -364,7 +365,7 @@ func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm
 	p.assistantSnapshotDirty = false
 	p.assistantSnapshotNeedsReconcile = false
 	if p.stateful {
-		p.rt.history = append([]llm.Message(nil), compacted...)
+		p.rt.history = append([]core.Message(nil), compacted...)
 		p.rt.historyPersisted = p.persisted
 		// Compaction replaced the transcript any lane branched from.
 		p.rt.invalidateSideQuestionSnapshot()
@@ -375,8 +376,8 @@ func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm
 	return nil
 }
 
-func (p *serveRunPersistence) persistRuntimeSwitch(cbCtx context.Context, change llm.RuntimeSwitch) error {
-	marker := llm.ModelSwapMarker{
+func (p *serveRunPersistence) persistRuntimeSwitch(cbCtx context.Context, change engine.RuntimeSwitch) error {
+	marker := core.ModelSwapMarker{
 		FromProvider: runtimeProviderKey(p.rt),
 		FromModel:    change.PreviousModel,
 		FromEffort:   change.PreviousReasoningEffort,
@@ -386,7 +387,7 @@ func (p *serveRunPersistence) persistRuntimeSwitch(cbCtx context.Context, change
 		BoundaryID:   change.BoundaryID,
 		Status:       "succeeded",
 	}
-	msg := tagResponseRunMessage(cbCtx, llm.ModelSwapEventMessage(marker), -1)
+	msg := tagResponseRunMessage(cbCtx, core.ModelSwapEventMessage(marker), -1)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	markerIndex := len(p.produced)

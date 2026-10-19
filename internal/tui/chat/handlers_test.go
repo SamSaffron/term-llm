@@ -11,7 +11,9 @@ import (
 	"charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -276,7 +278,7 @@ func TestCtrlCFirstCancelsStreamingThenRequiresConfirmation(t *testing.T) {
 
 func TestStreamDoneWhileInspectorOpenSettlesChatAndRestoresComposer(t *testing.T) {
 	m := newTestChatModel(true)
-	m.messages = append(m.messages, session.Message{Role: llm.RoleUser, TextContent: "inspect me"})
+	m.messages = append(m.messages, session.Message{Role: core.RoleUser, TextContent: "inspect me"})
 	updated, _ := m.cmdInspect()
 	m = updated.(*Model)
 	m.streaming = true
@@ -299,7 +301,7 @@ func TestStreamDoneWhileInspectorOpenSettlesChatAndRestoresComposer(t *testing.T
 
 func TestApprovalLifecycleWhileInspectorOpenReachesChat(t *testing.T) {
 	m := newTestChatModel(true)
-	m.messages = append(m.messages, session.Message{Role: llm.RoleUser, TextContent: "inspect me"})
+	m.messages = append(m.messages, session.Message{Role: core.RoleUser, TextContent: "inspect me"})
 	updated, _ := m.cmdInspect()
 	m = updated.(*Model)
 	flushDone := make(chan struct{})
@@ -443,7 +445,7 @@ func TestPromptHistoryRecallsCurrentSessionThenCrossSessionByDate(t *testing.T) 
 	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	addPrompt := func(sess *session.Session, text string, at time.Time) session.Message {
 		t.Helper()
-		msg := session.NewMessage(sess.ID, llm.UserText(text), -1)
+		msg := session.NewMessage(sess.ID, core.UserText(text), -1)
 		msg.CreatedAt = at
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage(%q): %v", text, err)
@@ -548,7 +550,7 @@ func TestPromptHistoryWorksDuringStreamingSteeringComposer(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create sess: %v", err)
 	}
-	msg := session.NewMessage(sess.ID, llm.UserText("streaming history prompt"), -1)
+	msg := session.NewMessage(sess.ID, core.UserText("streaming history prompt"), -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -570,7 +572,7 @@ func TestPromptHistoryWorksDuringStreamingSteeringComposer(t *testing.T) {
 func TestPromptHistoryUpVisitsPendingImageBeforeRecallingMessage(t *testing.T) {
 	m := newTestChatModel(true)
 	m.store = &session.NoopStore{}
-	m.messages = []session.Message{{Role: llm.RoleUser, TextContent: "previous prompt"}}
+	m.messages = []session.Message{{Role: core.RoleUser, TextContent: "previous prompt"}}
 	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
 	m.setTextareaValue("first line\nsecond line")
 
@@ -611,7 +613,7 @@ func TestImageHistoryNavigationBypassesStreamingSteering(t *testing.T) {
 	m := newTestChatModel(true)
 	m.store = &session.NoopStore{}
 	m.streaming = true
-	m.messages = []session.Message{{Role: llm.RoleUser, TextContent: "previous prompt"}}
+	m.messages = []session.Message{{Role: core.RoleUser, TextContent: "previous prompt"}}
 	m.pendingSteering = []pendingSteeringUI{{ID: "queued", Text: "queued prompt"}}
 	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
 	m.setTextareaValue("")
@@ -634,9 +636,9 @@ func TestPromptHistoryFallsBackToInMemoryMessagesWithoutStore(t *testing.T) {
 	m := newTestChatModel(true)
 	m.store = &session.NoopStore{}
 	m.messages = []session.Message{
-		{Role: llm.RoleUser, TextContent: "first in-memory prompt"},
-		{Role: llm.RoleAssistant, TextContent: "reply"},
-		{Role: llm.RoleUser, TextContent: "second in-memory prompt"},
+		{Role: core.RoleUser, TextContent: "first in-memory prompt"},
+		{Role: core.RoleAssistant, TextContent: "reply"},
+		{Role: core.RoleUser, TextContent: "second in-memory prompt"},
 	}
 	m.setTextareaValue("")
 
@@ -720,7 +722,7 @@ func TestHandleKeyMsg_SlashPathSubmitsAsChatMessage(t *testing.T) {
 		t.Fatal("expected pasted slash path to submit as a chat message")
 	}
 	last := m.messages[len(m.messages)-1]
-	if last.Role != llm.RoleUser {
+	if last.Role != core.RoleUser {
 		t.Fatalf("last message role = %q, want user", last.Role)
 	}
 	if last.TextContent != pastedPath {
@@ -1053,8 +1055,8 @@ func TestHandleKeyMsg_CancelsSelectedPendingSteering(t *testing.T) {
 			m.streaming = true
 			firstID := m.nextPendingSteeringID()
 			secondID := m.nextPendingSteeringID()
-			m.applyInterruptAction(firstID, "first note", llm.InterruptSteer)
-			m.applyInterruptAction(secondID, "second note", llm.InterruptSteer)
+			m.applyInterruptAction(firstID, "first note", engine.InterruptSteer)
+			m.applyInterruptAction(secondID, "second note", engine.InterruptSteer)
 
 			_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
 			_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
@@ -1088,7 +1090,7 @@ func TestHandleKeyMsg_BackspacePreservesUnselectedOrObscuredSteering(t *testing.
 		t.Run(state, func(t *testing.T) {
 			m := newTestChatModel(false)
 			m.streaming = true
-			m.applyInterruptAction("queued", "keep this", llm.InterruptSteer)
+			m.applyInterruptAction("queued", "keep this", engine.InterruptSteer)
 			if state != "unselected" {
 				_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
 			}
@@ -1110,7 +1112,7 @@ func TestHandleKeyMsg_StreamingEnterSteersImmediatelyWithoutFastProvider(t *test
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Thinking"
-	fastProvider := llm.NewMockProvider("fast").AddTextResponse("cancel")
+	fastProvider := mockprovider.NewMockProvider("fast").AddTextResponse("cancel")
 	m.fastProvider = fastProvider
 	m.setTextareaValue("stop changing the schema; inspect it first")
 
@@ -1134,11 +1136,11 @@ func TestHandleKeyMsg_StreamingEnterSteersImmediatelyWithoutFastProvider(t *test
 
 func TestHandleKeyMsg_SimpleStreamKeepsUnconsumableSteerAsDraft(t *testing.T) {
 	m := newTestChatModel(false)
-	provider := llm.NewMockProvider("simple").
-		WithCapabilities(llm.Capabilities{ToolCalls: false}).
-		AddTurn(llm.MockTurn{Text: "simple response", Delay: time.Second})
-	m.engine = llm.NewEngine(provider, nil)
-	stream, err := m.engine.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.UserText("hello")}})
+	provider := mockprovider.NewMockProvider("simple").
+		WithCapabilities(core.Capabilities{ToolCalls: false}).
+		AddTurn(mockprovider.MockTurn{Text: "simple response", Delay: time.Second})
+	m.engine = engine.NewEngine(provider, nil)
+	stream, err := m.engine.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("hello")}})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -1167,9 +1169,9 @@ func TestStreamEventSteering_DoesNotDiscardNewerPendingSteer(t *testing.T) {
 	m.phase = "Thinking"
 
 	firstID := m.nextPendingSteeringID()
-	m.applyInterruptAction(firstID, "first note", llm.InterruptSteer)
+	m.applyInterruptAction(firstID, "first note", engine.InterruptSteer)
 	secondID := m.nextPendingSteeringID()
-	m.applyInterruptAction(secondID, "second note", llm.InterruptSteer)
+	m.applyInterruptAction(secondID, "second note", engine.InterruptSteer)
 
 	_, _ = m.Update(streamEventMsg{event: ui.SteeringEvent("first note", firstID)})
 
@@ -1192,9 +1194,9 @@ func TestStreamEventSteering_MatchesByIDNotText(t *testing.T) {
 	m.streaming = true
 
 	firstID := m.nextPendingSteeringID()
-	m.applyInterruptAction(firstID, "same text", llm.InterruptSteer)
+	m.applyInterruptAction(firstID, "same text", engine.InterruptSteer)
 	secondID := m.nextPendingSteeringID()
-	m.applyInterruptAction(secondID, "same text", llm.InterruptSteer)
+	m.applyInterruptAction(secondID, "same text", engine.InterruptSteer)
 
 	_, _ = m.Update(streamEventMsg{event: ui.SteeringEvent("same text", firstID)})
 
@@ -1214,9 +1216,9 @@ func TestStreamEventSteering_MatchesByIDNotText(t *testing.T) {
 
 func TestRestorePendingSteeringDraft_RestoresImageParts(t *testing.T) {
 	m := newTestChatModel(false)
-	m.engine.QueueSteering(llm.QueuedSteering{
+	m.engine.QueueSteering(engine.QueuedSteering{
 		ID:      "img-draft",
-		Message: llm.UserImageMessage("image/png", base64.StdEncoding.EncodeToString([]byte("img")), "describe"),
+		Message: core.UserImageMessage("image/png", base64.StdEncoding.EncodeToString([]byte("img")), "describe"),
 	})
 
 	m.restorePendingSteeringDraft()
@@ -1253,7 +1255,7 @@ func TestStreamDone_OccupiedComposerKeepsQueuedSteerVisibleAndCancellable(t *tes
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.setTextareaValue("unrelated draft")
-	m.engine.QueueSteering(llm.QueuedSteering{ID: "late-steer", Message: llm.UserText("keep sleeping"), DisplayText: "keep sleeping"})
+	m.engine.QueueSteering(engine.QueuedSteering{ID: "late-steer", Message: core.UserText("keep sleeping"), DisplayText: "keep sleeping"})
 	m.setPendingSteering("late-steer", "keep sleeping")
 
 	_, _ = m.Update(streamEventMsg{event: ui.DoneEvent(0)})
@@ -1300,7 +1302,7 @@ func TestHandleKeyMsg_StreamingEscCancelsActiveStream(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.pendingAssistantMsgID = 42
-	m.pendingAssistantSnapshot = llm.AssistantText("partial answer")
+	m.pendingAssistantSnapshot = core.AssistantText("partial answer")
 	m.pendingAssistantSnapshotSet = true
 	m.completedAssistantTurns = 1
 
@@ -1611,7 +1613,7 @@ func TestPasteCollapse_StreamingSteerBypassesClassifierWithExpandedContent(t *te
 	stubClipboard(t)
 	m := newTestChatModel(false)
 	m.streaming = true
-	fastProvider := llm.NewMockProvider("fast").AddTextResponse("cancel")
+	fastProvider := mockprovider.NewMockProvider("fast").AddTextResponse("cancel")
 	m.fastProvider = fastProvider
 	pasteText := strings.Repeat("async alpha ", 12) + "\n" + strings.Repeat("async beta ", 12)
 
@@ -1659,8 +1661,8 @@ func TestStreamingSideSlashInvalidatesCachedAltScreenBackgroundBeforeOverlay(t *
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.streaming = true
 	m.streamRenderMinInterval = 0
-	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) {
-		return llm.NewMockProvider("side").AddTextResponse("answer"), nil
+	m.SetSideQuestionProviderFactory(func(_, _ string) (core.Provider, error) {
+		return mockprovider.NewMockProvider("side").AddTextResponse("answer"), nil
 	})
 	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
 	const submitted = "/side stale-composer-token"

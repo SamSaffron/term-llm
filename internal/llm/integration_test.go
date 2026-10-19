@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
@@ -18,8 +19,8 @@ func TestEngineHarness_SimpleTextResponse(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("Hello! I'm a mock LLM.")
 
-	output, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Hello")},
+	output, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Hello")},
 	})
 
 	if err != nil {
@@ -41,8 +42,8 @@ func TestEngineHarness_MultiTurnConversation(t *testing.T) {
 	h.Provider.AddTextResponse("Hello!")
 
 	// First turn
-	output1, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Hi there")},
+	output1, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Hi there")},
 	})
 	if err != nil {
 		t.Fatalf("Run() turn 1 error = %v", err)
@@ -54,11 +55,11 @@ func TestEngineHarness_MultiTurnConversation(t *testing.T) {
 	h2.Provider.AddTextResponse("I'm doing well, thanks!")
 
 	// Second turn
-	output2, err := h2.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{
-			llm.UserText("Hi there"),
-			llm.AssistantText("Hello!"),
-			llm.UserText("How are you?"),
+	output2, err := h2.Run(context.Background(), core.Request{
+		Messages: []core.Message{
+			core.UserText("Hi there"),
+			core.AssistantText("Hello!"),
+			core.UserText("How are you?"),
 		},
 	})
 	if err != nil {
@@ -76,8 +77,8 @@ func TestEngineHarness_ToolCall(t *testing.T) {
 	mockReadFile := h.AddMockTool("read_file", "package main\n\nfunc main() {}")
 
 	// Turn 1: LLM requests tool call
-	h.Provider.AddTurn(llm.MockTurn{
-		ToolCalls: []llm.ToolCall{{
+	h.Provider.AddTurn(mockprovider.MockTurn{
+		ToolCalls: []core.ToolCall{{
 			ID:        "call_1",
 			Name:      "read_file",
 			Arguments: json.RawMessage(`{"path": "main.go"}`),
@@ -87,8 +88,8 @@ func TestEngineHarness_ToolCall(t *testing.T) {
 	// Turn 2: LLM responds after seeing tool result
 	h.Provider.AddTextResponse("The file defines the main entry point.")
 
-	output, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("What's in main.go?")},
+	output, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("What's in main.go?")},
 		Tools:    h.Registry.AllSpecs(),
 	})
 
@@ -131,8 +132,8 @@ func TestEngineHarness_MultipleToolCalls(t *testing.T) {
 	mockGrep := h.AddMockTool("grep", "found: match on line 5")
 
 	// Turn 1: LLM requests multiple tool calls
-	h.Provider.AddTurn(llm.MockTurn{
-		ToolCalls: []llm.ToolCall{
+	h.Provider.AddTurn(mockprovider.MockTurn{
+		ToolCalls: []core.ToolCall{
 			{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path": "main.go"}`)},
 			{ID: "call_2", Name: "grep", Arguments: json.RawMessage(`{"pattern": "func"}`)},
 		},
@@ -141,8 +142,8 @@ func TestEngineHarness_MultipleToolCalls(t *testing.T) {
 	// Turn 2: LLM responds with summary
 	h.Provider.AddTextResponse("Found the function you're looking for.")
 
-	output, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Find the function")},
+	output, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Find the function")},
 		Tools:    h.Registry.AllSpecs(),
 	})
 
@@ -171,14 +172,14 @@ func TestEngineHarness_ToolError(t *testing.T) {
 		"fail_tool",
 		"A tool that always fails",
 		map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
-		func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-			return llm.ToolOutput{}, context.DeadlineExceeded
+		func(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+			return core.ToolOutput{}, context.DeadlineExceeded
 		},
 	))
 
 	// Turn 1: LLM requests the failing tool
-	h.Provider.AddTurn(llm.MockTurn{
-		ToolCalls: []llm.ToolCall{
+	h.Provider.AddTurn(mockprovider.MockTurn{
+		ToolCalls: []core.ToolCall{
 			{ID: "call_1", Name: "fail_tool", Arguments: json.RawMessage(`{}`)},
 		},
 	})
@@ -186,8 +187,8 @@ func TestEngineHarness_ToolError(t *testing.T) {
 	// Turn 2: LLM gracefully handles the error
 	h.Provider.AddTextResponse("I encountered an error trying to do that.")
 
-	output, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Do the thing")},
+	output, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Do the thing")},
 		Tools:    h.Registry.AllSpecs(),
 	})
 
@@ -206,8 +207,8 @@ func TestEngineHarness_ScreenCapture(t *testing.T) {
 
 	h.Provider.AddTextResponse("This is a test response with multiple words.")
 
-	_, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Test")},
+	_, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Test")},
 	})
 
 	if err != nil {
@@ -246,8 +247,8 @@ func TestEngineHarness_StreamingChunks(t *testing.T) {
 	longText := "This is a longer response that will be split into multiple chunks during streaming to simulate realistic LLM behavior."
 	h.Provider.AddTextResponse(longText)
 
-	output, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Say something long")},
+	output, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Say something long")},
 	})
 
 	if err != nil {
@@ -272,7 +273,7 @@ func TestEngineHarness_ContextCancellation(t *testing.T) {
 	h := testutil.NewEngineHarness()
 
 	// Add a response with delay
-	h.Provider.AddTurn(llm.MockTurn{
+	h.Provider.AddTurn(mockprovider.MockTurn{
 		Text:  "This response has a delay",
 		Delay: 5 * time.Second,
 	})
@@ -282,8 +283,8 @@ func TestEngineHarness_ContextCancellation(t *testing.T) {
 	// Cancel immediately
 	cancel()
 
-	_, err := h.Run(ctx, llm.Request{
-		Messages: []llm.Message{llm.UserText("Test")},
+	_, err := h.Run(ctx, core.Request{
+		Messages: []core.Message{core.UserText("Test")},
 	})
 
 	if err == nil {
@@ -304,8 +305,8 @@ func TestEngineHarness_MaxToolOutputChars(t *testing.T) {
 	h.Engine.SetMaxToolOutputChars(200)
 
 	// Turn 1: LLM requests tool call
-	h.Provider.AddTurn(llm.MockTurn{
-		ToolCalls: []llm.ToolCall{{
+	h.Provider.AddTurn(mockprovider.MockTurn{
+		ToolCalls: []core.ToolCall{{
 			ID:        "call_1",
 			Name:      "read_file",
 			Arguments: json.RawMessage(`{"path": "big.txt"}`),
@@ -315,8 +316,8 @@ func TestEngineHarness_MaxToolOutputChars(t *testing.T) {
 	// Turn 2: LLM responds after seeing truncated result
 	h.Provider.AddTextResponse("File is large.")
 
-	_, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Read big.txt")},
+	_, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Read big.txt")},
 		Tools:    h.Registry.AllSpecs(),
 	})
 	if err != nil {
@@ -373,8 +374,8 @@ func TestEngineHarness_MaxToolOutputCharsDisabled(t *testing.T) {
 	// Leave maxToolOutputChars at 0 (disabled)
 
 	// Turn 1: LLM requests tool call
-	h.Provider.AddTurn(llm.MockTurn{
-		ToolCalls: []llm.ToolCall{{
+	h.Provider.AddTurn(mockprovider.MockTurn{
+		ToolCalls: []core.ToolCall{{
 			ID:        "call_1",
 			Name:      "read_file",
 			Arguments: json.RawMessage(`{"path": "big.txt"}`),
@@ -384,8 +385,8 @@ func TestEngineHarness_MaxToolOutputCharsDisabled(t *testing.T) {
 	// Turn 2: LLM responds
 	h.Provider.AddTextResponse("OK")
 
-	_, err := h.Run(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("Read big.txt")},
+	_, err := h.Run(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("Read big.txt")},
 		Tools:    h.Registry.AllSpecs(),
 	})
 	if err != nil {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 const (
@@ -27,7 +27,7 @@ type progressTool struct {
 }
 
 // NewUpdateProgressTool creates the non-finishing progress checkpoint tool.
-func NewUpdateProgressTool() llm.Tool {
+func NewUpdateProgressTool() core.Tool {
 	return &progressTool{
 		name:        UpdateProgressToolName,
 		description: "Persist the current best-so-far state as a JSON object without ending the run.",
@@ -35,7 +35,7 @@ func NewUpdateProgressTool() llm.Tool {
 }
 
 // NewFinalizeProgressTool creates the finishing progress tool used only during finalization.
-func NewFinalizeProgressTool() llm.Tool {
+func NewFinalizeProgressTool() core.Tool {
 	return &progressTool{
 		name:        FinalizeProgressToolName,
 		description: "Persist the final best-so-far state as a JSON object and finish the run.",
@@ -43,8 +43,8 @@ func NewFinalizeProgressTool() llm.Tool {
 	}
 }
 
-func (t *progressTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *progressTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        t.name,
 		Description: t.description,
 		Schema: map[string]any{
@@ -73,10 +73,10 @@ func (t *progressTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *progressTool) Execute(_ context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *progressTool) Execute(_ context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	parsed, err := parseProgressToolArgs(args)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 
 	if t.final {
@@ -87,9 +87,9 @@ func (t *progressTool) Execute(_ context.Context, args json.RawMessage) (llm.Too
 	}
 
 	if parsed.Final {
-		return llm.TextOutput("final progress saved"), nil
+		return core.TextOutput("final progress saved"), nil
 	}
-	return llm.TextOutput("progress saved"), nil
+	return core.TextOutput("progress saved"), nil
 }
 
 func (t *progressTool) Preview(args json.RawMessage) string {

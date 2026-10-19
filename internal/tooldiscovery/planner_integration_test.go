@@ -15,7 +15,9 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	internalmcp "github.com/samsaffron/term-llm/internal/mcp"
 )
 
@@ -77,7 +79,7 @@ func startDiscoveryTestManager(t *testing.T) *internalmcp.Manager {
 	return nil
 }
 
-func drainStream(t *testing.T, stream llm.Stream) {
+func drainStream(t *testing.T, stream core.Stream) {
 	t.Helper()
 	for {
 		_, err := stream.Recv()
@@ -90,7 +92,7 @@ func drainStream(t *testing.T, stream llm.Stream) {
 	}
 }
 
-func toolNames(specs []llm.ToolSpec) []string {
+func toolNames(specs []core.ToolSpec) []string {
 	names := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		names = append(names, spec.Name)
@@ -118,12 +120,12 @@ func TestAlwaysLoadPinsOnlyAuthorisedTool(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	provider := llm.NewMockProvider("pinned").AddTextResponse("done")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 24}, manager, engine); err != nil {
+	provider := mockprovider.NewMockProvider("pinned").AddTextResponse("done")
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 24}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "pinned", Messages: []llm.Message{llm.UserText("hi")}, MaxTurns: 1})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "pinned", Messages: []core.Message{core.UserText("hi")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,10 +135,10 @@ func TestAlwaysLoadPinsOnlyAuthorisedTool(t *testing.T) {
 	}
 }
 
-func toolResultContent(messages []llm.Message, toolName string) string {
+func toolResultContent(messages []core.Message, toolName string) string {
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.Name == toolName {
+			if part.Type == core.PartToolResult && part.ToolResult != nil && part.ToolResult.Name == toolName {
 				return part.ToolResult.Content
 			}
 		}
@@ -172,14 +174,14 @@ func TestAmbiguousOriginalNameDoesNotActivate(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	provider := llm.NewMockProvider("ambiguous")
+	provider := mockprovider.NewMockProvider("ambiguous")
 	provider.AddToolCall("search", ToolSearchName, map[string]any{"tool_names": []string{"special_action"}})
 	provider.AddTextResponse("resolved ambiguity")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "ambiguous", Messages: []llm.Message{llm.UserText("load special_action")}, MaxTurns: 3})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "ambiguous", Messages: []core.Message{core.UserText("load special_action")}, MaxTurns: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +194,7 @@ func TestAmbiguousOriginalNameDoesNotActivate(t *testing.T) {
 	if !strings.Contains(result, "ambiguous") || !strings.Contains(result, "alpha__special_action") || !strings.Contains(result, "beta__special_action") {
 		t.Fatalf("ambiguous search result was not actionable: %q", result)
 	}
-	diagnostics, _ := engine.ToolDiscoveryDiagnostics("ambiguous")
+	diagnostics, _ := eng.ToolDiscoveryDiagnostics("ambiguous")
 	if diagnostics.DynamicActive != 0 {
 		t.Fatalf("ambiguous original activated a candidate: %+v", diagnostics)
 	}
@@ -201,7 +203,7 @@ func TestAmbiguousOriginalNameDoesNotActivate(t *testing.T) {
 func TestDefaultDynamicWorkingSetHandlesLargeCatalogue(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("working-set")
+	provider := mockprovider.NewMockProvider("working-set")
 	first, second := make([]string, 8), make([]string, 8)
 	for i := 0; i < 8; i++ {
 		first[i] = fmt.Sprintf("realistic_operation_%02d", i)
@@ -211,16 +213,16 @@ func TestDefaultDynamicWorkingSetHandlesLargeCatalogue(t *testing.T) {
 	provider.AddToolCall("search-2", ToolSearchName, map[string]any{"tool_names": second})
 	provider.AddToolCall("search-3", ToolSearchName, map[string]any{"tool_names": []string{"special_action"}})
 	provider.AddTextResponse("working set handled")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 24}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 24}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "working-set", Messages: []llm.Message{llm.UserText("load many")}, MaxTurns: 5})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "working-set", Messages: []core.Message{core.UserText("load many")}, MaxTurns: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
 	drainStream(t, stream)
-	diagnostics, _ := engine.ToolDiscoveryDiagnostics("working-set")
+	diagnostics, _ := eng.ToolDiscoveryDiagnostics("working-set")
 	if diagnostics.DynamicLimit != config.DefaultToolDiscoveryMaxActiveTools || diagnostics.DynamicActive != 17 || diagnostics.DeferredCount != 8 {
 		t.Fatalf("working-set diagnostics = %+v", diagnostics)
 	}
@@ -233,19 +235,19 @@ func TestDefaultDynamicWorkingSetHandlesLargeCatalogue(t *testing.T) {
 func TestExactNameActivationLoadsValidToolsWhenOneNameIsUnavailable(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("partial-exact")
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine)
+	provider := mockprovider.NewMockProvider("partial-exact")
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "partial-exact", MaxTurns: 3}
+	req := core.Request{SessionID: "partial-exact", MaxTurns: 3}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "partial-exact-run"); err != nil {
 		t.Fatal(err)
 	}
 	defer planner.EndRun("partial-exact-run")
 
-	ctx := llm.ContextWithToolRunID(context.Background(), "partial-exact-run")
+	ctx := core.ContextWithToolRunID(context.Background(), "partial-exact-run")
 	args := json.RawMessage(`{
 		"tool_names": ["realistic_operation_00", "discourse_list_categories"]
 	}`)
@@ -272,13 +274,13 @@ func TestExactNameActivationLoadsValidToolsWhenOneNameIsUnavailable(t *testing.T
 func TestDynamicWorkingSetEvictsNeverExecutedBeforeLRU(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("eviction")
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 2}, manager, engine)
+	provider := mockprovider.NewMockProvider("eviction")
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 2}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "eviction", MaxTurns: 5}
+	req := core.Request{SessionID: "eviction", MaxTurns: 5}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "eviction-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -334,16 +336,16 @@ func TestDynamicWorkingSetEvictsNeverExecutedBeforeLRU(t *testing.T) {
 func TestSessionlessRunTracksExecutionForEviction(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("sessionless-eviction")
+	provider := mockprovider.NewMockProvider("sessionless-eviction")
 	provider.AddToolCall("search-1", ToolSearchName, map[string]any{"tool_names": []string{"realistic_operation_00", "realistic_operation_01"}})
 	provider.AddToolCall("execute-0", "federation__realistic_operation_00", map[string]any{})
 	provider.AddToolCall("search-2", ToolSearchName, map[string]any{"tool_names": []string{"realistic_operation_02"}})
 	provider.AddTextResponse("done")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 2}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 2}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, Messages: []llm.Message{llm.UserText("run without a durable session")}, MaxTurns: 5})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, Messages: []core.Message{core.UserText("run without a durable session")}, MaxTurns: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,13 +363,13 @@ func TestSessionlessRunTracksExecutionForEviction(t *testing.T) {
 func TestDynamicWorkingSetPrefersUnsentEvictionVictim(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("unsent-eviction")
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 3}, manager, engine)
+	provider := mockprovider.NewMockProvider("unsent-eviction")
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 3}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "unsent-eviction", MaxTurns: 5}
+	req := core.Request{SessionID: "unsent-eviction", MaxTurns: 5}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "unsent-eviction-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -395,13 +397,13 @@ func TestDynamicWorkingSetPrefersUnsentEvictionVictim(t *testing.T) {
 func TestDynamicWorkingSetNeverEvictsPinnedTools(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("pinned-eviction")
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 1}, manager, engine)
+	provider := mockprovider.NewMockProvider("pinned-eviction")
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 1}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "pinned-eviction", MaxTurns: 4, ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceName, Name: "federation__special_action"}}
+	req := core.Request{SessionID: "pinned-eviction", MaxTurns: 4, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceName, Name: "federation__special_action"}}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "pinned-eviction-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -439,13 +441,13 @@ func TestSampleDeferredToolNamesUsesBoundedDeterministicSpread(t *testing.T) {
 func TestDeferredSurfaceAddsDeveloperToolSearchInstructionOnce(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("deferred-instruction")
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "portable"}, manager, engine)
+	provider := mockprovider.NewMockProvider("deferred-instruction")
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "portable"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "instruction", Messages: []llm.Message{llm.UserText("list the workflows on my site")}, MaxTurns: 4}
+	req := core.Request{SessionID: "instruction", Messages: []core.Message{core.UserText("list the workflows on my site")}, MaxTurns: 4}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "instruction-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -457,10 +459,10 @@ func TestDeferredSurfaceAddsDeveloperToolSearchInstructionOnce(t *testing.T) {
 	count := 0
 	developerBeforeUser := false
 	for i, message := range req.Messages {
-		text := llm.MessageText(message)
+		text := core.MessageText(message)
 		if strings.Contains(text, deferredToolSearchInstructionMarker) {
 			count++
-			if message.Role != llm.RoleDeveloper {
+			if message.Role != core.RoleDeveloper {
 				t.Fatalf("tool-search instruction role = %q, want developer", message.Role)
 			}
 			if !strings.Contains(text, "MUST call tool_search") || !strings.Contains(text, "before saying the capability is unavailable") {
@@ -471,7 +473,7 @@ func TestDeferredSurfaceAddsDeveloperToolSearchInstructionOnce(t *testing.T) {
 					t.Fatalf("tool-search instruction missing server context %q: %q", want, text)
 				}
 			}
-			developerBeforeUser = i+1 < len(req.Messages) && req.Messages[i+1].Role == llm.RoleUser
+			developerBeforeUser = i+1 < len(req.Messages) && req.Messages[i+1].Role == core.RoleUser
 		}
 	}
 	if count != 1 {
@@ -480,7 +482,7 @@ func TestDeferredSurfaceAddsDeveloperToolSearchInstructionOnce(t *testing.T) {
 	if !developerBeforeUser {
 		t.Fatalf("tool-search developer instruction was not inserted before the latest user message: %#v", req.Messages)
 	}
-	if specs := engine.ToolDiscoveryActiveSpecs("instruction"); len(specs) != 0 {
+	if specs := eng.ToolDiscoveryActiveSpecs("instruction"); len(specs) != 0 {
 		t.Fatalf("unloaded deferred tools appeared active in inspector surface: %v", toolNames(specs))
 	}
 
@@ -488,14 +490,14 @@ func TestDeferredSurfaceAddsDeveloperToolSearchInstructionOnce(t *testing.T) {
 	updatedSnapshot.Tools = append(append([]internalmcp.CatalogTool(nil), updatedSnapshot.Tools...), internalmcp.CatalogTool{
 		Server: "browser", Name: "browser__open", NamespaceDescription: "Browser automation and page inspection.",
 	})
-	updatedServers := []llm.ToolDiscoveryServerDiagnostic{
+	updatedServers := []core.ToolDiscoveryServerDiagnostic{
 		{Name: "browser", Total: 1, Deferred: 1},
 		{Name: "federation", Total: 25, Deferred: 25},
 	}
 	ensureDeferredToolSearchInstruction(&req, &updatedSnapshot, updatedServers)
 	count = 0
 	for _, message := range req.Messages {
-		text := llm.MessageText(message)
+		text := core.MessageText(message)
 		if strings.Contains(text, deferredToolSearchInstructionMarker) {
 			count++
 			for _, want := range []string{"browser: 1 tool", "Browser automation and page inspection.", "Example tool names: browser__open", "federation: 25 tools"} {
@@ -517,13 +519,13 @@ func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 		t.Fatalf("paginated catalogue count = %d, want 25", got)
 	}
 
-	provider := llm.NewMockProvider("generic")
+	provider := mockprovider.NewMockProvider("generic")
 	provider.AddToolCall("search-1", ToolSearchName, map[string]any{"tool_names": []string{"special_action"}})
 	provider.AddToolCall("external-1", "federation__special_action", map[string]any{"project_id": "P-42"})
 	provider.AddTextResponse("done")
-	registry := llm.NewToolRegistry()
-	engine := llm.NewEngine(provider, registry)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 24}, manager, engine); err != nil {
+	registry := engine.NewToolRegistry()
+	eng := engine.NewEngine(provider, registry)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 24}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
 	if specs := registry.AllSpecs(); len(specs) != 0 {
@@ -533,8 +535,8 @@ func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 		t.Fatalf("executable catalogue size = %d, want 25", len(specs))
 	}
 
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true,
-		SessionID: "session-a", Messages: []llm.Message{llm.UserText("perform the special action")}, MaxTurns: 3,
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true,
+		SessionID: "session-a", Messages: []core.Message{core.UserText("perform the special action")}, MaxTurns: 3,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -553,14 +555,14 @@ func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 	if got := toolNames(requests[2].Tools); len(got) != 1 || got[0] != "federation__special_action" {
 		t.Fatalf("final-turn tools = %v, want activated schema without tool_search", got)
 	}
-	if strings.Contains(llm.MessageText(requests[1].Messages[len(requests[1].Messages)-1]), "input_schema") {
+	if strings.Contains(core.MessageText(requests[1].Messages[len(requests[1].Messages)-1]), "input_schema") {
 		t.Fatal("tool_search result dumped a full schema")
 	}
-	diagnostics, ok := engine.ToolDiscoveryDiagnostics("session-a")
+	diagnostics, ok := eng.ToolDiscoveryDiagnostics("session-a")
 	if !ok || diagnostics.ResolvedMode != "deferred" || diagnostics.DynamicActive != 1 || diagnostics.DeferredCount != 24 {
 		t.Fatalf("diagnostics = %+v, ok=%v", diagnostics, ok)
 	}
-	activeSpecs := engine.ToolDiscoveryActiveSpecs("session-a")
+	activeSpecs := eng.ToolDiscoveryActiveSpecs("session-a")
 	if got := toolNames(activeSpecs); len(got) != 1 || got[0] != "federation__special_action" {
 		t.Fatalf("active inspector surface = %v, want loaded MCP schema only", got)
 	}
@@ -568,7 +570,7 @@ func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 	provider.ResetTurns()
 	provider.Reset()
 	provider.AddTextResponse("still active")
-	stream, err = engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "session-a", Messages: []llm.Message{llm.UserText("continue")}, MaxTurns: 1})
+	stream, err = eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "session-a", Messages: []core.Message{core.UserText("continue")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +583,7 @@ func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 	provider.ResetTurns()
 	provider.Reset()
 	provider.AddTextResponse("isolated")
-	stream, err = engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "session-b", Messages: []llm.Message{llm.UserText("unrelated")}, MaxTurns: 1})
+	stream, err = eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "session-b", Messages: []core.Message{core.UserText("unrelated")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +594,7 @@ func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 }
 
 type resetCountingProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	resets int
 }
 
@@ -601,13 +603,13 @@ func (p *resetCountingProvider) ResetConversation() { p.resets++ }
 func TestPolicyTighteningResetsProviderConversation(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := &resetCountingProvider{MockProvider: llm.NewMockProvider("stateful")}
+	provider := &resetCountingProvider{MockProvider: mockprovider.NewMockProvider("stateful")}
 	provider.AddTextResponse("first")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "eager", Threshold: 24}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "eager", Threshold: 24}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "policy", Messages: []llm.Message{llm.UserText("first")}, MaxTurns: 1})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "policy", Messages: []core.Message{core.UserText("first")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,11 +618,11 @@ func TestPolicyTighteningResetsProviderConversation(t *testing.T) {
 		t.Fatalf("initial additive surface reset provider %d times", provider.resets)
 	}
 
-	engine.SetAllowedToolsFilter([]string{"federation__special_action"})
+	eng.SetAllowedToolsFilter([]string{"federation__special_action"})
 	provider.ResetTurns()
 	provider.Reset()
 	provider.AddTextResponse("second")
-	stream, err = engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "policy", Messages: []llm.Message{llm.UserText("second")}, MaxTurns: 1})
+	stream, err = eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "policy", Messages: []core.Message{core.UserText("second")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,20 +635,20 @@ func TestPolicyTighteningResetsProviderConversation(t *testing.T) {
 	}
 }
 
-type bridgeMockProvider struct{ *llm.MockProvider }
+type bridgeMockProvider struct{ *mockprovider.MockProvider }
 
 func (p *bridgeMockProvider) Credential() string { return "cursor-bin" }
 
 func TestFixedCLIBridgeResolvesEager(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := &bridgeMockProvider{MockProvider: llm.NewMockProvider("Cursor CLI test")}
+	provider := &bridgeMockProvider{MockProvider: mockprovider.NewMockProvider("Cursor CLI test")}
 	provider.AddTextResponse("done")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 0}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 0}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "bridge", Messages: []llm.Message{llm.UserText("hi")}, MaxTurns: 1})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "bridge", Messages: []core.Message{core.UserText("hi")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +660,7 @@ func TestFixedCLIBridgeResolvesEager(t *testing.T) {
 	if hasTool(request.Tools, ToolSearchName) {
 		t.Fatal("fixed bridge received generic dynamic tool_search")
 	}
-	diagnostics, _ := engine.ToolDiscoveryDiagnostics("bridge")
+	diagnostics, _ := eng.ToolDiscoveryDiagnostics("bridge")
 	if diagnostics.Strategy != string(StrategyDelegated) || diagnostics.ResolvedMode != string(ModeEager) {
 		t.Fatalf("bridge diagnostics = %+v", diagnostics)
 	}
@@ -690,12 +692,12 @@ func TestAutoModeDefersFormerlyEagerToolsAfterCatalogueGrowth(t *testing.T) {
 	}
 	waitReady("alpha")
 
-	provider := llm.NewMockProvider("growth").AddTextResponse("eager").AddTextResponse("deferred")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 25}, manager, engine); err != nil {
+	provider := mockprovider.NewMockProvider("growth").AddTextResponse("eager").AddTextResponse("deferred")
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 25}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "growth", Messages: []llm.Message{llm.UserText("first")}, MaxTurns: 1})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "growth", Messages: []core.Message{core.UserText("first")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +710,7 @@ func TestAutoModeDefersFormerlyEagerToolsAfterCatalogueGrowth(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitReady("beta")
-	stream, err = engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "growth", Messages: []llm.Message{llm.UserText("second")}, MaxTurns: 3})
+	stream, err = eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "growth", Messages: []core.Message{core.UserText("second")}, MaxTurns: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +719,7 @@ func TestAutoModeDefersFormerlyEagerToolsAfterCatalogueGrowth(t *testing.T) {
 	if got := toolNames(requests[len(requests)-1].Tools); len(got) != 1 || got[0] != ToolSearchName {
 		t.Fatalf("grown deferred surface retained formerly eager schemas: %v", got)
 	}
-	diagnostics, _ := engine.ToolDiscoveryDiagnostics("growth")
+	diagnostics, _ := eng.ToolDiscoveryDiagnostics("growth")
 	if diagnostics.ResolvedMode != string(ModeDeferred) || diagnostics.PinnedCount != 0 || diagnostics.DeferredCount != 50 {
 		t.Fatalf("growth diagnostics = %+v", diagnostics)
 	}
@@ -726,12 +728,12 @@ func TestAutoModeDefersFormerlyEagerToolsAfterCatalogueGrowth(t *testing.T) {
 func TestAutoEagerAtThresholdAndForcedChoicePinning(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("generic").AddTextResponse("done")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 25}, manager, engine); err != nil {
+	provider := mockprovider.NewMockProvider("generic").AddTextResponse("done")
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Threshold: 25}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "eager", Messages: []llm.Message{llm.UserText("hi")}, MaxTurns: 1})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "eager", Messages: []core.Message{core.UserText("hi")}, MaxTurns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +743,7 @@ func TestAutoEagerAtThresholdAndForcedChoicePinning(t *testing.T) {
 		t.Fatalf("at-threshold eager tools = %d, want 25", got)
 	}
 	for _, message := range request.Messages {
-		if strings.Contains(llm.MessageText(message), deferredToolSearchInstructionMarker) {
+		if strings.Contains(core.MessageText(message), deferredToolSearchInstructionMarker) {
 			t.Fatalf("eager surface received deferred MCP guidance: %#v", request.Messages)
 		}
 	}
@@ -749,14 +751,14 @@ func TestAutoEagerAtThresholdAndForcedChoicePinning(t *testing.T) {
 	provider.ResetTurns()
 	provider.Reset()
 	provider.AddTextResponse("forced")
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 24}, manager, engine); err != nil {
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 24}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	engine.ResetSessionState("forced")
-	stream, err = engine.Stream(context.Background(), llm.Request{
+	eng.ResetSessionState("forced")
+	stream, err = eng.Stream(context.Background(), core.Request{
 		EnableToolDiscovery: true,
-		SessionID:           "forced", Messages: []llm.Message{llm.UserText("force")}, MaxTurns: 1,
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceName, Name: "federation__special_action"},
+		SessionID:           "forced", Messages: []core.Message{core.UserText("force")}, MaxTurns: 1,
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceName, Name: "federation__special_action"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -784,19 +786,19 @@ func TestForcedToolChoicePlannerBypassIsLimitedToAuthorisedDeferredMCP(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := llm.NewMockProvider(tt.name).AddTextResponse("done")
-			engine := llm.NewEngine(provider, nil)
+			provider := mockprovider.NewMockProvider(tt.name).AddTextResponse("done")
+			eng := engine.NewEngine(provider, nil)
 			if tt.allowed != nil {
-				engine.SetAllowedToolsFilter(tt.allowed)
+				eng.SetAllowedToolsFilter(tt.allowed)
 			}
-			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine); err != nil {
+			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, eng); err != nil {
 				t.Fatal(err)
 			}
-			stream, err := engine.Stream(context.Background(), llm.Request{
+			stream, err := eng.Stream(context.Background(), core.Request{
 				EnableToolDiscovery: true,
 				SessionID:           "forced-" + strings.ReplaceAll(tt.name, " ", "-"),
-				Messages:            []llm.Message{llm.UserText("force it")},
-				ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceName, Name: tt.forced},
+				Messages:            []core.Message{core.UserText("force it")},
+				ToolChoice:          core.ToolChoice{Mode: core.ToolChoiceName, Name: tt.forced},
 				MaxTurns:            1,
 			})
 			if tt.wantErr {
@@ -818,12 +820,12 @@ func TestForcedToolChoicePlannerBypassIsLimitedToAuthorisedDeferredMCP(t *testin
 }
 
 type tighteningProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	tighten   func()
 	tightened bool
 }
 
-func (p *tighteningProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *tighteningProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	if !p.tightened {
 		p.tightened = true
 		p.tighten()
@@ -834,29 +836,29 @@ func (p *tighteningProvider) Stream(ctx context.Context, req llm.Request) (llm.S
 func TestPlannerOwnedSearchDoesNotWeakenToolAllowlist(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := &tighteningProvider{MockProvider: llm.NewMockProvider("planner-boundary")}
+	provider := &tighteningProvider{MockProvider: mockprovider.NewMockProvider("planner-boundary")}
 	provider.AddToolCall("search", ToolSearchName, map[string]any{"tool_names": []string{"special_action"}})
 	provider.AddTextResponse("done")
-	engine := llm.NewEngine(provider, nil)
-	provider.tighten = func() { engine.SetAllowedToolsFilter([]string{}) }
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	provider.tighten = func() { eng.SetAllowedToolsFilter([]string{}) }
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if planner.AllowsPlannerTool("", ToolSearchName) || planner.AllowsPlannerTool("unknown", ToolSearchName) || planner.AllowsPlannerTool("unknown", "other") {
 		t.Fatal("planner authorised a control tool outside its exact active run boundary")
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	stream, err := eng.Stream(context.Background(), core.Request{
 		EnableToolDiscovery: true,
 		SessionID:           "planner-boundary",
-		Messages:            []llm.Message{llm.UserText("perform the special action")},
+		Messages:            []core.Message{core.UserText("perform the special action")},
 		MaxTurns:            3,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	drainStream(t, stream)
-	if engine.IsToolAllowed(ToolSearchName) {
+	if eng.IsToolAllowed(ToolSearchName) {
 		t.Fatal("planner-owned execution weakened IsToolAllowed after policy tightening")
 	}
 	requests := provider.RecordedRequests()
@@ -881,15 +883,15 @@ func TestDiscoveryFinalTurnCutoff(t *testing.T) {
 		{maxTurns: 4, wantSearch: true},
 	} {
 		t.Run(fmt.Sprintf("maxTurns=%d", tt.maxTurns), func(t *testing.T) {
-			provider := llm.NewMockProvider("cutoff").AddTextResponse("done")
-			engine := llm.NewEngine(provider, nil)
-			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine); err != nil {
+			provider := mockprovider.NewMockProvider("cutoff").AddTextResponse("done")
+			eng := engine.NewEngine(provider, nil)
+			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, eng); err != nil {
 				t.Fatal(err)
 			}
-			stream, err := engine.Stream(context.Background(), llm.Request{
+			stream, err := eng.Stream(context.Background(), core.Request{
 				EnableToolDiscovery: true,
 				SessionID:           fmt.Sprintf("cutoff-%d", tt.maxTurns),
-				Messages:            []llm.Message{llm.UserText("answer")},
+				Messages:            []core.Message{core.UserText("answer")},
 				MaxTurns:            tt.maxTurns,
 			})
 			if err != nil {
@@ -910,9 +912,9 @@ func TestDiscoveryFinalTurnCutoff(t *testing.T) {
 func TestForcedSearchRejectedAtAndAfterCutoff(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("forced-cutoff")
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine)
+	provider := mockprovider.NewMockProvider("forced-cutoff")
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -929,12 +931,12 @@ func TestForcedSearchRejectedAtAndAfterCutoff(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			runID := fmt.Sprintf("forced-cutoff-%d", i)
-			req := llm.Request{SessionID: runID, ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto}}
+			req := core.Request{SessionID: runID, ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto}}
 			if _, err := planner.BeginRun(context.Background(), provider, &req, runID); err != nil {
 				t.Fatal(err)
 			}
 			defer planner.EndRun(runID)
-			choice := llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName}
+			choice := core.ToolChoice{Mode: core.ToolChoiceName, Name: ToolSearchName}
 			if tt.lastChoice {
 				req.LastTurnToolChoice = &choice
 			} else {
@@ -946,21 +948,21 @@ func TestForcedSearchRejectedAtAndAfterCutoff(t *testing.T) {
 		})
 	}
 
-	t.Run("engine last-turn choice", func(t *testing.T) {
-		runProvider := llm.NewMockProvider("forced-last-turn")
+	t.Run("eng last-turn choice", func(t *testing.T) {
+		runProvider := mockprovider.NewMockProvider("forced-last-turn")
 		runProvider.AddToolCall("search", ToolSearchName, map[string]any{"tool_names": []string{"special_action"}})
 		runProvider.AddToolCall("external", "federation__special_action", map[string]any{"project_id": "P-1"})
-		runEngine := llm.NewEngine(runProvider, nil)
+		runEngine := engine.NewEngine(runProvider, nil)
 		runPlanner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, runEngine)
 		if err != nil {
 			t.Fatal(err)
 		}
-		lastChoice := llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName}
-		stream, err := runEngine.Stream(context.Background(), llm.Request{
+		lastChoice := core.ToolChoice{Mode: core.ToolChoiceName, Name: ToolSearchName}
+		stream, err := runEngine.Stream(context.Background(), core.Request{
 			EnableToolDiscovery: true,
 			SessionID:           "forced-last-turn",
-			Messages:            []llm.Message{llm.UserText("perform the special action")},
-			Tools:               []llm.ToolSpec{(&SearchTool{planner: runPlanner}).Spec()},
+			Messages:            []core.Message{core.UserText("perform the special action")},
+			Tools:               []core.ToolSpec{(&SearchTool{planner: runPlanner}).Spec()},
 			LastTurnToolChoice:  &lastChoice,
 			MaxTurns:            3,
 		})
@@ -978,7 +980,7 @@ func TestForcedSearchRejectedAtAndAfterCutoff(t *testing.T) {
 				cutoffErr = recvErr
 				break
 			}
-			if event.Type == llm.EventError && event.Err != nil {
+			if event.Type == core.EventError && event.Err != nil {
 				cutoffErr = event.Err
 				break
 			}
@@ -995,13 +997,13 @@ func TestForcedSearchRejectedAtAndAfterCutoff(t *testing.T) {
 func TestPlannerRequestOptInAndToolChoicePayloadBoundary(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("opt-in").AddTextResponse("plain").AddTextResponse("discovery")
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine); err != nil {
+	provider := mockprovider.NewMockProvider("opt-in").AddTextResponse("plain").AddTextResponse("discovery")
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
 
-	stream, err := engine.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.UserText("plain")}, MaxTurns: 3})
+	stream, err := eng.Stream(context.Background(), core.Request{Messages: []core.Message{core.UserText("plain")}, MaxTurns: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1011,28 +1013,28 @@ func TestPlannerRequestOptInAndToolChoicePayloadBoundary(t *testing.T) {
 		t.Fatalf("non-opted request changed by planner: tools=%v choice=%#v", toolNames(first.Tools), first.ToolChoice)
 	}
 
-	stream, err = engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "opted", Messages: []llm.Message{llm.UserText("discover")}, MaxTurns: 3})
+	stream, err = eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "opted", Messages: []core.Message{core.UserText("discover")}, MaxTurns: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
 	drainStream(t, stream)
 	second := provider.RecordedRequests()[1]
-	if !hasTool(second.Tools, ToolSearchName) || second.ToolChoice.Mode != llm.ToolChoiceAuto {
+	if !hasTool(second.Tools, ToolSearchName) || second.ToolChoice.Mode != core.ToolChoiceAuto {
 		t.Fatalf("opted request did not receive planner-added auto surface: tools=%v choice=%#v", toolNames(second.Tools), second.ToolChoice)
 	}
 
 	emptyManager := internalmcp.NewManagerWithConfig(&internalmcp.Config{Servers: map[string]internalmcp.ServerConfig{}})
-	plainProvider := llm.NewMockProvider("no-add").AddTextResponse("done")
-	plainEngine := llm.NewEngine(plainProvider, nil)
+	plainProvider := mockprovider.NewMockProvider("no-add").AddTextResponse("done")
+	plainEngine := engine.NewEngine(plainProvider, nil)
 	local := &testLocalTool{name: "local_only"}
 	plainEngine.RegisterTool(local)
 	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, emptyManager, plainEngine); err != nil {
 		t.Fatal(err)
 	}
-	stream, err = plainEngine.Stream(context.Background(), llm.Request{
+	stream, err = plainEngine.Stream(context.Background(), core.Request{
 		EnableToolDiscovery: true,
-		Messages:            []llm.Message{llm.UserText("local")},
-		Tools:               []llm.ToolSpec{local.Spec()},
+		Messages:            []core.Message{core.UserText("local")},
+		Tools:               []core.ToolSpec{local.Spec()},
 		MaxTurns:            1,
 	})
 	if err != nil {
@@ -1049,24 +1051,24 @@ type testLocalTool struct {
 	executed bool
 }
 
-func (t *testLocalTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: t.name, Schema: map[string]any{"type": "object"}}
+func (t *testLocalTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: t.name, Schema: map[string]any{"type": "object"}}
 }
 func (t *testLocalTool) Preview(json.RawMessage) string { return t.name }
-func (t *testLocalTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+func (t *testLocalTool) Execute(context.Context, json.RawMessage) (core.ToolOutput, error) {
 	t.executed = true
-	return llm.TextOutput("executed"), nil
+	return core.TextOutput("executed"), nil
 }
 
 func TestAttachEngineCleansOldPlannerOwnership(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	oldEngine := llm.NewEngine(llm.NewMockProvider("old"), nil)
+	oldEngine := engine.NewEngine(mockprovider.NewMockProvider("old"), nil)
 	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, oldEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newEngine := llm.NewEngine(llm.NewMockProvider("new"), nil)
+	newEngine := engine.NewEngine(mockprovider.NewMockProvider("new"), nil)
 	planner.AttachEngine(newEngine)
 	if _, ok := oldEngine.ToolDiscoveryDiagnostics("session"); ok {
 		t.Fatal("old engine retained planner ownership")
@@ -1081,7 +1083,7 @@ func TestAttachEngineCleansOldPlannerOwnership(t *testing.T) {
 		t.Fatalf("new engine wrappers = %d, want 25", got)
 	}
 
-	sharedEngine := llm.NewEngine(llm.NewMockProvider("shared-old"), nil)
+	sharedEngine := engine.NewEngine(mockprovider.NewMockProvider("shared-old"), nil)
 	oldPlanner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, sharedEngine)
 	if err != nil {
 		t.Fatal(err)
@@ -1089,7 +1091,7 @@ func TestAttachEngineCleansOldPlannerOwnership(t *testing.T) {
 	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, sharedEngine); err != nil {
 		t.Fatal(err)
 	}
-	oldPlanner.AttachEngine(llm.NewEngine(llm.NewMockProvider("shared-new"), nil))
+	oldPlanner.AttachEngine(engine.NewEngine(mockprovider.NewMockProvider("shared-new"), nil))
 	if _, ok := sharedEngine.ToolDiscoveryDiagnostics("session"); !ok {
 		t.Fatal("old planner detached a newer planner owner")
 	}
@@ -1100,7 +1102,7 @@ func TestAttachEngineCleansOldPlannerOwnership(t *testing.T) {
 
 func TestPlannerSessionStateIsBounded(t *testing.T) {
 	manager := internalmcp.NewManagerWithConfig(&internalmcp.Config{Servers: map[string]internalmcp.ServerConfig{}})
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, llm.NewEngine(llm.NewMockProvider("bounded"), nil))
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine.NewEngine(mockprovider.NewMockProvider("bounded"), nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1125,7 +1127,7 @@ func TestAlwaysLoadUsesCallerCatalogueSnapshot(t *testing.T) {
 	manager := internalmcp.NewManagerWithConfig(&internalmcp.Config{Servers: map[string]internalmcp.ServerConfig{
 		"server": {AlwaysLoad: []string{"pinned"}},
 	}})
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, llm.NewEngine(llm.NewMockProvider("snapshot"), nil))
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine.NewEngine(mockprovider.NewMockProvider("snapshot"), nil))
 	if err != nil {
 		t.Fatal(err)
 	}

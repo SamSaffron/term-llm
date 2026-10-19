@@ -6,6 +6,10 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // ModelEntry describes a model available through a specific provider.
@@ -316,7 +320,7 @@ var ImageProviderModels = map[string][]string{
 // Venice uses a live catalog; other providers use their curated model lists.
 func GetImageModelIDs(provider string, cfg *config.Config) []string {
 	if provider == "venice" {
-		return GetVeniceImageModelIDs(cfg, "")
+		return opencompat.GetVeniceImageModelIDs(cfg, "")
 	}
 	return ImageProviderModels[provider]
 }
@@ -373,7 +377,7 @@ func resolveProviderModelEntries(provider string) []ModelEntry {
 		entries = ProviderModels[resolved]
 	}
 	if resolved == "chatgpt" {
-		if models, _, err := cachedChatGPTModelFacts(); err == nil {
+		if models, _, err := rp.CachedChatGPTModelFacts(); err == nil {
 			merged := make([]ModelEntry, 0, len(models)+len(entries))
 			seen := make(map[string]bool, len(models))
 			for _, model := range models {
@@ -393,10 +397,10 @@ func resolveProviderModelEntries(provider string) []ModelEntry {
 
 func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "anthropic" {
-		return anthropicReasoningEfforts(baseModel) // live catalog before curated rows
+		return anthropic.ReasoningEfforts(baseModel) // live catalog before curated rows
 	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
-		if efforts, found := grokCachedReasoningEfforts(baseModel); found {
+		if efforts, found := rp.GrokCachedReasoningEfforts(baseModel); found {
 			return efforts
 		}
 	}
@@ -444,9 +448,9 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 			return cloneEfforts(defaultEffortVariants)
 		}
 	case "opencode-go":
-		return opencodeGoCachedReasoningEfforts(model)
+		return rp.OpenCodeGoCachedReasoningEfforts(model)
 	case "anthropic":
-		return anthropicReasoningEfforts(model)
+		return anthropic.ReasoningEfforts(model)
 	case "bedrock":
 		if isClaudeOpusModelName(nameLower) || isClaudeFableModelName(nameLower) {
 			return cloneEfforts(claudeBinOpusEffortVariants)
@@ -455,10 +459,10 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 			return cloneEfforts(claudeBinSonnetEffortVariants)
 		}
 	case "grok":
-		if efforts, found := grokCachedReasoningEfforts(model); found {
+		if efforts, found := rp.GrokCachedReasoningEfforts(model); found {
 			return efforts
 		}
-		return staticGrokReasoningEfforts(nameLower)
+		return rp.StaticGrokReasoningEfforts(nameLower)
 	case "grok-bin":
 		if base, hasSuffix := trimKnownEffortSuffix(nameLower); strings.HasPrefix(base, "grok-4") && !hasSuffix {
 			return cloneEfforts(grokBinEffortVariants)
@@ -564,10 +568,10 @@ func BaseModelAndEffortForProvider(provider, model string) (base string, effort 
 
 func reasoningEffortsForEntry(provider string, entry ModelEntry) []string {
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "anthropic" {
-		return anthropicReasoningEfforts(entry.ID) // live catalog before curated rows
+		return anthropic.ReasoningEfforts(entry.ID) // live catalog before curated rows
 	}
 	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
-		if efforts, found := grokCachedReasoningEfforts(entry.ID); found {
+		if efforts, found := rp.GrokCachedReasoningEfforts(entry.ID); found {
 			return efforts
 		}
 	}
@@ -795,18 +799,13 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 	return ""
 }
 
-// GetBuiltInProviderNames returns the built-in provider type names
-func GetBuiltInProviderNames() []string {
-	return config.GetBuiltInProviderNames()
-}
-
 // GetProviderNames returns valid provider names from config plus built-in types.
 // If cfg is nil, returns only built-in provider names.
 func GetProviderNames(cfg *config.Config) []string {
 	names := make(map[string]bool)
 
 	// Add built-in provider names
-	for _, name := range GetBuiltInProviderNames() {
+	for _, name := range config.GetBuiltInProviderNames() {
 		names[name] = true
 	}
 
@@ -853,7 +852,7 @@ func ConfiguredProviderReasoningEfforts(cfg *config.Config, provider string) []s
 		return normalizeReasoningEfforts(entry.ReasoningEfforts)
 	}
 	if config.InferProviderType(provider, pc.Type) == config.ProviderTypeOllama {
-		return normalizeReasoningEfforts(CachedOllamaReasoningEfforts(pc.BaseURL, pc.Model))
+		return normalizeReasoningEfforts(ollama.CachedOllamaReasoningEfforts(pc.BaseURL, pc.Model))
 	}
 	switch strings.ToLower(strings.TrimSpace(pc.Reasoning)) {
 	case "enabled", "enable", "on", "true", "yes":
@@ -950,7 +949,7 @@ func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *con
 	// primed. Prime once up front so candidate lookup, configured model
 	// lists, and effort expansion below all share the same metadata.
 	if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeOpenCodeGo {
-		primeOpenCodeGoCatalogScope(resolvedProviderAPIKey(cfg, provider), providerCfg.BaseURL)
+		rp.PrimeOpenCodeGoCatalogScope(resolvedProviderAPIKey(cfg, provider), providerCfg.BaseURL)
 	}
 	models, configured := configuredCompletionModels(provider, isImage, providerCfg)
 	if !configured {
@@ -981,7 +980,7 @@ func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *con
 		if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeChatGPT && strings.HasPrefix(modelPrefix, model) {
 			fast := model + "-fast"
 			if strings.HasPrefix(fast, modelPrefix) && !slices.Contains(models, fast) {
-				if _, tier := chatGPTModelServiceTier(fast); tier != "" {
+				if _, tier := rp.ChatGPTModelServiceTier(fast); tier != "" {
 					completions = append(completions, provider+":"+fast)
 				}
 			}
@@ -1049,21 +1048,21 @@ func completionModelCandidates(provider string, isImage bool, providerCfg config
 			return models, true
 		case providerType == "openrouter" || provider == "openrouter":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
-			if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
+			if cachedModels := opencompat.GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
 				return cachedModels, true
 			}
 			return getModelIDs("openrouter"), true
 		case providerType == "venice":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
-			models := GetCachedVeniceModels(apiKey)
+			models := opencompat.GetCachedVeniceModels(apiKey)
 			if len(models) == 0 && providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}
 			return models, true
 		case providerType == "zen":
-			models := GetCachedZenModels()
+			models := rp.GetCachedZenModels()
 			if len(models) > 0 {
-				models = ExpandCachedZenReasoningVariants(models)
+				models = rp.ExpandCachedZenReasoningVariants(models)
 			} else {
 				models = getModelIDs("zen")
 			}
@@ -1073,14 +1072,14 @@ func completionModelCandidates(provider string, isImage bool, providerCfg config
 			return models, true
 		case providerType == "opencode-go":
 			apiKey := resolvedProviderAPIKey(cfg, provider)
-			models := getCachedOpenCodeGoModelsForScope(apiKey, providerCfg.BaseURL)
+			models := rp.GetCachedOpenCodeGoModelsForScope(apiKey, providerCfg.BaseURL)
 			if len(models) == 0 && providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}
 			return models, true
 		case providerType == "ollama":
-			models := GetCachedOllamaModels(providerCfg.BaseURL)
-			models = ExpandCachedOllamaReasoningVariants(providerCfg.BaseURL, models)
+			models := ollama.GetCachedOllamaModels(providerCfg.BaseURL)
+			models = ollama.ExpandCachedOllamaReasoningVariants(providerCfg.BaseURL, models)
 			if len(models) == 0 && providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}
@@ -1134,4 +1133,25 @@ func completeProviderNames(toComplete string, isImage bool, cfg *config.Config, 
 		sort.Strings(completions)
 	}
 	return completions
+}
+
+// The anthropic leaf cannot import this package; it reads the shared model
+// registry and limit tables through these hooks. Every hook is evaluated
+// lazily, so initialization order does not matter.
+func init() {
+	anthropic.ParentHooks = anthropic.Hooks{
+		BaseModelAndEffort: func(model string) (string, string) {
+			return BaseModelAndEffortForProvider("anthropic", model)
+		},
+		InputLimit:  InputLimitForModel,
+		OutputLimit: OutputLimitForModel,
+		Curated: func() []anthropic.CuratedModel {
+			entries := ProviderModels["anthropic"]
+			rows := make([]anthropic.CuratedModel, len(entries))
+			for i, e := range entries {
+				rows[i] = anthropic.CuratedModel{ID: e.ID, ReasoningEfforts: e.ReasoningEfforts}
+			}
+			return rows
+		},
+	}
 }

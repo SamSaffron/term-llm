@@ -5,25 +5,28 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // cachedProviderModels contains provider-specific offline/live catalog probes.
 // Curated fallbacks remain in ProviderModels.
 var cachedProviderModels = map[string]func(string) []string{
 	"chatgpt": func(provider string) []string {
-		if ids := GetCachedChatGPTModels(); len(ids) > 0 {
+		if ids := rp.GetCachedChatGPTModels(); len(ids) > 0 {
 			return ids
 		}
 		return nil
 	},
 	"copilot": func(provider string) []string {
-		return GetCachedCopilotModels()
+		return rp.GetCachedCopilotModels()
 	},
 	"opencode-go": func(provider string) []string {
-		return GetCachedOpenCodeGoModels()
+		return rp.GetCachedOpenCodeGoModels()
 	},
 	"zen": func(provider string) []string {
-		if ids := GetCachedZenModels(); len(ids) > 0 {
+		if ids := rp.GetCachedZenModels(); len(ids) > 0 {
 			return ids
 		}
 		return nil
@@ -32,26 +35,26 @@ var cachedProviderModels = map[string]func(string) []string{
 		// The cached catalog is the public API's; custom-named Anthropic
 		// gateways keep the curated list (or their configured models).
 		if provider == "anthropic" && strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")) == "" {
-			if ids := GetCachedAnthropicModels(); len(ids) > 0 {
+			if ids := anthropic.GetCachedAnthropicModels(); len(ids) > 0 {
 				return ids
 			}
 		}
 		return nil
 	},
 	"agy-bin": func(provider string) []string {
-		if ids := GetCachedAgyBinModels(); len(ids) > 0 {
+		if ids := clibin.GetCachedAgyBinModels(); len(ids) > 0 {
 			return ids
 		}
 		return nil
 	},
 	"cursor-bin": func(provider string) []string {
-		if ids := GetCachedCursorBinModels(); len(ids) > 0 {
+		if ids := clibin.GetCachedCursorBinModels(); len(ids) > 0 {
 			return ids
 		}
 		return nil
 	},
 	"grok": func(provider string) []string {
-		if models, _, err := CachedGrokModels(); err == nil {
+		if models, _, err := rp.CachedGrokModels(); err == nil {
 			ids := make([]string, 0, len(models))
 			for _, model := range models {
 				ids = append(ids, model.ID)
@@ -61,7 +64,7 @@ var cachedProviderModels = map[string]func(string) []string{
 		return nil
 	},
 	"grok-bin": func(provider string) []string {
-		if ids := GetCachedGrokBinModels(); len(ids) > 0 {
+		if ids := clibin.GetCachedGrokBinModels(); len(ids) > 0 {
 			return ids
 		}
 		return nil

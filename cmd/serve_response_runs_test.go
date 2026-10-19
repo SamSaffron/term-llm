@@ -18,6 +18,9 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -26,16 +29,16 @@ type responseTimeoutDelayTool struct {
 	delay time.Duration
 }
 
-func (t responseTimeoutDelayTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "response_timeout_delay", Description: "wait before continuing", Schema: map[string]any{"type": "object"}}
+func (t responseTimeoutDelayTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "response_timeout_delay", Description: "wait before continuing", Schema: map[string]any{"type": "object"}}
 }
 
-func (t responseTimeoutDelayTool) Execute(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+func (t responseTimeoutDelayTool) Execute(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
 	select {
 	case <-time.After(t.delay):
-		return llm.ToolOutput{Content: "done"}, nil
+		return core.ToolOutput{Content: "done"}, nil
 	case <-ctx.Done():
-		return llm.ToolOutput{}, ctx.Err()
+		return core.ToolOutput{}, ctx.Err()
 	}
 }
 
@@ -100,22 +103,22 @@ func (t *fakeResponseRunTimer) Stop() bool {
 
 func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
 	const timeout = 100 * time.Millisecond
-	provider := llm.NewMockProvider("mock").
-		AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{
 			Delay: 60 * time.Millisecond,
-			ToolCalls: []llm.ToolCall{{
+			ToolCalls: []core.ToolCall{{
 				ID:        "call-delay",
 				Name:      "response_timeout_delay",
 				Arguments: json.RawMessage(`{}`),
 			}},
 		}).
-		AddTurn(llm.MockTurn{Text: "finished"})
-	registry := llm.NewToolRegistry()
+		AddTurn(mockprovider.MockTurn{Text: "finished"})
+	registry := engine.NewToolRegistry()
 	registry.Register(responseTimeoutDelayTool{delay: 60 * time.Millisecond})
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
-		engine:       llm.NewEngine(provider, registry),
+		engine:       engine.NewEngine(provider, registry),
 		defaultModel: "mock-model",
 	}
 	rt.Touch()
@@ -125,9 +128,9 @@ func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
 	}
 	defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("work")}, llm.Request{
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("work")}, core.Request{
 		SessionID: "sess_refresh_timeout",
-		Tools:     []llm.ToolSpec{responseTimeoutDelayTool{}.Spec()},
+		Tools:     []core.ToolSpec{responseTimeoutDelayTool{}.Spec()},
 	}, "sess_refresh_timeout", startResponseRunOptions{})
 	if err != nil {
 		t.Fatalf("startResponseRun: %v", err)
@@ -319,11 +322,11 @@ func TestResponseRunPersistenceIdentityDoesNotDependOnAssistantContent(t *testin
 	run.finalRevReader = func() (int64, error) { return 3, nil }
 	ctx := withResponseRunContext(context.Background(), run)
 	for _, text := range []string{"partial", "partial complete"} {
-		message := tagResponseRunMessage(ctx, llm.AssistantText(text), 0)
-		finish, _ := beginResponseRunPersistence(ctx, []llm.Message{message})
+		message := tagResponseRunMessage(ctx, core.AssistantText(text), 0)
+		finish, _ := beginResponseRunPersistence(ctx, []core.Message{message})
 		finish(3, nil)
 	}
-	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	if run.durableOutputCount != 1 {
@@ -336,7 +339,7 @@ func TestResponseRunTerminalizationFailureStillPublishesTerminalEvent(t *testing
 	run.finalizeLifecycle = func(session.ResponseRunState, int64, int) (session.AttentionState, error) {
 		return session.AttentionState{}, errors.New("database unavailable")
 	}
-	err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{})
+	err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{})
 	if err == nil {
 		t.Fatal("complete unexpectedly succeeded")
 	}
@@ -379,11 +382,11 @@ func TestResponseRunLifecycleFailureKeepsEarlierTerminalCause(t *testing.T) {
 func TestResponseRunDurableHandoffFailureCarriesReasonToClients(t *testing.T) {
 	run := newResponseRun("resp-handoff-reason", "sess-handoff-reason", "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
-	assistant := tagResponseRunMessage(ctx, llm.AssistantText("visible output"), 0)
-	finish, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("visible output"), 0)
+	finish, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
 	finish(0, errors.New("database unavailable"))
 
-	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	if len(run.events) != 1 || run.events[0].Event != "response.failed" {
@@ -444,11 +447,11 @@ func TestConfigureResponseRunRevisionSkipsTrailingNonBranchableRows(t *testing.T
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	user := session.NewMessage(sess.ID, llm.UserText("question"), -1)
+	user := session.NewMessage(sess.ID, core.UserText("question"), -1)
 	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
 		t.Fatal(err)
 	}
-	developer := session.NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "provider context"}}}, -1)
+	developer := session.NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "provider context"}}}, -1)
 	if err := store.AddMessage(ctx, sess.ID, developer); err != nil {
 		t.Fatal(err)
 	}
@@ -483,8 +486,8 @@ func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 		t.Fatalf("startedRev=%d before triggering row, want 0", run.startedRev)
 	}
 	runCtx := withResponseRunContext(ctx, run)
-	assistant := tagResponseRunMessage(runCtx, llm.AssistantText("durable output"), 0)
-	finishPersistence, _ := beginResponseRunPersistence(runCtx, []llm.Message{assistant})
+	assistant := tagResponseRunMessage(runCtx, core.AssistantText("durable output"), 0)
+	finishPersistence, _ := beginResponseRunPersistence(runCtx, []core.Message{assistant})
 	message := session.NewMessage(sess.ID, assistant, -1)
 	writer, ok := store.(session.TranscriptRevisionWriter)
 	if !ok {
@@ -498,7 +501,7 @@ func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 	if err := run.appendEvent("response.created", map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
 		t.Fatalf("append created: %v", err)
 	}
-	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 
@@ -569,7 +572,7 @@ func TestConfigureResponseRunRevisionUsesCompactStartStateThroughLoggingStore(t 
 	if err := base.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	user := session.NewMessage(sess.ID, llm.UserText("question"), -1)
+	user := session.NewMessage(sess.ID, core.UserText("question"), -1)
 	if err := base.AddMessage(ctx, sess.ID, user); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -634,7 +637,7 @@ func TestConfigureResponseRunRevisionFallsBackThroughLoggingStore(t *testing.T) 
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	user := session.NewMessage(sess.ID, llm.UserText("question"), -1)
+	user := session.NewMessage(sess.ID, core.UserText("question"), -1)
 	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -692,11 +695,11 @@ func TestResponseRunUsesFallbackRevisionForUnversionedPersistence(t *testing.T) 
 	run := newResponseRun("resp-fallback-rev", "sess-fallback-rev", "", "test", time.Now().Unix(), nil)
 	run.finalRevReader = func() (int64, error) { return 9, nil }
 	ctx := withResponseRunContext(context.Background(), run)
-	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisted"), 0)
-	finish, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("persisted"), 0)
+	finish, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
 	finish(0, nil)
 
-	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	if !run.durableHandoff || run.finalRev != 9 || run.durableHandoffErr != "" {
@@ -720,14 +723,14 @@ func TestResponseRunUsesFallbackRevisionForCapabilitylessStore(t *testing.T) {
 	run := newResponseRun("resp-capabilityless-rev", sess.ID, "", "test", time.Now().Unix(), nil)
 	server.configureResponseRunRevision(run, sess.ID)
 	runCtx := withResponseRunContext(ctx, run)
-	assistant := tagResponseRunMessage(runCtx, llm.AssistantText("persisted"), 0)
+	assistant := tagResponseRunMessage(runCtx, core.AssistantText("persisted"), 0)
 	message := session.NewMessage(sess.ID, assistant, -1)
-	if _, err := runResponseRunPersistence(runCtx, []llm.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
+	if _, err := runResponseRunPersistence(runCtx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
 		return addResponseRunMessage(session.WithResponseRunFence(ctx, fence), server.store, sess.ID, message)
 	}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
-	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	if !run.durableHandoff || run.finalRev <= 0 || run.durableHandoffErr != "" {
@@ -738,8 +741,8 @@ func TestResponseRunUsesFallbackRevisionForCapabilitylessStore(t *testing.T) {
 func TestResponseRunPersistenceBarrierTimesOut(t *testing.T) {
 	run := newResponseRun("resp-final-rev-timeout", "sess-timeout", "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
-	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisting"), 0)
-	_, _ = beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("persisting"), 0)
+	_, _ = beginResponseRunPersistence(ctx, []core.Message{assistant})
 
 	started := time.Now()
 	handoff := run.readDurableHandoffWithTimeout(20 * time.Millisecond)
@@ -754,12 +757,12 @@ func TestResponseRunPersistenceBarrierTimesOut(t *testing.T) {
 func TestResponseRunPersistenceBarrierDoesNotBlockEventMutex(t *testing.T) {
 	run := newResponseRun("resp-final-rev-lock", "sess-lock", "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
-	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisted"), 0)
-	finish, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("persisted"), 0)
+	finish, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
 
 	completeDone := make(chan error, 1)
 	go func() {
-		completeDone <- run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{})
+		completeDone <- run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{})
 	}()
 	select {
 	case err := <-completeDone:
@@ -791,8 +794,8 @@ func TestResponseRunPersistenceBarrierDoesNotBlockEventMutex(t *testing.T) {
 func TestResponseRunRejectsDurableHandoffWhenOwnedWriteFails(t *testing.T) {
 	run := newResponseRun("resp-write-failed", "sess-write-failed", "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
-	assistant := tagResponseRunMessage(ctx, llm.AssistantText("visible partial"), 0)
-	finishPersistence, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("visible partial"), 0)
+	finishPersistence, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
 	finishPersistence(0, errors.New("database unavailable"))
 
 	if _, err := run.fail(map[string]any{"error": map[string]any{"message": "failed"}}, "server_error", "failed"); err != nil {
@@ -872,13 +875,13 @@ func TestAppendResponseRunEventIncludesToolTiming(t *testing.T) {
 	run := newResponseRun("resp_tool_timing", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	server := &serveServer{}
 	state := newResponseRunStreamState("mock", "")
-	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
-		Type: llm.EventToolExecStart, ToolCallID: "spawn-1", ToolName: "spawn_agent",
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type: core.EventToolExecStart, ToolCallID: "spawn-1", ToolName: "spawn_agent",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
-		Type: llm.EventToolExecEnd, ToolCallID: "spawn-1", ToolName: "spawn_agent", ToolSuccess: true,
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type: core.EventToolExecEnd, ToolCallID: "spawn-1", ToolName: "spawn_agent", ToolSuccess: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -911,7 +914,7 @@ func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
 	server := &serveServer{}
 	state := &responseRunStreamState{}
 
-	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{Type: llm.EventPhase, Text: "Compacting context..."}); err != nil {
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{Type: core.EventPhase, Text: "Compacting context..."}); err != nil {
 		t.Fatalf("appendResponseRunEvent() error = %v", err)
 	}
 
@@ -941,10 +944,10 @@ func TestAppendResponseRunEventCompactionSplitsRecoveryToolGroups(t *testing.T) 
 		pendingCompactions: []runtimeCompactionIdentity{{sequence: 42, count: 3}},
 	}
 
-	for _, event := range []llm.Event{
-		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "before", Name: "shell"}},
-		{Type: llm.EventCompaction},
-		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "after", Name: "shell"}},
+	for _, event := range []core.Event{
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "before", Name: "shell"}},
+		{Type: core.EventCompaction},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "after", Name: "shell"}},
 	} {
 		if err := server.appendResponseRunEvent(runtime, run, state, event); err != nil {
 			t.Fatalf("append %v: %v", event.Type, err)
@@ -1001,7 +1004,7 @@ func TestAppendResponseRunEventCompactionsConsumeDurableIdentitiesInOrder(t *tes
 		{sequence: 84, count: 4},
 	}}
 	for range 2 {
-		if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, llm.Event{Type: llm.EventCompaction}); err != nil {
+		if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, core.Event{Type: core.EventCompaction}); err != nil {
 			t.Fatalf("append compaction: %v", err)
 		}
 	}
@@ -1022,7 +1025,7 @@ func TestAppendResponseRunEventCompactionsConsumeDurableIdentitiesInOrder(t *tes
 func TestAppendResponseRunEventCompactionWithoutRecordedIdentityStaysUnmatched(t *testing.T) {
 	run := newResponseRun("resp_compaction_unmatched", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	runtime := &serveRuntime{sessionMeta: &session.Session{CompactionSeq: 42, CompactionCount: 3}}
-	if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, llm.Event{Type: llm.EventCompaction}); err != nil {
+	if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, core.Event{Type: core.EventCompaction}); err != nil {
 		t.Fatalf("append compaction: %v", err)
 	}
 
@@ -1045,8 +1048,8 @@ func TestAppendResponseRunEventEmitsRetry(t *testing.T) {
 	server := &serveServer{}
 	state := &responseRunStreamState{}
 
-	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
-		Type:             llm.EventRetry,
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type:             core.EventRetry,
 		RetryAttempt:     2,
 		RetryMaxAttempts: 6,
 		RetryWaitSecs:    0.5,
@@ -1089,7 +1092,7 @@ func TestPersistResponseRunErrorEventStoresDurableNonLLMMarker(t *testing.T) {
 		t.Fatalf("messages = %d, want 1", len(messages))
 	}
 	msg := messages[0]
-	if msg.Role != llm.RoleEvent {
+	if msg.Role != core.RoleEvent {
 		t.Fatalf("role = %q, want event", msg.Role)
 	}
 	marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage())
@@ -1099,8 +1102,8 @@ func TestPersistResponseRunErrorEventStoresDurableNonLLMMarker(t *testing.T) {
 	if marker.ResponseID != "resp_error" || marker.ErrorType != "timeout_error" || marker.Message != "Responses WebSocket retries exhausted" {
 		t.Fatalf("marker = %#v", marker)
 	}
-	filtered := llm.FilterConversationMessages([]llm.Message{msg.ToLLMMessage(), llm.UserText("continue")})
-	if len(filtered) != 1 || filtered[0].Role != llm.RoleUser {
+	filtered := core.FilterConversationMessages([]core.Message{msg.ToLLMMessage(), core.UserText("continue")})
+	if len(filtered) != 1 || filtered[0].Role != core.RoleUser {
 		t.Fatalf("filtered messages = %#v, want only user message", filtered)
 	}
 }
@@ -1111,8 +1114,8 @@ func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) 
 	state := newResponseRunStreamState("gpt-5.4", "medium")
 	runtime := &serveRuntime{providerKey: "chatgpt"}
 
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:                    llm.EventModelSwitch,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:                    core.EventModelSwitch,
 		PreviousModel:           "gpt-5.4",
 		PreviousReasoningEffort: "medium",
 		Model:                   "gpt-5.4",
@@ -1168,15 +1171,15 @@ func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) 
 }
 
 func TestAppendResponseRunEventEmitsAskUserPromptWhenServerToolMetadataIsSuppressed(t *testing.T) {
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tools.NewAskUserTool())
-	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
 	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
 	run := newResponseRun("resp_ask_user", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	state := &responseRunStreamState{}
 
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:       llm.EventToolExecStart,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:       core.EventToolExecStart,
 		ToolCallID: "call-ask",
 		ToolName:   tools.AskUserToolName,
 		ToolArgs:   json.RawMessage(`{"questions":[{"header":"Theme","question":"Pick a theme","options":[{"label":"Dark","description":"Use dark mode"},{"label":"Light","description":"Use light mode"}]}]}`),
@@ -1184,8 +1187,8 @@ func TestAppendResponseRunEventEmitsAskUserPromptWhenServerToolMetadataIsSuppres
 		t.Fatalf("append start: %v", err)
 	}
 
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:        llm.EventToolExecEnd,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
 		ToolCallID:  "call-ask",
 		ToolName:    tools.AskUserToolName,
 		ToolSuccess: true,
@@ -1227,19 +1230,19 @@ func TestAppendResponseRunEventEmitsAskUserPromptWhenServerToolMetadataIsSuppres
 }
 
 func TestAppendResponseRunEventIncludesAskUserAnswerInLiveAndRecoveryTools(t *testing.T) {
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tools.NewAskUserTool())
-	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
 	server := &serveServer{}
 	run := newResponseRun("resp_ask_answer", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	state := &responseRunStreamState{}
 	arguments := json.RawMessage(`{"questions":[{"header":"Frontend","question":"Which renderer?","options":[{"label":"Vendor xterm.js","description":"Serve xterm.js"}]}]}`)
 
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:       llm.EventToolCall,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:       core.EventToolCall,
 		ToolCallID: "call-ask",
 		ToolName:   tools.AskUserToolName,
-		Tool: &llm.ToolCall{
+		Tool: &core.ToolCall{
 			ID:        "call-ask",
 			Name:      tools.AskUserToolName,
 			Arguments: arguments,
@@ -1247,8 +1250,8 @@ func TestAppendResponseRunEventIncludesAskUserAnswerInLiveAndRecoveryTools(t *te
 	}); err != nil {
 		t.Fatalf("append call: %v", err)
 	}
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:        llm.EventToolExecEnd,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
 		ToolCallID:  "call-ask",
 		ToolName:    tools.AskUserToolName,
 		ToolSuccess: true,
@@ -1288,27 +1291,27 @@ func TestAppendResponseRunEventIncludesAskUserAnswerInLiveAndRecoveryTools(t *te
 }
 
 func TestAppendResponseRunEventSuppressesServerToolMetadata(t *testing.T) {
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
 	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
 	run := newResponseRun("resp_suppress_tools", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	state := &responseRunStreamState{}
 
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:       llm.EventToolExecStart,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:       core.EventToolExecStart,
 		ToolCallID: "call-1",
 		ToolName:   "echo",
 		ToolArgs:   json.RawMessage(`{"path":"/secret/file.txt"}`),
 	}); err != nil {
 		t.Fatalf("append start: %v", err)
 	}
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:        llm.EventToolExecEnd,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
 		ToolCallID:  "call-1",
 		ToolName:    "echo",
 		ToolSuccess: true,
-		ToolFileChanges: []llm.FileChange{{
+		ToolFileChanges: []core.FileChange{{
 			Path: "/secret/file.txt",
 			Kind: "modify",
 			Seq:  1,
@@ -1329,16 +1332,16 @@ func TestAppendResponseRunEventSuppressesServerToolMetadata(t *testing.T) {
 }
 
 func TestSuppressedServerToolStillAdvancesAssistantSegmentIdentity(t *testing.T) {
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
 	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
 	run := newResponseRun("resp_suppressed_boundary", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	state := newResponseRunStreamState("mock", "")
-	for _, event := range []llm.Event{
-		{Type: llm.EventTextDelta, Text: "before"},
-		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-hidden", Name: "echo"}},
-		{Type: llm.EventTextDelta, Text: "after"},
+	for _, event := range []core.Event{
+		{Type: core.EventTextDelta, Text: "before"},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-hidden", Name: "echo"}},
+		{Type: core.EventTextDelta, Text: "after"},
 	} {
 		if err := server.appendResponseRunEvent(runtime, run, state, event); err != nil {
 			t.Fatalf("append %v: %v", event.Type, err)
@@ -1363,12 +1366,12 @@ func TestProviderTurnIdentitySkipsToolOnlyAssistantSegments(t *testing.T) {
 	server := &serveServer{}
 	run := newResponseRun("resp_tool_only_turns", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	state := newResponseRunStreamState("mock", "")
-	events := []llm.Event{
-		{Type: llm.EventTextDelta, Text: "first", ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
-		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-0", Name: "shell"}, ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
-		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "grep"}, ProviderTurnIndex: 1, ProviderTurnIndexSet: true},
-		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-2", Name: "read_file"}, ProviderTurnIndex: 2, ProviderTurnIndexSet: true},
-		{Type: llm.EventTextDelta, Text: "after tool-only turns", ProviderTurnIndex: 3, ProviderTurnIndexSet: true},
+	events := []core.Event{
+		{Type: core.EventTextDelta, Text: "first", ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-0", Name: "shell"}, ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-1", Name: "grep"}, ProviderTurnIndex: 1, ProviderTurnIndexSet: true},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-2", Name: "read_file"}, ProviderTurnIndex: 2, ProviderTurnIndexSet: true},
+		{Type: core.EventTextDelta, Text: "after tool-only turns", ProviderTurnIndex: 3, ProviderTurnIndexSet: true},
 	}
 	for _, event := range events {
 		if err := server.appendResponseRunEvent(nil, run, state, event); err != nil {
@@ -1394,9 +1397,9 @@ func TestToolArgumentDeltaCarriesStableIdentityAndProviderTurn(t *testing.T) {
 	server := &serveServer{}
 	run := newResponseRun("resp_tool_identity", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	state := newResponseRunStreamState("mock", "")
-	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
-		Type:                 llm.EventToolCall,
-		Tool:                 &llm.ToolCall{ID: "call-parallel", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)},
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type:                 core.EventToolCall,
+		Tool:                 &core.ToolCall{ID: "call-parallel", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)},
 		ProviderTurnIndex:    4,
 		ProviderTurnIndexSet: true,
 	}); err != nil {
@@ -1432,18 +1435,18 @@ func TestToolArgumentDeltaCarriesStableIdentityAndProviderTurn(t *testing.T) {
 }
 
 func TestAppendResponseRunEventRejectsUnverifiedClientToolFileChanges(t *testing.T) {
-	registry := llm.NewToolRegistry()
-	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	registry := engine.NewToolRegistry()
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
 	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
 	run := newResponseRun("resp_client_tool", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	state := &responseRunStreamState{}
 
-	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
-		Type:        llm.EventToolExecEnd,
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
 		ToolCallID:  "call-client",
 		ToolName:    "client_tool",
 		ToolSuccess: true,
-		ToolFileChanges: []llm.FileChange{{
+		ToolFileChanges: []core.FileChange{{
 			Path: "/client/file.txt",
 			Kind: "modify",
 			Seq:  1,
@@ -1599,10 +1602,10 @@ func TestResponseRunCompleteHonorsPendingCancellation(t *testing.T) {
 			"created":       run.created,
 			"model":         run.model,
 			"status":        "completed",
-			"usage":         usagePayload(llm.Usage{InputTokens: 3, OutputTokens: 4}),
-			"session_usage": usagePayload(llm.Usage{InputTokens: 5, OutputTokens: 6}),
+			"usage":         usagePayload(core.Usage{InputTokens: 3, OutputTokens: 4}),
+			"session_usage": usagePayload(core.Usage{InputTokens: 5, OutputTokens: 6}),
 		},
-	}, llm.Usage{InputTokens: 3, OutputTokens: 4}, llm.Usage{InputTokens: 5, OutputTokens: 6}); err != nil {
+	}, core.Usage{InputTokens: 3, OutputTokens: 4}, core.Usage{InputTokens: 5, OutputTokens: 6}); err != nil {
 		t.Fatalf("complete failed: %v", err)
 	}
 
@@ -1842,7 +1845,7 @@ func TestResponseRunRecoveryFlushesUnmatchedGuardianReviewAtTerminal(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatal(err)
 	}
 	messages := run.recoveryPayloadLocked()["messages"].([]map[string]any)
@@ -2023,7 +2026,7 @@ func TestResponseCreatedCarriesExactAnchorIdentity(t *testing.T) {
 func TestResponseRunRejectsSteeringWithoutClientMessageID(t *testing.T) {
 	run := newResponseRun("resp_missing_steering_id", "sess_test", "", "mock", time.Now().Unix(), nil)
 	state := newResponseRunStreamState("mock", "")
-	err := (&serveServer{}).appendResponseRunEvent(nil, run, state, llm.Event{Type: llm.EventSteering, Text: "ambiguous"})
+	err := (&serveServer{}).appendResponseRunEvent(nil, run, state, core.Event{Type: core.EventSteering, Text: "ambiguous"})
 	if err == nil || !strings.Contains(err.Error(), "client_message_id") {
 		t.Fatalf("missing steering identity error = %v", err)
 	}
@@ -2064,18 +2067,18 @@ func TestResponseRunSteeringSplitsRecoveryMessages(t *testing.T) {
 		cfgRef: &config.Config{Image: config.ImageConfig{OutputDir: imageOutputDir}},
 	}
 
-	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "before"}); err != nil {
+	if err := server.appendResponseRunEvent(nil, run, streamState, core.Event{Type: core.EventTextDelta, Text: "before"}); err != nil {
 		t.Fatalf("appendTextDeltaSegmentEvent before: %v", err)
 	}
-	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{
-		Type: llm.EventSteering, Text: "check X", SteeringID: "client-check-x",
-		Message: llm.Message{Parts: []llm.Part{{
-			Type: llm.PartImage, ImagePath: imagePath, ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Width: 200, Height: 400},
+	if err := server.appendResponseRunEvent(nil, run, streamState, core.Event{
+		Type: core.EventSteering, Text: "check X", SteeringID: "client-check-x",
+		Message: core.Message{Parts: []core.Part{{
+			Type: core.PartImage, ImagePath: imagePath, ImageData: &core.ToolImageData{MediaType: "image/jpeg", Width: 200, Height: 400},
 		}}},
 	}); err != nil {
 		t.Fatalf("append steering: %v", err)
 	}
-	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "after"}); err != nil {
+	if err := server.appendResponseRunEvent(nil, run, streamState, core.Event{Type: core.EventTextDelta, Text: "after"}); err != nil {
 		t.Fatalf("appendTextDeltaSegmentEvent after: %v", err)
 	}
 
@@ -2163,11 +2166,11 @@ func TestResponseRunPreservesImageOnlyBoundaryWhenAttachmentCannotBeServed(t *te
 		cfgRef: &config.Config{Image: config.ImageConfig{OutputDir: t.TempDir()}},
 	}
 	run := newResponseRun("resp_unserveable_steering", "sess_test", "", "mock", time.Now().Unix(), nil)
-	if err := server.appendResponseRunEvent(nil, run, newResponseRunStreamState("mock", ""), llm.Event{
-		Type:       llm.EventSteering,
+	if err := server.appendResponseRunEvent(nil, run, newResponseRunStreamState("mock", ""), core.Event{
+		Type:       core.EventSteering,
 		SteeringID: "image-only-unserveable",
-		Message: llm.Message{Parts: []llm.Part{{
-			Type: llm.PartImage, ImagePath: imagePath, ImageData: &llm.ToolImageData{MediaType: "image/jpeg"},
+		Message: core.Message{Parts: []core.Part{{
+			Type: core.PartImage, ImagePath: imagePath, ImageData: &core.ToolImageData{MediaType: "image/jpeg"},
 		}}},
 	}); err != nil {
 		t.Fatal(err)
@@ -2386,7 +2389,7 @@ func TestStreamResponseRunEventsWritesTerminalErrorWhenSubscriberOverflows(t *te
 
 	if err := run.complete(map[string]any{
 		"response": map[string]any{"id": run.id},
-	}, llm.Usage{}, llm.Usage{}); err != nil {
+	}, core.Usage{}, core.Usage{}); err != nil {
 		t.Fatalf("complete failed: %v", err)
 	}
 

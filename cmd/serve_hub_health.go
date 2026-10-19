@@ -5,86 +5,37 @@ import (
 	"sync"
 	"time"
 
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 const (
-	hubHealthInterval    = 10 * time.Second
-	hubHealthFreshness   = 30 * time.Second
-	hubHealthProbeBudget = 3 * time.Second
-	hubHealthConcurrency = 8
+	hubHealthInterval    = apphub.HealthInterval
+	hubHealthFreshness   = apphub.HealthFreshness
+	hubHealthProbeBudget = apphub.HealthProbeBudget
+	hubHealthConcurrency = apphub.HealthConcurrency
 )
 
-// Credentials and routing are part of the identity: replacing a node must not
-// reuse an observation made against its old backend or authentication policy.
-// This key is private and must never be included in public diagnostics.
-type hubHealthIdentity struct {
-	id, url, basePath, connection, token string
-}
+// hubHealthCache adapts the extracted hub health cache for cmd call sites.
+type hubHealthCache struct{ c apphub.HealthCache }
 
-func hubNodeHealthIdentity(n hub.Node) hubHealthIdentity {
-	return hubHealthIdentity{n.ID, n.URL, n.BasePath, n.Connection, n.Token}
-}
-
-type hubHealthObservation struct {
-	startedAt time.Time
-	status    hub.Status
-}
-
-type hubHealthCache struct {
-	mu      sync.Mutex
-	entries map[hubHealthIdentity]hubHealthObservation
-}
-
-// retain both prunes removed/replaced nodes and admits the current identities.
-// A late probe cannot reinsert an identity removed during its request.
-func (c *hubHealthCache) retain(nodes []hub.Node) {
-	current := make(map[hubHealthIdentity]hubHealthObservation, len(nodes))
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, n := range nodes {
-		key := hubNodeHealthIdentity(n)
-		current[key] = c.entries[key]
-	}
-	c.entries = current
-}
+func (c *hubHealthCache) retain(nodes []hub.Node) { c.c.Retain(nodes) }
 
 func (c *hubHealthCache) publish(ctx context.Context, n hub.Node, startedAt time.Time, status hub.Status) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	key := hubNodeHealthIdentity(n)
-	previous, ok := c.entries[key]
-	if ctx.Err() != nil || !ok || !startedAt.After(previous.startedAt) {
-		return
-	}
-	c.entries[key] = hubHealthObservation{startedAt: startedAt, status: status}
+	c.c.Publish(ctx, n, startedAt, status)
 }
 
-func (c *hubHealthCache) status(n hub.Node, now time.Time) hub.Status {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	entry, ok := c.entries[hubNodeHealthIdentity(n)]
-	if !ok || entry.startedAt.IsZero() || now.Sub(entry.startedAt) >= hubHealthFreshness {
-		return hub.Status{State: "unknown"}
-	}
-	return entry.status
-}
+func (c *hubHealthCache) len() int { return c.c.Len() }
+
+func (c *hubHealthCache) status(n hub.Node, now time.Time) hub.Status { return c.c.Status(n, now) }
 
 func (s *hubServer) sidebarNodeHealth(n hub.Node, now time.Time) hub.Status {
 	if !n.UsesReverseConnection() {
 		return s.healthCache.status(n, now)
 	}
-	// Websocket presence is already the source of reverse reachability, even
-	// when a reverse health request fails. Never reuse a previous socket's
-	// cached connected status (or metadata) after disconnect/reconnect.
 	connected, connectedAt, lastSeen := s.reverse.status(n.ID)
-	if !connected {
-		return hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
-	}
-	return hub.Status{Reachable: true, State: "connected", Details: map[string]string{
-		"connection": "reverse", "connected_at": connectedAt.Format(time.RFC3339), "last_seen": lastSeen.Format(time.RFC3339),
-	}}
+	return apphub.ReverseStatus(connected, connectedAt, lastSeen)
 }
 
 func (s *hubServer) startHealthMonitor() {

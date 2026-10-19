@@ -14,6 +14,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -21,9 +24,9 @@ import (
 
 func TestVisibleHistoryMessagesHidesGoalSteering(t *testing.T) {
 	messages := []session.Message{
-		*session.NewMessage("s", llm.UserText("go"), 0),
-		*session.NewMessage("s", llm.GoalSteeringText("internal continuation"), 1),
-		*session.NewMessage("s", llm.AssistantText("done"), 2),
+		*session.NewMessage("s", core.UserText("go"), 0),
+		*session.NewMessage("s", core.GoalSteeringText("internal continuation"), 1),
+		*session.NewMessage("s", core.AssistantText("done"), 2),
 	}
 	visible := visibleHistoryMessages(messages)
 	if len(visible) != 2 || visible[0].TextContent != "go" || visible[1].TextContent != "done" {
@@ -410,13 +413,13 @@ func TestRenderStreamingInlineKeepsCompletedConcurrentToolVisible(t *testing.T) 
 }
 
 func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock")
+	eng := engine.NewEngine(provider, nil)
 
 	m := New(
 		&config.Config{DefaultProvider: "mock"},
 		provider,
-		engine,
+		eng,
 		"mock",
 		"mock-model",
 		nil,   // mcpManager
@@ -504,8 +507,8 @@ func TestUpdate_StreamError_MarksPendingToolsFailed(t *testing.T) {
 }
 
 func TestUpdate_StreamError_ShowsOutOfTurnsWarning(t *testing.T) {
-	warning := llm.MaxTurnsExceededWarning(3)
-	streamErr := &llm.MaxTurnsExceededError{MaxTurns: 3}
+	warning := engine.MaxTurnsExceededWarning(3)
+	streamErr := &engine.MaxTurnsExceededError{MaxTurns: 3}
 
 	for _, tt := range []struct {
 		name      string
@@ -560,7 +563,7 @@ func TestRenderStreamingContentOnErrorForScrollback_ShowsOutOfTurnsWarning(t *te
 	m.width = 80
 
 	m.tracker.HandleToolStart("call-1", "read_file", "test.go", nil)
-	m.tracker.AddTextSegment(llm.MaxTurnsExceededWarning(3)+"\n", m.width)
+	m.tracker.AddTextSegment(engine.MaxTurnsExceededWarning(3)+"\n", m.width)
 
 	printed := ui.StripANSI(m.renderStreamingContentOnErrorForScrollback())
 	if !strings.Contains(printed, "read_file") || !strings.Contains(printed, "agent is out of turns") {
@@ -577,7 +580,7 @@ func TestUpdate_StreamErrorBeforeAssistantOutputKeepsUserVisible(t *testing.T) {
 	m.height = 20
 	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
 	m.streaming = true
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("hello from user"), 0)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("hello from user"), 0)}
 	m.viewCache.historyValid = true
 
 	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(errors.New("boom"))})
@@ -642,13 +645,13 @@ func TestUpdate_AttemptDiscardKeepsCommittedToolUsage(t *testing.T) {
 }
 
 func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock")
+	eng := engine.NewEngine(provider, nil)
 
 	m := New(
 		&config.Config{DefaultProvider: "mock"},
 		provider,
-		engine,
+		eng,
 		"mock",
 		"mock-model",
 		nil,   // mcpManager
@@ -673,9 +676,9 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 	)
 
 	for i := 0; i < 120; i++ {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 20)
 		m.messages = append(m.messages, session.Message{
@@ -683,7 +686,7 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 			SessionID:   m.sess.ID,
 			Role:        role,
 			TextContent: text,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			CreatedAt:   time.Now(),
 			Sequence:    i,
 		})
@@ -704,9 +707,9 @@ func TestActiveIsolatedSkillRun_AltScreenFollowsBottom(t *testing.T) {
 		m.messages = append(m.messages, session.Message{
 			ID:          int64(i + 1),
 			SessionID:   m.sess.ID,
-			Role:        llm.RoleUser,
+			Role:        core.RoleUser,
 			TextContent: text,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			CreatedAt:   time.Now(),
 			Sequence:    i,
 		})
@@ -738,9 +741,9 @@ func TestSendMessage_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.T) {
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	for i := 0; i < 120; i++ {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 20)
 		m.messages = append(m.messages, session.Message{
@@ -748,7 +751,7 @@ func TestSendMessage_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.T) {
 			SessionID:   m.sess.ID,
 			Role:        role,
 			TextContent: text,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			CreatedAt:   time.Now(),
 			Sequence:    i,
 		})
@@ -777,9 +780,9 @@ func TestApprovalRequest_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	for i := 0; i < 120; i++ {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 20)
 		m.messages = append(m.messages, session.Message{
@@ -787,7 +790,7 @@ func TestApprovalRequest_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.
 			SessionID:   m.sess.ID,
 			Role:        role,
 			TextContent: text,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			CreatedAt:   time.Now(),
 			Sequence:    i,
 		})
@@ -820,9 +823,9 @@ func TestAskUserRequest_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.T
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	for i := 0; i < 120; i++ {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 20)
 		m.messages = append(m.messages, session.Message{
@@ -830,7 +833,7 @@ func TestAskUserRequest_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.T
 			SessionID:   m.sess.ID,
 			Role:        role,
 			TextContent: text,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			CreatedAt:   time.Now(),
 			Sequence:    i,
 		})
@@ -870,18 +873,18 @@ func TestViewAltScreen_RefreshesWhenMessagesReplacedWithSameCount(t *testing.T) 
 		{
 			ID:          1,
 			SessionID:   sessionID,
-			Role:        llm.RoleUser,
+			Role:        core.RoleUser,
 			TextContent: "first prompt",
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "first prompt"}},
+			Parts:       []core.Part{{Type: core.PartText, Text: "first prompt"}},
 			CreatedAt:   time.Now(),
 			Sequence:    0,
 		},
 		{
 			ID:          2,
 			SessionID:   sessionID,
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: "old reply",
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "old reply"}},
+			Parts:       []core.Part{{Type: core.PartText, Text: "old reply"}},
 			CreatedAt:   time.Now(),
 			Sequence:    1,
 		},
@@ -896,18 +899,18 @@ func TestViewAltScreen_RefreshesWhenMessagesReplacedWithSameCount(t *testing.T) 
 		{
 			ID:          1,
 			SessionID:   sessionID,
-			Role:        llm.RoleUser,
+			Role:        core.RoleUser,
 			TextContent: "first prompt",
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "first prompt"}},
+			Parts:       []core.Part{{Type: core.PartText, Text: "first prompt"}},
 			CreatedAt:   time.Now(),
 			Sequence:    0,
 		},
 		{
 			ID:          2,
 			SessionID:   sessionID,
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: "new final reply",
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "new final reply"}},
+			Parts:       []core.Part{{Type: core.PartText, Text: "new final reply"}},
 			CreatedAt:   time.Now(),
 			Sequence:    1,
 		},
@@ -976,18 +979,18 @@ func TestViewAltScreen_HeightOnlyResizePreservesLastMessage(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   sessionID,
-			Role:        llm.RoleUser,
+			Role:        core.RoleUser,
 			TextContent: "hello",
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+			Parts:       []core.Part{{Type: core.PartText, Text: "hello"}},
 			CreatedAt:   time.Now(),
 			Sequence:    0,
 		},
 		{
 			ID:          2,
 			SessionID:   sessionID,
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: "world",
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "world"}},
+			Parts:       []core.Part{{Type: core.PartText, Text: "world"}},
 			CreatedAt:   time.Now(),
 			Sequence:    1,
 		},
@@ -1024,9 +1027,9 @@ func TestViewAltScreen_LargeHistoryResizeKeepsImmediateFrameResponsive(t *testin
 
 	m.messages = make([]session.Message, 1412)
 	for i := range m.messages {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 8)
 		m.messages[i] = session.Message{
@@ -1034,7 +1037,7 @@ func TestViewAltScreen_LargeHistoryResizeKeepsImmediateFrameResponsive(t *testin
 			SessionID:   m.sess.ID,
 			Role:        role,
 			TextContent: text,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			Sequence:    i,
 		}
 	}
@@ -1080,7 +1083,7 @@ func TestViewAltScreen_LargeHistoryResizeKeepsImmediateFrameResponsive(t *testin
 
 func TestViewAltScreen_ResizeFrameKeepsDialogOverlay(t *testing.T) {
 	m := newTestChatModel(true)
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("visible history"), 0)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("visible history"), 0)}
 	m.invalidateHistoryCache()
 	_ = m.View()
 	m.dialog.ShowContent("Resize help", "dialog body")
@@ -1098,7 +1101,7 @@ func TestViewAltScreen_ResizeFrameKeepsDialogOverlay(t *testing.T) {
 
 func TestViewAltScreen_ResizeFrameSuppressesStaleImagePlaceholders(t *testing.T) {
 	m := newTestChatModel(true)
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("visible history"), 0)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("visible history"), 0)}
 	m.viewCache.lastViewportView = "before\n\U0010eeee\nafter"
 	m.viewportImageBlocks = []viewportImageBlock{{}}
 
@@ -1114,7 +1117,7 @@ func TestViewAltScreen_ResizeFrameSuppressesStaleImagePlaceholders(t *testing.T)
 
 func TestViewAltScreen_ResizeReflowIgnoresStaleGeneration(t *testing.T) {
 	m := newTestChatModel(true)
-	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("history"), 0)}
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, core.UserText("history"), 0)}
 	_ = m.View()
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 76, Height: m.height})
@@ -1158,7 +1161,7 @@ func TestViewAltScreen_ResizeReflowPreservesScrolledAnchor(t *testing.T) {
 	m.messages = make([]session.Message, 120)
 	for i := range m.messages {
 		text := "anchor message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 12)
-		m.messages[i] = *session.NewMessage(m.sess.ID, llm.UserText(text), i)
+		m.messages[i] = *session.NewMessage(m.sess.ID, core.UserText(text), i)
 	}
 	m.invalidateHistoryCache()
 	_ = m.View()
@@ -1184,7 +1187,7 @@ func TestViewAltScreen_ScrollDuringResizeOverridesBottomAnchor(t *testing.T) {
 	m.messages = make([]session.Message, 80)
 	for i := range m.messages {
 		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 10)
-		m.messages[i] = *session.NewMessage(m.sess.ID, llm.UserText(text), i)
+		m.messages[i] = *session.NewMessage(m.sess.ID, core.UserText(text), i)
 	}
 	m.invalidateHistoryCache()
 	_ = m.View()
@@ -1355,11 +1358,11 @@ func TestRenderStatusLine_IdleUsesProviderBaselineWithoutHeuristicInflation(t *t
 	m.engine.SetContextEstimateBaseline(130_715, 1)
 	assistantText := strings.Repeat("large heuristic text ", 2500)
 	m.messages = []session.Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello"},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: assistantText}}, TextContent: assistantText},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "hello"}}, TextContent: "hello"},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: assistantText}}, TextContent: assistantText},
 	}
 
-	inflatedIfDoubleCounted := 130_715 + llm.EstimateMessageTokens([]llm.Message{llm.AssistantText(assistantText)})
+	inflatedIfDoubleCounted := 130_715 + engine.EstimateMessageTokens([]core.Message{core.AssistantText(assistantText)})
 	if inflatedIfDoubleCounted <= 130_715 {
 		t.Fatalf("test setup expected assistant heuristic to inflate provider baseline, got %d", inflatedIfDoubleCounted)
 	}
@@ -1378,13 +1381,13 @@ func TestRenderStatusLine_IdleUsesProviderBaselineWithoutHeuristicInflation(t *t
 }
 
 func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock")
+	eng := engine.NewEngine(provider, nil)
 
 	m := New(
 		&config.Config{DefaultProvider: "mock"},
 		provider,
-		engine,
+		eng,
 		"mock",
 		"mock-model",
 		nil,
@@ -1474,9 +1477,9 @@ func TestRenderStatusLine_UsesEstimatedContextBeforeUsageArrives(t *testing.T) {
 	m.messages = append(m.messages,
 		session.Message{
 			SessionID:   m.sess.ID,
-			Role:        llm.RoleUser,
+			Role:        core.RoleUser,
 			TextContent: userText,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+			Parts:       []core.Part{{Type: core.PartText, Text: userText}},
 			CreatedAt:   time.Now(),
 			Sequence:    0,
 		},
@@ -1492,8 +1495,8 @@ func TestRenderStatusLine_UsesEstimatedContextBeforeUsageArrives(t *testing.T) {
 }
 
 func TestNew_ResumeSession_ConfiguresContextEstimateFromLoadedSession(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock")
+	eng := engine.NewEngine(provider, nil)
 	sess := &session.Session{
 		ID:               session.NewID(),
 		Provider:         "OpenAI",
@@ -1513,17 +1516,17 @@ func TestNew_ResumeSession_ConfiguresContextEstimateFromLoadedSession(t *testing
 			sess.ID: []session.Message{
 				{
 					SessionID:   sess.ID,
-					Role:        llm.RoleUser,
+					Role:        core.RoleUser,
 					TextContent: userText,
-					Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+					Parts:       []core.Part{{Type: core.PartText, Text: userText}},
 					CreatedAt:   time.Now(),
 					Sequence:    0,
 				},
 				{
 					SessionID:   sess.ID,
-					Role:        llm.RoleAssistant,
+					Role:        core.RoleAssistant,
 					TextContent: assistantText,
-					Parts:       []llm.Part{{Type: llm.PartText, Text: assistantText}},
+					Parts:       []core.Part{{Type: core.PartText, Text: assistantText}},
 					CreatedAt:   time.Now(),
 					Sequence:    1,
 				},
@@ -1534,7 +1537,7 @@ func TestNew_ResumeSession_ConfiguresContextEstimateFromLoadedSession(t *testing
 	m := New(
 		&config.Config{DefaultProvider: "openai"},
 		provider,
-		engine,
+		eng,
 		"openai",
 		"gpt-5.2",
 		nil,
@@ -1560,7 +1563,7 @@ func TestNew_ResumeSession_ConfiguresContextEstimateFromLoadedSession(t *testing
 
 	wantLimit := llm.InputLimitForProviderModel("openai", "gpt-5.2")
 	if got := m.engine.InputLimit(); got != wantLimit {
-		t.Fatalf("engine input limit = %d, want %d", got, wantLimit)
+		t.Fatalf("eng input limit = %d, want %d", got, wantLimit)
 	}
 
 	line := ui.StripANSI(m.renderStatusLine())
@@ -1595,17 +1598,17 @@ func TestUpdate_SessionLoadedMsg_ReseedsStatsAndContextTracking(t *testing.T) {
 	messages := []session.Message{
 		{
 			SessionID:   loadedSess.ID,
-			Role:        llm.RoleUser,
+			Role:        core.RoleUser,
 			TextContent: userText,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+			Parts:       []core.Part{{Type: core.PartText, Text: userText}},
 			CreatedAt:   time.Now(),
 			Sequence:    0,
 		},
 		{
 			SessionID:   loadedSess.ID,
-			Role:        llm.RoleAssistant,
+			Role:        core.RoleAssistant,
 			TextContent: assistantText,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: assistantText}},
+			Parts:       []core.Part{{Type: core.PartText, Text: assistantText}},
 			CreatedAt:   time.Now(),
 			Sequence:    1,
 		},
@@ -1658,8 +1661,8 @@ func TestRenderStatusLine_ShowsCachedUsageWhenPresent(t *testing.T) {
 }
 
 func TestRenderStatusLine_ShowsSeededCachedUsageFromSession(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock")
+	eng := engine.NewEngine(provider, nil)
 	sess := &session.Session{
 		ID:                session.NewID(),
 		Provider:          provider.Name(),
@@ -1673,7 +1676,7 @@ func TestRenderStatusLine_ShowsSeededCachedUsageFromSession(t *testing.T) {
 	m := New(
 		&config.Config{DefaultProvider: "mock"},
 		provider,
-		engine,
+		eng,
 		"mock",
 		"mock-model",
 		nil,
@@ -1800,7 +1803,7 @@ func TestRenderInputInline_ShowsPendingSteeringStack(t *testing.T) {
 
 func TestPendingSteeringHidesUnavailableRush(t *testing.T) {
 	m := newTestChatModel(false)
-	m.engine = llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	m.engine = engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	m.setPendingSteering("one", "hello")
 	m.width = 100
 	output := ui.StripANSI(m.renderInputInline())
@@ -2152,7 +2155,7 @@ func TestChatReasoningSummaryUpdatesThinkingStatus(t *testing.T) {
 	m.phase = "Thinking"
 
 	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
-		llm.ReasoningKindSummary,
+		core.ReasoningKindSummary,
 		"**Inspecting repo**\n\nChecking files.",
 		"",
 		"rs_1",
@@ -2172,8 +2175,8 @@ func TestChatReasoningKeepsFirstSummaryTitleAcrossDeltas(t *testing.T) {
 	m.phase = "Thinking"
 
 	for _, event := range []ui.StreamEvent{
-		ui.ReasoningEvent(llm.ReasoningKindSummary, "**Verifying observation reachability during promote**", "Verifying observation reachability during promote", "rs_1", false, true),
-		ui.ReasoningEvent(llm.ReasoningKindSummary, "\n\n**Planning conservative plugin testing**", "Planning conservative plugin testing", "rs_1", false, true),
+		ui.ReasoningEvent(core.ReasoningKindSummary, "**Verifying observation reachability during promote**", "Verifying observation reachability during promote", "rs_1", false, true),
+		ui.ReasoningEvent(core.ReasoningKindSummary, "\n\n**Planning conservative plugin testing**", "Planning conservative plugin testing", "rs_1", false, true),
 	} {
 		updated, _ := m.Update(streamEventMsg{event: event})
 		m = updated.(*Model)
@@ -2196,9 +2199,9 @@ func TestChatReasoningSeparatesDifferentProviderItems(t *testing.T) {
 	m.phase = "Thinking"
 
 	for _, event := range []ui.StreamEvent{
-		ui.ReasoningEvent(llm.ReasoningKindSummary, "**Drafting bilingual couples therapy joke**", "", "rs_1", false, true),
-		ui.ReasoningEvent(llm.ReasoningKindSummary, "", "", "rs_1", true, true),
-		ui.ReasoningEvent(llm.ReasoningKindSummary, "**Evaluating bilingual joke options**", "", "rs_2", false, true),
+		ui.ReasoningEvent(core.ReasoningKindSummary, "**Drafting bilingual couples therapy joke**", "", "rs_1", false, true),
+		ui.ReasoningEvent(core.ReasoningKindSummary, "", "", "rs_1", true, true),
+		ui.ReasoningEvent(core.ReasoningKindSummary, "**Evaluating bilingual joke options**", "", "rs_2", false, true),
 	} {
 		updated, _ := m.Update(streamEventMsg{event: event})
 		m = updated.(*Model)
@@ -2225,7 +2228,7 @@ func TestChatReasoningRawAccumulatesWithoutStatusTitleByDefault(t *testing.T) {
 	m.phase = "Thinking"
 
 	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
-		llm.ReasoningKindRaw,
+		core.ReasoningKindRaw,
 		"raw thinking",
 		"",
 		"",
@@ -2250,7 +2253,7 @@ func TestChatReasoningOffSuppressesStatusTitle(t *testing.T) {
 	m.reasoningConfig.Display = config.ReasoningDisplayOff
 
 	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
-		llm.ReasoningKindSummary,
+		core.ReasoningKindSummary,
 		"**Inspecting repo**\n\nChecking files.",
 		"Inspecting repo",
 		"",
@@ -2271,7 +2274,7 @@ func TestChatCtrlETogglesCommittedReasoningGloballyDuringStream(t *testing.T) {
 	m.phase = "Thinking"
 
 	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
-		llm.ReasoningKindSummary,
+		core.ReasoningKindSummary,
 		"**Inspecting repo**\n\nChecking files.",
 		"",
 		"rs_1",
@@ -2319,7 +2322,7 @@ func TestChatActiveReasoningAfterFlushedToolKeepsBlankLine(t *testing.T) {
 	}
 
 	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
-		llm.ReasoningKindRaw,
+		core.ReasoningKindRaw,
 		"checking status",
 		"Considering version control steps",
 		"",
@@ -2348,10 +2351,10 @@ func TestChatCtrlEExpandsCompletedStreamReasoningAfterStream(t *testing.T) {
 	m.tracker = ui.NewToolTracker()
 	m.tracker.TextMode = m.textMode
 
-	part := llm.Part{
-		Type:             llm.PartText,
+	part := core.Part{
+		Type:             core.PartText,
 		ReasoningContent: "raw qwen thinking body",
-		ReasoningKind:    llm.ReasoningKindRaw,
+		ReasoningKind:    core.ReasoningKindRaw,
 	}
 	rendered := ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(part))
 	m.tracker.AddReasoningSegment(rendered, reasoningSegmentFromPart(part))
@@ -2398,7 +2401,7 @@ func TestChatReasoningAttemptDiscardClearsProvisionalTitle(t *testing.T) {
 	m.streaming = true
 	m.phase = "Thinking"
 	_, _ = m.Update(streamEventMsg{event: ui.ReasoningEvent(
-		llm.ReasoningKindSummary,
+		core.ReasoningKindSummary,
 		"**Old plan**\n\nDiscard me.",
 		"Old plan",
 		"",

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -26,7 +26,7 @@ func (r *mediaRunner) RunAgentWithCallbackAndOptions(ctx context.Context, name, 
 	if mime == "" {
 		mime = "image/png"
 	}
-	cb(id, SubagentEvent{Type: SubagentEventToolEnd, ToolName: "show_media", Media: []llm.MediaArtifact{{Reference: r.reference, StoredPath: r.path, MediaType: mime}}})
+	cb(id, SubagentEvent{Type: SubagentEventToolEnd, ToolName: "show_media", Media: []core.MediaArtifact{{Reference: r.reference, StoredPath: r.path, MediaType: mime}}})
 	return r.lifecycleRunner.RunAgentWithCallbackAndOptions(ctx, name, prompt, depth, id, cb, opts)
 }
 
@@ -38,7 +38,7 @@ func TestWaitAgentDeliversDetachedChildMedia(t *testing.T) {
 	runner := &mediaRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}, path: "/tmp/detached-child.png"}
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "media-parent")
+	ctx := core.ContextWithSessionID(context.Background(), "media-parent")
 	spawned := lifecycleResult(t, lifecycleCall(t, spawn, ctx, `{"agent_name":"artist","prompt":"draw","wait":0}`))
 	<-runner.entered
 	close(runner.release)
@@ -61,7 +61,7 @@ func TestSpawnAgentCompletedWithinBudgetIsCollectedAndReleased(t *testing.T) {
 	close(child.release)
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(&persistentLifecycleRunner{lifecycleRunner: child, store: store})
-	ctx := llm.ContextWithSessionID(context.Background(), "collect-parent")
+	ctx := core.ContextWithSessionID(context.Background(), "collect-parent")
 	result := lifecycleResult(t, lifecycleCall(t, spawn, ctx, `{"agent_name":"developer","prompt":"work","wait":5}`))
 	if result.Status != "completed" || result.Output != "done" {
 		t.Fatalf("spawn = %+v", result)
@@ -87,8 +87,8 @@ func TestInterruptAgentsForParentStopsOnlyThatParentsChildren(t *testing.T) {
 	defer close(runner.release)
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 2, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	stopped := llm.ContextWithSessionID(context.Background(), "stopped-parent")
-	other := llm.ContextWithSessionID(context.Background(), "other-parent")
+	stopped := core.ContextWithSessionID(context.Background(), "stopped-parent")
+	other := core.ContextWithSessionID(context.Background(), "other-parent")
 	victim := lifecycleResult(t, lifecycleCall(t, spawn, stopped, `{"agent_name":"developer","prompt":"a","wait":0}`))
 	survivor := lifecycleResult(t, lifecycleCall(t, spawn, other, `{"agent_name":"developer","prompt":"b","wait":0}`))
 	<-runner.entered
@@ -101,7 +101,7 @@ func TestInterruptAgentsForParentStopsOnlyThatParentsChildren(t *testing.T) {
 		t.Fatalf("interrupted = %v, want only %s", ids, victim.AgentID)
 	}
 	wait := &agentControlTool{name: WaitAgentToolName, spawn: spawn}
-	snapshot := lifecycleResult(t, llm.ToolOutput{Content: strings.Trim(lifecycleCall(t, wait, stopped, `{"agent_ids":["`+victim.AgentID+`"]}`).Content, "[]")})
+	snapshot := lifecycleResult(t, core.ToolOutput{Content: strings.Trim(lifecycleCall(t, wait, stopped, `{"agent_ids":["`+victim.AgentID+`"]}`).Content, "[]")})
 	if snapshot.Status != "interrupted" || !snapshot.Resumable || !strings.Contains(snapshot.Next, "continue_agent") {
 		t.Fatalf("stopped child = %+v, want resumable interrupted", snapshot)
 	}
@@ -115,7 +115,7 @@ func TestInterruptAgentsForParentStopsOnlyThatParentsChildren(t *testing.T) {
 func TestAgentControlFailuresAreToolErrors(t *testing.T) {
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	spawn.SetRunner(&lifecycleRunner{})
-	ctx := llm.ContextWithSessionID(context.Background(), "error-parent")
+	ctx := core.ContextWithSessionID(context.Background(), "error-parent")
 	for name, args := range map[string]string{
 		WaitAgentToolName:     `{"agent_ids":["missing"]}`,
 		CancelAgentToolName:   `{"agent_id":"missing"}`,
@@ -157,7 +157,7 @@ func TestBackgroundSpawnSurvivesReleaseOfSpawningCallAndReloadInterruptsIt(t *te
 	defer close(runner.release)
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	callCtx, releaseCall, err := c.Root(llm.ContextWithSessionID(context.Background(), "reload-parent"))
+	callCtx, releaseCall, err := c.Root(core.ContextWithSessionID(context.Background(), "reload-parent"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestBackgroundSpawnSurvivesReleaseOfSpawningCallAndReloadInterruptsIt(t *te
 	defer stop()
 	c.Request()
 	wait := &agentControlTool{name: WaitAgentToolName, spawn: spawn}
-	out := lifecycleCall(t, wait, llm.ContextWithSessionID(context.Background(), "reload-parent"), `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":5}`)
+	out := lifecycleCall(t, wait, core.ContextWithSessionID(context.Background(), "reload-parent"), `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":5}`)
 	if !strings.Contains(out.Content, `"status":"interrupted"`) || !strings.Contains(out.Content, `"resumable":true`) {
 		t.Fatalf("child after reload = %s, want resumable interrupted", out.Content)
 	}
@@ -187,7 +187,7 @@ func TestSpawnFromStoppedTurnIsRefused(t *testing.T) {
 	defer close(runner.release)
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	ctx, stop := context.WithCancel(llm.ContextWithSessionID(context.Background(), "stopped-turn"))
+	ctx, stop := context.WithCancel(core.ContextWithSessionID(context.Background(), "stopped-turn"))
 	stop()
 	out := lifecycleCall(t, spawn, ctx, `{"agent_name":"developer","prompt":"late","wait":0}`)
 	if !out.IsError || !strings.Contains(out.Content, "parent turn was stopped") {
@@ -206,7 +206,7 @@ func TestSpawnDuringReloadInterruptionIsRefused(t *testing.T) {
 	defer close(runner.release)
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	callCtx, releaseCall, err := c.Root(llm.ContextWithSessionID(context.Background(), "reload-parent"))
+	callCtx, releaseCall, err := c.Root(core.ContextWithSessionID(context.Background(), "reload-parent"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestWaitAgentUnknownIDDoesNotConsumeOtherResults(t *testing.T) {
 	runner := &persistentMediaRunner{mediaRunner: &mediaRunner{lifecycleRunner: child, path: "/tmp/batch-child.png"}, store: store}
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "batch-parent")
+	ctx := core.ContextWithSessionID(context.Background(), "batch-parent")
 	spawned := lifecycleResult(t, lifecycleCall(t, spawn, ctx, `{"agent_name":"artist","prompt":"draw","wait":0}`))
 	<-child.entered
 	close(child.release)
@@ -267,7 +267,7 @@ func TestSpawnWithoutParentSessionStaysSynchronous(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 2), release: make(chan struct{})}
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	done := make(chan llm.ToolOutput, 1)
+	done := make(chan core.ToolOutput, 1)
 	go func() {
 		out, _ := spawn.Execute(context.Background(), []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
 		done <- out

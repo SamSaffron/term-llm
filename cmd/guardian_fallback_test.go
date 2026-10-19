@@ -18,7 +18,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -119,10 +120,10 @@ func TestGuardianClassifyFallbackEscalatesDenial(t *testing.T) {
 	withGuardianClassifyClient(t, stub)
 	logger := &guardianEscalationStub{}
 	withGuardianEscalationLogger(t, logger)
-	provider := llm.NewMockProvider("fallback").AddTextResponse(`{"outcome":"allow","risk_level":"low","user_authorization":"high","rationale":"ok"}`)
+	provider := mockprovider.NewMockProvider("fallback").AddTextResponse(`{"outcome":"allow","risk_level":"low","user_authorization":"high","rationale":"ok"}`)
 	factoryCalls := 0
 	var gotName, gotModel string
-	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (core.Provider, error) {
 		factoryCalls++
 		gotName, gotModel = name, model
 		return provider, nil
@@ -180,8 +181,8 @@ func TestGuardianClassifyFallbackNotUsedOnAllow(t *testing.T) {
 	withGuardianClassifyClient(t, stub)
 	logger := &guardianEscalationStub{}
 	withGuardianEscalationLogger(t, logger)
-	provider := llm.NewMockProvider("fallback")
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("fallback")
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
@@ -212,8 +213,8 @@ func TestGuardianClassifyFallbackDenialTripsBreaker(t *testing.T) {
 	logger := &guardianEscalationStub{}
 	withGuardianEscalationLogger(t, logger)
 	denial := `{"outcome":"deny","risk_level":"high","user_authorization":"low","rationale":"credential access"}`
-	provider := llm.NewMockProvider("fallback").AddTextResponse(denial).AddTextResponse(denial).AddTextResponse(denial)
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("fallback").AddTextResponse(denial).AddTextResponse(denial).AddTextResponse(denial)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
@@ -247,8 +248,8 @@ func TestGuardianClassifyFallbackErrorAfterClassifyDenyCountsTowardBreaker(t *te
 	logger := &guardianEscalationStub{}
 	withGuardianEscalationLogger(t, logger)
 	transport := errors.New("fallback transport down")
-	provider := llm.NewMockProvider("fallback").AddError(transport).AddError(transport).AddError(transport)
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("fallback").AddError(transport).AddError(transport).AddError(transport)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
@@ -301,8 +302,8 @@ func TestGuardianClassifyFallbackErrorAfterClassifyErrorDoesNotTripBreaker(t *te
 	logger := &guardianEscalationStub{}
 	withGuardianEscalationLogger(t, logger)
 	transport := errors.New("fallback transport down")
-	provider := llm.NewMockProvider("fallback").AddError(transport).AddError(transport).AddError(transport)
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("fallback").AddError(transport).AddError(transport).AddError(transport)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
@@ -344,8 +345,8 @@ func TestGuardianClassifyFallbackContradictoryAllowIsDenied(t *testing.T) {
 	logger := &guardianEscalationStub{}
 	withGuardianEscalationLogger(t, logger)
 	contradictory := `{"outcome":"allow","risk_level":"high","user_authorization":"low","rationale":"risky but allowed"}`
-	provider := llm.NewMockProvider("fallback").AddTextResponse(contradictory).AddTextResponse(contradictory).AddTextResponse(contradictory)
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("fallback").AddTextResponse(contradictory).AddTextResponse(contradictory).AddTextResponse(contradictory)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) { return provider, nil })
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
@@ -394,7 +395,7 @@ func TestGuardianClassifyFallbackSetupFailures(t *testing.T) {
 	withGuardianEscalationLogger(t, &guardianEscalationStub{})
 
 	t.Run("fallback provider fails to construct", func(t *testing.T) {
-		withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 			return nil, errors.New("no credentials")
 		})
 		cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
@@ -443,7 +444,7 @@ func TestGuardianClassifyFallbackSetupFailures(t *testing.T) {
 
 	t.Run("yolo skips guardian setup", func(t *testing.T) {
 		var factoryCalls atomic.Int32
-		withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+		withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 			factoryCalls.Add(1)
 			return nil, errors.New("unused")
 		})
@@ -464,9 +465,9 @@ func TestGuardianClassifyFallbackCleansReplacedPool(t *testing.T) {
 	withGuardianClassifyClient(t, stub)
 	withGuardianEscalationLogger(t, &guardianEscalationStub{})
 	var cleaned atomic.Int32
-	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
 		return &delayedGuardianProvider{
-			delegate: llm.NewMockProvider("mock").AddTextResponse(`{"outcome":"allow"}`),
+			delegate: mockprovider.NewMockProvider("mock").AddTextResponse(`{"outcome":"allow"}`),
 			started:  make(chan struct{}, 1),
 			release:  closedChannel(),
 			cleaned:  &cleaned,
@@ -539,8 +540,8 @@ func TestGuardianClassifyFallbackEscalationLogFile(t *testing.T) {
 	escalate := func(t *testing.T) {
 		t.Helper()
 		withGuardianClassifyClient(t, &guardianFallbackClassifyStub{confidence: 0.4})
-		withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
-			return llm.NewMockProvider("fallback").AddTextResponse(`{"outcome":"allow","risk_level":"low","user_authorization":"high","rationale":"ok"}`), nil
+		withGuardianProviderFactory(t, func(*config.Config, string, string) (core.Provider, error) {
+			return mockprovider.NewMockProvider("fallback").AddTextResponse(`{"outcome":"allow","risk_level":"low","user_authorization":"high","rationale":"ok"}`), nil
 		})
 	}
 

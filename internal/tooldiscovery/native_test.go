@@ -12,11 +12,14 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/llm"
+	_ "github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 type nativeScriptTurn struct {
-	events []llm.Event
+	events []core.Event
 	err    error
 }
 
@@ -24,27 +27,27 @@ type nativeScriptProvider struct {
 	mu        sync.Mutex
 	supported bool
 	turns     []nativeScriptTurn
-	requests  []llm.Request
+	requests  []core.Request
 	resets    int
 }
 
 func (p *nativeScriptProvider) Name() string       { return "native-script" }
 func (p *nativeScriptProvider) Credential() string { return "mock" }
-func (p *nativeScriptProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *nativeScriptProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
-func (p *nativeScriptProvider) NativeToolDiscoverySupport(string) llm.NativeToolDiscoverySupport {
+func (p *nativeScriptProvider) NativeToolDiscoverySupport(string) core.NativeToolDiscoverySupport {
 	if p.supported {
-		return llm.NativeToolDiscoverySupport{Supported: true, Name: "test-native", Reason: "test capability"}
+		return core.NativeToolDiscoverySupport{Supported: true, Name: "test-native", Reason: "test capability"}
 	}
-	return llm.NativeToolDiscoverySupport{Reason: "test provider does not support native discovery"}
+	return core.NativeToolDiscoverySupport{Reason: "test provider does not support native discovery"}
 }
 func (p *nativeScriptProvider) ResetConversation() {
 	p.mu.Lock()
 	p.resets++
 	p.mu.Unlock()
 }
-func (p *nativeScriptProvider) Stream(_ context.Context, req llm.Request) (llm.Stream, error) {
+func (p *nativeScriptProvider) Stream(_ context.Context, req core.Request) (core.Stream, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.requests = append(p.requests, req)
@@ -56,16 +59,16 @@ func (p *nativeScriptProvider) Stream(_ context.Context, req llm.Request) (llm.S
 	if turn.err != nil {
 		return nil, turn.err
 	}
-	return &nativeScriptStream{events: append([]llm.Event(nil), turn.events...)}, nil
+	return &nativeScriptStream{events: append([]core.Event(nil), turn.events...)}, nil
 }
 
 type nativeScriptStream struct {
-	events []llm.Event
+	events []core.Event
 }
 
-func (s *nativeScriptStream) Recv() (llm.Event, error) {
+func (s *nativeScriptStream) Recv() (core.Event, error) {
 	if len(s.events) == 0 {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	event := s.events[0]
 	s.events = s.events[1:]
@@ -77,19 +80,19 @@ func TestNativeStrategyOrchestratesDiscoveryWithoutTopLevelSchemaMutation(t *tes
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
-		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
-		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
-		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+		{events: []core.Event{{Type: core.EventDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []core.Event{{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []core.Event{{Type: core.EventTextDelta, Text: "done"}}},
 	}}
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Strategy: "auto", Threshold: 24}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Strategy: "auto", Threshold: 24}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	stream, err := eng.Stream(context.Background(), core.Request{
 		EnableToolDiscovery: true,
 		SessionID:           "native",
 		Model:               "native-model",
-		Messages:            []llm.Message{llm.UserText("perform the special action")},
+		Messages:            []core.Message{core.UserText("perform the special action")},
 		MaxTurns:            3,
 	})
 	if err != nil {
@@ -114,10 +117,10 @@ func TestNativeStrategyOrchestratesDiscoveryWithoutTopLevelSchemaMutation(t *tes
 	var callSeen, outputSeen bool
 	for _, message := range provider.requests[1].Messages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartDiscoveryCall && part.DiscoveryCall != nil {
+			if part.Type == core.PartDiscoveryCall && part.DiscoveryCall != nil {
 				callSeen = true
 			}
-			if part.Type == llm.PartDiscoveryOutput && part.DiscoveryOutput != nil {
+			if part.Type == core.PartDiscoveryOutput && part.DiscoveryOutput != nil {
 				outputSeen = true
 				if len(part.DiscoveryOutput.Tools) != 1 || part.DiscoveryOutput.Tools[0].Spec.Name != "federation__special_action" {
 					t.Fatalf("discovery output = %#v", part.DiscoveryOutput)
@@ -128,10 +131,10 @@ func TestNativeStrategyOrchestratesDiscoveryWithoutTopLevelSchemaMutation(t *tes
 	if !callSeen || !outputSeen {
 		t.Fatalf("native replay parts call=%v output=%v", callSeen, outputSeen)
 	}
-	var routedCall *llm.ToolCall
+	var routedCall *core.ToolCall
 	for _, message := range provider.requests[2].Messages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID == "external-1" {
+			if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.ID == "external-1" {
 				routedCall = part.ToolCall
 			}
 		}
@@ -139,7 +142,7 @@ func TestNativeStrategyOrchestratesDiscoveryWithoutTopLevelSchemaMutation(t *tes
 	if routedCall == nil || routedCall.Name != "federation__special_action" || routedCall.Namespace != "federation" || routedCall.ChildName != "special_action" {
 		t.Fatalf("persisted native route = %#v", routedCall)
 	}
-	diagnostics, _ := engine.ToolDiscoveryDiagnostics("native")
+	diagnostics, _ := eng.ToolDiscoveryDiagnostics("native")
 	if diagnostics.Strategy != string(StrategyNative) || diagnostics.DynamicActive != 1 || diagnostics.FallbackCount != 0 {
 		t.Fatalf("native diagnostics = %+v", diagnostics)
 	}
@@ -149,8 +152,8 @@ func TestNativeHistoryDoesNotRestoreEvictedTools(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true}
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native", MaxActiveTools: 1}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native", MaxActiveTools: 1}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,9 +162,9 @@ func TestNativeHistoryDoesNotRestoreEvictedTools(t *testing.T) {
 		t.Fatal("expected at least two catalogue tools")
 	}
 	first, second := snapshot.Tools[0], snapshot.Tools[1]
-	req := llm.Request{SessionID: "native-eviction", Messages: []llm.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-old"}},
-		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: &llm.ToolDiscoveryOutput{CallID: "search-old", Tools: []llm.DiscoveredTool{
+	req := core.Request{SessionID: "native-eviction", Messages: []core.Message{{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-old"}},
+		{Type: core.PartDiscoveryOutput, DiscoveryOutput: &core.ToolDiscoveryOutput{CallID: "search-old", Tools: []core.DiscoveredTool{
 			{Spec: first.ToolSpec(), SchemaHash: first.SchemaHash},
 			{Spec: second.ToolSpec(), SchemaHash: second.SchemaHash},
 		}}},
@@ -185,13 +188,13 @@ func TestNativeHistoryDoesNotRestoreEvictedTools(t *testing.T) {
 		t.Fatalf("restored active tools = %v, want [%s]", got, second.Name)
 	}
 
-	emptyOutput := &llm.ToolDiscoveryOutput{CallID: "search-empty", Tools: []llm.DiscoveredTool{
+	emptyOutput := &core.ToolDiscoveryOutput{CallID: "search-empty", Tools: []core.DiscoveredTool{
 		{Spec: first.ToolSpec(), SchemaHash: first.SchemaHash},
 		{Spec: second.ToolSpec(), SchemaHash: second.SchemaHash},
 	}}
-	emptyReq := llm.Request{SessionID: "native-all-evicted", Messages: []llm.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-empty"}},
-		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: emptyOutput},
+	emptyReq := core.Request{SessionID: "native-all-evicted", Messages: []core.Message{{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-empty"}},
+		{Type: core.PartDiscoveryOutput, DiscoveryOutput: emptyOutput},
 	}}}}
 	emptyKey := planner.stateKey(emptyReq.SessionID, "")
 	planner.mu.Lock()
@@ -212,18 +215,18 @@ func TestNativeNamespaceCallRejectsUnselectedSibling(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
-		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
-		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "sibling-1", Namespace: "federation", ChildName: "realistic_operation_00", Arguments: json.RawMessage(`{}`)}}}},
+		{events: []core.Event{{Type: core.EventDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []core.Event{{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "sibling-1", Namespace: "federation", ChildName: "realistic_operation_00", Arguments: json.RawMessage(`{}`)}}}},
 	}}
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	stream, err := eng.Stream(context.Background(), core.Request{
 		EnableToolDiscovery: true,
 		SessionID:           "unselected-sibling",
 		Model:               "native-model",
-		Messages:            []llm.Message{llm.UserText("act")},
+		Messages:            []core.Message{core.UserText("act")},
 		MaxTurns:            3,
 	})
 	if err != nil {
@@ -239,7 +242,7 @@ func TestNativeNamespaceCallRejectsUnselectedSibling(t *testing.T) {
 			}
 			break
 		}
-		if event.Type == llm.EventError {
+		if event.Type == core.EventError {
 			gotErr = event.Err
 			break
 		}
@@ -257,15 +260,15 @@ func TestNativeAutoFallbackOccursOnceBeforeSideEffects(t *testing.T) {
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
 		{err: errors.New("native tool_search rejected")},
-		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "portable-search", Name: ToolSearchName, Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
-		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external", Name: "federation__special_action", Arguments: json.RawMessage(`{"project_id":"P-1"}`)}}}},
-		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+		{events: []core.Event{{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "portable-search", Name: ToolSearchName, Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []core.Event{{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "external", Name: "federation__special_action", Arguments: json.RawMessage(`{"project_id":"P-1"}`)}}}},
+		{events: []core.Event{{Type: core.EventTextDelta, Text: "done"}}},
 	}}
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "auto"}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "auto"}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "fallback", Model: "native-model", Messages: []llm.Message{llm.UserText("act")}, MaxTurns: 4})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, SessionID: "fallback", Model: "native-model", Messages: []core.Message{core.UserText("act")}, MaxTurns: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +276,7 @@ func TestNativeAutoFallbackOccursOnceBeforeSideEffects(t *testing.T) {
 	if len(provider.requests) != 4 || provider.requests[0].NativeToolDiscovery == nil || !hasTool(provider.requests[1].Tools, ToolSearchName) {
 		t.Fatalf("fallback requests = %#v", provider.requests)
 	}
-	diagnostics, _ := engine.ToolDiscoveryDiagnostics("fallback")
+	diagnostics, _ := eng.ToolDiscoveryDiagnostics("fallback")
 	if diagnostics.Strategy != string(StrategyPortable) || diagnostics.FallbackCount != 1 || !strings.Contains(diagnostics.FallbackReason, "rejected") {
 		t.Fatalf("fallback diagnostics = %+v", diagnostics)
 	}
@@ -286,12 +289,12 @@ func TestAutoStrategyUsesPortableWithoutProvenNativeCapability(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: false}
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "auto"}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "auto"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "qwen-like", Model: "qwen"}
+	req := core.Request{SessionID: "qwen-like", Model: "qwen"}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "qwen-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -308,17 +311,17 @@ func TestAutoStrategyUsesPortableWithoutProvenNativeCapability(t *testing.T) {
 func TestChatGPTLunaAutoStrategyResolvesNative(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewChatGPTProviderWithCredsAndOptions(
+	provider := responsesproviders.NewChatGPTProviderWithCredsAndOptions(
 		&credentials.ChatGPTCredentials{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour).Unix()},
 		"gpt-5.6-luna-medium",
-		llm.ChatGPTProviderOptions{UseWebSocket: true},
+		responsesproviders.ChatGPTProviderOptions{UseWebSocket: true},
 	)
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Strategy: "auto", Threshold: 24}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "auto", Strategy: "auto", Threshold: 24}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "luna", Model: "gpt-5.6-luna-medium"}
+	req := core.Request{SessionID: "luna", Model: "gpt-5.6-luna-medium"}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "luna-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -335,22 +338,22 @@ func TestNativeReplayStaleSchemaIsInvalidatedAndReset(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true}
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := manager.CatalogueSnapshot()
-	var spec llm.ToolSpec
+	var spec core.ToolSpec
 	for _, tool := range snapshot.Tools {
 		if tool.Name == "federation__special_action" {
 			spec = tool.ToolSpec()
 			break
 		}
 	}
-	req := llm.Request{SessionID: "stale", Model: "native-model", Messages: []llm.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-old", Arguments: json.RawMessage(`{"query":"special"}`)}},
-		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: &llm.ToolDiscoveryOutput{CallID: "search-old", CatalogueGen: snapshot.Generation - 1, Tools: []llm.DiscoveredTool{{Spec: spec, SchemaHash: "stale-hash"}}}},
+	req := core.Request{SessionID: "stale", Model: "native-model", Messages: []core.Message{{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-old", Arguments: json.RawMessage(`{"query":"special"}`)}},
+		{Type: core.PartDiscoveryOutput, DiscoveryOutput: &core.ToolDiscoveryOutput{CallID: "search-old", CatalogueGen: snapshot.Generation - 1, Tools: []core.DiscoveredTool{{Spec: spec, SchemaHash: "stale-hash"}}}},
 	}}}}
 	resetReason, err := planner.BeginRun(context.Background(), provider, &req, "stale-run")
 	if err != nil {
@@ -362,7 +365,7 @@ func TestNativeReplayStaleSchemaIsInvalidatedAndReset(t *testing.T) {
 	}
 	for _, message := range req.Messages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartDiscoveryCall || part.Type == llm.PartDiscoveryOutput {
+			if part.Type == core.PartDiscoveryCall || part.Type == core.PartDiscoveryOutput {
 				t.Fatalf("stale discovery replay survived: %#v", part)
 			}
 		}
@@ -373,23 +376,23 @@ func TestNativeReplayOldGenerationReResolvesCurrentCatalogue(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true}
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := manager.CatalogueSnapshot()
-	var selected llm.DiscoveredTool
+	var selected core.DiscoveredTool
 	for _, tool := range snapshot.Tools {
 		if tool.Name == "federation__special_action" {
-			selected = llm.DiscoveredTool{Spec: tool.ToolSpec(), SchemaHash: tool.SchemaHash}
+			selected = core.DiscoveredTool{Spec: tool.ToolSpec(), SchemaHash: tool.SchemaHash}
 			break
 		}
 	}
-	output := &llm.ToolDiscoveryOutput{CallID: "search-old", CatalogueHash: "old", CatalogueGen: 0, Tools: []llm.DiscoveredTool{selected}}
-	req := llm.Request{SessionID: "old-generation", Model: "native-model", Messages: []llm.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-old", Arguments: json.RawMessage(`{"query":"special"}`)}},
-		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: output},
+	output := &core.ToolDiscoveryOutput{CallID: "search-old", CatalogueHash: "old", CatalogueGen: 0, Tools: []core.DiscoveredTool{selected}}
+	req := core.Request{SessionID: "old-generation", Model: "native-model", Messages: []core.Message{{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-old", Arguments: json.RawMessage(`{"query":"special"}`)}},
+		{Type: core.PartDiscoveryOutput, DiscoveryOutput: output},
 	}}}}
 	resetReason, err := planner.BeginRun(context.Background(), provider, &req, "old-generation-run")
 	if err != nil {
@@ -412,13 +415,13 @@ func TestNativeSearchCannotLoadDeniedTool(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true}
-	engine := llm.NewEngine(provider, nil)
-	engine.SetAllowedToolsFilter([]string{})
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	eng.SetAllowedToolsFilter([]string{})
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "denied", Model: "native-model"}
+	req := core.Request{SessionID: "denied", Model: "native-model"}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "denied-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +429,7 @@ func TestNativeSearchCannotLoadDeniedTool(t *testing.T) {
 	if _, err := planner.PrepareTurn(context.Background(), provider, &req, "denied-run", 0, 3); err != nil {
 		t.Fatal(err)
 	}
-	_, err = planner.ResolveNativeToolDiscovery(context.Background(), "denied-run", llm.ToolDiscoveryCall{ID: "search", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)})
+	_, err = planner.ResolveNativeToolDiscovery(context.Background(), "denied-run", core.ToolDiscoveryCall{ID: "search", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)})
 	if err == nil || !strings.Contains(err.Error(), "unavailable or denied") {
 		t.Fatalf("denied search error = %v", err)
 	}
@@ -436,12 +439,12 @@ func TestNativeFallbackRejectedAfterCommit(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true}
-	engine := llm.NewEngine(provider, nil)
-	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "auto"}, manager, engine)
+	eng := engine.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "auto"}, manager, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := llm.Request{SessionID: "committed", Model: "native-model"}
+	req := core.Request{SessionID: "committed", Model: "native-model"}
 	if _, err := planner.BeginRun(context.Background(), provider, &req, "committed-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -454,12 +457,12 @@ func TestNativeFallbackRejectedAfterCommit(t *testing.T) {
 func TestForcedNativeUnsupportedProviderFailsClearly(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := &nativeScriptProvider{supported: false, turns: []nativeScriptTurn{{events: []llm.Event{{Type: llm.EventTextDelta, Text: "unexpected"}}}}}
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+	provider := &nativeScriptProvider{supported: false, turns: []nativeScriptTurn{{events: []core.Event{{Type: core.EventTextDelta, Text: "unexpected"}}}}}
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, Model: "unsupported", Messages: []llm.Message{llm.UserText("act")}, MaxTurns: 3})
+	stream, err := eng.Stream(context.Background(), core.Request{EnableToolDiscovery: true, Model: "unsupported", Messages: []core.Message{core.UserText("act")}, MaxTurns: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +476,7 @@ func TestForcedNativeUnsupportedProviderFailsClearly(t *testing.T) {
 			}
 			break
 		}
-		if event.Type == llm.EventError && event.Err != nil {
+		if event.Type == core.EventError && event.Err != nil {
 			gotErr = event.Err
 			break
 		}
@@ -493,21 +496,21 @@ func TestNativeForcedToolSearchKeepsDiscoveryAndDoesNotRepeat(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
-		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
-		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
-		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+		{events: []core.Event{{Type: core.EventDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []core.Event{{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []core.Event{{Type: core.EventTextDelta, Text: "done"}}},
 	}}
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	stream, err := eng.Stream(context.Background(), core.Request{
 		EnableToolDiscovery: true,
 		SessionID:           "forced-native",
 		Model:               "native-model",
-		Messages:            []llm.Message{llm.UserText("perform the special action")},
-		Tools:               []llm.ToolSpec{(&SearchTool{}).Spec()},
-		ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName},
+		Messages:            []core.Message{core.UserText("perform the special action")},
+		Tools:               []core.ToolSpec{(&SearchTool{}).Spec()},
+		ToolChoice:          core.ToolChoice{Mode: core.ToolChoiceName, Name: ToolSearchName},
 		MaxTurns:            4,
 	})
 	if err != nil {
@@ -519,13 +522,13 @@ func TestNativeForcedToolSearchKeepsDiscoveryAndDoesNotRepeat(t *testing.T) {
 		t.Fatalf("provider requests = %d, want 3 (search, tool call, answer)", len(provider.requests))
 	}
 	second := provider.requests[1]
-	if second.ToolChoice.Mode == llm.ToolChoiceName && second.ToolChoice.Name == ToolSearchName {
+	if second.ToolChoice.Mode == core.ToolChoiceName && second.ToolChoice.Name == ToolSearchName {
 		t.Fatalf("second request re-forced tool_search: %+v", second.ToolChoice)
 	}
 	var discoverySeen bool
 	for _, message := range second.Messages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartDiscoveryCall && part.DiscoveryCall != nil && part.DiscoveryCall.ID == "search-1" {
+			if part.Type == core.PartDiscoveryCall && part.DiscoveryCall != nil && part.DiscoveryCall.ID == "search-1" {
 				discoverySeen = true
 			}
 		}
@@ -544,18 +547,18 @@ func TestNativeDiscoveryResolvesQualifiedToolNames(t *testing.T) {
 			defer manager.StopAll()
 			args, _ := json.Marshal(map[string]any{"tool_names": []string{requested}})
 			provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
-				{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: args}}}},
-				{events: []llm.Event{{Type: llm.EventTextDelta, Text: "loaded"}}},
+				{events: []core.Event{{Type: core.EventDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-1", Arguments: args}}}},
+				{events: []core.Event{{Type: core.EventTextDelta, Text: "loaded"}}},
 			}}
-			engine := llm.NewEngine(provider, nil)
-			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+			eng := engine.NewEngine(provider, nil)
+			if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng); err != nil {
 				t.Fatal(err)
 			}
-			stream, err := engine.Stream(context.Background(), llm.Request{
+			stream, err := eng.Stream(context.Background(), core.Request{
 				EnableToolDiscovery: true,
 				SessionID:           "qualified",
 				Model:               "native-model",
-				Messages:            []llm.Message{llm.UserText("load it")},
+				Messages:            []core.Message{core.UserText("load it")},
 				MaxTurns:            4,
 			})
 			if err != nil {
@@ -568,7 +571,7 @@ func TestNativeDiscoveryResolvesQualifiedToolNames(t *testing.T) {
 			var loaded []string
 			for _, message := range provider.requests[1].Messages {
 				for _, part := range message.Parts {
-					if part.Type == llm.PartDiscoveryOutput && part.DiscoveryOutput != nil {
+					if part.Type == core.PartDiscoveryOutput && part.DiscoveryOutput != nil {
 						for _, tool := range part.DiscoveryOutput.Tools {
 							loaded = append(loaded, tool.Spec.Name)
 						}
@@ -589,21 +592,21 @@ func TestNativeForcedToolSearchWithinSmallTurnBudget(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
-		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
-		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
-		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
+		{events: []core.Event{{Type: core.EventDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []core.Event{{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []core.Event{{Type: core.EventTextDelta, Text: "done"}}},
 	}}
-	engine := llm.NewEngine(provider, nil)
-	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+	eng := engine.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, eng); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	stream, err := eng.Stream(context.Background(), core.Request{
 		EnableToolDiscovery: true,
 		SessionID:           "forced-small",
 		Model:               "native-model",
-		Messages:            []llm.Message{llm.UserText("perform the special action")},
-		Tools:               []llm.ToolSpec{(&SearchTool{}).Spec()},
-		ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceName, Name: ToolSearchName},
+		Messages:            []core.Message{core.UserText("perform the special action")},
+		Tools:               []core.ToolSpec{(&SearchTool{}).Spec()},
+		ToolChoice:          core.ToolChoice{Mode: core.ToolChoiceName, Name: ToolSearchName},
 		MaxTurns:            3,
 	})
 	if err != nil {

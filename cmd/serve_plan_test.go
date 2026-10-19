@@ -4,17 +4,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestSessionMessageEntriesExposeGuardianOnlyToolResult(t *testing.T) {
 	entries := (&serveServer{}).sessionMessageEntries([]session.Message{{
-		ID: 1, Sequence: 1, Role: llm.RoleTool, CreatedAt: time.Now(),
-		Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+		ID: 1, Sequence: 1, Role: core.RoleTool, CreatedAt: time.Now(),
+		Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
 			ID: "call-shell", Name: tools.ShellToolName,
-			GuardianReviews: []llm.GuardianReview{{Outcome: "approved", Message: "guardian: approved", Command: "pwd"}},
+			GuardianReviews: []core.GuardianReview{{Outcome: "approved", Message: "guardian: approved", Command: "pwd"}},
 		}}},
 	}})
 	if len(entries) != 1 || len(entries[0].Parts) != 1 {
@@ -29,12 +29,12 @@ func TestSessionMessageEntriesExposeGuardianOnlyToolResult(t *testing.T) {
 func TestSessionMessageEntriesAccumulateGuardianReviewsForRepeatedResults(t *testing.T) {
 	now := time.Now()
 	entries := (&serveServer{}).sessionMessageEntries([]session.Message{
-		{ID: 1, Sequence: 1, Role: llm.RoleAssistant, CreatedAt: now, Parts: []llm.Part{{
-			Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-shell", Name: tools.ShellToolName},
+		{ID: 1, Sequence: 1, Role: core.RoleAssistant, CreatedAt: now, Parts: []core.Part{{
+			Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-shell", Name: tools.ShellToolName},
 		}}},
-		{ID: 2, Sequence: 2, Role: llm.RoleTool, CreatedAt: now, Parts: []llm.Part{
-			{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-shell", Name: tools.ShellToolName, GuardianReviews: []llm.GuardianReview{{Outcome: "approved"}}}},
-			{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-shell", Name: tools.ShellToolName, GuardianReviews: []llm.GuardianReview{{Outcome: "warning"}}}},
+		{ID: 2, Sequence: 2, Role: core.RoleTool, CreatedAt: now, Parts: []core.Part{
+			{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-shell", Name: tools.ShellToolName, GuardianReviews: []core.GuardianReview{{Outcome: "approved"}}}},
+			{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-shell", Name: tools.ShellToolName, GuardianReviews: []core.GuardianReview{{Outcome: "warning"}}}},
 		}},
 	})
 	if len(entries) == 0 || len(entries[0].Parts) == 0 || len(entries[0].Parts[0].GuardianReviews) != 2 {
@@ -47,11 +47,11 @@ func TestSessionMessageEntriesExposeErrorOnlyToolResults(t *testing.T) {
 	entries := srv.sessionMessageEntries([]session.Message{{
 		ID:        1,
 		Sequence:  2,
-		Role:      llm.RoleTool,
+		Role:      core.RoleTool,
 		CreatedAt: time.Now(),
-		Parts: []llm.Part{{
-			Type: llm.PartToolResult,
-			ToolResult: &llm.ToolResult{
+		Parts: []core.Part{{
+			Type: core.PartToolResult,
+			ToolResult: &core.ToolResult{
 				ID:      "call-plan",
 				Name:    "update_plan",
 				IsError: true,
@@ -72,8 +72,8 @@ func TestSessionMessageEntriesExposeAskUserResultContent(t *testing.T) {
 	const content = `{"answers":[{"header":"Diplomacy","selected":"Bribe it"}]}`
 	srv := &serveServer{}
 	entries := srv.sessionMessageEntries([]session.Message{{
-		ID: 1, Sequence: 1, Role: llm.RoleTool, CreatedAt: time.Now(),
-		Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+		ID: 1, Sequence: 1, Role: core.RoleTool, CreatedAt: time.Now(),
+		Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
 			ID: "call-ask", Name: tools.AskUserToolName, Content: content,
 		}}},
 	}})
@@ -93,21 +93,21 @@ func TestSessionMessageEntriesExposeSuccessfulPlanResultOnly(t *testing.T) {
 		{
 			ID:        1,
 			Sequence:  1,
-			Role:      llm.RoleAssistant,
+			Role:      core.RoleAssistant,
 			CreatedAt: now,
-			Parts: []llm.Part{
-				{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-plan", Name: "update_plan"}},
-				{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-grep", Name: "grep"}},
+			Parts: []core.Part{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-plan", Name: "update_plan"}},
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-grep", Name: "grep"}},
 			},
 		},
 		{
 			ID:        2,
 			Sequence:  2,
-			Role:      llm.RoleTool,
+			Role:      core.RoleTool,
 			CreatedAt: now,
-			Parts: []llm.Part{
-				{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-plan", Name: "update_plan"}},
-				{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-grep", Name: "grep"}},
+			Parts: []core.Part{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-plan", Name: "update_plan"}},
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-grep", Name: "grep"}},
 			},
 		},
 	})
@@ -120,8 +120,8 @@ func TestSessionMessageEntriesExposeSuccessfulPlanResultOnly(t *testing.T) {
 	}
 
 	isolated := srv.sessionMessageEntries([]session.Message{{
-		ID: 3, Sequence: 3, Role: llm.RoleTool, CreatedAt: now,
-		Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-plan-page", Name: "update_plan"}}},
+		ID: 3, Sequence: 3, Role: core.RoleTool, CreatedAt: now,
+		Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call-plan-page", Name: "update_plan"}}},
 	}})
 	if len(isolated) != 1 || len(isolated[0].Parts) != 1 || isolated[0].Parts[0].ToolCallID != "call-plan-page" {
 		t.Fatalf("page-boundary plan result = %#v", isolated)
@@ -134,21 +134,21 @@ func TestSessionMessageEntriesDoNotCorrelateEmptyToolResultIDs(t *testing.T) {
 		{
 			ID:        1,
 			Sequence:  1,
-			Role:      llm.RoleAssistant,
+			Role:      core.RoleAssistant,
 			CreatedAt: time.Now(),
-			Parts: []llm.Part{{
-				Type:     llm.PartToolCall,
-				ToolCall: &llm.ToolCall{Name: "update_plan"},
+			Parts: []core.Part{{
+				Type:     core.PartToolCall,
+				ToolCall: &core.ToolCall{Name: "update_plan"},
 			}},
 		},
 		{
 			ID:        2,
 			Sequence:  2,
-			Role:      llm.RoleTool,
+			Role:      core.RoleTool,
 			CreatedAt: time.Now(),
-			Parts: []llm.Part{{
-				Type:       llm.PartToolResult,
-				ToolResult: &llm.ToolResult{Name: "update_plan", IsError: true},
+			Parts: []core.Part{{
+				Type:       core.PartToolResult,
+				ToolResult: &core.ToolResult{Name: "update_plan", IsError: true},
 			}},
 		},
 	})

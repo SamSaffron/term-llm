@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -26,11 +27,11 @@ func TestResumeAgentRepairsDanglingCallsBeforeMockProvider(t *testing.T) {
 	if err := store.Create(ctx, &session.Session{ID: id, ParentID: "parent", Provider: "mock", Model: "mock-model", IsSubagent: true}); err != nil {
 		t.Fatal(err)
 	}
-	call := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{
-		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "finished", Name: "read_file"}},
-		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "dangling", Name: "shell"}},
+	call := core.Message{Role: core.RoleAssistant, Parts: []core.Part{
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "finished", Name: "read_file"}},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "dangling", Name: "shell"}},
 	}}
-	for _, msg := range []llm.Message{llm.UserText("task"), call, llm.ToolResultMessage("finished", "read_file", "existing result", nil)} {
+	for _, msg := range []core.Message{core.UserText("task"), call, core.ToolResultMessage("finished", "read_file", "existing result", nil)} {
 		if err := store.AddMessage(ctx, id, session.NewMessage(id, msg, -1)); err != nil {
 			t.Fatal(err)
 		}
@@ -50,11 +51,11 @@ func TestResumeAgentRepairsDanglingCallsBeforeMockProvider(t *testing.T) {
 	if !strings.Contains(persisted[3].Parts[0].ToolResult.Content, "side effects unknown") || !persisted[3].Parts[0].ToolResult.IsError {
 		t.Fatalf("synthetic repair = %+v", persisted[3])
 	}
-	mock := llm.NewMockProvider("mock").AddTextResponse("continued")
+	mock := mockprovider.NewMockProvider("mock").AddTextResponse("continued")
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 	runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store})
 	includeTools := false
-	_, err = runner.Run(ctx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: id, ParentSessionID: "parent", IsSubagent: true, Persist: true, Stateful: true, Resume: true, Cwd: t.TempDir(), Messages: []llm.Message{llm.UserText("please continue")}, IncludeConfiguredTools: &includeTools, ProviderInstance: mock}, eventSinkFunc(func(llm.Event) {}))
+	_, err = runner.Run(ctx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: id, ParentSessionID: "parent", IsSubagent: true, Persist: true, Stateful: true, Resume: true, Cwd: t.TempDir(), Messages: []core.Message{core.UserText("please continue")}, IncludeConfiguredTools: &includeTools, ProviderInstance: mock}, eventSinkFunc(func(core.Event) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestResumeAgentRepairsDanglingCallsBeforeMockProvider(t *testing.T) {
 	hasExisting, hasSynthetic, hasInstruction := false, false, false
 	for _, msg := range requests[0].Messages {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolResult && part.ToolResult != nil {
+			if part.Type == core.PartToolResult && part.ToolResult != nil {
 				if part.ToolResult.ID == "finished" {
 					hasExisting = true
 				}
@@ -74,7 +75,7 @@ func TestResumeAgentRepairsDanglingCallsBeforeMockProvider(t *testing.T) {
 				}
 			}
 		}
-		if msg.Role == llm.RoleUser && strings.Contains(llm.MessageText(msg), "please continue") {
+		if msg.Role == core.RoleUser && strings.Contains(core.MessageText(msg), "please continue") {
 			hasInstruction = true
 		}
 	}

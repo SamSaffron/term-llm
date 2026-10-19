@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -216,7 +218,7 @@ func TestJobsV2NotifyWhenDoneAppendsWebNotificationToIdleSession(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("messages = %d, want 1: %#v", len(msgs), msgs)
 	}
-	if msgs[0].Role != llm.RoleAssistant {
+	if msgs[0].Role != core.RoleAssistant {
 		t.Fatalf("notification role = %s, want assistant", msgs[0].Role)
 	}
 	text := msgs[0].TextContent
@@ -230,11 +232,11 @@ func TestJobsV2NotifyWhenDoneAppendsWebNotificationToIdleSession(t *testing.T) {
 
 func TestJobsV2NotifyWhenDoneContinuesLoadedIdleWebSession(t *testing.T) {
 	store := newServeRuntimeTestStore()
-	provider := llm.NewMockProvider("mock").AddTextResponse("I saw the queued job finish.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("I saw the queued job finish.")
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 		store:        store,
 		platform:     "web",
@@ -270,10 +272,10 @@ func TestJobsV2NotifyWhenDoneContinuesLoadedIdleWebSession(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("messages = %d, want 2: %#v", len(msgs), msgs)
 	}
-	if msgs[0].Role != llm.RoleUser || !strings.Contains(msgs[0].TextContent, message) {
+	if msgs[0].Role != core.RoleUser || !strings.Contains(msgs[0].TextContent, message) {
 		t.Fatalf("first message = (%s, %q), want user notification", msgs[0].Role, msgs[0].TextContent)
 	}
-	if msgs[1].Role != llm.RoleAssistant || !strings.Contains(msgs[1].TextContent, "I saw the queued job finish") {
+	if msgs[1].Role != core.RoleAssistant || !strings.Contains(msgs[1].TextContent, "I saw the queued job finish") {
 		t.Fatalf("second message = (%s, %q), want assistant continuation", msgs[1].Role, msgs[1].TextContent)
 	}
 	if provider.CurrentTurn() != 1 {
@@ -286,13 +288,13 @@ func TestNotifyQueuedAgentWeb_ActiveRunOwnsNotificationExactlyOnce(t *testing.T)
 	if err := store.Create(context.Background(), &session.Session{ID: "sess-active", Origin: session.OriginWeb, Status: session.StatusActive}); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	provider := llm.NewMockProvider("active").
-		AddTurn(llm.MockTurn{Text: "working", Delay: 100 * time.Millisecond}).
+	provider := mockprovider.NewMockProvider("active").
+		AddTurn(mockprovider.MockTurn{Text: "working", Delay: 100 * time.Millisecond}).
 		AddTextResponse("notification acknowledged")
-	engine := llm.NewEngine(provider, nil)
-	stream, err := engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("work")},
-		Tools:    []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+	engine := engine.NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("work")},
+		Tools:    []core.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
 		MaxTurns: 2,
 	})
 	if err != nil {
@@ -324,7 +326,7 @@ func TestNotifyQueuedAgentWeb_ActiveRunOwnsNotificationExactlyOnce(t *testing.T)
 		if recvErr != nil {
 			t.Fatalf("Recv: %v", recvErr)
 		}
-		if event.Type == llm.EventSteering && event.SteeringID == "job_notify_run-active" {
+		if event.Type == core.EventSteering && event.SteeringID == "job_notify_run-active" {
 			steeringEvents++
 		}
 	}
@@ -341,7 +343,7 @@ func TestNotifyQueuedAgentWeb_ActiveRunOwnsNotificationExactlyOnce(t *testing.T)
 	notificationMessages := 0
 	for _, request := range requests {
 		for _, requestMessage := range request.Messages {
-			if requestMessage.ClientMessageID == "job_notify_run-active" && llm.MessageText(requestMessage) == message {
+			if requestMessage.ClientMessageID == "job_notify_run-active" && core.MessageText(requestMessage) == message {
 				notificationMessages++
 			}
 		}
@@ -362,11 +364,11 @@ func TestNotifyQueuedAgentWeb_RunFinishedTeardownFallsBackWithoutPhantom(t *test
 	if err := store.Create(context.Background(), &session.Session{ID: "sess-teardown", Origin: session.OriginWeb, Status: session.StatusActive}); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	provider := llm.NewMockProvider("teardown").AddTextResponse("finished")
-	engine := llm.NewEngine(provider, nil)
-	stream, err := engine.Stream(context.Background(), llm.Request{
-		Messages: []llm.Message{llm.UserText("work")},
-		Tools:    []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+	provider := mockprovider.NewMockProvider("teardown").AddTextResponse("finished")
+	engine := engine.NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), core.Request{
+		Messages: []core.Message{core.UserText("work")},
+		Tools:    []core.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
 		MaxTurns: 2,
 	})
 	if err != nil {
@@ -405,10 +407,10 @@ func TestNotifyQueuedAgentWeb_RunFinishedTeardownFallsBackWithoutPhantom(t *test
 	store.mu.Lock()
 	persisted := append([]session.Message(nil), store.messages["sess-teardown"]...)
 	store.mu.Unlock()
-	if len(persisted) != 1 || persisted[0].Role != llm.RoleAssistant || persisted[0].TextContent != message {
+	if len(persisted) != 1 || persisted[0].Role != core.RoleAssistant || persisted[0].TextContent != message {
 		t.Fatalf("fallback notifications = %#v, want exactly one assistant notice", persisted)
 	}
-	if len(rt.history) != 1 || rt.history[0].Role != llm.RoleAssistant || llm.MessageText(rt.history[0]) != message {
+	if len(rt.history) != 1 || rt.history[0].Role != core.RoleAssistant || core.MessageText(rt.history[0]) != message {
 		t.Fatalf("runtime history = %#v, want one assistant notice", rt.history)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestUsesEndpointModelCatalog(t *testing.T) {
@@ -71,9 +72,9 @@ func TestEndpointModelCacheIsScopedToEndpointAndCredential(t *testing.T) {
 	otherEndpoint.APIKey = "key-a"
 	otherEndpoint.BaseURL = "https://other.example.com/v1"
 
-	RefreshEndpointCacheSync(keyA, []ModelInfo{{ID: "a-model"}})
-	RefreshEndpointCacheSync(keyB, []ModelInfo{{ID: "b-model"}})
-	RefreshEndpointCacheSync(otherEndpoint, []ModelInfo{{ID: "other-model"}})
+	RefreshEndpointCacheSync(keyA, []core.ModelInfo{{ID: "a-model"}})
+	RefreshEndpointCacheSync(keyB, []core.ModelInfo{{ID: "b-model"}})
+	RefreshEndpointCacheSync(otherEndpoint, []core.ModelInfo{{ID: "other-model"}})
 
 	if got := GetCachedEndpointModels(keyA); !equalSlice(got, []string{"a-model"}) {
 		t.Fatalf("cached models for key-a = %v, want [a-model]", got)

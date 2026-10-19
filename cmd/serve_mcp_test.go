@@ -5,10 +5,32 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
+
+func TestServeMCPOptionsValidation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		opts serveMCPOptions
+		want string
+	}{
+		{"tools required", serveMCPOptions{}, "--tools is required"},
+		{"port range", serveMCPOptions{Tools: "all", Port: 0}, "invalid --port"},
+		{"edit format", serveMCPOptions{Tools: "all", Port: 8080, EditFormat: "unknown"}, "invalid --edit-format"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := runServeMCPWithOptions(&cobra.Command{}, nil, &tc.opts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runServeMCPWithOptions() = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
 
 func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLevelConflict(t *testing.T) {
 	parentApproval, childApproval := serveCmd.Flags().Lookup("approval"), serveMCPCmd.Flags().Lookup("approval")
@@ -20,17 +42,17 @@ func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLe
 		changed[i] = flag.Changed
 		flag.Changed = false
 	}
-	oldServeApproval, oldMCPApproval := serveApproval, serveMCPApproval
+	oldServeApproval, oldMCPApproval := serveFlags.Approval, serveMCPFlags.Approval
 	t.Cleanup(func() {
-		serveApproval, serveMCPApproval = oldServeApproval, oldMCPApproval
+		serveFlags.Approval, serveMCPFlags.Approval = oldServeApproval, oldMCPApproval
 		for i, flag := range flags {
 			flag.Changed = changed[i]
 		}
 	})
 
-	serveApproval = "auto"
+	serveFlags.Approval = "auto"
 	parentApproval.Changed = true
-	got, err := resolveServeMCPApprovalMode(serveMCPCmd, &config.Config{Serve: config.ServeConfig{MCP: config.ServeMCPConfig{ApprovalMode: "prompt"}}})
+	got, err := resolveServeMCPApprovalMode(serveMCPCmd, &config.Config{Serve: config.ServeConfig{MCP: config.ServeMCPConfig{ApprovalMode: "prompt"}}}, &serveMCPFlags)
 	if err != nil {
 		t.Fatalf("resolve parent-normalized approval: %v", err)
 	}
@@ -38,9 +60,9 @@ func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLe
 		t.Fatalf("resolved = {%v %s}, want CLI auto", got.Mode, got.Source)
 	}
 
-	serveMCPApproval = "prompt"
+	serveMCPFlags.Approval = "prompt"
 	childApproval.Changed = true
-	if _, err := resolveServeMCPApprovalMode(serveMCPCmd, &config.Config{}); err == nil || !strings.Contains(err.Error(), "mutually exclusive across serve and serve mcp") {
+	if _, err := resolveServeMCPApprovalMode(serveMCPCmd, &config.Config{}, &serveMCPFlags); err == nil || !strings.Contains(err.Error(), "mutually exclusive across serve and serve mcp") {
 		t.Fatalf("cross-level conflict error = %v", err)
 	}
 }
@@ -48,12 +70,12 @@ func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLe
 func TestServeMCPToolResultPreservesFailureStatus(t *testing.T) {
 	tests := []struct {
 		name string
-		out  llm.ToolOutput
+		out  core.ToolOutput
 		want bool
 	}{
-		{name: "success", out: llm.TextOutput("ok")},
-		{name: "semantic error", out: llm.ToolOutput{Content: "failed", IsError: true}, want: true},
-		{name: "timeout", out: llm.ToolOutput{Content: "timed out", TimedOut: true}, want: true},
+		{name: "success", out: core.TextOutput("ok")},
+		{name: "semantic error", out: core.ToolOutput{Content: "failed", IsError: true}, want: true},
+		{name: "timeout", out: core.ToolOutput{Content: "timed out", TimedOut: true}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

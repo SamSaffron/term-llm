@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // EventPipe adapts a Runner EventSink into an llm.Stream. It is useful for
@@ -13,7 +13,7 @@ import (
 // the shared runner owns execution.
 type EventPipe struct {
 	ctx       context.Context
-	events    chan llm.Event
+	events    chan core.Event
 	err       error
 	closeOnce sync.Once
 }
@@ -28,13 +28,13 @@ func NewEventPipe(ctx context.Context, buffer int) *EventPipe {
 	}
 	return &EventPipe{
 		ctx:    ctx,
-		events: make(chan llm.Event, buffer),
+		events: make(chan core.Event, buffer),
 	}
 }
 
 // Events exposes the raw event channel for consumers that already multiplex on
 // channels. Prefer Recv when an llm.Stream is accepted.
-func (p *EventPipe) Events() <-chan llm.Event {
+func (p *EventPipe) Events() <-chan core.Event {
 	if p == nil {
 		return nil
 	}
@@ -43,13 +43,13 @@ func (p *EventPipe) Events() <-chan llm.Event {
 
 // Event implements EventSink. It drops the event only when the pipe context has
 // been cancelled.
-func (p *EventPipe) Event(ev llm.Event) {
+func (p *EventPipe) Event(ev core.Event) {
 	_ = p.EventWithError(ev)
 }
 
 // EventWithError implements ErrorEventSink so runner producers can stop when a
 // consumer has cancelled the pipe context.
-func (p *EventPipe) EventWithError(ev llm.Event) error {
+func (p *EventPipe) EventWithError(ev core.Event) error {
 	if p == nil {
 		return nil
 	}
@@ -74,15 +74,15 @@ func (p *EventPipe) CloseWithError(err error) {
 }
 
 // Recv implements llm.Stream.
-func (p *EventPipe) Recv() (llm.Event, error) {
+func (p *EventPipe) Recv() (core.Event, error) {
 	if p == nil {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
-	handleClosed := func() (llm.Event, error) {
+	handleClosed := func() (core.Event, error) {
 		if p.err != nil {
-			return llm.Event{}, p.err
+			return core.Event{}, p.err
 		}
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 
 	// Prefer already-buffered or terminal events over context cancellation so
@@ -104,7 +104,7 @@ func (p *EventPipe) Recv() (llm.Event, error) {
 		}
 		return ev, nil
 	case <-p.ctx.Done():
-		return llm.Event{}, p.ctx.Err()
+		return core.Event{}, p.ctx.Err()
 	}
 }
 

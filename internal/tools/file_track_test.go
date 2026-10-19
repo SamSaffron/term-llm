@@ -13,7 +13,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // fakeFileRecorder captures ChangeRecords for assertions.
@@ -27,22 +27,22 @@ type fakeFileRecorder struct {
 	observations      []filetrack.FilesystemObservation
 }
 
-func (f *fakeFileRecorder) RecordAttributedChange(ctx context.Context, rec filetrack.ChangeRecord) (*llm.FileChange, error) {
+func (f *fakeFileRecorder) RecordAttributedChange(ctx context.Context, rec filetrack.ChangeRecord) (*core.FileChange, error) {
 	return f.RecordChange(ctx, rec), nil
 }
 
-func (f *fakeFileRecorder) RecordFilesystemObservation(_ context.Context, obs filetrack.FilesystemObservation) (*llm.FilesystemObservationSummary, error) {
+func (f *fakeFileRecorder) RecordFilesystemObservation(_ context.Context, obs filetrack.FilesystemObservation) (*core.FilesystemObservationSummary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.observations = append(f.observations, obs)
 	f.seq++
-	return &llm.FilesystemObservationSummary{ID: f.seq, Classification: obs.Classification, Root: obs.Root,
+	return &core.FilesystemObservationSummary{ID: f.seq, Classification: obs.Classification, Root: obs.Root,
 		CreatedCount: obs.CreatedCount, ModifiedCount: obs.ModifiedCount, DeletedCount: obs.DeletedCount,
 		SampledPaths: append([]string(nil), obs.SampledPaths...), SamplesTruncated: obs.SamplesTruncated,
 		CoverageStatus: obs.CoverageStatus, EventSeq: f.seq}, nil
 }
 
-func (f *fakeFileRecorder) RecordChange(ctx context.Context, rec filetrack.ChangeRecord) *llm.FileChange {
+func (f *fakeFileRecorder) RecordChange(ctx context.Context, rec filetrack.ChangeRecord) *core.FileChange {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.records = append(f.records, rec)
@@ -56,7 +56,7 @@ func (f *fakeFileRecorder) RecordChange(ctx context.Context, rec filetrack.Chang
 	case rec.AfterMissing:
 		kind = filetrack.KindDelete
 	}
-	return &llm.FileChange{Path: rec.Path, Kind: kind, Seq: f.seq}
+	return &core.FileChange{Path: rec.Path, Kind: kind, Seq: f.seq}
 }
 
 func (f *fakeFileRecorder) SessionPaths(ctx context.Context, sessionID string) []string {
@@ -111,8 +111,8 @@ func canonicalTestPath(path string) string {
 }
 
 func trackingContext() context.Context {
-	ctx := llm.ContextWithSessionID(context.Background(), "test-session")
-	return llm.ContextWithCallID(ctx, "call-1")
+	ctx := core.ContextWithSessionID(context.Background(), "test-session")
+	return core.ContextWithCallID(ctx, "call-1")
 }
 
 func TestWriteFileToolRecordsChanges(t *testing.T) {

@@ -3,7 +3,7 @@ package session
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -26,7 +26,7 @@ func (n *exportAudioNode) Dump(source []byte, level int) {
 }
 
 type exportMediaTransformer struct {
-	media  map[string]llm.MediaArtifact
+	media  map[string]core.MediaArtifact
 	images *exportImages
 	audio  *exportAudio
 }
@@ -108,7 +108,7 @@ func (r *exportAudioRenderer) render(w util.BufWriter, _ []byte, node ast.Node, 
 	return ast.WalkSkipChildren, nil
 }
 
-func newHTMLExportMarkdown(media map[string]llm.MediaArtifact, images *exportImages, audio *exportAudio) goldmark.Markdown {
+func newHTMLExportMarkdown(media map[string]core.MediaArtifact, images *exportImages, audio *exportAudio) goldmark.Markdown {
 	// The same audio renderer handles typed audio blocks and AST nodes.
 	// No raw HTML is injected into Markdown and Goldmark unsafe mode stays off.
 	return goldmark.New(

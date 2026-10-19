@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSQLiteStoreChangeLogTailsExternalMutations(t *testing.T) {
@@ -51,7 +51,7 @@ func TestSQLiteStoreChangeLogTailsExternalMutations(t *testing.T) {
 		cursor = change.Sequence
 	}
 
-	message := NewMessage(sess.ID, llm.UserText("one durable turn"), -1)
+	message := NewMessage(sess.ID, core.UserText("one durable turn"), -1)
 	if err := store.AddMessage(ctx, sess.ID, message); err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,678 @@
+package responsesproviders
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/samsaffron/term-llm/internal/signal"
+	"golang.org/x/term"
+)
+
+var chatGPTDefaultModel = config.DefaultProviderModel("chatgpt")
+
+// chatGPTResponsesURL is the ChatGPT backend API endpoint for responses
+const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
+
+// chatGPTHTTPClient intentionally uses transport-level timeouts only.
+//
+// ChatGPT streams can legitimately run for longer than 10 minutes, and
+// http.Client.Timeout would abort an otherwise healthy stream mid-response.
+var chatGPTHTTPClient = defaultHTTPClient
+
+// ChatGPTProvider implements Provider using the ChatGPT backend API with native OAuth.
+type ChatGPTProvider struct {
+	creds            *credentials.ChatGPTCredentials
+	model            string
+	effort           string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	useWebSocket     bool
+	responsesClient  *ResponsesClient
+	serviceTier      string
+	fileUploadPolicy *FileUploadPolicy
+	responsesOptions ResponsesOptions
+}
+
+type ChatGPTProviderOptions struct {
+	UseWebSocket     bool
+	ServiceTier      string
+	FileUploadPolicy *FileUploadPolicy
+	Responses        ResponsesOptions
+}
+
+// NewChatGPTProvider creates a new ChatGPT provider.
+// If credentials are not available or expired, it will prompt the user to authenticate.
+func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
+	return NewChatGPTProviderWithOptions(model, ChatGPTProviderOptions{})
+}
+
+// NewChatGPTProviderWithOptions creates a new ChatGPT provider with optional transport settings.
+// If credentials are not available or expired, it will prompt the user to authenticate.
+func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*ChatGPTProvider, error) {
+	// Try to load existing credentials
+	creds, err := credentials.GetChatGPTCredentials()
+	if err != nil {
+		// No credentials - prompt user to authenticate
+		creds, err = PromptForChatGPTAuth()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Refresh if expired
+	if creds.IsExpired() {
+		if refreshErr := credentials.RefreshChatGPTCredentials(creds); refreshErr != nil {
+			if !errors.Is(refreshErr, oauth.ErrChatGPTRefreshTokenInvalid) {
+				return nil, fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
+			if !runtimeoutput.Active() {
+				fmt.Fprintln(os.Stderr, "Token refresh failed. Re-authentication required.")
+			}
+			creds, err = PromptForChatGPTAuth()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return NewChatGPTProviderWithCredsAndOptions(creds, model, opts), nil
+}
+
+// NewChatGPTProviderWithCreds creates a ChatGPT provider with pre-loaded credentials.
+// This is used by the factory when credentials are already resolved.
+func NewChatGPTProviderWithCreds(creds *credentials.ChatGPTCredentials, model string) *ChatGPTProvider {
+	return NewChatGPTProviderWithCredsAndOptions(creds, model, ChatGPTProviderOptions{})
+}
+
+func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials, model string, opts ChatGPTProviderOptions) *ChatGPTProvider {
+	if model == "" {
+		model = chatGPTDefaultModel
+	}
+	model, tier := chatGPTModelServiceTier(model)
+	actualModel, effort := parseModelEffortForProvider("chatgpt", model)
+	return &ChatGPTProvider{
+		creds:            creds,
+		model:            actualModel,
+		effort:           effort,
+		useWebSocket:     opts.UseWebSocket,
+		serviceTier:      NormalizeServiceTier(firstNonEmpty(tier, opts.ServiceTier)),
+		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
+		responsesOptions: opts.Responses,
+	}
+}
+
+// PromptForChatGPTAuth prompts the user to authenticate with ChatGPT.
+// Prefers the device-code flow so auth works on headless/remote/containerized
+// boxes; falls back to the localhost browser flow if the backend doesn't
+// advertise device-code support. Exported so `term-llm auth login chatgpt`
+// can drive the same flow used by lazy auth.
+func PromptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
+	// Authentication prompts need the terminal. During a live TUI, surface an
+	// actionable error through the caller's UI instead of drawing over it.
+	if runtimeoutput.Active() {
+		return nil, fmt.Errorf("ChatGPT authentication required; run 'term-llm auth login chatgpt' outside chat")
+	}
+	// Check if stdin is a terminal - if not, we can't do interactive auth
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, fmt.Errorf("ChatGPT authentication required but running in non-interactive mode.\n" +
+			"Run 'term-llm auth login chatgpt' interactively first to authenticate")
+	}
+
+	fmt.Fprintln(os.Stderr, "ChatGPT provider requires authentication.")
+
+	// Wire Ctrl-C through to the full auth wait (device-code poll OR
+	// browser callback). The 15-minute cap matches the server-side
+	// device-code expiry.
+	sigCtx, stopSig := signal.NotifyContext()
+	defer stopSig()
+	ctx, cancel := context.WithTimeout(sigCtx, 15*time.Minute)
+	defer cancel()
+
+	oauthCreds, err := runChatGPTDeviceCodeFlow(ctx)
+	if errors.Is(err, oauth.ErrChatGPTDeviceCodeNotEnabled) {
+		fmt.Fprintln(os.Stderr, "(device-code login unavailable — falling back to browser flow)")
+		oauthCreds, err = runChatGPTBrowserFlow(ctx)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("authentication failed: %w", err)
+	}
+
+	creds := &credentials.ChatGPTCredentials{
+		AccessToken:  oauthCreds.AccessToken,
+		RefreshToken: oauthCreds.RefreshToken,
+		ExpiresAt:    oauthCreds.ExpiresAt,
+		AccountID:    oauthCreds.AccountID,
+	}
+	if err := credentials.SaveChatGPTCredentials(creds); err != nil {
+		return nil, fmt.Errorf("failed to save credentials: %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "Authentication successful!")
+	return creds, nil
+}
+
+func runChatGPTDeviceCodeFlow(ctx context.Context) (*oauth.ChatGPTCredentials, error) {
+	dc, err := oauth.RequestChatGPTDeviceCode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprint(os.Stderr, "\nTo sign in with ChatGPT:\n")
+	fmt.Fprintf(os.Stderr, "  1. Open this URL in any browser: %s\n", dc.VerificationURL)
+	fmt.Fprintf(os.Stderr, "  2. Enter this one-time code:     %s\n\n", dc.UserCode)
+	fmt.Fprint(os.Stderr, "Waiting for approval (Ctrl-C to cancel)...")
+
+	creds, err := oauth.AuthenticateChatGPTDevice(ctx, dc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr)
+		return nil, err
+	}
+	fmt.Fprintln(os.Stderr, " done!")
+	return creds, nil
+}
+
+func runChatGPTBrowserFlow(ctx context.Context) (*oauth.ChatGPTCredentials, error) {
+	fmt.Fprint(os.Stderr, "Press Enter to open browser and sign in with your ChatGPT account...")
+	if err := waitForEnterOrInterrupt(); err != nil {
+		return nil, err
+	}
+	return oauth.AuthenticateChatGPT(ctx)
+}
+
+func (p *ChatGPTProvider) Name() string {
+	if p.effort != "" {
+		return fmt.Sprintf("ChatGPT (%s, effort=%s)", p.model, p.effort)
+	}
+	return fmt.Sprintf("ChatGPT (%s)", p.model)
+}
+
+func (p *ChatGPTProvider) Credential() string {
+	return "chatgpt"
+}
+
+func (p *ChatGPTProvider) Capabilities() Capabilities {
+	return Capabilities{
+		NativeWebSearch: true,
+		NativeWebFetch:  false,
+		ToolCalls:       true,
+	}
+}
+
+// chatGPTNativeToolDiscoveryModels lists models whose full native tool_search
+// round trip (discovery call, planner output, discovered tool call, answer;
+// unforced and forced) has been verified live over the ChatGPT WebSocket path.
+var chatGPTNativeToolDiscoveryModels = map[string]bool{
+	"gpt-5.6-luna": true,
+	"gpt-6.1-sol":  true,
+	"gpt-6-luna":   true,
+	"gpt-6-astra":  true,
+}
+
+func chatGPTNativeToolDiscoveryModelList() []string {
+	models := make([]string, 0, len(chatGPTNativeToolDiscoveryModels))
+	for model := range chatGPTNativeToolDiscoveryModels {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models
+}
+
+// NativeToolDiscoverySupport is intentionally narrower than the public API's
+// general model family support. It records only the exact ChatGPT OAuth
+// Responses WebSocket combinations verified by this integration.
+func (p *ChatGPTProvider) NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport {
+	if p == nil || !p.useWebSocket {
+		return NativeToolDiscoverySupport{Reason: "ChatGPT native tool discovery requires Responses WebSocket transport"}
+	}
+	model, _ = chatGPTModelServiceTier(chooseModel(model, p.model))
+	actualModel, _ := parseModelEffortForProvider("chatgpt", model)
+	if !chatGPTNativeToolDiscoveryModels[actualModel] {
+		return NativeToolDiscoverySupport{Reason: fmt.Sprintf("ChatGPT native tool discovery is verified only for %s, not %s", strings.Join(chatGPTNativeToolDiscoveryModelList(), ", "), actualModel)}
+	}
+	return NativeToolDiscoverySupport{Supported: true, Name: "chatgpt-oauth-responses-websocket/tool_search", Reason: "exact verified " + actualModel + " WebSocket path"}
+}
+
+func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	// Check and refresh token if needed
+	if p.creds.IsExpired() {
+		if err := credentials.RefreshChatGPTCredentials(p.creds); err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w (re-run with --provider chatgpt to re-authenticate)", err)
+		}
+	}
+
+	// Reuse client across requests
+	if p.responsesClient == nil {
+		p.responsesClient = NewChatGPTResponsesClient(p.creds)
+		p.responsesClient.UseWebSocket = p.useWebSocket
+		if p.useWebSocket {
+			// ChatGPT's HTTP Responses path historically sends full history because
+			// previous_response_id hydration is not supported there. WebSocket mode keeps
+			// the previous response in connection-local memory, so enable server-state
+			// continuation for the WebSocket transport only.
+			p.responsesClient.WebSocketServerState = true
+		}
+	}
+
+	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
+	reqModel, tier := chatGPTModelServiceTier(chooseModel(req.Model, p.model))
+	model, reqEffort := parseModelEffortForProvider("chatgpt", reqModel)
+	effort := p.effort
+	if reqEffort != "" {
+		effort = reqEffort
+	}
+	if v := strings.TrimSpace(req.ReasoningEffort); v != "" {
+		effort = v
+	}
+
+	responsesOptions := mergeResponsesOptions(p.responsesOptions, req.Responses, req.Ephemeral)
+	if _, err := validateResponsesOptions("chatgpt", model, &responsesOptions, req.Tools); err != nil {
+		return nil, err
+	}
+
+	// Build tools. Public-API Pro and advanced Responses controls are not
+	// synthesized for the ChatGPT Codex backend.
+	tools := BuildResponsesTools(req.Tools)
+	var toolSearch *ResponsesToolSearchTool
+	if req.NativeToolDiscovery != nil {
+		support := p.NativeToolDiscoverySupport(model)
+		if !support.Supported {
+			return nil, fmt.Errorf("native tool discovery unsupported: %s", support.Reason)
+		}
+		search := req.NativeToolDiscovery.Search
+		toolSearch = &ResponsesToolSearchTool{
+			Type:        "tool_search",
+			Execution:   "client",
+			Description: search.Description,
+			Parameters:  deepCopyMap(search.Schema),
+		}
+		tools = append(tools, *toolSearch)
+	}
+	if req.Search {
+		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)
+	}
+	history := scanResponsesHistory(req.Messages)
+
+	// Send system messages via the instructions field but leave the transcript in
+	// raw message form so the Responses client can lazily build a continuation-only
+	// suffix on follow-up WebSocket turns. Native discovery replay is translated
+	// here, at the exact capable adapter boundary, rather than in ToolSpec.
+	messages := req.Messages
+	if req.NativeToolDiscovery != nil || history.HasDiscoveryParts {
+		var err error
+		messages, err = translateChatGPTDiscoveryMessages(messages)
+		if err != nil {
+			return nil, fmt.Errorf("translate native tool discovery replay: %w", err)
+		}
+	}
+	instructions := collectRoleText(messages, RoleSystem)
+
+	responsesReq := ResponsesRequest{
+		Model:                           model,
+		Instructions:                    instructions,
+		Messages:                        messages,
+		IncludeDeveloperInContinuation:  req.IncludeDeveloperInContinuation,
+		FileUploadPolicy:                p.effectiveFileUploadPolicy(),
+		ExtractInstructionsFromMessages: true,
+		Tools:                           tools,
+		Include:                         []string{"reasoning.encrypted_content"},
+		// The ChatGPT Codex backend's implicit prefix caching regresses for long
+		// prompts when prompt_cache_key is present. Keep session_id for routing and
+		// WebSocket continuation, but let the backend choose its cache route.
+		Store:          boolPtr(false),
+		Stream:         true,
+		SessionID:      req.SessionID,
+		ForceWebSocket: req.NativeToolDiscovery != nil || history.HasDiscoveryParts,
+	}
+
+	responsesReq.ServiceTier = firstNonEmpty(tier, p.serviceTier)
+	if req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
+		responsesReq.ServiceTier = NormalizeServiceTier(req.ServiceTier)
+	}
+
+	responsesReq.Tools, responsesReq.ToolChoice = chatGPTToolsAndChoice(tools, req.ToolChoice, toolSearch)
+	guardReplayedWebSearch(&responsesReq, history)
+	if req.ParallelToolCalls {
+		responsesReq.ParallelToolCalls = boolPtr(true)
+	}
+	responsesReq.Reasoning = &ResponsesReasoning{Summary: "auto"}
+	if effort != "" {
+		responsesReq.Reasoning.Effort = effort
+	}
+
+	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)
+}
+
+// chatGPTToolsAndChoice returns the tools and tool_choice to send. Forcing the
+// native tool_search needs special handling: the backend has no tool_choice that
+// names it ({"type":"tool_search"} is rejected with "Invalid value:
+// 'tool_search'", and allowed_tools cannot list it). Declaring tool_search as
+// the only tool with "required" forces it exactly, so the other tools are
+// withheld for that one turn. Verified live on gpt-6.1-sol, gpt-6-luna and
+// gpt-5.6-luna. web_search is withheld too, even when search is on; with
+// replayed searches in history the replay guard then strips them for this
+// turn. Do not keep web_search here: tool_choice could not exclude it.
+func chatGPTToolsAndChoice(tools []any, choice ToolChoice, toolSearch *ResponsesToolSearchTool) ([]any, any) {
+	if toolSearch != nil && choice.Mode == ToolChoiceName && choice.Name == "tool_search" {
+		return []any{*toolSearch}, "required"
+	}
+	if choice.Mode == "" {
+		return tools, nil
+	}
+	return tools, BuildResponsesToolChoice(choice)
+}
+
+// ResetConversation clears server state for the Responses API client.
+func (p *ChatGPTProvider) ResetConversation() {
+	if p.responsesClient != nil {
+		p.responsesClient.ResetConversation()
+	}
+}
+
+func (p *ChatGPTProvider) isolateHelperConversation() Provider {
+	clone := *p
+	clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
+	return &clone
+}
+
+// ChatGPTProvider intentionally does not implement helperConversationForker:
+// its continuation state is WebSocket-connection-local and cannot be safely
+// resumed by an independently cloned helper client.
+
+// ChatGPTRequestHeaders returns the identity headers every chatgpt.com backend
+// request carries. Authorization is excluded so callers can refresh the token
+// without rebuilding the map. Shared so non-Responses callers (live voice,
+// images) cannot drift from the provider's identity.
+func ChatGPTRequestHeaders(creds *credentials.ChatGPTCredentials) map[string]string {
+	headers := map[string]string{
+		"originator": chatGPTOriginator,
+		"User-Agent": chatGPTUserAgent(),
+	}
+	if creds != nil {
+		if accountID := strings.TrimSpace(creds.AccountID); accountID != "" {
+			headers["ChatGPT-Account-ID"] = accountID
+		}
+	}
+	return headers
+}
+
+// NewChatGPTResponsesClient builds a ResponsesClient pre-configured for the
+// chatgpt.com backend endpoint, handling auth, refresh, and rate-limit error
+// parsing. Shared by the LLM provider and the image provider so both pick up
+// the same headers, token-refresh behaviour, and 429 handling.
+func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *ResponsesClient {
+	webSocketPoolKey := ""
+	if accountID := strings.TrimSpace(creds.AccountID); accountID != "" {
+		webSocketPoolKey = "chatgpt:" + accountID + ":" + chatGPTResponsesURL
+	}
+	return &ResponsesClient{
+		BaseURL:          chatGPTResponsesURL,
+		WebSocketPoolKey: webSocketPoolKey,
+		GetAuthHeader: func() string {
+			return "Bearer " + creds.AccessToken
+		},
+		// Do not add the legacy responses=experimental beta here. The current
+		// ChatGPT WebSocket endpoint closes requests carrying it with code 1011;
+		// ensureWebSocket adds the modern responses_websockets beta by itself.
+		ExtraHeaders: map[string]string{
+			"ChatGPT-Account-ID": creds.AccountID,
+			"originator":         chatGPTOriginator,
+			"User-Agent":         chatGPTUserAgent(),
+		},
+		HTTPClient:         chatGPTHTTPClient,
+		DisableServerState: true,
+		HandleError: func(statusCode int, body []byte, headers http.Header) error {
+			if statusCode == http.StatusTooManyRequests {
+				return parseChatGPTRateLimitError(body, headers)
+			}
+			return nil
+		},
+		OnAuthRetry: func(_ context.Context) error {
+			if err := credentials.RefreshChatGPTCredentials(creds); err != nil {
+				if !errors.Is(err, oauth.ErrChatGPTRefreshTokenInvalid) {
+					return fmt.Errorf("failed to refresh ChatGPT session: %w", err)
+				}
+				failedRefreshToken := creds.RefreshToken
+				if clearErr := credentials.ClearChatGPTCredentialsIfRefreshToken(failedRefreshToken); clearErr != nil {
+					return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
+				}
+				return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")
+			}
+			return nil
+		},
+	}
+}
+
+func translateChatGPTDiscoveryMessages(messages []Message) ([]Message, error) {
+	translated := make([]Message, len(messages))
+	for i, message := range messages {
+		translated[i] = message
+		translated[i].Parts = make([]Part, 0, len(message.Parts))
+		for _, part := range message.Parts {
+			switch part.Type {
+			case PartDiscoveryCall:
+				if part.DiscoveryCall == nil {
+					continue
+				}
+				raw, err := buildResponsesDiscoveryCallItem(*part.DiscoveryCall)
+				if err != nil {
+					return nil, err
+				}
+				translated[i].Parts = append(translated[i].Parts, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: raw}})
+			case PartDiscoveryOutput:
+				if part.DiscoveryOutput == nil {
+					continue
+				}
+				raw, err := buildResponsesDiscoveryOutputItem(*part.DiscoveryOutput)
+				if err != nil {
+					return nil, err
+				}
+				translated[i].Parts = append(translated[i].Parts, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: raw}})
+			default:
+				translated[i].Parts = append(translated[i].Parts, part)
+			}
+		}
+	}
+	return translated, nil
+}
+
+func buildResponsesDiscoveryCallItem(call ToolDiscoveryCall) (json.RawMessage, error) {
+	arguments := call.Arguments
+	if len(arguments) == 0 {
+		arguments = json.RawMessage(`{}`)
+	}
+	return json.Marshal(struct {
+		Type      string          `json:"type"`
+		Execution string          `json:"execution"`
+		CallID    string          `json:"call_id"`
+		Status    string          `json:"status"`
+		Arguments json.RawMessage `json:"arguments"`
+	}{Type: "tool_search_call", Execution: "client", CallID: call.ID, Status: "completed", Arguments: arguments})
+}
+
+func buildResponsesDiscoveryOutputItem(output ToolDiscoveryOutput) (json.RawMessage, error) {
+	tools := make([]any, 0, len(output.Tools))
+	namespaceIndexes := make(map[string]int)
+	namespaceRoutes := make(map[string]string)
+	for _, selected := range output.Tools {
+		identity := selected.Spec.Namespace
+		if identity == nil || strings.TrimSpace(identity.Name) == "" || strings.TrimSpace(identity.ChildName) == "" {
+			built := BuildResponsesTools([]ToolSpec{selected.Spec})
+			if len(built) != 1 {
+				return nil, fmt.Errorf("build discovered tool %q", selected.Spec.Name)
+			}
+			raw, err := json.Marshal(built[0])
+			if err != nil {
+				return nil, fmt.Errorf("encode discovered tool %q: %w", selected.Spec.Name, err)
+			}
+			var tool map[string]any
+			if err := json.Unmarshal(raw, &tool); err != nil {
+				return nil, fmt.Errorf("decode discovered tool %q: %w", selected.Spec.Name, err)
+			}
+			tool["defer_loading"] = true
+			tools = append(tools, tool)
+			continue
+		}
+
+		routeKey := identity.Name + "\x00" + identity.ChildName
+		if prior, exists := namespaceRoutes[routeKey]; exists {
+			if prior != selected.Spec.Name {
+				return nil, fmt.Errorf("native namespace route %q/%q collides for %q and %q", identity.Name, identity.ChildName, prior, selected.Spec.Name)
+			}
+			continue
+		}
+		namespaceRoutes[routeKey] = selected.Spec.Name
+		child := ResponsesNamespaceFunctionTool{
+			Type:           "function",
+			Name:           identity.ChildName,
+			Description:    selected.Spec.Description,
+			Parameters:     openAIParametersFromToolSchema(selected.Spec.Schema, selected.Spec.Strict),
+			Strict:         selected.Spec.Strict,
+			AllowedCallers: append([]string(nil), selected.Spec.AllowedCallers...),
+			DeferLoading:   true,
+		}
+		if index, exists := namespaceIndexes[identity.Name]; exists {
+			namespace := tools[index].(ResponsesNamespace)
+			namespace.Tools = append(namespace.Tools, child)
+			if namespace.Description == "" && identity.Description != "" {
+				namespace.Description = identity.Description
+			}
+			tools[index] = namespace
+			continue
+		}
+		namespaceIndexes[identity.Name] = len(tools)
+		tools = append(tools, ResponsesNamespace{
+			Type:        "namespace",
+			Name:        identity.Name,
+			Description: identity.Description,
+			Tools:       []ResponsesNamespaceFunctionTool{child},
+		})
+	}
+	return json.Marshal(struct {
+		Type      string `json:"type"`
+		Execution string `json:"execution"`
+		CallID    string `json:"call_id"`
+		Status    string `json:"status"`
+		Tools     []any  `json:"tools"`
+	}{Type: "tool_search_output", Execution: "client", CallID: output.CallID, Status: "completed", Tools: tools})
+}
+
+// chatGPTRateLimitResponse represents the error response from ChatGPT rate limits
+type chatGPTRateLimitResponse struct {
+	Error struct {
+		Type         string `json:"type"`
+		Message      string `json:"message"`
+		PlanType     string `json:"plan_type"`
+		ResetsAt     int64  `json:"resets_at"`
+		ResetsInSecs int    `json:"resets_in_seconds"`
+	} `json:"error"`
+}
+
+// parseChatGPTRateLimitError parses a 429 response and returns a RateLimitError.
+// The retry loop uses RetryAfter with its configured elapsed-time budget to
+// decide whether to wait and retry.
+func parseChatGPTRateLimitError(body []byte, headers http.Header) error {
+	var resp chatGPTRateLimitResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		msg := fmt.Sprintf("rate limit exceeded (429): %s", string(body))
+		return newHTTPStatusErrorMessageString(msg, http.StatusTooManyRequests, "", headers, string(body))
+	}
+
+	resetsIn := resp.Error.ResetsInSecs
+
+	// Also check headers for reset time (more reliable)
+	if headerSecs := headers.Get("X-Codex-Primary-Reset-After-Seconds"); headerSecs != "" {
+		if secs, err := parseIntHeader(headerSecs); err == nil && secs > 0 {
+			resetsIn = secs
+		}
+	}
+
+	retryAfter := time.Duration(resetsIn) * time.Second
+	if wait, ok := providerhttp.ParseRetryAfter(headers, time.Now()); ok {
+		retryAfter = wait
+		resetsIn = int(wait.Seconds())
+	} else if retryAfter <= 0 && resp.Error.ResetsAt > 0 {
+		retryAfter = time.Until(time.Unix(resp.Error.ResetsAt, 0))
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		resetsIn = int(retryAfter.Seconds())
+	}
+
+	// Get usage percentages from headers for context
+	primaryUsed, _ := parseIntHeader(headers.Get("X-Codex-Primary-Used-Percent"))
+	secondaryUsed, _ := parseIntHeader(headers.Get("X-Codex-Secondary-Used-Percent"))
+
+	// Format the reset time in a human-readable way
+	resetTime := formatDuration(retryAfter)
+
+	// Build informative error message
+	var msg strings.Builder
+	msg.WriteString("ChatGPT usage limit reached")
+
+	if resp.Error.PlanType != "" {
+		msg.WriteString(fmt.Sprintf(" (%s plan)", resp.Error.PlanType))
+	}
+	msg.WriteString(". ")
+
+	msg.WriteString(fmt.Sprintf("Resets in %s", resetTime))
+
+	if primaryUsed > 0 || secondaryUsed > 0 {
+		msg.WriteString(" (usage: ")
+		if primaryUsed > 0 {
+			msg.WriteString(fmt.Sprintf("primary %d%%", primaryUsed))
+		}
+		if secondaryUsed > 0 {
+			if primaryUsed > 0 {
+				msg.WriteString(", ")
+			}
+			msg.WriteString(fmt.Sprintf("weekly %d%%", secondaryUsed))
+		}
+		msg.WriteString(")")
+	}
+
+	return &RateLimitError{
+		Message:       msg.String(),
+		RetryAfter:    retryAfter,
+		PlanType:      resp.Error.PlanType,
+		PrimaryUsed:   primaryUsed,
+		SecondaryUsed: secondaryUsed,
+	}
+}
+
+// parseIntHeader safely parses an integer from a header value
+func parseIntHeader(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	var val int
+	_, err := fmt.Sscanf(s, "%d", &val)
+	return val, err
+}
+
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		if secs > 0 {
+			return fmt.Sprintf("%dm %ds", mins, secs)
+		}
+		return fmt.Sprintf("%d minutes", mins)
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if mins > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%d hours", hours)
+}

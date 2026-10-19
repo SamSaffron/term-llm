@@ -6,15 +6,16 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // SessionRuntime is a per-conversation runtime for non-web platforms.
 type SessionRuntime struct {
-	Engine       *llm.Engine
-	Provider     llm.Provider
+	Engine       *engine.Engine
+	Provider     core.Provider
 	ProviderName string
 	ModelName    string
 	Cleanup      func()

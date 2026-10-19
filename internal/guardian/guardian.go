@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 const (
@@ -54,13 +55,13 @@ type Request struct {
 }
 
 type Decision struct {
-	StateBytes        int       `json:"-"`
-	RiskLevel         string    `json:"risk_level"`
-	UserAuthorization string    `json:"user_authorization"`
-	Outcome           string    `json:"outcome"`
-	Rationale         string    `json:"rationale"`
-	Model             string    `json:"-"`
-	Usage             llm.Usage `json:"-"`
+	StateBytes        int        `json:"-"`
+	RiskLevel         string     `json:"risk_level"`
+	UserAuthorization string     `json:"user_authorization"`
+	Outcome           string     `json:"outcome"`
+	Rationale         string     `json:"rationale"`
+	Model             string     `json:"-"`
+	Usage             core.Usage `json:"-"`
 	// Escalated reports that the classify backend denied or failed and the LLM
 	// fallback reviewer produced this verdict. It is presentation metadata and
 	// stays out of the canonical decision JSON.
@@ -70,7 +71,7 @@ type Decision struct {
 func (d Decision) Allowed() bool { return strings.EqualFold(strings.TrimSpace(d.Outcome), "allow") }
 
 type Reviewer struct {
-	Provider llm.Provider
+	Provider core.Provider
 	Model    string
 	Policy   string
 	Timeout  time.Duration
@@ -80,7 +81,7 @@ type Reviewer struct {
 	scopeID               string
 	transcriptCount       int
 	transcriptFingerprint uint64
-	reviewMessages        []llm.Message
+	reviewMessages        []core.Message
 	reviewTurnCount       int
 }
 
@@ -253,7 +254,7 @@ func cleanupReviewer(reviewer *Reviewer) {
 		return
 	}
 	reviewer.Reset()
-	if cleaner, ok := reviewer.Provider.(llm.ProviderCleaner); ok {
+	if cleaner, ok := reviewer.Provider.(engine.ProviderCleaner); ok {
 		cleaner.CleanupMCP()
 	}
 }
@@ -291,7 +292,7 @@ func (r *Reviewer) Review(ctx context.Context, req Request) (Decision, error) {
 	promptReq.PromptMode = mode
 
 	turnMessages := r.turnMessages(policy, promptReq, mode)
-	providerMessages := make([]llm.Message, 0, len(r.reviewMessages)+len(turnMessages))
+	providerMessages := make([]core.Message, 0, len(r.reviewMessages)+len(turnMessages))
 	providerMessages = append(providerMessages, r.reviewMessages...)
 	providerMessages = append(providerMessages, turnMessages...)
 
@@ -316,7 +317,7 @@ func (r *Reviewer) Review(ctx context.Context, req Request) (Decision, error) {
 	decision.Model = accounting.Model
 	decision.Usage = accounting.Usage
 
-	r.reviewMessages = append(providerMessages, llm.AssistantText(canonicalDecisionJSON(decision)))
+	r.reviewMessages = append(providerMessages, core.AssistantText(canonicalDecisionJSON(decision)))
 	r.sessionActive = true
 	r.scopeID = strings.TrimSpace(req.ScopeID)
 	r.transcriptCount = len(req.Transcript)
@@ -358,24 +359,24 @@ func (r *Reviewer) shouldResetForRequestLocked(req Request) bool {
 	return false
 }
 
-func (r *Reviewer) turnMessages(policy string, req Request, mode PromptMode) []llm.Message {
-	messages := []llm.Message{}
+func (r *Reviewer) turnMessages(policy string, req Request, mode PromptMode) []core.Message {
+	messages := []core.Message{}
 	if mode == PromptModeFull {
-		messages = append(messages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: policy + "\n\nReturn strict JSON only, with no markdown fences or commentary. Fields: risk_level, user_authorization, outcome, rationale. risk_level must be one of low, medium, high, critical. user_authorization must be one of high, medium, low, unknown. outcome must be allow or deny."}}})
+		messages = append(messages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: policy + "\n\nReturn strict JSON only, with no markdown fences or commentary. Fields: risk_level, user_authorization, outcome, rationale. risk_level must be one of low, medium, high, critical. user_authorization must be one of high, medium, low, unknown. outcome must be allow or deny."}}})
 	}
-	messages = append(messages, llm.UserText(BuildPrompt(req)))
+	messages = append(messages, core.UserText(BuildPrompt(req)))
 	return messages
 }
 
-func (r *Reviewer) runReviewRequest(ctx context.Context, messages []llm.Message) (string, llm.Usage, error) {
+func (r *Reviewer) runReviewRequest(ctx context.Context, messages []core.Message) (string, core.Usage, error) {
 	// Use model defaults: some reviewer models reject explicit temperature control.
-	stream, err := r.Provider.Stream(ctx, llm.Request{Model: r.Model, Messages: messages, MaxOutputTokens: 2000})
+	stream, err := r.Provider.Stream(ctx, core.Request{Model: r.Model, Messages: messages, MaxOutputTokens: 2000})
 	if err != nil {
-		return "", llm.Usage{}, err
+		return "", core.Usage{}, err
 	}
 	defer stream.Close()
 	var b strings.Builder
-	var usage llm.Usage
+	var usage core.Usage
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -385,13 +386,13 @@ func (r *Reviewer) runReviewRequest(ctx context.Context, messages []llm.Message)
 			return "", usage, err
 		}
 		switch event.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			b.WriteString(event.Text)
-		case llm.EventUsage:
+		case core.EventUsage:
 			if event.Use != nil {
 				usage.Add(*event.Use)
 			}
-		case llm.EventError:
+		case core.EventError:
 			if event.Err != nil {
 				return "", usage, event.Err
 			}

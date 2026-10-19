@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -28,7 +30,7 @@ func TestSessionInputUIWrappedSQLiteRealRegistry(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	for i, msg := range []llm.Message{llm.SystemText("old prompt"), llm.UserText("history"), llm.AssistantText("preserve answer")} {
+	for i, msg := range []core.Message{core.SystemText("old prompt"), core.UserText("history"), core.AssistantText("preserve answer")} {
 		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, i)); err != nil {
 			t.Fatal(err)
 		}
@@ -47,7 +49,7 @@ func TestSessionInputUIWrappedSQLiteRealRegistry(t *testing.T) {
 			return nil, errors.New("construction failed")
 		}
 		runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store, Inputs: request.Inputs, RestoreSettings: request.settings, RestoreAgentSkills: request.agentSkills, Tools: toolSetting, ToolsSet: true, SystemMessage: prompt, SystemMessageSet: true, WireSpawn: WireSpawnAgentRunner}).(*cmdRunner)
-		env, err := runner.prepare(ctx, runpkg.Request{SessionID: request.SessionID, Platform: runpkg.PlatformWeb, Cwd: request.RuntimeDir, DeferSession: true, ProviderInstance: llm.NewMockProvider("mock")}, nil)
+		env, err := runner.prepare(ctx, runpkg.Request{SessionID: request.SessionID, Platform: runpkg.PlatformWeb, Cwd: request.RuntimeDir, DeferSession: true, ProviderInstance: mockprovider.NewMockProvider("mock")}, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -185,7 +187,7 @@ func TestSessionInputPostCommitFailureRetiresOldRuntime(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.SystemText("obsolete"), 0)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.SystemText("obsolete"), 0)); err != nil {
 		t.Fatal(err)
 	}
 	srv := newTestServeServer()
@@ -197,8 +199,8 @@ func TestSessionInputPostCommitFailureRetiresOldRuntime(t *testing.T) {
 	}
 	broken := true
 	srv.agentRuntimeFactory = func(ctx context.Context, req serveRuntimeRequest) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock")
-		rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), store: store, systemPrompt: "selected", baseSystemPrompt: "selected"}
+		provider := mockprovider.NewMockProvider("mock")
+		rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), store: store, systemPrompt: "selected", baseSystemPrompt: "selected"}
 		if broken {
 			rt.store = inputRefreshHistoryFailure{Store: store}
 		}

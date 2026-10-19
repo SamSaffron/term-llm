@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -61,7 +61,7 @@ func (r *lifecycleRunner) SteerAgent(_ string, instructions string) (string, str
 	return "steer-id", "queued"
 }
 
-func lifecycleCall(t *testing.T, tool llm.Tool, ctx context.Context, args string) llm.ToolOutput {
+func lifecycleCall(t *testing.T, tool core.Tool, ctx context.Context, args string) core.ToolOutput {
 	t.Helper()
 	out, err := tool.Execute(ctx, json.RawMessage(args))
 	if err != nil {
@@ -69,7 +69,7 @@ func lifecycleCall(t *testing.T, tool llm.Tool, ctx context.Context, args string
 	}
 	return out
 }
-func lifecycleResult(t *testing.T, out llm.ToolOutput) SpawnAgentResult {
+func lifecycleResult(t *testing.T, out core.ToolOutput) SpawnAgentResult {
 	t.Helper()
 	var result SpawnAgentResult
 	if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
@@ -110,7 +110,7 @@ func (usageTurnRunner) RunAgentWithCallback(_ context.Context, _, _ string, _ in
 
 func TestAgentLifecycleCountsOnlyChildModelTurns(t *testing.T) {
 	m := newAgentManager(SpawnConfig{MaxParallel: 1})
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	e, err := m.start(ctx, "developer", "work", "", "call", nil, nil, usageTurnRunner{}, 0, false, "", session.AgentRun{})
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestAgentCallbackDetachWaitsForInFlightDelivery(t *testing.T) {
 	m := newAgentManager(SpawnConfig{MaxParallel: 1})
 	entered := make(chan struct{})
 	unblock := make(chan struct{})
-	entry, err := m.start(llm.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", func(string, SubagentEvent) {
+	entry, err := m.start(core.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", func(string, SubagentEvent) {
 		close(entered)
 		<-unblock
 	}, nil, runner, 0, false, "", session.AgentRun{})
@@ -181,7 +181,7 @@ func TestAgentLifecycleCrossManagerWait(t *testing.T) {
 	second := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	otherRunner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	second.SetRunner(otherRunner)
-	ctx := llm.ContextWithSessionID(context.Background(), "shared-parent")
+	ctx := core.ContextWithSessionID(context.Background(), "shared-parent")
 	spawned := lifecycleResult(t, lifecycleCall(t, first, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	<-runner.entered
 	wait := &agentControlTool{name: WaitAgentToolName, spawn: second}
@@ -223,7 +223,7 @@ func TestAgentLifecycleDetachQueueCancelResume(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 2), release: make(chan struct{})}
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent-one")
+	ctx := core.ContextWithSessionID(context.Background(), "parent-one")
 	first := lifecycleResult(t, lifecycleCall(t, spawn, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	if first.AgentID == "" || (first.Status != "queued" && first.Status != "running") {
 		t.Fatalf("first spawn = %+v", first)
@@ -272,7 +272,7 @@ func TestAgentLifecycleDetachQueueCancelResume(t *testing.T) {
 	if resumed.Status != "completed" || resumed.Output != "resumed" {
 		t.Fatalf("resumed = %+v", resumed)
 	}
-	other := llm.ContextWithSessionID(context.Background(), "parent-two")
+	other := core.ContextWithSessionID(context.Background(), "parent-two")
 	denied := lifecycleCall(t, wait, other, `{"agent_ids":["`+first.AgentID+`"]}`)
 	if !strings.Contains(denied.Content, "not found") {
 		t.Fatalf("cross-parent wait = %s", denied.Content)
@@ -282,19 +282,19 @@ func TestAgentLifecycleParentCancellationDoesNotKillChild(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	spawn.SetRunner(runner)
-	parent, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), "parent"))
+	parent, cancel := context.WithCancel(core.ContextWithSessionID(context.Background(), "parent"))
 	first := lifecycleResult(t, lifecycleCall(t, spawn, parent, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	<-runner.entered
 	cancel()
 	wait := &agentControlTool{name: WaitAgentToolName, spawn: spawn}
-	snapshot := lifecycleCall(t, wait, llm.ContextWithSessionID(context.Background(), "parent"), `{"agent_ids":["`+first.AgentID+`"],"max_wait":0}`)
+	snapshot := lifecycleCall(t, wait, core.ContextWithSessionID(context.Background(), "parent"), `{"agent_ids":["`+first.AgentID+`"],"max_wait":0}`)
 	if !strings.Contains(snapshot.Content, `"status":"running"`) {
 		t.Fatalf("cancelled parent killed child: %s", snapshot.Content)
 	}
 	if err := spawn.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	snapshot = lifecycleCall(t, wait, llm.ContextWithSessionID(context.Background(), "parent"), `{"agent_ids":["`+first.AgentID+`"]}`)
+	snapshot = lifecycleCall(t, wait, core.ContextWithSessionID(context.Background(), "parent"), `{"agent_ids":["`+first.AgentID+`"]}`)
 	if !strings.Contains(snapshot.Content, `"status":"interrupted"`) {
 		t.Fatalf("shutdown = %s", snapshot.Content)
 	}
@@ -331,7 +331,7 @@ func TestResumeEventsCountTurnsAndReachAttachedWaiter(t *testing.T) {
 	runner := &resumedEventRunner{started: make(chan struct{}), release: make(chan struct{})}
 	owner := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	owner.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	record := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", AgentName: "developer", Prompt: "work", Started: true, Status: "completed", TurnsUsed: 1}
 	e, err := owner.manager.start(ctx, record.AgentName, record.Prompt, "", "continue-call", nil, nil, runner, 1, true, "continue", record)
 	if err != nil {
@@ -405,7 +405,7 @@ func TestCollectedRunEvictsAfterDoneCloses(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	m := newAgentManager(SpawnConfig{MaxParallel: 1})
 	m.store = store
-	e, err := m.start(llm.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", nil, nil, runner, 0, false, "", session.AgentRun{})
+	e, err := m.start(core.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", nil, nil, runner, 0, false, "", session.AgentRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestUserCancellationPropagatesToGrandchild(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "child")
+	ctx := core.ContextWithSessionID(context.Background(), "child")
 	spawned := lifecycleResult(t, lifecycleCall(t, tool, ctx, `{"agent_name":"developer","prompt":"grandchild","wait":0}`))
 	<-runner.entered
 	cancelledCtx, cancel := context.WithCancelCause(context.Background())
@@ -459,7 +459,7 @@ func TestCollectedAgentWithoutStoreRemainsReadable(t *testing.T) {
 	e := &agentEntry{
 		record: session.AgentRun{ID: id, ParentSessionID: "parent", Status: "completed", CollectedAt: time.Now()},
 		done:   make(chan struct{}), result: SpawnAgentRunResult{Output: "finished"},
-		media: []llm.MediaArtifact{{}}, manager: m,
+		media: []core.MediaArtifact{{}}, manager: m,
 	}
 	close(e.done)
 	m.agents[id] = e

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -12,16 +12,16 @@ func benchmarkHistoryMessages(n int) []session.Message {
 	body := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 90) // ~4KB
 	msgs := make([]session.Message, 0, n)
 	for i := 0; i < n; i++ {
-		role := llm.RoleUser
+		role := core.RoleUser
 		if i%2 == 1 {
-			role = llm.RoleAssistant
+			role = core.RoleAssistant
 		}
 		msgs = append(msgs, session.Message{
 			ID:          int64(i + 1),
 			Sequence:    i,
 			Role:        role,
 			TextContent: body,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: body}},
+			Parts:       []core.Part{{Type: core.PartText, Text: body}},
 		})
 	}
 	return msgs

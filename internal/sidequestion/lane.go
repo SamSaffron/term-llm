@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 )
 
@@ -15,7 +17,7 @@ import (
 // with, and the provider/model identity that state belongs to always travel
 // together, so new identity can never end up attached to an old snapshot.
 type Anchor struct {
-	Messages        []llm.Message
+	Messages        []core.Message
 	Provider        runboundary.ProviderContext
 	DurableAnchorID int64
 	Durable         bool
@@ -65,13 +67,13 @@ type Lane struct {
 	// plus its replies. It is the provider-facing shape: it keeps the anchor
 	// prefix so the recorded resume offset and digest still line up on the next
 	// turn. It is not the lane's conversation.
-	requestPrefix []llm.Message
+	requestPrefix []core.Message
 	// transcript is the lane's own conversation — policy, questions and answers,
 	// without the main transcript it branched from. Promotion writes exactly
 	// these into a child session under the lane's anchor.
-	transcript    []llm.Message
-	usage         []llm.Usage
-	provider      llm.Provider
+	transcript    []core.Message
+	usage         []core.Usage
+	provider      core.Provider
 	providerState []byte
 	providerKey   string
 	model         string
@@ -102,9 +104,9 @@ type TurnRequest struct {
 	ForkStillAllowed func() bool
 	// ForkSource is the live provider the lane branches from. It is never used
 	// for the request itself, and is never mutated.
-	ForkSource llm.Provider
+	ForkSource core.Provider
 	// NewProvider builds a standalone provider for the bounded replay path.
-	NewProvider func(providerKey, model string) (llm.Provider, error)
+	NewProvider func(providerKey, model string) (core.Provider, error)
 	// SessionID is the term-llm session a promoted lane belongs to. Empty for an
 	// unpromoted lane, which keeps its turns out of session state entirely.
 	SessionID string
@@ -114,12 +116,12 @@ type TurnRequest struct {
 type Turn struct {
 	lane     *Lane
 	mode     TurnMode
-	provider llm.Provider
-	request  llm.Request
+	provider core.Provider
+	request  core.Request
 	// stillAllowed and replay let a prepared branch downgrade to a bounded replay
 	// if a main run starts before it streams.
 	stillAllowed func() bool
-	replay       func() (llm.Provider, llm.Request, error)
+	replay       func() (core.Provider, core.Request, error)
 	// failure records a downgrade that could not be completed, so the turn fails
 	// closed instead of streaming from a branch the gate forbids.
 	failure error
@@ -135,7 +137,7 @@ type Turn struct {
 func (t *Turn) Mode() TurnMode { return t.mode }
 
 // Request exposes the prepared provider request for assertions and debugging.
-func (t *Turn) Request() llm.Request { return t.request }
+func (t *Turn) Request() core.Request { return t.request }
 
 // Abandon releases a prepared turn that will never run. A branch created for it
 // is dropped; an already established lane session is kept, because nothing was
@@ -184,7 +186,7 @@ func (l *Lane) Continuing() bool {
 
 // Transcript returns the lane's own conversation, without the main transcript it
 // branched from. Promotion writes exactly these into a child session.
-func (l *Lane) Transcript() []llm.Message {
+func (l *Lane) Transcript() []core.Message {
 	if l == nil {
 		return nil
 	}
@@ -207,7 +209,7 @@ func (l *Lane) ProviderState() []byte {
 // RequestPrefix returns everything the lane's provider has already been given,
 // plus its replies. The next turn appends to it so the provider's recorded
 // resume offset and transcript digest still line up.
-func (l *Lane) RequestPrefix() []llm.Message {
+func (l *Lane) RequestPrefix() []core.Message {
 	if l == nil {
 		return nil
 	}
@@ -217,13 +219,13 @@ func (l *Lane) RequestPrefix() []llm.Message {
 }
 
 // Usage returns per-turn usage for the lane's own exchanges.
-func (l *Lane) Usage() []llm.Usage {
+func (l *Lane) Usage() []core.Usage {
 	if l == nil {
 		return nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return append([]llm.Usage(nil), l.usage...)
+	return append([]core.Usage(nil), l.usage...)
 }
 
 // Close releases the lane's provider and drops its anchor and transcript. A turn
@@ -235,7 +237,7 @@ func (l *Lane) Close() {
 	}
 	l.mu.Lock()
 	provider := l.provider
-	var prepared llm.Provider
+	var prepared core.Provider
 	if pending := l.pending; pending != nil {
 		if pending.started {
 			// A running turn is no longer the lane's current turn, so its own
@@ -294,22 +296,22 @@ func (l *Lane) PrepareTurn(request TurnRequest) (*Turn, error) {
 
 	// The replay recipe is built up front so a prepared branch can still be
 	// downgraded once, immediately before it streams.
-	replay := func() (llm.Provider, llm.Request, error) {
+	replay := func() (core.Provider, core.Request, error) {
 		provider, err := request.NewProvider(request.ProviderKey, request.Model)
 		if err != nil {
-			return nil, llm.Request{}, err
+			return nil, core.Request{}, err
 		}
 		messages, err := BuildMessages(request.Anchor.Messages, request.History, question,
 			request.ProviderKey, request.Model, request.InputLimit)
 		if err != nil {
 			cleanupProvider(provider)
-			return nil, llm.Request{}, err
+			return nil, core.Request{}, err
 		}
 		return provider, buildTurnRequest(request, messages, request.Anchor.Provider.WorkingDir, request.SessionID), nil
 	}
 
 	if l.canContinueLocked(request) {
-		messages := append(CloneMessages(l.requestPrefix), llm.UserText(question))
+		messages := append(CloneMessages(l.requestPrefix), core.UserText(question))
 		// A continuing lane keeps its own project directory and session identity,
 		// not whatever the latest main boundary reports.
 		req := buildTurnRequest(request, messages, l.anchor.Provider.WorkingDir, l.sessionID)
@@ -321,7 +323,7 @@ func (l *Lane) PrepareTurn(request TurnRequest) (*Turn, error) {
 		// The request carries the whole anchor; the provider derives what still
 		// has to cross the wire from the captured offset. Request shape and wire
 		// shape are deliberately different here.
-		messages := append(CloneMessages(request.Anchor.Messages), policyMessage(), llm.UserText(question))
+		messages := append(CloneMessages(request.Anchor.Messages), policyMessage(), core.UserText(question))
 		if forked, ok := llm.ForkHelperAtBoundary(request.ForkSource, request.Anchor.Provider.State, messages); ok {
 			l.adoptLocked(request)
 			l.provider = forked
@@ -379,8 +381,8 @@ func (l *Lane) adoptLocked(request TurnRequest) {
 	l.requestPrefix, l.transcript, l.usage, l.providerState = nil, nil, nil, nil
 }
 
-func (l *Lane) startTurnLocked(mode TurnMode, provider llm.Provider, req llm.Request,
-	stillAllowed func() bool, replay func() (llm.Provider, llm.Request, error)) *Turn {
+func (l *Lane) startTurnLocked(mode TurnMode, provider core.Provider, req core.Request,
+	stillAllowed func() bool, replay func() (core.Provider, core.Request, error)) *Turn {
 	turn := &Turn{lane: l, mode: mode, provider: provider, request: req, stillAllowed: stillAllowed, replay: replay}
 	l.pending = turn
 	return turn
@@ -397,14 +399,14 @@ func (l *Lane) releaseProviderLocked() {
 // buildTurnRequest assembles one lane turn's provider request. workingDir is
 // passed explicitly because Claude Code keys sessions by project directory: a
 // branch launched from a different cwd would not find the session to resume.
-func buildTurnRequest(request TurnRequest, messages []llm.Message, workingDir, sessionID string) llm.Request {
-	return llm.Request{
+func buildTurnRequest(request TurnRequest, messages []core.Message, workingDir, sessionID string) core.Request {
+	return core.Request{
 		Model:           request.Model,
 		Messages:        messages,
 		ReasoningEffort: request.ReasoningEffort,
 		WorkingDir:      workingDir,
 		SessionID:       sessionID,
-		Responses:       &llm.ResponsesOptions{ReasoningMode: request.ReasoningMode},
+		Responses:       &core.ResponsesOptions{ReasoningMode: request.ReasoningMode},
 	}
 }
 
@@ -414,7 +416,7 @@ func buildTurnRequest(request TurnRequest, messages []llm.Message, workingDir, s
 // Ephemeral is decided here and nowhere else: only a turn whose provider came
 // from the boundary fork seam runs non-ephemerally, so a Responses helper turn
 // can never chain onto the live conversation by convention or by mistake.
-func (t *Turn) Run(ctx context.Context, emit func(llm.Event)) (result Result, err error) {
+func (t *Turn) Run(ctx context.Context, emit func(core.Event)) (result Result, err error) {
 	if !t.claim() {
 		// The lane was torn down before this turn started, so its provider has
 		// already been released by whoever tore it down.
@@ -492,7 +494,7 @@ func (l *Lane) finishTurn(turn *Turn, result Result, err error) {
 			release = true
 			l.clearSessionLocked()
 		default:
-			answer := llm.AssistantText(result.Response)
+			answer := core.AssistantText(result.Response)
 			// The provider-facing prefix keeps the anchor so the recorded resume
 			// offset and digest still line up next turn.
 			l.requestPrefix = append(CloneMessages(turn.request.Messages), answer)
@@ -502,7 +504,7 @@ func (l *Lane) finishTurn(turn *Turn, result Result, err error) {
 			l.transcript = append(l.transcript, laneTurnMessages(turn, answer)...)
 			l.usage = append(l.usage, result.Usage)
 			l.providerState = nil
-			if exporter, ok := turn.provider.(llm.ProviderStateExporter); ok {
+			if exporter, ok := turn.provider.(core.ProviderStateExporter); ok {
 				if state, exported := exporter.ExportProviderState(); exported {
 					l.providerState = state
 				}
@@ -520,24 +522,24 @@ func (l *Lane) finishTurn(turn *Turn, result Result, err error) {
 // laneTurnMessages extracts the messages this turn added on top of what the lane
 // already held: the policy and question for a branch, the question alone for a
 // continuation, plus the answer.
-func laneTurnMessages(turn *Turn, answer llm.Message) []llm.Message {
+func laneTurnMessages(turn *Turn, answer core.Message) []core.Message {
 	messages := turn.request.Messages
 	added := 1 // the question
 	if turn.mode == TurnFork {
 		added = 2 // the policy travels with the branch's first turn
 	}
 	if len(messages) < added {
-		return []llm.Message{answer}
+		return []core.Message{answer}
 	}
 	return append(CloneMessages(messages[len(messages)-added:]), answer)
 }
 
-func cleanupProvider(provider llm.Provider) {
-	if cleaner, ok := provider.(llm.ProviderCleaner); ok {
+func cleanupProvider(provider core.Provider) {
+	if cleaner, ok := provider.(engine.ProviderCleaner); ok {
 		cleaner.CleanupMCP()
 	}
 }
 
-func policyMessage() llm.Message {
-	return llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}}
+func policyMessage() core.Message {
+	return core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: SystemPolicy}}}
 }

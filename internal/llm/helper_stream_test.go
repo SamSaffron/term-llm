@@ -5,33 +5,35 @@ import (
 	"fmt"
 	"io"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 type wrappedEOFStream struct{}
 
-func (wrappedEOFStream) Recv() (Event, error) {
-	return Event{}, fmt.Errorf("stream closed: %w", io.EOF)
+func (wrappedEOFStream) Recv() (core.Event, error) {
+	return core.Event{}, fmt.Errorf("stream closed: %w", io.EOF)
 }
 
 func (wrappedEOFStream) Close() error { return nil }
 
 func TestCollectTextStreamAcceptsWrappedEOF(t *testing.T) {
-	result, err := CollectTextStream(wrappedEOFStream{}, nil)
+	result, err := core.CollectTextStream(wrappedEOFStream{}, nil)
 	if err != nil {
 		t.Fatalf("CollectTextStream() error = %v, want wrapped EOF treated as completion", err)
 	}
-	if result != (TextStreamResult{}) {
+	if result != (core.TextStreamResult{}) {
 		t.Fatalf("result = %#v, want empty result", result)
 	}
 }
 
 func TestCollectTextStreamNilErrorEventIsFatal(t *testing.T) {
-	stream := &sliceStream{events: []Event{
-		{Type: EventTextDelta, Text: "partial"},
-		{Type: EventError},
+	stream := &sliceStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "partial"},
+		{Type: core.EventError},
 	}}
 
-	result, err := CollectTextStream(stream, nil)
+	result, err := core.CollectTextStream(stream, nil)
 	if err == nil || err.Error() != "provider stream reported an error" {
 		t.Fatalf("CollectTextStream() error = %v, want terminal provider error", err)
 	}
@@ -41,16 +43,16 @@ func TestCollectTextStreamNilErrorEventIsFatal(t *testing.T) {
 }
 
 func TestCollectTextStreamResetsDiscardedAttempt(t *testing.T) {
-	stream := &sliceStream{events: []Event{
-		{Type: EventTextDelta, Text: "discard me"},
-		{Type: EventUsage, Use: &Usage{InputTokens: 100, OutputTokens: 20}},
-		{Type: EventAttemptDiscard},
-		{Type: EventReasoningDelta, Text: "final reasoning", ReasoningKind: ReasoningKindSummary},
-		{Type: EventTextDelta, Text: "final text"},
-		{Type: EventUsage, Use: &Usage{InputTokens: 40, OutputTokens: 8}},
+	stream := &sliceStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "discard me"},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 20}},
+		{Type: core.EventAttemptDiscard},
+		{Type: core.EventReasoningDelta, Text: "final reasoning", ReasoningKind: core.ReasoningKindSummary},
+		{Type: core.EventTextDelta, Text: "final text"},
+		{Type: core.EventUsage, Use: &core.Usage{InputTokens: 40, OutputTokens: 8}},
 	}}
 
-	result, err := CollectTextStream(stream, nil)
+	result, err := core.CollectTextStream(stream, nil)
 	if err != nil {
 		t.Fatalf("CollectTextStream() error = %v", err)
 	}
@@ -64,11 +66,11 @@ func TestCollectTextStreamResetsDiscardedAttempt(t *testing.T) {
 
 func TestCollectTextStreamObserverSeesErrorEvent(t *testing.T) {
 	wantErr := errors.New("provider failed")
-	stream := &sliceStream{events: []Event{{Type: EventError, Err: wantErr}}}
+	stream := &sliceStream{events: []core.Event{{Type: core.EventError, Err: wantErr}}}
 	observed := false
 
-	_, err := CollectTextStream(stream, func(event Event) error {
-		observed = event.Type == EventError
+	_, err := core.CollectTextStream(stream, func(event core.Event) error {
+		observed = event.Type == core.EventError
 		return nil
 	})
 	if !errors.Is(err, wantErr) || !observed {
@@ -78,14 +80,14 @@ func TestCollectTextStreamObserverSeesErrorEvent(t *testing.T) {
 
 func TestCollectTextStreamObserverCanStopCollection(t *testing.T) {
 	stopErr := errors.New("stop")
-	stream := &sliceStream{events: []Event{
-		{Type: EventTextDelta, Text: "before"},
-		{Type: EventToolCall, Tool: &ToolCall{Name: "shell"}},
-		{Type: EventTextDelta, Text: "after"},
+	stream := &sliceStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "before"},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{Name: "shell"}},
+		{Type: core.EventTextDelta, Text: "after"},
 	}}
 
-	result, err := CollectTextStream(stream, func(event Event) error {
-		if event.Type == EventToolCall {
+	result, err := core.CollectTextStream(stream, func(event core.Event) error {
+		if event.Type == core.EventToolCall {
 			return stopErr
 		}
 		return nil

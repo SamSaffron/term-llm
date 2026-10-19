@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
@@ -159,8 +159,8 @@ func (t *QueueAgentTool) SetModelAdmission(state func() (modelpolicy.Policy, mod
 	t.parentState, t.admission = state, check
 }
 
-func (t *QueueAgentTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *QueueAgentTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        QueueAgentToolName,
 		Description: `Spawn a sub-agent as a background jobs-v2 LLM job and return immediately. Use wait_for_jobs with the returned run_id (preferred) or job_id to retrieve the result later.`,
 		Schema: map[string]any{
@@ -199,7 +199,7 @@ func (t *QueueAgentTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a QueueAgentArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
@@ -261,7 +261,7 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	}
 
 	data, _ := json.Marshal(QueueAgentResult{JobID: job.ID, RunID: run.ID, AgentName: agentName})
-	return llm.TextOutput(string(data)), nil
+	return core.TextOutput(string(data)), nil
 }
 
 func (t *QueueAgentTool) Preview(args json.RawMessage) string {
@@ -289,8 +289,8 @@ func NewWaitForJobsToolWithClient(client *jobsBackedAgentClient) *WaitForJobsToo
 	return &WaitForJobsTool{client: client}
 }
 
-func (t *WaitForJobsTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *WaitForJobsTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        WaitForJobsToolName,
 		Description: `Wait for one or more queued jobs-v2 agent jobs to finish and return their results. Prefer the run_id values returned by queue_agent to avoid ambiguity if a job is triggered again while waiting. job_ids remain supported for backwards compatibility.`,
 		Schema: map[string]any{
@@ -319,7 +319,7 @@ func (t *WaitForJobsTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a WaitForJobsArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
@@ -338,7 +338,7 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	results := make([]QueuedJobResult, len(a.RunIDs)+len(a.JobIDs))
 	var waitFailed atomic.Bool
 	progress := SubagentEventCallbackFromContext(ctx)
-	waitCallID := llm.CallIDFromContext(ctx)
+	waitCallID := core.CallIDFromContext(ctx)
 	var wg sync.WaitGroup
 	for i, runID := range a.RunIDs {
 		runID = strings.TrimSpace(runID)
@@ -382,7 +382,7 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	}
 	wg.Wait()
 	data, _ := json.Marshal(results)
-	output := llm.TextOutput(string(data))
+	output := core.TextOutput(string(data))
 	output.IsError = waitFailed.Load()
 	return output, nil
 }
@@ -997,8 +997,8 @@ func formatQueuedAgentError(errType ToolErrorType, message string) string {
 }
 
 // Preserve structured errors and partial job identity while marking the tool execution failed.
-func queuedAgentErrorOutput(content string) llm.ToolOutput {
-	output := llm.TextOutput(content)
+func queuedAgentErrorOutput(content string) core.ToolOutput {
+	output := core.TextOutput(content)
 	output.IsError = true
 	return output
 }

@@ -7,7 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -77,7 +78,7 @@ func messagePrefix(id int64, index int) string {
 
 func summaryPartIndex(msg session.Message) int {
 	for i, part := range msg.Parts {
-		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+		if part.Type == core.PartText && engine.IsInternalCompactionSummaryText(part.Text) {
 			return i
 		}
 	}
@@ -101,25 +102,25 @@ func blockForMessage(msg session.Message, prefix string, partIndex int, kind str
 
 func textKind(msg session.Message) string {
 	switch msg.Role {
-	case llm.RoleSystem:
+	case core.RoleSystem:
 		return "system"
-	case llm.RoleDeveloper:
+	case core.RoleDeveloper:
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartPathNote {
+			if part.Type == core.PartPathNote {
 				return "path_note"
 			}
 		}
 		return "developer"
-	case llm.RoleUser:
+	case core.RoleUser:
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartGoalSteering {
+			if part.Type == core.PartGoalSteering {
 				return "goal_steering"
 			}
 		}
 		return "user"
-	case llm.RoleAssistant:
+	case core.RoleAssistant:
 		return "assistant_text"
-	case llm.RoleEvent:
+	case core.RoleEvent:
 		return "event"
 	default:
 		return ""
@@ -129,7 +130,7 @@ func textKind(msg session.Message) string {
 func (d *Document) addMessage(msg session.Message, prefix string, compaction *Compaction, tail bool, summaryID string, children func(string, string) []string) {
 	parts := messageParts(msg)
 	for i, part := range parts {
-		if part.Type == llm.PartText {
+		if part.Type == core.PartText {
 			d.addReasoning(msg, prefix, i, part, tail, summaryID)
 		}
 		block, text, format := projectPart(msg, prefix, i, part, compaction)
@@ -140,17 +141,17 @@ func (d *Document) addMessage(msg session.Message, prefix string, compaction *Co
 		if tail {
 			block.CompactionSummaryID = summaryID
 		}
-		if part.Type == llm.PartToolResult && part.ToolResult != nil && children != nil {
+		if part.Type == core.PartToolResult && part.ToolResult != nil && children != nil {
 			block.ChildSessionIDs = children(part.ToolResult.Name, part.ToolResult.Content)
 		}
 		d.addBlock(block, text, format)
 	}
 }
 
-func projectPart(msg session.Message, prefix string, index int, part llm.Part, compaction *Compaction) (Block, string, string) {
+func projectPart(msg session.Message, prefix string, index int, part core.Part, compaction *Compaction) (Block, string, string) {
 	kind, text, format := "", "", "text"
 	switch part.Type {
-	case llm.PartText:
+	case core.PartText:
 		kind, text = textKind(msg), part.Text
 		if text == "" {
 			return Block{}, "", ""
@@ -158,19 +159,19 @@ func projectPart(msg session.Message, prefix string, index int, part llm.Part, c
 		if compaction != nil {
 			kind = "compaction_summary"
 		}
-	case llm.PartImage:
+	case core.PartImage:
 		kind, text = "image", imageMetadata(part)
-	case llm.PartFile:
+	case core.PartFile:
 		kind, text = "file", fileMetadata(part)
-	case llm.PartSkillActivation:
+	case core.PartSkillActivation:
 		if part.SkillActivation != nil {
 			kind, text = "skill_activation", FormatSkillActivationProvenance(part.SkillActivation)
 		}
-	case llm.PartToolCall:
+	case core.PartToolCall:
 		if part.ToolCall != nil {
 			kind, text, format = "tool_call", FormatJSON(part.ToolCall.Arguments), "json"
 		}
-	case llm.PartToolResult:
+	case core.PartToolResult:
 		if part.ToolResult != nil {
 			kind, text = "tool_result", toolResultText(part.ToolResult)
 		}
@@ -183,35 +184,35 @@ func projectPart(msg session.Message, prefix string, index int, part llm.Part, c
 		block.Compaction = compaction
 	}
 	decoratePart(&block, part)
-	if part.Type == llm.PartText {
+	if part.Type == core.PartText {
 		block, text = projectTimelineText(msg, prefix, index, part.Text, block, text)
 	}
 	return block, text, format
 }
 
-func decoratePart(block *Block, part llm.Part) {
+func decoratePart(block *Block, part core.Part) {
 	switch part.Type {
-	case llm.PartImage:
+	case core.PartImage:
 		block.Title = "image"
 		if part.ImageData != nil && part.ImageData.MediaType != "" {
 			block.Title = part.ImageData.MediaType
 		}
-	case llm.PartFile:
+	case core.PartFile:
 		if part.FileData != nil {
 			block.Title = part.FileData.Filename
 		}
-	case llm.PartSkillActivation:
+	case core.PartSkillActivation:
 		block.Title = part.SkillActivation.Name
-	case llm.PartToolCall:
+	case core.PartToolCall:
 		tc := part.ToolCall
 		block.Title, block.Tool = tc.Name, &Tool{CallID: tc.ID, Name: tc.Name}
-	case llm.PartToolResult:
+	case core.PartToolResult:
 		tr := part.ToolResult
 		block.Title, block.Tool = tr.Name, &Tool{CallID: tr.ID, Name: tr.Name, IsError: tr.IsError}
 	}
 }
 
-func (d *Document) addReasoning(msg session.Message, prefix string, index int, part llm.Part, tail bool, summaryID string) {
+func (d *Document) addReasoning(msg session.Message, prefix string, index int, part core.Part, tail bool, summaryID string) {
 	if part.ReasoningContent == "" && len(part.ReasoningSummaryParts) == 0 && part.ReasoningEncryptedContent == "" {
 		return
 	}
@@ -219,7 +220,7 @@ func (d *Document) addReasoning(msg session.Message, prefix string, index int, p
 	block := blockForMessage(msg, prefix, index, "reasoning")
 	block.Title, block.ReasoningKind = title, kind
 	block.EncryptedBytes = len(part.ReasoningEncryptedContent)
-	if kind == llm.ReasoningKindEncrypted {
+	if kind == core.ReasoningKindEncrypted {
 		block.EncryptedBytes += len(part.ReasoningContent)
 	}
 	block.CompactionTail = msg.CompactionTail || tail
@@ -240,7 +241,7 @@ func (d *Document) addBlock(block Block, text, format string) {
 	d.Blocks = append(d.Blocks, block)
 }
 
-func imageMetadata(part llm.Part) string {
+func imageMetadata(part core.Part) string {
 	if part.ImageData == nil {
 		return "[Image]"
 	}
@@ -252,7 +253,7 @@ func encodedBytes(encoded string) int {
 	return base64.StdEncoding.DecodedLen(len(encoded)) - min(2, len(encoded)-len(strings.TrimRight(encoded, "=")))
 }
 
-func fileMetadata(part llm.Part) string {
+func fileMetadata(part core.Part) string {
 	if part.Text != "" {
 		return part.Text
 	}
@@ -263,14 +264,14 @@ func fileMetadata(part llm.Part) string {
 	return fmt.Sprintf("[File: %s, %s, %d bytes]", file.Filename, file.MediaType, file.SizeBytes)
 }
 
-func toolResultText(result *llm.ToolResult) string {
+func toolResultText(result *core.ToolResult) string {
 	text := result.Content
 	n := len(result.Images) + len(result.Media)
 	for _, part := range result.ContentParts {
 		if part.ImageData != nil {
 			n++
 		}
-		if result.Content == "" && part.Type == llm.ToolContentPartText {
+		if result.Content == "" && part.Type == core.ToolContentPartText {
 			text += part.Text
 		}
 	}
@@ -327,12 +328,12 @@ func (d *Document) addRuntime(messages []session.Message, opts RuntimeOptions) {
 
 func persistedSystemPrompt(messages []session.Message) string {
 	for _, msg := range messages {
-		if msg.Role != llm.RoleSystem {
+		if msg.Role != core.RoleSystem {
 			continue
 		}
 		var texts []string
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartText && part.Text != "" {
+			if part.Type == core.PartText && part.Text != "" {
 				texts = append(texts, part.Text)
 			}
 		}

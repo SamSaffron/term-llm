@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestDetachedAgentReportsAwaitingApproval(t *testing.T) {
@@ -21,7 +21,7 @@ func TestDetachedAgentReportsAwaitingApproval(t *testing.T) {
 	close(runner.release)
 	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)
 	tool.SetRunner(runner)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	spawned := lifecycleResult(t, lifecycleCall(t, tool, ctx, `{"agent_name":"developer","prompt":"needs approval","wait":0}`))
 	<-entered
 	listed := lifecycleCall(t, &agentControlTool{name: ListAgentsToolName, spawn: tool}, ctx, `{}`)

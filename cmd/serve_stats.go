@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -47,7 +47,7 @@ func (rt *serveRuntime) observedUsageModel() string {
 // the model that spent it. Call it only alongside UpdateMetrics: the per-model
 // rows are meant to decompose the aggregate session bucket, so recording work
 // that never entered that bucket would make the two disagree.
-func (rt *serveRuntime) recordDurableModelUsage(ctx context.Context, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, llmTurns, toolCalls int) {
+func (rt *serveRuntime) recordDurableModelUsage(ctx context.Context, sessionID, model string, kind session.ModelUsageKind, u core.Usage, llmTurns, toolCalls int) {
 	rt.recordDurableModelUsageTimed(ctx, sessionID, model, kind, u, llmTurns, toolCalls, modelUsageTiming{})
 }
 
@@ -62,7 +62,7 @@ type modelUsageTiming struct {
 // recordDurableModelUsageTimed reports whether the attribution reached the
 // store. Callers hold the turn's clock until it does: a slice of time that is
 // consumed but never written cannot be recovered from anywhere.
-func (rt *serveRuntime) recordDurableModelUsageTimed(ctx context.Context, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, llmTurns, toolCalls int, timing modelUsageTiming) bool {
+func (rt *serveRuntime) recordDurableModelUsageTimed(ctx context.Context, sessionID, model string, kind session.ModelUsageKind, u core.Usage, llmTurns, toolCalls int, timing modelUsageTiming) bool {
 	entry := session.ModelUsage{
 		Model:             model,
 		Kind:              kind,
@@ -176,11 +176,11 @@ type serveStats struct {
 	running         bool
 	tools           map[string]bool
 	ended           map[string]bool
-	attempt         llm.Usage
+	attempt         core.Usage
 	attemptCalls    int
 	committed       bool
 	retries         int
-	handoverUsage   llm.Usage
+	handoverUsage   core.Usage
 	handoverCalls   int
 	// persisted*Time is the clock already written to the durable per-model rows;
 	// writing*Time additionally covers a write still in flight. Both die with
@@ -212,7 +212,7 @@ func (rt *serveRuntime) startStats(model string) {
 	a.running = true
 	a.tools = map[string]bool{}
 	a.ended = map[string]bool{}
-	a.attempt = llm.Usage{}
+	a.attempt = core.Usage{}
 	a.attemptCalls = 0
 	a.committed = false
 }
@@ -250,7 +250,7 @@ func (a *serveStats) endTool(s *ui.SessionStats, id string) {
 	if len(a.tools) == 0 {
 		s.ToolEnd()
 	}
-	a.attempt = llm.Usage{}
+	a.attempt = core.Usage{}
 	a.attemptCalls = 0
 	a.committed = false
 }
@@ -267,48 +267,48 @@ func (a *serveStats) discardAttempt(s *ui.SessionStats) {
 		// replacement attempt now; a subsequent retry reschedules past backoff.
 		s.RequestStart()
 	}
-	a.attempt = llm.Usage{}
+	a.attempt = core.Usage{}
 	a.attemptCalls = 0
 	a.committed = false
 }
 
-func (rt *serveRuntime) recordStatsEvent(e llm.Event) {
+func (rt *serveRuntime) recordStatsEvent(e core.Event) {
 	a := &rt.stats
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.init()
 	s := a.stats
 	switch e.Type {
-	case llm.EventTextDelta, llm.EventReasoningDelta:
+	case core.EventTextDelta, core.EventReasoningDelta:
 		a.committed = false
-		if e.Text != "" || llm.IsEncryptedReasoningDelta(e) {
+		if e.Text != "" || core.IsEncryptedReasoningDelta(e) {
 			s.ObserveOutput()
 		}
-	case llm.EventModelSwitch:
+	case core.EventModelSwitch:
 		s.SetModel(e.Model)
-	case llm.EventToolCall:
+	case core.EventToolCall:
 		a.committed = true
-		a.attempt = llm.Usage{}
+		a.attempt = core.Usage{}
 		a.attemptCalls = 0
 		if e.Tool != nil {
 			a.startTool(s, e.Tool.ID)
 		}
-	case llm.EventToolExecStart:
+	case core.EventToolExecStart:
 		a.startTool(s, e.ToolCallID)
-	case llm.EventToolExecEnd:
+	case core.EventToolExecEnd:
 		a.endTool(s, e.ToolCallID)
-	case llm.EventDiscoveryCall:
+	case core.EventDiscoveryCall:
 		if e.DiscoveryCall != nil {
 			a.committed = true
-			a.attempt = llm.Usage{}
+			a.attempt = core.Usage{}
 			a.attemptCalls = 0
 			a.startTool(s, e.DiscoveryCall.ID)
 		}
-	case llm.EventDiscoveryOutput:
+	case core.EventDiscoveryOutput:
 		if e.DiscoveryOutput != nil {
 			a.endTool(s, e.DiscoveryOutput.CallID)
 		}
-	case llm.EventUsage:
+	case core.EventUsage:
 		s.GenerationEnd()
 		if e.Use != nil {
 			u := *e.Use
@@ -318,17 +318,17 @@ func (rt *serveRuntime) recordStatsEvent(e llm.Event) {
 				a.attemptCalls++
 			}
 		}
-	case llm.EventRetry:
+	case core.EventRetry:
 		a.retries++
 		s.ScheduleRetryStart(e.RetryWaitSecs)
-	case llm.EventAttemptDiscard:
+	case core.EventAttemptDiscard:
 		a.discardAttempt(s)
-	case llm.EventDone, llm.EventError:
+	case core.EventDone, core.EventError:
 		s.Finalize()
 		a.running = false
 	}
 }
-func (rt *serveRuntime) recordHelperStats(kind, model string, u llm.Usage) {
+func (rt *serveRuntime) recordHelperStats(kind, model string, u core.Usage) {
 	if u.BillableCountersZero() {
 		return
 	}
@@ -464,7 +464,7 @@ func (a *modelStatsAccumulator) group(model string) *serveStatsModel {
 }
 
 // addUsage records one priced request against a model.
-func (a *modelStatsAccumulator) addUsage(model string, kind session.ModelUsageKind, u llm.Usage, turns int) {
+func (a *modelStatsAccumulator) addUsage(model string, kind session.ModelUsageKind, u core.Usage, turns int) {
 	row := a.group(model)
 	row.InputTokens += u.InputTokens
 	row.OutputTokens += u.OutputTokens
@@ -554,7 +554,7 @@ func appendRuntimeModelStats(out *serveStatsResponse, calls []ui.UsageCall, runs
 	mainModels := map[string]bool{}
 	for _, call := range calls {
 		kind := usageCallKind(call)
-		accumulator.addUsage(call.Model, kind, llm.Usage{
+		accumulator.addUsage(call.Model, kind, core.Usage{
 			InputTokens: call.InputTokens, OutputTokens: call.OutputTokens,
 			CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens,
 		}, 1)
@@ -619,7 +619,7 @@ func appendDurableModelStats(out *serveStatsResponse, entries []session.ModelUsa
 			*row.ActiveMS += entry.LLMMS + entry.ToolMS
 			*row.ToolMS += entry.ToolMS
 		}
-		accumulator.addUsage(entry.Model, entry.Kind, llm.Usage{
+		accumulator.addUsage(entry.Model, entry.Kind, core.Usage{
 			InputTokens: entry.InputTokens, OutputTokens: entry.OutputTokens,
 			CachedInputTokens: entry.CachedInputTokens, CacheWriteTokens: entry.CacheWriteTokens,
 		}, entry.LLMTurns)
@@ -728,13 +728,13 @@ func removeUnavailable(values []string, key string) []string {
 
 func appendHelperUsageSections(out *serveStatsResponse, calls []ui.UsageCall) {
 	for _, kind := range []string{"Private Side-Question Usage", "Guardian Usage", "Compaction Usage"} {
-		var usage llm.Usage
+		var usage core.Usage
 		count := 0
 		for _, call := range calls {
 			match := kind == "Private Side-Question Usage" && call.SideQuestion || kind == "Guardian Usage" && call.Guardian || kind == "Compaction Usage" && call.Compaction
 			if match {
 				count++
-				usage.Add(llm.Usage{InputTokens: call.InputTokens, OutputTokens: call.OutputTokens, CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens})
+				usage.Add(core.Usage{InputTokens: call.InputTokens, OutputTokens: call.OutputTokens, CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens})
 			}
 		}
 		appendUsageSection(out, kind, count, usage)

@@ -3,7 +3,8 @@ package chat
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -25,13 +26,13 @@ func TestCompactionAppliedMessagesMutateStatsOnlyThroughUpdate(t *testing.T) {
 			messages <- compactionAppliedMsg{
 				generation: m.streamGeneration,
 				model:      " compact-model ",
-				usage:      llm.Usage{InputTokens: 2, OutputTokens: 1},
+				usage:      core.Usage{InputTokens: 2, OutputTokens: 1},
 			}
 		}
 	}()
 	for msg := range messages {
 		m.queueCompactionForUI(msg)
-		if _, cmd := m.Update(streamEventMsg{event: ui.PhaseEvent(llm.PhaseCompactingResumeTask), generation: m.streamGeneration}); cmd == nil {
+		if _, cmd := m.Update(streamEventMsg{event: ui.PhaseEvent(engine.PhaseCompactingResumeTask), generation: m.streamGeneration}); cmd == nil {
 			t.Fatal("compaction resume phase did not schedule the stream listener")
 		}
 	}

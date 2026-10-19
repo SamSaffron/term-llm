@@ -8,7 +8,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -191,7 +193,7 @@ func TestAttemptDiscardBypassesAltScreenRenderThrottle(t *testing.T) {
 	model := newTestChatModel(true)
 	model.streaming = true
 	model.streamRenderMinInterval = 0
-	model.messages = []session.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello"}}
+	model.messages = []session.Message{{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "hello"}}, TextContent: "hello"}}
 	model.bumpContentVersion()
 
 	model.tracker.AddTextSegment("partial", model.width)
@@ -232,13 +234,13 @@ func TestModelSchedulesRenderTickWhenThrottledContentPending(t *testing.T) {
 }
 
 func newTestChatModel(altScreen bool) *Model {
-	provider := llm.NewMockProvider("mock")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock")
+	eng := engine.NewEngine(provider, nil)
 
 	return New(
 		&config.Config{DefaultProvider: "mock", Chat: config.ChatConfig{TerminalTitle: string(TerminalTitleOff)}},
 		provider,
-		engine,
+		eng,
 		"mock",
 		"mock-model",
 		nil,

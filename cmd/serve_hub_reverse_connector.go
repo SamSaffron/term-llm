@@ -1,11 +1,8 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
 
@@ -160,76 +158,5 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 }
 
 func handleHubReverseRequest(ctx context.Context, frame hubReverseRequest, token, localBase, allowedBasePath string, client *http.Client, writeFrame func(hubReverseResponse) error) {
-	sendError := func(status int, msg string) {
-		_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: frame.ID, Status: status, Error: msg})
-	}
-	if frame.ID == "" {
-		_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, Status: http.StatusBadRequest, Error: "missing request id"})
-		return
-	}
-	pathOnly := frame.Path
-	if i := strings.IndexByte(pathOnly, '?'); i >= 0 {
-		pathOnly = pathOnly[:i]
-	}
-	// Validate only the URI path. Query parameters may legitimately contain
-	// encoded slashes (for example file-change diff paths like path=a%2Fb) and
-	// are interpreted by node handlers as parameter values, not route segments.
-	if !strings.HasPrefix(pathOnly, "/") || hubContainsEncodedSeparator(pathOnly) || hubHasDotDotSegment(pathOnly) {
-		sendError(http.StatusBadRequest, "invalid reverse request path")
-		return
-	}
-	allowedBasePath = strings.TrimRight(allowedBasePath, "/")
-	if allowedBasePath != "" && pathOnly != allowedBasePath && !strings.HasPrefix(pathOnly, allowedBasePath+"/") {
-		sendError(http.StatusForbidden, "reverse request outside node base path")
-		return
-	}
-	localURL := strings.TrimRight(localBase, "/") + frame.Path
-	req, err := http.NewRequestWithContext(ctx, frame.Method, localURL, bytes.NewReader(frame.Body))
-	if err != nil {
-		sendError(http.StatusBadRequest, err.Error())
-		return
-	}
-	req.Header = frame.Header.Clone()
-	if req.Header == nil {
-		req.Header = http.Header{}
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		sendError(http.StatusBadGateway, err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	if hubResponseIsPassive(frame.Method, resp.Header) {
-		restart.Passive(ctx)
-	}
-	if err := writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: frame.ID, Status: resp.StatusCode, Header: resp.Header.Clone()}); err != nil {
-		return
-	}
-	buf := make([]byte, hubReverseChunkSize)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			if err := writeFrame(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: frame.ID, Body: chunk}); err != nil {
-				return
-			}
-		}
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: frame.ID})
-				return
-			}
-			if ctx.Err() == nil {
-				_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: frame.ID, Error: readErr.Error()})
-			}
-			return
-		}
-	}
+	appserver.HandleHubReverseRequest(ctx, frame, token, localBase, allowedBasePath, client, writeFrame)
 }

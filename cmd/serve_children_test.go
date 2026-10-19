@@ -11,13 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
 )
 
 func TestChildReadRevisionIsSafeForProductionEpochs(t *testing.T) {
@@ -59,13 +58,13 @@ func TestHandleSessionChildrenReturnsBoundedAuthoritativeProjection(t *testing.T
 		t.Fatalf("stored child = %#v, err = %v", storedChild, getErr)
 	}
 	if err := store.AddMessage(ctx, child.ID, &session.Message{
-		Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "Review the concurrency boundary"}},
+		Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "Review the concurrency boundary"}},
 		TextContent: "Review the concurrency boundary",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	spawnCall := session.NewMessage(parent.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
-		Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "spawn-1", Name: tools.SpawnAgentToolName},
+	spawnCall := session.NewMessage(parent.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{
+		Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "spawn-1", Name: tools.SpawnAgentToolName},
 	}}}, -1)
 	if err := store.AddMessage(ctx, parent.ID, spawnCall); err != nil {
 		t.Fatal(err)
@@ -73,7 +72,7 @@ func TestHandleSessionChildrenReturnsBoundedAuthoritativeProjection(t *testing.T
 	spawnResult, _ := json.Marshal(tools.SpawnAgentResult{AgentName: "reviewer", SessionID: child.ID})
 	if err := store.AddMessage(ctx, parent.ID, session.NewMessage(
 		parent.ID,
-		llm.ToolResultMessage("spawn-1", tools.SpawnAgentToolName, string(spawnResult), nil),
+		core.ToolResultMessage("spawn-1", tools.SpawnAgentToolName, string(spawnResult), nil),
 		-1,
 	)); err != nil {
 		t.Fatal(err)
@@ -236,8 +235,8 @@ func TestRuntimeSpawnPersistsChildForStats(t *testing.T) {
 			if spawn == nil {
 				t.Fatal("spawn tool missing")
 			}
-			toolCtx := llm.ContextWithCallID(llm.ContextWithSessionID(ctx, parent.ID), "spawn-stats")
-			var output llm.ToolOutput
+			toolCtx := core.ContextWithCallID(core.ContextWithSessionID(ctx, parent.ID), "spawn-stats")
+			var output core.ToolOutput
 			if tc.cancel {
 				output = executeCancelledStatsChild(t, toolCtx, cancel, env, spawn)
 			} else {
@@ -284,7 +283,7 @@ func TestRuntimeSpawnPersistsChildForStats(t *testing.T) {
 
 // Hold the child in its event callback while the parent closes, reproducing the
 // engine's cancellation behavior: it need not wait for tool goroutines to exit.
-func executeCancelledStatsChild(t *testing.T, ctx context.Context, cancel context.CancelFunc, env *cmdRunEnvironment, spawn *tools.SpawnAgentTool) llm.ToolOutput {
+func executeCancelledStatsChild(t *testing.T, ctx context.Context, cancel context.CancelFunc, env *cmdRunEnvironment, spawn *tools.SpawnAgentTool) core.ToolOutput {
 	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var enteredOnce, releaseOnce sync.Once
@@ -297,7 +296,7 @@ func executeCancelledStatsChild(t *testing.T, ctx context.Context, cancel contex
 		}
 	})
 	type outcome struct {
-		output llm.ToolOutput
+		output core.ToolOutput
 		err    error
 	}
 	finished := make(chan outcome, 1)

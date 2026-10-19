@@ -1,9 +1,19 @@
 package llm
 
+import (
+	"github.com/samsaffron/term-llm/internal/llm/core"
+)
+
 // helperConversationIsolator is implemented by providers that must clone
 // provider-local conversation state before a one-shot helper request.
 type helperConversationIsolator interface {
-	isolateHelperConversation() Provider
+	isolateHelperConversation() core.Provider
+}
+
+// ExportedHelperConversationIsolator is implemented by provider packages that
+// cannot satisfy the root package's private helper method across a package boundary.
+type ExportedHelperConversationIsolator interface {
+	IsolateHelperConversation() core.Provider
 }
 
 // helperConversationForker is implemented by providers that can branch from
@@ -13,7 +23,12 @@ type helperConversationIsolator interface {
 // and delivers only the messages handed to the clone, so the caller's request
 // carries no parent transcript at all. Handover depends on it.
 type helperConversationForker interface {
-	forkHelperConversation() (Provider, bool)
+	forkHelperConversation() (core.Provider, bool)
+}
+
+// ExportedHelperConversationForker is the same contract for provider packages.
+type ExportedHelperConversationForker interface {
+	ForkHelperConversation() (core.Provider, bool)
 }
 
 // HelperBoundaryForker is implemented by providers that can branch from a
@@ -32,10 +47,15 @@ type helperConversationForker interface {
 // recovery is an untrimmed replay of the full request, which is exactly what the
 // caller's bounded fallback exists to avoid.
 type HelperBoundaryForker interface {
-	ForkConversationAtBoundary(state []byte, requestMessages []Message) (Provider, bool)
+	ForkConversationAtBoundary(state []byte, requestMessages []core.Message) (core.Provider, bool)
 }
 
-func isolatedConversationProvider(provider Provider) Provider {
+func isolatedConversationProvider(provider core.Provider) core.Provider {
+	if isolator, ok := provider.(ExportedHelperConversationIsolator); ok {
+		if isolated := isolator.IsolateHelperConversation(); isolated != nil {
+			return isolated
+		}
+	}
 	if isolator, ok := provider.(helperConversationIsolator); ok {
 		if isolated := isolator.isolateHelperConversation(); isolated != nil {
 			return isolated
@@ -51,7 +71,7 @@ func isolatedConversationProvider(provider Provider) Provider {
 //
 // It reports false whenever the branch cannot be proven to line up with the
 // request, in which case the caller must fall back to a bounded replay.
-func ForkHelperAtBoundary(provider Provider, state []byte, requestMessages []Message) (Provider, bool) {
+func ForkHelperAtBoundary(provider core.Provider, state []byte, requestMessages []core.Message) (core.Provider, bool) {
 	if provider == nil || len(state) == 0 || len(requestMessages) == 0 {
 		return nil, false
 	}
@@ -69,12 +89,17 @@ func ForkHelperAtBoundary(provider Provider, state []byte, requestMessages []Mes
 // SupportsHelperBoundaryFork reports whether provider implements the
 // boundary-offset fork contract at all. Eligibility still requires captured
 // state that matches the request, which only ForkHelperAtBoundary can decide.
-func SupportsHelperBoundaryFork(provider Provider) bool {
+func SupportsHelperBoundaryFork(provider core.Provider) bool {
 	_, ok := provider.(HelperBoundaryForker)
 	return ok
 }
 
-func forkConversationProvider(provider Provider) (Provider, bool) {
+func forkConversationProvider(provider core.Provider) (core.Provider, bool) {
+	if forker, ok := provider.(ExportedHelperConversationForker); ok {
+		if forked, forkedOK := forker.ForkHelperConversation(); forkedOK && forked != nil {
+			return forked, true
+		}
+	}
 	if forker, ok := provider.(helperConversationForker); ok {
 		forked, forkedOK := forker.forkHelperConversation()
 		if forkedOK && forked != nil {

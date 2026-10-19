@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -22,7 +22,7 @@ func TestHandleCreateWebSessionPersistsBlankWorkspaceSession(t *testing.T) {
 	defer store.Close()
 	startupDir := t.TempDir()
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock")
+		provider := mockprovider.NewMockProvider("mock")
 		runtime := &serveRuntime{provider: provider, providerKey: "mock", defaultModel: "default", store: store}
 		runtime.Touch()
 		return runtime, nil

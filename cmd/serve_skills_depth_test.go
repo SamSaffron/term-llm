@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -39,7 +40,7 @@ func TestServeIsolatedSkillAtExhaustedParentBudget(t *testing.T) {
 				spawn := mgr.GetSpawnAgentTool()
 				spawn.SetDepth(3)
 				spawn.SetRemainingDepth(0)
-				rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), nil), toolMgr: mgr, store: store}
+				rt := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), nil), toolMgr: mgr, store: store}
 				manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) { return rt, nil })
 				t.Cleanup(manager.Close)
 				if _, err := manager.GetOrCreate(context.Background(), "parent"); err != nil {

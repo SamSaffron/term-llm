@@ -5,7 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -146,9 +147,9 @@ func TestAcceptableBoundary(t *testing.T) {
 
 func TestBuildConversationSlice(t *testing.T) {
 	messages := []session.Message{
-		{Role: llm.RoleUser, TextContent: "<<<<< FILE: /tmp/task.txt >>>>> Work in the term-llm worktree and redesign the resume browser to use full width and show more context."},
-		{Role: llm.RoleAssistant, TextContent: "I'll inspect the existing implementation and propose a cleaner browsing experience."},
-		{Role: llm.RoleUser, TextContent: "It should feel delightful and not like a cramped dialog."},
+		{Role: core.RoleUser, TextContent: "<<<<< FILE: /tmp/task.txt >>>>> Work in the term-llm worktree and redesign the resume browser to use full width and show more context."},
+		{Role: core.RoleAssistant, TextContent: "I'll inspect the existing implementation and propose a cleaner browsing experience."},
+		{Role: core.RoleUser, TextContent: "It should feel delightful and not like a cramped dialog."},
 	}
 	slice := BuildConversationSlice(messages)
 	if slice == "" {
@@ -209,9 +210,9 @@ func TestNormalizeTitleEdgeCases(t *testing.T) {
 }
 
 func TestGenerateReturnsRejectedSentinelForAbstention(t *testing.T) {
-	provider := llm.NewMockProvider("fast").AddTextResponse(`{"short_title":null,"long_title":null,"confidence":0}`)
+	provider := mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":null,"long_title":null,"confidence":0}`)
 	sess := &session.Session{Summary: "unclear request"}
-	messages := []session.Message{{Role: llm.RoleUser, TextContent: "please fix it"}}
+	messages := []session.Message{{Role: core.RoleUser, TextContent: "please fix it"}}
 
 	_, err := Generate(context.Background(), provider, sess, messages)
 	if !errors.Is(err, ErrRejected) {
@@ -220,9 +221,9 @@ func TestGenerateReturnsRejectedSentinelForAbstention(t *testing.T) {
 }
 
 func TestGenerateUsesProvider(t *testing.T) {
-	provider := llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Delightful resume browser redesign","long_title":"Redesigning chat TUI resume flow into a real session browser","confidence":0.91}`)
+	provider := mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Delightful resume browser redesign","long_title":"Redesigning chat TUI resume flow into a real session browser","confidence":0.91}`)
 	sess := &session.Session{Summary: "resume command in chat tui is ugly"}
-	messages := []session.Message{{Role: llm.RoleUser, TextContent: "resume command in chat tui is ugly and cramped"}}
+	messages := []session.Message{{Role: core.RoleUser, TextContent: "resume command in chat tui is ugly and cramped"}}
 	cand, err := Generate(context.Background(), provider, sess, messages)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)

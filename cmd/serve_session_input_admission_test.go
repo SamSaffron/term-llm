@@ -11,7 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -67,11 +69,11 @@ func TestSessionInputPreparedRuntimeReuseDuringActivity(t *testing.T) {
 }
 
 type sessionInputAdmissionProvider struct {
-	llm.Provider
+	core.Provider
 	inspect func() error
 }
 
-func (p *sessionInputAdmissionProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *sessionInputAdmissionProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	if err := p.inspect(); err != nil {
 		return nil, err
 	}
@@ -91,7 +93,7 @@ func TestSessionInputSynchronousCallsAllowMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			var last *session.Message
-			for _, message := range []llm.Message{llm.UserText("earlier question"), llm.AssistantText("earlier answer")} {
+			for _, message := range []core.Message{core.UserText("earlier question"), core.AssistantText("earlier answer")} {
 				last = session.NewMessage(sess.ID, message, -1)
 				if err := store.AddMessage(ctx, sess.ID, last); err != nil {
 					t.Fatal(err)
@@ -101,8 +103,8 @@ func TestSessionInputSynchronousCallsAllowMetadata(t *testing.T) {
 			srv.store = store
 			t.Cleanup(srv.sessionMgr.Close)
 			var inspected atomic.Bool
-			provider := &sessionInputAdmissionProvider{Provider: llm.NewMockProvider("mock").AddTextResponse("summary or answer")}
-			rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), providerKey: "mock", defaultModel: "mock-model", store: store, toolsSetting: sess.Tools}
+			provider := &sessionInputAdmissionProvider{Provider: mockprovider.NewMockProvider("mock").AddTextResponse("summary or answer")}
+			rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), providerKey: "mock", defaultModel: "mock-model", store: store, toolsSetting: sess.Tools}
 			putTestSession(srv.sessionMgr, sess.ID, rt)
 			provider.inspect = func() error {
 				inspected.Store(true)
@@ -237,8 +239,8 @@ func TestResponseRunAdmissionFailureReleasesFollowUpClaim(t *testing.T) {
 		&serveRuntime{}, // Deliberately not the runtime installed for sessionID.
 		true,
 		false,
-		[]llm.Message{llm.UserText("follow up")},
-		llm.Request{SessionID: sessionID},
+		[]core.Message{core.UserText("follow up")},
+		core.Request{SessionID: sessionID},
 		sessionID,
 		startResponseRunOptions{onDone: func() { released.Add(1) }},
 	)
@@ -263,9 +265,9 @@ func TestSessionInputSynchronousAdmissionReleasedOnRunFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			provider := &sessionInputAdmissionProvider{Provider: llm.NewMockProvider("mock"), inspect: func() error { return errors.New("synthetic provider failure") }}
+			provider := &sessionInputAdmissionProvider{Provider: mockprovider.NewMockProvider("mock"), inspect: func() error { return errors.New("synthetic provider failure") }}
 			rt.provider = provider
-			rt.engine = llm.NewEngine(provider, nil)
+			rt.engine = engine.NewEngine(provider, nil)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			if failure == "cancelled context" {
@@ -280,7 +282,7 @@ func TestSessionInputSynchronousAdmissionReleasedOnRunFailure(t *testing.T) {
 					return err
 				}
 				defer release()
-				_, err = rt.Run(ctx, false, false, []llm.Message{llm.UserText("hello")}, llm.Request{SessionID: id})
+				_, err = rt.Run(ctx, false, false, []core.Message{core.UserText("hello")}, core.Request{SessionID: id})
 				return err
 			}()
 			if failure == "busy runtime" {

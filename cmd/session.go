@@ -14,6 +14,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -570,7 +572,7 @@ func agentPromptTemplateContextAndBaseDirInDir(agent *agents.Agent, files []stri
 
 // SetupToolManager creates and configures a ToolManager from settings.
 // Returns nil if no tools are enabled.
-func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engine) (*tools.ToolManager, error) {
+func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *engine.Engine) (*tools.ToolManager, error) {
 	visionTarget := indirectVisionTarget(cfg, s.Provider, s.Model)
 	if s.Tools == "" && len(s.AutoTools) == 0 && visionTarget == "" {
 		return nil, nil
@@ -674,7 +676,7 @@ func indirectVisionTarget(cfg *config.Config, providerName, modelName string) st
 	return config.VisionViaForProviderModel(cfg, providerName, modelName)
 }
 
-func newVisionProviderForTarget(cfg *config.Config, target string) (llm.Provider, string, error) {
+func newVisionProviderForTarget(cfg *config.Config, target string) (core.Provider, string, error) {
 	providerName, modelName, err := llm.ParseProviderModel(target, cfg)
 	if err != nil {
 		return nil, "", fmt.Errorf("invalid vision_via %q: %w", target, err)
@@ -719,7 +721,7 @@ func appendUniqueString(values []string, value string) []string {
 	return append(values, value)
 }
 
-func alignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider llm.Provider) {
+func alignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider core.Provider) {
 	if settings == nil || cfg == nil {
 		return
 	}
@@ -811,7 +813,7 @@ func ensureRequestSessionID(sessionID string, resuming bool) string {
 // applyPersistedContextEstimate seeds the engine's context-estimate baseline from
 // persisted session state so resumed runs can use the last real provider-observed
 // context size instead of falling back to heuristic-only estimation.
-func applyPersistedContextEstimate(engine *llm.Engine, sess *session.Session) {
+func applyPersistedContextEstimate(engine *engine.Engine, sess *session.Session) {
 	if engine == nil || sess == nil {
 		return
 	}
@@ -999,7 +1001,7 @@ func intersectAllowedToolNames(left, right []string) []string {
 
 // RegisterSkillToolWithEngine registers activate_skill on the engine when skills are available.
 // This is independent of local tool manager setup so skills work in both agent-only and tools modes.
-func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager, skillsSetup *skills.Setup) {
+func RegisterSkillToolWithEngine(engine *engine.Engine, toolMgr *tools.ToolManager, skillsSetup *skills.Setup) {
 	if skillsSetup == nil || skillsSetup.Registry == nil {
 		return
 	}

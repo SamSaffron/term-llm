@@ -12,14 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestServeJobsRunnerOptionsUseCapturedResolvedApproval(t *testing.T) {
-	oldAuto, oldYolo := serveAuto, serveYolo
-	serveAuto, serveYolo = false, true
-	t.Cleanup(func() { serveAuto, serveYolo = oldAuto, oldYolo })
+	oldAuto, oldYolo := serveFlags.Auto, serveFlags.Yolo
+	serveFlags.Auto, serveFlags.Yolo = false, true
+	t.Cleanup(func() { serveFlags.Auto, serveFlags.Yolo = oldAuto, oldYolo })
 
 	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceSurfaceConfig}
 	opts := serveJobsRunnerOptions(resolved)
@@ -185,8 +186,8 @@ func TestJobsV2RunSummaryUsesCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 WHERE job_id = ? ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", "job_test", 50, 0)
-	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunSummaryIndexName) {
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+servejobs.RunSummaryColumns+" FROM job_runs_v2 WHERE job_id = ? ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", "job_test", 50, 0)
+	if !strings.Contains(plan, "USING COVERING INDEX "+servejobs.RunSummaryIndexName) {
 		t.Fatalf("summary query plan = %q, want covering summary index", plan)
 	}
 	if strings.Contains(plan, "USE TEMP B-TREE") {
@@ -201,8 +202,8 @@ func TestJobsV2GlobalRunSummaryUsesCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", 50, 0)
-	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunGlobalSummaryIndexName) {
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+servejobs.RunSummaryColumns+" FROM job_runs_v2 ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?", 50, 0)
+	if !strings.Contains(plan, "USING COVERING INDEX "+servejobs.RunGlobalSummaryIndexName) {
 		t.Fatalf("global summary query plan = %q, want covering global summary index", plan)
 	}
 	if strings.Contains(plan, "USE TEMP B-TREE") {
@@ -217,8 +218,8 @@ func TestJobsV2RunSummaryByIDUsesCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 INDEXED BY "+jobsV2RunByIDSummaryIndexName+" WHERE id = ?", "run_test")
-	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunByIDSummaryIndexName) {
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+servejobs.RunSummaryColumns+" FROM job_runs_v2 INDEXED BY "+servejobs.RunByIDSummaryIndexName+" WHERE id = ?", "run_test")
+	if !strings.Contains(plan, "USING COVERING INDEX "+servejobs.RunByIDSummaryIndexName) {
 		t.Fatalf("by-id summary query plan = %q, want covering summary index", plan)
 	}
 }
@@ -1405,23 +1406,23 @@ func TestJobsV2RetentionPrunesOldQueueAgentJobs(t *testing.T) {
 }
 
 func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
-	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		if cfg.AgentName != "planner" {
 			t.Fatalf("agent_name = %q, want %q", cfg.AgentName, "planner")
 		}
 		if strings.TrimSpace(cfg.SessionID) == "" {
 			t.Fatal("expected session_id to be set for llm job runs")
 		}
-		onEvent(llm.Event{
-			Type: llm.EventToolCall,
-			Tool: &llm.ToolCall{
+		onEvent(core.Event{
+			Type: core.EventToolCall,
+			Tool: &core.ToolCall{
 				ID:        "progress-1",
 				Name:      "update_progress",
 				Arguments: json.RawMessage(`{"state":{"step":"draft"},"reason":"milestone","message":"draft ready"}`),
 			},
 		})
-		onEvent(llm.Event{
-			Type:        llm.EventToolExecEnd,
+		onEvent(core.Event{
+			Type:        core.EventToolExecEnd,
 			ToolCallID:  "progress-1",
 			ToolName:    "update_progress",
 			ToolSuccess: true,
@@ -1511,7 +1512,7 @@ func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
 }
 
 func TestJobsV2_ProgressiveLLM_FinalResponseProse(t *testing.T) {
-	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		return serveJobsExecResult{
 			Progressive: &progressiveRunResult{
 				ExitReason:    exitReasonTimeout,
@@ -2258,11 +2259,11 @@ func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
 }
 
 func TestJobsV2LLMRunnerAccumulatesStreamingDeltas(t *testing.T) {
-	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
-		onEvent(llm.Event{Type: llm.EventReasoningDelta, Text: "thinking"})
-		onEvent(llm.Event{Type: llm.EventTextDelta, Text: "hel"})
-		onEvent(llm.Event{Type: llm.EventTextDelta, Text: "lo"})
-		onEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 5}})
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
+		onEvent(core.Event{Type: core.EventReasoningDelta, Text: "thinking"})
+		onEvent(core.Event{Type: core.EventTextDelta, Text: "hel"})
+		onEvent(core.Event{Type: core.EventTextDelta, Text: "lo"})
+		onEvent(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 3, OutputTokens: 5}})
 		return serveJobsExecResult{}, nil
 	}}
 	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"test","instructions":"say hello","cwd":"."}`)}
@@ -2339,7 +2340,7 @@ func TestJobsV2LLMRunnerRequiresCwd(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			runner := &jobsV2LLMRunner{exec: func(context.Context, jobsV2LLMConfig, func(llm.Event)) (serveJobsExecResult, error) {
+			runner := &jobsV2LLMRunner{exec: func(context.Context, jobsV2LLMConfig, func(core.Event)) (serveJobsExecResult, error) {
 				called = true
 				return serveJobsExecResult{}, nil
 			}}
@@ -2360,9 +2361,9 @@ func BenchmarkJobsV2LLMRunnerTextDeltaAccumulation(b *testing.B) {
 	const delta = "0123456789abcdef"
 	wantLen := deltas * len(delta)
 
-	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		for i := 0; i < deltas; i++ {
-			onEvent(llm.Event{Type: llm.EventTextDelta, Text: delta})
+			onEvent(core.Event{Type: core.EventTextDelta, Text: delta})
 		}
 		return serveJobsExecResult{}, nil
 	}}
@@ -2439,4 +2440,9 @@ func TestJobsV2DatabaseHasOneLiveRecoveryOwner(t *testing.T) {
 		t.Fatal("closed owner retained lock:", err)
 	}
 	defer next.Close()
+}
+
+// execJobsV2Schema creates a complete current jobs database for tests.
+func execJobsV2Schema(db *sql.DB) error {
+	return servejobs.InitSchema(context.Background(), db)
 }

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -176,7 +176,7 @@ func truncateChildText(text string, limit int) string {
 // Execute hands the prepared child runtime to the same response executor used
 // by POST /v1/responses. The runtime is temporarily attached to sessionMgr so
 // ordinary session state, steering, approvals and ask-user handlers address it.
-func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, onEvent func(llm.Event) error) (serveRunResult, error) {
+func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, onEvent func(core.Event) error) (serveRunResult, error) {
 	if h == nil || h.srv == nil || env == nil || env.runtime == nil {
 		return serveRunResult{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child runtime is unavailable")}
 	}
@@ -195,7 +195,7 @@ func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, on
 	run, err := h.srv.startResponseRun(env.runtime, env.req.Stateful, env.req.ReplaceHistory, env.inputMessages, env.llmReq, env.req.SessionID, startResponseRunOptions{
 		parentContext: ctx,
 		onRuntimeDone: release,
-		onEvent: func(event llm.Event) error {
+		onEvent: func(event core.Event) error {
 			h.observeEvent(event)
 			if onEvent != nil {
 				return onEvent(event)
@@ -226,8 +226,8 @@ func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, on
 	return result, executionErr
 }
 
-func (h *childRunHandle) observeEvent(event llm.Event) {
-	if event.Type != llm.EventSteering || event.SteeringStatus != llm.SteeringCommitted {
+func (h *childRunHandle) observeEvent(event core.Event) {
+	if event.Type != core.EventSteering || event.SteeringStatus != core.SteeringCommitted {
 		return
 	}
 	h.mu.Lock()
@@ -288,7 +288,7 @@ func (h *childRunHandle) AskUser(ctx context.Context, questions []tools.AskUserQ
 	if parentRT == nil {
 		return nil, errors.New("ask_user is unavailable: the parent conversation is not loaded")
 	}
-	callID := strings.TrimSpace(llm.CallIDFromContext(ctx))
+	callID := strings.TrimSpace(core.CallIDFromContext(ctx))
 	if callID == "" {
 		return nil, errors.New("ask_user missing tool call id")
 	}

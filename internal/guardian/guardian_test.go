@@ -5,13 +5,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 func TestReviewerUsesDefaultSampling(t *testing.T) {
-	provider := llm.NewMockProvider("guardian").
-		AddTurn(llm.MockTurn{Text: `{"outcome":"allow"}`}).
-		AddTurn(llm.MockTurn{Text: `{"outcome":"deny","rationale":"not authorized"}`})
+	provider := mockprovider.NewMockProvider("guardian").
+		AddTurn(mockprovider.MockTurn{Text: `{"outcome":"allow"}`}).
+		AddTurn(mockprovider.MockTurn{Text: `{"outcome":"deny","rationale":"not authorized"}`})
 	reviewer := &Reviewer{Provider: provider, Model: "guardian-model", Policy: "policy"}
 
 	for i, wantAllowed := range []bool{true, false} {
@@ -34,9 +35,9 @@ func TestReviewerUsesDefaultSampling(t *testing.T) {
 }
 
 func TestReviewerReportsProviderUsage(t *testing.T) {
-	provider := llm.NewMockProvider("guardian").AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("guardian").AddTurn(mockprovider.MockTurn{
 		Text:  `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`,
-		Usage: llm.Usage{InputTokens: 101, OutputTokens: 12, CachedInputTokens: 80, CacheWriteTokens: 7},
+		Usage: core.Usage{InputTokens: 101, OutputTokens: 12, CachedInputTokens: 80, CacheWriteTokens: 7},
 	})
 	reviewer := &Reviewer{Provider: provider, Model: "guardian-model", Policy: "policy"}
 
@@ -50,9 +51,9 @@ func TestReviewerReportsProviderUsage(t *testing.T) {
 }
 
 func TestReviewerReportsUsageWhenDecisionIsInvalid(t *testing.T) {
-	provider := llm.NewMockProvider("guardian").AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("guardian").AddTurn(mockprovider.MockTurn{
 		Text:  `not json`,
-		Usage: llm.Usage{InputTokens: 22, OutputTokens: 3},
+		Usage: core.Usage{InputTokens: 22, OutputTokens: 3},
 	})
 	reviewer := &Reviewer{Provider: provider, Model: "guardian-model", Policy: "policy"}
 
@@ -283,7 +284,7 @@ func TestTruncateStringPreservesPrefixAndSuffix(t *testing.T) {
 }
 
 func TestReviewerManagedProviderUsesFullThenDeltaTurns(t *testing.T) {
-	provider := llm.NewMockProvider("managed").WithCapabilities(llm.Capabilities{ManagesOwnContext: true}).
+	provider := mockprovider.NewMockProvider("managed").WithCapabilities(core.Capabilities{ManagesOwnContext: true}).
 		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`).
 		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`)
 	reviewer := &Reviewer{Provider: provider, Model: "mock", Policy: "policy"}
@@ -319,7 +320,7 @@ func TestReviewerManagedProviderUsesFullThenDeltaTurns(t *testing.T) {
 }
 
 func TestReviewerStatelessProviderKeepsAppendOnlyHistory(t *testing.T) {
-	provider := llm.NewMockProvider("stateless").
+	provider := mockprovider.NewMockProvider("stateless").
 		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`).
 		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`)
 	reviewer := &Reviewer{Provider: provider, Model: "mock", Policy: "policy"}
@@ -347,7 +348,7 @@ func TestReviewerStatelessProviderKeepsAppendOnlyHistory(t *testing.T) {
 }
 
 func TestReviewerTranscriptShrinkResetsToFull(t *testing.T) {
-	provider := llm.NewMockProvider("managed").WithCapabilities(llm.Capabilities{ManagesOwnContext: true}).
+	provider := mockprovider.NewMockProvider("managed").WithCapabilities(core.Capabilities{ManagesOwnContext: true}).
 		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`).
 		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`)
 	reviewer := &Reviewer{Provider: provider, Model: "mock", Policy: "policy"}
@@ -387,7 +388,7 @@ func TestReviewerChangedHistoryResetsToFull(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := llm.NewMockProvider("managed").WithCapabilities(llm.Capabilities{ManagesOwnContext: true}).
+			provider := mockprovider.NewMockProvider("managed").WithCapabilities(core.Capabilities{ManagesOwnContext: true}).
 				AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`).
 				AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`)
 			reviewer := &Reviewer{Provider: provider, Model: "mock", Policy: "policy"}
@@ -408,10 +409,10 @@ func TestReviewerChangedHistoryResetsToFull(t *testing.T) {
 	}
 }
 
-func messageText(msg llm.Message) string {
+func messageText(msg core.Message) string {
 	var b strings.Builder
 	for _, part := range msg.Parts {
-		if part.Type == llm.PartText {
+		if part.Type == core.PartText {
 			b.WriteString(part.Text)
 		}
 	}

@@ -13,7 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/core/stream"
 )
 
 type fakeClock struct {
@@ -39,7 +40,7 @@ func (c *fakeClock) advance(duration time.Duration) {
 
 type timedEvent struct {
 	after time.Duration
-	event llm.Event
+	event core.Event
 }
 
 type scriptedTurn struct {
@@ -52,15 +53,15 @@ type scriptedProvider struct {
 	clock    *fakeClock
 	turns    []scriptedTurn
 	next     int
-	requests []llm.Request
+	requests []core.Request
 	resets   int
 }
 
-func (p *scriptedProvider) Name() string                   { return "scripted" }
-func (p *scriptedProvider) Credential() string             { return "mock" }
-func (p *scriptedProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *scriptedProvider) ResetConversation()             { p.resets++ }
-func (p *scriptedProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *scriptedProvider) Name() string                    { return "scripted" }
+func (p *scriptedProvider) Credential() string              { return "mock" }
+func (p *scriptedProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *scriptedProvider) ResetConversation()              { p.resets++ }
+func (p *scriptedProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.requests = append(p.requests, req)
 	if p.next >= len(p.turns) {
 		return nil, errors.New("no scripted turn")
@@ -80,9 +81,9 @@ type scriptedStream struct {
 	next   int
 }
 
-func (s *scriptedStream) Recv() (llm.Event, error) {
+func (s *scriptedStream) Recv() (core.Event, error) {
 	if s.next >= len(s.events) {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	event := s.events[s.next]
 	s.next++
@@ -104,7 +105,7 @@ func baseOptions() Options {
 	}
 }
 
-func targetFor(provider llm.Provider, reportsCache bool) Target {
+func targetFor(provider core.Provider, reportsCache bool) Target {
 	return Target{
 		ProviderKey:    "test",
 		ProviderType:   "test",
@@ -174,7 +175,7 @@ func TestGeneratePayloadUnsupportedOutputLimitUsesBoundedNaturalInstruction(t *t
 }
 
 func TestNormalizeUsageIncludesCacheWritesAsComputedInput(t *testing.T) {
-	usage := normalizeUsage(llm.Usage{InputTokens: 12, CacheWriteTokens: 127_000, CachedInputTokens: 0, OutputTokens: 3}, AdapterCapabilities{ReportsCacheReads: true, ReportsCacheWrites: true})
+	usage := normalizeUsage(core.Usage{InputTokens: 12, CacheWriteTokens: 127_000, CachedInputTokens: 0, OutputTokens: 3}, AdapterCapabilities{ReportsCacheReads: true, ReportsCacheWrites: true})
 	if usage.TotalInputTokens != 127_012 || usage.ComputedInputTokens != 127_012 {
 		t.Fatalf("normalized usage = total %d computed %d, want 127012/127012", usage.TotalInputTokens, usage.ComputedInputTokens)
 	}
@@ -184,7 +185,7 @@ func TestNormalizeUsageIncludesCacheWritesAsComputedInput(t *testing.T) {
 	if usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 127_000 {
 		t.Fatalf("cache-write metric = %v, want 127000", usage.CacheWriteTokens)
 	}
-	unsupported := normalizeUsage(llm.Usage{InputTokens: 12, CachedInputTokens: 99, CacheWriteTokens: 88, ReasoningTokens: 7}, AdapterCapabilities{})
+	unsupported := normalizeUsage(core.Usage{InputTokens: 12, CachedInputTokens: 99, CacheWriteTokens: 88, ReasoningTokens: 7}, AdapterCapabilities{})
 	if unsupported.CachedInputTokens != nil || unsupported.CacheWriteTokens != nil || unsupported.ReasoningTokens != nil {
 		t.Fatalf("unsupported provider metrics must be null: %#v", unsupported)
 	}
@@ -195,11 +196,11 @@ func TestMeasureActivityVisibleTTFTAndReasoningDecode(t *testing.T) {
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{{
 		streamAfter: 10 * time.Millisecond,
 		events: []timedEvent{
-			{after: 20 * time.Millisecond, event: llm.Event{Type: llm.EventReasoningDelta, Text: "thinking"}},
-			{after: 30 * time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "a"}},
-			{after: 40 * time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "b"}},
-			{after: 5 * time.Millisecond, event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 8, ReasoningTokens: 2}}},
-			{after: 5 * time.Millisecond, event: llm.Event{Type: llm.EventDone}},
+			{after: 20 * time.Millisecond, event: core.Event{Type: core.EventReasoningDelta, Text: "thinking"}},
+			{after: 30 * time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "a"}},
+			{after: 40 * time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "b"}},
+			{after: 5 * time.Millisecond, event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 8, ReasoningTokens: 2}}},
+			{after: 5 * time.Millisecond, event: core.Event{Type: core.EventDone}},
 		},
 	}}}
 	record := (Runner{Clock: clock}).measure(context.Background(), targetFor(provider, true), baseOptions(), measureSpec{
@@ -219,10 +220,10 @@ func TestMeasureActivityVisibleTTFTAndReasoningDecode(t *testing.T) {
 func TestMeasureHiddenReasoningUsesVisibleWindowOnly(t *testing.T) {
 	clock := newFakeClock()
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{{events: []timedEvent{
-		{after: 10 * time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "a"}},
-		{after: 100 * time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "b"}},
-		{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 10, ReasoningTokens: 6}}},
-		{event: llm.Event{Type: llm.EventDone}},
+		{after: 10 * time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "a"}},
+		{after: 100 * time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "b"}},
+		{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 10, ReasoningTokens: 6}}},
+		{event: core.Event{Type: core.EventDone}},
 	}}}}
 	record := (Runner{Clock: clock}).measure(context.Background(), targetFor(provider, true), baseOptions(), measureSpec{
 		phase: "measured", workload: "decode", inputTarget: 100, outputTarget: 10, estimateTarget: 100,
@@ -239,11 +240,11 @@ func TestMeasureHiddenReasoningUsesVisibleWindowOnly(t *testing.T) {
 func TestMeasureLateReasoningDoesNotSpanObservedWindow(t *testing.T) {
 	clock := newFakeClock()
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{{events: []timedEvent{
-		{after: 10 * time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "a"}},
-		{after: 20 * time.Millisecond, event: llm.Event{Type: llm.EventReasoningDelta, Text: "late summary"}},
-		{after: 30 * time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "b"}},
-		{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 10, ReasoningTokens: 6}}},
-		{event: llm.Event{Type: llm.EventDone}},
+		{after: 10 * time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "a"}},
+		{after: 20 * time.Millisecond, event: core.Event{Type: core.EventReasoningDelta, Text: "late summary"}},
+		{after: 30 * time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "b"}},
+		{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 10, ReasoningTokens: 6}}},
+		{event: core.Event{Type: core.EventDone}},
 	}}}}
 	record := (Runner{Clock: clock}).measure(context.Background(), targetFor(provider, true), baseOptions(), measureSpec{
 		phase: "measured", workload: "decode", inputTarget: 100, outputTarget: 10, estimateTarget: 100,
@@ -257,9 +258,9 @@ func TestMeasureLateReasoningDoesNotSpanObservedWindow(t *testing.T) {
 func TestMeasureNonIncrementalStreamLeavesDecodeNull(t *testing.T) {
 	clock := newFakeClock()
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{{events: []timedEvent{
-		{after: time.Second, event: llm.Event{Type: llm.EventTextDelta, Text: "whole response"}},
-		{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 100}}},
-		{event: llm.Event{Type: llm.EventDone}},
+		{after: time.Second, event: core.Event{Type: core.EventTextDelta, Text: "whole response"}},
+		{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 100}}},
+		{event: core.Event{Type: core.EventDone}},
 	}}}}
 	record := (Runner{Clock: clock}).measure(context.Background(), targetFor(provider, true), baseOptions(), measureSpec{
 		phase: "measured", workload: "decode", inputTarget: 100, outputTarget: 100, estimateTarget: 100,
@@ -272,10 +273,10 @@ func TestMeasureNonIncrementalStreamLeavesDecodeNull(t *testing.T) {
 func TestMeasureAcceptsIntentionalResponsesOutputLimitWithValidUsage(t *testing.T) {
 	clock := newFakeClock()
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{{events: []timedEvent{
-		{after: time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "a"}},
-		{after: time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "b"}},
-		{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 8}}},
-		{event: llm.Event{Type: llm.EventError, Err: &llm.ResponsesIncompleteError{Reason: "max_output_tokens"}}},
+		{after: time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "a"}},
+		{after: time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "b"}},
+		{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 8}}},
+		{event: core.Event{Type: core.EventError, Err: &stream.ResponsesIncompleteError{Reason: "max_output_tokens"}}},
 	}}}}
 	record := (Runner{Clock: clock}).measure(context.Background(), targetFor(provider, true), baseOptions(), measureSpec{
 		phase: "measured", workload: "decode", inputTarget: 100, outputTarget: 8, estimateTarget: 100,
@@ -285,8 +286,8 @@ func TestMeasureAcceptsIntentionalResponsesOutputLimitWithValidUsage(t *testing.
 	}
 
 	provider.turns = append(provider.turns, scriptedTurn{events: []timedEvent{
-		{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 7}}},
-		{event: llm.Event{Type: llm.EventError, Err: &llm.ResponsesIncompleteError{Reason: "max_output_tokens"}}},
+		{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 7}}},
+		{event: core.Event{Type: core.EventError, Err: &stream.ResponsesIncompleteError{Reason: "max_output_tokens"}}},
 	}})
 	record = (Runner{Clock: clock}).measure(context.Background(), targetFor(provider, true), baseOptions(), measureSpec{
 		phase: "measured", workload: "decode", inputTarget: 100, outputTarget: 8, estimateTarget: 100,
@@ -300,11 +301,11 @@ func TestMeasureUnsupportedOutputLimitUsesBoundedPromptAndProviderUsage(t *testi
 	clock := newFakeClock()
 	events := make([]timedEvent, 0, 12)
 	for range 10 {
-		events = append(events, timedEvent{after: time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "natural output "}})
+		events = append(events, timedEvent{after: time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "natural output "}})
 	}
 	events = append(events,
-		timedEvent{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 13}}},
-		timedEvent{event: llm.Event{Type: llm.EventDone}},
+		timedEvent{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 13}}},
+		timedEvent{event: core.Event{Type: core.EventDone}},
 	)
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{{events: events}}}
 	target := targetFor(provider, true)
@@ -341,13 +342,13 @@ func TestMeasureUnsupportedOutputLimitUsesBoundedPromptAndProviderUsage(t *testi
 func TestRunnerManagedQuickTargetsGeneratedPayloadNotProviderTotal(t *testing.T) {
 	clock := newFakeClock()
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{{events: []timedEvent{
-		{after: time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "amber"}},
-		{after: time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: " amber"}},
-		{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{
+		{after: time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "amber"}},
+		{after: time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: " amber"}},
+		{event: core.Event{Type: core.EventUsage, Use: &core.Usage{
 			InputTokens: 12_000, CachedInputTokens: 500, CacheWriteTokens: 8_000,
 			ProviderRawInputTokens: 20_500, OutputTokens: 8,
 		}}},
-		{event: llm.Event{Type: llm.EventDone}},
+		{event: core.Event{Type: core.EventDone}},
 	}}}}
 	target := Target{
 		ProviderKey: "claude-bin", ProviderType: "claude-bin", RequestedModel: "haiku", Provider: provider,
@@ -400,8 +401,8 @@ func TestRunnerManagedQuickTargetsGeneratedPayloadNotProviderTotal(t *testing.T)
 func TestMeasureResetsConversationAndUsesUniqueSessionPerRequest(t *testing.T) {
 	clock := newFakeClock()
 	turn := scriptedTurn{events: []timedEvent{
-		{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 1}}},
-		{event: llm.Event{Type: llm.EventDone}},
+		{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 1}}},
+		{event: core.Event{Type: core.EventDone}},
 	}}
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{turn, turn}}
 	for i := 0; i < 2; i++ {
@@ -427,8 +428,8 @@ func TestRunnerStopsBeforeMeasuredRequestsWhenCalibrationValidationDetectsTrunca
 	clock := newFakeClock()
 	turn := func(input int) scriptedTurn {
 		return scriptedTurn{events: []timedEvent{
-			{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: input, OutputTokens: 1}}},
-			{event: llm.Event{Type: llm.EventDone}},
+			{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: input, OutputTokens: 1}}},
+			{event: core.Event{Type: core.EventDone}},
 		}}
 	}
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{turn(100), turn(50)}}
@@ -474,10 +475,10 @@ func TestRunnerRetriesCacheContaminationOnceWithFreshPayload(t *testing.T) {
 	clock := newFakeClock()
 	turn := func(input, cached int) scriptedTurn {
 		return scriptedTurn{events: []timedEvent{
-			{after: time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "a"}},
-			{after: time.Millisecond, event: llm.Event{Type: llm.EventTextDelta, Text: "b"}},
-			{event: llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: input - cached, CachedInputTokens: cached, ProviderRawInputTokens: input, OutputTokens: 3}}},
-			{event: llm.Event{Type: llm.EventDone}},
+			{after: time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "a"}},
+			{after: time.Millisecond, event: core.Event{Type: core.EventTextDelta, Text: "b"}},
+			{event: core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: input - cached, CachedInputTokens: cached, ProviderRawInputTokens: input, OutputTokens: 3}}},
+			{event: core.Event{Type: core.EventDone}},
 		}}
 	}
 	provider := &scriptedProvider{clock: clock, turns: []scriptedTurn{turn(100, 0), turn(100, 0), turn(100, 50), turn(100, 0)}}
@@ -871,10 +872,10 @@ func TestMeasureHardTimeout(t *testing.T) {
 
 type timeoutProvider struct{}
 
-func (timeoutProvider) Name() string                   { return "timeout" }
-func (timeoutProvider) Credential() string             { return "mock" }
-func (timeoutProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (timeoutProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (timeoutProvider) Name() string                    { return "timeout" }
+func (timeoutProvider) Credential() string              { return "mock" }
+func (timeoutProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (timeoutProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }

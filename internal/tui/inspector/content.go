@@ -9,7 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	appconfig "github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/inspect"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -36,8 +36,8 @@ type ContentRenderer struct {
 	store           session.Store   // Session store for fetching subagent messages
 	providerName    string
 	modelName       string
-	toolSpecs       []llm.ToolSpec
-	toolDiscovery   *llm.ToolDiscoveryDiagnostics
+	toolSpecs       []core.ToolSpec
+	toolDiscovery   *core.ToolDiscoveryDiagnostics
 	reasoningConfig appconfig.ReasoningConfig
 
 	hasCompactionBoundary   bool
@@ -47,7 +47,7 @@ type ContentRenderer struct {
 }
 
 // NewContentRenderer creates a new content renderer
-func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]bool, store session.Store, providerName, modelName string, toolSpecs []llm.ToolSpec, reasoningCfg appconfig.ReasoningConfig) *ContentRenderer {
+func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]bool, store session.Store, providerName, modelName string, toolSpecs []core.ToolSpec, reasoningCfg appconfig.ReasoningConfig) *ContentRenderer {
 	if expandedIDs == nil {
 		expandedIDs = make(map[string]bool)
 	}
@@ -65,7 +65,7 @@ func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]boo
 
 // SetToolDiscovery configures the provider-neutral discovery diagnostics shown
 // in the inspector header.
-func (r *ContentRenderer) SetToolDiscovery(diagnostics *llm.ToolDiscoveryDiagnostics) {
+func (r *ContentRenderer) SetToolDiscovery(diagnostics *core.ToolDiscoveryDiagnostics) {
 	r.toolDiscovery = diagnostics
 }
 
@@ -167,7 +167,7 @@ func (r *ContentRenderer) renderHeader(messages []session.Message) (string, []Co
 	// System Message section - extract first system message
 	var systemMsg *session.Message
 	for i := range messages {
-		if messages[i].Role == llm.RoleSystem {
+		if messages[i].Role == core.RoleSystem {
 			systemMsg = &messages[i]
 			break
 		}
@@ -339,15 +339,15 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 	// Keep call context local to this render and turn. CLI providers can store
 	// several calls in one assistant row followed by separate result rows. Repeat
 	// the matching call at its first result rather than inventing a parallel timeline.
-	calls := make(map[string]*llm.ToolCall)
+	calls := make(map[string]*core.ToolCall)
 	for i := 0; i < len(messages); {
 		msg := messages[i]
-		if msg.Role == llm.RoleUser || isInspectorCompactionSummaryMessage(msg) || boundaryMarkerIndex == i {
+		if msg.Role == core.RoleUser || isInspectorCompactionSummaryMessage(msg) || boundaryMarkerIndex == i {
 			clear(calls)
 		}
-		if msg.Role == llm.RoleAssistant {
+		if msg.Role == core.RoleAssistant {
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+				if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
 					calls[part.ToolCall.ID] = part.ToolCall
 				}
 			}
@@ -373,7 +373,7 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 		}
 
 		// Skip system messages - they're shown in the header
-		if msg.Role == llm.RoleSystem {
+		if msg.Role == core.RoleSystem {
 			i++
 			continue
 		}
@@ -382,7 +382,7 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 		var content string
 		var msgItems []ContentItem
 		var lineCount int
-		if msg.Role == llm.RoleTool {
+		if msg.Role == core.RoleTool {
 			content, msgItems = r.renderToolResultsWithCalls(msg, msgID, currentLine, calls)
 			lineCount = visualLineCount(content)
 		} else {
@@ -552,20 +552,20 @@ func compactionDebugMessageText(msg session.Message) string {
 	var sections []string
 	for _, part := range msg.Parts {
 		switch part.Type {
-		case llm.PartText, llm.PartFile:
+		case core.PartText, core.PartFile:
 			if part.Text != "" {
 				sections = append(sections, part.Text)
 			}
 			if reasoning := compactionDebugReasoningText(part); reasoning != "" {
 				sections = append(sections, "[Reasoning]\n"+reasoning)
 			}
-		case llm.PartImage:
+		case core.PartImage:
 			sections = append(sections, compactionDebugImageText(part))
-		case llm.PartToolCall:
+		case core.PartToolCall:
 			if part.ToolCall != nil {
 				sections = append(sections, compactionDebugToolCallText(part.ToolCall))
 			}
-		case llm.PartToolResult:
+		case core.PartToolResult:
 			if part.ToolResult != nil {
 				sections = append(sections, compactionDebugToolResultText(part.ToolResult))
 			}
@@ -580,14 +580,14 @@ func compactionDebugMessageText(msg session.Message) string {
 	return strings.Join(sections, "\n\n")
 }
 
-func compactionDebugReasoningText(part llm.Part) string {
+func compactionDebugReasoningText(part core.Part) string {
 	if len(part.ReasoningSummaryParts) > 0 {
 		return strings.Join(part.ReasoningSummaryParts, "\n\n")
 	}
 	return strings.TrimSpace(part.ReasoningContent)
 }
 
-func compactionDebugImageText(part llm.Part) string {
+func compactionDebugImageText(part core.Part) string {
 	if part.ImageData != nil {
 		return fmt.Sprintf("[Image: %s, %d bytes]", part.ImageData.MediaType, len(part.ImageData.Base64))
 	}
@@ -597,7 +597,7 @@ func compactionDebugImageText(part llm.Part) string {
 	return "[Image]"
 }
 
-func compactionDebugToolCallText(tc *llm.ToolCall) string {
+func compactionDebugToolCallText(tc *core.ToolCall) string {
 	var b strings.Builder
 	b.WriteString("[Tool call]\n")
 	b.WriteString("Name: ")
@@ -615,7 +615,7 @@ func compactionDebugToolCallText(tc *llm.ToolCall) string {
 	return b.String()
 }
 
-func compactionDebugToolResultText(tr *llm.ToolResult) string {
+func compactionDebugToolResultText(tr *core.ToolResult) string {
 	var b strings.Builder
 	b.WriteString("[Tool result]\n")
 	b.WriteString("Name: ")
@@ -695,7 +695,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 	// Role header
 	roleStyle := lipgloss.NewStyle().Bold(true)
 	switch msg.Role {
-	case llm.RoleUser:
+	case core.RoleUser:
 		roleStyle = roleStyle.Foreground(theme.Primary)
 		content, item := r.renderBoxWithItem("User", roleStyle, r.renderUserContent(msg), msgID, "message", startLine)
 		b.WriteString(content)
@@ -703,7 +703,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 			items = append(items, *item)
 			lineCount = item.EndLine - startLine
 		}
-	case llm.RoleAssistant:
+	case core.RoleAssistant:
 		roleStyle = roleStyle.Foreground(theme.Secondary)
 		content, assistantItems := r.renderAssistantContentWithItems(msg, msgID, startLine)
 		boxContent, item := r.renderBoxWithItem("Assistant", roleStyle, content, msgID, "message", startLine)
@@ -713,7 +713,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 			lineCount = item.EndLine - startLine
 		}
 		items = append(items, assistantItems...)
-	case llm.RoleSystem:
+	case core.RoleSystem:
 		roleStyle = roleStyle.Foreground(theme.Warning)
 		content, item := r.renderBoxWithItem("System", roleStyle, r.renderTextContent(msg), msgID, "message", startLine)
 		b.WriteString(content)
@@ -721,7 +721,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 			items = append(items, *item)
 			lineCount = item.EndLine - startLine
 		}
-	case llm.RoleDeveloper:
+	case core.RoleDeveloper:
 		roleStyle = roleStyle.Foreground(theme.Spinner)
 		content, item := r.renderBoxWithItem("Developer", roleStyle, r.renderTextContent(msg), msgID, "message", startLine)
 		b.WriteString(content)
@@ -729,7 +729,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 			items = append(items, *item)
 			lineCount = item.EndLine - startLine
 		}
-	case llm.RoleEvent:
+	case core.RoleEvent:
 		roleStyle = roleStyle.Foreground(theme.Muted)
 		content, item := r.renderBoxWithItem("Event", roleStyle, r.renderTextContent(msg), msgID, "message", startLine)
 		b.WriteString(content)
@@ -737,7 +737,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 			items = append(items, *item)
 			lineCount = item.EndLine - startLine
 		}
-	case llm.RoleTool:
+	case core.RoleTool:
 		content, toolItems := r.renderToolResultsWithItems(msg, msgID, startLine)
 		b.WriteString(content)
 		items = append(items, toolItems...)
@@ -913,11 +913,11 @@ func (r *ContentRenderer) renderTextContent(msg session.Message) string {
 	var texts []string
 	for _, part := range msg.Parts {
 		switch part.Type {
-		case llm.PartSkillActivation:
+		case core.PartSkillActivation:
 			if part.SkillActivation != nil {
 				texts = append(texts, formatSkillActivationProvenance(part.SkillActivation))
 			}
-		case llm.PartText:
+		case core.PartText:
 			if part.Text != "" {
 				texts = append(texts, part.Text)
 			}
@@ -929,7 +929,7 @@ func (r *ContentRenderer) renderTextContent(msg session.Message) string {
 	return strings.Join(texts, "\n\n")
 }
 
-func formatSkillActivationProvenance(provenance *llm.SkillActivationProvenance) string {
+func formatSkillActivationProvenance(provenance *core.SkillActivationProvenance) string {
 	return inspect.FormatSkillActivationProvenance(provenance)
 }
 
@@ -948,7 +948,7 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 
 	for i, part := range msg.Parts {
 		switch part.Type {
-		case llm.PartText:
+		case core.PartText:
 			if reasoning := r.renderReasoningForPart(part); reasoning != "" {
 				if b.Len() > 0 {
 					b.WriteString("\n\n")
@@ -967,7 +967,7 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 				currentLine += strings.Count(part.Text, "\n")
 				hasText = true
 			}
-		case llm.PartImage:
+		case core.PartImage:
 			if part.ImageData != nil {
 				if hasText {
 					b.WriteString("\n")
@@ -978,7 +978,7 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 				currentLine += strings.Count(meta, "\n")
 				hasText = true
 			}
-		case llm.PartToolCall:
+		case core.PartToolCall:
 			if part.ToolCall != nil {
 				if b.Len() > 0 {
 					b.WriteString("\n\n")
@@ -1001,24 +1001,24 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 	return b.String(), items
 }
 
-func reasoningSummaryDisplayContent(part llm.Part) string {
+func reasoningSummaryDisplayContent(part core.Part) string {
 	return inspect.ReasoningSummaryDisplayContent(part)
 }
 
-func (r *ContentRenderer) renderReasoningForPart(part llm.Part) string {
+func (r *ContentRenderer) renderReasoningForPart(part core.Part) string {
 	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	kind := llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
+	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
 	switch kind {
-	case llm.ReasoningKindSummary:
+	case core.ReasoningKindSummary:
 		return r.renderReasoningSummary(part)
-	case llm.ReasoningKindRaw, llm.ReasoningKindUnknown:
+	case core.ReasoningKindRaw, core.ReasoningKindUnknown:
 		return r.renderProviderReasoning(part)
 	default:
 		return ""
 	}
 }
 
-func (r *ContentRenderer) renderProviderReasoning(part llm.Part) string {
+func (r *ContentRenderer) renderProviderReasoning(part core.Part) string {
 	content := strings.TrimSpace(part.ReasoningContent)
 	if content == "" {
 		return ""
@@ -1034,9 +1034,9 @@ func (r *ContentRenderer) renderProviderReasoning(part llm.Part) string {
 	return r.renderReasoningBlock(header, content, true)
 }
 
-func (r *ContentRenderer) renderReasoningSummary(part llm.Part) string {
+func (r *ContentRenderer) renderReasoningSummary(part core.Part) string {
 	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	if llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent) != llm.ReasoningKindSummary {
+	if core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent) != core.ReasoningKindSummary {
 		return ""
 	}
 	content := strings.TrimSpace(reasoningSummaryDisplayContent(part))
@@ -1090,17 +1090,17 @@ func (r *ContentRenderer) renderReasoningBlock(header, body string, raw bool) st
 }
 
 // renderToolCall renders a tool call with its arguments
-func (r *ContentRenderer) renderToolCall(tc *llm.ToolCall) string {
+func (r *ContentRenderer) renderToolCall(tc *core.ToolCall) string {
 	content, _ := r.renderToolCallWithItem(tc, "", 0)
 	return content
 }
 
 // renderToolCallWithItem renders a tool call with truncation tracking
-func (r *ContentRenderer) renderToolCallWithItem(tc *llm.ToolCall, itemID string, startLine int) (string, *ContentItem) {
+func (r *ContentRenderer) renderToolCallWithItem(tc *core.ToolCall, itemID string, startLine int) (string, *ContentItem) {
 	return r.renderToolCallWithLabel(tc, itemID, startLine, "Tool Call: ")
 }
 
-func (r *ContentRenderer) renderToolCallWithLabel(tc *llm.ToolCall, itemID string, startLine int, label string) (string, *ContentItem) {
+func (r *ContentRenderer) renderToolCallWithLabel(tc *core.ToolCall, itemID string, startLine int, label string) (string, *ContentItem) {
 	theme := r.styles.Theme()
 	var b strings.Builder
 	lineCount := 0
@@ -1199,14 +1199,14 @@ func (r *ContentRenderer) renderToolResultsWithItems(msg session.Message, msgID 
 // renderToolResultsWithCalls adds independently expandable call context beside
 // each result. The original assistant row remains a faithful view of storage.
 // Matched entries are consumed from calls so context is shown once per call.
-func (r *ContentRenderer) renderToolResultsWithCalls(msg session.Message, msgID string, startLine int, calls map[string]*llm.ToolCall) (string, []ContentItem) {
+func (r *ContentRenderer) renderToolResultsWithCalls(msg session.Message, msgID string, startLine int, calls map[string]*core.ToolCall) (string, []ContentItem) {
 	theme := r.styles.Theme()
 	var b strings.Builder
 	var items []ContentItem
 	currentLine := startLine
 
 	for i, part := range msg.Parts {
-		if part.Type == llm.PartToolResult && part.ToolResult != nil {
+		if part.Type == core.PartToolResult && part.ToolResult != nil {
 			tr := part.ToolResult
 			itemID := fmt.Sprintf("%s-tr-%d-%s", msgID, i, tr.ID)
 			if tc := calls[tr.ID]; tc != nil && (tr.Name == "" || tc.Name == tr.Name) {
@@ -1405,15 +1405,15 @@ func (r *ContentRenderer) renderSubagentSession(sessionID string, startLine int)
 		// Determine role label
 		var roleLabel string
 		switch msg.Role {
-		case llm.RoleUser:
+		case core.RoleUser:
 			roleLabel = "User"
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			roleLabel = "Assistant"
-		case llm.RoleSystem:
+		case core.RoleSystem:
 			roleLabel = "System"
-		case llm.RoleTool:
+		case core.RoleTool:
 			roleLabel = "Tool"
-		case llm.RoleDeveloper:
+		case core.RoleDeveloper:
 			roleLabel = "Developer"
 		default:
 			roleLabel = string(msg.Role)
@@ -1429,19 +1429,19 @@ func (r *ContentRenderer) renderSubagentSession(sessionID string, startLine int)
 		var contentText string
 		for _, part := range msg.Parts {
 			switch part.Type {
-			case llm.PartText:
+			case core.PartText:
 				if part.Text != "" {
 					contentText += part.Text
 				}
-			case llm.PartImage:
+			case core.PartImage:
 				if part.ImageData != nil {
 					contentText += fmt.Sprintf("[Image: %s]", part.ImageData.MediaType)
 				}
-			case llm.PartToolCall:
+			case core.PartToolCall:
 				if part.ToolCall != nil {
 					contentText += fmt.Sprintf("[Tool Call: %s]", part.ToolCall.Name)
 				}
-			case llm.PartToolResult:
+			case core.PartToolResult:
 				if part.ToolResult != nil {
 					status := "✓"
 					if part.ToolResult.IsError {

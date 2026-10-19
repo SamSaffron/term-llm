@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runErr error, resultText string, restoreReplaceHistory func()) {
@@ -19,7 +19,7 @@ func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runE
 	}
 	p.mu.Lock()
 	if len(p.produced) == 0 && resultText != "" {
-		p.produced = append(p.produced, tagResponseRunMessage(runCtx, llm.AssistantText(resultText), 0))
+		p.produced = append(p.produced, tagResponseRunMessage(runCtx, core.AssistantText(resultText), 0))
 	}
 	hasProduced := len(p.produced) > 0
 	p.mu.Unlock()
@@ -47,7 +47,7 @@ func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runE
 // finalizeSuccess reconciles the successful transcript and accounting after the
 // engine stream has terminated. It cannot alter the first run error because it
 // is called only on the success path.
-func (p *serveRunPersistence) finalizeSuccess(ctx, runCtx context.Context, req llm.Request, result serveRunResult) serveRunResult {
+func (p *serveRunPersistence) finalizeSuccess(ctx, runCtx context.Context, req core.Request, result serveRunResult) serveRunResult {
 	p.rt.cumulativeUsage.Add(p.compactionUsageSnapshot())
 	p.rt.cumulativeUsage.Add(result.Usage)
 	result.SessionUsage = p.rt.cumulativeUsage
@@ -55,7 +55,7 @@ func (p *serveRunPersistence) finalizeSuccess(ctx, runCtx context.Context, req l
 	history := p.buildSnapshotLocked()
 	synthesized := len(p.produced) == 0 && result.Text.Len() > 0
 	if synthesized {
-		assistant := tagResponseRunMessage(runCtx, llm.AssistantText(result.Text.String()), 0)
+		assistant := tagResponseRunMessage(runCtx, core.AssistantText(result.Text.String()), 0)
 		history = append(history, assistant)
 		if p.appendOnlyPersisted {
 			p.produced = append(p.produced, assistant)

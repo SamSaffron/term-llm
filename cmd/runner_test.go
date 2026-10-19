@@ -11,7 +11,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -108,8 +109,8 @@ func TestCmdRunnerPrepareUsesRequestWorkingDirForSkills(t *testing.T) {
 	runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
 	env, err := runner.prepare(context.Background(), runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
-		Messages:         []llm.Message{llm.UserText("hello")},
-		ProviderInstance: llm.NewMockProvider("mock"),
+		Messages:         []core.Message{core.UserText("hello")},
+		ProviderInstance: mockprovider.NewMockProvider("mock"),
 		Cwd:              workingDir,
 		DeferSession:     true,
 	}, eventSinkFunc(nil))
@@ -129,13 +130,13 @@ func TestCmdRunnerPreparePropagatesWorkingDirToLLMRequest(t *testing.T) {
 			"mock": {Model: "mock-model"},
 		},
 	}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
 	workingDir := t.TempDir()
 
 	env, err := runner.prepare(context.Background(), runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
-		Messages:         []llm.Message{llm.UserText("hello")},
+		Messages:         []core.Message{core.UserText("hello")},
 		ProviderInstance: provider,
 		Cwd:              workingDir,
 		DeferSession:     true,
@@ -151,7 +152,7 @@ func TestCmdRunnerPreparePropagatesWorkingDirToLLMRequest(t *testing.T) {
 }
 
 func TestCmdRunnerEnsureRunSessionUsesExplicitPrimaryWorkspace(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	runner := newCmdRunner(&config.Config{}, cmdRunnerOptions{}).(*cmdRunner)
 	store := newServeRuntimeTestStore()
 	workingDir := t.TempDir()
@@ -214,7 +215,7 @@ func TestCmdRunnerPersistedSessionCreateFailure(t *testing.T) {
 					Status:   session.StatusActive,
 				}
 			}
-			provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+			provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 			cfg := &config.Config{
 				DefaultProvider: "mock",
 				Providers: map[string]config.ProviderConfig{
@@ -267,13 +268,13 @@ func TestCmdRunnerPrepareUsesBorrowedEngineProvider(t *testing.T) {
 			"mock": {Model: "mock-model"},
 		},
 	}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	engine := newEngine(provider, cfg)
 	runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
 
 	env, err := runner.prepare(context.Background(), runpkg.Request{
 		Platform:         runpkg.PlatformConsole,
-		Messages:         []llm.Message{llm.UserText("hello")},
+		Messages:         []core.Message{core.UserText("hello")},
 		Engine:           engine,
 		ProviderInstance: provider,
 		DeferSession:     true,
@@ -300,15 +301,15 @@ func TestCmdRunnerPrepareUsesBorrowedEngineProvider(t *testing.T) {
 // cmdRunnerDiscoveryPlanner stands in for a connected MCP planner: its schema
 // is deliberately absent from the engine's static registry.
 type cmdRunnerDiscoveryPlanner struct {
-	llm.ToolSurfacePlanner
+	core.ToolSurfacePlanner
 }
 
-func (*cmdRunnerDiscoveryPlanner) BeginRun(_ context.Context, _ llm.Provider, req *llm.Request, _ string) (string, error) {
-	req.Tools = append(req.Tools, llm.ToolSpec{Name: "mcp_status", Description: "Read MCP status", Schema: map[string]any{"type": "object"}})
+func (*cmdRunnerDiscoveryPlanner) BeginRun(_ context.Context, _ core.Provider, req *core.Request, _ string) (string, error) {
+	req.Tools = append(req.Tools, core.ToolSpec{Name: "mcp_status", Description: "Read MCP status", Schema: map[string]any{"type": "object"}})
 	return "", nil
 }
 
-func (*cmdRunnerDiscoveryPlanner) PrepareTurn(context.Context, llm.Provider, *llm.Request, string, int, int) (string, error) {
+func (*cmdRunnerDiscoveryPlanner) PrepareTurn(context.Context, core.Provider, *core.Request, string, int, int) (string, error) {
 	return "", nil
 }
 
@@ -327,13 +328,13 @@ func TestCmdRunnerBorrowedEngineDiscovery(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
-			provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+			provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 			engine := newEngine(provider, cfg)
 			engine.SetToolSurfacePlanner(&cmdRunnerDiscoveryPlanner{})
 			runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
 			_, err := runner.Run(context.Background(), runpkg.Request{
 				Platform:               runpkg.PlatformConsole,
-				Messages:               []llm.Message{llm.UserText("check status")},
+				Messages:               []core.Message{core.UserText("check status")},
 				Engine:                 engine,
 				ProviderInstance:       provider,
 				Cwd:                    t.TempDir(),

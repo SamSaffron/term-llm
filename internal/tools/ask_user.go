@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // AskUserQuestion represents a question to present to the user.
@@ -196,8 +196,8 @@ func NewAskUserTool() *AskUserTool {
 }
 
 // Spec returns the tool specification.
-func (t *AskUserTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *AskUserTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: AskUserToolName,
 		Description: `Present questions to the user and gather their responses. Use this when you need clarification, preferences, or decisions from the user. Each question can have 2-8 predefined options plus an automatic 'Other' option for custom input.
 
@@ -264,42 +264,42 @@ Guidelines:
 }
 
 // Execute runs the ask_user tool.
-func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a AskUserArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 
 	// Validate arguments
 	if len(a.Questions) == 0 {
-		return llm.TextOutput(formatAskUserError(ErrInvalidParams, "at least one question is required")), nil
+		return core.TextOutput(formatAskUserError(ErrInvalidParams, "at least one question is required")), nil
 	}
 	if len(a.Questions) > 4 {
-		return llm.TextOutput(formatAskUserError(ErrInvalidParams, "maximum 4 questions allowed")), nil
+		return core.TextOutput(formatAskUserError(ErrInvalidParams, "maximum 4 questions allowed")), nil
 	}
 
 	for i, q := range a.Questions {
 		if q.Header == "" {
-			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header is required", i+1))), nil
+			return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header is required", i+1))), nil
 		}
 		if len(q.Header) > 12 {
-			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header must be max 12 characters", i+1))), nil
+			return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: header must be max 12 characters", i+1))), nil
 		}
 		if q.Question == "" {
-			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: question text is required", i+1))), nil
+			return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: question text is required", i+1))), nil
 		}
 		if len(q.Options) < 2 {
-			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: at least 2 options required", i+1))), nil
+			return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: at least 2 options required", i+1))), nil
 		}
 		if len(q.Options) > 8 {
-			return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: maximum 8 options allowed", i+1))), nil
+			return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d: maximum 8 options allowed", i+1))), nil
 		}
 		for j, opt := range q.Options {
 			if opt.Label == "" {
-				return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: label is required", i+1, j+1))), nil
+				return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: label is required", i+1, j+1))), nil
 			}
 			if opt.Description == "" {
-				return llm.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: description is required", i+1, j+1))), nil
+				return core.TextOutput(formatAskUserError(ErrInvalidParams, fmt.Sprintf("question %d, option %d: description is required", i+1, j+1))), nil
 			}
 		}
 	}
@@ -347,24 +347,24 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 				Type:      "USER_CANCELLED",
 			}
 			data, _ := json.Marshal(result)
-			return llm.ToolOutput{Content: string(data), TrustedUserInput: askUserCancellationEvidence(a.Questions)}, nil
+			return core.ToolOutput{Content: string(data), TrustedUserInput: askUserCancellationEvidence(a.Questions)}, nil
 		}
 		// Other errors (e.g., no TTY)
-		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
+		return core.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
 	}
 
 	answers, err = NormalizeAskUserAnswers(a.Questions, answers)
 	if err != nil {
-		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
+		return core.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
 	}
 
 	// Return successful result
 	result := AskUserResult{Questions: a.Questions, Answers: answers}
 	data, err := json.Marshal(result)
 	if err != nil {
-		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, fmt.Sprintf("failed to marshal result: %v", err))), nil
+		return core.TextOutput(formatAskUserError(ErrExecutionFailed, fmt.Sprintf("failed to marshal result: %v", err))), nil
 	}
-	return llm.ToolOutput{Content: string(data), TrustedUserInput: AskUserApprovalEvidence(a.Questions, answers)}, nil
+	return core.ToolOutput{Content: string(data), TrustedUserInput: AskUserApprovalEvidence(a.Questions, answers)}, nil
 }
 
 // Preview returns a short description of the tool call.

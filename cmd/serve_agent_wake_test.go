@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func newAgentWakeFixture(t *testing.T, provider *llm.MockProvider) (*serveServer, *session.SQLiteStore, *serveRuntime) {
+func newAgentWakeFixture(t *testing.T, provider *mockprovider.MockProvider) (*serveServer, *session.SQLiteStore, *serveRuntime) {
 	t.Helper()
 	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "session.db")})
 	if err != nil {
@@ -26,9 +28,9 @@ func newAgentWakeFixture(t *testing.T, provider *llm.MockProvider) (*serveServer
 	if err := store.Create(context.Background(), parent); err != nil {
 		t.Fatal(err)
 	}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	rt := &serveRuntime{provider: provider, providerKey: "debug", engine: llm.NewEngine(provider, registry), store: store, defaultModel: "fast", platform: "web", sessionMeta: parent}
+	rt := &serveRuntime{provider: provider, providerKey: "debug", engine: engine.NewEngine(provider, registry), store: store, defaultModel: "fast", platform: "web", sessionMeta: parent}
 	mgr := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) { return rt, nil })
 	putTestSession(mgr, parent.ID, rt)
 	srv := &serveServer{store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager(), cfgRef: &config.Config{Providers: map[string]config.ProviderConfig{"debug": {Model: "fast"}}}}
@@ -51,7 +53,7 @@ func putWakeRun(t *testing.T, store *session.SQLiteStore, status string) session
 }
 
 func TestAgentCompletionWakesParentLoopAndExecutesFollowOnTool(t *testing.T) {
-	provider := llm.NewMockProvider("debug").AddToolCall("follow-on", "echo", map[string]any{"input": "continue workflow"}).AddTextResponse("synthesized result")
+	provider := mockprovider.NewMockProvider("debug").AddToolCall("follow-on", "echo", map[string]any{"input": "continue workflow"}).AddTextResponse("synthesized result")
 	srv, store, rt := newAgentWakeFixture(t, provider)
 	rt.maxTurns = 7
 	rt.search = true
@@ -72,10 +74,10 @@ func TestAgentCompletionWakesParentLoopAndExecutesFollowOnTool(t *testing.T) {
 	}
 	foundEvent := false
 	for _, msg := range requests[0].Messages {
-		if strings.Contains(llm.MessageText(msg), "wake-child") {
-			foundEvent = msg.Role == llm.RoleUser
+		if strings.Contains(core.MessageText(msg), "wake-child") {
+			foundEvent = msg.Role == core.RoleUser
 		}
-		if strings.Contains(llm.MessageText(msg), "child evidence") {
+		if strings.Contains(core.MessageText(msg), "child evidence") {
 			t.Fatal("wake elevated untrusted child output")
 		}
 	}
@@ -106,9 +108,9 @@ func TestAgentCompletionWakesParentLoopAndExecutesFollowOnTool(t *testing.T) {
 }
 
 func TestAgentWakeCoalescesCompletionsBehindBusyParent(t *testing.T) {
-	provider := llm.NewMockProvider("debug").AddTurn(llm.MockTurn{Text: "initial answer", Delay: 80 * time.Millisecond}).AddTextResponse("combined results")
+	provider := mockprovider.NewMockProvider("debug").AddTurn(mockprovider.MockTurn{Text: "initial answer", Delay: 80 * time.Millisecond}).AddTextResponse("combined results")
 	srv, store, rt := newAgentWakeFixture(t, provider)
-	initial, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("initial task")}, llm.Request{SessionID: "wake-parent", Model: "fast"}, "wake-parent", startResponseRunOptions{uiSession: true})
+	initial, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("initial task")}, core.Request{SessionID: "wake-parent", Model: "fast"}, "wake-parent", startResponseRunOptions{uiSession: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func TestAgentWakeCoalescesCompletionsBehindBusyParent(t *testing.T) {
 	if requests := provider.RecordedRequests(); len(requests) != 2 {
 		t.Fatalf("parent turns=%d, want initial + one wake", len(requests))
 	} else {
-		text := llm.MessageText(requests[1].Messages[len(requests[1].Messages)-1])
+		text := core.MessageText(requests[1].Messages[len(requests[1].Messages)-1])
 		if !strings.Contains(text, first.ID) || !strings.Contains(text, second.ID) {
 			t.Fatalf("wake did not coalesce children: %s", text)
 		}
@@ -158,7 +160,7 @@ func TestExplicitParentStopDistinguishesReloadFromHumanStop(t *testing.T) {
 }
 
 func TestAgentWakeFailureAndExplicitStopSuppression(t *testing.T) {
-	provider := llm.NewMockProvider("debug").AddTextResponse("I will report the failure")
+	provider := mockprovider.NewMockProvider("debug").AddTextResponse("I will report the failure")
 	srv, store, _ := newAgentWakeFixture(t, provider)
 	run := putWakeRun(t, store, "failed")
 	run.Error = "child failed"
@@ -172,7 +174,7 @@ func TestAgentWakeFailureAndExplicitStopSuppression(t *testing.T) {
 	}, "failure event")
 	srv.agentWakeWG.Wait()
 	requests := provider.RecordedRequests()
-	if len(requests) != 1 || !strings.Contains(llm.MessageText(requests[0].Messages[len(requests[0].Messages)-1]), `"status":"failed"`) {
+	if len(requests) != 1 || !strings.Contains(core.MessageText(requests[0].Messages[len(requests[0].Messages)-1]), `"status":"failed"`) {
 		t.Fatalf("failure context=%#v", requests)
 	}
 	other := run
@@ -202,7 +204,7 @@ func TestAgentWakeFailureAndExplicitStopSuppression(t *testing.T) {
 }
 
 func TestAgentInterruptedAfterRestartWakesParentWithoutResumingChild(t *testing.T) {
-	provider := llm.NewMockProvider("debug").AddTextResponse("I will inspect before resuming")
+	provider := mockprovider.NewMockProvider("debug").AddTextResponse("I will inspect before resuming")
 	srv, store, _ := newAgentWakeFixture(t, provider)
 	run := putWakeRun(t, store, "running")
 	run.NotifyWhenDone = false
@@ -215,7 +217,7 @@ func TestAgentInterruptedAfterRestartWakesParentWithoutResumingChild(t *testing.
 		return err == nil && !run.NotifiedAt.IsZero()
 	}, "restart interruption event")
 	requests := provider.RecordedRequests()
-	if len(requests) != 1 || !strings.Contains(llm.MessageText(requests[0].Messages[len(requests[0].Messages)-1]), `"reason":"host_restarted"`) {
+	if len(requests) != 1 || !strings.Contains(core.MessageText(requests[0].Messages[len(requests[0].Messages)-1]), `"reason":"host_restarted"`) {
 		t.Fatalf("restart parent request=%#v", requests)
 	}
 	run, err := store.GetAgentRun(context.Background(), "wake-child")

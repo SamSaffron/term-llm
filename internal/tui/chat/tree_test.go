@@ -9,7 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -74,9 +75,9 @@ func (s *branchChatStore) AddMessage(ctx context.Context, sessionID string, mess
 func newBranchChatModel() (*Model, *branchChatStore, []session.Message) {
 	const sourceID = "tui-tree-source"
 	messages := []session.Message{
-		{ID: 11, SessionID: sourceID, Role: llm.RoleUser, TextContent: "first question", Sequence: 0},
-		{ID: 12, SessionID: sourceID, Role: llm.RoleAssistant, TextContent: "first answer", Sequence: 1},
-		{ID: 13, SessionID: sourceID, Role: llm.RoleUser, TextContent: "edit this question", Sequence: 2},
+		{ID: 11, SessionID: sourceID, Role: core.RoleUser, TextContent: "first question", Sequence: 0},
+		{ID: 12, SessionID: sourceID, Role: core.RoleAssistant, TextContent: "first answer", Sequence: 1},
+		{ID: 13, SessionID: sourceID, Role: core.RoleUser, TextContent: "edit this question", Sequence: 2},
 	}
 	base := &mockStore{
 		sessions: map[string]*session.Session{
@@ -138,7 +139,7 @@ func attachBlockingMainRun(t *testing.T, m *Model) *MainRunManager {
 	if anchorID <= 0 {
 		anchorID = lastSafeBranchMessageID(m.messages)
 	}
-	providerMessages := make([]llm.Message, 0, len(m.messages))
+	providerMessages := make([]core.Message, 0, len(m.messages))
 	for i := range m.messages {
 		providerMessages = append(providerMessages, m.messages[i].ToLLMMessage())
 	}
@@ -257,7 +258,7 @@ func TestThreadCommandBranchesAtRootAndCarriesOnlyNonEmptyInstructions(t *testin
 
 func TestThreadContextSelectionHidesSourceBeforeBranchStorageCompletes(t *testing.T) {
 	m, store, _ := newBranchChatModel()
-	m.provider = llm.NewMockProvider("mock")
+	m.provider = mockprovider.NewMockProvider("mock")
 	m.completions = NewCompletionsModel(m.styles)
 	store.createStarted = make(chan struct{})
 	release := make(chan struct{})
@@ -371,7 +372,7 @@ func TestUndispatchedBranchCommandDoesNotBlockRuntimeCleanup(t *testing.T) {
 
 func TestFocusedThreadContextStaysInDialogWhileSourceIsStreaming(t *testing.T) {
 	m, _, _ := newBranchChatModel()
-	m.provider = llm.NewMockProvider("mock")
+	m.provider = mockprovider.NewMockProvider("mock")
 	m.completions = NewCompletionsModel(m.styles)
 	m.completions.Show()
 	m.keyMap = DefaultKeyMap()
@@ -379,12 +380,12 @@ func TestFocusedThreadContextStaysInDialogWhileSourceIsStreaming(t *testing.T) {
 	m.pendingBranchPoint = &conversationBranchPoint{
 		sourceSessionID:   m.sess.ID,
 		idempotencyKey:    session.NewID(),
-		sourceMessages:    []llm.Message{llm.UserText("abandoned context")},
+		sourceMessages:    []core.Message{core.UserText("abandoned context")},
 		laterMessageCount: 1,
 		skipExpectedState: true,
 	}
 	m.dialog.SetSize(100, 30)
-	m.dialog.ShowBranchContext(1, llm.RoleUser, 1, "branch here")
+	m.dialog.ShowBranchContext(1, core.RoleUser, 1, "branch here")
 	m.dialog.SetCursor(2)
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(*Model)
@@ -427,7 +428,7 @@ func TestFocusedThreadContextValidatesInlineAndEscapeReturnsToChoices(t *testing
 	m.keyMap = DefaultKeyMap()
 	m.pendingBranchPoint = &conversationBranchPoint{laterMessageCount: 1}
 	m.dialog.SetSize(100, 30)
-	m.dialog.ShowBranchContext(1, llm.RoleAssistant, 2, "use this point")
+	m.dialog.ShowBranchContext(1, core.RoleAssistant, 2, "use this point")
 	m.dialog.SetCursor(2)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -450,8 +451,8 @@ func TestFocusedThreadContextValidatesInlineAndEscapeReturnsToChoices(t *testing
 
 func TestForkCommandUsesLatestDurableCompletedBoundaryWhileReplyIsActive(t *testing.T) {
 	m, store, messages := newBranchChatModel()
-	tool := session.Message{ID: 14, SessionID: m.sess.ID, Role: llm.RoleTool, TextContent: "complete result", Sequence: 3}
-	partial := session.Message{ID: 15, SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "partial", Sequence: 4}
+	tool := session.Message{ID: 14, SessionID: m.sess.ID, Role: core.RoleTool, TextContent: "complete result", Sequence: 3}
+	partial := session.Message{ID: 15, SessionID: m.sess.ID, Role: core.RoleAssistant, TextContent: "partial", Sequence: 4}
 	store.messages[m.sess.ID] = append(store.messages[m.sess.ID], tool, partial)
 	m.messages = store.messages[m.sess.ID]
 	m.streaming = true
@@ -460,7 +461,7 @@ func TestForkCommandUsesLatestDurableCompletedBoundaryWhileReplyIsActive(t *test
 	manager.mu.RLock()
 	boundary := manager.runs[m.SessionID()].boundary
 	manager.mu.RUnlock()
-	if !boundary.Commit("test-boundary", 0, []llm.Message{tool.ToLLMMessage()}, runboundary.ProviderContext{}) || !boundary.PublishDurable("test-boundary", 0, tool.ID) {
+	if !boundary.Commit("test-boundary", 0, []core.Message{tool.ToLLMMessage()}, runboundary.ProviderContext{}) || !boundary.PublishDurable("test-boundary", 0, tool.ID) {
 		t.Fatal("publish completed tool boundary")
 	}
 
@@ -486,7 +487,7 @@ func TestForkCommandUsesLatestDurableCompletedBoundaryWhileReplyIsActive(t *test
 
 func TestForkCommandAtIdleIncludesCompletedToolTailAndEmptyCommandDoesNotSend(t *testing.T) {
 	m, store, _ := newBranchChatModel()
-	tool := session.Message{ID: 14, SessionID: m.sess.ID, Role: llm.RoleTool, TextContent: "complete result", Sequence: 3}
+	tool := session.Message{ID: 14, SessionID: m.sess.ID, Role: core.RoleTool, TextContent: "complete result", Sequence: 3}
 	store.messages[m.sess.ID] = append(store.messages[m.sess.ID], tool)
 	store.state = session.TranscriptMutationState{Rev: 8, HeadID: tool.ID}
 
@@ -507,10 +508,10 @@ func TestConversationBranchDoesNotCarryPathNotesWhenCreationFails(t *testing.T) 
 	m.pendingBranchPoint = &conversationBranchPoint{
 		sourceSessionID:   m.sess.ID,
 		idempotencyKey:    session.NewID(),
-		sourceMessages:    []llm.Message{llm.UserText("context")},
+		sourceMessages:    []core.Message{core.UserText("context")},
 		laterMessageCount: 1,
 	}
-	m.provider = llm.NewMockProvider("mock")
+	m.provider = mockprovider.NewMockProvider("mock")
 
 	updated, cmd := m.startConversationBranchWithNotes("")
 	m = updated.(*Model)
@@ -543,12 +544,12 @@ func TestConversationBranchFailureRestoresSourceComposer(t *testing.T) {
 
 func TestTreeUserSelectionAtTipOffersInheritedPathNoteContext(t *testing.T) {
 	m, store, messages := newBranchChatModel()
-	pathNote := session.NewPathNoteMessage(m.sess.ID, "- inherited parser finding", llm.PathNoteProvenance{SourceSessionID: "parent"}, 2)
+	pathNote := session.NewPathNoteMessage(m.sess.ID, "- inherited parser finding", core.PathNoteProvenance{SourceSessionID: "parent"}, 2)
 	pathNote.ID = 14
 	messages[2].Sequence = 3
 	store.messages[m.sess.ID] = []session.Message{messages[0], messages[1], *pathNote, messages[2]}
 	m.messages = store.messages[m.sess.ID]
-	m.provider = llm.NewMockProvider("mock")
+	m.provider = mockprovider.NewMockProvider("mock")
 
 	updated, _ := m.cmdTree(nil)
 	m = updated.(*Model)
@@ -581,7 +582,7 @@ func TestTreeUserSelectionAtTipOffersInheritedPathNoteContext(t *testing.T) {
 	var inherited bool
 	for _, message := range request.SourceMessages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartPathNote && part.PathNote != nil && strings.Contains(llm.MessageText(message), "inherited parser finding") {
+			if part.Type == core.PartPathNote && part.PathNote != nil && strings.Contains(core.MessageText(message), "inherited parser finding") {
 				inherited = true
 			}
 		}
@@ -594,10 +595,10 @@ func TestTreeUserSelectionAtTipOffersInheritedPathNoteContext(t *testing.T) {
 func TestTreeHidesCompactionArtifactsAndUserAnchorSkipsToolRows(t *testing.T) {
 	m, store, messages := newBranchChatModel()
 	sourceID := m.sess.ID
-	tool := session.Message{ID: 14, SessionID: sourceID, Role: llm.RoleTool, TextContent: "orphan tool result", Sequence: 3}
-	summary := session.Message{ID: 15, SessionID: sourceID, Role: llm.RoleUser, TextContent: "[Context Compaction]\ninternal summary", Sequence: 4}
-	tail := session.Message{ID: 16, SessionID: sourceID, Role: llm.RoleAssistant, TextContent: "duplicate retained answer", Sequence: 5, CompactionTail: true}
-	user := session.Message{ID: 17, SessionID: sourceID, Role: llm.RoleUser, TextContent: "after tool", Sequence: 6}
+	tool := session.Message{ID: 14, SessionID: sourceID, Role: core.RoleTool, TextContent: "orphan tool result", Sequence: 3}
+	summary := session.Message{ID: 15, SessionID: sourceID, Role: core.RoleUser, TextContent: "[Context Compaction]\ninternal summary", Sequence: 4}
+	tail := session.Message{ID: 16, SessionID: sourceID, Role: core.RoleAssistant, TextContent: "duplicate retained answer", Sequence: 5, CompactionTail: true}
+	user := session.Message{ID: 17, SessionID: sourceID, Role: core.RoleUser, TextContent: "after tool", Sequence: 6}
 	store.messages[sourceID] = append(store.messages[sourceID], tool, summary, tail, user)
 	store.state = session.TranscriptMutationState{Rev: 8, HeadID: user.ID}
 
@@ -779,14 +780,14 @@ func TestTreeSearchesMetadataAndShowsToolInvocation(t *testing.T) {
 	sourceID := m.sess.ID
 	store.messages[sourceID] = append(store.messages[sourceID],
 		session.Message{
-			ID: 14, SessionID: sourceID, Role: llm.RoleAssistant, Sequence: 3,
-			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+			ID: 14, SessionID: sourceID, Role: core.RoleAssistant, Sequence: 3,
+			Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{
 				ID: "read-1", Name: "read_file", Arguments: []byte(`{"path":"cmd/agents.go"}`), ToolInfo: "(cmd/agents.go)",
 			}}},
 		},
 		session.Message{
-			ID: 15, SessionID: sourceID, Role: llm.RoleTool, Sequence: 4,
-			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+			ID: 15, SessionID: sourceID, Role: core.RoleTool, Sequence: 4,
+			Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{
 				ID: "read-1", Name: "read_file", Content: "file contents",
 			}}},
 		},
@@ -852,17 +853,17 @@ func TestTreeJumpsAcrossLongToolRunsAndTogglesToolRows(t *testing.T) {
 	sourceID := m.sess.ID
 	for i := range 100 {
 		store.messages[sourceID] = append(store.messages[sourceID], session.Message{
-			ID: int64(100 + i), SessionID: sourceID, Role: llm.RoleTool,
+			ID: int64(100 + i), SessionID: sourceID, Role: core.RoleTool,
 			TextContent: "tool output", Sequence: 3 + i,
 		})
 	}
 	store.messages[sourceID] = append(store.messages[sourceID], session.Message{
-		ID: 300, SessionID: sourceID, Role: llm.RoleUser,
+		ID: 300, SessionID: sourceID, Role: core.RoleUser,
 		TextContent: "user after one hundred tools", Sequence: 103,
 	})
 	for i := range 5 {
 		store.messages[sourceID] = append(store.messages[sourceID], session.Message{
-			ID: int64(400 + i), SessionID: sourceID, Role: llm.RoleTool,
+			ID: int64(400 + i), SessionID: sourceID, Role: core.RoleTool,
 			TextContent: "later tool output", Sequence: 104 + i,
 		})
 	}
@@ -991,7 +992,7 @@ func TestTreeRemainsAvailableDuringActiveWorkAndBranchPrefillDoesNotAutoSend(t *
 
 func TestTreeBringUsefulContextEntersChildBeforeGeneratingPathNotes(t *testing.T) {
 	m, store, _ := newBranchChatModel()
-	provider := llm.NewMockProvider("mock").AddTextResponse("- The abandoned attempt found a parser bug.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- The abandoned attempt found a parser bug.")
 	m.provider = provider
 	m.modelName = "mock-model"
 	updated, _ := m.cmdTree(nil)
@@ -1071,7 +1072,7 @@ func TestTreeBringUsefulContextEntersChildBeforeGeneratingPathNotes(t *testing.T
 
 func TestPathNoteGateKeepsSQLiteAvailableDuringRapidNavigation(t *testing.T) {
 	_, store, _ := newBranchChatModel()
-	provider := llm.NewMockProvider("mock").AddTextResponse("- Retain the parser finding.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- Retain the parser finding.")
 	store.addStarted = make(chan struct{})
 	releaseAdd := make(chan struct{})
 	store.addRelease = releaseAdd
@@ -1083,7 +1084,7 @@ func TestPathNoteGateKeepsSQLiteAvailableDuringRapidNavigation(t *testing.T) {
 	child.SetBranchPathNotes(&BranchPathNotesRequest{
 		ChildSessionID:  child.sess.ID,
 		SourceSessionID: "tui-tree-source",
-		SourceMessages:  []llm.Message{llm.UserText("abandoned parser attempt")},
+		SourceMessages:  []core.Message{core.UserText("abandoned parser attempt")},
 	})
 
 	worker := child.startPendingBranchPathNotes()
@@ -1126,7 +1127,7 @@ func TestPathNoteGateKeepsSQLiteAvailableDuringRapidNavigation(t *testing.T) {
 
 func TestQueuedThreadMessageSurvivesImmediateNavigationBack(t *testing.T) {
 	_, store, _ := newBranchChatModel()
-	provider := llm.NewMockProvider("mock").AddTextResponse("- Carry the parser finding.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- Carry the parser finding.")
 	child := newTestChatModel(false)
 	child.store = store
 	child.sess = store.result.Session
@@ -1137,7 +1138,7 @@ func TestQueuedThreadMessageSurvivesImmediateNavigationBack(t *testing.T) {
 	child.SetBranchPathNotes(&BranchPathNotesRequest{
 		ChildSessionID:  child.sess.ID,
 		SourceSessionID: "tui-tree-source",
-		SourceMessages:  []llm.Message{llm.UserText("abandoned parser attempt")},
+		SourceMessages:  []core.Message{core.UserText("abandoned parser attempt")},
 	})
 	child.queuedBranchSend = &pendingBranchSend{content: "abc", selectedImage: -1}
 	worker := child.startPendingBranchPathNotes()
@@ -1155,14 +1156,14 @@ func TestQueuedThreadMessageSurvivesImmediateNavigationBack(t *testing.T) {
 		t.Fatalf("deferred navigation did not resume: cmd=%v pending=%v transition=%v", cmd != nil, child.pendingBranchNavigation != nil, child.sessionTransition != nil)
 	}
 	stored := store.messages[store.result.Session.ID]
-	if len(stored) != 2 || stored[1].Role != llm.RoleUser || stored[1].TextContent != "abc" {
+	if len(stored) != 2 || stored[1].Role != core.RoleUser || stored[1].TextContent != "abc" {
 		t.Fatalf("queued /thread message was lost: %#v", stored)
 	}
 }
 
 func TestTreeQueuedSendWaitsForPathNoteThenStarts(t *testing.T) {
 	_, store, _ := newBranchChatModel()
-	provider := llm.NewMockProvider("mock").AddTextResponse("- Carry the parser finding.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("- Carry the parser finding.")
 	child := newTestChatModel(false)
 	child.store = store
 	child.sess = store.result.Session
@@ -1171,7 +1172,7 @@ func TestTreeQueuedSendWaitsForPathNoteThenStarts(t *testing.T) {
 	child.SetBranchPathNotes(&BranchPathNotesRequest{
 		SourceSessionID: "tui-tree-source",
 		AnchorMessageID: 0,
-		SourceMessages:  []llm.Message{llm.UserText("abandoned parser attempt")},
+		SourceMessages:  []core.Message{core.UserText("abandoned parser attempt")},
 	})
 	worker := child.startPendingBranchPathNotes()
 	if worker == nil {
@@ -1203,14 +1204,14 @@ func TestTreeQueuedSendWaitsForPathNoteThenStarts(t *testing.T) {
 	if len(stored) != 2 {
 		t.Fatalf("child messages = %#v", stored)
 	}
-	if _, ok := stored[0].PathNoteProvenance(); !ok || stored[1].Role != llm.RoleUser || stored[1].TextContent != "chart the new future" {
+	if _, ok := stored[0].PathNoteProvenance(); !ok || stored[1].Role != core.RoleUser || stored[1].TextContent != "chart the new future" {
 		t.Fatalf("path note/user ordering = %#v", stored)
 	}
 }
 
 func TestTreePathNoteFailureRestoresQueuedDraftWithoutSending(t *testing.T) {
 	_, store, _ := newBranchChatModel()
-	provider := llm.NewMockProvider("mock").AddError(errors.New("helper unavailable"))
+	provider := mockprovider.NewMockProvider("mock").AddError(errors.New("helper unavailable"))
 	child := newTestChatModel(false)
 	child.store = store
 	child.sess = store.result.Session
@@ -1218,7 +1219,7 @@ func TestTreePathNoteFailureRestoresQueuedDraftWithoutSending(t *testing.T) {
 	child.modelName = "mock-model"
 	child.SetBranchPathNotes(&BranchPathNotesRequest{
 		SourceSessionID: "tui-tree-source",
-		SourceMessages:  []llm.Message{llm.UserText("abandoned attempt")},
+		SourceMessages:  []core.Message{core.UserText("abandoned attempt")},
 	})
 	worker := child.startPendingBranchPathNotes()
 	child.setTextareaValue("queued future")
@@ -1242,7 +1243,7 @@ func TestTreePathNoteFailureRestoresQueuedDraftWithoutSending(t *testing.T) {
 
 func TestTreeKeyboardSelectionStartsUsefulContextWorker(t *testing.T) {
 	m, _, _ := newBranchChatModel()
-	m.provider = llm.NewMockProvider("mock").AddTextResponse("- carried finding")
+	m.provider = mockprovider.NewMockProvider("mock").AddTextResponse("- carried finding")
 	m.modelName = "mock-model"
 	updated, _ := m.cmdTree(nil)
 	m = updated.(*Model)
@@ -1282,7 +1283,7 @@ func TestTreeKeyboardSelectionStartsUsefulContextWorker(t *testing.T) {
 
 func TestTreeLatestTipDoesNotOfferContextWithNothingToCarry(t *testing.T) {
 	m, store, _ := newBranchChatModel()
-	latest := session.Message{ID: 18, SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "latest answer", Parts: []llm.Part{{Type: llm.PartText, Text: "latest answer"}}, Sequence: 3}
+	latest := session.Message{ID: 18, SessionID: m.sess.ID, Role: core.RoleAssistant, TextContent: "latest answer", Parts: []core.Part{{Type: core.PartText, Text: "latest answer"}}, Sequence: 3}
 	store.messages[m.sess.ID] = append(store.messages[m.sess.ID], latest)
 	store.state = session.TranscriptMutationState{Rev: 8, HeadID: latest.ID}
 	updated, _ := m.cmdTree(nil)

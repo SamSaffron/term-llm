@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
 )
 
@@ -99,7 +99,7 @@ func TestServeMediaRejectsTraversalAndDoesNotProjectSourcePath(t *testing.T) {
 			t.Fatalf("%s status = %d", path, response.Code)
 		}
 	}
-	entries := server.toolMediaEntries([]llm.MediaArtifact{{
+	entries := server.toolMediaEntries([]core.MediaArtifact{{
 		Reference: "0123456789abcdef0123456789abcdef", SourcePath: "/private/source/demo.mp4", StoredPath: "/missing/stored.mp4", MediaType: "video/mp4", Name: "demo.mp4",
 	}})
 	if len(entries) != 0 {
@@ -182,7 +182,7 @@ func TestServeAudioPublicationAndRanges(t *testing.T) {
 					}
 				}
 			}
-			entries := s.toolMediaEntries([]llm.MediaArtifact{{Reference: "reference", StoredPath: stored, SourcePath: source, MediaType: mime, Name: "narration", Caption: "Listen"}})
+			entries := s.toolMediaEntries([]core.MediaArtifact{{Reference: "reference", StoredPath: stored, SourcePath: source, MediaType: mime, Name: "narration", Caption: "Listen"}})
 			b, _ := json.Marshal(entries)
 			if len(entries) != 1 || strings.Contains(string(b), publisher.dir) || strings.Contains(string(b), source) {
 				t.Fatalf("projection=%s", b)

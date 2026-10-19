@@ -1,12 +1,14 @@
 package chat
 
-import "github.com/samsaffron/term-llm/internal/llm"
+import (
+	"github.com/samsaffron/term-llm/internal/llm/core"
+)
 
-func filterSearchToolSpecs(specs []llm.ToolSpec, searchEnabled bool) []llm.ToolSpec {
+func filterSearchToolSpecs(specs []core.ToolSpec, searchEnabled bool) []core.ToolSpec {
 	if searchEnabled {
 		return specs
 	}
-	filtered := make([]llm.ToolSpec, 0, len(specs))
+	filtered := make([]core.ToolSpec, 0, len(specs))
 	for _, spec := range specs {
 		if isSearchToolName(spec.Name) {
 			continue
@@ -17,5 +19,5 @@ func filterSearchToolSpecs(specs []llm.ToolSpec, searchEnabled bool) []llm.ToolS
 }
 
 func isSearchToolName(name string) bool {
-	return name == llm.WebSearchToolName || name == llm.ReadURLToolName
+	return name == core.WebSearchToolName || name == core.ReadURLToolName
 }

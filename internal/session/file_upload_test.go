@@ -9,14 +9,15 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestMessagePreservesFileDataForStorageReplay(t *testing.T) {
 	const b64 = "YSxiCg=="
-	msg := NewMessage("sess_test", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
-		Type: llm.PartFile,
+	msg := NewMessage("sess_test", core.Message{Role: core.RoleUser, Parts: []core.Part{{
+		Type: core.PartFile,
 		Text: llm.FormatEmbeddedFileText("data.csv", "text/csv", "a,b\n"),
-		FileData: &llm.ToolFileData{
+		FileData: &core.ToolFileData{
 			MediaType: "text/csv",
 			Base64:    b64,
 			Filename:  "data.csv",
@@ -54,10 +55,10 @@ func TestMessagePreservesFileDataForStorageReplay(t *testing.T) {
 
 func TestMessagePreservesImageBase64ByDefault(t *testing.T) {
 	const b64 = "aW1hZ2UtYnl0ZXM="
-	msg := NewMessage("sess_test", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
-		Type:      llm.PartImage,
+	msg := NewMessage("sess_test", core.Message{Role: core.RoleUser, Parts: []core.Part{{
+		Type:      core.PartImage,
 		ImagePath: "/tmp/upload.png",
-		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high", Width: 1200, Height: 800},
+		ImageData: &core.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high", Width: 1200, Height: 800},
 	}}}, 0)
 
 	partsJSON, err := msg.PartsJSON()
@@ -80,10 +81,10 @@ func TestMessageStripsImageBase64WhenStorageOptionEnabled(t *testing.T) {
 		t.Fatalf("write upload: %v", err)
 	}
 	const b64 = "aW1hZ2UtYnl0ZXM="
-	msg := NewMessage("sess_test", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
-		Type:      llm.PartImage,
+	msg := NewMessage("sess_test", core.Message{Role: core.RoleUser, Parts: []core.Part{{
+		Type:      core.PartImage,
 		ImagePath: uploadPath,
-		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high", Width: 1200, Height: 800},
+		ImageData: &core.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high", Width: 1200, Height: 800},
 	}}}, 0)
 
 	if msg.Parts[0].ImageData == nil || msg.Parts[0].ImageData.Base64 != b64 {
@@ -138,10 +139,10 @@ func TestSQLiteStoreStripImageBase64Config(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	const b64 = "aW1hZ2UtYnl0ZXM="
-	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
-		Type:      llm.PartImage,
+	msg := NewMessage(sess.ID, core.Message{Role: core.RoleUser, Parts: []core.Part{{
+		Type:      core.PartImage,
 		ImagePath: uploadPath,
-		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64},
+		ImageData: &core.ToolImageData{MediaType: "image/png", Base64: b64},
 	}}}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
@@ -171,10 +172,10 @@ func TestMessageDoesNotStripImageBase64ForNonUploadPath(t *testing.T) {
 		t.Fatalf("write outside path: %v", err)
 	}
 	const b64 = "aW1hZ2UtYnl0ZXM="
-	msg := NewMessage("sess_test", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
-		Type:      llm.PartImage,
+	msg := NewMessage("sess_test", core.Message{Role: core.RoleUser, Parts: []core.Part{{
+		Type:      core.PartImage,
 		ImagePath: outsidePath,
-		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64},
+		ImageData: &core.ToolImageData{MediaType: "image/png", Base64: b64},
 	}}}, 0)
 
 	partsJSON, err := msg.PartsJSONForStorage(true)

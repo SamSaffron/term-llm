@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestLiveSwitchSessionRequiresOriginatingTurnAuthority(t *testing.T) {
@@ -20,10 +20,10 @@ func TestLiveSwitchSessionRequiresOriginatingTurnAuthority(t *testing.T) {
 	}
 	bound := ContextWithLiveSwitchSession(context.Background(), "parent", activate)
 	for name, ctx := range map[string]context.Context{
-		"ordinary turn": llm.ContextWithSessionID(context.Background(), "parent"),
+		"ordinary turn": core.ContextWithSessionID(context.Background(), "parent"),
 		"no session":    bound,
-		"child session": llm.ContextWithSessionID(bound, "child"),
-		"foreign turn":  llm.ContextWithSessionID(ContextWithLiveSwitchSession(context.Background(), "other", activate), "parent"),
+		"child session": core.ContextWithSessionID(bound, "child"),
+		"foreign turn":  core.ContextWithSessionID(ContextWithLiveSwitchSession(context.Background(), "other", activate), "parent"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tool.Execute(ctx, json.RawMessage(`{"session":"42"}`))
@@ -36,7 +36,7 @@ func TestLiveSwitchSessionRequiresOriginatingTurnAuthority(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("unauthorized callbacks = %d", calls)
 	}
-	ctx := llm.ContextWithSessionID(bound, "parent")
+	ctx := core.ContextWithSessionID(bound, "parent")
 	out, err := tool.Execute(ctx, json.RawMessage(`{"session":"42"}`))
 	if err != nil || calls != 1 || !strings.Contains(out.Content, `"session_id":"target"`) || !strings.Contains(out.Content, `"session_number":42`) {
 		t.Fatalf("authorized output = %+v, %v; calls=%d", out, err, calls)
@@ -52,13 +52,13 @@ func TestLiveSwitchSessionRequiresOriginatingTurnAuthority(t *testing.T) {
 func TestLiveSwitchSessionDeniesMissingAndEmptyBindings(t *testing.T) {
 	tool := &LiveSwitchSessionTool{}
 	for name, candidate := range map[string]context.Context{
-		"nil callback": llm.ContextWithSessionID(
+		"nil callback": core.ContextWithSessionID(
 			ContextWithLiveSwitchSession(context.Background(), "parent", nil), "parent"),
-		"empty session": llm.ContextWithSessionID(
+		"empty session": core.ContextWithSessionID(
 			ContextWithLiveSwitchSession(context.Background(), "", func(context.Context, string) (LiveSessionSwitchResult, error) {
 				return LiveSessionSwitchResult{}, nil
 			}), "parent"),
-		"unbound context": llm.ContextWithSessionID(context.Background(), "parent"),
+		"unbound context": core.ContextWithSessionID(context.Background(), "parent"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tool.Execute(candidate, json.RawMessage(`{"session":"42"}`))
@@ -79,7 +79,7 @@ func TestLiveSwitchSessionArgumentsAndFailures(t *testing.T) {
 		}
 		return LiveSessionSwitchResult{SessionID: "target", Number: 42}, nil
 	})
-	ctx = llm.ContextWithSessionID(ctx, "chat")
+	ctx = core.ContextWithSessionID(ctx, "chat")
 	tool := &LiveSwitchSessionTool{}
 	for name, args := range map[string]string{
 		"unknown field":  `{"session":"42","force":true}`,
@@ -156,7 +156,7 @@ func TestLiveSwitchSessionNotesCoverBusyArchivedAndNoOpTargets(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ctx := llm.ContextWithSessionID(ContextWithLiveSwitchSession(context.Background(), "chat",
+			ctx := core.ContextWithSessionID(ContextWithLiveSwitchSession(context.Background(), "chat",
 				func(context.Context, string) (LiveSessionSwitchResult, error) { return tc.result, nil }), "chat")
 			out, err := tool.Execute(ctx, json.RawMessage(`{"session":"t"}`))
 			if err != nil {
@@ -183,7 +183,7 @@ func TestLiveSwitchSessionNotesCoverBusyArchivedAndNoOpTargets(t *testing.T) {
 
 func TestLiveSwitchSessionBoundsTheRunningTaskDescription(t *testing.T) {
 	long := strings.Repeat("speakable ", 60)
-	ctx := llm.ContextWithSessionID(ContextWithLiveSwitchSession(context.Background(), "chat",
+	ctx := core.ContextWithSessionID(ContextWithLiveSwitchSession(context.Background(), "chat",
 		func(context.Context, string) (LiveSessionSwitchResult, error) {
 			return LiveSessionSwitchResult{SessionID: "t", Running: true, RunningTask: long}, nil
 		}), "chat")

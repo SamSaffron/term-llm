@@ -6,31 +6,21 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 type namedTestTool struct{ name string }
 
 type finishingNamedTestTool struct{ namedTestTool }
 
-type dynamicPublishingProvider struct {
-	*MockProvider
-	mu        sync.Mutex
-	published []ToolSpec
+func (t *namedTestTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: t.name, Description: t.name, Schema: map[string]any{"type": "object"}}
 }
 
-func (p *dynamicPublishingProvider) PublishDynamicTools(tools []ToolSpec) error {
-	p.mu.Lock()
-	p.published = append(p.published, tools...)
-	p.mu.Unlock()
-	return nil
-}
-
-func (t *namedTestTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.name, Description: t.name, Schema: map[string]any{"type": "object"}}
-}
-
-func (t *namedTestTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
-	return TextOutput(t.name), nil
+func (t *namedTestTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput(t.name), nil
 }
 
 func (t *namedTestTool) Preview(args json.RawMessage) string { return t.name }
@@ -38,7 +28,7 @@ func (t *namedTestTool) Preview(args json.RawMessage) string { return t.name }
 func (t *finishingNamedTestTool) IsFinishingTool() bool { return true }
 
 func TestToolRegistryDeferredVisibility(t *testing.T) {
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	visible := &namedTestTool{name: "visible"}
 	deferred := &namedTestTool{name: "deferred"}
 	registry.Register(visible)
@@ -64,61 +54,10 @@ func TestToolRegistryDeferredVisibility(t *testing.T) {
 	}
 }
 
-func TestDynamicToolPublishesImmediatelyForActiveRun(t *testing.T) {
-	provider := &dynamicPublishingProvider{MockProvider: NewMockProvider("dynamic")}
-	engine := NewEngine(provider, nil)
-	runID := engine.beginToolRun()
-	defer engine.endToolRun(runID)
-
-	tool := &namedTestTool{name: "late_tool"}
-	if !engine.AddDynamicToolForRun(runID, tool) {
-		t.Fatal("active run rejected dynamic tool")
-	}
-	provider.mu.Lock()
-	published := append([]ToolSpec(nil), provider.published...)
-	provider.mu.Unlock()
-	if len(published) != 1 || published[0].Name != "late_tool" {
-		t.Fatalf("published tools = %#v, want late_tool immediately", published)
-	}
-	pending := engine.drainPendingToolSpecs(runID)
-	if len(pending) != 1 || pending[0].Name != "late_tool" {
-		t.Fatalf("fallback pending tools = %#v, want late_tool", pending)
-	}
-}
-
-func TestDynamicToolQueueIsRunScopedAndDeduplicated(t *testing.T) {
-	engine := NewEngine(NewMockProvider("dynamic"), nil)
-	tool := &namedTestTool{name: "late_tool"}
-	runOne := engine.beginToolRun()
-	if !engine.AddDynamicToolForRun(runOne, tool) || !engine.AddDynamicToolForRun(runOne, tool) {
-		t.Fatal("active run rejected dynamic tool")
-	}
-	pending := engine.drainPendingToolSpecs(runOne)
-	if len(pending) != 1 || pending[0].Name != "late_tool" {
-		t.Fatalf("deduplicated pending specs = %#v", pending)
-	}
-	if pending := engine.drainPendingToolSpecs(runOne); len(pending) != 0 {
-		t.Fatalf("drained queue retained specs: %#v", pending)
-	}
-	if !engine.AddDynamicToolForRun(runOne, tool) {
-		t.Fatal("active run rejected requeued tool")
-	}
-	engine.endToolRun(runOne)
-
-	runTwo := engine.beginToolRun()
-	defer engine.endToolRun(runTwo)
-	if pending := engine.drainPendingToolSpecs(runTwo); len(pending) != 0 {
-		t.Fatalf("cancelled/ended run leaked into later run: %#v", pending)
-	}
-	if engine.AddDynamicToolForRun(runOne, tool) {
-		t.Fatal("ended run accepted a late activation")
-	}
-}
-
 func TestToolRegistryAllSpecsSorted(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "zeta"})
 	registry.Register(&namedTestTool{name: "alpha"})
 	registry.Register(&namedTestTool{name: "middle"})
@@ -139,11 +78,11 @@ func TestToolRegistryAllSpecsSorted(t *testing.T) {
 func TestToolSpecsForRequestPreservesSortedOrderAfterFiltering(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "zeta"})
-	registry.Register(&namedTestTool{name: WebSearchToolName})
+	registry.Register(&namedTestTool{name: core.WebSearchToolName})
 	registry.Register(&namedTestTool{name: "alpha"})
-	registry.Register(&namedTestTool{name: ReadURLToolName})
+	registry.Register(&namedTestTool{name: core.ReadURLToolName})
 
 	specs := ToolSpecsForRequest(registry, false)
 	if len(specs) != 2 {
@@ -161,7 +100,7 @@ func TestToolSpecsForRequestPreservesSortedOrderAfterFiltering(t *testing.T) {
 func TestToolRegistryConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&finishingNamedTestTool{namedTestTool{name: "base"}})
 
 	const (
@@ -216,7 +155,7 @@ func TestToolRegistryConcurrentAccess(t *testing.T) {
 func TestToolRegistryAllSpecsReturnedSliceIsIndependent(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "alpha"})
 	registry.Register(&namedTestTool{name: "beta"})
 
@@ -235,7 +174,7 @@ func TestToolRegistryAllSpecsReturnedSliceIsIndependent(t *testing.T) {
 func TestToolRegistryAllSpecsInvalidatesCache(t *testing.T) {
 	t.Parallel()
 
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&namedTestTool{name: "alpha"})
 
 	_ = registry.AllSpecs()
@@ -253,7 +192,7 @@ func TestToolRegistryAllSpecsInvalidatesCache(t *testing.T) {
 }
 
 func BenchmarkToolRegistryAllSpecs(b *testing.B) {
-	registry := NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	const toolCount = 128
 	for i := 0; i < toolCount; i++ {
 		registry.Register(&namedTestTool{name: fmt.Sprintf("tool-%03d", i)})

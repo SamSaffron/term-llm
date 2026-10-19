@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // LiveNewSessionToolName starts a new conversation and binds the live call to it.
@@ -49,8 +49,8 @@ func ContextWithLiveNewSession(ctx context.Context, sessionID string, create fun
 // LiveNewSessionTool starts a brand-new conversation and moves the live call to it.
 type LiveNewSessionTool struct{}
 
-func (*LiveNewSessionTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (*LiveNewSessionTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: LiveNewSessionToolName,
 		Description: "Start a brand-new, empty conversation and bind this live voice call to it. Both fields are optional: project and agent default " +
 			"to the ones the current conversation uses, so omitting them keeps the user where they are. A named project or agent must be one the " +
@@ -67,10 +67,10 @@ func (*LiveNewSessionTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (*LiveNewSessionTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (*LiveNewSessionTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	binding, ok := ctx.Value(liveNewSessionKey{}).(liveNewSessionBinding)
-	if !ok || binding.create == nil || binding.sessionID == "" || binding.sessionID != llm.SessionIDFromContext(ctx) {
-		return llm.ToolOutput{}, NewToolError(ErrPermissionDenied, "starting a new conversation is available only to the originating live chat turn")
+	if !ok || binding.create == nil || binding.sessionID == "" || binding.sessionID != core.SessionIDFromContext(ctx) {
+		return core.ToolOutput{}, NewToolError(ErrPermissionDenied, "starting a new conversation is available only to the originating live chat turn")
 	}
 	params := struct {
 		Project string `json:"project"`
@@ -79,21 +79,21 @@ func (*LiveNewSessionTool) Execute(ctx context.Context, args json.RawMessage) (l
 	decoder := json.NewDecoder(bytes.NewReader(args))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&params); err != nil {
-		return llm.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid live new session: %v", err)
+		return core.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid live new session: %v", err)
 	}
 	result, err := binding.create(ctx, LiveNewSessionRequest{
 		Project: strings.TrimSpace(params.Project), Agent: strings.TrimSpace(params.Agent),
 	})
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("live new session: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("live new session: %w", err)
 	}
 	encoded, err := json.Marshal(liveNewSessionOutput{
 		LiveNewSessionResult: result, Note: liveNewSessionNote(result),
 	})
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("encode live new session: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("encode live new session: %w", err)
 	}
-	return llm.TextOutput(string(encoded)), nil
+	return core.TextOutput(string(encoded)), nil
 }
 
 func (*LiveNewSessionTool) Preview(json.RawMessage) string {

@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -48,7 +48,7 @@ func (rt *serveRuntime) resetAfterTranscriptMutation(ctx context.Context, sessio
 	if err != nil {
 		return fmt.Errorf("reload active transcript: %w", err)
 	}
-	history := make([]llm.Message, 0, len(messages))
+	history := make([]core.Message, 0, len(messages))
 	for i := range messages {
 		history = append(history, messages[i].ToLLMMessage())
 	}

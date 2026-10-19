@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/share"
 )
@@ -42,9 +42,9 @@ func newServeShareImageFixture(t *testing.T) (*serveServer, int64) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
-	call := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "image_generate", Arguments: []byte(`{}`)}}}}
-	result := llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "c1", Name: "image_generate", Content: "Generated image successfully.", Images: []string{generated}}}}}
-	for _, message := range []llm.Message{llm.UserText("draw a dot"), call, result, llm.AssistantText("Here is your dot.")} {
+	call := core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c1", Name: "image_generate", Arguments: []byte(`{}`)}}}}
+	result := core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "c1", Name: "image_generate", Content: "Generated image successfully.", Images: []string{generated}}}}}
+	for _, message := range []core.Message{core.UserText("draw a dot"), call, result, core.AssistantText("Here is your dot.")} {
 		if err := store.AddMessage(context.Background(), sess.ID, session.NewMessage(sess.ID, message, -1)); err != nil {
 			t.Fatal(err)
 		}

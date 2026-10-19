@@ -23,6 +23,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/gitcommit"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
@@ -63,9 +67,9 @@ type conversationBranchPoint struct {
 	expected            session.TranscriptMutationState
 	idempotencyKey      string
 	prefill             string
-	sourceMessages      []llm.Message
+	sourceMessages      []core.Message
 	laterMessageCount   int
-	sourceRole          llm.Role
+	sourceRole          core.Role
 	sourceMessageNumber int
 	sourcePreview       string
 	autoSend            string
@@ -79,7 +83,7 @@ type BranchPathNotesRequest struct {
 	ChildSessionID  string
 	SourceSessionID string
 	AnchorMessageID int64
-	SourceMessages  []llm.Message
+	SourceMessages  []core.Message
 	Focus           string
 }
 
@@ -137,12 +141,12 @@ type promptHistoryState struct {
 
 type RuntimeSystemContext struct {
 	SystemPrompt string
-	ApplySkills  func(engine *llm.Engine, toolMgr *tools.ToolManager)
+	ApplySkills  func(engine *engine.Engine, toolMgr *tools.ToolManager)
 	Skills       *skills.Setup
 }
 
 type Model struct {
-	reloadContinuation *llm.Continuation
+	reloadContinuation *core.Continuation
 	reloadEnabled      bool
 	autoSendPending    bool
 	// Dimensions
@@ -199,12 +203,12 @@ type Model struct {
 	reasoningModeOverride  string
 	currentReasoning       strings.Builder
 	currentReasoningItemID string
-	currentReasoningKind   llm.ReasoningKind
+	currentReasoningKind   core.ReasoningKind
 	currentReasoningTitle  string
 	// Per-block expansion override for the live (uncommitted) reasoning
 	// block; carried onto the segment when it is committed to the tracker.
 	currentReasoningExpanded *bool
-	committedReasoning       []llm.Part
+	committedReasoning       []core.Part
 	reasoningPhaseActive     bool
 	reasoningRawWarned       bool
 
@@ -225,7 +229,7 @@ type Model struct {
 	tracker                     *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker             *ui.SubagentTracker // Live subagent progress tracking
 	persistedSubagents          map[string]subagentview.CompletedRun
-	mediaByReference            map[string]llm.MediaArtifact
+	mediaByReference            map[string]core.MediaArtifact
 	persistedSubagentGeneration uint64
 
 	// Persist-as-we-go: row ID and latest per-turn snapshot of the in-progress
@@ -233,7 +237,7 @@ type Model struct {
 	// protected by pendingMu.
 	pendingAssistantMsgID       int64
 	pendingAssistantTextSet     bool
-	pendingAssistantSnapshot    llm.Message
+	pendingAssistantSnapshot    core.Message
 	pendingAssistantSnapshotSet bool
 	completedAssistantTurns     int
 	pendingMu                   sync.Mutex
@@ -249,7 +253,7 @@ type Model struct {
 	contextEstimateCachedTokens      int
 	contextEstimateCachedStreaming   bool
 	contextEstimateCachedValid       bool
-	streamingContextMessages         []llm.Message
+	streamingContextMessages         []core.Message
 	streamingContextPendingAssistant bool
 
 	// Streaming channels
@@ -293,12 +297,12 @@ type Model struct {
 
 	// LLM context
 	rootCtx                    context.Context
-	provider                   llm.Provider
-	fastProvider               llm.Provider
-	sideProviderFactory        func(providerKey, model string) (llm.Provider, error)
+	provider                   core.Provider
+	fastProvider               core.Provider
+	sideProviderFactory        func(providerKey, model string) (core.Provider, error)
 	sideQuestion               SideQuestionState
-	engine                     *llm.Engine
-	agentMentionEngine         atomic.Pointer[llm.Engine]
+	engine                     *engine.Engine
+	agentMentionEngine         atomic.Pointer[engine.Engine]
 	runner                     runpkg.Runner
 	childRunner                runpkg.ChildRunner
 	commit                     *CommitState
@@ -314,7 +318,7 @@ type Model struct {
 	agentName                  string
 	modelPolicy                modelpolicy.Policy
 	modelSwitchHook            func(providerKey, model string)
-	fastProviderResolver       func(providerKey, model string) (llm.Provider, error)
+	fastProviderResolver       func(providerKey, model string) (core.Provider, error)
 
 	platformDeveloperMessage string
 	currentOrigin            session.SessionOrigin
@@ -330,8 +334,8 @@ type Model struct {
 	skillFilterRestorePresent    bool
 	skillFilterPending           bool
 	skillDynamicToolNames        []string
-	skillDynamicEnginePrevious   map[string]llm.Tool
-	skillDynamicRegistryPrevious map[string]llm.Tool
+	skillDynamicEnginePrevious   map[string]core.Tool
+	skillDynamicRegistryPrevious map[string]core.Tool
 	sessionInputsObserver        func(*session.Session, string, string)
 	systemPromptOverridden       bool
 	systemPromptOverride         string
@@ -371,7 +375,7 @@ type Model struct {
 	fastMetadataStale       bool // Loaded metadata came from stale cache and should refresh in background
 	fastMetadataLoading     bool // Metadata load command is in flight
 	pendingFastToggle       bool // User requested /fast while waiting for metadata
-	modelMetadata           []llm.ModelInfo
+	modelMetadata           []core.ModelInfo
 	forceExternalSearch     bool     // Force external search tools even if provider supports native
 	disableExternalWebFetch bool     // Disable external read_url injection even when provider lacks native fetch
 	localTools              []string // Names of enabled local tools (read, write, etc.)
@@ -471,7 +475,7 @@ type Model struct {
 
 	// Deferred model switch marker for non-submitting shortcuts such as Ctrl+R.
 	// Coalesces repeated effort changes and is appended when the next user turn is sent.
-	pendingModelSwitch *llm.ModelSwapMarker
+	pendingModelSwitch *core.ModelSwapMarker
 
 	// Deferred model/effort switch requested while a provider stream is active.
 	// The active llm.Engine must not be replaced mid-turn, so this is applied at
@@ -705,11 +709,11 @@ type (
 	}
 	compactStartedMsg struct{}
 	compactDoneMsg    struct {
-		result *llm.CompactionResult
+		result *engine.CompactionResult
 		err    error
 	}
 	handoverDoneMsg struct {
-		result       *llm.HandoverResult
+		result       *engine.HandoverResult
 		err          error
 		agentName    string
 		providerStr  string // Optional "provider:model" override
@@ -789,7 +793,7 @@ type autoSendMsg struct{}
 type inlineCompletionRenderedMsg struct{}
 
 type chatGPTModelsLoadedMsg struct {
-	models []llm.ModelInfo
+	models []core.ModelInfo
 	fresh  bool
 	err    error
 }
@@ -904,14 +908,14 @@ func (m *Model) loadOlderScrollbackPrefix(ctx context.Context) tea.Cmd {
 
 // New creates a new chat model.
 // fast-provider aware callers should use NewWithFastProvider.
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, toolMgrs ...*tools.ToolManager) *Model {
+func New(cfg *config.Config, provider core.Provider, engine *engine.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, toolMgrs ...*tools.ToolManager) *Model {
 	return NewWithFastProvider(cfg, provider, nil, engine, providerKey, modelName, mcpManager, maxTurns, forceExternalSearch, disableExternalWebFetch, searchEnabled, localTools, toolsStr, mcpStr, showStats, initialText, store, sess, altScreen, autoSendQueue, autoSendExitOnDone, textMode, agentName, platformDeveloperMessage, yolo, toolMgrs...)
 }
 
 // NewWithFastProvider creates a new chat model with an optional fast provider
 // for control-plane classification tasks. Callers that distinguish requested
 // policy from runtime fallback should use NewWithFastProviderAndApproval.
-func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, toolMgrs ...*tools.ToolManager) *Model {
+func NewWithFastProvider(cfg *config.Config, provider core.Provider, fastProvider core.Provider, engine *engine.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, toolMgrs ...*tools.ToolManager) *Model {
 	requested := tools.ModePrompt
 	if yolo {
 		requested = tools.ModeYolo
@@ -923,7 +927,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 
 // NewWithFastProviderAndApproval preserves requested policy independently from
 // the approval manager's actual mode after an interactive Guardian fallback.
-func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, requestedApprovalMode tools.ApprovalMode, toolMgrs ...*tools.ToolManager) *Model {
+func NewWithFastProviderAndApproval(cfg *config.Config, provider core.Provider, fastProvider core.Provider, engine *engine.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, requestedApprovalMode tools.ApprovalMode, toolMgrs ...*tools.ToolManager) *Model {
 	var discoveryPlanner *tooldiscovery.Planner
 	if cfg != nil && engine != nil && mcpManager != nil {
 		var err error
@@ -1078,7 +1082,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 
 	fastProviderDefault := false
 	fastMode := false
-	var modelMetadata []llm.ModelInfo
+	var modelMetadata []core.ModelInfo
 	fastMetadataLoaded := false
 	providerIsChatGPT := false
 	providerType := config.ProviderType("")
@@ -1092,13 +1096,13 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	fastMode = fastProviderDefault
 	fastMetadataStale := false
 	if providerIsChatGPT {
-		if cached, fresh, err := llm.CachedChatGPTModels(); err == nil {
+		if cached, fresh, err := responsesproviders.CachedChatGPTModels(); err == nil {
 			modelMetadata = cached
 			fastMetadataLoaded = true
 			fastMetadataStale = !fresh
 		}
 	} else if providerType == config.ProviderTypeOpenCodeGo {
-		if cached, fresh, err := llm.CachedOpenCodeGoModels(); err == nil {
+		if cached, fresh, err := responsesproviders.CachedOpenCodeGoModels(); err == nil {
 			modelMetadata = cached
 			fastMetadataLoaded = true
 			fastMetadataStale = !fresh
@@ -1202,18 +1206,18 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	return model
 }
 
-func sessionMessageForSteering(sessionID, visibleText string, message llm.Message) *session.Message {
+func sessionMessageForSteering(sessionID, visibleText string, message core.Message) *session.Message {
 	if len(message.Parts) == 0 {
-		message = llm.UserText(visibleText)
+		message = core.UserText(visibleText)
 	}
-	message.Role = llm.RoleUser
+	message.Role = core.RoleUser
 	userMessage := session.NewMessage(sessionID, message, -1)
 	// Steering parts may include provider-only eager file or delegation
 	// context. Keep visible consumers clean while retaining full Parts.
 	if visibleText != "" {
 		userMessage.TextContent = visibleText
 	} else if userMessage.TextContent == "" {
-		userMessage.TextContent = llm.MessageText(message)
+		userMessage.TextContent = core.MessageText(message)
 	}
 	return userMessage
 }
@@ -1242,7 +1246,7 @@ func isClientMessageIDConflict(err error) bool {
 
 // persistSteering preserves identities: matching receipts reconcile, while
 // conflicting content is an error, never another invented user turn.
-func (m *Model) persistSteering(ctx context.Context, visibleText string, message llm.Message) {
+func (m *Model) persistSteering(ctx context.Context, visibleText string, message core.Message) {
 	if m.store == nil || m.sess == nil {
 		return
 	}
@@ -1540,7 +1544,7 @@ func formatStreamErrorFooter(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "Stream cancelled."
 	}
-	var incomplete *llm.StreamIncompleteError
+	var incomplete *stream.StreamIncompleteError
 	if errors.As(err, &incomplete) {
 		return "Stream interrupted before completion."
 	}
@@ -1655,7 +1659,7 @@ func (m *Model) flushStreamingContentOnErrorToScrollback() []tea.Cmd {
 	return ui.ScrollbackPrintlnCommands(output, true)
 }
 
-func (m *Model) interruptedAssistantFallbackMessage() (llm.Message, bool) {
+func (m *Model) interruptedAssistantFallbackMessage() (core.Message, bool) {
 	m.pendingMu.Lock()
 	if m.pendingAssistantSnapshotSet {
 		assistantMsg := m.pendingAssistantSnapshot
@@ -1671,23 +1675,23 @@ func (m *Model) interruptedAssistantFallbackMessage() (llm.Message, bool) {
 	// the interrupted turn. Without a per-turn snapshot, fail open and leave the
 	// already persisted rows intact.
 	if m.store != nil && completedAssistantTurns > 0 {
-		return llm.Message{}, false
+		return core.Message{}, false
 	}
 
 	responseContent := m.currentResponse.String()
 	reasoningContent, reasoningKind, reasoningTitle := m.currentReasoningPartMetadata()
 	if responseContent == "" && reasoningContent == "" {
-		return llm.Message{}, false
+		return core.Message{}, false
 	}
 
-	part := llm.Part{Type: llm.PartText, Text: responseContent}
+	part := core.Part{Type: core.PartText, Text: responseContent}
 	if reasoningContent != "" {
 		part.ReasoningContent = reasoningContent
 		part.ReasoningKind = reasoningKind
 		part.ReasoningSummaryTitle = reasoningTitle
 	}
 
-	return llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{part}}, true
+	return core.Message{Role: core.RoleAssistant, Parts: []core.Part{part}}, true
 }
 
 type interruptedAssistantSalvageResult struct {
@@ -2101,7 +2105,7 @@ func (m *Model) RequestedBranchPathNotes() *BranchPathNotesRequest {
 		return nil
 	}
 	request := *m.pendingBranchPathNotes
-	request.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
+	request.SourceMessages = append([]core.Message(nil), request.SourceMessages...)
 	return &request
 }
 
@@ -2201,7 +2205,7 @@ func (m *Model) SetBranchPathNotes(request *BranchPathNotesRequest) {
 		m.branchPathNotesRequest = nil
 		return
 	}
-	copyRequest.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
+	copyRequest.SourceMessages = append([]core.Message(nil), request.SourceMessages...)
 	m.branchPathNotesRequest = &copyRequest
 }
 

@@ -5,18 +5,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
-func shareTestMessage(id int64, sequence int, role llm.Role, text, responseID string) Message {
-	var value llm.Message
+func shareTestMessage(id int64, sequence int, role core.Role, text, responseID string) Message {
+	var value core.Message
 	switch role {
-	case llm.RoleUser:
-		value = llm.UserText(text)
-	case llm.RoleAssistant:
-		value = llm.AssistantText(text)
+	case core.RoleUser:
+		value = core.UserText(text)
+	case core.RoleAssistant:
+		value = core.AssistantText(text)
 	default:
-		value = llm.Message{Role: role, Parts: []llm.Part{{Type: llm.PartText, Text: text}}}
+		value = core.Message{Role: role, Parts: []core.Part{{Type: core.PartText, Text: text}}}
 	}
 	return Message{
 		ID: id, SessionID: "share-session", Role: role, Parts: value.Parts,
@@ -26,11 +26,11 @@ func shareTestMessage(id int64, sequence int, role llm.Role, text, responseID st
 
 func TestSelectShareMessagesResponseAggregatesOnlyAnchoredResponse(t *testing.T) {
 	messages := []Message{
-		shareTestMessage(1, 1, llm.RoleUser, "private prompt", ""),
-		shareTestMessage(2, 2, llm.RoleAssistant, "first", "response-a"),
-		shareTestMessage(3, 3, llm.RoleTool, "private tool output", ""),
-		shareTestMessage(4, 4, llm.RoleAssistant, "second", "response-a"),
-		shareTestMessage(5, 5, llm.RoleAssistant, "other response", "response-b"),
+		shareTestMessage(1, 1, core.RoleUser, "private prompt", ""),
+		shareTestMessage(2, 2, core.RoleAssistant, "first", "response-a"),
+		shareTestMessage(3, 3, core.RoleTool, "private tool output", ""),
+		shareTestMessage(4, 4, core.RoleAssistant, "second", "response-a"),
+		shareTestMessage(5, 5, core.RoleAssistant, "other response", "response-b"),
 	}
 	selected, err := SelectShareMessages(messages, 4, ShareScopeResponse)
 	if err != nil {
@@ -50,10 +50,10 @@ func TestSelectShareMessagesResponseAggregatesOnlyAnchoredResponse(t *testing.T)
 
 func TestSelectShareMessagesLegacyResponseStopsAtUser(t *testing.T) {
 	messages := []Message{
-		shareTestMessage(1, 1, llm.RoleAssistant, "old answer", ""),
-		shareTestMessage(2, 2, llm.RoleUser, "next question", ""),
-		shareTestMessage(3, 3, llm.RoleAssistant, "part one", ""),
-		shareTestMessage(4, 4, llm.RoleAssistant, "part two", ""),
+		shareTestMessage(1, 1, core.RoleAssistant, "old answer", ""),
+		shareTestMessage(2, 2, core.RoleUser, "next question", ""),
+		shareTestMessage(3, 3, core.RoleAssistant, "part one", ""),
+		shareTestMessage(4, 4, core.RoleAssistant, "part two", ""),
 	}
 	selected, err := SelectShareMessages(messages, 4, ShareScopeResponse)
 	if err != nil {
@@ -66,11 +66,11 @@ func TestSelectShareMessagesLegacyResponseStopsAtUser(t *testing.T) {
 
 func TestSelectShareMessagesConversationEndsAtAnchorAndFiltersInternalRows(t *testing.T) {
 	messages := []Message{
-		shareTestMessage(1, 1, llm.RoleUser, "question", ""),
-		shareTestMessage(2, 2, llm.RoleAssistant, "answer", "response-a"),
-		shareTestMessage(3, 3, llm.RoleUser, "later", ""),
+		shareTestMessage(1, 1, core.RoleUser, "question", ""),
+		shareTestMessage(2, 2, core.RoleAssistant, "answer", "response-a"),
+		shareTestMessage(3, 3, core.RoleUser, "later", ""),
 	}
-	messages = append(messages, shareTestMessage(4, 0, llm.RoleAssistant, "retained duplicate", ""))
+	messages = append(messages, shareTestMessage(4, 0, core.RoleAssistant, "retained duplicate", ""))
 	messages[3].CompactionTail = true
 	selected, err := SelectShareMessages(messages, 2, ShareScopeConversation)
 	if err != nil {
@@ -82,11 +82,11 @@ func TestSelectShareMessagesConversationEndsAtAnchorAndFiltersInternalRows(t *te
 }
 
 func TestSelectShareMessagesRejectsInvalidScopeAndAnchor(t *testing.T) {
-	messages := []Message{shareTestMessage(1, 1, llm.RoleUser, "question", "")}
+	messages := []Message{shareTestMessage(1, 1, core.RoleUser, "question", "")}
 	if _, err := SelectShareMessages(messages, 1, ShareScopeResponse); !errors.Is(err, ErrInvalidShareAnchor) {
 		t.Fatalf("anchor error = %v", err)
 	}
-	messages = append(messages, shareTestMessage(2, 2, llm.RoleAssistant, "answer", ""))
+	messages = append(messages, shareTestMessage(2, 2, core.RoleAssistant, "answer", ""))
 	if _, err := SelectShareMessages(messages, 2, ShareScope("other")); !errors.Is(err, ErrInvalidShareScope) {
 		t.Fatalf("scope error = %v", err)
 	}

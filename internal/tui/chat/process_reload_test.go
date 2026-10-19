@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -16,7 +16,7 @@ func TestReloadCheckpointPreservesDraftAndOriginalUserTurn(t *testing.T) {
 	m := newTestChatModel(false)
 	m.EnableProcessReload()
 	m.textarea.SetValue("unsent draft")
-	saved := &llm.Continuation{Turn: 2, Request: llm.Request{Messages: []llm.Message{llm.SystemText("system"), llm.UserText("original request"), llm.AssistantText("Hello")}}, Pending: []llm.ToolCall{{ID: "next", Name: "shell", Arguments: json.RawMessage(`{"command":"true"}`)}}}
+	saved := &core.Continuation{Turn: 2, Request: core.Request{Messages: []core.Message{core.SystemText("system"), core.UserText("original request"), core.AssistantText("Hello")}}, Pending: []core.ToolCall{{ID: "next", Name: "shell", Arguments: json.RawMessage(`{"command":"true"}`)}}}
 	m.suspendForReload(saved)
 	if m.streaming || m.reloadContinuation != saved {
 		t.Fatal("checkpoint not parked")
@@ -42,7 +42,7 @@ func TestReloadCheckpointPreservesDraftAndOriginalUserTurn(t *testing.T) {
 	}
 	users := 0
 	for _, message := range next.messages {
-		if message.Role == llm.RoleUser {
+		if message.Role == core.RoleUser {
 			users++
 		}
 	}
@@ -67,10 +67,10 @@ func TestReloadContinuationDoesNotHideCancelledToolOnDone(t *testing.T) {
 	if err := store.Create(ctx, m.sess); err != nil {
 		t.Fatal(err)
 	}
-	history := []llm.Message{
-		llm.UserText("sleep for 60 seconds"),
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "sleep-call", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 60","description":"Sleep for 60 seconds"}`)}}}},
-		llm.ToolErrorMessage("sleep-call", "shell", "Error: context canceled", nil),
+	history := []core.Message{
+		core.UserText("sleep for 60 seconds"),
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "sleep-call", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 60","description":"Sleep for 60 seconds"}`)}}}},
+		core.ToolErrorMessage("sleep-call", "shell", "Error: context canceled", nil),
 	}
 	for i, msg := range history {
 		if err := store.AddMessage(ctx, m.sess.ID, session.NewMessage(m.sess.ID, msg, i)); err != nil {
@@ -80,14 +80,14 @@ func TestReloadContinuationDoesNotHideCancelledToolOnDone(t *testing.T) {
 	if err := m.reloadMessagesFromStore(ctx); err != nil {
 		t.Fatal(err)
 	}
-	m.RestoreReloadState(ReloadState{Continuation: &llm.Continuation{Request: llm.Request{Messages: history}, Turn: 1}})
+	m.RestoreReloadState(ReloadState{Continuation: &core.Continuation{Request: core.Request{Messages: history}, Turn: 1}})
 	// Preparing the continuation must not claim its suffix-only tracker covers
 	// the persisted tool batch. No provider call is needed to exercise rendering.
 	m.resumeAfterReload()
 	defer m.releaseStreamCancelFunc()
 	const answer = "The sleep was interrupted before completion."
 	m.tracker.AddTextSegment(answer, m.width)
-	if err := store.AddMessage(ctx, m.sess.ID, session.NewMessage(m.sess.ID, llm.AssistantText(answer), len(history))); err != nil {
+	if err := store.AddMessage(ctx, m.sess.ID, session.NewMessage(m.sess.ID, core.AssistantText(answer), len(history))); err != nil {
 		t.Fatal(err)
 	}
 	m.Update(streamEventMsg{event: ui.DoneEvent(0), generation: m.streamGeneration})

@@ -14,6 +14,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -81,7 +83,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	// only runs after the user explicitly confirms the handover.
 	if strings.TrimSpace(targetAgent.HandoverScript) != "" {
 		preview := pendingTargetScriptPreview(targetAgent)
-		result := llm.HandoverFromFile(preview, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
+		result := engine.HandoverFromFile(preview, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{result: result, agentName: agentName, providerStr: providerStr}
 		}
@@ -93,7 +95,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		if doc == "" {
 			doc = "(No assistant response to hand over.)"
 		}
-		result := llm.HandoverFromFile(doc, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
+		result := engine.HandoverFromFile(doc, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{
 				result:      result,
@@ -158,7 +160,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 				if !stale {
 					content, readErr := os.ReadFile(latestFile)
 					if readErr == nil && len(content) > 0 {
-						result := llm.HandoverFromFile(string(content), transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
+						result := engine.HandoverFromFile(string(content), transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 						return m, func() tea.Msg {
 							return handoverDoneMsg{
 								result:      result,
@@ -184,7 +186,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	// boundary shared with /compact, excluding history hidden by prior compaction.
 	currentSystemPrompt, llmMessages := m.snapshotActiveHelperConversation()
 	if len(llmMessages) < 2 {
-		result := llm.HandoverFromFile("(No prior conversation to hand over.)", transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
+		result := engine.HandoverFromFile("(No prior conversation to hand over.)", transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{
 				result:      result,
@@ -205,7 +207,7 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 
 	return m, tea.Batch(
 		func() tea.Msg {
-			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, transientHandoverSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig, llm.HandoverOptions{AllowProviderFork: allowProviderFork})
+			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, transientHandoverSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig, engine.HandoverOptions{AllowProviderFork: allowProviderFork})
 			return handoverDoneMsg{result: result, err: err, agentName: agentName, providerStr: providerStr}
 		},
 		m.spinner.Tick,
@@ -232,7 +234,7 @@ func (m *Model) lastAssistantMessage() string {
 	defer m.messagesMu.Unlock()
 
 	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].Role == llm.RoleAssistant {
+		if m.messages[i].Role == core.RoleAssistant {
 			var text strings.Builder
 			for _, p := range m.messages[i].Parts {
 				if p.Text != "" {
@@ -264,7 +266,7 @@ func (m *Model) currentSystemPromptText() string {
 	m.messagesMu.Lock()
 	defer m.messagesMu.Unlock()
 	for _, msg := range m.messages {
-		if msg.Role != llm.RoleSystem {
+		if msg.Role != core.RoleSystem {
 			continue
 		}
 		for _, p := range msg.Parts {
@@ -332,7 +334,7 @@ func handoverScriptCmd(ctx context.Context, approvalMgr *tools.ApprovalManager, 
 	}
 }
 
-func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, provider string, instructions string) (*llm.HandoverResult, error) {
+func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, provider string, instructions string) (*engine.HandoverResult, error) {
 	if scriptAgent == nil {
 		return nil, fmt.Errorf("handover script agent is not configured")
 	}
@@ -346,7 +348,7 @@ func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalM
 	if strings.TrimSpace(doc) == "" {
 		return nil, fmt.Errorf("handover script produced no output")
 	}
-	return llm.HandoverFromFile(doc, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name), nil
+	return engine.HandoverFromFile(doc, transientHandoverSystemPrompt, sourceAgent, targetAgent.Name), nil
 }
 
 func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, providerStr string, confirmed bool, instructions string) (tea.Model, tea.Cmd) {
@@ -460,15 +462,15 @@ func isRelativeCommandPath(path string) bool {
 	return strings.Contains(path, "/") || strings.Contains(path, "\\") || strings.HasPrefix(path, ".")
 }
 
-func applyHandoverInstructions(result *llm.HandoverResult, instructions string) *llm.HandoverResult {
+func applyHandoverInstructions(result *engine.HandoverResult, instructions string) *engine.HandoverResult {
 	instructions = strings.TrimSpace(instructions)
 	if result == nil || instructions == "" {
 		return result
 	}
 	document := "## Additional Instructions\n\n" + instructions + "\n\n" + result.Document
-	return &llm.HandoverResult{
+	return &engine.HandoverResult{
 		Document:    document,
-		NewMessages: llm.ReconstructHandoverHistory(handoverSystemPrompt(result.NewMessages), document, result.SourceAgent, result.TargetAgent),
+		NewMessages: engine.ReconstructHandoverHistory(handoverSystemPrompt(result.NewMessages), document, result.SourceAgent, result.TargetAgent),
 		SourceAgent: result.SourceAgent,
 		TargetAgent: result.TargetAgent,
 		Model:       result.Model,
@@ -476,8 +478,8 @@ func applyHandoverInstructions(result *llm.HandoverResult, instructions string) 
 	}
 }
 
-func handoverSystemPrompt(messages []llm.Message) string {
-	if len(messages) == 0 || messages[0].Role != llm.RoleSystem {
+func handoverSystemPrompt(messages []core.Message) string {
+	if len(messages) == 0 || messages[0].Role != core.RoleSystem {
 		return ""
 	}
 	for _, p := range messages[0].Parts {
@@ -488,9 +490,9 @@ func handoverSystemPrompt(messages []llm.Message) string {
 	return ""
 }
 
-func handoverMessagesToPersist(messages []llm.Message, systemPrompt string) []llm.Message {
+func handoverMessagesToPersist(messages []core.Message, systemPrompt string) []core.Message {
 	start := 0
-	for start < len(messages) && messages[start].Role == llm.RoleSystem {
+	for start < len(messages) && messages[start].Role == core.RoleSystem {
 		start++
 	}
 
@@ -498,8 +500,8 @@ func handoverMessagesToPersist(messages []llm.Message, systemPrompt string) []ll
 		return messages[start:]
 	}
 
-	out := make([]llm.Message, 0, len(messages)-start+1)
-	out = append(out, llm.SystemText(systemPrompt))
+	out := make([]core.Message, 0, len(messages)-start+1)
+	out = append(out, core.SystemText(systemPrompt))
 	out = append(out, messages[start:]...)
 	return out
 }
@@ -602,12 +604,12 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	// Carry the source conversation's immutable time anchor through reconstructed
 	// handover history. Legacy source sessions fall back to their persisted
 	// creation time rather than being mislabeled with handover or reload time.
-	sourceMessages := make([]llm.Message, 0, len(m.messages))
+	sourceMessages := make([]core.Message, 0, len(m.messages))
 	for i := range m.messages {
 		sourceMessages = append(sourceMessages, m.messages[i].ToLLMMessage())
 	}
 	if platformText := targetAgent.PlatformMessages.For("chat"); platformText != "" {
-		result.NewMessages = llm.InsertPlatformContext(result.NewMessages, []llm.Message{llm.PlatformContextMessage(platformText)})
+		result.NewMessages = llm.InsertPlatformContext(result.NewMessages, []core.Message{llm.PlatformContextMessage(platformText)})
 	}
 	if targetAgent.TimeGroundingEnabled() {
 		result.NewMessages = llm.InsertConversationStart(result.NewMessages, sourceMessages)
@@ -616,7 +618,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 			if m.sess != nil && !m.sess.CreatedAt.IsZero() {
 				start = m.sess.CreatedAt
 			}
-			result.NewMessages = llm.InsertConversationStart(result.NewMessages, []llm.Message{llm.ConversationStartMessage(start)})
+			result.NewMessages = llm.InsertConversationStart(result.NewMessages, []core.Message{llm.ConversationStartMessage(start)})
 		}
 	} else {
 		result.NewMessages = llm.WithoutConversationStart(result.NewMessages)
@@ -685,19 +687,19 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	return m, m.quitCmd()
 }
 
-func insertHandoverMarker(messages []llm.Message, marker llm.Message) []llm.Message {
+func insertHandoverMarker(messages []core.Message, marker core.Message) []core.Message {
 	insertAt := 0
-	if len(messages) > 0 && messages[0].Role == llm.RoleSystem {
+	if len(messages) > 0 && messages[0].Role == core.RoleSystem {
 		insertAt = 1
 	}
-	out := make([]llm.Message, 0, len(messages)+1)
+	out := make([]core.Message, 0, len(messages)+1)
 	out = append(out, messages[:insertAt]...)
 	out = append(out, marker)
 	return append(out, messages[insertAt:]...)
 }
 
 // handoverModelSwapMarker records provenance in the target session only.
-func (m *Model) handoverModelSwapMarker(target *session.Session, sourceAgent string) llm.Message {
+func (m *Model) handoverModelSwapMarker(target *session.Session, sourceAgent string) core.Message {
 	provider, model := m.currentProviderAndModel()
 	base, effort := llm.BaseModelAndEffortForProvider(provider, model)
 	if m.sess != nil && m.sess.ReasoningEffort != "" {
@@ -710,7 +712,7 @@ func (m *Model) handoverModelSwapMarker(target *session.Session, sourceAgent str
 	if sourceAgent == "" {
 		sourceAgent = handoverSourceAgent(nil, m.agentName)
 	}
-	return llm.ModelSwapEventMessage(llm.ModelSwapMarker{
+	return core.ModelSwapEventMessage(core.ModelSwapMarker{
 		FromProvider: provider, FromModel: base, FromEffort: effort, FromAgent: sourceAgent,
 		ToProvider: target.ProviderKey, ToModel: targetBase, ToEffort: targetEffort, ToAgent: target.Agent,
 		Strategy: "handover", Status: "succeeded",

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // TestShellTool_BackgroundedChildKilled pins down the session-1708 behaviour:
@@ -124,7 +124,7 @@ type blockingAttributedRecorder struct {
 	release       chan struct{}
 }
 
-func (r *blockingAttributedRecorder) RecordAttributedChange(ctx context.Context, rec filetrack.ChangeRecord) (*llm.FileChange, error) {
+func (r *blockingAttributedRecorder) RecordAttributedChange(ctx context.Context, rec filetrack.ChangeRecord) (*core.FileChange, error) {
 	select {
 	case r.recordStarted <- rec:
 	case <-ctx.Done():

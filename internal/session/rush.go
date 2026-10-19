@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 var ErrSteeringConflict = errors.New("steering identity, content or ownership conflict")
@@ -126,12 +128,12 @@ func (s *SQLiteStore) AdmitRush(ctx context.Context, op RushOperation, entries [
 		if err != nil {
 			return nil, err
 		}
-		if content != string(encoded) || display != entry.DisplayText || attachments != llm.MessageAttachmentSummary(entry.Message) || (entry.Origin != "" && origin != string(entry.Origin)) || (entry.AcceptanceSequence > 0 && sequence != entry.AcceptanceSequence) {
+		if content != string(encoded) || display != entry.DisplayText || attachments != core.MessageAttachmentSummary(entry.Message) || (entry.Origin != "" && origin != string(entry.Origin)) || (entry.AcceptanceSequence > 0 && sequence != entry.AcceptanceSequence) {
 			return nil, ErrSteeringConflict
 		}
 		entry.SessionID = op.SessionID
 		entry.AcceptanceSequence = sequence
-		entry.Origin = llm.SteeringOrigin(origin)
+		entry.Origin = engine.SteeringOrigin(origin)
 		entry.AttachmentSummary = attachments
 		payload, err := json.Marshal(entry)
 		if err != nil {
@@ -228,8 +230,8 @@ func (s *SQLiteStore) CommitRushInitialInput(ctx context.Context, op *RushOperat
 		if msg == nil {
 			return 0, ErrSteeringConflict
 		}
-		if msg.Role != llm.RoleUser {
-			if msg.ClientMessageID != "" || (msg.Role != llm.RoleDeveloper && msg.Role != llm.RoleSystem) {
+		if msg.Role != core.RoleUser {
+			if msg.ClientMessageID != "" || (msg.Role != core.RoleDeveloper && msg.Role != core.RoleSystem) {
 				return 0, ErrSteeringConflict
 			}
 			continue

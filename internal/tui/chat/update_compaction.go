@@ -7,7 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -27,7 +27,7 @@ func (m *Model) handleCompactDone(msg compactDoneMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.engine != nil {
 		sessionID := sessionIDOf(m.sess)
-		var toolSpecs []llm.ToolSpec
+		var toolSpecs []core.ToolSpec
 		for _, specName := range m.localTools {
 			if tool, ok := m.engine.Tools().Get(specName); ok {
 				toolSpecs = append(toolSpecs, tool.Spec())

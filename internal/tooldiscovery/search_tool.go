@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
@@ -26,8 +26,8 @@ type SearchTool struct {
 	planner *Planner
 }
 
-func (t *SearchTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *SearchTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        ToolSearchName,
 		Description: fmt.Sprintf("Search the authorised MCP tool catalogue and load matching tool schemas for the next turn. Use query when the exact tool name is unknown, or tool_names when it is known. Keep semantic queries short and focused on one capability—usually 5–15 words and under %d Unicode code points; use separate searches for unrelated capabilities. Do not supply both. If both are supplied, tool_names takes precedence. Exact-name batches load valid tools even when another requested name is unavailable. Use this before the final turn when the needed MCP capability is not already available.", recommendedSearchQueryRunes),
 		Schema: map[string]any{
@@ -116,25 +116,25 @@ func decodeSearchInput(args json.RawMessage) (searchInput, error) {
 	return input, nil
 }
 
-func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	if t == nil || t.planner == nil {
-		return llm.ToolOutput{}, fmt.Errorf("tool catalogue is unavailable")
+		return core.ToolOutput{}, fmt.Errorf("tool catalogue is unavailable")
 	}
 	input, err := decodeSearchInput(args)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 
-	runID := llm.ToolRunIDFromContext(ctx)
+	runID := core.ToolRunIDFromContext(ctx)
 	if runID == "" {
-		return llm.ToolOutput{}, fmt.Errorf("tool_search is not attached to an active agentic run")
+		return core.ToolOutput{}, fmt.Errorf("tool_search is not attached to an active agentic run")
 	}
 	loaded, already, evicted, omitted, unavailable, label, err := t.planner.activate(runID, input)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	if len(loaded) == 0 && len(already) == 0 {
-		return llm.TextOutput(fmt.Sprintf("No available tools matched %q. Try a broader capability description or a server/tool name.", label)), nil
+		return core.TextOutput(fmt.Sprintf("No available tools matched %q. Try a broader capability description or a server/tool name.", label)), nil
 	}
 
 	var b strings.Builder
@@ -163,7 +163,7 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (llm.Too
 	if omitted > 0 {
 		fmt.Fprintf(&b, "\n\n%d additional matching tool(s) were not loaded because this single request exceeds the dynamic working-set limit.", omitted)
 	}
-	return llm.TextOutput(b.String()), nil
+	return core.TextOutput(b.String()), nil
 }
 
 func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.CatalogTool, already []string, evicted []string, omitted int, unavailable []string, label string, err error) {
@@ -356,9 +356,9 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 				reason = "least recently used"
 			}
 			state.evictionCount++
-			state.recentEvictions = append(state.recentEvictions, llm.ToolEvictionDiagnostic{Name: victim.name, Reason: reason, Executed: victim.state.Executed})
+			state.recentEvictions = append(state.recentEvictions, core.ToolEvictionDiagnostic{Name: victim.name, Reason: reason, Executed: victim.state.Executed})
 			if len(state.recentEvictions) > maxRecentEvents {
-				state.recentEvictions = append([]llm.ToolEvictionDiagnostic(nil), state.recentEvictions[len(state.recentEvictions)-maxRecentEvents:]...)
+				state.recentEvictions = append([]core.ToolEvictionDiagnostic(nil), state.recentEvictions[len(state.recentEvictions)-maxRecentEvents:]...)
 			}
 			if _, sent := state.sent[victim.name]; sent {
 				state.resetRequired = "an LRU-evicted MCP tool is no longer visible"
@@ -378,14 +378,14 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 			ActivatedAt: timeNowUTC(),
 			LastUsed:    state.lastUsed,
 		}
-		state.recent = append(state.recent, llm.ToolActivationDiagnostic{
+		state.recent = append(state.recent, core.ToolActivationDiagnostic{
 			Name:      tool.Name,
 			Namespace: tool.Namespace,
 			ChildName: tool.ChildName,
 			Reason:    activationReason(input),
 		})
 		if len(state.recent) > maxRecentEvents {
-			state.recent = append([]llm.ToolActivationDiagnostic(nil), state.recent[len(state.recent)-maxRecentEvents:]...)
+			state.recent = append([]core.ToolActivationDiagnostic(nil), state.recent[len(state.recent)-maxRecentEvents:]...)
 		}
 		loaded = append(loaded, tool)
 	}

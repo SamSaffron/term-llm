@@ -9,7 +9,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -39,7 +40,7 @@ type MainRunSnapshot struct {
 	AnchorMessageID    int64 // Deprecated: immutable run-start anchor.
 	DurableAnchorID    int64
 	DurableAnchorValid bool
-	CompletedMessages  []llm.Message
+	CompletedMessages  []core.Message
 	CompletedProvider  runboundary.ProviderContext
 	Done               <-chan struct{}
 	Err                error
@@ -58,11 +59,11 @@ type MainRunExecution struct {
 	Cancel              context.CancelFunc
 	Finalize            func(error)
 	Cleanup             func()
-	QueueSteering       func(llm.QueuedSteering) llm.SteeringQueueStatus
+	QueueSteering       func(engine.QueuedSteering) engine.SteeringQueueStatus
 	CancelSteering      func(string) bool
 	DiscardSteering     func()
-	ListSteering        func() []llm.QueuedSteering
-	DrainSteering       func() []llm.QueuedSteering
+	ListSteering        func() []engine.QueuedSteering
+	DrainSteering       func() []engine.QueuedSteering
 	AnchorMessageID     int64
 	Boundary            *runboundary.Tracker
 }
@@ -109,11 +110,11 @@ type mainRunState struct {
 	uiSinkID        uint64
 	presentation    *mainRunPresentation
 	cleanup         func()
-	queueSteering   func(llm.QueuedSteering) llm.SteeringQueueStatus
+	queueSteering   func(engine.QueuedSteering) engine.SteeringQueueStatus
 	cancelSteering  func(string) bool
 	discardSteering func()
-	listSteering    func() []llm.QueuedSteering
-	drainSteering   func() []llm.QueuedSteering
+	listSteering    func() []engine.QueuedSteering
+	drainSteering   func() []engine.QueuedSteering
 	cleanupOnce     sync.Once
 }
 
@@ -626,21 +627,21 @@ func (m *MainRunManager) signalChanged() {
 }
 
 // QueueSteering routes steering to the engine owned by sessionID's run.
-func (m *MainRunManager) QueueSteering(sessionID string, steering llm.QueuedSteering) llm.SteeringQueueStatus {
+func (m *MainRunManager) QueueSteering(sessionID string, steering engine.QueuedSteering) engine.SteeringQueueStatus {
 	if m == nil {
-		return llm.SteeringQueueRunFinished
+		return engine.SteeringQueueRunFinished
 	}
 	m.mu.RLock()
 	run := m.runs[sessionID]
 	m.mu.RUnlock()
 	if run == nil {
-		return llm.SteeringQueueRunFinished
+		return engine.SteeringQueueRunFinished
 	}
 	run.mu.Lock()
 	active, queue := run.active, run.queueSteering
 	run.mu.Unlock()
 	if !active || queue == nil {
-		return llm.SteeringQueueRunFinished
+		return engine.SteeringQueueRunFinished
 	}
 	return queue(steering)
 }
@@ -682,7 +683,7 @@ func (m *MainRunManager) DiscardSteering(sessionID string) {
 }
 
 // ListSteering returns a snapshot of steering queued on the owning run.
-func (m *MainRunManager) ListSteering(sessionID string) []llm.QueuedSteering {
+func (m *MainRunManager) ListSteering(sessionID string) []engine.QueuedSteering {
 	if m == nil {
 		return nil
 	}
@@ -702,7 +703,7 @@ func (m *MainRunManager) ListSteering(sessionID string) []llm.QueuedSteering {
 }
 
 // DrainSteering removes and returns steering queued on the owning run.
-func (m *MainRunManager) DrainSteering(sessionID string) []llm.QueuedSteering {
+func (m *MainRunManager) DrainSteering(sessionID string) []engine.QueuedSteering {
 	if m == nil {
 		return nil
 	}
@@ -835,7 +836,7 @@ func (m *MainRunManager) ActiveBoundary(sessionID string) (runboundary.Snapshot,
 // assistant message still being produced. It is ahead of the completed boundary
 // and carries no provider state, so it is only safe for reading, never for
 // branching.
-func (m *MainRunManager) ActiveLiveContext(sessionID string) ([]llm.Message, bool) {
+func (m *MainRunManager) ActiveLiveContext(sessionID string) ([]core.Message, bool) {
 	if m == nil {
 		return nil, false
 	}

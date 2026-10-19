@@ -7,7 +7,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestBuildCommandHelpRequestUsesSystemInstructions(t *testing.T) {
@@ -15,10 +16,10 @@ func TestBuildCommandHelpRequestUsesSystemInstructions(t *testing.T) {
 	if len(req.Messages) != 2 {
 		t.Fatalf("message count = %d, want 2", len(req.Messages))
 	}
-	if req.Messages[0].Role != llm.RoleSystem {
+	if req.Messages[0].Role != core.RoleSystem {
 		t.Fatalf("first message role = %q, want system", req.Messages[0].Role)
 	}
-	if req.Messages[1].Role != llm.RoleUser {
+	if req.Messages[1].Role != core.RoleUser {
 		t.Fatalf("second message role = %q, want user", req.Messages[1].Role)
 	}
 	system := req.Messages[0].Parts[0].Text
@@ -33,12 +34,12 @@ func TestBuildCommandHelpRequestUsesSystemInstructions(t *testing.T) {
 
 func TestStreamCommandHelpStopsOnContextCancel(t *testing.T) {
 	provider := &blockingHelpProvider{started: make(chan context.Context, 1)}
-	engine := llm.NewEngine(provider, nil)
+	eng := engine.NewEngine(provider, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sent := make(chan tea.Msg, 1)
-	streamDone := streamCommandHelp(ctx, engine, buildCommandHelpRequest("ls -la", "bash"), func(msg tea.Msg) {
+	streamDone := streamCommandHelp(ctx, eng, buildCommandHelpRequest("ls -la", "bash"), func(msg tea.Msg) {
 		select {
 		case sent <- msg:
 		default:
@@ -132,9 +133,9 @@ func (p *blockingHelpProvider) Name() string { return "blocking-help" }
 
 func (p *blockingHelpProvider) Credential() string { return "test" }
 
-func (p *blockingHelpProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *blockingHelpProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
 
-func (p *blockingHelpProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *blockingHelpProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	select {
 	case p.started <- ctx:
 	default:
@@ -146,9 +147,9 @@ type blockingHelpStream struct {
 	ctx context.Context
 }
 
-func (s blockingHelpStream) Recv() (llm.Event, error) {
+func (s blockingHelpStream) Recv() (core.Event, error) {
 	<-s.ctx.Done()
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 
 func (s blockingHelpStream) Close() error { return nil }

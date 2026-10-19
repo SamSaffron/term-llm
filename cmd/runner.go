@@ -8,8 +8,11 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -64,7 +67,7 @@ type cmdRunnerOptions struct {
 	// into nested runners, because a runner built for a child knows nothing
 	// about serve otherwise.
 	ChildRunObserver childRunObserver
-	AgentOwner       *agentHostOwner
+	AgentOwner       *runtime.AgentHostOwner
 }
 
 type cmdRunner struct {
@@ -87,17 +90,17 @@ type cmdRunEnvironment struct {
 	cfg           *config.Config
 	req           runpkg.Request
 	runtime       *serveRuntime
-	engine        *llm.Engine
-	provider      llm.Provider
+	engine        *engine.Engine
+	provider      core.Provider
 	modelName     string
 	settings      SessionSettings
 	store         session.Store
 	closeStore    func()
 	sess          *session.Session
-	llmReq        llm.Request
-	inputMessages []llm.Message
+	llmReq        core.Request
+	inputMessages []core.Message
 	runCtx        context.Context
-	agentOwner    *agentHostOwner
+	agentOwner    *runtime.AgentHostOwner
 }
 
 func (env *cmdRunEnvironment) Close() {
@@ -113,7 +116,7 @@ func (env *cmdRunEnvironment) Close() {
 	}
 	if env.runtime != nil && !env.req.IsSubagent {
 		if env.agentOwner != nil {
-			env.agentOwner.adopt(env.runtime, env.closeStore)
+			env.agentOwner.Adopt(env.runtime, env.closeStore)
 		} else {
 			// One-shot callers have no host owner to shut down adopted children.
 			env.runtime.CloseAfterRun(env.runCtx)
@@ -179,7 +182,7 @@ func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.Eve
 		return r.runProgressive(ctx, env.runtime, env.engine, env.llmReq, env.inputMessages, env.req, env.sess, env.store, env.provider, collector)
 	}
 
-	serveResult, err := env.runtime.RunWithEvents(ctx, env.req.Stateful, env.req.ReplaceHistory, env.inputMessages, env.llmReq, func(ev llm.Event) error {
+	serveResult, err := env.runtime.RunWithEvents(ctx, env.req.Stateful, env.req.ReplaceHistory, env.inputMessages, env.llmReq, func(ev core.Event) error {
 		return collector.Event(ev)
 	})
 	result := collector.Result(env.req.SessionID)
@@ -535,7 +538,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	configuredTools := includeConfiguredRunnerTools(req)
-	var toolSpecs []llm.ToolSpec
+	var toolSpecs []core.ToolSpec
 	if configuredTools {
 		toolSpecs = runtime.selectTools(nil)
 	}
@@ -544,21 +547,21 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 	toolSpecs = appendHostOutputToolSpec(toolSpecs, req.HostOutputTool)
 	toolSpecs = filterEngineAllowedToolSpecs(toolSpecs, engine)
-	toolChoice := llm.ToolChoice{}
+	toolChoice := core.ToolChoice{}
 	if len(toolSpecs) > 0 {
-		toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		toolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
 	}
 	caps := provider.Capabilities()
 	if req.ForceToolName != "" && caps.SupportsToolChoice {
-		toolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: req.ForceToolName}
+		toolChoice = core.ToolChoice{Mode: core.ToolChoiceName, Name: req.ForceToolName}
 	}
-	var lastTurnToolChoice *llm.ToolChoice
+	var lastTurnToolChoice *core.ToolChoice
 	if req.LastTurnForceToolName != "" && caps.SupportsToolChoice {
-		choice := llm.ToolChoice{Mode: llm.ToolChoiceName, Name: req.LastTurnForceToolName}
+		choice := core.ToolChoice{Mode: core.ToolChoiceName, Name: req.LastTurnForceToolName}
 		lastTurnToolChoice = &choice
 	}
 
-	llmReq := llm.Request{
+	llmReq := core.Request{
 		Model:                    modelName,
 		SessionID:                req.SessionID,
 		WorkingDir:               settings.BaseDir,
@@ -576,14 +579,14 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		ServiceTierSet:           req.ServiceTierSet,
 		Debug:                    runtime.debug,
 		DebugRaw:                 runtime.debugRaw,
-		ApprovalTranscriptPrefix: append([]llm.Message(nil), req.ApprovalTranscriptPrefix...),
+		ApprovalTranscriptPrefix: append([]core.Message(nil), req.ApprovalTranscriptPrefix...),
 	}
 
 	llmReq.Resume = req.Continuation
 	inputMessages := requestInputMessages(req)
 	if role := strings.TrimSpace(req.ApprovalRole); role != "" {
 		for i := range inputMessages {
-			if inputMessages[i].Role == llm.RoleUser {
+			if inputMessages[i].Role == core.RoleUser {
 				inputMessages[i].ApprovalRole = role
 			}
 		}
@@ -703,7 +706,7 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 	return settings, nil
 }
 
-func appendHostOutputToolSpec(specs []llm.ToolSpec, host *runpkg.HostOutputTool) []llm.ToolSpec {
+func appendHostOutputToolSpec(specs []core.ToolSpec, host *runpkg.HostOutputTool) []core.ToolSpec {
 	if host == nil {
 		return specs
 	}
@@ -749,7 +752,7 @@ func configureInteractiveSink(toolMgr *tools.ToolManager, sink runpkg.EventSink)
 	}
 }
 
-func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, req runpkg.Request, provider llm.Provider, providerKey, modelName, agentName string, settings SessionSettings) (*session.Session, error) {
+func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, req runpkg.Request, provider core.Provider, providerKey, modelName, agentName string, settings SessionSettings) (*session.Session, error) {
 	if store == nil || strings.TrimSpace(req.SessionID) == "" {
 		return nil, nil
 	}
@@ -800,7 +803,7 @@ func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, r
 	return sess, nil
 }
 
-func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, engine *llm.Engine, llmReq llm.Request, inputMessages []llm.Message, req runpkg.Request, sess *session.Session, store session.Store, provider llm.Provider, collector *runnerEventCollector) (runpkg.Result, error) {
+func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, engine *engine.Engine, llmReq core.Request, inputMessages []core.Message, req runpkg.Request, sess *session.Session, store session.Store, provider core.Provider, collector *runnerEventCollector) (runpkg.Result, error) {
 	if req.Progressive != nil && req.Progressive.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Progressive.Timeout)
@@ -813,12 +816,12 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 	}
 	defer releaseRootLease()
 
-	messages := append([]llm.Message(nil), inputMessages...)
+	messages := append([]core.Message(nil), inputMessages...)
 	if runtime.systemPrompt != "" && !containsSystemMessage(messages) {
-		messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)
+		messages = append([]core.Message{core.SystemText(runtime.systemPrompt)}, messages...)
 	}
 	if platformText := runtime.platformMessages.For(runtime.platform); platformText != "" {
-		messages = llm.InsertPlatformContext(messages, []llm.Message{llm.PlatformContextMessage(platformText)})
+		messages = llm.InsertPlatformContext(messages, []core.Message{llm.PlatformContextMessage(platformText)})
 	}
 	if runtime.timeGroundingEnabled() && req.Continuation == nil && (sess == nil || sess.UserTurns == 0) {
 		messages = llm.BeginConversation(messages, time.Now())
@@ -836,11 +839,11 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 	if persistStore != nil && sess != nil {
 		for _, msg := range messages {
 			_ = persistStore.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1))
-			if msg.Role == llm.RoleUser {
+			if msg.Role == core.RoleUser {
 				_ = persistStore.IncrementUserTurns(ctx, sess.ID)
 			}
 		}
-		persistResponseCompleted = func(cbCtx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+		persistResponseCompleted = func(cbCtx context.Context, turnIndex int, assistantMsg core.Message, metrics core.TurnMetrics) error {
 			sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
 			sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
 			if err := persistStore.AddMessage(cbCtx, sess.ID, sessionMsg); err != nil {
@@ -851,10 +854,10 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			}
 			return nil
 		}
-		persistTurnCompleted = func(cbCtx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		persistTurnCompleted = func(cbCtx context.Context, turnIndex int, turnMessages []core.Message, metrics core.TurnMetrics) error {
 			for _, msg := range turnMessages {
 				sessionMsg := session.NewMessage(sess.ID, msg, -1)
-				if msg.Role == llm.RoleAssistant {
+				if msg.Role == core.RoleAssistant {
 					sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
 				}
 				if err := persistStore.AddMessage(cbCtx, sess.ID, sessionMsg); err != nil {
@@ -864,7 +867,7 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			if err := persistStore.UpdateMetrics(cbCtx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
 				runtimeoutput.Logf("[runner] session UpdateMetrics failed for %s: %v", sess.ID, err)
 			} else {
-				recordStoreModelUsage(cbCtx, persistStore, sess.ID, sess.Model, session.ModelUsageMain, llm.Usage{
+				recordStoreModelUsage(cbCtx, persistStore, sess.ID, sess.Model, session.ModelUsageMain, core.Usage{
 					InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
 					CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
 				}, 1, metrics.ToolCalls)
@@ -879,7 +882,7 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			}
 			return nil
 		}
-		persistSyntheticUserMessage = func(cbCtx context.Context, msg llm.Message) error {
+		persistSyntheticUserMessage = func(cbCtx context.Context, msg core.Message) error {
 			turnStartTime = time.Now()
 			if err := persistStore.AddMessage(cbCtx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
 				return err
@@ -899,7 +902,7 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 		OnSyntheticUserMessage: persistSyntheticUserMessage,
 		OnResponseCompleted:    persistResponseCompleted,
 		OnTurnCompleted:        persistTurnCompleted,
-		OnEvent: func(ev llm.Event) error {
+		OnEvent: func(ev core.Event) error {
 			return collector.Event(ev)
 		},
 	})
@@ -928,15 +931,15 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 	return result, err
 }
 
-func requestInputMessages(req runpkg.Request) []llm.Message {
+func requestInputMessages(req runpkg.Request) []core.Message {
 	if len(req.Messages) > 0 {
-		return append([]llm.Message(nil), req.Messages...)
+		return append([]core.Message(nil), req.Messages...)
 	}
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
 		return nil
 	}
-	return []llm.Message{llm.UserText(prompt)}
+	return []core.Message{core.UserText(prompt)}
 }
 
 func runnerFirstNonEmpty(values ...string) string {
@@ -1020,9 +1023,9 @@ func progressiveFromRunResult(result *runpkg.ProgressiveResult) *progressiveRunR
 	}
 }
 
-type eventSinkFunc func(llm.Event)
+type eventSinkFunc func(core.Event)
 
-func (f eventSinkFunc) Event(ev llm.Event) {
+func (f eventSinkFunc) Event(ev core.Event) {
 	if f != nil {
 		f(ev)
 	}
@@ -1031,19 +1034,19 @@ func (f eventSinkFunc) Event(ev llm.Event) {
 type runnerEventCollector struct {
 	sink runpkg.EventSink
 
-	runnerOutput
+	runtime.RunnerOutput
 	turns  int
 	input  int
 	output int
 }
 
-func (c *runnerEventCollector) Event(ev llm.Event) error {
+func (c *runnerEventCollector) Event(ev core.Event) error {
 	if c == nil {
 		return nil
 	}
-	c.runnerOutput.Event(ev)
+	c.RunnerOutput.Event(ev)
 	switch ev.Type {
-	case llm.EventUsage:
+	case core.EventUsage:
 		if ev.Use != nil {
 			c.turns++
 			c.input += ev.Use.InputTokens
@@ -1065,8 +1068,8 @@ func (c *runnerEventCollector) Result(sessionID string) runpkg.Result {
 	}
 	return runpkg.Result{
 		SessionID:    sessionID,
-		Response:     c.response.String(),
-		Thinking:     c.thinking.String(),
+		Response:     c.Response(),
+		Thinking:     c.Thinking(),
 		Turns:        c.turns,
 		InputTokens:  c.input,
 		OutputTokens: c.output,

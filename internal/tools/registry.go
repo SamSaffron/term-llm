@@ -10,7 +10,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -37,7 +38,7 @@ type LocalToolRegistry struct {
 	shellRoutingMode             ShellRoutingMode
 
 	// Registered tools
-	tools map[string]llm.Tool
+	tools map[string]core.Tool
 }
 
 // NewLocalToolRegistry creates a new registry from configuration.
@@ -70,7 +71,7 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 		limits:           DefaultOutputLimits(),
 		appConfig:        appConfig,
 		shellRoutingMode: ShellRoutingLocalOnly,
-		tools:            make(map[string]llm.Tool),
+		tools:            make(map[string]core.Tool),
 	}
 
 	// Register enabled tools
@@ -285,7 +286,7 @@ func (r *LocalToolRegistry) SetJobsServer(baseURL, token string) {
 }
 
 // newSessionStateTool constructs non-filesystem, session-bound state controls.
-func (r *LocalToolRegistry) newSessionStateTool(name string) llm.Tool {
+func (r *LocalToolRegistry) newSessionStateTool(name string) core.Tool {
 	if name == LiveSettingsToolName {
 		return &LiveSettingsTool{}
 	}
@@ -296,7 +297,7 @@ func (r *LocalToolRegistry) newSessionStateTool(name string) llm.Tool {
 
 // SetViewImageVisionProvider switches view_image into routed-vision mode. If
 // view_image was not enabled, it is registered so the primary model can call it.
-func (r *LocalToolRegistry) SetViewImageVisionProvider(provider llm.Provider, model string) {
+func (r *LocalToolRegistry) SetViewImageVisionProvider(provider core.Provider, model string) {
 	if r == nil || provider == nil {
 		return
 	}
@@ -321,15 +322,15 @@ func stringSliceContains(values []string, needle string) bool {
 }
 
 // RegisterWithEngine registers all enabled tools with the LLM engine.
-func (r *LocalToolRegistry) RegisterWithEngine(engine *llm.Engine) {
+func (r *LocalToolRegistry) RegisterWithEngine(eng *engine.Engine) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	for _, tool := range r.tools {
-		engine.RegisterTool(tool)
+		eng.RegisterTool(tool)
 	}
-	if lifecycle, ok := r.fileRecorder.(llm.FileTrackingRunLifecycle); ok {
-		engine.SetFileTrackingRunLifecycle(lifecycle)
+	if lifecycle, ok := r.fileRecorder.(engine.FileTrackingRunLifecycle); ok {
+		eng.SetFileTrackingRunLifecycle(lifecycle)
 	}
 }
 
@@ -352,11 +353,11 @@ func (r *LocalToolRegistry) SetPlanStore(store session.Store) {
 }
 
 // GetSpecs returns tool specs for all enabled tools.
-func (r *LocalToolRegistry) GetSpecs() []llm.ToolSpec {
+func (r *LocalToolRegistry) GetSpecs() []core.ToolSpec {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	specs := make([]llm.ToolSpec, 0, len(r.tools))
+	specs := make([]core.ToolSpec, 0, len(r.tools))
 	for _, tool := range r.tools {
 		specs = append(specs, tool.Spec())
 	}
@@ -364,7 +365,7 @@ func (r *LocalToolRegistry) GetSpecs() []llm.ToolSpec {
 }
 
 // Get returns a tool by spec name.
-func (r *LocalToolRegistry) Get(specName string) (llm.Tool, bool) {
+func (r *LocalToolRegistry) Get(specName string) (core.Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -605,18 +606,18 @@ func (m *ToolManager) IsReadPathApproved(path string) bool {
 }
 
 // SetupEngine registers tools with the engine.
-func (m *ToolManager) SetupEngine(engine *llm.Engine) {
+func (m *ToolManager) SetupEngine(engine *engine.Engine) {
 	m.Registry.RegisterWithEngine(engine)
 }
 
 // FilterToolSpecsForApprovalMode removes tools that have no model-facing use in
 // the effective approval mode. Executors stay registered so an in-flight call
 // issued before a mode change can still complete safely.
-func FilterToolSpecsForApprovalMode(specs []llm.ToolSpec, approval *ApprovalManager) []llm.ToolSpec {
+func FilterToolSpecsForApprovalMode(specs []core.ToolSpec, approval *ApprovalManager) []core.ToolSpec {
 	if approval == nil || (!approval.YoloEnabled() && approval.WorkspacePolicy != "none") {
 		return specs
 	}
-	filtered := make([]llm.ToolSpec, 0, len(specs))
+	filtered := make([]core.ToolSpec, 0, len(specs))
 	for _, spec := range specs {
 		if spec.Name != ManageWorkspaceToolName {
 			filtered = append(filtered, spec)
@@ -626,7 +627,7 @@ func FilterToolSpecsForApprovalMode(specs []llm.ToolSpec, approval *ApprovalMana
 }
 
 // GetSpecs returns all model-facing tool specs for the effective approval mode.
-func (m *ToolManager) GetSpecs() []llm.ToolSpec {
+func (m *ToolManager) GetSpecs() []core.ToolSpec {
 	if m == nil || m.Registry == nil {
 		return nil
 	}
@@ -731,7 +732,7 @@ func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skill
 
 // RestoreSkillTools removes tools registered for a skill turn and restores any
 // same-named tools that were present before that turn.
-func (r *LocalToolRegistry) RestoreSkillTools(names []string, previous map[string]llm.Tool) {
+func (r *LocalToolRegistry) RestoreSkillTools(names []string, previous map[string]core.Tool) {
 	if r == nil {
 		return
 	}

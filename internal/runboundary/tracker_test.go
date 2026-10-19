@@ -3,7 +3,7 @@ package runboundary
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestNilTrackerSnapshotHasNoCompletedTurn(t *testing.T) {
@@ -14,15 +14,15 @@ func TestNilTrackerSnapshotHasNoCompletedTurn(t *testing.T) {
 }
 
 func TestTrackerCompletedAndDurableBoundaries(t *testing.T) {
-	base := []llm.Message{llm.SystemText("system"), llm.UserText("question")}
+	base := []core.Message{core.SystemText("system"), core.UserText("question")}
 	tracker := New("run-1", base, 10, true, ProviderContext{})
-	tracker.UpdateAssistant("run-1", llm.AssistantText("partial"))
+	tracker.UpdateAssistant("run-1", core.AssistantText("partial"))
 	if got := tracker.CompletedSnapshot(); len(got.Messages) != len(base) || got.DurableAnchorID != 10 || !got.Durable {
 		t.Fatalf("partial advanced boundary: %#v", got)
 	}
-	toolCall := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read_file"}}}}
-	toolResult := llm.ToolResultMessage("call-1", "read_file", "result", nil)
-	if !tracker.Commit("run-1", 0, []llm.Message{toolCall, toolResult}, ProviderContext{}) {
+	toolCall := core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "read_file"}}}}
+	toolResult := core.ToolResultMessage("call-1", "read_file", "result", nil)
+	if !tracker.Commit("run-1", 0, []core.Message{toolCall, toolResult}, ProviderContext{}) {
 		t.Fatal("commit rejected")
 	}
 	if got := tracker.CompletedSnapshot(); len(got.Messages) != 4 || got.DurableAnchorID != 10 {
@@ -31,7 +31,7 @@ func TestTrackerCompletedAndDurableBoundaries(t *testing.T) {
 	if !tracker.PublishDurable("run-1", 0, 12) {
 		t.Fatal("durable publication rejected")
 	}
-	tracker.UpdateAssistant("run-1", llm.AssistantText("next partial"))
+	tracker.UpdateAssistant("run-1", core.AssistantText("next partial"))
 	got := tracker.CompletedSnapshot()
 	if len(got.Messages) != 4 || got.DurableAnchorID != 12 || !got.Durable {
 		t.Fatalf("next partial advanced boundary: %#v", got)
@@ -39,7 +39,7 @@ func TestTrackerCompletedAndDurableBoundaries(t *testing.T) {
 }
 
 func TestTrackerPublishesProviderStateWithTheMessagesItBelongsTo(t *testing.T) {
-	base := []llm.Message{llm.SystemText("system"), llm.UserText("question")}
+	base := []core.Message{core.SystemText("system"), core.UserText("question")}
 	start := ProviderContext{State: []byte(`{"session_id":"S1","messages_sent":2}`), WorkingDir: "/w", ProviderKey: "claude-bin", Model: "opus-max"}
 	tracker := New("run-1", base, 10, true, start)
 
@@ -49,7 +49,7 @@ func TestTrackerPublishesProviderStateWithTheMessagesItBelongsTo(t *testing.T) {
 	}
 
 	turn := ProviderContext{State: []byte(`{"session_id":"S1","messages_sent":3}`), WorkingDir: "/w", ProviderKey: "claude-bin", Model: "opus-max"}
-	if !tracker.Commit("run-1", 0, []llm.Message{llm.AssistantText("answer")}, turn) {
+	if !tracker.Commit("run-1", 0, []core.Message{core.AssistantText("answer")}, turn) {
 		t.Fatal("commit rejected")
 	}
 	got = tracker.CompletedSnapshot()
@@ -60,7 +60,7 @@ func TestTrackerPublishesProviderStateWithTheMessagesItBelongsTo(t *testing.T) {
 	// A turn completion with no provider advance (steering injection, error
 	// recovery) must keep the previous state rather than publish nothing: being
 	// behind the messages is safe, being ahead of them is not.
-	if !tracker.Commit("run-1", 1, []llm.Message{llm.UserText("steering")}, ProviderContext{}) {
+	if !tracker.Commit("run-1", 1, []core.Message{core.UserText("steering")}, ProviderContext{}) {
 		t.Fatal("stateless commit rejected")
 	}
 	got = tracker.CompletedSnapshot()
@@ -70,7 +70,7 @@ func TestTrackerPublishesProviderStateWithTheMessagesItBelongsTo(t *testing.T) {
 
 	// A rejected out-of-order commit must not pair new state with old messages.
 	ahead := ProviderContext{State: []byte(`{"session_id":"S1","messages_sent":99}`), ProviderKey: "claude-bin", Model: "opus-max"}
-	if tracker.Commit("run-1", 1, []llm.Message{llm.AssistantText("duplicate")}, ahead) {
+	if tracker.Commit("run-1", 1, []core.Message{core.AssistantText("duplicate")}, ahead) {
 		t.Fatal("accepted an out-of-order commit")
 	}
 	if got = tracker.CompletedSnapshot(); string(got.Provider.State) != string(turn.State) {
@@ -116,15 +116,15 @@ func TestSnapshotProviderStateIsDetached(t *testing.T) {
 }
 
 func TestTrackerFailsClosedAndRejectsStaleUpdates(t *testing.T) {
-	tracker := New("old", []llm.Message{llm.UserText("old")}, 1, true, ProviderContext{})
-	tracker.Reset("new", []llm.Message{llm.UserText("new")}, 0, false, ProviderContext{})
-	if tracker.Commit("old", 0, []llm.Message{llm.AssistantText("stale")}, ProviderContext{}) || tracker.PublishDurable("old", 0, 99) {
+	tracker := New("old", []core.Message{core.UserText("old")}, 1, true, ProviderContext{})
+	tracker.Reset("new", []core.Message{core.UserText("new")}, 0, false, ProviderContext{})
+	if tracker.Commit("old", 0, []core.Message{core.AssistantText("stale")}, ProviderContext{}) || tracker.PublishDurable("old", 0, 99) {
 		t.Fatal("accepted stale run update")
 	}
 	if got := tracker.CompletedSnapshot(); got.Durable || got.DurableAnchorID != 0 || len(got.Messages) != 1 {
 		t.Fatalf("new boundary corrupted: %#v", got)
 	}
-	if !tracker.Commit("new", 0, []llm.Message{llm.AssistantText("done")}, ProviderContext{}) {
+	if !tracker.Commit("new", 0, []core.Message{core.AssistantText("done")}, ProviderContext{}) {
 		t.Fatal("new commit rejected")
 	}
 	if tracker.PublishDurable("new", -1, 2) || tracker.PublishDurable("new", 0, 0) {

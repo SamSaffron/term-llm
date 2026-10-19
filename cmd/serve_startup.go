@@ -45,22 +45,7 @@ func shutdownServe(ctx context.Context, server *serveServer, wg *sync.WaitGroup,
 	wg.Wait()
 }
 
-func parseServeToolMap(entries []string) (map[string]string, error) {
-	var toolMap map[string]string
-	for _, entry := range entries {
-		parts := strings.SplitN(entry, ":", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return nil, fmt.Errorf("invalid --tool-map %q (expected ClientName:ServerName)", entry)
-		}
-		if toolMap == nil {
-			toolMap = make(map[string]string)
-		}
-		toolMap[parts[0]] = parts[1]
-	}
-	return toolMap, nil
-}
-
-func resolveServeStartup(cmd *cobra.Command) (serveStartupResolution, error) {
+func resolveServeStartup(cmd *cobra.Command, opts *ServeOptions) (serveStartupResolution, error) {
 	var out serveStartupResolution
 	var err error
 	out.startupDir, err = os.Getwd()
@@ -70,58 +55,43 @@ func resolveServeStartup(cmd *cobra.Command) (serveStartupResolution, error) {
 	if cmd.Flags().Changed("projects") && cmd.Flags().Changed("no-projects") {
 		return out, fmt.Errorf("--projects and --no-projects cannot be used together")
 	}
-	if servePort <= 0 || servePort > 65535 {
-		return out, fmt.Errorf("invalid --port %d (must be 1-65535)", servePort)
+	if err := opts.Validate(cmd.Flags().Changed("response-timeout")); err != nil {
+		return out, err
 	}
-	if serveSessionTTL <= 0 {
-		return out, fmt.Errorf("invalid --session-ttl %s (must be > 0)", serveSessionTTL)
-	}
-	if serveSessionMax <= 0 {
-		return out, fmt.Errorf("invalid --session-max %d (must be > 0)", serveSessionMax)
-	}
-	if serveTelegramCarryoverChars < 0 {
-		return out, fmt.Errorf("invalid --telegram-carryover-chars %d (must be >= 0)", serveTelegramCarryoverChars)
-	}
-	if serveJobsWorkers <= 0 {
-		return out, fmt.Errorf("invalid --jobs-workers %d (must be > 0)", serveJobsWorkers)
-	}
-	if cmd.Flags().Changed("response-timeout") && serveResponseTimeout <= 0 {
-		return out, fmt.Errorf("invalid --response-timeout %s (must be > 0)", serveResponseTimeout)
-	}
-	out.sidebarSessions, err = parseSidebarSessionCategories(serveSidebarSessions, true)
+	out.sidebarSessions, err = parseSidebarSessionCategories(opts.SidebarSessions, true)
 	if err != nil {
 		return out, err
 	}
-	out.authMode, err = resolveServeAuthMode(cmd.Flags().Changed("auth"), serveAuthMode, cmd.Flags().Changed("no-auth") || cmd.Flags().Changed("allow-no-auth"), serveAllowNoAuth)
+	out.authMode, err = resolveServeAuthMode(cmd.Flags().Changed("auth"), opts.AuthMode, cmd.Flags().Changed("no-auth") || cmd.Flags().Changed("allow-no-auth"), opts.AllowNoAuth)
 	if err != nil {
 		return out, err
 	}
 	if out.authMode == "passkey" {
-		out.passkeyEndpoint, err = resolveWebPasskeyEndpoint(cmd)
+		out.passkeyEndpoint, err = resolveWebPasskeyEndpoint(cmd, *opts)
 		if err != nil {
 			return out, err
 		}
-		serveBasePath, servePublicURL = out.passkeyEndpoint.BasePath, out.passkeyEndpoint.URL.String()
+		opts.BasePath, opts.PublicURL = out.passkeyEndpoint.BasePath, out.passkeyEndpoint.URL.String()
 	}
 	out.requireAuth = out.authMode != "none"
-	if !out.requireAuth && !isLoopbackHost(serveHost) {
-		return out, fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", serveHost)
+	if !out.requireAuth && !isLoopbackHost(opts.Host) {
+		return out, fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", opts.Host)
 	}
-	out.token, out.tokenSource, err = resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), out.authMode == "bearer", restoreOrGenerateServeToken)
+	out.token, out.tokenSource, err = resolveServeToken(opts.Token, os.Getenv("TERM_LLM_SERVE_TOKEN"), out.authMode == "bearer", restoreOrGenerateServeToken)
 	if err != nil {
 		return out, err
 	}
-	serveHubConnect = strings.ToLower(strings.TrimSpace(serveHubConnect))
-	if serveHubConnect == "" {
-		serveHubConnect = "direct"
+	opts.HubConnect = strings.ToLower(strings.TrimSpace(opts.HubConnect))
+	if opts.HubConnect == "" {
+		opts.HubConnect = "direct"
 	}
-	if serveHubConnect != "direct" && serveHubConnect != "reverse" {
-		return out, fmt.Errorf("invalid --hub-connect %q (use direct or reverse)", serveHubConnect)
+	if opts.HubConnect != "direct" && opts.HubConnect != "reverse" {
+		return out, fmt.Errorf("invalid --hub-connect %q (use direct or reverse)", opts.HubConnect)
 	}
-	if serveHubRegister {
-		out.hubRegistrationToken = resolveServeHubRegistrationToken(serveHubRegistrationToken)
+	if opts.HubRegister {
+		out.hubRegistrationToken = resolveServeHubRegistrationToken(opts.HubRegistrationToken)
 	}
-	if hubURL, hubNodeID := strings.TrimSpace(serveHubURL), strings.TrimSpace(serveHubNodeID); hubURL != "" && hubNodeID != "" && out.token != "" {
+	if hubURL, hubNodeID := strings.TrimSpace(opts.HubURL), strings.TrimSpace(opts.HubNodeID); hubURL != "" && hubNodeID != "" && out.token != "" {
 		tools.ConfigureHubDelegation(hubURL, hubNodeID, out.token)
 	}
 	return out, nil

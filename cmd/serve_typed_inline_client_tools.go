@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // Typed WebMCP calls belong to the response that offered them, not to a live
@@ -38,9 +38,9 @@ type typedClientToolRunner struct {
 
 func (r *typedClientToolRunner) OwnsClientTool(name string) bool { return r.names[name] }
 
-func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call llm.ToolCall) (llm.ToolOutput, error) {
+func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call core.ToolCall) (core.ToolOutput, error) {
 	if !r.names[call.Name] {
-		return llm.ToolOutput{}, fmt.Errorf("client tool %q was not offered", call.Name)
+		return core.ToolOutput{}, fmt.Errorf("client tool %q was not offered", call.Name)
 	}
 	if r.runtime != nil {
 		defer r.runtime.pauseForInteractiveWait()()
@@ -56,32 +56,32 @@ func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call llm.Tool
 	}
 	if r.calls >= liveClientToolInlineCallLimit {
 		r.mu.Unlock()
-		return llm.ToolOutput{}, fmt.Errorf("stopped after %d device tool calls", liveClientToolInlineCallLimit)
+		return core.ToolOutput{}, fmt.Errorf("stopped after %d device tool calls", liveClientToolInlineCallLimit)
 	}
 	if _, exists := r.answered[call.ID]; exists {
 		r.mu.Unlock()
-		return llm.ToolOutput{}, fmt.Errorf("duplicate client tool call %q", call.ID)
+		return core.ToolOutput{}, fmt.Errorf("duplicate client tool call %q", call.ID)
 	}
 	if _, exists := r.pending[call.ID]; exists {
 		r.mu.Unlock()
-		return llm.ToolOutput{}, fmt.Errorf("duplicate client tool call %q", call.ID)
+		return core.ToolOutput{}, fmt.Errorf("duplicate client tool call %q", call.ID)
 	}
 	r.pending[call.ID] = answer
 	r.calls++
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.pending, call.ID); r.mu.Unlock() }()
 	if err := r.run.appendEvent("response.client_tool.requested", map[string]any{"call_id": call.ID, "name": call.Name, "arguments": args}); err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("request client tool: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("request client tool: %w", err)
 	}
 	timer := time.NewTimer(typedClientToolTimeout)
 	defer timer.Stop()
 	select {
 	case <-answer.done:
-		return llm.TextOutput(answer.output), nil
+		return core.TextOutput(answer.output), nil
 	case <-timer.C:
-		return llm.ToolOutput{}, errors.New("the device did not run its tool in time")
+		return core.ToolOutput{}, errors.New("the device did not run its tool in time")
 	case <-ctx.Done():
-		return llm.ToolOutput{}, ctx.Err()
+		return core.ToolOutput{}, ctx.Err()
 	}
 }
 
@@ -97,7 +97,7 @@ func (r *typedClientToolRunner) pendingSnapshot() []map[string]string {
 	return calls
 }
 
-func (s *serveServer) typedClientToolRunner(runtime *serveRuntime, tools []llm.ToolSpec) func(string) llm.ClientToolRunner {
+func (s *serveServer) typedClientToolRunner(runtime *serveRuntime, tools []core.ToolSpec) func(string) core.ClientToolRunner {
 	names := make(map[string]bool)
 	for _, tool := range tools {
 		if strings.HasPrefix(tool.Name, "webmcp__") {
@@ -107,7 +107,7 @@ func (s *serveServer) typedClientToolRunner(runtime *serveRuntime, tools []llm.T
 	if len(names) == 0 {
 		return nil
 	}
-	return func(responseID string) llm.ClientToolRunner {
+	return func(responseID string) core.ClientToolRunner {
 		run, ok := s.ensureResponseRuns().get(responseID)
 		if !ok {
 			return nil

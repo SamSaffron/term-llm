@@ -1,0 +1,462 @@
+package memory
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/embedding"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
+)
+
+const (
+	memorySearchCandidateLimit   = 24
+	memorySearchVectorWeight     = 0.7
+	memorySearchBM25Weight       = 0.3
+	memorySearchMMRLambda        = 0.5
+	memorySearchMinScore         = 0.35
+	memorySearchMinScoreBM25Only = 0.10 // lower threshold for fragments with no embedding
+)
+
+// SearchOptions configures `memory search`.
+type SearchOptions struct {
+	Env
+	Limit             int
+	JSON              bool
+	EmbedProvider     string
+	ApplyDecay        bool
+	Freshness         bool
+	FreshnessHalfLife float64
+	BM25Only          bool
+	Touch             bool
+}
+
+type hybridSearchCandidate struct {
+	fragment    memorydb.ScoredFragment
+	vectorScore float64
+	bm25Score   float64
+	mergedScore float64
+}
+
+// Search runs a hybrid BM25 + vector search over memory fragments.
+func Search(opts SearchOptions, args []string) error {
+	env := opts.Env
+	store, err := env.OpenStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	query := strings.TrimSpace(strings.Join(args, " "))
+	if query == "" {
+		return fmt.Errorf("query cannot be empty")
+	}
+
+	if opts.Limit <= 0 {
+		opts.Limit = 6
+	}
+	if opts.FreshnessHalfLife <= 0 {
+		return fmt.Errorf("--freshness-half-life must be > 0")
+	}
+
+	ctx := context.Background()
+	results, err := searchMemory(ctx, opts, store, query)
+	if err != nil {
+		return err
+	}
+
+	if opts.Touch && len(results) > 0 {
+		for _, r := range results {
+			if r.ID == "" {
+				continue
+			}
+			if err := store.BumpAccess(ctx, r.ID); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to bump access for fragment %s: %v\n", r.ID, err)
+			}
+		}
+	}
+
+	output := projectSearchResults(results)
+	if opts.JSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(output)
+	}
+
+	if len(output) == 0 {
+		fmt.Println("No memory fragments found.")
+		return nil
+	}
+
+	if env.AgentFilter() == "" {
+		fmt.Printf("%-14s %-36s %s\n", "AGENT", "PATH", "SNIPPET")
+		fmt.Println(strings.Repeat("-", 108))
+		for _, r := range output {
+			fmt.Printf("%-14s %-36s %s\n", r.Agent, truncateString(r.Path, 36), oneLine(truncateString(r.Snippet, 64)))
+		}
+		return nil
+	}
+
+	fmt.Printf("%-36s %s\n", "PATH", "SNIPPET")
+	fmt.Println(strings.Repeat("-", 96))
+	for _, r := range output {
+		fmt.Printf("%-36s %s\n", truncateString(r.Path, 36), oneLine(truncateString(r.Snippet, 64)))
+	}
+
+	return nil
+}
+
+func searchMemory(ctx context.Context, opts SearchOptions, store *memorydb.Store, query string) ([]memorydb.ScoredFragment, error) {
+	env := opts.Env
+	agent := env.AgentFilter()
+
+	if opts.BM25Only {
+		bm25Limit := opts.Limit
+		if opts.usesScoreModifiers() && bm25Limit < memorySearchCandidateLimit {
+			bm25Limit = memorySearchCandidateLimit
+		}
+		candidates, err := store.SearchBM25(ctx, query, bm25Limit, agent)
+		if err != nil {
+			return nil, err
+		}
+		return limitScoredFragments(opts.applyScoreOptions(candidates), opts.Limit), nil
+	}
+
+	bm25Candidates, err := store.SearchBM25(ctx, query, memorySearchCandidateLimit, agent)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg, err := env.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	providerName, modelName, providerSpec := resolveMemoryEmbeddingProvider(cfg, opts.EmbedProvider)
+	if providerName == "" || providerSpec == "" {
+		fmt.Fprintln(os.Stderr, "warning: embedding provider unavailable, falling back to BM25-only search")
+		return limitScoredFragments(opts.applyScoreOptions(bm25Candidates), opts.Limit), nil
+	}
+
+	embedder, err := embedding.NewEmbeddingProvider(cfg, providerSpec)
+	if err != nil {
+		if strings.TrimSpace(opts.EmbedProvider) != "" {
+			return nil, err
+		}
+		fmt.Fprintf(os.Stderr, "warning: embedding provider initialization failed (%v), falling back to BM25-only search\n", err)
+		return limitScoredFragments(opts.applyScoreOptions(bm25Candidates), opts.Limit), nil
+	}
+
+	embRes, err := embedder.Embed(ctx, embedding.EmbedRequest{
+		Texts:    []string{query},
+		Model:    modelName,
+		TaskType: "RETRIEVAL_QUERY",
+	})
+	if err != nil {
+		if strings.TrimSpace(opts.EmbedProvider) != "" {
+			return nil, err
+		}
+		fmt.Fprintf(os.Stderr, "warning: query embedding failed (%v), falling back to BM25-only search\n", err)
+		return limitScoredFragments(opts.applyScoreOptions(bm25Candidates), opts.Limit), nil
+	}
+	if len(embRes.Embeddings) == 0 || len(embRes.Embeddings[0].Vector) == 0 {
+		fmt.Fprintln(os.Stderr, "warning: empty query embedding result, falling back to BM25-only search")
+		return limitScoredFragments(opts.applyScoreOptions(bm25Candidates), opts.Limit), nil
+	}
+
+	queryVec := embRes.Embeddings[0].Vector
+	if modelName == "" {
+		modelName = strings.TrimSpace(embRes.Model)
+	}
+
+	vectorCandidates, err := store.VectorSearch(ctx, agent, providerName, modelName, queryVec, memorySearchCandidateLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := opts.mergeCandidates(ctx, store, providerName, modelName, bm25Candidates, vectorCandidates)
+	if len(merged) == 0 {
+		return nil, nil
+	}
+
+	reranked := rerankMMR(merged)
+	out := make([]memorydb.ScoredFragment, 0, opts.Limit)
+	for _, c := range reranked {
+		threshold := memorySearchMinScore
+		if c.vectorScore == 0 {
+			threshold = memorySearchMinScoreBM25Only
+		}
+		if c.mergedScore < threshold {
+			continue
+		}
+		out = append(out, c.fragment)
+		if len(out) >= opts.Limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (opts SearchOptions) mergeCandidates(ctx context.Context, store *memorydb.Store, provider, model string, bm25, vector []memorydb.ScoredFragment) []*hybridSearchCandidate {
+	bm25Norm := normalizeBM25Scores(bm25)
+	merged := map[string]*hybridSearchCandidate{}
+
+	for _, candidate := range vector {
+		entry := merged[candidate.ID]
+		if entry == nil {
+			c := candidate
+			entry = &hybridSearchCandidate{fragment: c}
+			merged[candidate.ID] = entry
+		}
+		entry.vectorScore = maxFloat(entry.vectorScore, normalizeCosineScore(candidate.Score))
+		if entry.fragment.Snippet == "" {
+			entry.fragment.Snippet = snippetFromContent(candidate.Content)
+		}
+	}
+
+	for _, candidate := range bm25 {
+		entry := merged[candidate.ID]
+		if entry == nil {
+			c := candidate
+			entry = &hybridSearchCandidate{fragment: c}
+			merged[candidate.ID] = entry
+		}
+		entry.bm25Score = maxFloat(entry.bm25Score, bm25Norm[candidate.ID])
+		if entry.fragment.Snippet == "" {
+			entry.fragment.Snippet = candidate.Snippet
+		}
+	}
+
+	if provider != "" && model != "" {
+		missing := make([]string, 0, len(merged))
+		for id, entry := range merged {
+			if len(entry.fragment.Vector) == 0 {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			vectors, err := store.GetEmbeddingsByIDs(ctx, missing, provider, model)
+			if err == nil {
+				for id, vec := range vectors {
+					if entry := merged[id]; entry != nil && len(entry.fragment.Vector) == 0 && len(vec) > 0 {
+						entry.fragment.Vector = vec
+					}
+				}
+			}
+		}
+	}
+
+	now := time.Now()
+	out := make([]*hybridSearchCandidate, 0, len(merged))
+	for _, candidate := range merged {
+		var score float64
+		if candidate.vectorScore > 0 {
+			// Full hybrid score: both signals available
+			score = memorySearchVectorWeight*candidate.vectorScore + memorySearchBM25Weight*candidate.bm25Score
+		} else {
+			// No embedding yet — use BM25 score directly, scaled to hybrid range.
+			// Multiply by BM25Weight so embedded fragments always rank above equally-good
+			// BM25-only ones, but BM25-only fragments are no longer buried below minScore.
+			score = candidate.bm25Score
+		}
+		score = opts.applyScoreModifiers(score, candidate.fragment, now)
+		candidate.mergedScore = score
+		candidate.fragment.Score = score
+		if candidate.fragment.Snippet == "" {
+			candidate.fragment.Snippet = snippetFromContent(candidate.fragment.Content)
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func rerankMMR(candidates []*hybridSearchCandidate) []*hybridSearchCandidate {
+	remaining := append([]*hybridSearchCandidate(nil), candidates...)
+	selected := make([]*hybridSearchCandidate, 0, len(candidates))
+
+	for len(remaining) > 0 {
+		bestIdx := 0
+		bestScore := math.Inf(-1)
+		for i, candidate := range remaining {
+			maxSimilarity := 0.0
+			for _, picked := range selected {
+				sim := candidateSimilarity(candidate.fragment, picked.fragment)
+				if sim > maxSimilarity {
+					maxSimilarity = sim
+				}
+			}
+			// MMR only affects ordering; mergedScore drives the final min-score cutoff.
+			mmrScore := memorySearchMMRLambda*candidate.mergedScore - (1.0-memorySearchMMRLambda)*maxSimilarity
+			if mmrScore > bestScore {
+				bestScore = mmrScore
+				bestIdx = i
+			}
+		}
+
+		selected = append(selected, remaining[bestIdx])
+		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
+	}
+
+	return selected
+}
+
+func candidateSimilarity(a, b memorydb.ScoredFragment) float64 {
+	if len(a.Vector) == 0 || len(b.Vector) == 0 {
+		return 0
+	}
+	sim := embedding.CosineSimilarity(a.Vector, b.Vector)
+	if sim < 0 {
+		return 0
+	}
+	if sim > 1 {
+		return 1
+	}
+	return sim
+}
+
+func normalizeBM25Scores(candidates []memorydb.ScoredFragment) map[string]float64 {
+	out := make(map[string]float64, len(candidates))
+	if len(candidates) == 0 {
+		return out
+	}
+
+	transformed := make([]float64, len(candidates))
+	minScore := math.Inf(1)
+	maxScore := math.Inf(-1)
+	for i, candidate := range candidates {
+		relevance := candidate.Score
+		transformed[i] = relevance
+		if relevance < minScore {
+			minScore = relevance
+		}
+		if relevance > maxScore {
+			maxScore = relevance
+		}
+	}
+
+	if maxScore-minScore < 1e-9 {
+		for _, candidate := range candidates {
+			out[candidate.ID] = 0.5
+		}
+		return out
+	}
+
+	for i, candidate := range candidates {
+		norm := (transformed[i] - minScore) / (maxScore - minScore)
+		if norm < 0 {
+			norm = 0
+		} else if norm > 1 {
+			norm = 1
+		}
+		out[candidate.ID] = norm
+	}
+	return out
+}
+
+func normalizeCosineScore(raw float64) float64 {
+	if raw < 0 {
+		return 0
+	}
+	if raw > 1 {
+		return 1
+	}
+	return raw
+}
+
+func (opts SearchOptions) usesScoreModifiers() bool {
+	return opts.ApplyDecay || opts.Freshness
+}
+
+func (opts SearchOptions) applyScoreOptions(in []memorydb.ScoredFragment) []memorydb.ScoredFragment {
+	if !opts.usesScoreModifiers() || len(in) == 0 {
+		return in
+	}
+
+	now := time.Now()
+	out := append([]memorydb.ScoredFragment(nil), in...)
+	for i := range out {
+		out[i].Score = opts.applyScoreModifiers(out[i].Score, out[i], now)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if math.Abs(out[i].Score-out[j].Score) < 1e-12 {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
+		return out[i].Score > out[j].Score
+	})
+	return out
+}
+
+func (opts SearchOptions) applyScoreModifiers(score float64, fragment memorydb.ScoredFragment, now time.Time) float64 {
+	if opts.ApplyDecay {
+		decay := fragment.DecayScore
+		if decay <= 0 {
+			decay = 1.0
+		}
+		score *= decay
+	}
+	if opts.Freshness {
+		score *= memorySearchFreshnessMultiplier(fragment, opts.FreshnessHalfLife, now)
+	}
+	return score
+}
+
+func memorySearchFreshnessMultiplier(fragment memorydb.ScoredFragment, halfLifeDays float64, now time.Time) float64 {
+	return memorydb.ComputeDecayScore(fragment.UpdatedAt, fragment.AccessedAt, halfLifeDays, now)
+}
+
+func limitScoredFragments(in []memorydb.ScoredFragment, limit int) []memorydb.ScoredFragment {
+	if limit <= 0 || len(in) <= limit {
+		return in
+	}
+	return in[:limit]
+}
+
+func projectSearchResults(results []memorydb.ScoredFragment) []memorydb.SearchResult {
+	out := make([]memorydb.SearchResult, 0, len(results))
+	for _, result := range results {
+		snippet := result.Snippet
+		if snippet == "" {
+			snippet = snippetFromContent(result.Content)
+		}
+		out = append(out, memorydb.SearchResult{
+			Agent:   result.Agent,
+			Path:    result.Path,
+			Snippet: snippet,
+			Score:   result.Score,
+		})
+	}
+	return out
+}
+
+func snippetFromContent(content string) string {
+	content = oneLine(strings.TrimSpace(content))
+	return truncateString(content, 140)
+}
+
+func maxFloat(a, b float64) float64 {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+func truncateString(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return strings.TrimSpace(s)
+}

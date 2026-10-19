@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -30,7 +30,7 @@ func CompactionBoundaryIndex(messages []session.Message, hasBoundary bool, seque
 	if idx < 0 {
 		return -1
 	}
-	for idx < len(messages) && messages[idx].Role == llm.RoleSystem {
+	for idx < len(messages) && messages[idx].Role == core.RoleSystem {
 		idx++
 	}
 	if idx >= len(messages) {
@@ -40,20 +40,20 @@ func CompactionBoundaryIndex(messages []session.Message, hasBoundary bool, seque
 }
 
 // StoredReasoningKind applies the same legacy summary classification as the CLI.
-func StoredReasoningKind(part llm.Part) llm.ReasoningKind {
-	return llm.NormalizeStoredReasoningKind(part.ReasoningKind, part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0)
+func StoredReasoningKind(part core.Part) core.ReasoningKind {
+	return core.NormalizeStoredReasoningKind(part.ReasoningKind, part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0)
 }
 
 // ReasoningDisplay returns display-safe content, never encrypted replay material.
-func ReasoningDisplay(part llm.Part) (kind llm.ReasoningKind, title, body string) {
+func ReasoningDisplay(part core.Part) (kind core.ReasoningKind, title, body string) {
 	kind = StoredReasoningKind(part)
 	content := strings.TrimSpace(part.ReasoningContent)
-	if kind == llm.ReasoningKindEncrypted || (strings.TrimSpace(ReasoningSummaryDisplayContent(part)) == "" && part.ReasoningEncryptedContent != "") {
-		return llm.ReasoningKindEncrypted, "Encrypted reasoning", ""
+	if kind == core.ReasoningKindEncrypted || (strings.TrimSpace(ReasoningSummaryDisplayContent(part)) == "" && part.ReasoningEncryptedContent != "") {
+		return core.ReasoningKindEncrypted, "Encrypted reasoning", ""
 	}
 	title = strings.TrimSpace(part.ReasoningSummaryTitle)
 	body = content
-	if kind == llm.ReasoningKindSummary {
+	if kind == core.ReasoningKindSummary {
 		content = strings.TrimSpace(ReasoningSummaryDisplayContent(part))
 		parsed := reasoning.ParseReasoningSummary(content)
 		if title == "" {

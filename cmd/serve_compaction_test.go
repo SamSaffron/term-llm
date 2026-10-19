@@ -11,24 +11,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 type serveCompactionContextTool struct{}
 
-func (*serveCompactionContextTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "test_context", Schema: map[string]any{"type": "object"}}
+func (*serveCompactionContextTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "test_context", Schema: map[string]any{"type": "object"}}
 }
-func (*serveCompactionContextTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("ok"), nil
+func (*serveCompactionContextTool) Execute(context.Context, json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("ok"), nil
 }
 func (*serveCompactionContextTool) Preview(json.RawMessage) string { return "" }
-func (*serveCompactionContextTool) PrepareRequestContext(_ context.Context, _ string, messages []llm.Message) ([]llm.Message, error) {
+func (*serveCompactionContextTool) PrepareRequestContext(_ context.Context, _ string, messages []core.Message) ([]core.Message, error) {
 	return messages, nil
 }
-func (*serveCompactionContextTool) PrepareCompactionContext(_ context.Context, _ string, result *llm.CompactionResult) error {
-	result.EphemeralMessages = append(result.EphemeralMessages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "ephemeral plan"}}})
+func (*serveCompactionContextTool) PrepareCompactionContext(_ context.Context, _ string, result *engine.CompactionResult) error {
+	result.EphemeralMessages = append(result.EphemeralMessages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "ephemeral plan"}}})
 	return nil
 }
 
@@ -48,9 +50,9 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	history := []llm.Message{
-		llm.UserText("first question"), llm.AssistantText("first answer"),
-		llm.UserText("second question"), llm.AssistantText("second answer"),
+	history := []core.Message{
+		core.UserText("first question"), core.AssistantText("first answer"),
+		core.UserText("second question"), core.AssistantText("second answer"),
 	}
 	stored := make([]session.Message, 0, len(history))
 	for i, message := range history {
@@ -60,11 +62,11 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 		t.Fatal(err)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{
 		Text:  "Continue from the second answer.",
-		Usage: llm.Usage{InputTokens: 20, OutputTokens: 5},
+		Usage: core.Usage{InputTokens: 20, OutputTokens: 5},
 	})
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	engine.RegisterTool(&serveCompactionContextTool{})
 	rt := &serveRuntime{
 		provider: provider, providerKey: "mock", defaultModel: "mock-model",
@@ -83,7 +85,7 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 		t.Fatalf("ephemeral messages = %#v", result.EphemeralMessages)
 	}
 	for _, message := range rt.history {
-		if message.Role == llm.RoleDeveloper || strings.Contains(llm.MessageText(message), "ephemeral plan") {
+		if message.Role == core.RoleDeveloper || strings.Contains(core.MessageText(message), "ephemeral plan") {
 			t.Fatalf("request-only compaction context leaked into runtime history: %#v", rt.history)
 		}
 	}
@@ -129,16 +131,16 @@ func TestServeSessionRuntimeCompactEndpoint(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	for _, message := range []llm.Message{llm.UserText("question"), llm.AssistantText("answer")} {
+	for _, message := range []core.Message{core.UserText("question"), core.AssistantText("answer")} {
 		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, message, -1)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("Continue from the answer.")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("Continue from the answer.")
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
 		return &serveRuntime{
 			provider: provider, providerKey: "mock", defaultModel: "mock-model",
-			engine: llm.NewEngine(provider, nil), store: store,
+			engine: engine.NewEngine(provider, nil), store: store,
 		}, nil
 	})
 	t.Cleanup(manager.Close)

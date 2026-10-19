@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
@@ -514,7 +514,7 @@ func TestImageToolsDoNotCopyToClipboard(t *testing.T) {
 				if err := os.WriteFile(inputPath, []byte("image data"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				for _, tool := range []llm.Tool{generate, show} {
+				for _, tool := range []core.Tool{generate, show} {
 					args := map[string]any{"prompt": "a cat", "file_path": inputPath}
 					if clipboardArg != "omitted" {
 						args["copy_to_clipboard"] = clipboardArg == "true"

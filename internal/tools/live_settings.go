@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // LiveSettingsToolName controls only the current live call, never saved config.
@@ -27,34 +27,34 @@ func ContextWithLiveSettings(ctx context.Context, sessionID string, apply func(c
 // LiveSettingsTool exposes a host-bound, session-local voice control.
 type LiveSettingsTool struct{}
 
-func (*LiveSettingsTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (*LiveSettingsTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        LiveSettingsToolName,
 		Description: "Inspect this term-llm live call's model, current voice and supported voices. Supply voice to request a change for this call only. Provider restrictions may prevent changes after speech starts; report errors truthfully. Never edits saved configuration.",
 		Schema:      map[string]any{"type": "object", "properties": map[string]any{"voice": map[string]any{"type": "string", "description": "Optional supported voice to select for the current call. Omit to inspect settings."}}, "additionalProperties": false},
 	}
 }
 
-func (*LiveSettingsTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (*LiveSettingsTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	binding, ok := ctx.Value(liveSettingsKey{}).(liveSettingsBinding)
-	if !ok || binding.apply == nil || binding.sessionID == "" || binding.sessionID != llm.SessionIDFromContext(ctx) {
-		return llm.ToolOutput{}, NewToolError(ErrPermissionDenied, "live settings are available only to the originating live chat turn")
+	if !ok || binding.apply == nil || binding.sessionID == "" || binding.sessionID != core.SessionIDFromContext(ctx) {
+		return core.ToolOutput{}, NewToolError(ErrPermissionDenied, "live settings are available only to the originating live chat turn")
 	}
 	var params struct {
 		Voice string `json:"voice"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return llm.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid live settings: %v", err)
+		return core.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid live settings: %v", err)
 	}
 	capabilities, err := binding.apply(ctx, params.Voice)
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("live settings: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("live settings: %w", err)
 	}
 	encoded, err := json.Marshal(capabilities)
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("encode live settings: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("encode live settings: %w", err)
 	}
-	return llm.TextOutput(string(encoded)), nil
+	return core.TextOutput(string(encoded)), nil
 }
 
 func (*LiveSettingsTool) Preview(json.RawMessage) string {

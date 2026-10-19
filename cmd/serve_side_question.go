@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -30,7 +30,7 @@ type sideQuestionRuntime struct {
 	anchor          sidequestion.Anchor
 	lane            *sidequestion.Lane
 	snapshotReady   bool
-	context         []llm.Message
+	context         []core.Message
 	providerKey     string
 	model           string
 	reasoningEffort string
@@ -38,8 +38,8 @@ type sideQuestionRuntime struct {
 	question        string
 	response        []byte
 	synthetic       bool
-	usage           llm.Usage
-	totalUsage      llm.Usage
+	usage           core.Usage
+	totalUsage      core.Usage
 	requestCount    int
 	lastError       string
 }
@@ -49,8 +49,8 @@ type sideQuestionView struct {
 	Question   string               `json:"question,omitempty"`
 	Response   string               `json:"response,omitempty"`
 	Synthetic  bool                 `json:"synthetic,omitempty"`
-	Usage      llm.Usage            `json:"usage"`
-	TotalUsage llm.Usage            `json:"total_usage"`
+	Usage      core.Usage           `json:"usage"`
+	TotalUsage core.Usage           `json:"total_usage"`
 	Requests   int                  `json:"requests"`
 	Error      string               `json:"error,omitempty"`
 	Generation uint64               `json:"generation"`
@@ -60,16 +60,16 @@ type sideQuestionView struct {
 // sideQuestionContextLocked snapshots runtime-owned context. Callers must hold
 // rt.mu after the runtime has been published; construction-time callers are safe
 // before publication.
-func (rt *serveRuntime) sideQuestionContextLocked() []llm.Message {
-	contextMessages := make([]llm.Message, 0, 3)
+func (rt *serveRuntime) sideQuestionContextLocked() []core.Message {
+	contextMessages := make([]core.Message, 0, 3)
 	if systemPrompt := strings.TrimSpace(rt.systemPrompt); systemPrompt != "" {
-		contextMessages = append(contextMessages, llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: systemPrompt}}})
+		contextMessages = append(contextMessages, core.Message{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: systemPrompt}}})
 	}
 	if platformPrompt := strings.TrimSpace(rt.platformMessages.For(rt.platform)); platformPrompt != "" {
-		contextMessages = append(contextMessages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: platformPrompt}}})
+		contextMessages = append(contextMessages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: platformPrompt}}})
 	}
 	if rt.sessionMeta != nil && strings.TrimSpace(rt.sessionMeta.CWD) != "" {
-		contextMessages = append(contextMessages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "Current working directory (context only; do not access it): " + strings.TrimSpace(rt.sessionMeta.CWD)}}})
+		contextMessages = append(contextMessages, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "Current working directory (context only; do not access it): " + strings.TrimSpace(rt.sessionMeta.CWD)}}})
 	}
 	return contextMessages
 }
@@ -84,7 +84,7 @@ func (rt *serveRuntime) configureSideQuestionContext() {
 	rt.sideQuestion.mu.Unlock()
 }
 
-func (rt *serveRuntime) updateSideQuestionConfig(req llm.Request) {
+func (rt *serveRuntime) updateSideQuestionConfig(req core.Request) {
 	contextMessages := rt.sideQuestionContextLocked()
 	providerKey := rt.providerKey
 	model := strings.TrimSpace(req.Model)
@@ -138,9 +138,9 @@ func (rt *serveRuntime) sideQuestionProviderIdentity() runboundary.ProviderConte
 // Transcript rewrites publish this, because the live session no longer matches
 // what the transcript says — but the replay still has to run in the session's
 // project directory.
-func (rt *serveRuntime) sideQuestionReplayBoundary(messages []llm.Message) sidequestion.Anchor {
+func (rt *serveRuntime) sideQuestionReplayBoundary(messages []core.Message) sidequestion.Anchor {
 	return sidequestion.Anchor{
-		Messages: append([]llm.Message(nil), messages...),
+		Messages: append([]core.Message(nil), messages...),
 		Provider: rt.sideQuestionProviderIdentity(),
 	}
 }
@@ -150,7 +150,7 @@ func (rt *serveRuntime) sideQuestionReplayBoundary(messages []llm.Message) sideq
 // boundary, and must only be called when the provider is not streaming.
 func (rt *serveRuntime) captureSideQuestionProvider() runboundary.ProviderContext {
 	captured := rt.sideQuestionProviderIdentity()
-	if exporter, ok := rt.provider.(llm.ProviderStateExporter); ok {
+	if exporter, ok := rt.provider.(core.ProviderStateExporter); ok {
 		if state, exported := exporter.ExportProviderState(); exported {
 			captured.State = state
 		}
@@ -163,9 +163,9 @@ func (rt *serveRuntime) captureSideQuestionProvider() runboundary.ProviderContex
 // promoted branch would be created at — one value, assembled at one instant.
 // durableRowID is zero when no row identity is available, which is not the same
 // as row zero.
-func (rt *serveRuntime) sideQuestionBoundary(messages []llm.Message, durableRowID int64, durable bool) sidequestion.Anchor {
+func (rt *serveRuntime) sideQuestionBoundary(messages []core.Message, durableRowID int64, durable bool) sidequestion.Anchor {
 	return sidequestion.Anchor{
-		Messages:        append([]llm.Message(nil), messages...),
+		Messages:        append([]core.Message(nil), messages...),
 		Provider:        rt.captureSideQuestionProvider(),
 		DurableAnchorID: durableRowID,
 		Durable:         durable && durableRowID > 0,
@@ -226,8 +226,8 @@ func (rt *serveRuntime) refreshSideQuestionSnapshot(anchor sidequestion.Anchor) 
 // dropping the working directory would run the replay in the wrong project
 // directory and make an established lane look like it had moved. The last known
 // branch point is left alone; it still points at a persisted row.
-func (rt *serveRuntime) advanceSideQuestionTranscript(messages []llm.Message) {
-	snapshot := append([]llm.Message(nil), messages...)
+func (rt *serveRuntime) advanceSideQuestionTranscript(messages []core.Message) {
+	snapshot := append([]core.Message(nil), messages...)
 	identity := rt.sideQuestionProviderIdentity()
 	rt.sideQuestion.mu.Lock()
 	rt.sideQuestion.anchor.Messages = snapshot
@@ -262,7 +262,7 @@ type sideQuestionStateBackup struct {
 	history         []sidequestion.Entry
 	anchor          sidequestion.Anchor
 	snapshotReady   bool
-	context         []llm.Message
+	context         []core.Message
 	providerKey     string
 	model           string
 	reasoningEffort string
@@ -270,7 +270,7 @@ type sideQuestionStateBackup struct {
 	question        string
 	response        string
 	synthetic       bool
-	usage           llm.Usage
+	usage           core.Usage
 	lastError       string
 }
 
@@ -352,7 +352,7 @@ func (sq *sideQuestionRuntime) clearHistory() {
 	sq.question = ""
 	sq.response = nil
 	sq.synthetic = false
-	sq.usage = llm.Usage{}
+	sq.usage = core.Usage{}
 	sq.lastError = ""
 	lane := sq.lane
 	sq.lane = nil
@@ -393,7 +393,7 @@ type sideQuestionStart struct {
 	Question string `json:"question"`
 }
 
-func appendMissingSideContext(snapshot, contextMessages []llm.Message) []llm.Message {
+func appendMissingSideContext(snapshot, contextMessages []core.Message) []core.Message {
 	canonicalPrefix := len(snapshot) >= len(contextMessages)
 	for i, candidate := range contextMessages {
 		if i >= len(snapshot) || !equivalentMessage(snapshot[i], candidate) {
@@ -418,14 +418,14 @@ func appendMissingSideContext(snapshot, contextMessages []llm.Message) []llm.Mes
 			}
 		}
 		if !duplicate {
-			messages = append(messages, sidequestion.CloneMessages([]llm.Message{existing})...)
+			messages = append(messages, sidequestion.CloneMessages([]core.Message{existing})...)
 		}
 	}
 	return messages
 }
 
-func equivalentMessage(a, b llm.Message) bool {
-	return a.Role == b.Role && llm.MessageText(a) == llm.MessageText(b)
+func equivalentMessage(a, b core.Message) bool {
+	return a.Role == b.Role && core.MessageText(a) == core.MessageText(b)
 }
 
 func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQuestionEventMsg, error) {
@@ -517,7 +517,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 	sq.question = question
 	sq.response = nil
 	sq.synthetic = false
-	sq.usage = llm.Usage{}
+	sq.usage = core.Usage{}
 	sq.lastError = ""
 	sq.mu.Unlock()
 
@@ -526,13 +526,13 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 		defer close(events)
 		// The lane owns its provider across turns and releases it itself: after a
 		// replay turn, after a failed lane turn, and on teardown.
-		result, runErr := turn.Run(ctx, func(event llm.Event) {
+		result, runErr := turn.Run(ctx, func(event core.Event) {
 			sq.mu.Lock()
 			if generation == sq.generation {
 				switch event.Type {
-				case llm.EventTextDelta:
+				case core.EventTextDelta:
 					sq.response = append(sq.response, event.Text...)
-				case llm.EventAttemptDiscard:
+				case core.EventAttemptDiscard:
 					// Release an abandoned large attempt rather than retaining its
 					// capacity for a potentially much smaller retry.
 					sq.response = nil
@@ -588,7 +588,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 
 type sideQuestionEventMsg struct {
 	Generation uint64
-	Event      llm.Event
+	Event      core.Event
 	Result     *sidequestion.Result
 	Err        error
 }
@@ -635,7 +635,7 @@ func (s *serveServer) runtimeForSideQuestion(ctx context.Context, sessionID stri
 	if err != nil {
 		return nil, fmt.Errorf("load active session history: %w", err)
 	}
-	history := make([]llm.Message, 0, len(storedMessages))
+	history := make([]core.Message, 0, len(storedMessages))
 	for _, message := range storedMessages {
 		history = append(history, message.ToLLMMessage())
 	}
@@ -650,9 +650,9 @@ func (s *serveServer) runtimeForSideQuestion(ctx context.Context, sessionID stri
 		rt.restorePlatformInjectionStateFromHistory()
 	}
 	rt.initializeSideQuestionSnapshot(rt.sideQuestionBoundary(history, 0, false))
-	rt.updateSideQuestionConfig(llm.Request{
+	rt.updateSideQuestionConfig(core.Request{
 		Model: model, ReasoningEffort: effort,
-		Responses: &llm.ResponsesOptions{ReasoningMode: mode},
+		Responses: &core.ResponsesOptions{ReasoningMode: mode},
 	})
 	rt.mu.Unlock()
 	return rt, nil

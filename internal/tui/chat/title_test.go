@@ -10,7 +10,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
 )
@@ -332,10 +333,10 @@ func TestMaybeGenerateSessionTitleCmd(t *testing.T) {
 	store := &mockStore{}
 	m.store = store
 	m.sess = &session.Session{ID: "title-session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fix Ctrl C Exit","long_title":"Fixing the extra Ctrl C after chat turn completion","confidence":0.92}`)
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fix Ctrl C Exit","long_title":"Fixing the extra Ctrl C after chat turn completion","confidence":0.92}`)
 	m.messages = []session.Message{
-		{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "After a turn settles, the first Ctrl-C is swallowed instead of arming exit.", Sequence: 0},
-		{SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "I'll fix the stale stream cancel function and add tests.", Sequence: 1},
+		{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "After a turn settles, the first Ctrl-C is swallowed instead of arming exit.", Sequence: 0},
+		{SessionID: m.sess.ID, Role: core.RoleAssistant, TextContent: "I'll fix the stale stream cancel function and add tests.", Sequence: 1},
 	}
 
 	cmd := m.maybeGenerateSessionTitleCmd()
@@ -369,8 +370,8 @@ func TestTitleFallbackTickGeneratesForCurrentUntitledSession(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store = &mockStore{}
 	m.sess = &session.Session{ID: "fallback-title", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fallback Handover Title","long_title":"Fallback title from long handover prompt","confidence":0.93}`)
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "A detailed handover asks the developer agent to implement session title fallback behavior.", Sequence: 0}}
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Fallback Handover Title","long_title":"Fallback title from long handover prompt","confidence":0.93}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "A detailed handover asks the developer agent to implement session title fallback behavior.", Sequence: 0}}
 
 	updated, cmd := m.Update(titleFallbackTickMsg{sessionID: m.sess.ID})
 	m = updated.(*Model)
@@ -395,8 +396,8 @@ func TestTitleFallbackTickIgnoresStaleSession(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store = &mockStore{}
 	m.sess = &session.Session{ID: "current-title-session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Should Not Run","long_title":"Should not run for stale fallback","confidence":0.9}`)
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Current session text.", Sequence: 0}}
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Should Not Run","long_title":"Should not run for stale fallback","confidence":0.9}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Current session text.", Sequence: 0}}
 
 	updated, cmd := m.Update(titleFallbackTickMsg{sessionID: "old-title-session"})
 	m = updated.(*Model)
@@ -433,8 +434,8 @@ func TestTitleFallbackTickNoopsWhenGeneratedOrInFlight(t *testing.T) {
 			m := newTestChatModel(false)
 			m.store = &mockStore{}
 			m.sess = &session.Session{ID: "fallback-noop", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-			m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Should Not Run","long_title":"Should not run fallback","confidence":0.9}`)
-			m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "Current session text.", Sequence: 0}}
+			m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Should Not Run","long_title":"Should not run fallback","confidence":0.9}`)
+			m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "Current session text.", Sequence: 0}}
 			tt.configure(m)
 
 			updated, cmd := m.Update(titleFallbackTickMsg{sessionID: m.sess.ID})
@@ -450,7 +451,7 @@ func TestScheduleTitleFallbackCmdRequiresUntitledSession(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store = &mockStore{}
 	m.sess = &session.Session{ID: "schedule-fallback", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	m.fastProvider = llm.NewMockProvider("fast")
+	m.fastProvider = mockprovider.NewMockProvider("fast")
 	if cmd := m.scheduleTitleFallbackCmd(); cmd == nil {
 		t.Fatal("expected fallback tick command for untitled session")
 	}
@@ -465,8 +466,8 @@ func TestMaybeGenerateSessionTitleRetriesOnlyAfterLaterTurn(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store = &mockStore{}
 	m.sess = &session.Session{ID: "retry-title-session", Provider: "mock", Model: "mock-model", Mode: session.ModeChat}
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":null,"long_title":null,"confidence":0}`)
-	m.messages = []session.Message{{SessionID: m.sess.ID, Role: llm.RoleUser, TextContent: "hi", Sequence: 0}}
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":null,"long_title":null,"confidence":0}`)
+	m.messages = []session.Message{{SessionID: m.sess.ID, Role: core.RoleUser, TextContent: "hi", Sequence: 0}}
 
 	cmd := m.maybeGenerateSessionTitleCmd()
 	if cmd == nil {
@@ -477,8 +478,8 @@ func TestMaybeGenerateSessionTitleRetriesOnlyAfterLaterTurn(t *testing.T) {
 		t.Fatal("should not retry without a later turn")
 	}
 
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse(`{"short_title":"Retry Title Works","long_title":"Generating a title after a later useful turn","confidence":0.9}`)
-	m.messages = append(m.messages, session.Message{SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "A later useful answer.", Sequence: 1})
+	m.fastProvider = mockprovider.NewMockProvider("fast").AddTextResponse(`{"short_title":"Retry Title Works","long_title":"Generating a title after a later useful turn","confidence":0.9}`)
+	m.messages = append(m.messages, session.Message{SessionID: m.sess.ID, Role: core.RoleAssistant, TextContent: "A later useful answer.", Sequence: 1})
 	if cmd := m.maybeGenerateSessionTitleCmd(); cmd == nil {
 		t.Fatal("expected one retry after a later turn")
 	}

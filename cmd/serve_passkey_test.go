@@ -89,22 +89,21 @@ func TestWebPasskeyAuthenticationBoundary(t *testing.T) {
 }
 
 func TestWebPasskeyModeValidation(t *testing.T) {
-	oldToken, oldURL := serveToken, servePublicURL
-	t.Cleanup(func() { serveToken, servePublicURL = oldToken, oldURL })
+	opts := ServeOptions{BasePath: "/ui"}
 	t.Setenv("TERM_LLM_SERVE_TOKEN", "")
-	serveToken = ""
-	servePublicURL = "http://localhost:8080/ui/"
-	endpoint, err := resolveWebPasskeyEndpoint(serveCmd)
+	opts.Token = ""
+	opts.PublicURL = "http://localhost:8080/ui/"
+	endpoint, err := resolveWebPasskeyEndpoint(serveCmd, opts)
 	if err != nil || endpoint.BasePath != "/ui" {
 		t.Fatalf("endpoint=%+v err=%v", endpoint, err)
 	}
-	serveToken = "explicit"
-	if _, err := resolveWebPasskeyEndpoint(serveCmd); err == nil {
+	opts.Token = "explicit"
+	if _, err := resolveWebPasskeyEndpoint(serveCmd, opts); err == nil {
 		t.Fatal("accepted bearer compatibility")
 	}
-	serveToken = ""
-	servePublicURL = "http://127.0.0.1:8080/ui/"
-	if _, err := resolveWebPasskeyEndpoint(serveCmd); err == nil {
+	opts.Token = ""
+	opts.PublicURL = "http://127.0.0.1:8080/ui/"
+	if _, err := resolveWebPasskeyEndpoint(serveCmd, opts); err == nil {
 		t.Fatal("accepted loopback IP")
 	}
 	mode, err := resolveServeAuthMode(true, "passkey", false, false)
@@ -190,29 +189,26 @@ func TestWebPasskeyCookieAndLegacyCleanup(t *testing.T) {
 }
 
 func TestWebPasskeyUnsupportedTransports(t *testing.T) {
-	oldURL, oldToken, oldConnect, oldHubURL, oldRegister, oldCORS := servePublicURL, serveToken, serveHubConnect, serveHubURL, serveHubRegister, serveCORSOrigins
-	t.Cleanup(func() {
-		servePublicURL, serveToken, serveHubConnect, serveHubURL, serveHubRegister, serveCORSOrigins = oldURL, oldToken, oldConnect, oldHubURL, oldRegister, oldCORS
-	})
 	t.Setenv("TERM_LLM_SERVE_TOKEN", "")
 	for _, tc := range []struct {
 		name  string
-		setup func()
+		setup func(*ServeOptions)
 	}{
-		{"reverse case and whitespace", func() { serveHubConnect = " Reverse " }},
-		{"Hub URL", func() { serveHubURL = "https://hub.example/" }},
-		{"registration", func() { serveHubRegister = true }},
-		{"CORS", func() { serveCORSOrigins = []string{"https://other.example"} }},
+		{"reverse case and whitespace", func(opts *ServeOptions) { opts.HubConnect = " Reverse " }},
+		{"Hub URL", func(opts *ServeOptions) { opts.HubURL = "https://hub.example/" }},
+		{"registration", func(opts *ServeOptions) { opts.HubRegister = true }},
+		{"CORS", func(opts *ServeOptions) { opts.CORSOrigins = []string{"https://other.example"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			servePublicURL = "http://localhost:8080/ui/"
-			serveToken = ""
-			serveHubConnect = "direct"
-			serveHubURL = ""
-			serveHubRegister = false
-			serveCORSOrigins = nil
-			tc.setup()
-			if _, err := resolveWebPasskeyEndpoint(serveCmd); err == nil {
+			opts := ServeOptions{BasePath: "/ui"}
+			opts.PublicURL = "http://localhost:8080/ui/"
+			opts.Token = ""
+			opts.HubConnect = "direct"
+			opts.HubURL = ""
+			opts.HubRegister = false
+			opts.CORSOrigins = nil
+			tc.setup(&opts)
+			if _, err := resolveWebPasskeyEndpoint(serveCmd, opts); err == nil {
 				t.Fatal("accepted incompatible transport")
 			}
 		})

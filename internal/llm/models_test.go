@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestZenDefaultModelFallback(t *testing.T) {
@@ -25,7 +27,7 @@ func TestProviderModelsIncludeGrokBin(t *testing.T) {
 			t.Fatalf("grok-bin models missing %q: %v", want, ids)
 		}
 	}
-	if !containsModelID(GetBuiltInProviderNames(), "grok-bin") {
+	if !containsModelID(config.GetBuiltInProviderNames(), "grok-bin") {
 		t.Fatal("GetBuiltInProviderNames missing grok-bin")
 	}
 	wantEfforts := []string{"low", "medium", "high", "xhigh"}
@@ -46,7 +48,7 @@ func TestProviderModelsIncludeCursorBin(t *testing.T) {
 			t.Fatalf("cursor-bin models missing %q: %v", want, ids)
 		}
 	}
-	if !containsModelID(GetBuiltInProviderNames(), "cursor-bin") {
+	if !containsModelID(config.GetBuiltInProviderNames(), "cursor-bin") {
 		t.Fatal("GetBuiltInProviderNames missing cursor-bin")
 	}
 }
@@ -136,7 +138,7 @@ func TestCopilotProviderModelsAreDynamicCacheOnly(t *testing.T) {
 		t.Fatalf("InputLimitForProviderModel(copilot, gpt-5.5) before cache = %d, want 0", got)
 	}
 
-	RefreshCopilotCacheSync([]ModelInfo{
+	rp.RefreshCopilotCacheSync([]core.ModelInfo{
 		{ID: "cached-copilot-a", InputLimit: 123_456},
 		{ID: "cached-copilot-b"},
 	})
@@ -680,7 +682,7 @@ func equalSlice(a, b []string) bool {
 }
 
 func TestGeminiCLIProviderIsNotBuiltIn(t *testing.T) {
-	if containsModelID(GetBuiltInProviderNames(), "gemini-cli") {
+	if containsModelID(config.GetBuiltInProviderNames(), "gemini-cli") {
 		t.Fatal("GetBuiltInProviderNames unexpectedly contains removed gemini-cli provider")
 	}
 

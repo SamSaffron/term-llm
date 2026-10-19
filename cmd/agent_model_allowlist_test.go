@@ -10,15 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/spf13/cobra"
 )
 
 func TestCheckAgentModelResolvesFastAlias(t *testing.T) {
@@ -118,7 +117,7 @@ func TestWebModelSwapRejectsDisallowedModelAndKeepsRuntime(t *testing.T) {
 	cfg, agentDir := modelAllowlistFixture(t, "debug:allowed")
 	previous, provider := newCloseTrackingServeRuntime()
 	previous.providerKey, previous.defaultModel, previous.agentName = "debug", "allowed", agentDir
-	previous.history = []llm.Message{llm.UserText("hello")}
+	previous.history = []core.Message{core.UserText("hello")}
 	manager := newServeSessionManager(time.Minute, 10, nil)
 	t.Cleanup(manager.Close)
 	putTestSession(manager, "allowlist-swap", previous)

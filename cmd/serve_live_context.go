@@ -10,7 +10,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -136,7 +136,7 @@ func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, 
 	}
 	budget := 8 * 1024
 	for _, message := range messages {
-		if message.Role != llm.RoleUser && message.Role != llm.RoleAssistant {
+		if message.Role != core.RoleUser && message.Role != core.RoleAssistant {
 			continue
 		}
 		text := strings.TrimSpace(message.TextContent)

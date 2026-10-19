@@ -18,10 +18,12 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/jobs"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -41,7 +43,7 @@ type serveJobsExecResult struct {
 	Progressive *progressiveRunResult
 }
 
-type serveJobsExecutor func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error)
+type serveJobsExecutor func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error)
 
 const (
 	jobsV2RunnerLLM     jobsV2RunnerType = jobsV2RunnerType(jobs.RunnerLLM)
@@ -391,18 +393,18 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	if delegationID := hubDelegationIDFromJobLabels(job.Labels); delegationID != "" {
 		ctx = tools.WithHubDelegationID(ctx, delegationID)
 	}
-	var output runnerOutput
+	var output runtime.RunnerOutput
 	progressTracker := newProgressTracker()
-	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
-		if ev.Type != llm.EventTextDelta || !cfg.Progressive {
+	execResult, err := r.exec(ctx, cfg, func(ev core.Event) {
+		if ev.Type != core.EventTextDelta || !cfg.Progressive {
 			output.Event(ev)
 		}
 		switch ev.Type {
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			if ev.Tool != nil && cfg.Progressive && isProgressToolName(ev.Tool.Name) {
-				progressTracker.observeToolCall(strings.TrimSpace(ev.Tool.ID), strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
+				progressTracker.ObserveToolCall(strings.TrimSpace(ev.Tool.ID), strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
 			}
-		case llm.EventUsage:
+		case core.EventUsage:
 			if ev.Use != nil {
 				res.InputTokens += ev.Use.InputTokens
 				res.OutputTokens += ev.Use.OutputTokens
@@ -410,7 +412,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 				// Flush accumulated response to DB after each turn so callers can see partial output.
 				if pw != nil {
 					if !cfg.Progressive {
-						pw("response_flush", output.response.String(), nil)
+						pw("response_flush", output.Response(), nil)
 					}
 					pw("turn_complete", fmt.Sprintf("turn %d complete (%d in, %d out tokens)", res.TurnCount, ev.Use.InputTokens, ev.Use.OutputTokens), map[string]any{
 						"turn":          res.TurnCount,
@@ -419,7 +421,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					})
 				}
 			}
-		case llm.EventToolExecStart:
+		case core.EventToolExecStart:
 			if cfg.Progressive && isProgressToolName(ev.ToolName) {
 				return
 			}
@@ -434,14 +436,14 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					"id":   ev.ToolCallID,
 				})
 			}
-		case llm.EventToolExecEnd:
+		case core.EventToolExecEnd:
 			if cfg.Progressive && isProgressToolName(ev.ToolName) {
-				if commit := progressTracker.commitToolCall(strings.TrimSpace(ev.ToolCallID), strings.TrimSpace(ev.ToolName), ev.ToolSuccess); commit != nil && pw != nil {
+				if commit := progressTracker.CommitToolCall(strings.TrimSpace(ev.ToolCallID), strings.TrimSpace(ev.ToolName), ev.ToolSuccess); commit != nil && pw != nil {
 					message := commit.Message
 					if message == "" {
 						message = "progress updated"
 					}
-					envelope := buildProgressiveRunResult(cfg.SessionID, "", commit.Final, commit, output.response.String())
+					envelope := buildProgressiveRunResult(cfg.SessionID, "", commit.Final, commit, output.Response())
 					pw("progress_update", message, envelope)
 				}
 				return
@@ -457,15 +459,15 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					"id":      ev.ToolCallID,
 				})
 			}
-		case llm.EventPhase:
+		case core.EventPhase:
 			if pw != nil && ev.Text != "" {
 				pw("phase", ev.Text, map[string]any{"text": ev.Text})
 			}
 		}
 	})
-	res.Thinking = output.thinking.String()
+	res.Thinking = output.Thinking()
 	if !cfg.Progressive {
-		res.Response = output.response.String()
+		res.Response = output.Response()
 	}
 	if execResult.Progressive != nil {
 		if strings.TrimSpace(execResult.Progressive.SessionID) == "" {
@@ -577,7 +579,7 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 	// serialized before they reach SQLite's single-writer lock.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if err := initJobsV2Schema(context.Background(), db); err != nil {
+	if err := servejobs.InitSchema(context.Background(), db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init jobs schema: %w", err)
 	}
@@ -730,7 +732,7 @@ func (m *jobsV2Manager) reconcileMisfiredSchedules(cutoff time.Time) error {
 			_ = rows.Close()
 			return fmt.Errorf("parse skipped cron misfire %s: %w", cron.id, err)
 		}
-		cron.nextRun, err = nextCronTime(cfg.Expression, effectiveCronTimezone(cfg.Timezone, cron.scheduleTimezone), cutoff)
+		cron.nextRun, err = servejobs.NextCronTime(cfg.Expression, servejobs.EffectiveCronTimezone(cfg.Timezone, cron.scheduleTimezone), cutoff)
 		if err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("advance skipped cron misfire %s: %w", cron.id, err)
@@ -1844,7 +1846,7 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 		stringOrEmptyRaw(req.RunnerConfig, "{}"),
 		req.TriggerType,
 		stringOrEmptyRaw(req.TriggerConfig, "{}"),
-		normalizeTZ(req.ScheduleTimezone),
+		servejobs.NormalizeTZ(req.ScheduleTimezone),
 		req.ConcurrencyPolicy,
 		req.MaxConcurrentRuns,
 		nullableRaw(req.RetryPolicy),
@@ -1943,8 +1945,8 @@ func (m *jobsV2Manager) attachLastRuns(jobs []*jobsV2Job) error {
 		args[i] = id
 	}
 
-	query := `SELECT ` + jobsV2RunSummaryColumns + ` FROM (
-		SELECT ` + jobsV2RunSummaryColumns + `,
+	query := `SELECT ` + servejobs.RunSummaryColumns + ` FROM (
+		SELECT ` + servejobs.RunSummaryColumns + `,
 			ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY created_at DESC, id DESC) AS rn
 		FROM job_runs_v2
 		WHERE job_id IN (` + strings.Join(placeholders, ",") + `)
@@ -2035,7 +2037,7 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 		stringOrEmptyRaw(current.RunnerConfig, "{}"),
 		current.TriggerType,
 		stringOrEmptyRaw(current.TriggerConfig, "{}"),
-		normalizeTZ(current.ScheduleTimezone),
+		servejobs.NormalizeTZ(current.ScheduleTimezone),
 		current.ConcurrencyPolicy,
 		current.MaxConcurrentRuns,
 		nullableRaw(current.RetryPolicy),
@@ -2106,7 +2108,7 @@ func (m *jobsV2Manager) GetRun(id string) (jobsV2Run, error) {
 }
 
 func (m *jobsV2Manager) GetRunSummary(id string) (jobsV2Run, error) {
-	row := m.db.QueryRow(`SELECT `+jobsV2RunSummaryColumns+` FROM job_runs_v2 INDEXED BY `+jobsV2RunByIDSummaryIndexName+` WHERE id = ?`, id)
+	row := m.db.QueryRow(`SELECT `+servejobs.RunSummaryColumns+` FROM job_runs_v2 INDEXED BY `+servejobs.RunByIDSummaryIndexName+` WHERE id = ?`, id)
 	return scanRunSummaryV2(row)
 }
 
@@ -2117,22 +2119,6 @@ func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, 
 func (m *jobsV2Manager) ListRunSummaries(jobID string, limit, offset int) ([]jobsV2Run, int, error) {
 	return m.listRuns(jobID, limit, offset, false)
 }
-
-const jobsV2RunSummaryIndexName = "idx_job_runs_v2_summary_by_job_created"
-
-const jobsV2RunSummaryIndexSQL = "CREATE INDEX IF NOT EXISTS " + jobsV2RunSummaryIndexName + " ON job_runs_v2(job_id, created_at DESC, id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, updated_at)"
-
-const jobsV2RunGlobalSummaryIndexName = "idx_job_runs_v2_summary_created"
-
-const jobsV2RunGlobalSummaryIndexSQL = "CREATE INDEX IF NOT EXISTS " + jobsV2RunGlobalSummaryIndexName + " ON job_runs_v2(created_at DESC, id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, updated_at)"
-
-const jobsV2RunByIDSummaryIndexName = "idx_job_runs_v2_summary_by_id"
-
-const jobsV2RunByIDSummaryIndexSQL = "CREATE UNIQUE INDEX IF NOT EXISTS " + jobsV2RunByIDSummaryIndexName + " ON job_runs_v2(id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at)"
-
-const jobsV2RunFullColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
-
-const jobsV2RunSummaryColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
 
 func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput bool) ([]jobsV2Run, int, error) {
 	if limit <= 0 {
@@ -2155,9 +2141,9 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 	if err := m.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	columns := jobsV2RunSummaryColumns
+	columns := servejobs.RunSummaryColumns
 	if includeOutput {
-		columns = jobsV2RunFullColumns
+		columns = servejobs.RunFullColumns
 	}
 	query := "SELECT " + columns + " FROM job_runs_v2" + where + " ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
@@ -2449,14 +2435,14 @@ func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage, scheduleTZ st
 		if strings.TrimSpace(cfg.Expression) == "" {
 			return cfg, fmt.Errorf("trigger_config.expression is required for cron trigger")
 		}
-		cfg.Timezone = effectiveCronTimezone(cfg.Timezone, scheduleTZ)
+		cfg.Timezone = servejobs.EffectiveCronTimezone(cfg.Timezone, scheduleTZ)
 		if cfg.Timezone == "" {
 			return cfg, fmt.Errorf("trigger_config.timezone is required for cron trigger")
 		}
 		if _, err := time.LoadLocation(cfg.Timezone); err != nil {
 			return cfg, fmt.Errorf("invalid cron timezone: %w", err)
 		}
-		if _, err := parseCronExpression(cfg.Expression); err != nil {
+		if err := servejobs.ValidateCronExpression(cfg.Expression); err != nil {
 			return cfg, err
 		}
 		return cfg, nil
@@ -2478,7 +2464,7 @@ func initialNextRun(tt jobsV2TriggerType, cfg jobsV2TriggerConfig, scheduleTZ st
 		u := t.UTC()
 		return &u
 	case jobsV2TriggerCron:
-		next, err := nextCronTime(cfg.Expression, effectiveCronTimezone(cfg.Timezone, scheduleTZ), now)
+		next, err := servejobs.NextCronTime(cfg.Expression, servejobs.EffectiveCronTimezone(cfg.Timezone, scheduleTZ), now)
 		if err != nil {
 			return nil
 		}
@@ -2495,127 +2481,6 @@ func computeNextRunAt(job jobsV2Job, now time.Time) (*time.Time, error) {
 		return nil, err
 	}
 	return initialNextRun(job.TriggerType, cfg, job.ScheduleTimezone), nil
-}
-
-type cronField struct {
-	any    bool
-	values map[int]bool
-}
-
-type cronSpec struct {
-	minute cronField
-	hour   cronField
-	dom    cronField
-	month  cronField
-	dow    cronField
-}
-
-func parseCronExpression(expr string) (cronSpec, error) {
-	parts := strings.Fields(strings.TrimSpace(expr))
-	if len(parts) != 5 {
-		return cronSpec{}, fmt.Errorf("cron expression must have 5 fields")
-	}
-	minute, err := parseCronField(parts[0], 0, 59)
-	if err != nil {
-		return cronSpec{}, fmt.Errorf("minute: %w", err)
-	}
-	hour, err := parseCronField(parts[1], 0, 23)
-	if err != nil {
-		return cronSpec{}, fmt.Errorf("hour: %w", err)
-	}
-	dom, err := parseCronField(parts[2], 1, 31)
-	if err != nil {
-		return cronSpec{}, fmt.Errorf("day-of-month: %w", err)
-	}
-	month, err := parseCronField(parts[3], 1, 12)
-	if err != nil {
-		return cronSpec{}, fmt.Errorf("month: %w", err)
-	}
-	dow, err := parseCronField(parts[4], 0, 6)
-	if err != nil {
-		return cronSpec{}, fmt.Errorf("day-of-week: %w", err)
-	}
-	return cronSpec{minute: minute, hour: hour, dom: dom, month: month, dow: dow}, nil
-}
-
-func parseCronField(raw string, min, max int) (cronField, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "*" {
-		return cronField{any: true}, nil
-	}
-	values := make(map[int]bool)
-	segments := strings.Split(raw, ",")
-	for _, seg := range segments {
-		seg = strings.TrimSpace(seg)
-		if seg == "" {
-			return cronField{}, fmt.Errorf("empty segment")
-		}
-		if strings.HasPrefix(seg, "*/") {
-			step, err := strconv.Atoi(strings.TrimPrefix(seg, "*/"))
-			if err != nil || step <= 0 {
-				return cronField{}, fmt.Errorf("invalid step %q", seg)
-			}
-			for i := min; i <= max; i += step {
-				values[i] = true
-			}
-			continue
-		}
-		if strings.Contains(seg, "-") {
-			r := strings.SplitN(seg, "-", 2)
-			if len(r) != 2 {
-				return cronField{}, fmt.Errorf("invalid range %q", seg)
-			}
-			start, err1 := strconv.Atoi(strings.TrimSpace(r[0]))
-			end, err2 := strconv.Atoi(strings.TrimSpace(r[1]))
-			if err1 != nil || err2 != nil || start > end {
-				return cronField{}, fmt.Errorf("invalid range %q", seg)
-			}
-			if start < min || end > max {
-				return cronField{}, fmt.Errorf("range %q out of bounds", seg)
-			}
-			for i := start; i <= end; i++ {
-				values[i] = true
-			}
-			continue
-		}
-		v, err := strconv.Atoi(seg)
-		if err != nil {
-			return cronField{}, fmt.Errorf("invalid value %q", seg)
-		}
-		if v < min || v > max {
-			return cronField{}, fmt.Errorf("value %d out of bounds", v)
-		}
-		values[v] = true
-	}
-	return cronField{values: values}, nil
-}
-
-func (f cronField) match(v int) bool {
-	if f.any {
-		return true
-	}
-	return f.values[v]
-}
-
-func nextCronTime(expr, tz string, after time.Time) (time.Time, error) {
-	spec, err := parseCronExpression(expr)
-	if err != nil {
-		return time.Time{}, err
-	}
-	loc, err := time.LoadLocation(tz)
-	if err != nil {
-		return time.Time{}, err
-	}
-	t := after.In(loc).Truncate(time.Minute).Add(time.Minute)
-	max := t.Add(366 * 24 * time.Hour)
-	for !t.After(max) {
-		dow := int(t.Weekday())
-		if spec.minute.match(t.Minute()) && spec.hour.match(t.Hour()) && spec.month.match(int(t.Month())) && spec.dom.match(t.Day()) && spec.dow.match(dow) {
-			return t, nil
-		}
-		t = t.Add(time.Minute)
-	}
-	return time.Time{}, fmt.Errorf("no cron fire time found within one year")
 }
 
 func boolToInt(v bool) int {
@@ -2639,22 +2504,11 @@ func nullableString(v string) any {
 	return v
 }
 
-func effectiveCronTimezone(cfgTZ, scheduleTZ string) string {
-	if tz := normalizeTZ(scheduleTZ); tz != "" {
-		return tz
-	}
-	return normalizeTZ(cfgTZ)
-}
-
 func stringOrEmptyRaw(raw json.RawMessage, fallback string) string {
 	if len(raw) == 0 {
 		return fallback
 	}
 	return string(raw)
-}
-
-func normalizeTZ(v string) string {
-	return strings.TrimSpace(v)
 }
 
 func (s *serveServer) handleJobsV2(w http.ResponseWriter, r *http.Request) {
@@ -3124,30 +2978,30 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 
 func serveJobsRunnerOptions(approval resolvedApprovalMode) cmdRunnerOptions {
 	return cmdRunnerOptions{
-		Provider:         serveProvider,
-		Tools:            serveTools,
-		ReadDirs:         append([]string(nil), serveReadDirs...),
-		WriteDirs:        append([]string(nil), serveWriteDirs...),
-		ShellAllow:       append([]string(nil), serveShellAllow...),
-		MCP:              serveMCP,
-		SystemMessage:    serveSystemMessage,
-		MaxTurns:         serveMaxTurns,
-		Search:           serveSearch,
-		NoSearch:         serveNoSearch,
-		NativeSearch:     serveNativeSearch,
-		NoNativeSearch:   serveNoNativeSearch,
+		Provider:         serveFlags.Provider,
+		Tools:            serveFlags.Tools,
+		ReadDirs:         append([]string(nil), serveFlags.ReadDirs...),
+		WriteDirs:        append([]string(nil), serveFlags.WriteDirs...),
+		ShellAllow:       append([]string(nil), serveFlags.ShellAllow...),
+		MCP:              serveFlags.MCP,
+		SystemMessage:    serveFlags.SystemMessage,
+		MaxTurns:         serveFlags.MaxTurns,
+		Search:           serveFlags.Search,
+		NoSearch:         serveFlags.NoSearch,
+		NativeSearch:     serveFlags.NativeSearch,
+		NoNativeSearch:   serveFlags.NoNativeSearch,
 		ApprovalMode:     approval.Mode,
 		ApprovalModeSet:  true,
 		ApprovalSource:   approval.Source,
 		ApprovalHeadless: true,
-		Debug:            serveDebug,
+		Debug:            serveFlags.Debug,
 		DebugRaw:         debugRaw,
 		ErrWriter:        io.Discard,
 	}
 }
 
 func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode) serveJobsExecutor {
-	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		var search *bool
 		if cfg.Search {
 			v := true
@@ -3201,4 +3055,9 @@ func parentModelOrEmpty(p *runpkg.ParentModel) runpkg.ParentModel {
 		return *p
 	}
 	return runpkg.ParentModel{}
+}
+
+// initJobsV2Schema is retained for callers outside the scheduler (doctor).
+func initJobsV2Schema(ctx context.Context, db *sql.DB) error {
+	return servejobs.InitSchema(ctx, db)
 }

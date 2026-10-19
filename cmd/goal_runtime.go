@@ -9,7 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -115,7 +116,7 @@ func (t *goalToolTracker) commitToolCall(callID, name string, success bool) *goa
 	}
 }
 
-func (rt *serveRuntime) runWithGoal(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+func (rt *serveRuntime) runWithGoal(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error) (serveRunResult, error) {
 	ctx, sweep := withSessionChildrenSweep(ctx)
 	result, err := rt.runWithGoalPasses(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
 	// runOnce stops the session's detached children, under rt.mu, when a turn
@@ -134,7 +135,7 @@ func (rt *serveRuntime) runWithGoal(ctx context.Context, stateful bool, replaceH
 	return result, err
 }
 
-func (rt *serveRuntime) runWithGoalPasses(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+func (rt *serveRuntime) runWithGoalPasses(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error) (serveRunResult, error) {
 	goalStore := rt.goalStateStore()
 	if goalStore == nil || strings.TrimSpace(req.SessionID) == "" {
 		return rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
@@ -175,7 +176,7 @@ func (rt *serveRuntime) loadGoal(ctx context.Context, sessionID string) *session
 	return sess.Goal.Clone()
 }
 
-func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error, goal *session.Goal) (serveRunResult, error) {
+func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error, goal *session.Goal) (serveRunResult, error) {
 	if refreshed := rt.loadGoal(context.Background(), req.SessionID); refreshed != nil {
 		goal = refreshed
 	}
@@ -188,18 +189,18 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 	updateTool := toolpkg.NewUpdateGoalTool()
 	getTool := toolpkg.NewGetGoalTool(func() *session.Goal { return goalState.Clone() })
 	createTool := toolpkg.NewCreateGoalTool()
-	goalTools := []llm.Tool{updateTool, getTool, createTool}
+	goalTools := []core.Tool{updateTool, getTool, createTool}
 	for _, tool := range goalTools {
 		rt.engine.RegisterTool(tool)
 		defer rt.engine.UnregisterTool(tool.Spec().Name)
 	}
-	goalSpecs := make([]llm.ToolSpec, 0, len(goalTools))
+	goalSpecs := make([]core.ToolSpec, 0, len(goalTools))
 	for _, tool := range goalTools {
 		goalSpecs = append(goalSpecs, tool.Spec())
 	}
 
 	tracker := newGoalToolTracker()
-	currentInput := append([]llm.Message(nil), inputMessages...)
+	currentInput := append([]core.Message(nil), inputMessages...)
 	var aggregate serveRunResult
 	autoPasses := 0
 	budgetWrapupPending := false
@@ -219,7 +220,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 			return nil
 		}
 		text := prompt.BuildGoalPromptWithPlan(goalPromptData(promptGoal), kind, planCallable)
-		msg := llm.GoalSteeringText(text)
+		msg := core.GoalSteeringText(text)
 		currentInput = append(currentInput, msg)
 		if rt.syntheticUserCB != nil && rt.store == nil {
 			// Callers that disable runtime transcript persistence (notably the TUI)
@@ -284,12 +285,12 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 
 		passReq := req
 		passReq.Tools = appendGoalToolSpecs(req.Tools, goalSpecs)
-		maxTurnsWarning := llm.MaxTurnsExceededWarning(passReq.MaxTurns)
-		passUsage := llm.Usage{}
+		maxTurnsWarning := engine.MaxTurnsExceededWarning(passReq.MaxTurns)
+		passUsage := core.Usage{}
 		goalCompleted := false
-		wrappedOnEvent := func(ev llm.Event) error {
+		wrappedOnEvent := func(ev core.Event) error {
 			switch ev.Type {
-			case llm.EventToolCall:
+			case core.EventToolCall:
 				if ev.Tool != nil {
 					callID := strings.TrimSpace(ev.Tool.ID)
 					if callID == "" {
@@ -297,7 +298,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 					}
 					tracker.observeToolCall(callID, strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
 				}
-			case llm.EventToolExecEnd:
+			case core.EventToolExecEnd:
 				if commit := tracker.commitToolCall(strings.TrimSpace(ev.ToolCallID), strings.TrimSpace(ev.ToolName), ev.ToolSuccess); commit != nil {
 					latest := rt.applyGoalCommit(context.Background(), req.SessionID, goalState.Clone(), commit)
 					goalState.Set(latest)
@@ -306,7 +307,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 						goalCompleted = true
 					}
 				}
-			case llm.EventUsage:
+			case core.EventUsage:
 				if ev.Use != nil {
 					passUsage.Add(*ev.Use)
 				}
@@ -314,10 +315,10 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 			if onEvent != nil {
 				// A goal uses max turns as a per-pass yield boundary. Keep the
 				// transient boundary warning/error internal to the goal runner.
-				if ev.Type == llm.EventError && llm.IsMaxTurnsExceeded(ev.Err) {
+				if ev.Type == core.EventError && engine.IsMaxTurnsExceeded(ev.Err) {
 					return nil
 				}
-				if ev.Type == llm.EventPhase && ev.Text == maxTurnsWarning {
+				if ev.Type == core.EventPhase && ev.Text == maxTurnsWarning {
 					return nil
 				}
 				return onEvent(ev)
@@ -342,7 +343,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 
 		// Active goals continue in a fresh pass when the engine reaches its
 		// per-pass turn boundary; all other errors still end the goal run.
-		if err != nil && !llm.IsMaxTurnsExceeded(err) {
+		if err != nil && !engine.IsMaxTurnsExceeded(err) {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 				paused := rt.updateCurrentGoal(context.Background(), req.SessionID, goalState.Clone(), false, func(g *session.Goal) {
 					g.Status = session.GoalStatusPaused
@@ -430,20 +431,20 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 			return aggregate, err
 		}
 		if onEvent != nil {
-			if err := onEvent(llm.Event{Type: llm.EventPhase, Text: "Continuing toward active goal..."}); err != nil {
+			if err := onEvent(core.Event{Type: core.EventPhase, Text: "Continuing toward active goal..."}); err != nil {
 				return aggregate, err
 			}
 		}
 	}
 }
 
-func (rt *serveRuntime) runGoalPass(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, []llm.Message, error) {
+func (rt *serveRuntime) runGoalPass(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error) (serveRunResult, []core.Message, error) {
 	origResponseCompleted := rt.responseCompletedCB
 	origTurnCompleted := rt.turnCompletedCB
-	var produced []llm.Message
+	var produced []core.Message
 	var producedMu sync.Mutex
 	assistantCaptured := false
-	rt.responseCompletedCB = func(cbCtx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+	rt.responseCompletedCB = func(cbCtx context.Context, turnIndex int, assistantMsg core.Message, metrics core.TurnMetrics) error {
 		var err error
 		if origResponseCompleted != nil {
 			err = origResponseCompleted(cbCtx, turnIndex, assistantMsg, metrics)
@@ -456,10 +457,10 @@ func (rt *serveRuntime) runGoalPass(ctx context.Context, stateful bool, replaceH
 		}
 		return err
 	}
-	rt.turnCompletedCB = func(cbCtx context.Context, turnIndex int, messages []llm.Message, metrics llm.TurnMetrics) error {
+	rt.turnCompletedCB = func(cbCtx context.Context, turnIndex int, messages []core.Message, metrics core.TurnMetrics) error {
 		producedMu.Lock()
 		appendStart := 0
-		if assistantCaptured && len(messages) > 0 && messages[0].Role == llm.RoleAssistant {
+		if assistantCaptured && len(messages) > 0 && messages[0].Role == core.RoleAssistant {
 			appendStart = 1
 			assistantCaptured = false
 		}
@@ -476,13 +477,13 @@ func (rt *serveRuntime) runGoalPass(ctx context.Context, stateful bool, replaceH
 	}()
 	result, err := rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
 	producedMu.Lock()
-	out := append([]llm.Message(nil), produced...)
+	out := append([]core.Message(nil), produced...)
 	producedMu.Unlock()
 	return result, out, err
 }
 
-func appendGoalToolSpecs(base []llm.ToolSpec, goalSpecs []llm.ToolSpec) []llm.ToolSpec {
-	out := append([]llm.ToolSpec(nil), base...)
+func appendGoalToolSpecs(base []core.ToolSpec, goalSpecs []core.ToolSpec) []core.ToolSpec {
+	out := append([]core.ToolSpec(nil), base...)
 	for _, spec := range goalSpecs {
 		found := false
 		for _, existing := range out {
@@ -539,7 +540,7 @@ func (rt *serveRuntime) applyGoalCommit(ctx context.Context, sessionID string, e
 	return latest
 }
 
-func (rt *serveRuntime) accountGoalUsage(ctx context.Context, sessionID string, usage llm.Usage, elapsed time.Duration) *session.Goal {
+func (rt *serveRuntime) accountGoalUsage(ctx context.Context, sessionID string, usage core.Usage, elapsed time.Duration) *session.Goal {
 	latest := rt.loadGoal(ctx, sessionID)
 	if latest == nil || !latest.Exists() {
 		return latest
@@ -606,7 +607,7 @@ func sameGoalRuntimeTarget(a, b *session.Goal) bool {
 	return true
 }
 
-func goalUsageTokens(usage llm.Usage) int {
+func goalUsageTokens(usage core.Usage) int {
 	total := usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens + usage.OutputTokens
 	if total < 0 {
 		return 0

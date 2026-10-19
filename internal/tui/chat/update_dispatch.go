@@ -9,7 +9,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -340,7 +340,7 @@ func (m *Model) dispatchConversationUpdate(message tea.Msg, cmds *[]tea.Cmd, flu
 			for _, media := range msg.Event.Media {
 				if reference := strings.ToLower(strings.TrimSpace(media.Reference)); reference != "" {
 					if m.mediaByReference == nil {
-						m.mediaByReference = make(map[string]llm.MediaArtifact)
+						m.mediaByReference = make(map[string]core.MediaArtifact)
 					}
 					m.mediaByReference[reference] = media
 				}

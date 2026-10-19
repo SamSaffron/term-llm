@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 const RunErrorEventType = "run_error"
@@ -21,7 +23,7 @@ type RunErrorMarker struct {
 // RunErrorEventMessage returns a RoleEvent message suitable for durable
 // transcript storage. It intentionally stores structured JSON in a text part so
 // existing session storage schemas can persist it without migration.
-func RunErrorEventMessage(marker RunErrorMarker) Message {
+func RunErrorEventMessage(marker RunErrorMarker) core.Message {
 	marker.Type = RunErrorEventType
 	if strings.TrimSpace(marker.Message) == "" {
 		marker.Message = "The response failed."
@@ -30,16 +32,16 @@ func RunErrorEventMessage(marker RunErrorMarker) Message {
 	if err != nil {
 		data = []byte(fmt.Sprintf(`{"type":"%s","message":"%s"}`, RunErrorEventType, strings.ReplaceAll(marker.Message, `"`, `'`)))
 	}
-	return Message{Role: RoleEvent, Parts: []Part{{Type: PartText, Text: string(data)}}}
+	return core.Message{Role: core.RoleEvent, Parts: []core.Part{{Type: core.PartText, Text: string(data)}}}
 }
 
 // ParseRunErrorMarker extracts a run-error marker from a durable event message.
-func ParseRunErrorMarker(msg Message) (RunErrorMarker, bool) {
-	if msg.Role != RoleEvent {
+func ParseRunErrorMarker(msg core.Message) (RunErrorMarker, bool) {
+	if msg.Role != core.RoleEvent {
 		return RunErrorMarker{}, false
 	}
 	for _, part := range msg.Parts {
-		if part.Type != PartText || strings.TrimSpace(part.Text) == "" {
+		if part.Type != core.PartText || strings.TrimSpace(part.Text) == "" {
 			continue
 		}
 		var marker RunErrorMarker

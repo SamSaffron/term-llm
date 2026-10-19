@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
+	sessionsapp "github.com/samsaffron/term-llm/internal/app/sessions"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
@@ -68,7 +69,7 @@ func TestSessionsShareCreatesThenUpdatesAndPersistsWholeSession(t *testing.T) {
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(context.Background(), sess.ID, session.NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+	if err := store.AddMessage(context.Background(), sess.ID, session.NewMessage(sess.ID, core.UserText("hello"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -77,7 +78,7 @@ func TestSessionsShareCreatesThenUpdatesAndPersistsWholeSession(t *testing.T) {
 
 	publisher := &sessionsSharePublisherMock{}
 	newSessionSharePublisher = func(config.ShareConfig) (sharepkg.Publisher, error) { return publisher, nil }
-	run := func() sessionsShareOutput {
+	run := func() sessionsapp.ShareOutput {
 		t.Helper()
 		var output bytes.Buffer
 		command := &cobra.Command{}
@@ -85,7 +86,7 @@ func TestSessionsShareCreatesThenUpdatesAndPersistsWholeSession(t *testing.T) {
 		if err := runSessionsShare(command, []string{sess.ID}); err != nil {
 			t.Fatal(err)
 		}
-		var decoded sessionsShareOutput
+		var decoded sessionsapp.ShareOutput
 		if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
 			t.Fatalf("decode output %q: %v", output.String(), err)
 		}
@@ -134,34 +135,6 @@ func TestSessionsShareCreatesThenUpdatesAndPersistsWholeSession(t *testing.T) {
 	text := output.String()
 	if !strings.Contains(text, "Note: Private links expire.") || !strings.Contains(text, "Help: Run acme login.") || strings.Index(text, "Note:") > strings.Index(text, "Updated share") {
 		t.Fatalf("provider guidance was not shown before publishing: %q", text)
-	}
-}
-
-func TestSessionShareExportOptionsRequireExplicitRawReasoning(t *testing.T) {
-	cfg := &config.Config{Reasoning: config.ReasoningConfig{Raw: true, Source: config.ReasoningSourceAll, Export: config.ReasoningExportRaw}}
-	sess := &session.Session{ID: "share-raw", Mode: session.ModeChat, Provider: "mock", Model: "mock", CreatedAt: time.Now()}
-	messages := []session.Message{{
-		SessionID: sess.ID, Role: llm.RoleAssistant, TextContent: "Final answer.",
-		Parts: []llm.Part{{Type: llm.PartText, Text: "Final answer.", ReasoningContent: "private raw chain", ReasoningKind: llm.ReasoningKindRaw}},
-	}}
-	withoutOptions, err := sessionShareExportOptions(cfg, sess, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	without := session.ExportToMarkdown(sess, messages, withoutOptions)
-	if strings.Contains(without, "private raw chain") {
-		t.Fatalf("generic session share implicitly included raw reasoning: %q", without)
-	}
-	withOptions, err := sessionShareExportOptions(cfg, sess, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	with := session.ExportToMarkdown(sess, messages, withOptions)
-	if !strings.Contains(with, "private raw chain") {
-		t.Fatalf("explicit raw share omitted reasoning: %q", with)
-	}
-	if _, err := sessionShareExportOptions(&config.Config{}, sess, true); err == nil || !strings.Contains(err.Error(), "reasoning.raw") {
-		t.Fatalf("disabled explicit raw error=%v", err)
 	}
 }
 

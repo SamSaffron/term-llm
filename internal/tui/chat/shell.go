@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
@@ -470,7 +470,7 @@ func (m *Model) directShellHistoryCompletion(prefix string) (string, bool) {
 		return "", false
 	}
 	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].Role != llm.RoleUser {
+		if m.messages[i].Role != core.RoleUser {
 			continue
 		}
 		command, ok := directShellCommandFromResult(m.messages[i].TextContent)
@@ -729,8 +729,8 @@ func (m *Model) sendDirectShellResult(command, content string) (tea.Model, tea.C
 
 	userMsg := &session.Message{
 		SessionID:   m.sess.ID,
-		Role:        llm.RoleUser,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: content}},
+		Role:        core.RoleUser,
+		Parts:       []core.Part{{Type: core.PartText, Text: content}},
 		TextContent: content,
 		CreatedAt:   time.Now(),
 		Sequence:    -1,

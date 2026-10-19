@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -19,9 +20,9 @@ func TestNewWithFastProviderAndApprovalPersistsRequestedModeImmediately(t *testi
 	}
 	defer store.Close()
 
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	model := NewWithFastProviderAndApproval(
-		&config.Config{}, provider, nil, llm.NewEngine(provider, nil),
+		&config.Config{}, provider, nil, engine.NewEngine(provider, nil),
 		"mock", "mock", mcp.NewManager(), 1,
 		false, false, false, nil, "", "", false, "",
 		store, nil, false, nil, false, true, "", "", false,
@@ -150,9 +151,9 @@ func TestPersistApprovalModeSkipsUnchangedSession(t *testing.T) {
 
 func TestNewChatSkipsScrollbackReadForFreshSession(t *testing.T) {
 	store := &mockStore{}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	model := NewWithFastProviderAndApproval(
-		&config.Config{}, provider, nil, llm.NewEngine(provider, nil),
+		&config.Config{}, provider, nil, engine.NewEngine(provider, nil),
 		"mock", "mock", mcp.NewManager(), 1,
 		false, false, false, nil, "", "", false, "",
 		store, nil, false, nil, false, true, "", "", false,
@@ -169,9 +170,9 @@ func TestNewChatSkipsScrollbackReadForFreshSession(t *testing.T) {
 func TestNewChatLoadsScrollbackForExistingSession(t *testing.T) {
 	store := &mockStore{}
 	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock", Mode: session.ModeChat}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	NewWithFastProviderAndApproval(
-		&config.Config{}, provider, nil, llm.NewEngine(provider, nil),
+		&config.Config{}, provider, nil, engine.NewEngine(provider, nil),
 		"mock", "mock", mcp.NewManager(), 1,
 		false, false, false, nil, "", "", false, "",
 		store, sess, false, nil, false, true, "", "", false,

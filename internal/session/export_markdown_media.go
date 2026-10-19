@@ -3,7 +3,7 @@ package session
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
@@ -59,7 +59,7 @@ func rewriteExportMediaText(value string, replace func(string) string) string {
 	return out.String()
 }
 
-func replaceMarkdownAudioReferences(value string, media map[string]llm.MediaArtifact) string {
+func replaceMarkdownAudioReferences(value string, media map[string]core.MediaArtifact) string {
 	return rewriteExportMediaText(value, func(token string) string {
 		match := htmlMediaReferencePattern.FindStringSubmatch(token)
 		item, ok := media[strings.ToLower(match[2])]
@@ -70,7 +70,7 @@ func replaceMarkdownAudioReferences(value string, media map[string]llm.MediaArti
 	})
 }
 
-func markdownAudioPlaceholder(item llm.MediaArtifact) string {
+func markdownAudioPlaceholder(item core.MediaArtifact) string {
 	name := exportAudioName(item)
 	// The placeholder is text even if a malicious filename contains Markdown.
 	name = strings.NewReplacer(`\`, `\\`, "[", `\[`, "]", `\]`, "<", "&lt;", ">", "&gt;", "*", `\*`, "_", `\_`, "`", "\\`").Replace(name)

@@ -8,18 +8,18 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
-func executeClaimedShell(t *testing.T, tool *ShellTool, sessionID, runID string, args ShellArgs) llm.ToolOutput {
+func executeClaimedShell(t *testing.T, tool *ShellTool, sessionID, runID string, args ShellArgs) core.ToolOutput {
 	t.Helper()
 	raw, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := llm.ContextWithSessionID(context.Background(), sessionID)
-	ctx = llm.ContextWithToolRunID(ctx, runID)
-	ctx = llm.ContextWithCallID(ctx, "call-1")
+	ctx := core.ContextWithSessionID(context.Background(), sessionID)
+	ctx = core.ContextWithToolRunID(ctx, runID)
+	ctx = core.ContextWithCallID(ctx, "call-1")
 	out, err := tool.Execute(ctx, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -29,9 +29,9 @@ func executeClaimedShell(t *testing.T, tool *ShellTool, sessionID, runID string,
 
 type legacyOnlyFileRecorder struct{ records []filetrack.ChangeRecord }
 
-func (r *legacyOnlyFileRecorder) RecordChange(_ context.Context, rec filetrack.ChangeRecord) *llm.FileChange {
+func (r *legacyOnlyFileRecorder) RecordChange(_ context.Context, rec filetrack.ChangeRecord) *core.FileChange {
 	r.records = append(r.records, rec)
-	return &llm.FileChange{Path: rec.Path, Kind: filetrack.KindModify}
+	return &core.FileChange{Path: rec.Path, Kind: filetrack.KindModify}
 }
 func (r *legacyOnlyFileRecorder) SessionPaths(context.Context, string) []string { return nil }
 func (r *legacyOnlyFileRecorder) MaxFileBytes() int                             { return filetrack.DefaultMaxFileBytes }

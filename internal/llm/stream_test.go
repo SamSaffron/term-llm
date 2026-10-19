@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestNewEventStreamReturnsRunErrorAfterBufferedEventsWhenBufferIsFull(t *testing.T) {
@@ -15,7 +17,7 @@ func TestNewEventStreamReturnsRunErrorAfterBufferedEventsWhenBufferIsFull(t *tes
 	stream := newEventStream(context.Background(), func(ctx context.Context, send eventSender) error {
 		bufSize = cap(send.ch)
 		for range bufSize {
-			send.Send(Event{Type: EventTextDelta, Text: "x"})
+			send.Send(core.Event{Type: core.EventTextDelta, Text: "x"})
 		}
 		close(filled)
 		return wantErr
@@ -28,7 +30,7 @@ func TestNewEventStreamReturnsRunErrorAfterBufferedEventsWhenBufferIsFull(t *tes
 		if err != nil {
 			t.Fatalf("Recv() %d error = %v", i, err)
 		}
-		if event.Type == EventError {
+		if event.Type == core.EventError {
 			t.Fatalf("Recv() %d unexpectedly returned error event: %v", i, event.Err)
 		}
 	}
@@ -37,8 +39,8 @@ func TestNewEventStreamReturnsRunErrorAfterBufferedEventsWhenBufferIsFull(t *tes
 	if err != nil {
 		t.Fatalf("Recv() terminal error = %v, want nil", err)
 	}
-	if event.Type != EventError {
-		t.Fatalf("Recv() terminal event type = %v, want %v", event.Type, EventError)
+	if event.Type != core.EventError {
+		t.Fatalf("Recv() terminal event type = %v, want %v", event.Type, core.EventError)
 	}
 	if !errors.Is(event.Err, wantErr) {
 		t.Fatalf("Recv() terminal event error = %v, want %v", event.Err, wantErr)
@@ -50,65 +52,36 @@ func TestNewEventStreamReturnsRunErrorAfterBufferedEventsWhenBufferIsFull(t *tes
 	}
 }
 
-// A cancelled stream context must not turn a failed run into a clean EOF. The
-// consumer reports cancellation only while the run goroutine is still live, so a
-// dropped error made a failed run look successful whenever the goroutine
-// finished first.
-func TestNewEventStreamKeepsRunErrorWhenStreamContextIsCancelled(t *testing.T) {
-	wantErr := errors.New("provider failed")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		return wantErr
-	})
-
-	// Recv after the run goroutine has closed its channels, which is the ordering
-	// that previously reported io.EOF.
-	<-stream.(*channelStream).done
-
-	event, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("Recv() error = %v, want nil with a terminal error event", err)
-	}
-	if event.Type != EventError {
-		t.Fatalf("Recv() event type = %v, want %v", event.Type, EventError)
-	}
-	if !errors.Is(event.Err, wantErr) {
-		t.Fatalf("Recv() event error = %v, want %v", event.Err, wantErr)
-	}
-}
-
 func TestTrySend_ClosedChannel(t *testing.T) {
-	ch := make(chan Event)
+	ch := make(chan core.Event)
 	close(ch)
 
 	s := eventSender{ctx: context.Background(), ch: ch}
 
 	// Must not panic; should return false
-	if s.TrySend(Event{Type: EventHeartbeat}) {
+	if s.TrySend(core.Event{Type: core.EventHeartbeat}) {
 		t.Fatal("TrySend should return false for closed channel")
 	}
 }
 
 func TestTrySend_CancelledContext(t *testing.T) {
-	ch := make(chan Event) // unbuffered, will block
+	ch := make(chan core.Event) // unbuffered, will block
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	s := eventSender{ctx: ctx, ch: ch}
 
-	if s.TrySend(Event{Type: EventHeartbeat}) {
+	if s.TrySend(core.Event{Type: core.EventHeartbeat}) {
 		t.Fatal("TrySend should return false for cancelled context")
 	}
 }
 
 func TestTrySend_Success(t *testing.T) {
-	ch := make(chan Event, 1)
+	ch := make(chan core.Event, 1)
 	s := eventSender{ctx: context.Background(), ch: ch}
 
-	if !s.TrySend(Event{Type: EventHeartbeat, Text: "ping"}) {
+	if !s.TrySend(core.Event{Type: core.EventHeartbeat, Text: "ping"}) {
 		t.Fatal("TrySend should return true when buffer has space")
 	}
 	got := <-ch
@@ -118,12 +91,12 @@ func TestTrySend_Success(t *testing.T) {
 }
 
 func TestTrySend_BufferFull(t *testing.T) {
-	ch := make(chan Event, 1)
-	ch <- Event{Type: EventHeartbeat} // fill the buffer
+	ch := make(chan core.Event, 1)
+	ch <- core.Event{Type: core.EventHeartbeat} // fill the buffer
 
 	s := eventSender{ctx: context.Background(), ch: ch}
 
-	if s.TrySend(Event{Type: EventHeartbeat}) {
+	if s.TrySend(core.Event{Type: core.EventHeartbeat}) {
 		t.Fatal("TrySend should return false when buffer is full")
 	}
 }
@@ -131,7 +104,7 @@ func TestTrySend_BufferFull(t *testing.T) {
 func TestTrySend_NilChannel(t *testing.T) {
 	s := eventSender{}
 
-	if s.TrySend(Event{Type: EventHeartbeat}) {
+	if s.TrySend(core.Event{Type: core.EventHeartbeat}) {
 		t.Fatal("TrySend should return false for nil channel")
 	}
 }

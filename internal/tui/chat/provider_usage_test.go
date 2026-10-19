@@ -7,26 +7,26 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 )
 
 func TestCmdProviderUsageFetchesCurrentProviderAndOpensDialog(t *testing.T) {
 	originalFetch := fetchProviderUsage
 	defer func() { fetchProviderUsage = originalFetch }()
-	fetchProviderUsage = func(_ context.Context, provider, apiKey string) (*llm.ProviderUsage, error) {
+	fetchProviderUsage = func(_ context.Context, provider, apiKey string) (*providerusage.Report, error) {
 		if provider != "chatgpt" {
 			t.Fatalf("provider = %q, want chatgpt", provider)
 		}
 		if apiKey != "" {
 			t.Fatalf("apiKey = %q, want empty for chatgpt", apiKey)
 		}
-		return &llm.ProviderUsage{
+		return &providerusage.Report{
 			Provider: "chatgpt",
 			Plan:     "pro",
-			Limits: []llm.ProviderUsageLimit{{
+			Limits: []providerusage.Limit{{
 				ID:   "codex",
 				Name: "Codex",
-				PrimaryWindow: &llm.ProviderUsageWindow{
+				PrimaryWindow: &providerusage.Window{
 					UsedPercent:     31,
 					DurationMinutes: 300,
 				},
@@ -63,15 +63,15 @@ func TestCmdProviderUsageFetchesCurrentProviderAndOpensDialog(t *testing.T) {
 func TestCmdProviderUsageOpenCodeGoUsesConfiguredKey(t *testing.T) {
 	originalFetch := fetchProviderUsage
 	defer func() { fetchProviderUsage = originalFetch }()
-	fetchProviderUsage = func(_ context.Context, provider, apiKey string) (*llm.ProviderUsage, error) {
+	fetchProviderUsage = func(_ context.Context, provider, apiKey string) (*providerusage.Report, error) {
 		if provider != "opencode-go" || apiKey != "configured-key" {
 			t.Fatalf("fetch args = provider %q, apiKey %q", provider, apiKey)
 		}
-		return &llm.ProviderUsage{
+		return &providerusage.Report{
 			Provider: "opencode-go",
-			Limits: []llm.ProviderUsageLimit{{
+			Limits: []providerusage.Limit{{
 				Name:          "Weekly usage",
-				PrimaryWindow: &llm.ProviderUsageWindow{Label: "1 week window", UsedPercent: 20},
+				PrimaryWindow: &providerusage.Window{Label: "1 week window", UsedPercent: 20},
 			}},
 		}, nil
 	}
@@ -97,8 +97,8 @@ func TestCmdProviderUsageOpenCodeGoUsesConfiguredKey(t *testing.T) {
 func TestCmdProviderUsageReportsUnsupportedCurrentProvider(t *testing.T) {
 	originalFetch := fetchProviderUsage
 	defer func() { fetchProviderUsage = originalFetch }()
-	fetchProviderUsage = func(ctx context.Context, provider, _ string) (*llm.ProviderUsage, error) {
-		return llm.FetchProviderUsage(ctx, provider)
+	fetchProviderUsage = func(ctx context.Context, provider, _ string) (*providerusage.Report, error) {
+		return providerusage.Fetch(ctx, provider)
 	}
 
 	m := newCmdTestModel(&mockStore{})

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -30,9 +30,9 @@ func TestGrantUploadedFileReads(t *testing.T) {
 	}
 	approval := tools.NewApprovalManager(tools.NewToolPermissions())
 	rt := &serveRuntime{toolMgr: &tools.ToolManager{ApprovalMgr: approval}}
-	rt.grantUploadedFileReads([]llm.Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{file, {Type: llm.PartImage, ImagePath: imagePath}, {Type: llm.PartFile, FilePath: outside}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartFile, FilePath: sibling}}},
+	rt.grantUploadedFileReads([]core.Message{
+		{Role: core.RoleUser, Parts: []core.Part{file, {Type: core.PartImage, ImagePath: imagePath}, {Type: core.PartFile, FilePath: outside}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartFile, FilePath: sibling}}},
 	})
 	for _, path := range []string{file.FilePath, imagePath} {
 		for _, tool := range []string{"read_file", "grep", "glob", "view_image"} {

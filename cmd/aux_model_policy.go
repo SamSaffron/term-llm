@@ -6,12 +6,13 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
 // auxProviderForPolicy checks every candidate, including the default-provider
 // fallback. Automatic work can use the already-admitted main model instead.
-func auxProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main modelSelection, keys ...string) (llm.Provider, error) {
+func auxProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main modelSelection, keys ...string) (core.Provider, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -42,7 +43,7 @@ func auxProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main mo
 	return nil, lastErr
 }
 
-func mainProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main modelSelection) (llm.Provider, error) {
+func mainProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main modelSelection) (core.Provider, error) {
 	if main.Provider == "" || main.Model == "" {
 		return nil, fmt.Errorf("auxiliary fallback has no main model")
 	}

@@ -10,6 +10,8 @@ import (
 	"github.com/sahilm/fuzzy"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -104,7 +106,7 @@ func (m *Model) cachedOllamaModelEffort(provider, model string) (base, effort st
 	if err := pc.ResolveForInference(); err != nil {
 		return "", "", nil, false
 	}
-	return llm.CachedOllamaModelEffort(pc.BaseURL, model)
+	return ollama.CachedOllamaModelEffort(pc.BaseURL, model)
 }
 
 func (m *Model) baseModelAndEffort(provider, model string) (string, string) {
@@ -561,7 +563,7 @@ func (m *Model) switchEffortStateOnly(resolved effortSwitchResolution, deferMark
 	guardianErr := m.refreshGuardianReviewer(resolved.provider, resolved.targetModel)
 
 	if m.sess != nil && len(m.messages) > 0 {
-		marker := llm.ModelSwapMarker{
+		marker := core.ModelSwapMarker{
 			FromProvider: oldProvider,
 			FromModel:    oldModel,
 			ToProvider:   resolved.provider,

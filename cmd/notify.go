@@ -1,20 +1,13 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
-	"log"
-	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
+	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -45,218 +38,45 @@ func init() {
 	rootCmd.AddCommand(notifyCmd)
 }
 
+func notifyDeps() appnotify.Deps {
+	return appnotify.Deps{LoadConfig: loadConfigWithSetup, InitSessionStore: InitSessionStore}
+}
+
 func runNotifyBroadcast(cmd *cobra.Command, args []string) error {
-	message := args[0]
-
-	cfg, err := loadConfigWithSetup()
-	if err != nil {
-		return err
-	}
-
-	var errs []string
-	sent := 0
-
-	// Telegram: send if token is configured and chat-id provided. Resolution
-	// failures are reported alongside other platform errors rather than
-	// aborting web push.
-	token := ""
-	if notifyTelegramChatID != 0 && cfg.Serve.Telegram.TokenRef().Configured() {
-		resolved, tokenErr := cfg.Serve.Telegram.TokenRef().Resolve()
-		if tokenErr != nil {
-			errs = append(errs, fmt.Sprintf("serve.telegram.token: %v", tokenErr))
-		}
-		token = resolved
-	}
-	if token != "" && notifyTelegramChatID != 0 {
-		parseMode, err := normalizeTelegramParseMode(notifyTelegramParseMode)
-		if err != nil {
-			return err
-		}
-		if err := sendTelegramMessage(cmd.Context(), token, notifyTelegramChatID, message, parseMode); err != nil {
-			errs = append(errs, fmt.Sprintf("telegram: %v", err))
-		} else {
-			logTelegramNotifySession(cmd.Context(), cfg, notifyTelegramChatID, message, cmd.ErrOrStderr())
-			fmt.Fprintln(cmd.ErrOrStderr(), "sent via telegram")
-			sent++
-		}
-	}
-
-	// Web Push: send if VAPID keys are configured
-	if webPushConfigured(cfg) {
-		n, webErrs := sendWebPushAll(cmd.Context(), cfg, message, cmd.ErrOrStderr())
-		sent += n
-		errs = append(errs, webErrs...)
-		if n > 0 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "sent via web push (%d subscriptions)\n", n)
-		}
-	}
-
-	if sent == 0 && len(errs) == 0 {
-		return fmt.Errorf("no notification platforms configured\n\nConfigure telegram (serve.telegram.token + --chat-id) or web push (serve.web_push VAPID keys)")
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("notification errors:\n  %s", strings.Join(errs, "\n  "))
-	}
-	return nil
+	return appnotify.RunBroadcast(cmd.Context(), notifyDeps(), appnotify.BroadcastOptions{
+		Message:   args[0],
+		ChatID:    notifyTelegramChatID,
+		ParseMode: notifyTelegramParseMode,
+		Stderr:    cmd.ErrOrStderr(),
+	})
 }
 
-// Telegram helpers — shared by notify and notify telegram subcommands.
+// Thin aliases used by serve code that still lives in cmd.
 
-type telegramSendRequest struct {
-	ChatID    int64  `json:"chat_id"`
-	Text      string `json:"text"`
-	ParseMode string `json:"parse_mode"`
-}
-
-type telegramSendResponse struct {
-	OK          bool   `json:"ok"`
-	ErrorCode   int    `json:"error_code"`
-	Description string `json:"description"`
-	Parameters  struct {
-		RetryAfter int `json:"retry_after"`
-	} `json:"parameters"`
-}
-
-func normalizeTelegramParseMode(parseMode string) (string, error) {
-	mode := strings.TrimSpace(parseMode)
-	if mode == "" {
-		return "Markdown", nil
-	}
-	switch strings.ToLower(mode) {
-	case "markdown":
-		return "Markdown", nil
-	case "html":
-		return "HTML", nil
-	default:
-		return "", fmt.Errorf("invalid --parse-mode %q (must be Markdown or HTML)", parseMode)
-	}
-}
+type telegramSendResponse = appnotify.TelegramSendResponse
 
 func sendTelegramMessage(ctx context.Context, token string, chatID int64, message, parseMode string) error {
-	payload := telegramSendRequest{
-		ChatID:    chatID,
-		Text:      message,
-		ParseMode: parseMode,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal telegram request: %w", err)
-	}
-
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create telegram request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("send telegram message: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read telegram response: %w", err)
-	}
-
-	var apiResp telegramSendResponse
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		_ = json.Unmarshal(respBody, &apiResp)
-		message := fmt.Sprintf("telegram send failed: status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
-		return providerhttp.NewStatusErrorMessageString(message, resp.StatusCode, resp.Status, telegramErrorHeaders(resp.Header, apiResp.Parameters.RetryAfter), string(respBody))
-	}
-
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return fmt.Errorf("decode telegram response: %w", err)
-	}
-	if !apiResp.OK {
-		return telegramAPIResponseError(resp, apiResp, respBody)
-	}
-
-	return nil
-}
-
-func telegramAPIResponseError(resp *http.Response, apiResp telegramSendResponse, body []byte) error {
-	detail := strings.TrimSpace(apiResp.Description)
-	if detail == "" {
-		detail = "unknown error"
-	}
-	message := fmt.Sprintf("telegram send failed: %s", detail)
-	statusCode := apiResp.ErrorCode
-	if statusCode == 0 {
-		statusCode = resp.StatusCode
-	}
-	return providerhttp.NewStatusErrorMessageString(message, statusCode, resp.Status, telegramErrorHeaders(resp.Header, apiResp.Parameters.RetryAfter), string(body))
-}
-
-func telegramErrorHeaders(header http.Header, retryAfterSeconds int) http.Header {
-	if header == nil {
-		header = make(http.Header)
-	} else {
-		header = header.Clone()
-	}
-	if retryAfterSeconds > 0 && header.Get("Retry-After") == "" {
-		header.Set("Retry-After", strconv.Itoa(retryAfterSeconds))
-	}
-	return header
+	return appnotify.SendTelegramMessage(ctx, token, chatID, message, parseMode)
 }
 
 func logTelegramNotifySession(ctx context.Context, cfg *config.Config, chatID int64, message string, errWriter io.Writer) {
-	store, cleanup := InitSessionStore(cfg, errWriter)
-	defer cleanup()
-	if store == nil {
-		return
-	}
+	appnotify.LogTelegramNotifySession(ctx, notifyDeps(), cfg, chatID, message, errWriter)
+}
 
-	sessionName := fmt.Sprintf("telegram:%d", chatID)
-	var sess *session.Session
+func webPushConfigured(cfg *config.Config) bool { return appnotify.WebPushConfigured(cfg) }
 
-	summaries, err := store.List(ctx, session.ListOptions{Name: sessionName, Limit: 1})
-	if err != nil {
-		log.Printf("warning: list telegram sessions: %v", err)
-	} else if len(summaries) > 0 && summaries[0].Status == session.StatusActive {
-		sess, err = store.Get(ctx, summaries[0].ID)
-		if err != nil {
-			log.Printf("warning: load telegram session %s: %v", summaries[0].ID, err)
-			sess = nil
-		}
-	}
+func webPushKeys(cfg *config.Config) (string, string, error) { return appnotify.WebPushKeys(cfg) }
 
-	if sess == nil {
-		sess = &session.Session{
-			Name:     sessionName,
-			Provider: "telegram-notify",
-			Model:    "push",
-			Mode:     session.ModeChat,
-			Origin:   session.OriginTelegram,
-			Status:   session.StatusActive,
-		}
-		if err := store.Create(ctx, sess); err != nil {
-			log.Printf("warning: create telegram session: %v", err)
-			return
-		}
-	}
+func webPushPublicKey(cfg *config.Config) (string, error) { return appnotify.WebPushPublicKey(cfg) }
 
-	msg := session.NewMessage(sess.ID, llm.Message{
-		Role: llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type: llm.PartText,
-			Text: message,
-		}},
-	}, -1)
+func webPushKeyID(publicKey string) string { return appnotify.WebPushKeyID(publicKey) }
 
-	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
-		log.Printf("warning: add telegram message to session: %v", err)
-		return
-	}
+func normalizeWebPushSubject(raw string) string { return appnotify.NormalizeWebPushSubject(raw) }
 
-	if err := store.Update(ctx, sess); err != nil {
-		log.Printf("warning: update telegram session timestamp: %v", err)
-	}
-	if err := store.SetCurrent(ctx, sess.ID); err != nil {
-		log.Printf("warning: set current telegram session: %v", err)
-	}
+func sendWebPush(ctx context.Context, sub *session.PushSubscription, payload []byte, opts *webpush.Options) (int, error) {
+	return appnotify.SendWebPush(ctx, sub, payload, opts)
+}
+
+func sendWebPushDetailed(ctx context.Context, sub *session.PushSubscription, payload []byte, opts *webpush.Options) (int, time.Duration, error) {
+	return appnotify.SendWebPushDetailed(ctx, sub, payload, opts)
 }

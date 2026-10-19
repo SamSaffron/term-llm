@@ -4,31 +4,30 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
-
-	"golang.org/x/net/html"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/share"
 	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
+	"golang.org/x/net/html"
 )
 
 const exportAudioReference = "0123456789abcdef0123456789abcdef"
 
-func exportAudioFixture(t *testing.T, data []byte, mime string) llm.MediaArtifact {
+func exportAudioFixture(t *testing.T, data []byte, mime string) core.MediaArtifact {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "private-recording")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return llm.MediaArtifact{Reference: exportAudioReference, SourcePath: path, MediaType: mime, Name: "narration.mp3", Caption: "Narrated summary"}
+	return core.MediaArtifact{Reference: exportAudioReference, SourcePath: path, MediaType: mime, Name: "narration.mp3", Caption: "Narrated summary"}
 }
 
 func exportAudioMessages(text string) []Message {
-	return []Message{{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: text}}, TextContent: text}}
+	return []Message{{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: text}}, TextContent: text}}
 }
 
 func TestExportAudioConsentAndFormats(t *testing.T) {
@@ -36,7 +35,7 @@ func TestExportAudioConsentAndFormats(t *testing.T) {
 		for _, include := range []bool{false, true} {
 			t.Run(mime+map[bool]string{false: "/default", true: "/opt-in"}[include], func(t *testing.T) {
 				item := exportAudioFixture(t, data, mime)
-				opts := ExportOptions{IncludeAudio: include, Media: []llm.MediaArtifact{item}}
+				opts := ExportOptions{IncludeAudio: include, Media: []core.MediaArtifact{item}}
 				messages := exportAudioMessages("Before\n\n![Listen](term-llm-media://" + item.Reference + ")\n\nAfter")
 				html, err := ExportToHTML(&Session{ID: "audio"}, messages, opts)
 				if err != nil {
@@ -104,7 +103,7 @@ func TestExportAudioUnavailable(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages("![Listen](term-llm-media://"+item.Reference+")"), ExportOptions{IncludeAudio: true, Media: []llm.MediaArtifact{item}})
+			html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages("![Listen](term-llm-media://"+item.Reference+")"), ExportOptions{IncludeAudio: true, Media: []core.MediaArtifact{item}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +126,7 @@ func TestExportAudioBudgetAndDedup(t *testing.T) {
 	if result.URL == "" {
 		t.Fatal(result.Reason)
 	}
-	for _, item := range []llm.MediaArtifact{first, duplicate} {
+	for _, item := range []core.MediaArtifact{first, duplicate} {
 		if got := audio.resolve(item); got != result {
 			t.Fatal("duplicate was not cached")
 		}
@@ -152,7 +151,7 @@ func TestExportAudioCodeAndEscaping(t *testing.T) {
 	reference := "![Listen](term-llm-media://" + item.Reference + ")"
 	literal := "```markdown\n" + reference + "\n```\n\n`" + reference + "`\n\n    " + reference
 	for _, text := range []string{literal, "Before " + reference + " after\n\n" + literal} {
-		html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages(text), ExportOptions{IncludeAudio: true, Media: []llm.MediaArtifact{item}})
+		html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages(text), ExportOptions{IncludeAudio: true, Media: []core.MediaArtifact{item}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +171,7 @@ func TestExportAudioCodeAndEscaping(t *testing.T) {
 		if wantPlayers == 0 && strings.Contains(html, "media-src data:") {
 			t.Fatal("CSP enabled by a literal reference")
 		}
-		markdown := ExportToMarkdown(&Session{ID: "s"}, exportAudioMessages(text), ExportOptions{Media: []llm.MediaArtifact{item}})
+		markdown := ExportToMarkdown(&Session{ID: "s"}, exportAudioMessages(text), ExportOptions{Media: []core.MediaArtifact{item}})
 		if !strings.Contains(markdown, literal) {
 			t.Fatal("Markdown code reference changed")
 		}
@@ -185,7 +184,7 @@ func TestExportAudioPrivateMetadataAndDurablePath(t *testing.T) {
 	item.SourcePath = "/private/deleted-original.mp3"
 	item.Name = "/private/narration.mp3"
 	item.Caption = item.StoredPath + " https://private.example/media/secret.mp3"
-	html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages("![](term-llm-media://"+item.Reference+")"), ExportOptions{IncludeAudio: true, Media: []llm.MediaArtifact{item}})
+	html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages("![](term-llm-media://"+item.Reference+")"), ExportOptions{IncludeAudio: true, Media: []core.MediaArtifact{item}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +202,7 @@ func TestAudioShareBundleAndFiles(t *testing.T) {
 	item := exportAudioFixture(t, mediafixture.MP3(), "audio/mpeg")
 	messages := exportAudioMessages("![Listen](term-llm-media://" + item.Reference + ")")
 	for _, include := range []bool{false, true} {
-		opts := ExportOptions{IncludeAudio: include, Images: ExportImagesAssets, AssetMediaTypes: share.AssetImageMediaTypes, Media: []llm.MediaArtifact{item}}
+		opts := ExportOptions{IncludeAudio: include, Images: ExportImagesAssets, AssetMediaTypes: share.AssetImageMediaTypes, Media: []core.MediaArtifact{item}}
 		files, err := ShareBundle(&Session{ID: "s"}, messages, opts)
 		if err != nil {
 			t.Fatal(err)
@@ -233,7 +232,7 @@ func TestAudioShareFinalSizeLimits(t *testing.T) {
 	// Repeated references must not multiply base64 payloads or duplicate the
 	// payload in the download link; the bounded export now fits the provider.
 	messages := exportAudioMessages(strings.Repeat("![Listen](term-llm-media://"+item.Reference+")\n\n", 4))
-	files, err := ShareBundle(&Session{ID: "s"}, messages, ExportOptions{IncludeAudio: true, Media: []llm.MediaArtifact{item}})
+	files, err := ShareBundle(&Session{ID: "s"}, messages, ExportOptions{IncludeAudio: true, Media: []core.MediaArtifact{item}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,10 +257,10 @@ func TestAudioShareFinalSizeLimits(t *testing.T) {
 func TestAudioShareSelectionsRetainMedia(t *testing.T) {
 	item := exportAudioFixture(t, mediafixture.MP3(), "audio/mpeg")
 	messages := []Message{
-		shareTestMessage(1, 1, llm.RoleUser, "question", ""),
-		{ID: 2, Sequence: 2, Role: llm.RoleTool, ResponseID: "r", Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: "show_media", Media: []llm.MediaArtifact{item}}}}},
-		shareTestMessage(3, 3, llm.RoleAssistant, "![Listen](term-llm-media://"+item.Reference+")", "r"),
-		shareTestMessage(4, 4, llm.RoleAssistant, "later", "later"),
+		shareTestMessage(1, 1, core.RoleUser, "question", ""),
+		{ID: 2, Sequence: 2, Role: core.RoleTool, ResponseID: "r", Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: "show_media", Media: []core.MediaArtifact{item}}}}},
+		shareTestMessage(3, 3, core.RoleAssistant, "![Listen](term-llm-media://"+item.Reference+")", "r"),
+		shareTestMessage(4, 4, core.RoleAssistant, "later", "later"),
 	}
 	for _, scope := range []ShareScope{ShareScopeResponse, ShareScopeConversation} {
 		for _, noTools := range []bool{false, true} {
@@ -270,7 +269,7 @@ func TestAudioShareSelectionsRetainMedia(t *testing.T) {
 				t.Fatal(err)
 			}
 			if noTools {
-				var media []llm.MediaArtifact
+				var media []core.MediaArtifact
 				selection.Messages, media = StripToolActivity(selection.Messages)
 				selection.Media = append(selection.Media, media...)
 			}
@@ -301,7 +300,7 @@ func TestExportAudioRequiresParsedRegisteredReference(t *testing.T) {
 			if tc.name == "video" {
 				media.MediaType = "video/mp4"
 			}
-			html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages(tc.text), ExportOptions{IncludeAudio: true, Media: []llm.MediaArtifact{media}})
+			html, err := ExportToHTML(&Session{ID: "s"}, exportAudioMessages(tc.text), ExportOptions{IncludeAudio: true, Media: []core.MediaArtifact{media}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -315,7 +314,7 @@ func TestExportAudioRequiresParsedRegisteredReference(t *testing.T) {
 func TestExportAudioLinkedImage(t *testing.T) {
 	item := exportAudioFixture(t, mediafixture.MP3(), "audio/mpeg")
 	value := "Before [![Listen](term-llm-media://" + item.Reference + ")](https://example.com) after"
-	content, result, err := ExportToHTMLWithResult(&Session{ID: "s"}, exportAudioMessages(value), ExportOptions{IncludeAudio: true, Media: []llm.MediaArtifact{item}})
+	content, result, err := ExportToHTMLWithResult(&Session{ID: "s"}, exportAudioMessages(value), ExportOptions{IncludeAudio: true, Media: []core.MediaArtifact{item}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +349,7 @@ func TestExportAudioResultCounts(t *testing.T) {
 	if err := os.Truncate(oversize.SourcePath, maxHTMLExportInlineAudioBytes+1); err != nil {
 		t.Fatal(err)
 	}
-	items := []llm.MediaArtifact{good, duplicate, missing, invalid, oversize}
+	items := []core.MediaArtifact{good, duplicate, missing, invalid, oversize}
 	var value strings.Builder
 	for i := range items {
 		items[i].Reference = fmt.Sprintf("%032x", i+1)
@@ -372,7 +371,7 @@ func TestExportAudioResultCounts(t *testing.T) {
 
 func TestExportAudioNameShared(t *testing.T) {
 	for _, name := range []string{`private\nested\recording.mp3`, "/private/narration.mp3", "", "https://private.example/media/secret.mp3"} {
-		item := llm.MediaArtifact{Name: name}
+		item := core.MediaArtifact{Name: name}
 		card := buildHTMLAudio(newExportAudio(ExportOptions{}), item, "")
 		if card.Name != exportAudioName(item) || !strings.Contains(markdownAudioPlaceholder(item), card.Name) {
 			t.Fatalf("name differs across exports for %q", name)

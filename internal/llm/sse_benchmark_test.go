@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core/stream"
 )
 
 func BenchmarkReadSSEEventChatCompletions(b *testing.B) {
@@ -15,7 +17,7 @@ func BenchmarkReadSSEEventChatCompletions(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		reader := bufio.NewReader(strings.NewReader(payload))
 		for {
-			_, data, eof, err := readSSEEvent(reader)
+			_, data, eof, err := stream.ReadEvent(reader)
 			if err != nil {
 				b.Fatalf("readSSEEvent: %v", err)
 			}

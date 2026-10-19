@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // SessionDirectoryToolName exposes the durable session directory to a
@@ -65,8 +65,8 @@ func ContextWithSessionDirectory(ctx context.Context, sessionID string, list fun
 // SessionDirectoryTool lists or searches recent chat sessions.
 type SessionDirectoryTool struct{}
 
-func (*SessionDirectoryTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (*SessionDirectoryTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: SessionDirectoryToolName,
 		Description: "List or search this term-llm instance's chat sessions. With no query, returns the most recently active " +
 			"sessions; with query, searches full transcripts and returns matching excerpts. Sessions marked running are busy, " +
@@ -88,24 +88,24 @@ func (*SessionDirectoryTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (*SessionDirectoryTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (*SessionDirectoryTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	binding, ok := ctx.Value(sessionDirectoryKey{}).(sessionDirectoryBinding)
-	if !ok || binding.list == nil || binding.sessionID == "" || binding.sessionID != llm.SessionIDFromContext(ctx) {
-		return llm.ToolOutput{}, NewToolError(ErrPermissionDenied, "the session directory is available only to the originating live chat turn")
+	if !ok || binding.list == nil || binding.sessionID == "" || binding.sessionID != core.SessionIDFromContext(ctx) {
+		return core.ToolOutput{}, NewToolError(ErrPermissionDenied, "the session directory is available only to the originating live chat turn")
 	}
 	params, err := parseSessionDirectoryArgs(args)
 	if err != nil {
-		return llm.ToolOutput{}, err
+		return core.ToolOutput{}, err
 	}
 	entries, err := binding.list(ctx, params)
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("session directory: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("session directory: %w", err)
 	}
 	encoded, err := json.Marshal(sessionDirectoryOutput(entries, time.Now()))
 	if err != nil {
-		return llm.ToolOutput{}, fmt.Errorf("encode session directory: %w", err)
+		return core.ToolOutput{}, fmt.Errorf("encode session directory: %w", err)
 	}
-	return llm.TextOutput(string(encoded)), nil
+	return core.TextOutput(string(encoded)), nil
 }
 
 func (*SessionDirectoryTool) Preview(json.RawMessage) string {

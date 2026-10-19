@@ -15,6 +15,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -31,8 +34,8 @@ func TestServeRuntimeNewSessionDoesNotPersistDaemonCWD(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	rt := &serveRuntime{store: store, provider: llm.NewMockProvider("mock"), defaultModel: "mock-model"}
-	if !rt.ensurePersistedSession(ctx, "serve-no-cwd", []llm.Message{llm.UserText("hello")}) {
+	rt := &serveRuntime{store: store, provider: mockprovider.NewMockProvider("mock"), defaultModel: "mock-model"}
+	if !rt.ensurePersistedSession(ctx, "serve-no-cwd", []core.Message{core.UserText("hello")}) {
 		t.Fatal("ensurePersistedSession failed")
 	}
 	sess, err := store.Get(ctx, "serve-no-cwd")
@@ -86,13 +89,13 @@ func TestServeRuntimeSessionNumberConcurrentAccess(t *testing.T) {
 }
 
 type serveRuntimeTestStream struct {
-	events []llm.Event
+	events []core.Event
 	index  int
 }
 
-func (s *serveRuntimeTestStream) Recv() (llm.Event, error) {
+func (s *serveRuntimeTestStream) Recv() (core.Event, error) {
 	if s.index >= len(s.events) {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	event := s.events[s.index]
 	s.index++
@@ -115,22 +118,22 @@ func (p *serveRuntimeTestProvider) Credential() string {
 	return "test"
 }
 
-func (p *serveRuntimeTestProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *serveRuntimeTestProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 
-func (p *serveRuntimeTestProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	var events []llm.Event
+func (p *serveRuntimeTestProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	var events []core.Event
 	switch p.calls % 2 {
 	case 0:
-		events = []llm.Event{
-			{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "serve_runtime_test_tool", Arguments: json.RawMessage(`{}`)}},
-			{Type: llm.EventDone},
+		events = []core.Event{
+			{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-1", Name: "serve_runtime_test_tool", Arguments: json.RawMessage(`{}`)}},
+			{Type: core.EventDone},
 		}
 	case 1:
-		events = []llm.Event{
-			{Type: llm.EventTextDelta, Text: "done"},
-			{Type: llm.EventDone},
+		events = []core.Event{
+			{Type: core.EventTextDelta, Text: "done"},
+			{Type: core.EventDone},
 		}
 	}
 	p.calls++
@@ -149,17 +152,17 @@ func TestServeRuntimePropagatesToolManagerBaseDirToLLMRequest(t *testing.T) {
 		t.Fatalf("SetBaseDir: %v", err)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("done")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("done")
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		toolMgr:      toolMgr,
 		defaultModel: "mock-model",
 	}
 	_, err = rt.Run(context.Background(), false, false,
-		[]llm.Message{llm.UserText("hello")},
-		llm.Request{WorkingDir: t.TempDir()})
+		[]core.Message{core.UserText("hello")},
+		core.Request{WorkingDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -174,12 +177,12 @@ func TestServeRuntimePropagatesToolManagerBaseDirToLLMRequest(t *testing.T) {
 
 type serveRuntimeTestTool struct{}
 
-func (t *serveRuntimeTestTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "serve_runtime_test_tool", Description: "test tool", Schema: map[string]interface{}{}}
+func (t *serveRuntimeTestTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "serve_runtime_test_tool", Description: "test tool", Schema: map[string]interface{}{}}
 }
 
-func (t *serveRuntimeTestTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("tool ok"), nil
+func (t *serveRuntimeTestTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("tool ok"), nil
 }
 
 func (t *serveRuntimeTestTool) Preview(args json.RawMessage) string {
@@ -241,11 +244,11 @@ func TestServeRuntimeStatefulRunRequiresSessionPersistence(t *testing.T) {
 		Store: newServeRuntimeTestStore(),
 		err:   storeErr,
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("must not run")
 	rt := &serveRuntime{
 		store:        store,
 		provider:     provider,
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 	}
 
@@ -255,10 +258,10 @@ func TestServeRuntimeStatefulRunRequiresSessionPersistence(t *testing.T) {
 		context.Background(),
 		true,
 		false,
-		[]llm.Message{llm.UserText("hello")},
-		llm.Request{SessionID: "sess-persistence-failure"},
+		[]core.Message{core.UserText("hello")},
+		core.Request{SessionID: "sess-persistence-failure"},
 		func() { startCalls++ },
-		func(llm.Event) error {
+		func(core.Event) error {
 			eventCalls++
 			return nil
 		},
@@ -278,7 +281,7 @@ func TestServeRuntimeStatefulRunRequiresSessionPersistence(t *testing.T) {
 }
 
 type resetTrackingProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	resets int
 }
 
@@ -286,13 +289,13 @@ func (p *resetTrackingProvider) ResetConversation() { p.resets++ }
 
 func TestServeRuntimeDoesNotDuplicateSurfaceOwnedPlatformContext(t *testing.T) {
 	const platformText = "chat platform context"
-	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("answer")
 	rt := &serveRuntime{
-		provider: provider, engine: llm.NewEngine(provider, nil), platform: "chat",
+		provider: provider, engine: engine.NewEngine(provider, nil), platform: "chat",
 		platformMessages: agents.PlatformMessagesConfig{Chat: platformText},
 	}
-	input := []llm.Message{llm.PlatformContextMessage(platformText), llm.UserText("hello")}
-	if _, err := rt.Run(context.Background(), false, false, input, llm.Request{}); err != nil {
+	input := []core.Message{llm.PlatformContextMessage(platformText), core.UserText("hello")}
+	if _, err := rt.Run(context.Background(), false, false, input, core.Request{}); err != nil {
 		t.Fatal(err)
 	}
 	requests := provider.RecordedRequests()
@@ -301,7 +304,7 @@ func TestServeRuntimeDoesNotDuplicateSurfaceOwnedPlatformContext(t *testing.T) {
 	}
 	count := 0
 	for _, message := range requests[0].Messages {
-		if message.Role == llm.RoleDeveloper && llm.MessageText(message) == platformText {
+		if message.Role == core.RoleDeveloper && core.MessageText(message) == platformText {
 			count++
 		}
 	}
@@ -316,17 +319,17 @@ func TestServeRuntimeDoesNotDuplicateSurfaceOwnedPlatformContext(t *testing.T) {
 func TestServeRuntimeHonorsTimeGroundingOptOut(t *testing.T) {
 	ctx := context.Background()
 	store := newServeRuntimeTestStore()
-	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("answer")
 	rt := &serveRuntime{
-		provider: provider, engine: llm.NewEngine(provider, nil), store: store, defaultModel: "mock",
+		provider: provider, engine: engine.NewEngine(provider, nil), store: store, defaultModel: "mock",
 		settings: &SessionSettings{TimeGrounding: false},
 	}
-	if _, err := rt.Run(ctx, true, false, []llm.Message{llm.UserText("question")}, llm.Request{SessionID: "timeless"}); err != nil {
+	if _, err := rt.Run(ctx, true, false, []core.Message{core.UserText("question")}, core.Request{SessionID: "timeless"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, request := range provider.RecordedRequests() {
 		for _, message := range request.Messages {
-			if strings.Contains(llm.MessageText(message), "Conversation started at") {
+			if strings.Contains(core.MessageText(message), "Conversation started at") {
 				t.Fatalf("opted-out runtime sent time grounding: %#v", request.Messages)
 			}
 		}
@@ -349,12 +352,12 @@ func TestServeRuntimeFirstTurnAddsStartAfterPreseededDeveloperContext(t *testing
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "preseeded context"}}}, -1)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "preseeded context"}}}, -1)); err != nil {
 		t.Fatal(err)
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
-	rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), store: store, defaultModel: "mock", settings: &SessionSettings{TimeGrounding: true}}
-	if _, err := rt.Run(ctx, true, false, []llm.Message{llm.UserText("question")}, llm.Request{SessionID: sess.ID}); err != nil {
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("answer")
+	rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), store: store, defaultModel: "mock", settings: &SessionSettings{TimeGrounding: true}}
+	if _, err := rt.Run(ctx, true, false, []core.Message{core.UserText("question")}, core.Request{SessionID: sess.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -374,16 +377,16 @@ func TestServeRuntimeFirstTurnAddsStartAfterPreseededDeveloperContext(t *testing
 }
 
 func TestServeRuntimeBorrowedEnginePreservesProviderConversation(t *testing.T) {
-	provider := &resetTrackingProvider{MockProvider: llm.NewMockProvider("mock").AddTextResponse("one").AddTextResponse("two")}
+	provider := &resetTrackingProvider{MockProvider: mockprovider.NewMockProvider("mock").AddTextResponse("one").AddTextResponse("two")}
 	rt := &serveRuntime{
 		provider:       provider,
-		engine:         llm.NewEngine(provider, nil),
+		engine:         engine.NewEngine(provider, nil),
 		borrowedEngine: true,
 		defaultModel:   "mock-model",
 		settings:       &SessionSettings{TimeGrounding: true},
 	}
 	for _, prompt := range []string{"first", "second"} {
-		if _, err := rt.Run(context.Background(), false, false, []llm.Message{llm.UserText(prompt)}, llm.Request{}); err != nil {
+		if _, err := rt.Run(context.Background(), false, false, []core.Message{core.UserText(prompt)}, core.Request{}); err != nil {
 			t.Fatalf("Run(%q): %v", prompt, err)
 		}
 	}
@@ -396,21 +399,21 @@ func TestServeRuntimeBorrowedEnginePreservesProviderConversation(t *testing.T) {
 	var startText string
 	for i, want := range []string{"first", "second"} {
 		request := provider.Requests[i]
-		if len(request.Messages) != 2 || request.Messages[0].Role != llm.RoleDeveloper || llm.MessageText(request.Messages[1]) != want {
+		if len(request.Messages) != 2 || request.Messages[0].Role != core.RoleDeveloper || core.MessageText(request.Messages[1]) != want {
 			t.Fatalf("provider request %d messages = %#v, want start context then %q", i, request.Messages, want)
 		}
 		if i == 0 {
-			startText = llm.MessageText(request.Messages[0])
-		} else if got := llm.MessageText(request.Messages[0]); got != startText {
+			startText = core.MessageText(request.Messages[0])
+		} else if got := core.MessageText(request.Messages[0]); got != startText {
 			t.Fatalf("borrowed conversation start changed: first %q, second %q", startText, got)
 		}
 	}
 }
 
 func TestServeRuntimeOwnedEngineResetsStatelessConversation(t *testing.T) {
-	provider := &resetTrackingProvider{MockProvider: llm.NewMockProvider("mock").AddTextResponse("ok")}
-	rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), defaultModel: "mock-model"}
-	if _, err := rt.Run(context.Background(), false, false, []llm.Message{llm.UserText("hello")}, llm.Request{}); err != nil {
+	provider := &resetTrackingProvider{MockProvider: mockprovider.NewMockProvider("mock").AddTextResponse("ok")}
+	rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), defaultModel: "mock-model"}
+	if _, err := rt.Run(context.Background(), false, false, []core.Message{core.UserText("hello")}, core.Request{}); err != nil {
 		t.Fatal(err)
 	}
 	if provider.resets != 1 {
@@ -441,11 +444,11 @@ func TestServeRuntimeNonPersistentRunsStillExecute(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+			provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 			rt := &serveRuntime{
 				store:        tc.store,
 				provider:     provider,
-				engine:       llm.NewEngine(provider, nil),
+				engine:       engine.NewEngine(provider, nil),
 				defaultModel: "mock-model",
 			}
 
@@ -453,9 +456,9 @@ func TestServeRuntimeNonPersistentRunsStillExecute(t *testing.T) {
 				context.Background(),
 				tc.stateful,
 				false,
-				[]llm.Message{llm.UserText("hello")},
-				llm.Request{SessionID: "sess-non-persistent"},
-				func(llm.Event) error { return nil },
+				[]core.Message{core.UserText("hello")},
+				core.Request{SessionID: "sess-non-persistent"},
+				func(core.Event) error { return nil },
 			)
 			if err != nil {
 				t.Fatalf("RunWithEvents() error = %v", err)
@@ -682,7 +685,7 @@ func (s *serveRuntimeTestStore) AppendMessagesWithTranscriptRev(ctx context.Cont
 		msg.Sequence = start + i
 		copyMsg := *msg
 		s.messages[sessionID] = append(s.messages[sessionID], copyMsg)
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			if sess := s.sessions[sessionID]; sess != nil {
 				sess.UserTurns++
 			}
@@ -868,11 +871,11 @@ func (s *serveRuntimeTestStore) Close() error {
 	return nil
 }
 
-func serveRuntimeTextMessage(role llm.Role, text string) llm.Message {
-	return llm.Message{
+func serveRuntimeTextMessage(role core.Role, text string) core.Message {
+	return core.Message{
 		Role: role,
-		Parts: []llm.Part{{
-			Type: llm.PartText,
+		Parts: []core.Part{{
+			Type: core.PartText,
 			Text: text,
 		}},
 	}
@@ -887,15 +890,15 @@ type serveRuntimePersistentProvider struct {
 	sessionID    string
 	messagesSent int
 	importCalls  int
-	received     [][]llm.Message
+	received     [][]core.Message
 }
 
 func (p *serveRuntimePersistentProvider) Name() string { return "persistent-provider" }
 
 func (p *serveRuntimePersistentProvider) Credential() string { return "claude-bin" }
 
-func (p *serveRuntimePersistentProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ManagesOwnContext: true}
+func (p *serveRuntimePersistentProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ManagesOwnContext: true}
 }
 
 func (p *serveRuntimePersistentProvider) ExportProviderState() ([]byte, bool) {
@@ -923,19 +926,19 @@ func (p *serveRuntimePersistentProvider) ImportProviderState(data []byte) error 
 	return nil
 }
 
-func (p *serveRuntimePersistentProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveRuntimePersistentProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	delivered := req.Messages
 	if p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
 		delivered = req.Messages[p.messagesSent:]
 	}
-	p.received = append(p.received, append([]llm.Message(nil), delivered...))
+	p.received = append(p.received, append([]core.Message(nil), delivered...))
 	if p.sessionID == "" {
 		p.sessionID = "claude-session-from-first-runtime"
 	}
 	p.messagesSent = len(req.Messages)
-	return &serveRuntimeTestStream{events: []llm.Event{
-		{Type: llm.EventTextDelta, Text: "provider answer"},
-		{Type: llm.EventDone},
+	return &serveRuntimeTestStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "provider answer"},
+		{Type: core.EventDone},
 	}}, nil
 }
 
@@ -952,7 +955,7 @@ func TestServeRuntimeRestoresProviderStateFromSessionStore(t *testing.T) {
 		return &serveRuntime{
 			provider:     provider,
 			providerKey:  "claude-bin",
-			engine:       llm.NewEngine(provider, nil),
+			engine:       engine.NewEngine(provider, nil),
 			store:        store,
 			defaultModel: "sonnet",
 		}
@@ -960,8 +963,8 @@ func TestServeRuntimeRestoresProviderStateFromSessionStore(t *testing.T) {
 
 	firstProvider := &serveRuntimePersistentProvider{}
 	if _, err := newRuntime(firstProvider).Run(ctx, true, false,
-		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "first question")},
-		llm.Request{SessionID: "sess-persistent-provider", Model: "sonnet"}); err != nil {
+		[]core.Message{serveRuntimeTextMessage(core.RoleUser, "first question")},
+		core.Request{SessionID: "sess-persistent-provider", Model: "sonnet"}); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
 	if len(firstProvider.received) != 1 || len(firstProvider.received[0]) != 1 {
@@ -970,8 +973,8 @@ func TestServeRuntimeRestoresProviderStateFromSessionStore(t *testing.T) {
 
 	secondProvider := &serveRuntimePersistentProvider{}
 	if _, err := newRuntime(secondProvider).Run(ctx, true, false,
-		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "second question")},
-		llm.Request{SessionID: "sess-persistent-provider", Model: "sonnet"}); err != nil {
+		[]core.Message{serveRuntimeTextMessage(core.RoleUser, "second question")},
+		core.Request{SessionID: "sess-persistent-provider", Model: "sonnet"}); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
 	if secondProvider.importCalls != 1 {
@@ -982,7 +985,7 @@ func TestServeRuntimeRestoresProviderStateFromSessionStore(t *testing.T) {
 	}
 	var gotText strings.Builder
 	for _, msg := range secondProvider.received[0] {
-		gotText.WriteString(llm.MessageText(msg))
+		gotText.WriteString(core.MessageText(msg))
 		gotText.WriteString("\n")
 	}
 	if strings.Contains(gotText.String(), "first question") {
@@ -1001,10 +1004,10 @@ func TestServeRuntimePersistSnapshotUpdatesUserTurns(t *testing.T) {
 	}
 	rt := &serveRuntime{store: store, sessionMeta: sess}
 
-	snapshot := []llm.Message{
-		serveRuntimeTextMessage(llm.RoleUser, "first user"),
-		serveRuntimeTextMessage(llm.RoleAssistant, "first assistant"),
-		serveRuntimeTextMessage(llm.RoleUser, "second user"),
+	snapshot := []core.Message{
+		serveRuntimeTextMessage(core.RoleUser, "first user"),
+		serveRuntimeTextMessage(core.RoleAssistant, "first assistant"),
+		serveRuntimeTextMessage(core.RoleUser, "second user"),
 	}
 	if !rt.persistSnapshot(context.Background(), sess.ID, snapshot) {
 		t.Fatal("persistSnapshot returned false")
@@ -1038,7 +1041,7 @@ func TestServeRuntimePersistSnapshotDoesNotPublishPendingAssistantBoundary(t *te
 	rt := &serveRuntime{store: store, sessionMeta: sess}
 	run := newResponseRun("resp-snapshot-boundary", sess.ID, "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
-	initial := []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "question")}
+	initial := []core.Message{serveRuntimeTextMessage(core.RoleUser, "question")}
 	if !rt.persistInitialSnapshot(ctx, sess.ID, initial) {
 		t.Fatal("persistInitialSnapshot returned false")
 	}
@@ -1046,7 +1049,7 @@ func TestServeRuntimePersistSnapshotDoesNotPublishPendingAssistantBoundary(t *te
 		t.Fatalf("initial boundary = %#v, want durable user row", boundary)
 	}
 
-	withPendingAssistant := append(append([]llm.Message(nil), initial...), serveRuntimeTextMessage(llm.RoleAssistant, "partial"))
+	withPendingAssistant := append(append([]core.Message(nil), initial...), serveRuntimeTextMessage(core.RoleAssistant, "partial"))
 	if !rt.persistSnapshot(ctx, sess.ID, withPendingAssistant) {
 		t.Fatal("persistSnapshot returned false")
 	}
@@ -1066,10 +1069,10 @@ func TestServeRuntimeAppendMessagesIncrementsUserTurns(t *testing.T) {
 	}
 	rt := &serveRuntime{store: store, sessionMeta: sess}
 
-	result := rt.appendMessagesDetailed(context.Background(), sess.ID, []llm.Message{
-		serveRuntimeTextMessage(llm.RoleUser, "first user"),
-		serveRuntimeTextMessage(llm.RoleAssistant, "assistant"),
-		serveRuntimeTextMessage(llm.RoleUser, "second user"),
+	result := rt.appendMessagesDetailed(context.Background(), sess.ID, []core.Message{
+		serveRuntimeTextMessage(core.RoleUser, "first user"),
+		serveRuntimeTextMessage(core.RoleAssistant, "assistant"),
+		serveRuntimeTextMessage(core.RoleUser, "second user"),
 	}, 3)
 	if result.Written != 3 || !result.Complete || result.LastRowID <= 0 {
 		t.Fatalf("append result = %#v, want three complete writes and assigned final ID", result)
@@ -1097,24 +1100,24 @@ func (p *serveRuntimeMetricsProvider) Name() string { return "serve-runtime-metr
 
 func (p *serveRuntimeMetricsProvider) Credential() string { return "test" }
 
-func (p *serveRuntimeMetricsProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *serveRuntimeMetricsProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 
-func (p *serveRuntimeMetricsProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	var events []llm.Event
+func (p *serveRuntimeMetricsProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	var events []core.Event
 	switch p.calls {
 	case 0:
-		events = []llm.Event{
-			{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-metrics", Name: "serve_runtime_test_tool", Arguments: json.RawMessage(`{}`)}},
-			{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 10, CachedInputTokens: 3, CacheWriteTokens: 2, OutputTokens: 5}},
-			{Type: llm.EventDone},
+		events = []core.Event{
+			{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-metrics", Name: "serve_runtime_test_tool", Arguments: json.RawMessage(`{}`)}},
+			{Type: core.EventUsage, Use: &core.Usage{InputTokens: 10, CachedInputTokens: 3, CacheWriteTokens: 2, OutputTokens: 5}},
+			{Type: core.EventDone},
 		}
 	default:
-		events = []llm.Event{
-			{Type: llm.EventTextDelta, Text: "done"},
-			{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 7, OutputTokens: 4}},
-			{Type: llm.EventDone},
+		events = []core.Event{
+			{Type: core.EventTextDelta, Text: "done"},
+			{Type: core.EventUsage, Use: &core.Usage{InputTokens: 7, OutputTokens: 4}},
+			{Type: core.EventDone},
 		}
 	}
 	p.calls++
@@ -1135,9 +1138,9 @@ func TestServeRuntimeRunPersistsTurnMetricsAndContextEstimate(t *testing.T) {
 	}
 	provider := &serveRuntimeMetricsProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
@@ -1146,11 +1149,11 @@ func TestServeRuntimeRunPersistsTurnMetricsAndContextEstimate(t *testing.T) {
 		defaultModel: "metrics-model",
 	}
 
-	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "collect metrics")}, llm.Request{
+	result, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "collect metrics")}, core.Request{
 		SessionID:  "sess-metrics",
 		Model:      "metrics-model",
-		Tools:      []llm.ToolSpec{tool.Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{tool.Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:   4,
 	})
 	if err != nil {
@@ -1220,7 +1223,7 @@ func TestServeRuntimePersistSnapshotPreservesParentDeadline(t *testing.T) {
 	defer cancel()
 	rt := &serveRuntime{store: store, sessionMeta: sess}
 
-	if !rt.persistSnapshot(parentCtx, sess.ID, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}) {
+	if !rt.persistSnapshot(parentCtx, sess.ID, []core.Message{serveRuntimeTextMessage(core.RoleUser, "hello")}) {
 		t.Fatal("persistSnapshot returned false")
 	}
 	if remaining <= 0 || remaining > 250*time.Millisecond {
@@ -1247,7 +1250,7 @@ func TestServeRuntimeAppendMessagesPreservesParentDeadline(t *testing.T) {
 	defer cancel()
 	rt := &serveRuntime{store: store, sessionMeta: sess}
 
-	written := rt.appendMessages(parentCtx, sess.ID, []llm.Message{serveRuntimeTextMessage(llm.RoleAssistant, "hello")}, 1)
+	written := rt.appendMessages(parentCtx, sess.ID, []core.Message{serveRuntimeTextMessage(core.RoleAssistant, "hello")}, 1)
 	if written != 1 {
 		t.Fatalf("written = %d, want 1", written)
 	}
@@ -1257,17 +1260,17 @@ func TestServeRuntimeAppendMessagesPreservesParentDeadline(t *testing.T) {
 }
 
 type serveRuntimeCompactionProvider struct {
-	calls []llm.Request
+	calls []core.Request
 }
 
 func (p *serveRuntimeCompactionProvider) Name() string       { return "serve-runtime-compact" }
 func (p *serveRuntimeCompactionProvider) Credential() string { return "test" }
-func (p *serveRuntimeCompactionProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *serveRuntimeCompactionProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 func (p *serveRuntimeCompactionProvider) ResetConversation() {}
 
-func (p *serveRuntimeCompactionProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveRuntimeCompactionProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.calls = append(p.calls, req)
 	last := ""
 	if len(req.Messages) > 0 {
@@ -1276,27 +1279,27 @@ func (p *serveRuntimeCompactionProvider) Stream(ctx context.Context, req llm.Req
 		}
 	}
 	if strings.Contains(last, "compact continuation brief") {
-		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "summary after runtime compaction"}, {Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 11, OutputTokens: 3}}}}, nil
+		return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventTextDelta, Text: "summary after runtime compaction"}, {Type: core.EventUsage, Use: &core.Usage{InputTokens: 11, OutputTokens: 3}}}}, nil
 	}
 	if strings.Contains(last, "Create a detailed summary of the conversation history") {
-		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "unexpected hard summary"}}}, nil
+		return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventTextDelta, Text: "unexpected hard summary"}}}, nil
 	}
-	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "final after compaction"}, {Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 7, OutputTokens: 2}}}}, nil
+	return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventTextDelta, Text: "final after compaction"}, {Type: core.EventUsage, Use: &core.Usage{InputTokens: 7, OutputTokens: 2}}}}, nil
 }
 
 type serveRuntimeCompactionErrorProvider struct {
-	calls    []llm.Request
+	calls    []core.Request
 	finalErr error
 }
 
 func (p *serveRuntimeCompactionErrorProvider) Name() string       { return "serve-runtime-compact-error" }
 func (p *serveRuntimeCompactionErrorProvider) Credential() string { return "test" }
-func (p *serveRuntimeCompactionErrorProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *serveRuntimeCompactionErrorProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 func (p *serveRuntimeCompactionErrorProvider) ResetConversation() {}
 
-func (p *serveRuntimeCompactionErrorProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveRuntimeCompactionErrorProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.calls = append(p.calls, req)
 	last := ""
 	if len(req.Messages) > 0 {
@@ -1305,18 +1308,18 @@ func (p *serveRuntimeCompactionErrorProvider) Stream(ctx context.Context, req ll
 		}
 	}
 	if strings.Contains(last, "compact continuation brief") {
-		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "summary before stream failure"}}}, nil
+		return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventTextDelta, Text: "summary before stream failure"}}}, nil
 	}
-	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "partial after compaction"}, {Type: llm.EventError, Err: p.finalErr}}}, nil
+	return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventTextDelta, Text: "partial after compaction"}, {Type: core.EventError, Err: p.finalErr}}}, nil
 }
 
 type serveRuntimeBlockingStream struct {
 	ctx context.Context
 }
 
-func (s *serveRuntimeBlockingStream) Recv() (llm.Event, error) {
+func (s *serveRuntimeBlockingStream) Recv() (core.Event, error) {
 	<-s.ctx.Done()
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 
 func (s *serveRuntimeBlockingStream) Close() error {
@@ -1336,11 +1339,11 @@ func (p *serveRuntimeBlockingProvider) Credential() string {
 	return "test"
 }
 
-func (p *serveRuntimeBlockingProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{}
+func (p *serveRuntimeBlockingProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{}
 }
 
-func (p *serveRuntimeBlockingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveRuntimeBlockingProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.startOnce.Do(func() {
 		close(p.streamStarted)
 	})
@@ -1359,11 +1362,11 @@ func (p *serveRuntimeErrorProvider) Credential() string {
 	return "test"
 }
 
-func (p *serveRuntimeErrorProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{}
+func (p *serveRuntimeErrorProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{}
 }
 
-func (p *serveRuntimeErrorProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveRuntimeErrorProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return nil, p.err
 }
 
@@ -1372,7 +1375,7 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "test-model",
 	}
 
@@ -1381,7 +1384,7 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 	run := newResponseRun("resp-interrupt-cancel", "sess-interrupt-cancel", "", "test-model", time.Now().Unix(), cancelRun)
 	runErrCh := make(chan error, 1)
 	go func() {
-		_, err := rt.Run(withResponseRunContext(runCtx, run), false, false, []llm.Message{llm.UserText("gather context")}, llm.Request{
+		_, err := rt.Run(withResponseRunContext(runCtx, run), false, false, []core.Message{core.UserText("gather context")}, core.Request{
 			SessionID: "sess-interrupt-cancel",
 		})
 		runErrCh <- err
@@ -1393,12 +1396,12 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 		t.Fatal("run did not start")
 	}
 
-	rt.engine.QueueSteering(llm.QueuedSteering{ID: "msg-earlier-queued", Message: llm.UserText("earlier queued")})
-	action, _, err := rt.InterruptMessage(context.Background(), llm.UserText("/stop"), "/stop", "msg-stop", nil, interruptDeliveryAuto)
+	rt.engine.QueueSteering(engine.QueuedSteering{ID: "msg-earlier-queued", Message: core.UserText("earlier queued")})
+	action, _, err := rt.InterruptMessage(context.Background(), core.UserText("/stop"), "/stop", "msg-stop", nil, interruptDeliveryAuto)
 	if err != nil {
 		t.Fatalf("InterruptMessage: %v", err)
 	}
-	if action != llm.InterruptCancel {
+	if action != engine.InterruptCancel {
 		t.Fatalf("action = %v, want cancel", action)
 	}
 	if pending := rt.engine.ListPendingSteering(); len(pending) != 0 {
@@ -1424,7 +1427,7 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 
 func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
 	provider := &serveRuntimeBlockingProvider{streamStarted: make(chan struct{})}
-	engine := llm.NewEngine(provider, llm.NewToolRegistry())
+	engine := engine.NewEngine(provider, engine.NewToolRegistry())
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
@@ -1434,7 +1437,7 @@ func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
 
 	runErrCh := make(chan error, 1)
 	go func() {
-		_, err := rt.Run(context.Background(), false, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+		_, err := rt.Run(context.Background(), false, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "hello")}, core.Request{
 			SessionID: "sess-close",
 		})
 		runErrCh <- err
@@ -1488,18 +1491,20 @@ type serveRuntimeInspectStoreProvider struct {
 	t         *testing.T
 }
 
-func (p *serveRuntimeInspectStoreProvider) Name() string                   { return "serve-runtime-inspect" }
-func (p *serveRuntimeInspectStoreProvider) Credential() string             { return "test" }
-func (p *serveRuntimeInspectStoreProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *serveRuntimeInspectStoreProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveRuntimeInspectStoreProvider) Name() string       { return "serve-runtime-inspect" }
+func (p *serveRuntimeInspectStoreProvider) Credential() string { return "test" }
+func (p *serveRuntimeInspectStoreProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{}
+}
+func (p *serveRuntimeInspectStoreProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	msgs, err := p.store.GetMessages(ctx, p.sessionID, 0, 0)
 	if err != nil {
 		p.t.Fatalf("GetMessages() error = %v", err)
 	}
-	if len(msgs) != 1 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "slow prompt" {
+	if len(msgs) != 1 || msgs[0].Role != core.RoleUser || msgs[0].TextContent != "slow prompt" {
 		p.t.Fatalf("messages before provider stream = %+v, want durable user prompt", msgs)
 	}
-	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "ok"}, {Type: llm.EventDone}}}, nil
+	return &serveRuntimeTestStream{events: []core.Event{{Type: core.EventTextDelta, Text: "ok"}, {Type: core.EventDone}}}, nil
 }
 
 func TestServeRuntimePersistsInputBeforeFirstProviderEvent(t *testing.T) {
@@ -1508,14 +1513,14 @@ func TestServeRuntimePersistsInputBeforeFirstProviderEvent(t *testing.T) {
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		store:        store,
 		defaultModel: "test-model",
 	}
 
-	result, err := rt.RunWithEvents(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "slow prompt")}, llm.Request{
+	result, err := rt.RunWithEvents(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "slow prompt")}, core.Request{
 		SessionID: "sess-slow",
-	}, func(ev llm.Event) error { return nil })
+	}, func(ev core.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("RunWithEvents() error = %v", err)
 	}
@@ -1530,9 +1535,9 @@ func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 
 	provider := &serveRuntimeTestProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -1540,16 +1545,16 @@ func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 		engine:       engine,
 		store:        store,
 		defaultModel: "test-model",
-		history: []llm.Message{
-			serveRuntimeTextMessage(llm.RoleUser, "previous user"),
-			serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+		history: []core.Message{
+			serveRuntimeTextMessage(core.RoleUser, "previous user"),
+			serveRuntimeTextMessage(core.RoleAssistant, "previous assistant"),
 		},
 	}
 
-	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+	result, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "current user")}, core.Request{
 		SessionID:   "sess-1",
-		Tools:       []llm.ToolSpec{tool.Spec()},
-		ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:       []core.ToolSpec{tool.Spec()},
+		ToolChoice:  core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:    4,
 		Search:      false,
 		Debug:       false,
@@ -1575,22 +1580,22 @@ func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 		t.Fatalf("stored message count = %d, want 6", len(msgs))
 	}
 
-	if msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "previous user" {
+	if msgs[0].Role != core.RoleUser || msgs[0].TextContent != "previous user" {
 		t.Fatalf("message[0] = %+v, want previous user message", msgs[0])
 	}
-	if msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "previous assistant" {
+	if msgs[1].Role != core.RoleAssistant || msgs[1].TextContent != "previous assistant" {
 		t.Fatalf("message[1] = %+v, want previous assistant message", msgs[1])
 	}
-	if msgs[2].Role != llm.RoleUser || msgs[2].TextContent != "current user" {
+	if msgs[2].Role != core.RoleUser || msgs[2].TextContent != "current user" {
 		t.Fatalf("message[2] = %+v, want current user message", msgs[2])
 	}
-	if msgs[3].Role != llm.RoleAssistant || len(msgs[3].Parts) != 1 || msgs[3].Parts[0].Type != llm.PartToolCall {
+	if msgs[3].Role != core.RoleAssistant || len(msgs[3].Parts) != 1 || msgs[3].Parts[0].Type != core.PartToolCall {
 		t.Fatalf("message[3] = %+v, want assistant tool call message", msgs[3])
 	}
-	if msgs[4].Role != llm.RoleTool || len(msgs[4].Parts) != 1 || msgs[4].Parts[0].Type != llm.PartToolResult {
+	if msgs[4].Role != core.RoleTool || len(msgs[4].Parts) != 1 || msgs[4].Parts[0].Type != core.PartToolResult {
 		t.Fatalf("message[4] = %+v, want tool result message", msgs[4])
 	}
-	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
+	if msgs[5].Role != core.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
 	}
 }
@@ -1599,9 +1604,9 @@ func TestServeRuntimeSuccessfulRunSkipsFinalSnapshotRewrite(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	provider := &serveRuntimeTestProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -1609,16 +1614,16 @@ func TestServeRuntimeSuccessfulRunSkipsFinalSnapshotRewrite(t *testing.T) {
 		engine:       engine,
 		store:        store,
 		defaultModel: "test-model",
-		history: []llm.Message{
-			serveRuntimeTextMessage(llm.RoleUser, "previous user"),
-			serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+		history: []core.Message{
+			serveRuntimeTextMessage(core.RoleUser, "previous user"),
+			serveRuntimeTextMessage(core.RoleAssistant, "previous assistant"),
 		},
 	}
 
-	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+	result, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "current user")}, core.Request{
 		SessionID:   "sess-no-rewrite",
-		Tools:       []llm.ToolSpec{tool.Spec()},
-		ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:       []core.ToolSpec{tool.Spec()},
+		ToolChoice:  core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:    4,
 		Search:      false,
 		Debug:       false,
@@ -1643,7 +1648,7 @@ func TestServeRuntimeSuccessfulRunSkipsFinalSnapshotRewrite(t *testing.T) {
 	if len(msgs) != 6 {
 		t.Fatalf("stored message count = %d, want 6", len(msgs))
 	}
-	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
+	if msgs[5].Role != core.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
 	}
 }
@@ -1652,9 +1657,9 @@ func TestServeRuntimeLaterTurnsStayAppendOnlyOnceHistoryPersisted(t *testing.T) 
 	store := newServeRuntimeTestStore()
 	provider := &serveRuntimeTestProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -1662,17 +1667,17 @@ func TestServeRuntimeLaterTurnsStayAppendOnlyOnceHistoryPersisted(t *testing.T) 
 		engine:       engine,
 		store:        store,
 		defaultModel: "test-model",
-		history: []llm.Message{
-			serveRuntimeTextMessage(llm.RoleUser, "previous user"),
-			serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+		history: []core.Message{
+			serveRuntimeTextMessage(core.RoleUser, "previous user"),
+			serveRuntimeTextMessage(core.RoleAssistant, "previous assistant"),
 		},
 	}
 
 	for i, userText := range []string{"current user", "second user"} {
-		result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, userText)}, llm.Request{
+		result, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, userText)}, core.Request{
 			SessionID:   "sess-append-next-turn",
-			Tools:       []llm.ToolSpec{tool.Spec()},
-			ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+			Tools:       []core.ToolSpec{tool.Spec()},
+			ToolChoice:  core.ToolChoice{Mode: core.ToolChoiceAuto},
 			MaxTurns:    4,
 			Search:      false,
 			Debug:       false,
@@ -1701,10 +1706,10 @@ func TestServeRuntimeLaterTurnsStayAppendOnlyOnceHistoryPersisted(t *testing.T) 
 	if len(msgs) != 10 {
 		t.Fatalf("stored message count = %d, want 10", len(msgs))
 	}
-	if msgs[6].Role != llm.RoleUser || msgs[6].TextContent != "second user" {
+	if msgs[6].Role != core.RoleUser || msgs[6].TextContent != "second user" {
 		t.Fatalf("message[6] = %+v, want second user message", msgs[6])
 	}
-	if msgs[9].Role != llm.RoleAssistant || msgs[9].TextContent != "done" {
+	if msgs[9].Role != core.RoleAssistant || msgs[9].TextContent != "done" {
 		t.Fatalf("message[9] = %+v, want final assistant message", msgs[9])
 	}
 }
@@ -1715,9 +1720,9 @@ func TestServeRuntimeAppendOnlyTurnFallsBackToSnapshotAfterAssistantUpdateFailur
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	seeded := []llm.Message{
-		serveRuntimeTextMessage(llm.RoleUser, "previous user"),
-		serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+	seeded := []core.Message{
+		serveRuntimeTextMessage(core.RoleUser, "previous user"),
+		serveRuntimeTextMessage(core.RoleAssistant, "previous assistant"),
 	}
 	seededMessages := make([]session.Message, 0, len(seeded))
 	for _, msg := range seeded {
@@ -1731,9 +1736,9 @@ func TestServeRuntimeAppendOnlyTurnFallsBackToSnapshotAfterAssistantUpdateFailur
 
 	provider := &serveRuntimeTestProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:         provider,
@@ -1746,10 +1751,10 @@ func TestServeRuntimeAppendOnlyTurnFallsBackToSnapshotAfterAssistantUpdateFailur
 		historyPersisted: true,
 	}
 
-	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+	result, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "current user")}, core.Request{
 		SessionID:   sess.ID,
-		Tools:       []llm.ToolSpec{tool.Spec()},
-		ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:       []core.ToolSpec{tool.Spec()},
+		ToolChoice:  core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:    4,
 		Search:      false,
 		Debug:       false,
@@ -1777,10 +1782,10 @@ func TestServeRuntimeAppendOnlyTurnFallsBackToSnapshotAfterAssistantUpdateFailur
 	if len(msgs) != 6 {
 		t.Fatalf("stored message count = %d, want 6", len(msgs))
 	}
-	if msgs[3].Role != llm.RoleAssistant || len(msgs[3].Parts) == 0 || msgs[3].Parts[0].ToolCall == nil {
+	if msgs[3].Role != core.RoleAssistant || len(msgs[3].Parts) == 0 || msgs[3].Parts[0].ToolCall == nil {
 		t.Fatalf("message[3] = %+v, want assistant tool-call message", msgs[3])
 	}
-	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
+	if msgs[5].Role != core.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
 	}
 }
@@ -1790,9 +1795,9 @@ func TestServeRuntimeFinalSnapshotReconcilesEarlierAssistantUpdateFailure(t *tes
 	store.updateFailures[1] = errors.New("transient update failure")
 	provider := &serveRuntimeTestProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -1800,16 +1805,16 @@ func TestServeRuntimeFinalSnapshotReconcilesEarlierAssistantUpdateFailure(t *tes
 		engine:       engine,
 		store:        store,
 		defaultModel: "test-model",
-		history: []llm.Message{
-			serveRuntimeTextMessage(llm.RoleUser, "previous user"),
-			serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+		history: []core.Message{
+			serveRuntimeTextMessage(core.RoleUser, "previous user"),
+			serveRuntimeTextMessage(core.RoleAssistant, "previous assistant"),
 		},
 	}
 
-	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+	result, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "current user")}, core.Request{
 		SessionID:   "sess-reconcile-update-failure",
-		Tools:       []llm.ToolSpec{tool.Spec()},
-		ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:       []core.ToolSpec{tool.Spec()},
+		ToolChoice:  core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:    4,
 		Search:      false,
 		Debug:       false,
@@ -1834,10 +1839,10 @@ func TestServeRuntimeFinalSnapshotReconcilesEarlierAssistantUpdateFailure(t *tes
 	if len(msgs) != 6 {
 		t.Fatalf("stored message count = %d, want 6", len(msgs))
 	}
-	if msgs[3].Role != llm.RoleAssistant || len(msgs[3].Parts) == 0 || msgs[3].Parts[0].ToolCall == nil {
+	if msgs[3].Role != core.RoleAssistant || len(msgs[3].Parts) == 0 || msgs[3].Parts[0].ToolCall == nil {
 		t.Fatalf("message[3] = %+v, want reconciled assistant tool-call message", msgs[3])
 	}
-	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
+	if msgs[5].Role != core.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
 	}
 }
@@ -1853,37 +1858,37 @@ func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
 	}
 
 	provider := &serveRuntimeCompactionProvider{}
-	engine := llm.NewEngine(provider, nil)
+	eng := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       engine,
+		engine:       eng,
 		store:        store,
 		sessionMeta:  sess,
 		autoCompact:  true,
 		defaultModel: "compact-runtime",
 		systemPrompt: "system prompt",
-		history: []llm.Message{
-			serveRuntimeTextMessage(llm.RoleUser, strings.Repeat("stale pre-compaction history ", 60)),
-			serveRuntimeTextMessage(llm.RoleAssistant, "old answer"),
+		history: []core.Message{
+			serveRuntimeTextMessage(core.RoleUser, strings.Repeat("stale pre-compaction history ", 60)),
+			serveRuntimeTextMessage(core.RoleAssistant, "old answer"),
 		},
 	}
-	rt.compactionCB = func(ctx context.Context, result *llm.CompactionResult) error {
+	rt.compactionCB = func(ctx context.Context, result *engine.CompactionResult) error {
 		_, _, _, err := session.ApplyCompaction(ctx, store, sess, nil, result)
 		return err
 	}
 
-	rt.configureContextManagementForRequest(llm.Request{Model: "compact-runtime"})
-	if got := engine.InputLimit(); got != 1000 {
+	rt.configureContextManagementForRequest(core.Request{Model: "compact-runtime"})
+	if got := eng.InputLimit(); got != 1000 {
 		t.Fatalf("configured input limit = %d, want 1000", got)
 	}
 
-	engine.SetContextEstimateBaseline(910, 4)
+	eng.SetContextEstimateBaseline(910, 4)
 
-	_, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "continue task")}, llm.Request{
+	_, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "continue task")}, core.Request{
 		SessionID: "sess-runtime-compact",
 		Model:     "compact-runtime",
-		Tools:     []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		Tools:     []core.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -1967,7 +1972,7 @@ func TestServeRuntimeCompactionErrorFallbackPreservesPreCompactionScrollback(t *
 
 	streamErr := errors.New("stream failed after compaction")
 	provider := &serveRuntimeCompactionErrorProvider{finalErr: streamErr}
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	staleText := strings.Repeat("stale pre-compaction history ", 60)
 	rt := &serveRuntime{
 		provider:     provider,
@@ -1977,18 +1982,18 @@ func TestServeRuntimeCompactionErrorFallbackPreservesPreCompactionScrollback(t *
 		sessionMeta:  sess,
 		autoCompact:  true,
 		defaultModel: "compact-runtime-error",
-		history: []llm.Message{
-			serveRuntimeTextMessage(llm.RoleUser, staleText),
-			serveRuntimeTextMessage(llm.RoleAssistant, "old answer"),
+		history: []core.Message{
+			serveRuntimeTextMessage(core.RoleUser, staleText),
+			serveRuntimeTextMessage(core.RoleAssistant, "old answer"),
 		},
 	}
-	rt.configureContextManagementForRequest(llm.Request{Model: "compact-runtime-error"})
+	rt.configureContextManagementForRequest(core.Request{Model: "compact-runtime-error"})
 	engine.SetContextEstimateBaseline(910, 4)
 
-	_, err = rt.Run(ctx, true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "continue task")}, llm.Request{
+	_, err = rt.Run(ctx, true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "continue task")}, core.Request{
 		SessionID: sess.ID,
 		Model:     "compact-runtime-error",
-		Tools:     []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		Tools:     []core.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
 	})
 	if !errors.Is(err, streamErr) {
 		t.Fatalf("Run() error = %v, want %v", err, streamErr)
@@ -2047,8 +2052,8 @@ func TestServeRuntimeReplaceHistoryPreservesPersistedMessagesBeforeEarlyFailure(
 		t.Fatalf("Create() error = %v", err)
 	}
 	staleMessages := []session.Message{
-		*session.NewMessage("sess-replace", serveRuntimeTextMessage(llm.RoleUser, "stale user"), -1),
-		*session.NewMessage("sess-replace", serveRuntimeTextMessage(llm.RoleAssistant, "stale assistant"), -1),
+		*session.NewMessage("sess-replace", serveRuntimeTextMessage(core.RoleUser, "stale user"), -1),
+		*session.NewMessage("sess-replace", serveRuntimeTextMessage(core.RoleAssistant, "stale assistant"), -1),
 	}
 	if err := store.ReplaceMessages(context.Background(), "sess-replace", staleMessages); err != nil {
 		t.Fatalf("ReplaceMessages() error = %v", err)
@@ -2056,20 +2061,20 @@ func TestServeRuntimeReplaceHistoryPreservesPersistedMessagesBeforeEarlyFailure(
 
 	providerErr := errors.New("provider startup failed")
 	provider := &serveRuntimeErrorProvider{err: providerErr}
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
 		engine:       engine,
 		store:        store,
 		defaultModel: "test-model",
-		history: []llm.Message{
-			serveRuntimeTextMessage(llm.RoleUser, "stale user"),
-			serveRuntimeTextMessage(llm.RoleAssistant, "stale assistant"),
+		history: []core.Message{
+			serveRuntimeTextMessage(core.RoleUser, "stale user"),
+			serveRuntimeTextMessage(core.RoleAssistant, "stale assistant"),
 		},
 	}
 
-	_, err := rt.Run(context.Background(), true, true, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "fresh user")}, llm.Request{
+	_, err := rt.Run(context.Background(), true, true, []core.Message{serveRuntimeTextMessage(core.RoleUser, "fresh user")}, core.Request{
 		SessionID: "sess-replace",
 	})
 	if !errors.Is(err, providerErr) {
@@ -2087,10 +2092,10 @@ func TestServeRuntimeReplaceHistoryPreservesPersistedMessagesBeforeEarlyFailure(
 	if len(msgs) != 2 {
 		t.Fatalf("stored message count = %d, want 2 preserved messages", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "stale user" {
+	if msgs[0].Role != core.RoleUser || msgs[0].TextContent != "stale user" {
 		t.Fatalf("message[0] = %+v, want preserved stale user", msgs[0])
 	}
-	if msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "stale assistant" {
+	if msgs[1].Role != core.RoleAssistant || msgs[1].TextContent != "stale assistant" {
 		t.Fatalf("message[1] = %+v, want preserved stale assistant", msgs[1])
 	}
 	if got := rt.history; len(got) != 2 {
@@ -2106,21 +2111,21 @@ type serveRuntimeDisconnectDuringStreamStream struct {
 	index int
 }
 
-func (s *serveRuntimeDisconnectDuringStreamStream) Recv() (llm.Event, error) {
+func (s *serveRuntimeDisconnectDuringStreamStream) Recv() (core.Event, error) {
 	switch s.index {
 	case 0:
 		s.index++
-		return llm.Event{Type: llm.EventTextDelta, Text: "partial text"}, nil
+		return core.Event{Type: core.EventTextDelta, Text: "partial text"}, nil
 	case 1:
 		s.index++
 		time.Sleep(50 * time.Millisecond)
-		return llm.Event{Type: llm.EventTextDelta, Text: " ignored"}, nil
+		return core.Event{Type: core.EventTextDelta, Text: " ignored"}, nil
 	case 2:
 		s.index++
 		time.Sleep(50 * time.Millisecond)
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	default:
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 }
 
@@ -2136,11 +2141,11 @@ func (p *serveRuntimeDisconnectDuringStreamProvider) Name() string {
 
 func (p *serveRuntimeDisconnectDuringStreamProvider) Credential() string { return "test" }
 
-func (p *serveRuntimeDisconnectDuringStreamProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *serveRuntimeDisconnectDuringStreamProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 
-func (p *serveRuntimeDisconnectDuringStreamProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *serveRuntimeDisconnectDuringStreamProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	return &serveRuntimeDisconnectDuringStreamStream{}, nil
 }
 
@@ -2148,19 +2153,19 @@ func (p *serveRuntimeSnapshotErrProvider) Name() string { return "serve-runtime-
 
 func (p *serveRuntimeSnapshotErrProvider) Credential() string { return "test" }
 
-func (p *serveRuntimeSnapshotErrProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{ToolCalls: true}
+func (p *serveRuntimeSnapshotErrProvider) Capabilities() core.Capabilities {
+	return core.Capabilities{ToolCalls: true}
 }
 
-func (p *serveRuntimeSnapshotErrProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return &serveRuntimeTestStream{events: []llm.Event{
-		{Type: llm.EventTextDelta, Text: "partial text"},
-		{Type: llm.EventToolCall, Tool: &llm.ToolCall{
+func (p *serveRuntimeSnapshotErrProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	return &serveRuntimeTestStream{events: []core.Event{
+		{Type: core.EventTextDelta, Text: "partial text"},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{
 			ID:        "call-mid-err",
 			Name:      "serve_runtime_test_tool",
 			Arguments: json.RawMessage(`{}`),
 		}},
-		{Type: llm.EventError, Err: p.err},
+		{Type: core.EventError, Err: p.err},
 	}}, nil
 }
 
@@ -2174,9 +2179,9 @@ func TestServeRuntimeSnapshotPersistsAssistantOnMidTurnError(t *testing.T) {
 	providerErr := errors.New("mid-turn stream failure")
 	provider := &serveRuntimeSnapshotErrProvider{err: providerErr}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -2186,10 +2191,10 @@ func TestServeRuntimeSnapshotPersistsAssistantOnMidTurnError(t *testing.T) {
 		defaultModel: "test-model",
 	}
 
-	_, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+	_, err := rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "hello")}, core.Request{
 		SessionID:  "sess-mid-err",
-		Tools:      []llm.ToolSpec{tool.Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{tool.Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:   4,
 	})
 	if !errors.Is(err, providerErr) {
@@ -2206,7 +2211,7 @@ func TestServeRuntimeSnapshotPersistsAssistantOnMidTurnError(t *testing.T) {
 	}
 	var assistant *session.Message
 	for i := range msgs {
-		if msgs[i].Role == llm.RoleAssistant {
+		if msgs[i].Role == core.RoleAssistant {
 			assistant = &msgs[i]
 			break
 		}
@@ -2218,9 +2223,9 @@ func TestServeRuntimeSnapshotPersistsAssistantOnMidTurnError(t *testing.T) {
 	var gotText, gotToolCallID string
 	for _, p := range assistant.Parts {
 		switch p.Type {
-		case llm.PartText:
+		case core.PartText:
 			gotText = p.Text
-		case llm.PartToolCall:
+		case core.PartToolCall:
 			if p.ToolCall != nil {
 				gotToolCallID = p.ToolCall.ID
 			}
@@ -2252,9 +2257,9 @@ func TestServeRuntimeSnapshotCallbackPreservesEngineDeadline(t *testing.T) {
 
 	provider := &serveRuntimeSnapshotErrProvider{err: errors.New("mid-turn stream failure")}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -2264,10 +2269,10 @@ func TestServeRuntimeSnapshotCallbackPreservesEngineDeadline(t *testing.T) {
 		defaultModel: "test-model",
 	}
 
-	_, _ = rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+	_, _ = rt.Run(context.Background(), true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "hello")}, core.Request{
 		SessionID:  sess.ID,
-		Tools:      []llm.ToolSpec{tool.Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{tool.Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:   4,
 	})
 	if remaining <= 0 || remaining > 6*time.Second {
@@ -2280,9 +2285,9 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	disconnectErr := errors.New("client disconnected")
 	provider := &serveRuntimeDisconnectDuringStreamProvider{}
 	tool := &serveRuntimeTestTool{}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(tool)
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -2295,13 +2300,13 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	textDeltas := 0
 	run := newResponseRun("resp-partial-error", "sess-partial-err", "", "test-model", time.Now().Unix(), nil)
 	runCtx := withResponseRunContext(context.Background(), run)
-	_, err := rt.RunWithEvents(runCtx, true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+	_, err := rt.RunWithEvents(runCtx, true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "hello")}, core.Request{
 		SessionID:  "sess-partial-err",
-		Tools:      []llm.ToolSpec{tool.Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{tool.Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 		MaxTurns:   4,
-	}, func(ev llm.Event) error {
-		if ev.Type != llm.EventTextDelta {
+	}, func(ev core.Event) error {
+		if ev.Type != core.EventTextDelta {
 			return nil
 		}
 		textDeltas++
@@ -2327,10 +2332,10 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	if len(msgs) != 2 {
 		t.Fatalf("stored message count = %d, want 2", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hello" {
+	if msgs[0].Role != core.RoleUser || msgs[0].TextContent != "hello" {
 		t.Fatalf("message[0] = %+v, want user hello", msgs[0])
 	}
-	if msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "partial text" {
+	if msgs[1].Role != core.RoleAssistant || msgs[1].TextContent != "partial text" {
 		t.Fatalf("message[1] = %+v, want partial assistant text", msgs[1])
 	}
 	if msgs[1].ResponseID != run.id {
@@ -2345,7 +2350,7 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	if len(rt.history) != 2 {
 		t.Fatalf("runtime history length = %d, want 2", len(rt.history))
 	}
-	if rt.history[1].Role != llm.RoleAssistant || len(rt.history[1].Parts) != 1 || rt.history[1].Parts[0].Type != llm.PartText || rt.history[1].Parts[0].Text != "partial text" {
+	if rt.history[1].Role != core.RoleAssistant || len(rt.history[1].Parts) != 1 || rt.history[1].Parts[0].Type != core.PartText || rt.history[1].Parts[0].Text != "partial text" {
 		t.Fatalf("runtime history[1] = %+v, want partial assistant text", rt.history[1])
 	}
 }
@@ -2361,13 +2366,13 @@ func TestServeRuntimeTerminalHandoffPersistsTaggedPartialOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newServeRuntimeTestStore()
 			provider := &serveRuntimeDisconnectDuringStreamProvider{}
-			rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: llm.NewEngine(provider, nil), store: store, defaultModel: "test-model"}
+			rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine.NewEngine(provider, nil), store: store, defaultModel: "test-model"}
 			sessionID := "sess-terminal-" + tc.name
 			run := newResponseRun("resp-terminal-"+tc.name, sessionID, "", "test-model", time.Now().Unix(), nil)
 			runCtx := withResponseRunContext(context.Background(), run)
 			deltas := 0
-			result, runErr := rt.RunWithEvents(runCtx, true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{SessionID: sessionID}, func(ev llm.Event) error {
-				if tc.cancelled && ev.Type == llm.EventTextDelta {
+			result, runErr := rt.RunWithEvents(runCtx, true, false, []core.Message{serveRuntimeTextMessage(core.RoleUser, "hello")}, core.Request{SessionID: sessionID}, func(ev core.Event) error {
+				if tc.cancelled && ev.Type == core.EventTextDelta {
 					deltas++
 					if deltas == 2 {
 						return context.Canceled
@@ -2399,7 +2404,7 @@ func TestServeRuntimeTerminalHandoffPersistsTaggedPartialOutput(t *testing.T) {
 			}
 			var assistant *session.Message
 			for i := range messages {
-				if messages[i].Role == llm.RoleAssistant {
+				if messages[i].Role == core.RoleAssistant {
 					assistant = &messages[i]
 				}
 			}
@@ -2423,9 +2428,9 @@ func TestServeRuntimePlatformTransitionSurvivesEvictionWithoutReinjection(t *tes
 	if err := store.Create(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
-	for _, message := range []llm.Message{
-		llm.PlatformContextMessage("web context"), llm.UserText("web turn"), llm.AssistantText("web answer"),
-		llm.PlatformContextMessage("tui context"), llm.UserText("tui turn"), llm.AssistantText("tui answer"),
+	for _, message := range []core.Message{
+		llm.PlatformContextMessage("web context"), core.UserText("web turn"), core.AssistantText("web answer"),
+		llm.PlatformContextMessage("tui context"), core.UserText("tui turn"), core.AssistantText("tui answer"),
 	} {
 		if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, message, -1)); err != nil {
 			t.Fatal(err)
@@ -2434,13 +2439,13 @@ func TestServeRuntimePlatformTransitionSurvivesEvictionWithoutReinjection(t *tes
 
 	run := func(answer, prompt string) {
 		t.Helper()
-		provider := llm.NewMockProvider("mock").AddTextResponse(answer)
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse(answer)
 		rt := &serveRuntime{
-			provider: provider, providerKey: provider.Name(), engine: llm.NewEngine(provider, nil),
+			provider: provider, providerKey: provider.Name(), engine: engine.NewEngine(provider, nil),
 			store: store, platform: "web", platformMessages: agents.PlatformMessagesConfig{Web: "web context", Chat: "tui context"},
 			defaultModel: "test-model",
 		}
-		if _, err := rt.Run(context.Background(), true, false, []llm.Message{llm.UserText(prompt)}, llm.Request{SessionID: sessionID}); err != nil {
+		if _, err := rt.Run(context.Background(), true, false, []core.Message{core.UserText(prompt)}, core.Request{SessionID: sessionID}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2458,7 +2463,7 @@ func TestServeRuntimePlatformTransitionSurvivesEvictionWithoutReinjection(t *tes
 	webCount := 0
 	for _, message := range messages {
 		providerMessage := message.ToLLMMessage()
-		if llm.IsPlatformContextMessage(providerMessage) && llm.MessageText(providerMessage) == "web context" {
+		if llm.IsPlatformContextMessage(providerMessage) && core.MessageText(providerMessage) == "web context" {
 			webCount++
 		}
 	}
@@ -2479,11 +2484,11 @@ func TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromSt
 	store := newServeRuntimeTestStore()
 
 	// First runtime: establishes session with developer message baked into history.
-	provider1 := llm.NewMockProvider("mock1").AddTextResponse("first response")
+	provider1 := mockprovider.NewMockProvider("mock1").AddTextResponse("first response")
 	rt1 := &serveRuntime{
 		provider:         provider1,
 		providerKey:      provider1.Name(),
-		engine:           llm.NewEngine(provider1, nil),
+		engine:           engine.NewEngine(provider1, nil),
 		store:            store,
 		platform:         "web",
 		platformMessages: agents.PlatformMessagesConfig{Web: devText},
@@ -2492,8 +2497,8 @@ func TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromSt
 	rt1.Touch()
 
 	_, err := rt1.Run(context.Background(), true, false,
-		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")},
-		llm.Request{SessionID: sessionID})
+		[]core.Message{serveRuntimeTextMessage(core.RoleUser, "hello")},
+		core.Request{SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("rt1.Run() error = %v", err)
 	}
@@ -2503,17 +2508,17 @@ func TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromSt
 
 	// Confirm the store has the developer message as the first persisted message.
 	storedMsgs, _ := store.GetMessages(context.Background(), sessionID, 0, 0)
-	if len(storedMsgs) == 0 || storedMsgs[0].Role != llm.RoleDeveloper {
+	if len(storedMsgs) == 0 || storedMsgs[0].Role != core.RoleDeveloper {
 		t.Fatalf("expected developer message first in store, got %d messages: %+v", len(storedMsgs), storedMsgs)
 	}
 
 	// Second runtime: fresh instance for the same session (simulates runtime eviction/restart).
 	// lastInjectedPlatform is intentionally zero — this is the state after eviction.
-	provider2 := llm.NewMockProvider("mock2").AddTextResponse("second response")
+	provider2 := mockprovider.NewMockProvider("mock2").AddTextResponse("second response")
 	rt2 := &serveRuntime{
 		provider:         provider2,
 		providerKey:      provider2.Name(),
-		engine:           llm.NewEngine(provider2, nil),
+		engine:           engine.NewEngine(provider2, nil),
 		store:            store,
 		platform:         "web",
 		platformMessages: agents.PlatformMessagesConfig{Web: devText},
@@ -2522,8 +2527,8 @@ func TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromSt
 	rt2.Touch()
 
 	_, err = rt2.Run(context.Background(), true, false,
-		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "follow-up")},
-		llm.Request{SessionID: sessionID})
+		[]core.Message{serveRuntimeTextMessage(core.RoleUser, "follow-up")},
+		core.Request{SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("rt2.Run() error = %v", err)
 	}
@@ -2535,7 +2540,7 @@ func TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromSt
 	// Count developer-role messages sent to the provider: exactly one is expected.
 	devCount := 0
 	for _, msg := range provider2.Requests[0].Messages {
-		if msg.Role == llm.RoleDeveloper {
+		if msg.Role == core.RoleDeveloper {
 			devCount++
 		}
 	}
@@ -2558,10 +2563,10 @@ func TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore(t *testi
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	seeded := []llm.Message{
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "first message"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "first reply"}}},
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "interrupted message"}}},
+	seeded := []core.Message{
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "first message"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "first reply"}}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "interrupted message"}}},
 	}
 	for i, msg := range seeded {
 		sm := session.NewMessage(sessionID, msg, i)
@@ -2570,19 +2575,19 @@ func TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore(t *testi
 		}
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("recovery response")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("recovery response")
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		store:        store,
 		defaultModel: "test-model",
 	}
 	rt.Touch()
 
 	_, err := rt.Run(context.Background(), true, false,
-		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "new message after interrupt")},
-		llm.Request{SessionID: sessionID})
+		[]core.Message{serveRuntimeTextMessage(core.RoleUser, "new message after interrupt")},
+		core.Request{SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -2594,7 +2599,7 @@ func TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore(t *testi
 	msgs := provider.Requests[0].Messages
 	// A valid conversation must not have consecutive user messages.
 	for i := 1; i < len(msgs); i++ {
-		if msgs[i].Role == llm.RoleUser && msgs[i-1].Role == llm.RoleUser {
+		if msgs[i].Role == core.RoleUser && msgs[i-1].Role == core.RoleUser {
 			t.Fatalf("consecutive user messages at positions %d and %d after recovery: %+v", i-1, i, msgs)
 		}
 	}
@@ -2604,13 +2609,13 @@ func TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore(t *testi
 		t.Fatalf("GetMessages() error = %v", err)
 	}
 	wantStored := []struct {
-		role llm.Role
+		role core.Role
 		text string
 	}{
-		{llm.RoleUser, "first message"},
-		{llm.RoleAssistant, "first reply"},
-		{llm.RoleUser, "new message after interrupt"},
-		{llm.RoleAssistant, "recovery response"},
+		{core.RoleUser, "first message"},
+		{core.RoleAssistant, "first reply"},
+		{core.RoleUser, "new message after interrupt"},
+		{core.RoleAssistant, "recovery response"},
 	}
 	if len(storedMsgs) != len(wantStored) {
 		t.Fatalf("stored message count = %d, want %d: %+v", len(storedMsgs), len(wantStored), storedMsgs)
@@ -2634,24 +2639,24 @@ func TestServeRuntimeRun_AllowsRepeatedIdenticalUserMessageWithoutIdempotency(t 
 
 	store := newServeRuntimeTestStore()
 
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddTextResponse("response 1").
 		AddTextResponse("response 2")
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		store:        store,
 		defaultModel: "test-model",
 	}
 	rt.Touch()
 
-	input := []llm.Message{serveRuntimeTextMessage(llm.RoleUser, userMsg)}
+	input := []core.Message{serveRuntimeTextMessage(core.RoleUser, userMsg)}
 
-	if _, err := rt.Run(context.Background(), true, false, input, llm.Request{SessionID: sessionID}); err != nil {
+	if _, err := rt.Run(context.Background(), true, false, input, core.Request{SessionID: sessionID}); err != nil {
 		t.Fatalf("first Run() error = %v", err)
 	}
-	if _, err := rt.Run(context.Background(), true, false, input, llm.Request{SessionID: sessionID}); err != nil {
+	if _, err := rt.Run(context.Background(), true, false, input, core.Request{SessionID: sessionID}); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
 
@@ -2666,11 +2671,11 @@ func TestServeResponseRun_IdempotencyKeyReusesExistingRun(t *testing.T) {
 		idempotencyKey = "req-grab-tuner"
 	)
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("response 1")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("response 1")
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "test-model",
 	}
 	rt.Touch()
@@ -2678,8 +2683,8 @@ func TestServeResponseRun_IdempotencyKeyReusesExistingRun(t *testing.T) {
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 	defer srv.responseRuns.Close()
 
-	input := []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "grab tuner")}
-	llmReq := llm.Request{SessionID: sessionID, Model: "test-model"}
+	input := []core.Message{serveRuntimeTextMessage(core.RoleUser, "grab tuner")}
+	llmReq := core.Request{SessionID: sessionID, Model: "test-model"}
 	options := startResponseRunOptions{idempotencyKey: idempotencyKey}
 
 	run1, err := srv.startResponseRun(rt, true, false, input, llmReq, sessionID, options)

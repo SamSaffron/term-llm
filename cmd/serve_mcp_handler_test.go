@@ -19,7 +19,9 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	internalmcp "github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -159,22 +161,22 @@ type serveMCPFakeTool struct {
 	name string
 }
 
-func (t serveMCPFakeTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: t.name, Description: "fake"}
+func (t serveMCPFakeTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: t.name, Description: "fake"}
 }
 
 func (t serveMCPFakeTool) Preview(args json.RawMessage) string { return "" }
 
-func (t serveMCPFakeTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	return llm.TextOutput("ok"), nil
+func (t serveMCPFakeTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	return core.TextOutput("ok"), nil
 }
 
 func newServeMCPHandlerTestServer(t *testing.T, store session.Store) (*serveServer, **serveRuntime) {
 	t.Helper()
 	var created *serveRuntime
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock")
-		engine := llm.NewEngine(provider, llm.NewToolRegistry())
+		provider := mockprovider.NewMockProvider("mock")
+		engine := engine.NewEngine(provider, engine.NewToolRegistry())
 		created = &serveRuntime{
 			provider:     provider,
 			providerKey:  "mock",
@@ -597,17 +599,17 @@ func TestHandleSessionMCPPatchDoesNotSkipPersistedHistoryLoad(t *testing.T) {
 		t.Fatalf("Create session: %v", err)
 	}
 	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
-		*session.NewMessage(sessionID, llm.UserText("old question"), -1),
-		*session.NewMessage(sessionID, llm.AssistantText("old answer"), -1),
+		*session.NewMessage(sessionID, core.UserText("old question"), -1),
+		*session.NewMessage(sessionID, core.AssistantText("old answer"), -1),
 	}); err != nil {
 		t.Fatalf("seed ReplaceMessages: %v", err)
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("new answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("new answer")
 	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "mock",
-			engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+			engine:       engine.NewEngine(provider, engine.NewToolRegistry()),
 			defaultModel: "mock-model",
 			store:        store,
 		}
@@ -648,13 +650,13 @@ func TestHandleSessionMCPPatchDoesNotSkipPersistedHistoryLoad(t *testing.T) {
 		t.Fatalf("stored message count = %d, want 4 appended messages", len(msgs))
 	}
 	want := []struct {
-		role llm.Role
+		role core.Role
 		text string
 	}{
-		{llm.RoleUser, "old question"},
-		{llm.RoleAssistant, "old answer"},
-		{llm.RoleUser, "new question"},
-		{llm.RoleAssistant, "new answer"},
+		{core.RoleUser, "old question"},
+		{core.RoleAssistant, "old answer"},
+		{core.RoleUser, "new question"},
+		{core.RoleAssistant, "new answer"},
 	}
 	for i, w := range want {
 		if msgs[i].Role != w.role || msgs[i].TextContent != w.text {
@@ -669,10 +671,10 @@ func TestHandleSessionMCPPatchDoesNotSkipPersistedHistoryLoad(t *testing.T) {
 func TestEnsureMCPManagerRetriesPlannerSetupAfterFailure(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
-	provider := llm.NewMockProvider("serve-planner-order")
+	provider := mockprovider.NewMockProvider("serve-planner-order")
 	rt := &serveRuntime{
 		provider:      provider,
-		engine:        llm.NewEngine(provider, nil),
+		engine:        engine.NewEngine(provider, nil),
 		toolDiscovery: config.ToolDiscoveryConfig{Mode: "invalid"},
 	}
 

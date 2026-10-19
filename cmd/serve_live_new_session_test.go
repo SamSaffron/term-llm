@@ -16,7 +16,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -50,10 +51,10 @@ func newVoiceNewSessionHarness(t *testing.T, sourceID string, agentNames ...stri
 	// The runtime production builds for a named agent, minus the work: it reports
 	// the agent it was asked for, which is what the created row has to carry.
 	srv.agentRuntimeFactory = func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock")
+		provider := mockprovider.NewMockProvider("mock")
 		return &serveRuntime{
 			provider: provider, providerKey: "mock", defaultModel: "mock-model",
-			agentName: strings.TrimSpace(request.Agent), engine: llm.NewEngine(provider, nil), store: store,
+			agentName: strings.TrimSpace(request.Agent), engine: engine.NewEngine(provider, nil), store: store,
 		}, nil
 	}
 	audio := &stubLiveSession{events: make(chan live.Event, 8), closed: make(chan struct{})}
@@ -319,10 +320,10 @@ func TestLiveNewSessionInheritsTheBoundConversationsModel(t *testing.T) {
 				if providerKey == "" {
 					providerKey, model = "mock", "mock-model"
 				}
-				provider := llm.NewMockProvider(providerKey)
+				provider := mockprovider.NewMockProvider(providerKey)
 				return &serveRuntime{
 					provider: provider, providerKey: providerKey, defaultModel: model,
-					agentName: strings.TrimSpace(request.Agent), engine: llm.NewEngine(provider, nil), store: store,
+					agentName: strings.TrimSpace(request.Agent), engine: engine.NewEngine(provider, nil), store: store,
 				}, nil
 			}
 			registered := h.project(t, "Reflow work")
@@ -581,7 +582,7 @@ func TestHandleCreateWebSessionStillAnswersAsItAlwaysDid(t *testing.T) {
 	newServer := func(t *testing.T) (*serveServer, *session.SQLiteStore) {
 		t.Helper()
 		manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
-			provider := llm.NewMockProvider("mock")
+			provider := mockprovider.NewMockProvider("mock")
 			runtime := &serveRuntime{provider: provider, providerKey: "mock", defaultModel: "default"}
 			runtime.Touch()
 			return runtime, nil

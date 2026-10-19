@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/inspect"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -132,18 +133,18 @@ func inspectRuntimeSnapshot(rt *serveRuntime, sessionID string) inspect.RuntimeO
 	return out
 }
 
-func inspectRuntimeTools(engine *llm.Engine, sessionID string, approval *tools.ApprovalManager) []llm.ToolSpec {
+func inspectRuntimeTools(engine *engine.Engine, sessionID string, approval *tools.ApprovalManager) []core.ToolSpec {
 	specs := engine.Tools().AllSpecs()
 	specs = append(specs, engine.ToolDiscoveryActiveSpecs(sessionID)...)
 	specs = tools.FilterToolSpecsForApprovalMode(specs, approval)
-	byName := make(map[string]llm.ToolSpec, len(specs))
+	byName := make(map[string]core.ToolSpec, len(specs))
 	for _, spec := range specs {
 		byName[spec.Name] = spec
 	}
-	specs = make([]llm.ToolSpec, 0, len(byName))
+	specs = make([]core.ToolSpec, 0, len(byName))
 	for _, spec := range byName {
 		specs = append(specs, spec)
 	}
-	slices.SortFunc(specs, func(a, b llm.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(specs, func(a, b core.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
 	return specs
 }

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -514,45 +514,6 @@ func TestHubDelegationInFlightCaps(t *testing.T) {
 	}
 }
 
-func TestResolveDelegationCwd(t *testing.T) {
-	cases := []struct {
-		workdir, requested, want string
-		wantErr                  bool
-	}{
-		{"/work", "", "/work", false},
-		{"/work/", "", "/work", false},
-		{"/work", "/work", "/work", false},
-		{"/work", "/work/sub", "/work/sub", false},
-		{"/work", "sub/dir", "/work/sub/dir", false},
-		{"/work", "/worker", "", true},
-		{"/work", "/etc", "", true},
-		{"/work", "/work/../etc", "", true},
-		{"/work", "../outside", "", true},
-		{"", "", "", true},
-		// Workdir canonicalization: relative or root workdirs are refused,
-		// un-normalized ones are cleaned before containment checks.
-		{"relative", "", "", true},
-		{"/", "", "", true},
-		{"/work/..", "", "", true},
-		{"/work/.", "", "/work", false},
-		{"/work/sub/..", "sub", "/work/sub", false},
-		{"/wo\nrk", "", "", true},
-		{"/work", "sub\x00dir", "", true},
-	}
-	for _, tc := range cases {
-		got, err := resolveDelegationCwd(tc.workdir, tc.requested)
-		if tc.wantErr {
-			if err == nil {
-				t.Errorf("resolveDelegationCwd(%q, %q) = %q, want error", tc.workdir, tc.requested, got)
-			}
-			continue
-		}
-		if err != nil || got != tc.want {
-			t.Errorf("resolveDelegationCwd(%q, %q) = %q, %v; want %q", tc.workdir, tc.requested, got, err, tc.want)
-		}
-	}
-}
-
 func TestHubDelegationAgentModelPolicy(t *testing.T) {
 	s, _ := newDelegationHub(t)
 
@@ -794,7 +755,7 @@ func TestHubDelegationIDFromJobLabels(t *testing.T) {
 
 func TestJobsV2LLMRunnerHubDelegationContext(t *testing.T) {
 	got := "unset"
-	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		got = tools.HubDelegationIDFromContext(ctx)
 		return serveJobsExecResult{}, nil
 	}}

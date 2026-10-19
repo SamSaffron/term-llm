@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -20,7 +22,7 @@ func (m *Model) cmdSkills(args []string, rawArgs string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) newInspectorConfig() *inspector.Config {
-	var toolSpecs []llm.ToolSpec
+	var toolSpecs []core.ToolSpec
 	if m.engine != nil {
 		sessionID := ""
 		if m.sess != nil {
@@ -78,7 +80,7 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) snapshotActiveHelperConversation() (string, []llm.Message) {
+func (m *Model) snapshotActiveHelperConversation() (string, []core.Message) {
 	m.messagesMu.Lock()
 	snapshot := append([]session.Message(nil), m.messages...)
 	compactionIdx := m.compactionIdx
@@ -86,8 +88,8 @@ func (m *Model) snapshotActiveHelperConversation() (string, []llm.Message) {
 
 	systemPrompt := ""
 	for _, msg := range snapshot {
-		if msg.Role == llm.RoleSystem {
-			if text := strings.TrimSpace(llm.MessageText(msg.ToLLMMessage())); text != "" {
+		if msg.Role == core.RoleSystem {
+			if text := strings.TrimSpace(core.MessageText(msg.ToLLMMessage())); text != "" {
 				systemPrompt = text
 				break
 			}
@@ -101,17 +103,17 @@ func (m *Model) snapshotActiveHelperConversation() (string, []llm.Message) {
 		}
 	}
 
-	messages := make([]llm.Message, 0, len(snapshot))
+	messages := make([]core.Message, 0, len(snapshot))
 	for _, msg := range snapshot {
-		if msg.Role != llm.RoleSystem {
+		if msg.Role != core.RoleSystem {
 			messages = append(messages, msg.ToLLMMessage())
 		}
 	}
 	return systemPrompt, messages
 }
 
-func (m *Model) helperCompactionConfig() llm.CompactionConfig {
-	cfg := llm.DefaultCompactionConfig()
+func (m *Model) helperCompactionConfig() engine.CompactionConfig {
+	cfg := engine.DefaultCompactionConfig()
 	if m.engine != nil && m.engine.InputLimit() > 0 {
 		cfg.InputLimit = m.engine.InputLimit()
 	} else if limit := llm.InputLimitForProviderModel(m.providerKey, m.modelName); limit > 0 {
@@ -170,9 +172,9 @@ func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 	compactConfig := m.helperCompactionConfig()
 	model := m.modelName
 	provider := m.provider
-	phase := llm.PhaseCompacting
+	phase := engine.PhaseCompacting
 	if mode == "hard" {
-		phase = llm.PhaseCompactingSummarizeHistory
+		phase = engine.PhaseCompactingSummarizeHistory
 	}
 
 	ctx := m.beginHelperStream(phase, true)
@@ -180,7 +182,7 @@ func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(
 		func() tea.Msg {
 			var (
-				result *llm.CompactionResult
+				result *engine.CompactionResult
 				err    error
 			)
 			if mode == "hard" {
@@ -206,7 +208,7 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 
 // SetModelPolicy installs the effective inherited and own model rules.
 func (m *Model) SetModelPolicy(policy modelpolicy.Policy) { m.modelPolicy = policy }
-func (m *Model) SetFastProviderResolver(resolver func(providerKey, model string) (llm.Provider, error)) {
+func (m *Model) SetFastProviderResolver(resolver func(providerKey, model string) (core.Provider, error)) {
 	m.fastProviderResolver = resolver
 }
 
@@ -272,7 +274,7 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	// Update model state
 	m.provider = provider
 	// Preserve existing tool registry when creating new engine.
-	m.replaceEngine(llm.NewEngine(provider, m.engine.Tools()))
+	m.replaceEngine(engine.NewEngine(provider, m.engine.Tools()))
 	m.providerName = provider.Name()
 	m.providerKey = providerName
 	m.modelName = modelName
@@ -315,7 +317,7 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	guardianErr := m.refreshGuardianReviewer(providerName, modelName)
 
 	if m.sess != nil && len(m.messages) > 0 {
-		marker := llm.ModelSwapMarker{
+		marker := core.ModelSwapMarker{
 			FromProvider: oldProvider,
 			FromModel:    oldModel,
 			ToProvider:   providerName,
@@ -383,7 +385,7 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 	return cmd
 }
 
-func (m *Model) deferModelSwitchMarker(marker llm.ModelSwapMarker) {
+func (m *Model) deferModelSwitchMarker(marker core.ModelSwapMarker) {
 	if m.pendingModelSwitch != nil {
 		m.pendingModelSwitch.ToProvider = marker.ToProvider
 		m.pendingModelSwitch.ToModel = marker.ToModel
@@ -403,11 +405,11 @@ func (m *Model) appendPendingModelSwitchMarker() {
 	m.appendModelSwitchMarker(marker)
 }
 
-func (m *Model) appendModelSwitchMarker(marker llm.ModelSwapMarker) {
+func (m *Model) appendModelSwitchMarker(marker core.ModelSwapMarker) {
 	if m.sess == nil {
 		return
 	}
-	msg := llm.ModelSwapEventMessage(marker)
+	msg := core.ModelSwapEventMessage(marker)
 	sm := *session.NewMessage(m.sess.ID, msg, -1)
 	m.messagesMu.Lock()
 	m.messages = append(m.messages, sm)

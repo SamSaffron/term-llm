@@ -9,7 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -33,7 +34,7 @@ type serveSteeringTransition struct {
 	replacementID   string
 	source          *responseRun
 	runtime         *serveRuntime
-	owner           llm.SteeringTransition
+	owner           engine.SteeringTransition
 	admitted        chan struct{}
 	cancelRequested atomic.Bool
 	finish          sync.Once
@@ -148,7 +149,7 @@ func (s *serveServer) handleSteeringRush(w http.ResponseWriter, r *http.Request,
 		writeOpenAIError(w, 422, "rush_unavailable", "run_not_consuming")
 		return
 	}
-	owner := llm.SteeringTransition{OperationID: req.RequestID, Fence: req.ExpectedRunEpoch}
+	owner := engine.SteeringTransition{OperationID: req.RequestID, Fence: req.ExpectedRunEpoch}
 	rt.steeringMutationMu.Lock()
 	entries, err := rt.engine.FreezeSteering(owner)
 	rt.steeringMutationMu.Unlock()
@@ -258,7 +259,7 @@ func (s *serveServer) coordinateSteeringRush(store session.RushStore, t *serveSt
 	}
 	// Frozen entries cannot have been drained by the source. Retain each row and
 	// client ID as an ordered batch, not a text concatenation or fake user notice.
-	messages := []llm.Message{{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: llm.SteeringInterruptionNotice}}}}
+	messages := []core.Message{{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: engine.SteeringInterruptionNotice}}}}
 	for _, entry := range op.Entries {
 		messages = append(messages, entry.Steering.Message)
 	}

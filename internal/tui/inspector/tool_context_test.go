@@ -8,18 +8,18 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-func inspectorCall(id, command string) llm.Part {
+func inspectorCall(id, command string) core.Part {
 	args, _ := json.Marshal(map[string]string{"command": command})
-	return llm.Part{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: id, Name: "shell", Arguments: args}}
+	return core.Part{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: id, Name: "shell", Arguments: args}}
 }
 
-func inspectorResult(id string) llm.Part {
-	return llm.Part{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: id, Name: "shell", Content: "result-" + id, IsError: true}}
+func inspectorResult(id string) core.Part {
+	return core.Part{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: id, Name: "shell", Content: "result-" + id, IsError: true}}
 }
 
 func TestInspectorBatchedCallsHaveLocalResultContext(t *testing.T) {
@@ -27,13 +27,13 @@ func TestInspectorBatchedCallsHaveLocalResultContext(t *testing.T) {
 		t.Run(fmt.Sprintf("separate_rows=%t", separate), func(t *testing.T) {
 			// The long preface hides the original calls in the collapsed assistant box.
 			messages := []session.Message{
-				{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: strings.Repeat("preface\n", 60)}, inspectorCall("first", "first-command"), inspectorCall("second", "second-command")}},
+				{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: strings.Repeat("preface\n", 60)}, inspectorCall("first", "first-command"), inspectorCall("second", "second-command")}},
 				// Results can arrive in a different order from calls.
-				{Role: llm.RoleTool, Parts: []llm.Part{inspectorResult("second"), inspectorResult("first")}},
+				{Role: core.RoleTool, Parts: []core.Part{inspectorResult("second"), inspectorResult("first")}},
 			}
 			if separate {
-				messages[1].Parts = []llm.Part{inspectorResult("second")}
-				messages = append(messages, session.Message{Role: llm.RoleTool, Parts: []llm.Part{inspectorResult("first")}})
+				messages[1].Parts = []core.Part{inspectorResult("second")}
+				messages = append(messages, session.Message{Role: core.RoleTool, Parts: []core.Part{inspectorResult("first")}})
 			}
 			before, _ := json.Marshal(messages)
 			r := NewContentRenderer(100, ui.DefaultStyles(), nil, nil, "", "", nil, config.ReasoningConfig{})
@@ -80,19 +80,19 @@ func TestInspectorResultCallMatching(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		middle []session.Message
-		result llm.Part
+		result core.Part
 		want   bool
 	}{
 		{name: "matching", result: inspectorResult("call"), want: true},
-		{name: "unnamed result", result: llm.Part{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call"}}, want: true},
+		{name: "unnamed result", result: core.Part{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call"}}, want: true},
 		{name: "orphan", result: inspectorResult("missing")},
-		{name: "new user turn", middle: []session.Message{{Role: llm.RoleUser}}, result: inspectorResult("call")},
-		{name: "wrong tool", result: llm.Part{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call", Name: "read_file"}}},
+		{name: "new user turn", middle: []session.Message{{Role: core.RoleUser}}, result: inspectorResult("call")},
+		{name: "wrong tool", result: core.Part{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call", Name: "read_file"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			messages := []session.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{inspectorCall("call", "command")}}}
+			messages := []session.Message{{Role: core.RoleAssistant, Parts: []core.Part{inspectorCall("call", "command")}}}
 			messages = append(messages, tt.middle...)
-			messages = append(messages, session.Message{Role: llm.RoleTool, Parts: []llm.Part{tt.result}})
+			messages = append(messages, session.Message{Role: core.RoleTool, Parts: []core.Part{tt.result}})
 			r := NewContentRenderer(100, ui.DefaultStyles(), nil, nil, "", "", nil, config.ReasoningConfig{})
 			_, items := r.RenderMessages(messages)
 			found := false
@@ -111,8 +111,8 @@ func TestInspectorResultCallMatching(t *testing.T) {
 func TestInspectorResultCallContextExpandAll(t *testing.T) {
 	command := strings.Repeat("argument ", 1000) + "command-end-marker"
 	messages := []session.Message{
-		{Role: llm.RoleAssistant, Parts: []llm.Part{inspectorCall("call", command)}},
-		{Role: llm.RoleTool, Parts: []llm.Part{inspectorResult("call")}},
+		{Role: core.RoleAssistant, Parts: []core.Part{inspectorCall("call", command)}},
+		{Role: core.RoleTool, Parts: []core.Part{inspectorResult("call")}},
 	}
 	m := New(messages, 100, 24, ui.DefaultStyles())
 	found := false
@@ -136,10 +136,10 @@ func TestInspectorResultCallContextExpandAll(t *testing.T) {
 }
 func TestInspectorEmptyToolRowsDoNotShiftCallContext(t *testing.T) {
 	messages := []session.Message{
-		{Role: llm.RoleAssistant, Parts: []llm.Part{inspectorCall("call", "command")}},
-		{Role: llm.RoleTool},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{inspectorResult("call")}},
+		{Role: core.RoleAssistant, Parts: []core.Part{inspectorCall("call", "command")}},
+		{Role: core.RoleTool},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult}}},
+		{Role: core.RoleTool, Parts: []core.Part{inspectorResult("call")}},
 	}
 	r := NewContentRenderer(100, ui.DefaultStyles(), nil, nil, "", "", nil, config.ReasoningConfig{})
 	content, items := r.RenderMessages(messages)

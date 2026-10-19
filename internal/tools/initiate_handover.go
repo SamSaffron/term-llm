@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // InitiateHandoverResult is the result returned by the tool.
@@ -49,8 +49,8 @@ func NewInitiateHandoverTool() *InitiateHandoverTool {
 }
 
 // Spec returns the tool specification.
-func (t *InitiateHandoverTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *InitiateHandoverTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: InitiateHandoverToolName,
 		Description: `Initiate a handover to another agent. This triggers the handover confirmation UI where the user can confirm, add instructions, or cancel. Use this when you want to hand off work to a different agent (e.g., from planner to developer).
 
@@ -74,15 +74,15 @@ Guidelines:
 }
 
 // Execute runs the initiate_handover tool.
-func (t *InitiateHandoverTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *InitiateHandoverTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a InitiateHandoverArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatHandoverResult("error", fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return core.TextOutput(formatHandoverResult("error", fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 
 	agent := strings.TrimSpace(strings.TrimPrefix(a.Agent, "@"))
 	if agent == "" {
-		return llm.TextOutput(formatHandoverResult("error", "agent name is required")), nil
+		return core.TextOutput(formatHandoverResult("error", "agent name is required")), nil
 	}
 
 	// Check context-based handler first (for web serve / non-TUI use)
@@ -100,17 +100,17 @@ func (t *InitiateHandoverTool) Execute(ctx context.Context, args json.RawMessage
 	case uiFunc != nil:
 		fn = uiFunc
 	default:
-		return llm.TextOutput(formatHandoverResult("error", "handover UI not available")), nil
+		return core.TextOutput(formatHandoverResult("error", "handover UI not available")), nil
 	}
 
 	confirmed, err := fn(ctx, agent)
 	if err != nil {
-		return llm.TextOutput(formatHandoverResult("error", err.Error())), nil
+		return core.TextOutput(formatHandoverResult("error", err.Error())), nil
 	}
 	if confirmed {
-		return llm.TextOutput(formatHandoverResult("confirmed", "")), nil
+		return core.TextOutput(formatHandoverResult("confirmed", "")), nil
 	}
-	return llm.TextOutput(formatHandoverResult("cancelled", "user declined the handover")), nil
+	return core.TextOutput(formatHandoverResult("cancelled", "user declined the handover")), nil
 }
 
 // Preview returns a short description of the tool call.

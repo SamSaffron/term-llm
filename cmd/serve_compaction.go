@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -16,7 +18,7 @@ var (
 	errServeCompactionTooSmall    = errors.New("not enough conversation history to compress")
 )
 
-func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*llm.CompactionResult, error) {
+func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*engine.CompactionResult, error) {
 	if rt == nil {
 		return nil, errServeCompactionUnavailable
 	}
@@ -39,11 +41,11 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	}
 
 	systemPrompt := strings.TrimSpace(rt.systemPrompt)
-	history := make([]llm.Message, 0, len(rt.history))
+	history := make([]core.Message, 0, len(rt.history))
 	for _, message := range rt.history {
-		if message.Role == llm.RoleSystem {
+		if message.Role == core.RoleSystem {
 			if systemPrompt == "" && rt.inputs.Load() == nil {
-				systemPrompt = strings.TrimSpace(llm.MessageText(message))
+				systemPrompt = strings.TrimSpace(core.MessageText(message))
 			}
 			continue
 		}
@@ -57,7 +59,7 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	if model == "" && rt.sessionMeta != nil {
 		model = strings.TrimSpace(rt.sessionMeta.Model)
 	}
-	config := llm.DefaultCompactionConfig()
+	config := engine.DefaultCompactionConfig()
 	if rt.engine != nil && rt.engine.InputLimit() > 0 {
 		config.InputLimit = rt.engine.InputLimit()
 	} else if limit := llm.InputLimitForProviderModel(rt.providerKey, model); limit > 0 {
@@ -85,7 +87,7 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	if refreshed != nil {
 		rt.sessionMeta = refreshed
 	}
-	compacted := make([]llm.Message, 0, len(updated))
+	compacted := make([]core.Message, 0, len(updated))
 	for _, message := range updated {
 		compacted = append(compacted, message.ToLLMMessage())
 	}

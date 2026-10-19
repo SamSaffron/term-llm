@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/textmatch"
 	"github.com/samsaffron/term-llm/internal/udiff"
@@ -24,7 +25,7 @@ const MaxToolCallLoops = 5
 const ReadContextToolName = "read_context"
 
 // ReadContextToolSpec defines the tool for lazy context loading.
-var ReadContextToolSpec = llm.ToolSpec{
+var ReadContextToolSpec = core.ToolSpec{
 	Name:        ReadContextToolName,
 	Description: "Read lines from a file to get additional context. Use this when you need to see more of the file beyond what was initially provided.",
 	Schema: map[string]interface{}{
@@ -108,7 +109,7 @@ type ExecutorConfig struct {
 // StreamEditExecutor executes streaming edits with validation and retry.
 type StreamEditExecutor struct {
 	config    ExecutorConfig
-	provider  llm.Provider
+	provider  core.Provider
 	model     string
 	parser    *StreamParser
 	results   []EditResult
@@ -123,7 +124,7 @@ type StreamEditExecutor struct {
 }
 
 // NewStreamEditExecutor creates a new executor.
-func NewStreamEditExecutor(provider llm.Provider, model string, config ExecutorConfig) *StreamEditExecutor {
+func NewStreamEditExecutor(provider core.Provider, model string, config ExecutorConfig) *StreamEditExecutor {
 	return &StreamEditExecutor{
 		config:   config,
 		provider: provider,
@@ -133,7 +134,7 @@ func NewStreamEditExecutor(provider llm.Provider, model string, config ExecutorC
 
 // Execute runs the streaming edit with the given messages.
 // Returns the results and about text, or an error.
-func (e *StreamEditExecutor) Execute(ctx context.Context, messages []llm.Message) ([]EditResult, string, error) {
+func (e *StreamEditExecutor) Execute(ctx context.Context, messages []core.Message) ([]EditResult, string, error) {
 	for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
 		results, aboutText, retryCtx, err := e.executeOnce(ctx, messages)
 		if err == nil {
@@ -166,16 +167,16 @@ func (e *StreamEditExecutor) Execute(ctx context.Context, messages []llm.Message
 
 		// Add the partial assistant response and error feedback
 		if e.accumulated.Len() > 0 {
-			messages = append(messages, llm.AssistantText(e.accumulated.String()))
+			messages = append(messages, core.AssistantText(e.accumulated.String()))
 		}
-		messages = append(messages, llm.UserText(retryPrompt))
+		messages = append(messages, core.UserText(retryPrompt))
 	}
 
 	return nil, "", fmt.Errorf("edit failed after %d attempts", MaxRetryAttempts)
 }
 
 // executeOnce runs a single attempt at streaming edits.
-func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Message) ([]EditResult, string, *RetryContext, error) {
+func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []core.Message) ([]EditResult, string, *RetryContext, error) {
 	e.results = nil
 	e.aboutText = ""
 	e.retryContext = nil
@@ -421,7 +422,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 	e.parser = NewStreamParser(callbacks)
 
 	// Create stream request
-	req := llm.Request{
+	req := core.Request{
 		Model:    e.model,
 		Messages: messages,
 		Debug:    e.config.Debug,
@@ -430,7 +431,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 
 	// Add read_context tool if lazy context mode
 	if e.config.LazyContext {
-		req.Tools = []llm.ToolSpec{ReadContextToolSpec}
+		req.Tools = []core.ToolSpec{ReadContextToolSpec}
 	}
 
 	// Tool call loop - allows LLM to request more context
@@ -457,7 +458,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 		stream := llm.WrapDebugStream(e.config.DebugRaw, rawStream)
 
 		// Collect tool calls during streaming
-		var toolCalls []llm.ToolCall
+		var toolCalls []core.ToolCall
 
 		// Process stream events
 		streamErr := func() error {
@@ -482,7 +483,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 				}
 
 				switch event.Type {
-				case llm.EventTextDelta:
+				case core.EventTextDelta:
 					// Notify on first token
 					if !e.sentFirstToken && e.config.OnFirstToken != nil {
 						e.sentFirstToken = true
@@ -493,25 +494,25 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 						return err
 					}
 
-				case llm.EventToolCall:
+				case core.EventToolCall:
 					if event.Tool != nil {
 						toolCalls = append(toolCalls, *event.Tool)
 					}
 
-				case llm.EventUsage:
+				case core.EventUsage:
 					if e.config.OnTokens != nil && event.Use != nil {
 						e.config.OnTokens(event.Use.OutputTokens)
 					}
 
-				case llm.EventRetry:
+				case core.EventRetry:
 					if e.config.OnAPIRetry != nil {
 						e.config.OnAPIRetry(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
 					}
 
-				case llm.EventError:
+				case core.EventError:
 					return event.Err
 
-				case llm.EventDone:
+				case core.EventDone:
 					// Stream complete
 				}
 			}
@@ -569,13 +570,13 @@ type readContextArgs struct {
 }
 
 // executeReadContextCalls executes read_context tool calls and returns result messages.
-func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, contents map[string]string) []llm.Message {
+func (e *StreamEditExecutor) executeReadContextCalls(calls []core.ToolCall, contents map[string]string) []core.Message {
 	// Notify that tool execution is starting
 	if len(calls) > 0 && e.config.OnToolStart != nil {
 		e.config.OnToolStart(ReadContextToolName)
 	}
 
-	results := make([]llm.Message, 0, len(calls))
+	results := make([]core.Message, 0, len(calls))
 
 	for _, call := range calls {
 		// Ensure tool call has an ID
@@ -586,7 +587,7 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 
 		if call.Name != ReadContextToolName {
 			// Unknown tool - return error
-			results = append(results, llm.ToolResultMessage(callID, call.Name,
+			results = append(results, core.ToolResultMessage(callID, call.Name,
 				fmt.Sprintf("error: unknown tool %q", call.Name), call.ThoughtSig))
 			continue
 		}
@@ -594,13 +595,13 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 		// Parse arguments from JSON
 		var args readContextArgs
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
-			results = append(results, llm.ToolResultMessage(callID, call.Name,
+			results = append(results, core.ToolResultMessage(callID, call.Name,
 				fmt.Sprintf("error: invalid arguments: %v", err), call.ThoughtSig))
 			continue
 		}
 
 		if args.Path == "" {
-			results = append(results, llm.ToolResultMessage(callID, call.Name,
+			results = append(results, core.ToolResultMessage(callID, call.Name,
 				"error: path is required", call.ThoughtSig))
 			continue
 		}
@@ -608,7 +609,7 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 		// Find the file content
 		content, resolvedPath, ok := findWorkingContent(contents, args.Path)
 		if !ok {
-			results = append(results, llm.ToolResultMessage(callID, call.Name,
+			results = append(results, core.ToolResultMessage(callID, call.Name,
 				fmt.Sprintf("error: file not found: %s", args.Path), call.ThoughtSig))
 			continue
 		}
@@ -628,28 +629,28 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 				resolvedPath, startLine, endLine, len(excerpt))
 		}
 
-		results = append(results, llm.ToolResultMessage(callID, call.Name, excerpt, call.ThoughtSig))
+		results = append(results, core.ToolResultMessage(callID, call.Name, excerpt, call.ThoughtSig))
 	}
 
 	return results
 }
 
 // toolCallMessage creates an assistant message containing tool calls.
-func toolCallMessage(calls []llm.ToolCall) llm.Message {
-	parts := make([]llm.Part, 0, len(calls))
+func toolCallMessage(calls []core.ToolCall) core.Message {
+	parts := make([]core.Part, 0, len(calls))
 	for i := range calls {
 		call := calls[i]
 		// Ensure ID
 		if call.ID == "" {
 			call.ID = fmt.Sprintf("call_%d", i)
 		}
-		parts = append(parts, llm.Part{
-			Type:     llm.PartToolCall,
+		parts = append(parts, core.Part{
+			Type:     core.PartToolCall,
 			ToolCall: &call,
 		})
 	}
-	return llm.Message{
-		Role:  llm.RoleAssistant,
+	return core.Message{
+		Role:  core.RoleAssistant,
 		Parts: parts,
 	}
 }
@@ -730,11 +731,11 @@ func filterDiffEmptyLines(lines []string) []string {
 }
 
 // extractSystemPrompt extracts the system prompt from messages.
-func extractSystemPrompt(messages []llm.Message) string {
+func extractSystemPrompt(messages []core.Message) string {
 	for _, msg := range messages {
-		if msg.Role == llm.RoleSystem {
+		if msg.Role == core.RoleSystem {
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartText {
+				if part.Type == core.PartText {
 					return part.Text
 				}
 			}
@@ -744,11 +745,11 @@ func extractSystemPrompt(messages []llm.Message) string {
 }
 
 // extractUserPrompt extracts the first user prompt from messages.
-func extractUserPrompt(messages []llm.Message) string {
+func extractUserPrompt(messages []core.Message) string {
 	for _, msg := range messages {
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartText {
+				if part.Type == core.PartText {
 					return part.Text
 				}
 			}

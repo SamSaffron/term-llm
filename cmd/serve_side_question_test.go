@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
@@ -44,10 +46,10 @@ func TestSideQuestionDoesNotMasqueradeAsMainRun(t *testing.T) {
 }
 
 func TestReplaceHistoryFailureRestoresSideQuestionState(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddError(errors.New("boom"))
+	provider := mockprovider.NewMockProvider("mock").AddError(errors.New("boom"))
 	rt := &serveRuntime{
 		providerKey: "mock", defaultModel: "m", provider: provider,
-		engine: llm.NewEngine(provider, nil), history: []llm.Message{llm.UserText("old main")},
+		engine: engine.NewEngine(provider, nil), history: []core.Message{core.UserText("old main")},
 	}
 	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: rt.history, Provider: runboundary.ProviderContext{
 		State: []byte(`{"session_id":"S1","messages_sent":1}`), ProviderKey: "mock", Model: "m",
@@ -56,11 +58,11 @@ func TestReplaceHistoryFailureRestoresSideQuestionState(t *testing.T) {
 	rt.sideQuestion.history = []sidequestion.Entry{{Question: "old side", Response: "old answer"}}
 	rt.sideQuestion.mu.Unlock()
 
-	_, err := rt.Run(context.Background(), true, true, []llm.Message{llm.UserText("replacement")}, llm.Request{Model: "m"})
+	_, err := rt.Run(context.Background(), true, true, []core.Message{core.UserText("replacement")}, core.Request{Model: "m"})
 	if err == nil {
 		t.Fatal("replace-history run unexpectedly succeeded")
 	}
-	if len(rt.history) != 1 || llm.MessageText(rt.history[0]) != "old main" {
+	if len(rt.history) != 1 || core.MessageText(rt.history[0]) != "old main" {
 		t.Fatalf("main history was not restored: %#v", rt.history)
 	}
 	view := rt.sideQuestion.view()
@@ -70,7 +72,7 @@ func TestReplaceHistoryFailureRestoresSideQuestionState(t *testing.T) {
 	rt.sideQuestion.mu.Lock()
 	anchor := rt.sideQuestion.anchor.Clone()
 	rt.sideQuestion.mu.Unlock()
-	if len(anchor.Messages) != 1 || llm.MessageText(anchor.Messages[0]) != "old main" {
+	if len(anchor.Messages) != 1 || core.MessageText(anchor.Messages[0]) != "old main" {
 		t.Fatalf("side snapshot was not restored: %#v", anchor.Messages)
 	}
 	// The whole anchor round-trips, so a rollback cannot restore a snapshot
@@ -81,13 +83,13 @@ func TestReplaceHistoryFailureRestoresSideQuestionState(t *testing.T) {
 }
 
 func TestServeSideQuestionIsEphemeralAndToolless(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("private answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("private answer")
 	rt := &serveRuntime{
 		providerKey: "mock", defaultModel: "test-model",
-		history: []llm.Message{llm.UserText("main question"), llm.AssistantText("main answer")},
+		history: []core.Message{core.UserText("main question"), core.AssistantText("main answer")},
 	}
 	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: rt.history})
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "clarify"})
 	if err != nil {
@@ -114,12 +116,12 @@ func TestServeSideQuestionIsEphemeralAndToolless(t *testing.T) {
 // serveForkableProvider is a live runtime provider that can branch from a
 // captured boundary, like claude-bin.
 type serveForkableProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	branch *serveBranchProvider
 	// deliveredPrefix stands in for claude-bin's transcript fingerprint over the
 	// messages the captured session already holds.
 	deliveredPrefix string
-	forkRequest     []llm.Message
+	forkRequest     []core.Message
 	forks           int
 }
 
@@ -130,7 +132,7 @@ const serveForkableOffset = 2
 // ForkConversationAtBoundary refuses whatever the real seam refuses: state that
 // is not ours, an offset that does not fit the request, or a request prefix that
 // no longer matches the captured fingerprint.
-func (p *serveForkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []llm.Message) (llm.Provider, bool) {
+func (p *serveForkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []core.Message) (core.Provider, bool) {
 	p.forks++
 	if string(state) != string(serveForkableState) || len(requestMessages) < serveForkableOffset {
 		return nil, false
@@ -138,7 +140,7 @@ func (p *serveForkableProvider) ForkConversationAtBoundary(state []byte, request
 	if messageTextOf(requestMessages[:serveForkableOffset]) != p.deliveredPrefix {
 		return nil, false
 	}
-	p.forkRequest = append([]llm.Message(nil), requestMessages...)
+	p.forkRequest = append([]core.Message(nil), requestMessages...)
 	return p.branch, true
 }
 
@@ -151,14 +153,14 @@ var serveForkableState = []byte(`{"session_id":"S1","messages_sent":2,"transcrip
 // serveBranchProvider is the branched session; it exports the state promotion
 // would later save under a child session id.
 type serveBranchProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 }
 
 func (p *serveBranchProvider) ExportProviderState() ([]byte, bool) {
 	return []byte(`{"session_id":"S2","messages_sent":4,"transcript_digest":"d2"}`), true
 }
 
-func newServeSideLaneRuntime(t *testing.T) (*serveRuntime, *serveForkableProvider, *llm.MockProvider) {
+func newServeSideLaneRuntime(t *testing.T) (*serveRuntime, *serveForkableProvider, *mockprovider.MockProvider) {
 	t.Helper()
 	toolCfg := tools.DefaultToolConfig()
 	toolMgr, err := tools.NewToolManager(&toolCfg, &config.Config{})
@@ -169,20 +171,20 @@ func newServeSideLaneRuntime(t *testing.T) (*serveRuntime, *serveForkableProvide
 	if err := toolMgr.SetBaseDir(workingDir); err != nil {
 		t.Fatal(err)
 	}
-	history := []llm.Message{llm.UserText("main question"), llm.AssistantText("main answer")}
+	history := []core.Message{core.UserText("main question"), core.AssistantText("main answer")}
 	live := &serveForkableProvider{
-		MockProvider:    llm.NewMockProvider("live"),
+		MockProvider:    mockprovider.NewMockProvider("live"),
 		deliveredPrefix: messageTextOf(history[:serveForkableOffset]),
 		branch: &serveBranchProvider{
-			MockProvider: llm.NewMockProvider("branch").AddTextResponse("branched answer").AddTextResponse("second branched answer"),
+			MockProvider: mockprovider.NewMockProvider("branch").AddTextResponse("branched answer").AddTextResponse("second branched answer"),
 		},
 	}
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
 	rt := &serveRuntime{
 		providerKey: "claude-bin", defaultModel: "opus-max", provider: live,
 		history: history, toolMgr: toolMgr,
 	}
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return replay, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return replay, nil }
 	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 0, false))
 	return rt, live, replay
 }
@@ -252,18 +254,18 @@ func TestServeSideQuestionLaneIsDroppedByBoundaryInvalidation(t *testing.T) {
 		{"rollback restore", func(rt *serveRuntime) { rt.sideQuestion.restore(rt.sideQuestion.backup()) }},
 		{"model swap", func(rt *serveRuntime) {
 			rt.defaultModel = "sonnet"
-			rt.updateSideQuestionConfig(llm.Request{Model: "sonnet"})
+			rt.updateSideQuestionConfig(core.Request{Model: "sonnet"})
 		}},
 		// The transcript-rewriting paths call invalidateSideQuestionSnapshot
 		// before republishing. Assert the republish does not resurrect a lane or a
 		// provider state that no longer describes the transcript.
 		{"compaction republish", func(rt *serveRuntime) {
 			rt.invalidateSideQuestionSnapshot()
-			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("compacted summary")}})
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []core.Message{core.UserText("compacted summary")}})
 		}},
 		{"undo/redo republish", func(rt *serveRuntime) {
 			rt.invalidateSideQuestionSnapshot()
-			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("rewritten main")}})
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []core.Message{core.UserText("rewritten main")}})
 		}},
 	}
 	for _, tc := range tests {
@@ -307,17 +309,17 @@ func TestServeSideQuestionLaneIsDroppedByBoundaryInvalidation(t *testing.T) {
 // is answered from a transcript where none of that work has happened.
 func TestServeSideQuestionSeesInFlightWorkDuringAnInlineToolLoopRun(t *testing.T) {
 	rt, _, replay := newServeSideLaneRuntime(t)
-	rt.history = []llm.Message{llm.UserText("count from 1 to 7")}
+	rt.history = []core.Message{core.UserText("count from 1 to 7")}
 	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 0, false))
 
 	persistence := newServeRunPersistence(rt, "session", 0, serveRunSpec{stateful: true},
-		rt.history, []llm.Message{llm.UserText("count from 1 to 7")}, false, "")
+		rt.history, []core.Message{core.UserText("count from 1 to 7")}, false, "")
 
 	// One inline turn, streamed as a growing assistant message: step 1 runs, then
 	// step 2, with no turn boundary in between.
 	ctx := context.Background()
 	for _, step := range []string{"step 1 done", "step 1 done, step 2 done"} {
-		if err := persistence.assistantSnapshot(ctx, 0, llm.AssistantText(step)); err != nil {
+		if err := persistence.assistantSnapshot(ctx, 0, core.AssistantText(step)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -373,7 +375,7 @@ func TestServeSideQuestionKeepsProviderIdentityWhileARunIsInFlight(t *testing.T)
 	}
 
 	// A run starts and streams; the boundary follows it.
-	rt.advanceSideQuestionTranscript(append(rt.history, llm.AssistantText("in-flight work")))
+	rt.advanceSideQuestionTranscript(append(rt.history, core.AssistantText("in-flight work")))
 	rt.sideQuestion.mu.Lock()
 	anchor := rt.sideQuestion.anchor.Clone()
 	rt.sideQuestion.mu.Unlock()
@@ -414,12 +416,12 @@ func TestServeSideQuestionReplayKeepsTheProjectDirectory(t *testing.T) {
 		prepare func(*serveRuntime)
 	}{
 		{"mid-run", func(rt *serveRuntime) {
-			rt.advanceSideQuestionTranscript(append(rt.history, llm.AssistantText("in-flight work")))
+			rt.advanceSideQuestionTranscript(append(rt.history, core.AssistantText("in-flight work")))
 			rt.setActiveInterrupt(&runtimeInterruptState{done: make(chan struct{})})
 		}},
 		{"after a transcript rewrite", func(rt *serveRuntime) {
 			rt.invalidateSideQuestionSnapshot()
-			rt.refreshSideQuestionSnapshot(rt.sideQuestionReplayBoundary([]llm.Message{llm.UserText("compacted")}))
+			rt.refreshSideQuestionSnapshot(rt.sideQuestionReplayBoundary([]core.Message{core.UserText("compacted")}))
 		}},
 		{"before the rewrite republishes anything", func(rt *serveRuntime) {
 			rt.invalidateSideQuestionSnapshot()
@@ -448,10 +450,10 @@ func TestServeSideQuestionReplayKeepsTheProjectDirectory(t *testing.T) {
 	}
 }
 
-func messageTextOf(messages []llm.Message) string {
+func messageTextOf(messages []core.Message) string {
 	var out strings.Builder
 	for _, message := range messages {
-		out.WriteString(llm.MessageText(message))
+		out.WriteString(core.MessageText(message))
 		out.WriteString("\n")
 	}
 	return out.String()
@@ -470,7 +472,7 @@ func TestServeSideQuestionAnchorCarriesTheDurableBranchPoint(t *testing.T) {
 	}
 
 	// A later advance that knows no row identity must not erase the last one.
-	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(append(rt.history, llm.UserText("more")), 0, false))
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(append(rt.history, core.UserText("more")), 0, false))
 	if anchor := rt.sideQuestion.anchor; anchor.DurableAnchorID != 77 || !anchor.Durable {
 		t.Fatalf("a stateless refresh erased the branch point: %#v", anchor)
 	}
@@ -515,11 +517,11 @@ func TestServeSideQuestionTranscriptRewritesDropProviderState(t *testing.T) {
 	}{
 		{"compaction", func() {
 			rt.invalidateSideQuestionSnapshot()
-			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("compacted")}})
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []core.Message{core.UserText("compacted")}})
 		}},
 		{"undo", func() {
 			rt.invalidateSideQuestionSnapshot()
-			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("undone")}})
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []core.Message{core.UserText("undone")}})
 		}},
 		{"replace history", func() { rt.invalidateSideQuestionSnapshot() }},
 	} {
@@ -556,14 +558,14 @@ func TestServeSideQuestionReplaysWhileAMainRunIsActive(t *testing.T) {
 }
 
 func TestServeSideQuestionPreservesMainPrefixAndDeduplicatesRuntimeContext(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("answer")
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "m", systemPrompt: "system", platform: "web"}
 	rt.platformMessages.Web = "platform"
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
-	mainPrefix := []llm.Message{
-		llm.SystemText("system"),
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
-		llm.UserText("main question"),
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
+	mainPrefix := []core.Message{
+		core.SystemText("system"),
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "platform"}}},
+		core.UserText("main question"),
 	}
 	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: mainPrefix})
 
@@ -578,14 +580,14 @@ func TestServeSideQuestionPreservesMainPrefixAndDeduplicatesRuntimeContext(t *te
 		t.Fatalf("request too short: %#v", got)
 	}
 	for i, want := range mainPrefix {
-		if got[i].Role != want.Role || llm.MessageText(got[i]) != llm.MessageText(want) {
+		if got[i].Role != want.Role || core.MessageText(got[i]) != core.MessageText(want) {
 			t.Fatalf("shared prefix message %d = %#v, want %#v", i, got[i], want)
 		}
 	}
 	for _, text := range []string{"system", "platform"} {
 		count := 0
 		for _, msg := range got {
-			if llm.MessageText(msg) == text {
+			if core.MessageText(msg) == text {
 				count++
 			}
 		}
@@ -596,15 +598,15 @@ func TestServeSideQuestionPreservesMainPrefixAndDeduplicatesRuntimeContext(t *te
 }
 
 func TestAppendMissingSideContextRebuildsCanonicalPrefix(t *testing.T) {
-	contextMessages := []llm.Message{
-		llm.SystemText("system"),
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "cwd"}}},
+	contextMessages := []core.Message{
+		core.SystemText("system"),
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "platform"}}},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "cwd"}}},
 	}
-	snapshot := []llm.Message{
-		llm.SystemText("system"),
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
-		llm.UserText("main question"), llm.AssistantText("main answer"),
+	snapshot := []core.Message{
+		core.SystemText("system"),
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "platform"}}},
+		core.UserText("main question"), core.AssistantText("main answer"),
 	}
 	got := appendMissingSideContext(snapshot, contextMessages)
 	want := []string{"system", "platform", "cwd", "main question", "main answer"}
@@ -612,7 +614,7 @@ func TestAppendMissingSideContextRebuildsCanonicalPrefix(t *testing.T) {
 		t.Fatalf("messages = %#v", got)
 	}
 	for i, text := range want {
-		if llm.MessageText(got[i]) != text {
+		if core.MessageText(got[i]) != text {
 			t.Fatalf("message %d = %#v, want %q", i, got[i], text)
 		}
 	}
@@ -622,7 +624,7 @@ func TestServeSideQuestionClearHistoryInvalidatesActiveGeneration(t *testing.T) 
 	provider := &stubbornSideProvider{release: make(chan struct{})}
 	rt := &serveRuntime{providerKey: "stubborn", defaultModel: "m"}
 	rt.configureSideQuestionContext()
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
 	if err != nil {
 		t.Fatal(err)
@@ -642,10 +644,10 @@ func TestServeSideQuestionClearHistoryInvalidatesActiveGeneration(t *testing.T) 
 }
 
 func TestServeSideUsageSurvivesPrivateHistoryClear(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Text: "answer", Usage: llm.Usage{InputTokens: 11, OutputTokens: 3}})
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Text: "answer", Usage: core.Usage{InputTokens: 11, OutputTokens: 3}})
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "m"}
 	rt.configureSideQuestionContext()
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
 	if err != nil {
@@ -661,10 +663,10 @@ func TestServeSideUsageSurvivesPrivateHistoryClear(t *testing.T) {
 }
 
 func TestServeSideFollowUpRefreshesMainContextAndKeepsPrivateHistoryChronological(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("first side answer").AddTextResponse("second side answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("first side answer").AddTextResponse("second side answer")
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "m"}
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
-	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("main one"), llm.AssistantText("main answer one")}})
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
+	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []core.Message{core.UserText("main one"), core.AssistantText("main answer one")}})
 
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "first side question"})
 	if err != nil {
@@ -672,9 +674,9 @@ func TestServeSideFollowUpRefreshesMainContextAndKeepsPrivateHistoryChronologica
 	}
 	for range events {
 	}
-	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{
-		llm.UserText("main one"), llm.AssistantText("main answer one"),
-		llm.UserText("main two"), llm.AssistantText("main answer two"),
+	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []core.Message{
+		core.UserText("main one"), core.AssistantText("main answer one"),
+		core.UserText("main two"), core.AssistantText("main answer two"),
 	}})
 	events, err = rt.startSideQuestion(sideQuestionStart{Question: "second side question"})
 	if err != nil {
@@ -711,10 +713,10 @@ func TestServeSideFollowUpRefreshesMainContextAndKeepsPrivateHistoryChronologica
 }
 
 func TestServeSideQuestionEndpointsRecoverCancelAndClear(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("answer")
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{providerKey: "mock", defaultModel: "m"}
-		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+		rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 		return rt, nil
 	})
 	defer manager.Close()
@@ -760,9 +762,9 @@ func TestServeSideQuestionEndpointsRecoverCancelAndClear(t *testing.T) {
 }
 
 func TestServeSideQuestionRejectsToolAttemptFromHistory(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddToolCall("call", "shell", map[string]any{"command": "touch /tmp/no"})
+	provider := mockprovider.NewMockProvider("mock").AddToolCall("call", "shell", map[string]any{"command": "touch /tmp/no"})
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "m"}
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "do it"})
 	if err != nil {
 		t.Fatal(err)
@@ -776,7 +778,7 @@ func TestServeSideQuestionRejectsToolAttemptFromHistory(t *testing.T) {
 }
 
 type pauseSecondTurnProvider struct {
-	base          *llm.MockProvider
+	base          *mockprovider.MockProvider
 	mu            sync.Mutex
 	calls         int
 	secondStarted chan struct{}
@@ -785,10 +787,10 @@ type pauseSecondTurnProvider struct {
 
 func (p *pauseSecondTurnProvider) Name() string       { return p.base.Name() }
 func (p *pauseSecondTurnProvider) Credential() string { return p.base.Credential() }
-func (p *pauseSecondTurnProvider) Capabilities() llm.Capabilities {
+func (p *pauseSecondTurnProvider) Capabilities() core.Capabilities {
 	return p.base.Capabilities()
 }
-func (p *pauseSecondTurnProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *pauseSecondTurnProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.mu.Lock()
 	p.calls++
 	call := p.calls
@@ -805,26 +807,26 @@ func (p *pauseSecondTurnProvider) Stream(ctx context.Context, req llm.Request) (
 }
 
 func TestServeSideQuestionForksAtCurrentCompletedToolBoundary(t *testing.T) {
-	mainBase := llm.NewMockProvider("main").
-		WithCapabilities(llm.Capabilities{ToolCalls: true}).
+	mainBase := mockprovider.NewMockProvider("main").
+		WithCapabilities(core.Capabilities{ToolCalls: true}).
 		AddToolCall("call-1", "echo", map[string]any{"input": "live tool context"}).
 		AddTextResponse("main done")
 	mainProvider := &pauseSecondTurnProvider{
 		base: mainBase, secondStarted: make(chan struct{}), release: make(chan struct{}),
 	}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	sideProvider := llm.NewMockProvider("side").AddTextResponse("side answer")
+	sideProvider := mockprovider.NewMockProvider("side").AddTextResponse("side answer")
 	rt := &serveRuntime{
 		providerKey: "main", defaultModel: "m", provider: mainProvider,
-		engine: llm.NewEngine(mainProvider, registry),
+		engine: engine.NewEngine(mainProvider, registry),
 	}
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return sideProvider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return sideProvider, nil }
 
 	mainDone := make(chan error, 1)
 	go func() {
-		_, err := rt.Run(context.Background(), true, false, []llm.Message{llm.UserText("active main question")}, llm.Request{
-			Model: "m", MaxTurns: 5, Tools: []llm.ToolSpec{(&echoTool{}).Spec()},
+		_, err := rt.Run(context.Background(), true, false, []core.Message{core.UserText("active main question")}, core.Request{
+			Model: "m", MaxTurns: 5, Tools: []core.ToolSpec{(&echoTool{}).Spec()},
 		})
 		mainDone <- err
 	}()
@@ -847,7 +849,7 @@ func TestServeSideQuestionForksAtCurrentCompletedToolBoundary(t *testing.T) {
 	joined := ""
 	hasToolCall, hasToolResult := false, false
 	for _, msg := range request.Messages {
-		joined += llm.MessageText(msg) + "\n"
+		joined += core.MessageText(msg) + "\n"
 		for _, part := range msg.Parts {
 			hasToolCall = hasToolCall || part.ToolCall != nil
 			hasToolResult = hasToolResult || part.ToolResult != nil
@@ -865,25 +867,25 @@ func TestServeSideQuestionForksAtCurrentCompletedToolBoundary(t *testing.T) {
 
 type blockingSideProvider struct{}
 
-func (blockingSideProvider) Name() string                   { return "blocking" }
-func (blockingSideProvider) Credential() string             { return "test" }
-func (blockingSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (blockingSideProvider) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+func (blockingSideProvider) Name() string                    { return "blocking" }
+func (blockingSideProvider) Credential() string              { return "test" }
+func (blockingSideProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (blockingSideProvider) Stream(ctx context.Context, _ core.Request) (core.Stream, error) {
 	return &blockingSideStream{ctx: ctx}, nil
 }
 
 type blockingSideStream struct{ ctx context.Context }
 
-func (s *blockingSideStream) Recv() (llm.Event, error) {
+func (s *blockingSideStream) Recv() (core.Event, error) {
 	<-s.ctx.Done()
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 func (*blockingSideStream) Close() error { return nil }
 
 func TestServeSideQuestionConcurrencyAndCancellationAreIndependent(t *testing.T) {
 	provider := blockingSideProvider{}
 	rt := &serveRuntime{providerKey: "blocking", defaultModel: "m"}
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "first"})
 	if err != nil {
 		t.Fatal(err)
@@ -950,15 +952,15 @@ func TestServeSideQuestionHydratesPersistedHistoryOnFreshRuntime(t *testing.T) {
 	if err := store.Create(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
-	for _, msg := range []llm.Message{llm.UserText("persisted fact"), llm.AssistantText("persisted answer")} {
+	for _, msg := range []core.Message{core.UserText("persisted fact"), core.AssistantText("persisted answer")} {
 		if err := store.AddMessage(ctx, meta.ID, session.NewMessage(meta.ID, msg, -1)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("side answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("side answer")
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{providerKey: "mock", defaultModel: "default", store: store}
-		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+		rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 		return rt, nil
 	})
 	defer manager.Close()
@@ -1003,21 +1005,21 @@ func TestServeSideQuestionColdHydrationUsesActiveCompactionBoundary(t *testing.T
 	if err := store.Create(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
-	for _, msg := range []llm.Message{llm.UserText("obsolete fact"), llm.AssistantText("obsolete answer")} {
+	for _, msg := range []core.Message{core.UserText("obsolete fact"), core.AssistantText("obsolete answer")} {
 		if err := store.AddMessage(ctx, meta.ID, session.NewMessage(meta.ID, msg, -1)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := store.CompactMessages(ctx, meta.ID, []session.Message{
-		*session.NewMessage(meta.ID, llm.UserText("active summary"), -1),
-		*session.NewMessage(meta.ID, llm.AssistantText("summary ack"), -1),
+		*session.NewMessage(meta.ID, core.UserText("active summary"), -1),
+		*session.NewMessage(meta.ID, core.AssistantText("summary ack"), -1),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("answer")
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{providerKey: "mock", defaultModel: "m", store: store}
-		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+		rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 		return rt, nil
 	})
 	defer manager.Close()
@@ -1034,10 +1036,10 @@ func TestServeSideQuestionColdHydrationUsesActiveCompactionBoundary(t *testing.T
 	}
 }
 
-func messageTextForTest(messages []llm.Message) string {
+func messageTextForTest(messages []core.Message) string {
 	var text strings.Builder
 	for _, msg := range messages {
-		text.WriteString(llm.MessageText(msg))
+		text.WriteString(core.MessageText(msg))
 		text.WriteByte('\n')
 	}
 	return text.String()
@@ -1075,10 +1077,10 @@ func TestServeSideQuestionRejectsNonexistentSession(t *testing.T) {
 
 type disconnectSideProvider struct{}
 
-func (disconnectSideProvider) Name() string                   { return "disconnect" }
-func (disconnectSideProvider) Credential() string             { return "test" }
-func (disconnectSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (disconnectSideProvider) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+func (disconnectSideProvider) Name() string                    { return "disconnect" }
+func (disconnectSideProvider) Credential() string              { return "test" }
+func (disconnectSideProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (disconnectSideProvider) Stream(ctx context.Context, _ core.Request) (core.Stream, error) {
 	return &disconnectSideStream{ctx: ctx}, nil
 }
 
@@ -1087,13 +1089,13 @@ type disconnectSideStream struct {
 	sent bool
 }
 
-func (s *disconnectSideStream) Recv() (llm.Event, error) {
+func (s *disconnectSideStream) Recv() (core.Event, error) {
 	if !s.sent {
 		s.sent = true
-		return llm.Event{Type: llm.EventTextDelta, Text: "partial"}, nil
+		return core.Event{Type: core.EventTextDelta, Text: "partial"}, nil
 	}
 	<-s.ctx.Done()
-	return llm.Event{}, s.ctx.Err()
+	return core.Event{}, s.ctx.Err()
 }
 func (*disconnectSideStream) Close() error { return nil }
 
@@ -1115,7 +1117,7 @@ func TestServeSideQuestionDisconnectCancelsProvider(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{providerKey: "disconnect", defaultModel: "m"}
 		rt.configureSideQuestionContext()
-		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return disconnectSideProvider{}, nil }
+		rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return disconnectSideProvider{}, nil }
 		return rt, nil
 	})
 	defer manager.Close()
@@ -1171,7 +1173,7 @@ func TestServeSideQuestionSlowClientWriteCancelsProvider(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{providerKey: "disconnect", defaultModel: "m"}
 		rt.configureSideQuestionContext()
-		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return disconnectSideProvider{}, nil }
+		rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return disconnectSideProvider{}, nil }
 		return rt, nil
 	})
 	defer manager.Close()
@@ -1232,10 +1234,10 @@ type stubbornSideProvider struct {
 	starts  int
 }
 
-func (p *stubbornSideProvider) Name() string                   { return "stubborn" }
-func (p *stubbornSideProvider) Credential() string             { return "test" }
-func (p *stubbornSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *stubbornSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+func (p *stubbornSideProvider) Name() string                    { return "stubborn" }
+func (p *stubbornSideProvider) Credential() string              { return "test" }
+func (p *stubbornSideProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *stubbornSideProvider) Stream(context.Context, core.Request) (core.Stream, error) {
 	p.mu.Lock()
 	p.starts++
 	p.mu.Unlock()
@@ -1250,9 +1252,9 @@ func (p *stubbornSideProvider) startCount() int {
 
 type stubbornSideStream struct{ release <-chan struct{} }
 
-func (s *stubbornSideStream) Recv() (llm.Event, error) {
+func (s *stubbornSideStream) Recv() (core.Event, error) {
 	<-s.release
-	return llm.Event{}, io.EOF
+	return core.Event{}, io.EOF
 }
 func (*stubbornSideStream) Close() error { return nil }
 
@@ -1261,10 +1263,10 @@ type attemptDiscardSideProvider struct {
 	release chan struct{}
 }
 
-func (p *attemptDiscardSideProvider) Name() string                   { return "attempt-discard" }
-func (p *attemptDiscardSideProvider) Credential() string             { return "test" }
-func (p *attemptDiscardSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *attemptDiscardSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+func (p *attemptDiscardSideProvider) Name() string                    { return "attempt-discard" }
+func (p *attemptDiscardSideProvider) Credential() string              { return "test" }
+func (p *attemptDiscardSideProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *attemptDiscardSideProvider) Stream(context.Context, core.Request) (core.Stream, error) {
 	return &attemptDiscardSideStream{paused: p.paused, release: p.release}, nil
 }
 
@@ -1274,12 +1276,12 @@ type attemptDiscardSideStream struct {
 	release <-chan struct{}
 }
 
-func (s *attemptDiscardSideStream) Recv() (llm.Event, error) {
-	events := []llm.Event{
-		{Type: llm.EventTextDelta, Text: "discarded"},
-		{Type: llm.EventAttemptDiscard},
-		{Type: llm.EventTextDelta, Text: "kept "},
-		{Type: llm.EventTextDelta, Text: "世界"},
+func (s *attemptDiscardSideStream) Recv() (core.Event, error) {
+	events := []core.Event{
+		{Type: core.EventTextDelta, Text: "discarded"},
+		{Type: core.EventAttemptDiscard},
+		{Type: core.EventTextDelta, Text: "kept "},
+		{Type: core.EventTextDelta, Text: "世界"},
 	}
 	if s.index < len(events) {
 		event := events[s.index]
@@ -1291,7 +1293,7 @@ func (s *attemptDiscardSideStream) Recv() (llm.Event, error) {
 		s.paused = nil
 	}
 	<-s.release
-	return llm.Event{}, io.EOF
+	return core.Event{}, io.EOF
 }
 
 func (*attemptDiscardSideStream) Close() error { return nil }
@@ -1300,7 +1302,7 @@ func TestServeSideQuestionLiveResponseDropsDiscardedAttempt(t *testing.T) {
 	provider := &attemptDiscardSideProvider{paused: make(chan struct{}), release: make(chan struct{})}
 	rt := &serveRuntime{providerKey: "attempt-discard", defaultModel: "m"}
 	rt.configureSideQuestionContext()
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
 	if err != nil {
@@ -1329,10 +1331,10 @@ type burstSideProvider struct {
 	deltas int
 }
 
-func (p burstSideProvider) Name() string                   { return "burst" }
-func (p burstSideProvider) Credential() string             { return "test" }
-func (p burstSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p burstSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+func (p burstSideProvider) Name() string                    { return "burst" }
+func (p burstSideProvider) Credential() string              { return "test" }
+func (p burstSideProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p burstSideProvider) Stream(context.Context, core.Request) (core.Stream, error) {
 	deltas := p.deltas
 	if deltas == 0 {
 		deltas = 100
@@ -1342,12 +1344,12 @@ func (p burstSideProvider) Stream(context.Context, llm.Request) (llm.Stream, err
 
 type burstSideStream struct{ remaining int }
 
-func (s *burstSideStream) Recv() (llm.Event, error) {
+func (s *burstSideStream) Recv() (core.Event, error) {
 	if s.remaining == 0 {
-		return llm.Event{}, io.EOF
+		return core.Event{}, io.EOF
 	}
 	s.remaining--
-	return llm.Event{Type: llm.EventTextDelta, Text: "x"}, nil
+	return core.Event{Type: core.EventTextDelta, Text: "x"}, nil
 }
 func (*burstSideStream) Close() error { return nil }
 
@@ -1359,7 +1361,7 @@ func BenchmarkStartSideQuestionTextDeltas(b *testing.B) {
 	for b.Loop() {
 		rt := &serveRuntime{providerKey: "burst", defaultModel: "m"}
 		rt.configureSideQuestionContext()
-		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+		rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 		events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
 		if err != nil {
 			b.Fatal(err)
@@ -1376,7 +1378,7 @@ func BenchmarkStartSideQuestionTextDeltas(b *testing.B) {
 func TestServeSideQuestionTerminalEventSurvivesBackpressure(t *testing.T) {
 	rt := &serveRuntime{providerKey: "burst", defaultModel: "m"}
 	rt.configureSideQuestionContext()
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return burstSideProvider{}, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return burstSideProvider{}, nil }
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
 	if err != nil {
 		t.Fatal(err)
@@ -1404,7 +1406,7 @@ func TestServeSideQuestionCancelDoesNotOverlapStubbornRestart(t *testing.T) {
 	provider := &stubbornSideProvider{release: make(chan struct{})}
 	rt := &serveRuntime{providerKey: "stubborn", defaultModel: "m"}
 	rt.configureSideQuestionContext()
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "first"})
 	if err != nil {
 		t.Fatal(err)

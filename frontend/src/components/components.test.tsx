@@ -85,7 +85,7 @@ const mentionSearchPayload = (
   paths: string[],
 ): MentionSearchResponse => ({
   active: true,
-  token: { start_utf16: token.start, end_utf16: token.end, query: token.query },
+  token: { start_utf16: token.start, end_utf16: token.end, query: token.query, quoted: false },
   items: paths.map((path) => ({
     path,
     kind: 'file',
@@ -242,6 +242,8 @@ describe('Preact-owned chat surfaces', () => {
       {
         session_id: 'child-running',
         parent_session_id: 's1',
+        attention: false,
+        revision: 1,
         title: 'Inspect transport',
         agent: 'researcher',
         state: 'active',
@@ -447,6 +449,8 @@ describe('Preact-owned chat surfaces', () => {
       {
         session_id: 'child-a',
         parent_session_id: 's1',
+        attention: false,
+        revision: 1,
         title: 'A',
         state: 'active',
         input_tokens: 0,
@@ -615,6 +619,8 @@ describe('Preact-owned chat surfaces', () => {
       const child = {
         session_id: 'live-child',
         parent_session_id: 's1',
+        attention: false,
+        revision: 1,
         parent_spawn_call_id: 'spawn-live',
         title: 'Developer',
         state: 'active',
@@ -7326,13 +7332,16 @@ describe('Preact-owned chat surfaces', () => {
       store.projectsEnabled.value = true;
       const search = vi.fn(async (_body: unknown, _sessionId?: string, _signal?: AbortSignal) => ({
         active: true,
-        token: { start_utf16: 0, end_utf16: 3, query: 'ja' },
+        token: { start_utf16: 0, end_utf16: 3, query: 'ja', quoted: false },
         items: [
           {
             path: 'jar.go',
             kind: 'file' as const,
             insert_text: '@jar.go',
-            segments: [{ text: 'jar', matched: true }, { text: '.go' }],
+            segments: [
+              { text: 'jar', matched: true },
+              { text: '.go', matched: false },
+            ],
           },
         ],
       }));

@@ -16,7 +16,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
@@ -242,7 +242,7 @@ func (m *Manager) SetStatusChannel(ch chan StatusUpdate) {
 
 // SetSamplingProvider configures the provider and model for MCP sampling requests.
 // If yoloMode is true, sampling requests are auto-approved without prompting.
-func (m *Manager) SetSamplingProvider(provider llm.Provider, model string, yoloMode bool) {
+func (m *Manager) SetSamplingProvider(provider core.Provider, model string, yoloMode bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.samplingHandler = NewSamplingHandler(provider, model)
@@ -779,7 +779,7 @@ func (m *Manager) AllTools() []ToolSpec {
 // CallTool routes a canonical flattened tool name. Exact catalogue identity is
 // preferred so collision-safe names never depend on delimiter parsing; the
 // historical parser remains as a compatibility fallback for legacy callers.
-func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMessage) (llm.ToolOutput, error) {
+func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMessage) (core.ToolOutput, error) {
 	if snapshot := m.aggregate.Load(); snapshot != nil {
 		for _, tool := range snapshot.Tools {
 			if tool.Name == fullName {
@@ -789,7 +789,7 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMe
 	}
 	serverName, toolName := parseToolName(fullName)
 	if serverName == "" {
-		return llm.ToolOutput{}, fmt.Errorf("invalid MCP tool name: %s (expected servername__toolname)", fullName)
+		return core.ToolOutput{}, fmt.Errorf("invalid MCP tool name: %s (expected servername__toolname)", fullName)
 	}
 	return m.callCatalogTool(ctx, serverName, toolName, fullName, args)
 }
@@ -797,33 +797,33 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMe
 // CallCatalogTool routes an explicitly identified catalogue entry. It is used by
 // catalogue wrappers and native namespace calls so server/child identity is never
 // inferred from the flattened executable name.
-func (m *Manager) CallCatalogTool(ctx context.Context, serverName, toolName, executableName string, args json.RawMessage) (llm.ToolOutput, error) {
+func (m *Manager) CallCatalogTool(ctx context.Context, serverName, toolName, executableName string, args json.RawMessage) (core.ToolOutput, error) {
 	if serverName == "" || toolName == "" {
-		return llm.ToolOutput{}, fmt.Errorf("invalid MCP catalogue identity %q/%q", serverName, toolName)
+		return core.ToolOutput{}, fmt.Errorf("invalid MCP catalogue identity %q/%q", serverName, toolName)
 	}
 	return m.callCatalogTool(ctx, serverName, toolName, executableName, args)
 }
 
-func (m *Manager) callCatalogTool(ctx context.Context, serverName, toolName, displayName string, args json.RawMessage) (llm.ToolOutput, error) {
+func (m *Manager) callCatalogTool(ctx context.Context, serverName, toolName, displayName string, args json.RawMessage) (core.ToolOutput, error) {
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
-		return llm.ToolOutput{}, reloadErr
+		return core.ToolOutput{}, reloadErr
 	}
 	defer release()
 	m.mu.RLock()
 	state, ok := m.statuses[serverName]
 	if !ok || state.Status != StatusReady || state.Client == nil {
 		m.mu.RUnlock()
-		return llm.ToolOutput{}, fmt.Errorf("MCP server %s is not running", serverName)
+		return core.ToolOutput{}, fmt.Errorf("MCP server %s is not running", serverName)
 	}
 	snapshot := m.catalogues[serverName]
 	if snapshot == nil {
 		m.mu.RUnlock()
-		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is unavailable: server catalogue is not ready", displayName)
+		return core.ToolOutput{}, fmt.Errorf("MCP tool %s is unavailable: server catalogue is not ready", displayName)
 	}
 	if _, ok := snapshot.ByOriginal[toolName]; !ok {
 		m.mu.RUnlock()
-		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is no longer available in the current catalogue", displayName)
+		return core.ToolOutput{}, fmt.Errorf("MCP tool %s is no longer available in the current catalogue", displayName)
 	}
 	client := state.Client
 	m.mu.RUnlock()

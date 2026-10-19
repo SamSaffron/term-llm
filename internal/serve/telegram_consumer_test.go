@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 )
@@ -18,7 +18,7 @@ type blockingCloseTestStream struct {
 	release chan struct{}
 }
 
-func (s *blockingCloseTestStream) Recv() (llm.Event, error) { return llm.Event{}, io.EOF }
+func (s *blockingCloseTestStream) Recv() (core.Event, error) { return core.Event{}, io.EOF }
 func (s *blockingCloseTestStream) Close() error {
 	close(s.started)
 	<-s.release

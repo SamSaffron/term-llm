@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -69,7 +69,7 @@ func TestPersistSteeringReconcilesDuplicateReceipt(t *testing.T) {
 	store := newClientIDUniqueStore()
 	m.sess.ID = "steer-conflict"
 
-	msg := llm.UserText("steer left")
+	msg := core.UserText("steer left")
 	msg.ClientMessageID = "tui-steer-1"
 
 	// An earlier process already wrote this identity into the same session.
@@ -103,7 +103,7 @@ func TestPersistSteeringRejectsDifferentContentForSameID(t *testing.T) {
 	store := newClientIDUniqueStore()
 	m.sess.ID = "steer-retry-failure"
 
-	msg := llm.UserText("steer left")
+	msg := core.UserText("steer left")
 	msg.ClientMessageID = "tui-steer-1"
 	if err := store.AddMessage(context.Background(), m.sess.ID, session.NewMessage(m.sess.ID, msg, -1)); err != nil {
 		t.Fatalf("seed existing steering: %v", err)
@@ -112,7 +112,7 @@ func TestPersistSteeringRejectsDifferentContentForSameID(t *testing.T) {
 	var warnings int
 	m.store = session.NewLoggingStore(store, func(string, ...any) { warnings++ })
 
-	msg.Parts = llm.UserText("different guidance").Parts
+	msg.Parts = core.UserText("different guidance").Parts
 	m.persistSteering(context.Background(), "different guidance", msg)
 
 	if warnings != 1 {
@@ -129,7 +129,7 @@ func TestPersistSteeringDoesNotRetryUnrelatedFailures(t *testing.T) {
 	m.store = session.NewLoggingStore(store, func(string, ...any) { warnings++ })
 	m.sess.ID = "steer-outage"
 
-	msg := llm.UserText("steer left")
+	msg := core.UserText("steer left")
 	msg.ClientMessageID = "tui-steer-1"
 	m.persistSteering(context.Background(), "steer left", msg)
 

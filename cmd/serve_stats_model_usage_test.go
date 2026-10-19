@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -256,7 +256,7 @@ func TestStatsOmitsSectionsWithNoRecordedActivity(t *testing.T) {
 
 	t.Run("sections appear once their helper runs", func(t *testing.T) {
 		rt := &serveRuntime{}
-		rt.recordHelperStats("guardian", "haiku", llm.Usage{InputTokens: 7238, OutputTokens: 12})
+		rt.recordHelperStats("guardian", "haiku", core.Usage{InputTokens: 7238, OutputTokens: 12})
 		titles := sectionTitles(rt.statsSnapshot())
 		if !slices.Contains(titles, "Guardian Usage") {
 			t.Fatalf("guardian section missing after a guardian review: %v", titles)

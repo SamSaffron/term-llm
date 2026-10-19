@@ -1,206 +1,28 @@
 package llm
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"sync"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/prompt"
 )
 
 const (
-	SuggestCommandsToolName = "suggest_commands"
-	EditToolName            = "edit"
-	UnifiedDiffToolName     = "unified_diff"
-	WebSearchToolName       = "web_search"
+	EditToolName        = "edit"
+	UnifiedDiffToolName = "unified_diff"
 )
 
 const (
 	suggestCommandsDescription = "Suggest shell commands based on user input. Call this after gathering any needed information from web search."
 )
 
-// Tool describes a callable external tool.
-type Tool interface {
-	Spec() ToolSpec
-	Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error)
-	// Preview returns a human-readable description of what the tool will do,
-	// shown to the user before execution starts (e.g., "Generating image: a cat").
-	// Returns empty string if no preview is available.
-	Preview(args json.RawMessage) string
-}
-
-// RequestContextTool is an optional interface for explicitly configured tools
-// that own restorable, session-scoped model context. Engine invokes it only when
-// that exact tool survives final request filtering and the provider supports
-// tool calls.
-type RequestContextTool interface {
-	Tool
-	PrepareRequestContext(ctx context.Context, sessionID string, messages []Message) ([]Message, error)
-	PrepareCompactionContext(ctx context.Context, sessionID string, result *CompactionResult) error
-}
-
-// SessionStateResetter clears a tool's cached projection for one durable
-// session after an out-of-band transcript mutation such as undo/redo.
-type SessionStateResetter interface {
-	ResetSessionState(sessionID string)
-}
-
-// FinishingTool is an optional interface for tools that signal agent completion.
-// When a finishing tool is executed, the agentic loop should stop after this turn.
-// Example: output capture tools like set_commit_message.
-type FinishingTool interface {
-	IsFinishingTool() bool
-}
-
-// ToolRegistry stores tools by name for execution.
-type ToolRegistry struct {
-	mu         sync.RWMutex
-	tools      map[string]Tool
-	visible    map[string]bool
-	specsCache []ToolSpec
-	specsDirty bool
-}
-
-func NewToolRegistry() *ToolRegistry {
-	return &ToolRegistry{tools: make(map[string]Tool), visible: make(map[string]bool), specsDirty: true}
-}
-
-// Register makes a tool executable and provider-visible.
-func (r *ToolRegistry) Register(tool Tool) {
-	r.register(tool, true)
-}
-
-// RegisterDeferred makes a tool executable without exposing its schema through AllSpecs.
-func (r *ToolRegistry) RegisterDeferred(tool Tool) {
-	r.register(tool, false)
-}
-
-func (r *ToolRegistry) register(tool Tool, visible bool) {
-	spec := tool.Spec()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.tools[spec.Name] = tool
-	r.visible[spec.Name] = visible
-	r.specsDirty = true
-}
-
-// SetVisibility changes provider visibility without affecting execution lookup.
-func (r *ToolRegistry) SetVisibility(name string, visible bool) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.tools[name]; !ok {
-		return false
-	}
-	if r.visible[name] != visible {
-		r.visible[name] = visible
-		r.specsDirty = true
-	}
-	return true
-}
-
-func (r *ToolRegistry) Get(name string) (Tool, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tool, ok := r.tools[name]
-	return tool, ok
-}
-
-// IsFinishingTool returns true if the named tool is a finishing tool.
-func (r *ToolRegistry) IsFinishingTool(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tool, ok := r.tools[name]
-	if !ok {
-		return false
-	}
-	if ft, ok := tool.(FinishingTool); ok {
-		return ft.IsFinishingTool()
-	}
-	return false
-}
-
-func (r *ToolRegistry) Unregister(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.tools[name]; ok {
-		delete(r.tools, name)
-		delete(r.visible, name)
-		r.specsDirty = true
-	}
-}
-
-// AllSpecs returns the specs for all registered tools in deterministic name order.
-func (r *ToolRegistry) AllSpecs() []ToolSpec {
-	r.mu.RLock()
-	if !r.specsDirty {
-		specs := copyToolSpecs(r.specsCache)
-		r.mu.RUnlock()
-		return specs
-	}
-	r.mu.RUnlock()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.specsDirty {
-		names := make([]string, 0, len(r.tools))
-		for name := range r.tools {
-			if r.visible[name] {
-				names = append(names, name)
-			}
-		}
-		sort.Strings(names)
-
-		specs := make([]ToolSpec, 0, len(names))
-		for _, name := range names {
-			specs = append(specs, r.tools[name].Spec())
-		}
-		r.specsCache = specs
-		r.specsDirty = false
-	}
-	return copyToolSpecs(r.specsCache)
-}
-
-// AllSpecsIncludingDeferred returns every executable tool spec for diagnostics
-// and discovery planning, regardless of provider visibility.
-func (r *ToolRegistry) AllSpecsIncludingDeferred() []ToolSpec {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.tools))
-	for name := range r.tools {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	specs := make([]ToolSpec, 0, len(names))
-	for _, name := range names {
-		specs = append(specs, r.tools[name].Spec())
-	}
-	return specs
-}
-
-// IsVisible reports whether a registered tool is included by AllSpecs.
-func (r *ToolRegistry) IsVisible(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.visible[name]
-}
-
-// copyToolSpecs protects callers from mutating the cached slice or top-level
-// ToolSpec values. ToolSpec.Schema maps are intentionally shared by the
-// immutability contract on ToolSpec.
-func copyToolSpecs(specs []ToolSpec) []ToolSpec {
-	out := make([]ToolSpec, len(specs))
-	copy(out, specs)
-	return out
-}
-
 // ToolSpecsForRequest returns the registered tool specs for a request, filtering
 // out search tools when searchEnabled is false. When search is enabled, Engine
 // normalizes the full list: native-capable providers have external web_search
 // and read_url removed, while other providers retain or receive them.
-func ToolSpecsForRequest(registry *ToolRegistry, searchEnabled bool) []ToolSpec {
+func ToolSpecsForRequest(registry *engine.ToolRegistry, searchEnabled bool) []core.ToolSpec {
 	all := registry.AllSpecs()
 	if len(all) == 0 {
 		return nil
@@ -208,9 +30,9 @@ func ToolSpecsForRequest(registry *ToolRegistry, searchEnabled bool) []ToolSpec 
 	if searchEnabled {
 		return all
 	}
-	var filtered []ToolSpec
+	var filtered []core.ToolSpec
 	for _, spec := range all {
-		if spec.Name != WebSearchToolName && spec.Name != ReadURLToolName {
+		if spec.Name != core.WebSearchToolName && spec.Name != core.ReadURLToolName {
 			filtered = append(filtered, spec)
 		}
 	}
@@ -218,9 +40,9 @@ func ToolSpecsForRequest(registry *ToolRegistry, searchEnabled bool) []ToolSpec 
 }
 
 // SuggestCommandsToolSpec returns the tool spec for command suggestions.
-func SuggestCommandsToolSpec(numSuggestions int) ToolSpec {
-	return ToolSpec{
-		Name:        SuggestCommandsToolName,
+func SuggestCommandsToolSpec(numSuggestions int) core.ToolSpec {
+	return core.ToolSpec{
+		Name:        core.SuggestCommandsToolName,
 		Description: suggestCommandsDescription,
 		Schema:      prompt.SuggestSchema(numSuggestions),
 	}
@@ -230,8 +52,8 @@ func SuggestCommandsToolSpec(numSuggestions int) ToolSpec {
 const EditToolDescription = "Edit a file by replacing old_string with new_string. You may include the literal token <<<elided>>> in old_string to match any sequence of characters (including newlines). Use multiple tool calls for multiple edits."
 
 // EditToolSpec returns the tool spec for the edit tool.
-func EditToolSpec() ToolSpec {
-	return ToolSpec{
+func EditToolSpec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        EditToolName,
 		Description: EditToolDescription,
 		Schema:      EditToolSchema(),
@@ -289,8 +111,8 @@ Rules:
 5. Multiple files: use separate --- +++ blocks for each file`
 
 // UnifiedDiffToolSpec returns the tool spec for unified diff edits.
-func UnifiedDiffToolSpec() ToolSpec {
-	return ToolSpec{
+func UnifiedDiffToolSpec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        UnifiedDiffToolName,
 		Description: UnifiedDiffToolDescription,
 		Schema:      UnifiedDiffToolSchema(),
@@ -313,9 +135,9 @@ func UnifiedDiffToolSchema() map[string]interface{} {
 }
 
 // WebSearchToolSpec returns the tool spec for external web search.
-func WebSearchToolSpec() ToolSpec {
-	return ToolSpec{
-		Name:        WebSearchToolName,
+func WebSearchToolSpec() core.ToolSpec {
+	return core.ToolSpec{
+		Name:        core.WebSearchToolName,
 		Description: "Search the web for current information. Use max_results=20 for comprehensive results.",
 		Schema: map[string]interface{}{
 			"type": "object",
@@ -337,9 +159,9 @@ func WebSearchToolSpec() ToolSpec {
 }
 
 // ParseCommandSuggestions parses a suggest_commands tool call.
-func ParseCommandSuggestions(call ToolCall) ([]CommandSuggestion, error) {
+func ParseCommandSuggestions(call core.ToolCall) ([]core.CommandSuggestion, error) {
 	var resp struct {
-		Suggestions []CommandSuggestion `json:"suggestions"`
+		Suggestions []core.CommandSuggestion `json:"suggestions"`
 	}
 	if err := json.Unmarshal(call.Arguments, &resp); err != nil {
 		return nil, fmt.Errorf("parse suggestions: %w", err)
@@ -348,16 +170,16 @@ func ParseCommandSuggestions(call ToolCall) ([]CommandSuggestion, error) {
 }
 
 // ParseEditToolCall parses a single edit tool call payload.
-func ParseEditToolCall(call ToolCall) (EditToolCall, error) {
-	var edit EditToolCall
+func ParseEditToolCall(call core.ToolCall) (core.EditToolCall, error) {
+	var edit core.EditToolCall
 	if err := json.Unmarshal(call.Arguments, &edit); err != nil {
-		return EditToolCall{}, fmt.Errorf("parse edit: %w", err)
+		return core.EditToolCall{}, fmt.Errorf("parse edit: %w", err)
 	}
 	return edit, nil
 }
 
 // ParseUnifiedDiff parses a unified_diff tool call payload.
-func ParseUnifiedDiff(call ToolCall) (string, error) {
+func ParseUnifiedDiff(call core.ToolCall) (string, error) {
 	var payload struct {
 		Diff string `json:"diff"`
 	}

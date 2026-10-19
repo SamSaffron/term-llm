@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // GlobTool implements the glob tool.
@@ -48,8 +48,8 @@ const maxGlobResults = 200
 
 var errGlobResultLimit = errors.New("glob result limit reached")
 
-func (t *GlobTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *GlobTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        GlobToolName,
 		Description: "Find files by glob pattern (supports ** for recursive matching). Returns file metadata sorted by modification time.",
 		Schema: map[string]interface{}{
@@ -81,13 +81,13 @@ func (t *GlobTool) Preview(args json.RawMessage) string {
 	return a.Pattern
 }
 
-func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	warning := WarnUnknownParams(args, []string{"pattern", "path"})
-	textOutput := func(message string) llm.ToolOutput {
-		return llm.TextOutput(warning + message)
+	textOutput := func(message string) core.ToolOutput {
+		return core.TextOutput(warning + message)
 	}
 
 	var a GlobArgs

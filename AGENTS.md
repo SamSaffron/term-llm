@@ -8,7 +8,9 @@
 - Before finishing, inspect `git diff`, run checks for every touched area, and report commands and omissions.
 
 ## Project Map
-- `main.go`, `cmd/` – CLI entry point, commands, and cross-package wiring
+- `main.go`, `cmd/` – CLI entry point and thin Cobra glue; command implementation moves into `internal/app/<command>/`
+- `internal/app/serve/` – serve application seams (Hub and shell protocol); remaining HTTP handlers, jobs, and live runtime are still in `cmd/`
+- `internal/app/process/`, `internal/app/usage/`, `internal/app/memory/`, `internal/app/ask/`, `internal/app/chat/`, `internal/app/sessions/`, `internal/app/service/`, `internal/app/notify/`, `internal/app/agent/` – extracted command implementations
 - `internal/config/`, `internal/llm/` – config/provider resolution; provider implementations, engine, compaction, and mocks (`llm/factory.go` constructs providers)
 - `internal/tools/`, `internal/edit/` – tool registry/permissions and file editing
 - `internal/serve/`, `internal/serveui/` – server primitives and embedded web UI
@@ -32,17 +34,7 @@ Size and function ratchets live in `ledger/`. Run `make complexity` after Go edi
 
 ### Frontend formatting and linting
 
-The Preact frontends live in `frontend/`. Chat uses `frontend/src/main.tsx`; every Hub surface and Hub style is owned by `frontend/src/hub/`, with Hub transport under `frontend/src/api/hub-client.ts`. The chat build runs first and the standalone Hub build then emits `hub.js`/`hub.css` into the same ignored embedded directory. Prettier is the source formatter, ESLint checks TypeScript/TSX and hooks, and Stylelint checks CSS. After changing frontend files, format them before reviewing the diff and run every frontend quality check:
-
-```sh
-npm --prefix frontend run format
-npm --prefix frontend run format:check
-npm --prefix frontend run lint
-npm --prefix frontend run typecheck
-npm --prefix frontend test
-```
-
-CI runs `format:check` and `lint`; do not rely on CI to rewrite files. Keep lint suppressions narrow and documented rather than disabling rules inline to bypass a finding.
+Follow `frontend/AGENTS.md` and `frontend/README.md` for ownership, formatting, lint, typecheck, tests and build contracts.
 
 ## Nested Terminal and Reflow Modules
 `internal/reflow`, `internal/terminal/runtime`, and `internal/terminal/renderer` have their own `go.mod` files. Root `go test ./...` does not enter them.
@@ -54,31 +46,20 @@ CI runs `format:check` and `lint`; do not rely on CI to rewrite files. Keep lint
 
 ## Testing Conventions
 - Add a regression test that fails before the fix when practical. Keep tests beside code as `*_test.go`; use table-driven cases for meaningful variants.
-- Use `internal/llm/mock_provider.go` for scripted provider turns and recorded requests. Use `internal/testutil/harness.go` for engine-level behavior rather than invoking a live model.
+- Use `internal/llm/mockprovider/` for scripted provider turns and recorded requests. Use `internal/testutil/harness.go` for engine-level behavior rather than invoking a live model.
 - Test observable behavior and failure paths, not implementation trivia. Avoid network access, real API keys, timing sleeps, and dependence on the user's home directory.
 
 ## Package Documentation
 User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Run `make docs` after changing reference sources to regenerate marked tables and CLI flags. Contributor rules live beside the code they govern:
 
-- `internal/sqliteutil/README.md` – adding and testing SQLite migrations
-- `internal/doctor/README.md` – adding a `term-llm doctor` check
-- `internal/restart/README.md` – reload ownership, mode adapters, and SIGUSR2 verification coverage
-- `internal/session/README.md` – steering persistence, ownership, and schema upgrades
-- `internal/terminal/README.md` – owned terminal architecture and verification
-- `frontend/README.md` – embedded frontends, build contract, and accessibility checks
-
-## Common Change Paths
-### Providers and configuration
-- For provider changes, follow [`internal/providerspec/README.md`](internal/providerspec/README.md).
-- Config lives under `$XDG_CONFIG_HOME/term-llm/config.yaml` (falling back to `~/.config/term-llm/config.yaml`). Credential names and supported providers are defined in code; do not maintain a second static list here.
-
-### Tools
-See `internal/tools/README.md` for adding a built-in tool and permission-denial coverage.
-
-### Web UI (`frontend/` and `internal/serveui/`)
-- Markdown configuration and sanitization live in `frontend/src/domain/markdown.ts`, with shared renderer hooks in `markdown-hooks.ts`. Add rendering cases to `frontend/src/domain/rendering.test.ts`.
-- Author frontend assets under `frontend/` and rebuild with `make frontend`; never edit generated `internal/serveui/static/dist` files. The directory is embedded recursively and asset versions are computed from embedded contents. Follow `frontend/README.md` for the separate chat/Hub build and cache contracts; Hub assets must stay out of the chat service worker.
-- For static shell assets outside `dist`, check the explicit `//go:embed` inputs in `internal/serveui/embed.go`, references in `static/index.html` and `static/sw.js`, and `embed_test.go` coverage.
+- `internal/tools/AGENTS.md`, `internal/tools/README.md` – tool registration and permission-denial coverage.
+- `internal/config/AGENTS.md`, `internal/providerspec/README.md` – configuration paths and provider/credential definitions.
+- `internal/jobs/AGENTS.md`, `internal/session/AGENTS.md`, `internal/session/README.md` – job ownership, steering persistence and schema upgrades.
+- `internal/tui/AGENTS.md`, `internal/terminal/README.md` – TUI and owned terminal architecture/verification.
+- `frontend/AGENTS.md`, `frontend/README.md` – frontend ownership, web transport, embed/build/cache contracts and accessibility.
+- `internal/sqliteutil/README.md` – adding and testing SQLite migrations.
+- `internal/doctor/README.md` – adding a `term-llm doctor` check.
+- `internal/restart/README.md` – reload ownership, mode adapters, and SIGUSR2 verification coverage.
 
 ## Go Style and Commits
 - Use standard `gofmt`; exported names are CamelCase and unexported names mixedCaps.

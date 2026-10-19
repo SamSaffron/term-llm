@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func TestInspectCompactionHelpers(t *testing.T) {
-	messages := []session.Message{{Role: llm.RoleSystem, Sequence: 0}, {Role: llm.RoleUser, Sequence: 2}, {Role: llm.RoleAssistant, Sequence: 3, CompactionTail: true}, {Role: llm.RoleUser, Sequence: 4}}
+	messages := []session.Message{{Role: core.RoleSystem, Sequence: 0}, {Role: core.RoleUser, Sequence: 2}, {Role: core.RoleAssistant, Sequence: 3, CompactionTail: true}, {Role: core.RoleUser, Sequence: 4}}
 	for _, tt := range []struct {
 		name             string
 		enabled          bool
@@ -36,8 +36,8 @@ func TestInspectCompactionHelpers(t *testing.T) {
 		want bool
 	}{
 		{"text content", session.Message{TextContent: "[Context Compaction]\nsummary"}, true},
-		{"part", session.Message{Parts: []llm.Part{{Type: llm.PartText, Text: "[Context Compaction]\nsummary"}}}, true},
-		{"replay not text", session.Message{Parts: []llm.Part{{Type: llm.PartProviderReplay, Text: "[Context Compaction]"}}}, false},
+		{"part", session.Message{Parts: []core.Part{{Type: core.PartText, Text: "[Context Compaction]\nsummary"}}}, true},
+		{"replay not text", session.Message{Parts: []core.Part{{Type: core.PartProviderReplay, Text: "[Context Compaction]"}}}, false},
 		{"ordinary", session.Message{TextContent: "not compacted"}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -60,7 +60,7 @@ func TestInspectExtractChildCandidate(t *testing.T) {
 			}
 		})
 	}
-	messages := []session.Message{inspectMessage(1, llm.RoleTool, llm.Part{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: "spawn_agent", Content: `{"session_id":"unvalidated"}`}})}
+	messages := []session.Message{inspectMessage(1, core.RoleTool, core.Part{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: "spawn_agent", Content: `{"session_id":"unvalidated"}`}})}
 	if got := Project(messages, Options{}).Blocks[0].ChildSessionIDs; len(got) != 0 {
 		t.Fatal("unvalidated child emitted", got)
 	}
@@ -79,7 +79,7 @@ func TestInspectFormatHelpers(t *testing.T) {
 	if FormatSkillActivationProvenance(nil) != "" {
 		t.Fatal("nil provenance")
 	}
-	provenance := &llm.SkillActivationProvenance{Name: "skill", Source: "disk", SourcePath: "path", Origin: "direct", Execution: "local", RawArguments: "args", Agent: "dev", Model: "mock", RunID: "run", ChildSessionID: "child", Status: "done", StartedAt: "start", CompletedAt: "end", AllowedToolsPresent: true, AllowedTools: []string{"shell", "read_file"}}
+	provenance := &core.SkillActivationProvenance{Name: "skill", Source: "disk", SourcePath: "path", Origin: "direct", Execution: "local", RawArguments: "args", Agent: "dev", Model: "mock", RunID: "run", ChildSessionID: "child", Status: "done", StartedAt: "start", CompletedAt: "end", AllowedToolsPresent: true, AllowedTools: []string{"shell", "read_file"}}
 	got := FormatSkillActivationProvenance(provenance)
 	for _, want := range []string{"Skill activation: skill", "Source: disk", "Source path: path", "Origin: direct", "Execution: local", "Arguments: args", "Agent: dev", "Model: mock", "Run ID: run", "Child session: child", "Status: done", "Started: start", "Completed: end", "Allowed tools: shell, read_file"} {
 		if !strings.Contains(got, want) {

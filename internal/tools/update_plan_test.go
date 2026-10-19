@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 )
 
@@ -98,7 +100,7 @@ func TestUpdatePlanToolExecutePersistsAndClears(t *testing.T) {
 	store := newTestPlanStore()
 	controller := NewPlanController(store)
 	tool := NewUpdatePlanTool(controller)
-	ctx := llm.ContextWithSessionID(context.Background(), "session-1")
+	ctx := core.ContextWithSessionID(context.Background(), "session-1")
 
 	output, err := tool.Execute(ctx, json.RawMessage(`{"explanation":"starting","plan":[{"step":"Inspect","status":"in_progress"}]}`))
 	if err != nil {
@@ -128,13 +130,13 @@ func TestUpdatePlanToolDoesNotCommitOnPersistenceFailure(t *testing.T) {
 	store.saveErr = errors.New("disk full")
 	controller := NewPlanController(store)
 	tool := NewUpdatePlanTool(controller)
-	ctx := llm.ContextWithSessionID(context.Background(), "session-1")
+	ctx := core.ContextWithSessionID(context.Background(), "session-1")
 
 	_, err := tool.Execute(ctx, json.RawMessage(`{"plan":[{"step":"Inspect","status":"pending"}]}`))
 	if err == nil || !strings.Contains(err.Error(), "persist plan") {
 		t.Fatalf("Execute error = %v", err)
 	}
-	messages, prepareErr := tool.PrepareRequestContext(context.Background(), "session-1", []llm.Message{llm.UserText("continue")})
+	messages, prepareErr := tool.PrepareRequestContext(context.Background(), "session-1", []core.Message{core.UserText("continue")})
 	if prepareErr != nil {
 		t.Fatal(prepareErr)
 	}
@@ -192,8 +194,8 @@ func TestPlanControllersIsolateParentAndChildSessions(t *testing.T) {
 	store := newTestPlanStore()
 	parent := NewUpdatePlanTool(NewPlanController(store))
 	child := NewUpdatePlanTool(NewPlanController(store))
-	parentCtx := llm.ContextWithSessionID(context.Background(), "parent-session")
-	childCtx := llm.ContextWithSessionID(context.Background(), "child-session")
+	parentCtx := core.ContextWithSessionID(context.Background(), "parent-session")
+	childCtx := core.ContextWithSessionID(context.Background(), "child-session")
 
 	if _, err := parent.Execute(parentCtx, json.RawMessage(`{"plan":[{"step":"Parent work","status":"in_progress"}]}`)); err != nil {
 		t.Fatal(err)
@@ -223,14 +225,14 @@ func TestUpdatePlanRestoresAcrossControllerRestartOnlyWhenCallable(t *testing.T)
 	store.snapshots["resume"] = planpkg.Snapshot{Plan: []planpkg.Step{{Step: "Resume work", Status: planpkg.StatusInProgress}}}
 	store.versions["resume"] = 4
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("continuing")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("continuing")
 	tool := NewUpdatePlanTool(NewPlanController(store))
-	engine := llm.NewEngine(provider, nil)
-	engine.RegisterTool(tool)
-	stream, err := engine.Stream(context.Background(), llm.Request{
+	eng := engine.NewEngine(provider, nil)
+	eng.RegisterTool(tool)
+	stream, err := eng.Stream(context.Background(), core.Request{
 		SessionID: "resume",
-		Messages:  []llm.Message{llm.UserText("continue")},
-		Tools:     []llm.ToolSpec{tool.Spec()},
+		Messages:  []core.Message{core.UserText("continue")},
+		Tools:     []core.ToolSpec{tool.Spec()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -249,7 +251,7 @@ func TestUpdatePlanRestoresAcrossControllerRestartOnlyWhenCallable(t *testing.T)
 	restored := false
 	if len(requests) == 1 {
 		for _, message := range requests[0].Messages {
-			if message.Role == llm.RoleDeveloper && strings.Contains(llm.MessageText(message), "Resume work") {
+			if message.Role == core.RoleDeveloper && strings.Contains(core.MessageText(message), "Resume work") {
 				restored = true
 			}
 		}
@@ -260,10 +262,10 @@ func TestUpdatePlanRestoresAcrossControllerRestartOnlyWhenCallable(t *testing.T)
 
 	filteredStore := newTestPlanStore()
 	filteredTool := NewUpdatePlanTool(NewPlanController(filteredStore))
-	filteredProvider := llm.NewMockProvider("mock").AddTextResponse("plain")
-	filteredEngine := llm.NewEngine(filteredProvider, nil)
+	filteredProvider := mockprovider.NewMockProvider("mock").AddTextResponse("plain")
+	filteredEngine := engine.NewEngine(filteredProvider, nil)
 	filteredEngine.RegisterTool(filteredTool)
-	stream, err = filteredEngine.Stream(context.Background(), llm.Request{SessionID: "resume", Messages: []llm.Message{llm.UserText("plain")}})
+	stream, err = filteredEngine.Stream(context.Background(), core.Request{SessionID: "resume", Messages: []core.Message{core.UserText("plain")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,16 +289,16 @@ func TestPlanControllerPromptGuidanceKeepsStableContinuationPrefix(t *testing.T)
 	controller.SetPromptGuidance(true)
 	tool := NewUpdatePlanTool(controller)
 
-	base := []llm.Message{llm.SystemText("system"), llm.UserText("first")}
+	base := []core.Message{core.SystemText("system"), core.UserText("first")}
 	first, err := tool.PrepareRequestContext(context.Background(), "session-1", base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	followUp := []llm.Message{
+	followUp := []core.Message{
 		base[0],
 		base[1],
-		llm.AssistantText("answer"),
-		llm.UserText("second"),
+		core.AssistantText("answer"),
+		core.UserText("second"),
 	}
 	second, err := tool.PrepareRequestContext(context.Background(), "session-1", followUp)
 	if err != nil {
@@ -311,14 +313,14 @@ func TestPlanControllerPromptGuidanceIsCallableOnlyContext(t *testing.T) {
 	controller := NewPlanController(nil)
 	controller.SetPromptGuidance(true)
 	tool := NewUpdatePlanTool(controller)
-	messages, err := tool.PrepareRequestContext(context.Background(), "", []llm.Message{llm.UserText("implement")})
+	messages, err := tool.PrepareRequestContext(context.Background(), "", []core.Message{core.UserText("implement")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || messages[0].Role != llm.RoleDeveloper {
+	if len(messages) != 2 || messages[0].Role != core.RoleDeveloper {
 		t.Fatalf("callable guidance messages = %#v", messages)
 	}
-	guidance := llm.MessageText(messages[0])
+	guidance := core.MessageText(messages[0])
 	if !strings.Contains(guidance, "<update_plan_guidance>") {
 		t.Fatalf("callable guidance messages = %#v", messages)
 	}
@@ -344,12 +346,12 @@ func TestPlanControllerRestoresOnlyActiveMissingContext(t *testing.T) {
 	store.versions["session-1"] = 3
 	tool := NewUpdatePlanTool(NewPlanController(store))
 
-	messages := []llm.Message{llm.UserText("continue")}
+	messages := []core.Message{core.UserText("continue")}
 	restored, err := tool.PrepareRequestContext(context.Background(), "session-1", messages)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restored) != 2 || restored[0].Role != llm.RoleDeveloper || !strings.Contains(llm.MessageText(restored[0]), "Keep working") {
+	if len(restored) != 2 || restored[0].Role != core.RoleDeveloper || !strings.Contains(core.MessageText(restored[0]), "Keep working") {
 		t.Fatalf("restored messages = %#v", restored)
 	}
 	restoredAgain, err := tool.PrepareRequestContext(context.Background(), "session-1", restored)
@@ -369,9 +371,9 @@ func TestPlanControllerSkipsHistoryCompletedAndFilteredCompactionDuplicates(t *t
 	tool := NewUpdatePlanTool(NewPlanController(store))
 
 	callArgs := json.RawMessage(`{"plan":[{"step":"Already represented","status":"in_progress"}]}`)
-	history := []llm.Message{
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call", Name: UpdatePlanToolName, Arguments: callArgs}}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call", Name: UpdatePlanToolName, Content: "Plan updated"}}}},
+	history := []core.Message{
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call", Name: UpdatePlanToolName, Arguments: callArgs}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call", Name: UpdatePlanToolName, Content: "Plan updated"}}}},
 	}
 	got, err := tool.PrepareRequestContext(context.Background(), "session-1", history)
 	if err != nil || len(got) != len(history) {
@@ -381,11 +383,11 @@ func TestPlanControllerSkipsHistoryCompletedAndFilteredCompactionDuplicates(t *t
 		t.Fatalf("history snapshot did not reconcile durable state: saves=%d snapshot=%#v", store.saves, store.snapshots["session-1"])
 	}
 
-	result := &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("summary")}}
+	result := &engine.CompactionResult{NewMessages: []core.Message{core.UserText("summary")}}
 	if err := tool.PrepareCompactionContext(context.Background(), "session-1", result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.EphemeralMessages) != 1 || !strings.Contains(llm.MessageText(result.EphemeralMessages[0]), "Already represented") {
+	if len(result.EphemeralMessages) != 1 || !strings.Contains(core.MessageText(result.EphemeralMessages[0]), "Already represented") {
 		t.Fatalf("compaction restoration = %#v", result.EphemeralMessages)
 	}
 
@@ -393,7 +395,7 @@ func TestPlanControllerSkipsHistoryCompletedAndFilteredCompactionDuplicates(t *t
 	completedStore.snapshots["done"] = planpkg.Snapshot{Plan: []planpkg.Step{{Step: "Finished", Status: planpkg.StatusCompleted}}}
 	completedStore.versions["done"] = 1
 	completedTool := NewUpdatePlanTool(NewPlanController(completedStore))
-	unchanged, err := completedTool.PrepareRequestContext(context.Background(), "done", []llm.Message{llm.UserText("next")})
+	unchanged, err := completedTool.PrepareRequestContext(context.Background(), "done", []core.Message{core.UserText("next")})
 	if err != nil || len(unchanged) != 1 {
 		t.Fatalf("completed plan was restored: %#v err=%v", unchanged, err)
 	}
@@ -407,7 +409,7 @@ func TestPlanControllerDoesNotBlockOtherSessionsDuringStoreIO(t *testing.T) {
 	tool := NewUpdatePlanTool(NewPlanController(store))
 	blockedDone := make(chan error, 1)
 	go func() {
-		_, err := tool.PrepareRequestContext(context.Background(), "blocked", []llm.Message{llm.UserText("wait")})
+		_, err := tool.PrepareRequestContext(context.Background(), "blocked", []core.Message{core.UserText("wait")})
 		blockedDone <- err
 	}()
 	select {
@@ -418,7 +420,7 @@ func TestPlanControllerDoesNotBlockOtherSessionsDuringStoreIO(t *testing.T) {
 
 	fastDone := make(chan error, 1)
 	go func() {
-		_, err := tool.PrepareRequestContext(context.Background(), "fast", []llm.Message{llm.UserText("go")})
+		_, err := tool.PrepareRequestContext(context.Background(), "fast", []core.Message{core.UserText("go")})
 		fastDone <- err
 	}()
 	select {
@@ -440,7 +442,7 @@ func TestPlanControllerDoesNotBlockOtherSessionsDuringStoreIO(t *testing.T) {
 func TestPlanControllerStoreAttachmentDoesNotResurrectClearedPlan(t *testing.T) {
 	controller := NewPlanController(nil)
 	tool := NewUpdatePlanTool(controller)
-	ctx := llm.ContextWithSessionID(context.Background(), "session-1")
+	ctx := core.ContextWithSessionID(context.Background(), "session-1")
 	if _, err := tool.Execute(ctx, json.RawMessage(`{"plan":[{"step":"Temporary","status":"in_progress"}]}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +454,7 @@ func TestPlanControllerStoreAttachmentDoesNotResurrectClearedPlan(t *testing.T) 
 	store.snapshots["session-1"] = planpkg.Snapshot{Plan: []planpkg.Step{{Step: "Stale durable plan", Status: planpkg.StatusInProgress}}}
 	store.versions["session-1"] = 7
 	controller.SetStore(store)
-	messages, err := tool.PrepareRequestContext(context.Background(), "session-1", []llm.Message{llm.UserText("continue")})
+	messages, err := tool.PrepareRequestContext(context.Background(), "session-1", []core.Message{core.UserText("continue")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +468,7 @@ func TestPlanControllerDoesNotLeakBlankSessionStateIntoFreshRun(t *testing.T) {
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"plan":[{"step":"First run only","status":"in_progress"}]}`)); err != nil {
 		t.Fatal(err)
 	}
-	messages, err := tool.PrepareRequestContext(context.Background(), "", []llm.Message{llm.UserText("unrelated run")})
+	messages, err := tool.PrepareRequestContext(context.Background(), "", []core.Message{core.UserText("unrelated run")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,10 +477,10 @@ func TestPlanControllerDoesNotLeakBlankSessionStateIntoFreshRun(t *testing.T) {
 	}
 }
 
-func messagesText(messages []llm.Message) string {
+func messagesText(messages []core.Message) string {
 	var parts []string
 	for _, message := range messages {
-		parts = append(parts, llm.MessageText(message))
+		parts = append(parts, core.MessageText(message))
 	}
 	return strings.Join(parts, "\n")
 }
@@ -488,9 +490,9 @@ func TestPlanControllerReconcilesHistoryClearToStore(t *testing.T) {
 	store.snapshots["session-1"] = planpkg.Snapshot{Plan: []planpkg.Step{{Step: "Stale", Status: planpkg.StatusInProgress}}}
 	store.versions["session-1"] = 2
 	tool := NewUpdatePlanTool(NewPlanController(store))
-	history := []llm.Message{
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "clear", Name: UpdatePlanToolName, Arguments: json.RawMessage(`{"plan":[]}`)}}}},
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "clear", Name: UpdatePlanToolName, Content: "Plan cleared"}}}},
+	history := []core.Message{
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "clear", Name: UpdatePlanToolName, Arguments: json.RawMessage(`{"plan":[]}`)}}}},
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "clear", Name: UpdatePlanToolName, Content: "Plan cleared"}}}},
 	}
 	if _, err := tool.PrepareRequestContext(context.Background(), "session-1", history); err != nil {
 		t.Fatal(err)

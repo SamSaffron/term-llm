@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -116,16 +116,16 @@ Explain $ARGUMENTS[0]. Raw: $ARGUMENTS
 	}
 
 	var userText, developerText string
-	var provenance *llm.SkillActivationProvenance
+	var provenance *core.SkillActivationProvenance
 	for i := range m.messages {
 		message := &m.messages[i]
 		switch message.Role {
-		case llm.RoleUser:
+		case core.RoleUser:
 			userText = message.TextContent
-		case llm.RoleDeveloper:
+		case core.RoleDeveloper:
 			developerText = message.TextContent
 			for _, part := range message.Parts {
-				if part.Type == llm.PartSkillActivation {
+				if part.Type == core.PartSkillActivation {
 					provenance = part.SkillActivation
 				}
 			}
@@ -158,7 +158,7 @@ Explain $ARGUMENTS[0]. Raw: $ARGUMENTS
 	built := m.buildMessagesForStream()
 	for _, message := range built {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartSkillActivation || part.SkillActivation != nil {
+			if part.Type == core.PartSkillActivation || part.SkillActivation != nil {
 				t.Fatalf("provider context leaked provenance control part: %#v", part)
 			}
 		}

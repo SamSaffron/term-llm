@@ -13,7 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -173,7 +174,7 @@ func (s *serveServer) notifyQueuedAgentWeb(ctx context.Context, runID, sessionID
 				// originating session is already generating. Pass no classifier
 				// provider so this best-effort notice cannot be upgraded into a
 				// cancel/interrupt decision for the user's active run.
-				if _, _, err := rt.InterruptMessage(ctx, llm.UserText(message), message, "job_notify_"+strings.TrimSpace(runID), nil, interruptDeliverySteer, llm.SteeringOriginJobNotification); err == nil {
+				if _, _, err := rt.InterruptMessage(ctx, core.UserText(message), message, "job_notify_"+strings.TrimSpace(runID), nil, interruptDeliverySteer, engine.SteeringOriginJobNotification); err == nil {
 					return nil
 				}
 			}
@@ -203,7 +204,7 @@ func (s *serveServer) startQueuedAgentNotificationContinuation(ctx context.Conte
 	if previousResponseID == "" {
 		previousResponseID = s.latestDurableResponseIDForSession(ctx, sessionID)
 	}
-	run, err := s.startResponseRun(rt, true, false, []llm.Message{llm.UserText(message)}, llm.Request{
+	run, err := s.startResponseRun(rt, true, false, []core.Message{core.UserText(message)}, core.Request{
 		SessionID: sessionID,
 		Model:     model,
 	}, sessionID, startResponseRunOptions{
@@ -233,7 +234,7 @@ func (rt *serveRuntime) appendNotificationMessage(ctx context.Context, sessionID
 	if sessionID == "" && rt.sessionMeta != nil {
 		sessionID = rt.sessionMeta.ID
 	}
-	msg := llm.AssistantText(message)
+	msg := core.AssistantText(message)
 	rt.history = append(rt.history, msg)
 	if rt.store == nil || sessionID == "" {
 		return nil
@@ -258,7 +259,7 @@ func appendQueuedAgentNotificationToStore(ctx context.Context, store session.Sto
 	if sess, err := store.Get(dbCtx, sessionID); err != nil || sess == nil {
 		return nil
 	}
-	if err := store.AddMessage(dbCtx, sessionID, session.NewMessage(sessionID, llm.AssistantText(message), -1)); err != nil {
+	if err := store.AddMessage(dbCtx, sessionID, session.NewMessage(sessionID, core.AssistantText(message), -1)); err != nil {
 		return err
 	}
 	_ = store.SetCurrent(dbCtx, sessionID)

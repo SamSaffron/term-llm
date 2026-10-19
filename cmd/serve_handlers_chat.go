@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +94,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	serverNames := make(map[string]bool, len(serverTools))
-	tools := make([]llm.ToolSpec, 0, len(serverTools)+len(req.Tools))
+	tools := make([]core.ToolSpec, 0, len(serverTools)+len(req.Tools))
 	for _, t := range serverTools {
 		serverNames[t.Name] = true
 		if !mappedTargets[t.Name] {
@@ -107,14 +107,14 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	if len(tools) == 0 {
-		toolChoice = llm.ToolChoice{}
+		toolChoice = core.ToolChoice{}
 	}
 	parallel := true
 	if req.ParallelToolCalls != nil {
 		parallel = *req.ParallelToolCalls
 	}
 
-	llmReq := llm.Request{
+	llmReq := core.Request{
 		SessionID:           sessionID,
 		Model:               strings.TrimSpace(req.Model),
 		Tools:               tools,
@@ -163,7 +163,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	if s.cfg.suppressServerTools {
-		filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
+		filtered := make([]core.ToolCall, 0, len(result.ToolCalls))
 		for _, call := range result.ToolCalls {
 			if !runtime.isServerExecutedTool(call.Name) {
 				filtered = append(filtered, call)
@@ -179,7 +179,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, chatCompletionFinalResponse(result, model))
 }
 
-func (s *serveServer) streamChatCompletions(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, streamOpts *chatStreamOptions, sessionID string) {
+func (s *serveServer) streamChatCompletions(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, streamOpts *chatStreamOptions, sessionID string) {
 	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -204,12 +204,12 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 	first := true
 	toolCallSeen := false
 	toolCallIndex := 0
-	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev core.Event) error {
 		pingMu.Lock()
 		defer pingMu.Unlock()
 		var writeErr error
 		switch ev.Type {
-		case llm.EventTextDelta:
+		case core.EventTextDelta:
 			delta := map[string]any{"content": ev.Text}
 			if first {
 				delta["role"] = "assistant"
@@ -222,7 +222,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 				"model":   model,
 				"choices": []map[string]any{{"index": 0, "delta": delta}},
 			})
-		case llm.EventToolCall:
+		case core.EventToolCall:
 			if ev.Tool == nil {
 				return nil
 			}
@@ -265,7 +265,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 					},
 				}},
 			})
-		case llm.EventHeartbeat:
+		case core.EventHeartbeat:
 			writeErr = writeChatStreamChunk(w, map[string]any{
 				"id":      respID,
 				"object":  "chat.completion.chunk",
@@ -277,7 +277,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 					"tool_name": ev.ToolName,
 				},
 			})
-		case llm.EventSteering:
+		case core.EventSteering:
 			writeErr = writeChatStreamChunk(w, map[string]any{
 				"id":      respID,
 				"object":  "chat.completion.chunk",

@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -1002,7 +1002,7 @@ func (m *responseRunManager) CloseContext(ctx context.Context) {
 	}
 }
 
-func usagePayload(usage llm.Usage) map[string]any {
+func usagePayload(usage core.Usage) map[string]any {
 	return map[string]any{
 		"input_tokens":  usage.InputTokens,
 		"output_tokens": usage.OutputTokens,

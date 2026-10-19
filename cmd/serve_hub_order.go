@@ -1,45 +1,27 @@
 package cmd
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net/http"
-	"strings"
-	"sync"
 
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"github.com/samsaffron/term-llm/internal/hub"
 )
 
 const (
-	// hubNodeOrderPath saves the dashboard's node order. It is the only Hub
-	// operator route a node may also call with its own credentials.
-	hubNodeOrderPath = "/api/nodes/order"
-	// hubNodeOrderBodyLimit bounds a reorder request; hub.MaxNodeOrderIDs
-	// quoted IDs of at most 64 characters fit well within it.
-	hubNodeOrderBodyLimit = 128 << 10
+	hubNodeOrderPath      = apphub.NodeOrderPath
+	hubNodeOrderBodyLimit = apphub.NodeOrderBodyLimit
 )
 
-// hubNodeOrderRequest lists node IDs in their new relative order.
-type hubNodeOrderRequest struct {
-	NodeIDs []string `json:"node_ids"`
-}
+type hubNodeOrderRequest = apphub.NodeOrderRequest
 
-// hubNodeIDPresented reports whether a request claims a node identity. Such
-// a request is authenticated as that node or rejected; it never falls back
-// to Hub operator credentials.
-func hubNodeIDPresented(r *http.Request) bool {
-	return strings.TrimSpace(r.Header.Get(hubNodeIDHeader)) != ""
-}
+// hubNodeIDPresented reports whether a request claims a node identity.
+func hubNodeIDPresented(r *http.Request) bool { return apphub.NodeIDPresented(r) }
 
 // hubNodeOrderNodeRequest reports a node saving the dashboard order with its
-// own credentials. Only PATCH of this exact path skips Hub authentication for
-// a node, and handleNodesOrder then authenticates the node itself, so a node
-// token reaches no other operator route or method.
-func hubNodeOrderNodeRequest(r *http.Request) bool {
-	return r.URL.Path == hubNodeOrderPath && r.Method == http.MethodPatch && hubNodeIDPresented(r)
-}
+// own credentials; see apphub.NodeOrderNodeRequest.
+func hubNodeOrderNodeRequest(r *http.Request) bool { return apphub.NodeOrderNodeRequest(r) }
 
 // handleNodesOrder serves PATCH /api/nodes/order for the Hub operator and
 // for individual nodes authenticated with their own token. The listed nodes
@@ -109,22 +91,8 @@ func (s *hubServer) saveNodeOrder(w http.ResponseWriter, r *http.Request, caller
 	writeJSON(w, http.StatusOK, map[string]any{"node_ids": order})
 }
 
-// decodeHubNodeOrderRequest reads exactly one bounded JSON object with no
-// unknown fields.
 func decodeHubNodeOrderRequest(w http.ResponseWriter, r *http.Request, dst *hubNodeOrderRequest) error {
-	r.Body = http.MaxBytesReader(w, r.Body, hubNodeOrderBodyLimit)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		return err
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			return errors.New("request body must contain one JSON object")
-		}
-		return err
-	}
-	return nil
+	return apphub.DecodeNodeOrderRequest(w, r, dst)
 }
 
 func writeHubNodeOrderError(w http.ResponseWriter, err error) {
@@ -146,26 +114,8 @@ func (s *hubServer) arrangeNodes(nodes []hub.Node) []hub.Node {
 		return nodes
 	}
 	arranged, err := s.nodeOrder.Arrange(nodes)
-	s.nodeOrderLog.report(err)
+	s.nodeOrderLog.Report(err)
 	return arranged
 }
 
-// hubRepeatLog logs each distinct error once until an operation succeeds
-// again, so a problem seen on every dashboard poll cannot flood the log.
-type hubRepeatLog struct {
-	mu   sync.Mutex
-	last string
-}
-
-func (l *hubRepeatLog) report(err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if err == nil {
-		l.last = ""
-		return
-	}
-	if message := err.Error(); message != l.last {
-		l.last = message
-		log.Printf("hub: dashboard node order: %v", err)
-	}
-}
+type hubRepeatLog = apphub.RepeatLog

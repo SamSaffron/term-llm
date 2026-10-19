@@ -11,7 +11,8 @@ import (
 	"unicode/utf8"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 const (
@@ -350,20 +351,20 @@ func finalizeCatalogTool(tool *CatalogTool) error {
 	if err != nil {
 		return fmt.Errorf("encode tool %q provider definition: %w", tool.Name, err)
 	}
-	tool.EstimatedTokens = llm.EstimateTokens(string(specData)) + toolSchemaFramingTokens
+	tool.EstimatedTokens = engine.EstimateTokens(string(specData)) + toolSchemaFramingTokens
 	return nil
 }
 
 // ToolSpec converts a catalogue entry to the provider-neutral callable shape.
-func (t CatalogTool) ToolSpec() llm.ToolSpec {
-	spec := llm.ToolSpec{
+func (t CatalogTool) ToolSpec() core.ToolSpec {
+	spec := core.ToolSpec{
 		Name:         t.Name,
 		Description:  t.Description,
 		Schema:       t.InputSchema,
 		OutputSchema: t.OutputSchema,
 	}
 	if t.Namespace != "" && t.ChildName != "" {
-		spec.Namespace = &llm.ToolNamespaceIdentity{
+		spec.Namespace = &core.ToolNamespaceIdentity{
 			Name:        t.Namespace,
 			ChildName:   t.ChildName,
 			Description: t.NamespaceDescription,

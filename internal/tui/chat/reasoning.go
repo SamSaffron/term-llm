@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -40,13 +40,13 @@ func (m *Model) resetActiveReasoning() {
 	m.reasoningPhaseActive = false
 }
 
-func (m *Model) mergeCurrentReasoningKind(kind llm.ReasoningKind) {
-	m.currentReasoningKind = llm.MergeReasoningKind(m.currentReasoningKind, kind)
+func (m *Model) mergeCurrentReasoningKind(kind core.ReasoningKind) {
+	m.currentReasoningKind = core.MergeReasoningKind(m.currentReasoningKind, kind)
 }
 
 func (m *Model) handleReasoningStreamEvent(ev ui.StreamEvent) {
 	cfg := m.effectiveReasoningConfig()
-	kind := llm.NormalizeReasoningKind(ev.ReasoningKind)
+	kind := core.NormalizeReasoningKind(ev.ReasoningKind)
 	if !internalreasoning.IsDisplayable(string(kind), cfg) {
 		return
 	}
@@ -61,7 +61,7 @@ func (m *Model) handleReasoningStreamEvent(ev ui.StreamEvent) {
 	}
 
 	title := strings.TrimSpace(ev.ReasoningTitle)
-	if kind == llm.ReasoningKindSummary {
+	if kind == core.ReasoningKindSummary {
 		// The adapter extracts a title from each individual stream delta. A single
 		// reasoning item can contain multiple bold summary headings, so a later
 		// delta's heading must not replace the leading heading for the accumulated
@@ -72,7 +72,7 @@ func (m *Model) handleReasoningStreamEvent(ev ui.StreamEvent) {
 			title = accumulatedTitle
 		}
 	}
-	if title == "" && kind == llm.ReasoningKindRaw && internalreasoning.EffectiveDisplay(cfg) == config.ReasoningDisplayRaw {
+	if title == "" && kind == core.ReasoningKindRaw && internalreasoning.EffectiveDisplay(cfg) == config.ReasoningDisplayRaw {
 		title = "Raw thinking"
 	}
 	if title != "" {
@@ -121,15 +121,15 @@ func (m *Model) applyReasoningPhase() {
 	m.reasoningPhaseActive = true
 }
 
-func (m *Model) activeReasoningPartMetadata() (content string, kind llm.ReasoningKind, title string) {
+func (m *Model) activeReasoningPartMetadata() (content string, kind core.ReasoningKind, title string) {
 	cfg := m.effectiveReasoningConfig()
-	kind = llm.NormalizeReasoningKind(m.currentReasoningKind)
+	kind = core.NormalizeReasoningKind(m.currentReasoningKind)
 	if m.currentReasoning.Len() == 0 || !internalreasoning.HistoryVisible(string(kind), cfg) {
 		return "", "", ""
 	}
 	content = internalreasoning.LimitReasoningText(string(kind), m.currentReasoning.String(), cfg)
 	title = strings.TrimSpace(m.currentReasoningTitle)
-	if title == "" && kind == llm.ReasoningKindSummary {
+	if title == "" && kind == core.ReasoningKindSummary {
 		title = internalreasoning.SummaryTitle(content, cfg)
 	}
 	return content, kind, title
@@ -140,8 +140,8 @@ func (m *Model) activeReasoningPartMetadata() (content string, kind llm.Reasonin
 // stream boundaries plus the active in-progress reasoning buffer. By contrast,
 // activeReasoningPartMetadata only describes the live buffer that is currently
 // visible in the streaming UI.
-func (m *Model) currentReasoningPartMetadata() (content string, kind llm.ReasoningKind, title string) {
-	var parts []llm.Part
+func (m *Model) currentReasoningPartMetadata() (content string, kind core.ReasoningKind, title string) {
+	var parts []core.Part
 	parts = append(parts, m.committedReasoning...)
 	if active, ok := m.currentReasoningDisplayPart(); ok {
 		parts = append(parts, active)
@@ -149,16 +149,16 @@ func (m *Model) currentReasoningPartMetadata() (content string, kind llm.Reasoni
 	if len(parts) == 0 {
 		return "", "", ""
 	}
-	kind = llm.NormalizeReasoningKind(parts[0].ReasoningKind)
+	kind = core.NormalizeReasoningKind(parts[0].ReasoningKind)
 	for i, part := range parts {
-		partKind := llm.NormalizeReasoningKind(part.ReasoningKind)
+		partKind := core.NormalizeReasoningKind(part.ReasoningKind)
 		if i == 0 {
 			kind = partKind
 		} else if kind != partKind {
-			if kind == llm.ReasoningKindRaw || partKind == llm.ReasoningKindRaw {
-				kind = llm.ReasoningKindRaw
+			if kind == core.ReasoningKindRaw || partKind == core.ReasoningKindRaw {
+				kind = core.ReasoningKindRaw
 			} else {
-				kind = llm.ReasoningKindUnknown
+				kind = core.ReasoningKindUnknown
 			}
 		}
 		text := strings.TrimSpace(part.ReasoningContent)
@@ -179,20 +179,20 @@ func (m *Model) currentReasoningPartMetadata() (content string, kind llm.Reasoni
 	return content, kind, title
 }
 
-func (m *Model) currentReasoningDisplayPart() (llm.Part, bool) {
+func (m *Model) currentReasoningDisplayPart() (core.Part, bool) {
 	content, kind, title := m.activeReasoningPartMetadata()
 	if content == "" {
-		return llm.Part{}, false
+		return core.Part{}, false
 	}
-	return llm.Part{
-		Type:                  llm.PartText,
+	return core.Part{
+		Type:                  core.PartText,
 		ReasoningContent:      content,
 		ReasoningKind:         kind,
 		ReasoningSummaryTitle: title,
 	}, true
 }
 
-func reasoningSegmentFromPart(part llm.Part) ui.ReasoningSegment {
+func reasoningSegmentFromPart(part core.Part) ui.ReasoningSegment {
 	return ui.ReasoningSegment{
 		Content: part.ReasoningContent,
 		Kind:    string(part.ReasoningKind),
@@ -200,11 +200,11 @@ func reasoningSegmentFromPart(part llm.Part) ui.ReasoningSegment {
 	}
 }
 
-func partFromReasoningSegment(seg ui.ReasoningSegment) llm.Part {
-	return llm.Part{
-		Type:                  llm.PartText,
+func partFromReasoningSegment(seg ui.ReasoningSegment) core.Part {
+	return core.Part{
+		Type:                  core.PartText,
 		ReasoningContent:      seg.Content,
-		ReasoningKind:         llm.ReasoningKind(seg.Kind),
+		ReasoningKind:         core.ReasoningKind(seg.Kind),
 		ReasoningSummaryTitle: seg.Title,
 	}
 }
@@ -213,16 +213,16 @@ func (m *Model) renderReasoningSegmentBlock(seg ui.ReasoningSegment) string {
 	return m.renderReasoningPartBlockWithConfig(partFromReasoningSegment(seg), reasoningConfigWithSegmentExpansion(m.effectiveReasoningConfig(), seg.Expanded))
 }
 
-func (m *Model) renderReasoningPartBlock(part llm.Part) string {
+func (m *Model) renderReasoningPartBlock(part core.Part) string {
 	return m.renderReasoningPartBlockWithConfig(part, m.effectiveReasoningConfig())
 }
 
-func (m *Model) renderReasoningPartBlockWithConfig(part llm.Part, cfg config.ReasoningConfig) string {
+func (m *Model) renderReasoningPartBlockWithConfig(part core.Part, cfg config.ReasoningConfig) string {
 	r := renderchat.NewMessageBlockRenderer(m.width, m.renderMd, m.toolsExpanded)
 	r.SetReasoningConfig(cfg)
 	block := r.Render(&session.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{part},
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{part},
 	})
 	if block == nil {
 		return ""

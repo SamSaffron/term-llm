@@ -16,7 +16,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 )
 
 // pageToolDefinition is a page tool as the web UI declares it.
@@ -25,8 +26,8 @@ func pageToolDefinition(name string) json.RawMessage {
 		`"parameters":{"type":"object","properties":{"message":{"type":"string"}}}}`)
 }
 
-func pageToolCall(id string) llm.ToolCall {
-	return llm.ToolCall{ID: id, Name: "webmcp__ping", Arguments: json.RawMessage(`{"message":"hi"}`)}
+func pageToolCall(id string) core.ToolCall {
+	return core.ToolCall{ID: id, Name: "webmcp__ping", Arguments: json.RawMessage(`{"message":"hi"}`)}
 }
 
 // requestedToolCalls returns every live.tool_calls_requested published so far.
@@ -80,10 +81,10 @@ func postLivePath(t *testing.T, srv *serveServer, method, path, body string) (in
 }
 
 // toolResultContent finds the tool result a model request carried for callID.
-func toolResultContent(request llm.Request, callID string) (string, bool) {
+func toolResultContent(request core.Request, callID string) (string, bool) {
 	for _, message := range request.Messages {
 		for _, part := range message.Parts {
-			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.ID == callID {
+			if part.Type == core.PartToolResult && part.ToolResult != nil && part.ToolResult.ID == callID {
 				return part.ToolResult.Content, true
 			}
 		}
@@ -91,8 +92,8 @@ func toolResultContent(request llm.Request, callID string) (string, bool) {
 	return "", false
 }
 
-func requestOffersTool(request llm.Request, name string) bool {
-	return slices.ContainsFunc(request.Tools, func(spec llm.ToolSpec) bool { return spec.Name == name })
+func requestOffersTool(request core.Request, name string) bool {
+	return slices.ContainsFunc(request.Tools, func(spec core.ToolSpec) bool { return spec.Name == name })
 }
 
 // liveSpeech collects what a delegation said aloud.
@@ -119,14 +120,14 @@ func (s *liveSpeech) String() string {
 // newPageToolDelegation registers a server-mode call on sessionID that declared
 // tools, and returns the session's scripted provider and a delegator with
 // test-speed pacing.
-func newPageToolDelegation(t *testing.T, sessionID string, tools ...json.RawMessage) (*serveServer, *liveSession, *llm.MockProvider, *serveLiveDelegator) {
+func newPageToolDelegation(t *testing.T, sessionID string, tools ...json.RawMessage) (*serveServer, *liveSession, *mockprovider.MockProvider, *serveLiveDelegator) {
 	t.Helper()
 	srv := newTestServeServer()
 	runtime, _, err := srv.runtimeForRequest(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, ok := runtime.provider.(*llm.MockProvider)
+	provider, ok := runtime.provider.(*mockprovider.MockProvider)
 	if !ok {
 		t.Fatalf("unexpected provider %T", runtime.provider)
 	}
@@ -271,7 +272,7 @@ func TestLiveDelegationRunsPageToolsOnTheClientAndSpeaksTheContinuation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := runtime.provider.(*llm.MockProvider)
+	provider := runtime.provider.(*mockprovider.MockProvider)
 	provider.AddToolCall("call_ping", "webmcp__ping", map[string]any{"message": "hi"}).AddTextResponse("Your phone answered pong.")
 
 	status, decoded := harness.start(t, map[string]any{
@@ -336,8 +337,8 @@ func TestLiveDelegationRunsServerToolsThenPageToolsOverSeveralRounds(t *testing.
 	probe := &liveContextProbeTool{}
 	runtime.engine.RegisterTool(probe)
 	provider.AddToolCall("call_server", "live_probe", map[string]any{})
-	provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_one")}})
-	provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_two"), pageToolCall("call_three")}})
+	provider.AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pageToolCall("call_one")}})
+	provider.AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pageToolCall("call_two"), pageToolCall("call_three")}})
 	provider.AddTextResponse("Both rounds are done.")
 
 	done, speech := runPageToolDelegation(context.Background(), delegator, "use the phone twice")
@@ -391,8 +392,8 @@ func TestLiveDelegationRunsServerToolsThenPageToolsOverSeveralRounds(t *testing.
 // the same model turn.
 func TestLiveDelegationAnswersInlinePageToolCallsWithinTheTurn(t *testing.T) {
 	srv, record, provider, delegator := newPageToolDelegation(t, "inline-session", pageToolDefinition("webmcp__ping"))
-	provider.WithCapabilities(llm.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
-	provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_inline")}, InlineTools: true, InlineText: "The phone said pong."})
+	provider.WithCapabilities(core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
+	provider.AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pageToolCall("call_inline")}, InlineTools: true, InlineText: "The phone said pong."})
 
 	done, speech := runPageToolDelegation(context.Background(), delegator, "ping my phone")
 	requestID, calls := requestedCalls(t, waitForRequestedToolCalls(t, record, 1)[0])
@@ -425,8 +426,8 @@ func TestLiveDelegationAnswersInlinePageToolCallsWithinTheTurn(t *testing.T) {
 // round does: the model is still mid-turn and can recover.
 func TestLiveDelegationInlinePageToolFailureIsAToolError(t *testing.T) {
 	srv, record, provider, delegator := newPageToolDelegation(t, "inline-error-session", pageToolDefinition("webmcp__ping"))
-	provider.WithCapabilities(llm.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
-	provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_inline")}, InlineTools: true, InlineText: "The phone refused."})
+	provider.WithCapabilities(core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
+	provider.AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pageToolCall("call_inline")}, InlineTools: true, InlineText: "The phone refused."})
 
 	done, speech := runPageToolDelegation(context.Background(), delegator, "ping my phone")
 	requestID, _ := requestedCalls(t, waitForRequestedToolCalls(t, record, 1)[0])
@@ -449,9 +450,9 @@ func TestLiveDelegationInlinePageToolFailureIsAToolError(t *testing.T) {
 // batch is run in order, never as overlapping rounds.
 func TestLiveDelegationRunsParallelInlinePageToolsOneRoundAtATime(t *testing.T) {
 	srv, record, provider, delegator := newPageToolDelegation(t, "inline-parallel-session", pageToolDefinition("webmcp__ping"))
-	provider.WithCapabilities(llm.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
-	provider.AddTurn(llm.MockTurn{
-		ToolCalls:   []llm.ToolCall{pageToolCall("call_a"), pageToolCall("call_b")},
+	provider.WithCapabilities(core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true})
+	provider.AddTurn(mockprovider.MockTurn{
+		ToolCalls:   []core.ToolCall{pageToolCall("call_a"), pageToolCall("call_b")},
 		InlineTools: true, InlineParallel: true, InlineText: "Both answered.",
 	})
 
@@ -493,7 +494,7 @@ func TestLiveDelegationRunsParallelInlinePageToolsOneRoundAtATime(t *testing.T) 
 type inlineRunnerHarness struct {
 	srv     *serveServer
 	record  *liveSession
-	factory func(string) llm.ClientToolRunner
+	factory func(string) core.ClientToolRunner
 	paused  atomic.Int32
 }
 
@@ -516,11 +517,11 @@ func newInlineRunnerHarness(t *testing.T, sessionID string) *inlineRunnerHarness
 }
 
 type inlineRunnerResult struct {
-	output llm.ToolOutput
+	output core.ToolOutput
 	err    error
 }
 
-func (h *inlineRunnerHarness) run(ctx context.Context, runner llm.ClientToolRunner) chan inlineRunnerResult {
+func (h *inlineRunnerHarness) run(ctx context.Context, runner core.ClientToolRunner) chan inlineRunnerResult {
 	done := make(chan inlineRunnerResult, 1)
 	go func() {
 		output, err := runner.RunClientTool(ctx, pageToolCall("call_direct"))
@@ -620,7 +621,7 @@ func TestLiveDelegationWithoutPageToolsNeverAsksTheClient(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			_, record, provider, delegator := newPageToolDelegation(t, "no-tools-"+strings.ReplaceAll(testCase.name, " ", "-"), testCase.tools...)
-			provider.AddTurn(llm.MockTurn{Text: "Working on it.", ToolCalls: []llm.ToolCall{pageToolCall("call_ping")}})
+			provider.AddTurn(mockprovider.MockTurn{Text: "Working on it.", ToolCalls: []core.ToolCall{pageToolCall("call_ping")}})
 			done, speech := runPageToolDelegation(context.Background(), delegator, "ping my phone")
 			if err := waitForDelegationRun(t, done); err != nil {
 				t.Fatalf("Run = %v", err)
@@ -736,7 +737,7 @@ func TestLiveClientToolResultDigestKeepsReplaysExact(t *testing.T) {
 func TestLivePageToolRoundFailurePaths(t *testing.T) {
 	start := func(t *testing.T, sessionID string) (*serveServer, *liveSession, *serveLiveDelegator) {
 		srv, record, provider, delegator := newPageToolDelegation(t, sessionID, pageToolDefinition("webmcp__ping"))
-		provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_ping")}})
+		provider.AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pageToolCall("call_ping")}})
 		return srv, record, delegator
 	}
 
@@ -830,7 +831,7 @@ func TestLivePageToolResultsAreRefusedAfterAnotherTurnTookTheSession(t *testing.
 		t.Run(testCase.name, func(t *testing.T) {
 			sessionID := "moved-" + strings.ReplaceAll(testCase.name, " ", "-")
 			srv, record, provider, delegator := newPageToolDelegation(t, sessionID, pageToolDefinition("webmcp__ping"))
-			provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall("call_ping")}})
+			provider.AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pageToolCall("call_ping")}})
 			provider.AddTextResponse("this continuation must not run")
 			done, _ := runPageToolDelegation(context.Background(), delegator, "ping my phone")
 			event := waitForRequestedToolCalls(t, record, 1)[0]
@@ -878,8 +879,8 @@ func TestLivePageToolContinuationAdmissionRejectsTurnCompletedAfterPrecheck(t *t
 	srv.ensureResponseRuns().setActiveRun(sessionID, "resp_typed_turn")
 	srv.registerResponseID(runtime, "resp_typed_turn", sessionID)
 	srv.ensureResponseRuns().clearActiveRun(sessionID, "resp_typed_turn")
-	if _, err := delegator.startDelegatedRun(runtime, sessionID, previous, []llm.Message{
-		llm.ToolResultMessage("call_ping", "webmcp__ping", "pong", nil),
+	if _, err := delegator.startDelegatedRun(runtime, sessionID, previous, []core.Message{
+		core.ToolResultMessage("call_ping", "webmcp__ping", "pong", nil),
 	}, delegator.pageTools(), previous); !errors.Is(err, errServeSessionBusy) {
 		t.Fatalf("continuation admission = %v, want busy after a newer turn", err)
 	}
@@ -888,7 +889,7 @@ func TestLivePageToolContinuationAdmissionRejectsTurnCompletedAfterPrecheck(t *t
 func TestLivePageToolRoundsAreBounded(t *testing.T) {
 	srv, record, provider, delegator := newPageToolDelegation(t, "bounded-session", pageToolDefinition("webmcp__ping"))
 	for round := 0; round <= liveClientToolRoundLimit; round++ {
-		provider.AddTurn(llm.MockTurn{ToolCalls: []llm.ToolCall{pageToolCall(fmt.Sprintf("call_%d", round))}})
+		provider.AddTurn(mockprovider.MockTurn{ToolCalls: []core.ToolCall{pageToolCall(fmt.Sprintf("call_%d", round))}})
 	}
 	done, _ := runPageToolDelegation(context.Background(), delegator, "keep pinging")
 	for round := 1; round <= liveClientToolRoundLimit; round++ {

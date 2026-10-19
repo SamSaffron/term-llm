@@ -11,13 +11,14 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"golang.org/x/term"
 )
 
 // ShowCommandHelp renders scrollable help for a command
-func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
+func ShowCommandHelp(command, shell string, engine *engine.Engine) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -52,7 +53,7 @@ func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
 	return err
 }
 
-func streamCommandHelp(ctx context.Context, engine *llm.Engine, req llm.Request, send func(tea.Msg)) <-chan struct{} {
+func streamCommandHelp(ctx context.Context, engine *engine.Engine, req core.Request, send func(tea.Msg)) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -81,14 +82,14 @@ func streamCommandHelp(ctx context.Context, engine *llm.Engine, req llm.Request,
 				send(errorMsg{err})
 				return
 			}
-			if event.Type == llm.EventError && event.Err != nil {
+			if event.Type == core.EventError && event.Err != nil {
 				if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) || ctx.Err() != nil {
 					return
 				}
 				send(errorMsg{event.Err})
 				return
 			}
-			if event.Type == llm.EventTextDelta && event.Text != "" {
+			if event.Type == core.EventTextDelta && event.Text != "" {
 				if ctx.Err() != nil {
 					return
 				}
@@ -99,12 +100,12 @@ func streamCommandHelp(ctx context.Context, engine *llm.Engine, req llm.Request,
 	return done
 }
 
-func buildCommandHelpRequest(command, shell string) llm.Request {
-	return llm.Request{
+func buildCommandHelpRequest(command, shell string) core.Request {
+	return core.Request{
 		Ephemeral: true,
-		Messages: []llm.Message{
-			llm.SystemText(prompt.HelpSystemPrompt(shell)),
-			llm.UserText(prompt.HelpUserPrompt(command)),
+		Messages: []core.Message{
+			core.SystemText(prompt.HelpSystemPrompt(shell)),
+			core.UserText(prompt.HelpUserPrompt(command)),
 		},
 		Search: false,
 		Debug:  false,

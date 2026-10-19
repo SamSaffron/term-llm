@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mediatype"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 )
@@ -247,7 +247,7 @@ func (p *telegramPresentation) renderInterrupted(partial string) {
 	}
 	p.sendEdit(p.currentMsgID, display, true)
 }
-func (p *telegramPresentation) deliverMedia(images []string, mediaItems []llm.MediaArtifact) {
+func (p *telegramPresentation) deliverMedia(images []string, mediaItems []core.MediaArtifact) {
 	for _, path := range images {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -304,7 +304,7 @@ func checkTelegramMediaInfo(info os.FileInfo) error {
 	return nil
 }
 
-func (p *telegramPresentation) uploadArtifact(media llm.MediaArtifact, document bool) (string, error) {
+func (p *telegramPresentation) uploadArtifact(media core.MediaArtifact, document bool) (string, error) {
 	upload, info, err := openTelegramMedia(media.PublishedPath())
 	if err != nil {
 		return "", err
@@ -317,14 +317,14 @@ func (p *telegramPresentation) uploadArtifact(media llm.MediaArtifact, document 
 	return kind, p.sendMediaUpload(media, upload, kind)
 }
 
-func (p *telegramPresentation) reportOversizedMedia(media llm.MediaArtifact) {
+func (p *telegramPresentation) reportOversizedMedia(media core.MediaArtifact) {
 	label := telegramArtifactFilename(media)
 	if _, err := p.bot.Send(tgbotapi.NewMessage(p.chatID, fmt.Sprintf("%s was not sent because it exceeds Telegram's 50 MiB upload limit.", label))); err != nil {
 		log.Printf("[telegram] failed to report oversized media: %v", err)
 	}
 }
 
-func (p *telegramPresentation) deliverArtifact(media llm.MediaArtifact) {
+func (p *telegramPresentation) deliverArtifact(media core.MediaArtifact) {
 	kind, err := p.uploadArtifact(media, false)
 	if err == nil {
 		return
@@ -366,7 +366,7 @@ func telegramUploadKind(mime string, upload *os.File, size int64) string {
 	return "document"
 }
 
-func (p *telegramPresentation) sendMediaUpload(media llm.MediaArtifact, upload *os.File, kind string) error {
+func (p *telegramPresentation) sendMediaUpload(media core.MediaArtifact, upload *os.File, kind string) error {
 	file := tgbotapi.FileReader{Name: telegramArtifactFilename(media), Reader: upload}
 	caption := telegramMediaText(media.Caption, 1024)
 	var message tgbotapi.Chattable
@@ -414,7 +414,7 @@ func telegramMediaText(value string, limit int) string {
 	return value
 }
 
-func telegramArtifactFilename(media llm.MediaArtifact) string {
+func telegramArtifactFilename(media core.MediaArtifact) string {
 	name := telegramMediaText(filepath.Base(strings.ReplaceAll(media.Name, "\\", "/")), 180)
 	if name == "" || name == "." || name == ".." {
 		return telegramMediaFilename(media.MediaType)

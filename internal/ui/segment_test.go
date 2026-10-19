@@ -7,13 +7,13 @@ import (
 	"testing"
 
 	xansi "github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestUpdatePlanRendersDedicatedChecklist(t *testing.T) {
 	args := json.RawMessage(`{"explanation":"moving to tests","plan":[{"step":"Inspect patterns","status":"completed"},{"step":"Add tests","status":"in_progress"},{"step":"Run suite","status":"pending"}]}`)
-	tc := &llm.ToolCall{Name: "update_plan", Arguments: args}
+	tc := &core.ToolCall{Name: "update_plan", Arguments: args}
 
 	historical := RenderToolCallFromPartWithStatus(tc, 100, false, ToolSuccess)
 	for lineNo, line := range strings.Split(StripANSI(historical), "\n") {
@@ -264,7 +264,7 @@ func TestExtractAgentName(t *testing.T) {
 }
 
 func TestRenderToolCallFromPart_FallsBackToExtractedArgsWhenToolInfoMissing(t *testing.T) {
-	call := &llm.ToolCall{
+	call := &core.ToolCall{
 		ID:        "call-1",
 		Name:      "edit_file",
 		Arguments: json.RawMessage(`{"path":"main.go","old_text":"before","new_text":"after"}`),

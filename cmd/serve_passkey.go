@@ -13,35 +13,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	servePasskeyAuthFile       string
-	servePasskeyBootstrapFile  string
-	servePasskeyRecoveryFile   string
-	servePrintPasskeyBootstrap bool
-	servePasskeyTrustedProxies []string
-)
-
 func init() {
 	f := serveCmd.Flags()
-	f.StringVar(&servePasskeyAuthFile, "passkey-auth-file", "", "Private Web passkey store (default: <data-dir>/web-auth/auth.json)")
-	f.StringVar(&servePasskeyBootstrapFile, "passkey-bootstrap-token-file", "", "Private file containing the first-passkey setup secret")
-	f.StringVar(&servePasskeyRecoveryFile, "passkey-recovery-token-file", "", "Private file containing a short-lived passkey recovery secret")
-	f.BoolVar(&servePrintPasskeyBootstrap, "print-passkey-bootstrap-token", false, "Explicitly allow printing the one-time setup code to non-interactive output")
-	f.StringSliceVar(&servePasskeyTrustedProxies, "passkey-trusted-proxy", nil, "Trusted proxy IP/CIDR for passkey rate limits (repeatable; never determines the public origin)")
+	f.StringVar(&serveFlags.PasskeyAuthFile, "passkey-auth-file", "", "Private Web passkey store (default: <data-dir>/web-auth/auth.json)")
+	f.StringVar(&serveFlags.PasskeyBootstrapFile, "passkey-bootstrap-token-file", "", "Private file containing the first-passkey setup secret")
+	f.StringVar(&serveFlags.PasskeyRecoveryFile, "passkey-recovery-token-file", "", "Private file containing a short-lived passkey recovery secret")
+	f.BoolVar(&serveFlags.PrintPasskeyBootstrap, "print-passkey-bootstrap-token", false, "Explicitly allow printing the one-time setup code to non-interactive output")
+	f.StringSliceVar(&serveFlags.PasskeyTrustedProxies, "passkey-trusted-proxy", nil, "Trusted proxy IP/CIDR for passkey rate limits (repeatable; never determines the public origin)")
 }
 
-func resolveWebPasskeyEndpoint(cmd *cobra.Command) (passkeyauth.Endpoint, error) {
-	if serveToken != "" || os.Getenv("TERM_LLM_SERVE_TOKEN") != "" {
+func resolveWebPasskeyEndpoint(cmd *cobra.Command, opts ServeOptions) (passkeyauth.Endpoint, error) {
+	if opts.Token != "" || os.Getenv("TERM_LLM_SERVE_TOKEN") != "" {
 		return passkeyauth.Endpoint{}, fmt.Errorf("--auth passkey does not accept --token or TERM_LLM_SERVE_TOKEN; use bearer mode for API clients")
 	}
-	if err := validateWebPasskeyTransport(serveHubURL, serveHubRegister, serveHubConnect, serveCORSOrigins); err != nil {
+	if err := validateWebPasskeyTransport(opts.HubURL, opts.HubRegister, opts.HubConnect, opts.CORSOrigins); err != nil {
 		return passkeyauth.Endpoint{}, err
 	}
-	publicURL := strings.TrimSpace(servePublicURL)
+	publicURL := strings.TrimSpace(opts.PublicURL)
 	if publicURL == "" {
 		publicURL = strings.TrimSpace(os.Getenv("TERM_LLM_SERVE_PUBLIC_URL"))
 	}
-	endpoint, err := passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: serveBasePath, BasePathExplicit: cmd.Flags().Changed("base-path")})
+	endpoint, err := passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: opts.BasePath, BasePathExplicit: cmd.Flags().Changed("base-path")})
 	if err != nil {
 		return endpoint, fmt.Errorf("invalid Web passkey --public-url/--base-path configuration: %w", err)
 	}
@@ -61,8 +53,8 @@ func validateWebPasskeyConfigPath(cmd *cobra.Command, endpoint passkeyauth.Endpo
 	return nil
 }
 
-func openWebPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint) (*browserPasskeyHandler, string, func() error, error) {
-	authFile := strings.TrimSpace(servePasskeyAuthFile)
+func openWebPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint, opts *ServeOptions) (*browserPasskeyHandler, string, func() error, error) {
+	authFile := strings.TrimSpace(opts.PasskeyAuthFile)
 	if authFile == "" {
 		dir, err := appdata.GetDataDir()
 		if err != nil {
@@ -71,12 +63,12 @@ func openWebPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint) (*browse
 		authFile = filepath.Join(dir, "web-auth", "auth.json")
 	}
 	runtime, display, cleanup, err := openBrowserPasskeys(cmd, endpoint, authFile, browserPasskeyOptions{
-		userName: "Web operator", displayName: "term-llm Web", trustedProxies: servePasskeyTrustedProxies,
+		userName: "Web operator", displayName: "term-llm Web", trustedProxies: opts.PasskeyTrustedProxies,
 		bootstrap: func(cmd *cobra.Command, needed bool) ([]byte, string, error) {
-			return resolveBrowserBootstrapSecret(cmd, needed, servePasskeyBootstrapFile, "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", servePrintPasskeyBootstrap, cmd.ErrOrStderr())
+			return resolveBrowserBootstrapSecret(cmd, needed, opts.PasskeyBootstrapFile, "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", opts.PrintPasskeyBootstrap, cmd.ErrOrStderr())
 		},
 		recovery: func(enabled bool) ([]byte, error) {
-			return resolveBrowserRecoverySecret(enabled, servePasskeyRecoveryFile, "TERM_LLM_SERVE_RECOVERY_TOKEN")
+			return resolveBrowserRecoverySecret(enabled, opts.PasskeyRecoveryFile, "TERM_LLM_SERVE_RECOVERY_TOKEN")
 		},
 	})
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -59,7 +59,7 @@ func TestSkillRunUsageIncludedInSessionTotals(t *testing.T) {
 	}
 	send(tools.SubagentEvent{Type: tools.SubagentEventInit, Model: "child-model"})
 	send(tools.SubagentEvent{Type: tools.SubagentEventUsage, InputTokens: 10, OutputTokens: 2, CachedInputTokens: 20, CacheWriteTokens: 3})
-	send(tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Model: "guardian-model", Usage: llm.Usage{InputTokens: 5, OutputTokens: 1}}})
+	send(tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Model: "guardian-model", Usage: core.Usage{InputTokens: 5, OutputTokens: 1}}})
 	calls, _ := m.stats.UsageCalls()
 	if len(calls) != 2 || calls[0].Model != "child-model" || !calls[0].Subagent || !calls[1].Guardian {
 		t.Fatalf("calls = %+v", calls)
@@ -81,7 +81,7 @@ func TestLateSubagentGuardianUsageRetainedWithoutResurrection(t *testing.T) {
 	m.subagentTracker = ui.NewSubagentTracker()
 	m.Update(SubagentProgressMsg{CallID: "child", Event: tools.SubagentEvent{Type: tools.SubagentEventInit, Model: "child-model"}})
 	m.subagentTracker.Remove("child")
-	m.Update(SubagentProgressMsg{CallID: "child", Event: tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{ToolCallID: "nested", Model: "guardian-model", Usage: llm.Usage{InputTokens: 5, OutputTokens: 1, CachedInputTokens: 3, CacheWriteTokens: 2}}}})
+	m.Update(SubagentProgressMsg{CallID: "child", Event: tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{ToolCallID: "nested", Model: "guardian-model", Usage: core.Usage{InputTokens: 5, OutputTokens: 1, CachedInputTokens: 3, CacheWriteTokens: 2}}}})
 	runs := m.subagentTracker.Snapshots()
 	if len(runs) != 1 || len(runs[0].UsageCalls) != 1 || !runs[0].UsageCalls[0].Guardian || runs[0].InputTokens != 5 || runs[0].CachedInputTokens != 3 || runs[0].CacheWriteTokens != 2 {
 		t.Fatalf("runs = %+v", runs)
@@ -183,7 +183,7 @@ func TestModelStatsIncludesSessionOwnModel(t *testing.T) {
 	m.subagentTracker = ui.NewSubagentTracker()
 	m.stats.SetModel("opus")
 	m.stats.AddUsage(5720, 149063, 35795091, 465243)
-	m.recordSubagentUsage(context.Background(), "haiku", llm.Usage{InputTokens: 300, OutputTokens: 22112})
+	m.recordSubagentUsage(context.Background(), "haiku", core.Usage{InputTokens: 300, OutputTokens: 22112})
 	var b strings.Builder
 	m.renderModelStats(&b)
 	out := b.String()
@@ -216,7 +216,7 @@ func TestSubagentStatsGroupsRunsByBillingModel(t *testing.T) {
 		m.recordChildEventUsage(id, tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: "shared-model", InputTokens: 100, OutputTokens: 10})
 		m.subagentTracker.MarkDoneAt(id, start.Add(5*time.Second))
 	}
-	guardian := tools.GuardianEvent{Model: "guardian-model", Usage: llm.Usage{InputTokens: 50, OutputTokens: 5}}
+	guardian := tools.GuardianEvent{Model: "guardian-model", Usage: core.Usage{InputTokens: 50, OutputTokens: 5}}
 	m.subagentTracker.HandleGuardianEvent("reviewer", guardian)
 	m.recordChildEventUsage("reviewer", tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &guardian})
 	var b strings.Builder
@@ -248,7 +248,7 @@ func TestStatsModalOmitsSectionsWithNoRecordedActivity(t *testing.T) {
 		}
 	}
 
-	m.recordGuardianUsage(context.Background(), "haiku", llm.Usage{InputTokens: 7238, OutputTokens: 12})
+	m.recordGuardianUsage(context.Background(), "haiku", core.Usage{InputTokens: 7238, OutputTokens: 12})
 	modal = m.renderStatsModal()
 	if !strings.Contains(modal, "Guardian Usage") {
 		t.Fatalf("guardian section missing after a guardian review:\n%s", modal)

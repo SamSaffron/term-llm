@@ -14,7 +14,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/clipboard"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
@@ -296,12 +297,12 @@ func TestSideQuestionPanelLongAnswerScrollsRenderedLines(t *testing.T) {
 func TestSideCommandOpensOverlayAndClearsSubmittedCommand(t *testing.T) {
 	m := newTestChatModel(true)
 	m.sess = &session.Session{ID: "main-session"}
-	m.messages = []session.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "main fact"}}}}
+	m.messages = []session.Message{{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartText, Text: "main fact"}}}}
 	m.scrollOffset = 3
 	m.setTextareaValue("/side what does that mean?")
 	m.completions.Show()
-	provider := llm.NewMockProvider("mock").AddTextResponse("side answer")
-	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("side answer")
+	m.SetSideQuestionProviderFactory(func(_, _ string) (core.Provider, error) { return provider, nil })
 
 	updated, cmd := m.ExecuteCommand("/side what does that mean?")
 	m = updated.(*Model)
@@ -365,16 +366,16 @@ func TestSideCommandStartupErrorUsesSlashCommandClearing(t *testing.T) {
 
 func TestSideSnapshotUsesCurrentCompletedStreamingContext(t *testing.T) {
 	m := newTestChatModel(true)
-	toolCall := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read_file"}}}}
-	toolResult := llm.ToolResultMessage("call-1", "read_file", "important current context", nil)
+	toolCall := core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "read_file"}}}}
+	toolResult := core.ToolResultMessage("call-1", "read_file", "important current context", nil)
 	m.streaming = true
-	m.setStreamingContextMessages([]llm.Message{
-		llm.SystemText("system"),
-		llm.UserText("active question"),
+	m.setStreamingContextMessages([]core.Message{
+		core.SystemText("system"),
+		core.UserText("active question"),
 		toolCall,
 		toolResult,
 	})
-	m.updateStreamingContextAssistant(llm.AssistantText("incomplete next response"))
+	m.updateStreamingContextAssistant(core.AssistantText("incomplete next response"))
 
 	anchor := m.sideAnchor()
 	got := anchor.Messages
@@ -384,10 +385,10 @@ func TestSideSnapshotUsesCurrentCompletedStreamingContext(t *testing.T) {
 	if len(got) != 4 {
 		t.Fatalf("snapshot len = %d, want current completed boundary of 4: %#v", len(got), got)
 	}
-	if got[2].Role != llm.RoleAssistant || got[3].Role != llm.RoleTool {
+	if got[2].Role != core.RoleAssistant || got[3].Role != core.RoleTool {
 		t.Fatalf("snapshot omitted current tool context: %#v", got)
 	}
-	if strings.Contains(llm.MessageText(got[len(got)-1]), "incomplete next response") {
+	if strings.Contains(core.MessageText(got[len(got)-1]), "incomplete next response") {
 		t.Fatalf("snapshot included pending assistant response: %#v", got)
 	}
 }
@@ -413,7 +414,7 @@ func TestSideCancellationDoesNotCancelMain(t *testing.T) {
 func TestLateSideGenerationIgnoredAndClearConfirmed(t *testing.T) {
 	m := newTestChatModel(true)
 	m.sideQuestion = SideQuestionState{Visible: true, Generation: 2, History: []sidequestion.Entry{{Question: "q", Response: "a"}}}
-	_, _ = m.Update(sideQuestionEventMsg{generation: 1, event: llm.Event{Type: llm.EventTextDelta, Text: "late"}})
+	_, _ = m.Update(sideQuestionEventMsg{generation: 1, event: core.Event{Type: core.EventTextDelta, Text: "late"}})
 	if m.sideQuestion.Response.Len() != 0 {
 		t.Fatal("late side event was applied")
 	}
@@ -430,20 +431,20 @@ func TestLateSideGenerationIgnoredAndClearConfirmed(t *testing.T) {
 // tuiForkableProvider is a live provider that can branch from a captured
 // boundary, like claude-bin.
 type tuiForkableProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	branch      *tuiBranchProvider
-	forkRequest []llm.Message
+	forkRequest []core.Message
 	forks       int
 }
 
 var tuiForkableState = []byte(`{"session_id":"S1","messages_sent":2,"transcript_digest":"d"}`)
 
-func (p *tuiForkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []llm.Message) (llm.Provider, bool) {
+func (p *tuiForkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []core.Message) (core.Provider, bool) {
 	p.forks++
 	if string(state) != string(tuiForkableState) || len(requestMessages) == 0 {
 		return nil, false
 	}
-	p.forkRequest = append([]llm.Message(nil), requestMessages...)
+	p.forkRequest = append([]core.Message(nil), requestMessages...)
 	return p.branch, true
 }
 
@@ -454,32 +455,32 @@ func (p *tuiForkableProvider) ExportProviderState() ([]byte, bool) {
 // tuiBranchProvider is the branched session; it exports the state promotion
 // would later save under a child session id.
 type tuiBranchProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 }
 
 func (p *tuiBranchProvider) ExportProviderState() ([]byte, bool) {
 	return []byte(`{"session_id":"S2","messages_sent":4,"transcript_digest":"d2"}`), true
 }
 
-func newTUISideLaneModel(t *testing.T) (*Model, *tuiForkableProvider, *llm.MockProvider) {
+func newTUISideLaneModel(t *testing.T) (*Model, *tuiForkableProvider, *mockprovider.MockProvider) {
 	t.Helper()
 	m := newTestChatModel(true)
 	m.providerKey = "claude-bin"
 	m.modelName = "opus-max"
 	m.sess = &session.Session{ID: "main", WorktreeDir: t.TempDir()}
 	m.messages = []session.Message{
-		*session.NewMessage("main", llm.UserText("Refactor the widget loader."), 0),
-		*session.NewMessage("main", llm.AssistantText("Extracted loadWidget."), 1),
+		*session.NewMessage("main", core.UserText("Refactor the widget loader."), 0),
+		*session.NewMessage("main", core.AssistantText("Extracted loadWidget."), 1),
 	}
 	live := &tuiForkableProvider{
-		MockProvider: llm.NewMockProvider("live"),
+		MockProvider: mockprovider.NewMockProvider("live"),
 		branch: &tuiBranchProvider{
-			MockProvider: llm.NewMockProvider("branch").AddTextResponse("branched answer").AddTextResponse("second branched answer"),
+			MockProvider: mockprovider.NewMockProvider("branch").AddTextResponse("branched answer").AddTextResponse("second branched answer"),
 		},
 	}
 	m.provider = live
-	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
-	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return replay, nil })
+	replay := mockprovider.NewMockProvider("replay").AddTextResponse("replayed answer")
+	m.SetSideQuestionProviderFactory(func(_, _ string) (core.Provider, error) { return replay, nil })
 	return m, live, replay
 }
 
@@ -536,7 +537,7 @@ func TestSideQuestionBranchesTheIdleBoundaryAndReusesTheLane(t *testing.T) {
 func TestSideQuestionReplaysWhileAMainRunIsActive(t *testing.T) {
 	m, live, replay := newTUISideLaneModel(t)
 	m.streaming = true
-	m.setStreamingContextMessages([]llm.Message{llm.SystemText("system"), llm.UserText("in flight")})
+	m.setStreamingContextMessages([]core.Message{core.SystemText("system"), core.UserText("in flight")})
 
 	_, cmd := m.cmdSide("what changed?")
 	m = runSideQuestionCommands(t, m, cmd)
@@ -590,13 +591,13 @@ func TestSideQuestionSeesInFlightWorkDuringAnInlineToolLoopRun(t *testing.T) {
 	manager.mu.RLock()
 	tracker := manager.runs[m.SessionID()].boundary
 	manager.mu.RUnlock()
-	tracker.UpdateAssistant("test-boundary", llm.AssistantText("step 1 done, step 2 done"))
+	tracker.UpdateAssistant("test-boundary", core.AssistantText("step 1 done, step 2 done"))
 
 	anchor := m.sideAnchor()
 	if len(anchor.Messages) != started+1 {
 		t.Fatalf("anchor = %d messages, want the completed boundary plus the in-flight assistant", len(anchor.Messages))
 	}
-	if !strings.Contains(llm.MessageText(anchor.Messages[len(anchor.Messages)-1]), "step 2 done") {
+	if !strings.Contains(core.MessageText(anchor.Messages[len(anchor.Messages)-1]), "step 2 done") {
 		t.Fatalf("anchor did not follow the in-flight run: %#v", anchor.Messages)
 	}
 	// Reading a streaming provider's resume boundary is not safe.
@@ -612,7 +613,7 @@ func TestSideQuestionSeesInFlightWorkDuringAnInlineToolLoopRun(t *testing.T) {
 	}
 	var joined strings.Builder
 	for _, message := range requests[0].Messages {
-		joined.WriteString(llm.MessageText(message))
+		joined.WriteString(core.MessageText(message))
 		joined.WriteString("\n")
 	}
 	if !strings.Contains(joined.String(), "step 2 done") {
@@ -637,7 +638,7 @@ func TestSideQuestionKeepsProviderIdentityWhileARunIsInFlight(t *testing.T) {
 	manager.mu.RLock()
 	tracker := manager.runs[m.SessionID()].boundary
 	manager.mu.RUnlock()
-	tracker.UpdateAssistant("test-boundary", llm.AssistantText("in-flight work"))
+	tracker.UpdateAssistant("test-boundary", core.AssistantText("in-flight work"))
 
 	anchor := m.sideAnchor()
 	if anchor.Provider.Available() {
@@ -700,7 +701,7 @@ func TestSideQuestionCarriesPanelHistoryAfterTheLaneIsTornDown(t *testing.T) {
 	}
 	var joined strings.Builder
 	for _, message := range requests[0].Messages {
-		joined.WriteString(llm.MessageText(message))
+		joined.WriteString(core.MessageText(message))
 		joined.WriteString("\n")
 	}
 	for _, want := range []string{"what changed?", "branched answer", "and the nil case?"} {
@@ -746,8 +747,8 @@ func TestSideQuestionMirrorsMainReasoningRequestNotDisplayMode(t *testing.T) {
 	m.modelName = "reasoning-model"
 	m.reasoningModeOverride = "expanded"
 	m.sess = &session.Session{ID: "main", ReasoningEffort: "high", ReasoningMode: "pro"}
-	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
-	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("answer")
+	m.SetSideQuestionProviderFactory(func(_, _ string) (core.Provider, error) { return provider, nil })
 	_, cmd := m.cmdSide("question")
 	m = runSideQuestionCommands(t, m, cmd)
 	if len(provider.Requests) != 1 {
@@ -770,8 +771,8 @@ func TestSideTranscriptIsChronologicalAndComposerPreservesMainDraft(t *testing.T
 	m.setTextareaValue("unfinished main draft")
 	m.focusSideComposer()
 	m.sideQuestion.Composer.SetValue("follow-up")
-	provider := llm.NewMockProvider("mock").AddTextResponse("third answer")
-	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("third answer")
+	m.SetSideQuestionProviderFactory(func(_, _ string) (core.Provider, error) { return provider, nil })
 
 	plain := ui.StripANSI(m.renderSideQuestionPanel())
 	positions := []int{
@@ -893,10 +894,10 @@ type stubbornTUISideProvider struct {
 	starts  int
 }
 
-func (p *stubbornTUISideProvider) Name() string                   { return "stubborn" }
-func (p *stubbornTUISideProvider) Credential() string             { return "test" }
-func (p *stubbornTUISideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (p *stubbornTUISideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+func (p *stubbornTUISideProvider) Name() string                    { return "stubborn" }
+func (p *stubbornTUISideProvider) Credential() string              { return "test" }
+func (p *stubbornTUISideProvider) Capabilities() core.Capabilities { return core.Capabilities{} }
+func (p *stubbornTUISideProvider) Stream(context.Context, core.Request) (core.Stream, error) {
 	p.mu.Lock()
 	p.starts++
 	p.mu.Unlock()
@@ -905,16 +906,16 @@ func (p *stubbornTUISideProvider) Stream(context.Context, llm.Request) (llm.Stre
 
 type stubbornTUISideStream struct{ release <-chan struct{} }
 
-func (s *stubbornTUISideStream) Recv() (llm.Event, error) {
+func (s *stubbornTUISideStream) Recv() (core.Event, error) {
 	<-s.release
-	return llm.Event{}, io.EOF
+	return core.Event{}, io.EOF
 }
 func (*stubbornTUISideStream) Close() error { return nil }
 
 func TestSideCleanupIsBoundedAndPreventsStubbornRestartOverlap(t *testing.T) {
 	m := newTestChatModel(true)
 	provider := &stubbornTUISideProvider{release: make(chan struct{})}
-	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
+	m.SetSideQuestionProviderFactory(func(_, _ string) (core.Provider, error) { return provider, nil })
 	_, _ = m.cmdSide("first")
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -953,7 +954,7 @@ func TestSyntheticSideUsageSurvivesHistoryCleanupInSessionStats(t *testing.T) {
 	m.sideQuestion.Running = true
 	m.updateSideQuestion(sideQuestionEventMsg{
 		generation: 1,
-		result:     &sidequestion.Result{Response: sidequestion.ToolAttemptResponse, Synthetic: true, Usage: llm.Usage{InputTokens: 7, OutputTokens: 3}},
+		result:     &sidequestion.Result{Response: sidequestion.ToolAttemptResponse, Synthetic: true, Usage: core.Usage{InputTokens: 7, OutputTokens: 3}},
 	})
 	m.clearSideQuestionHistory()
 	if m.stats == nil || m.stats.InputTokens != 7 || m.stats.OutputTokens != 3 {

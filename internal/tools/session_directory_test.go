@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSessionDirectoryRequiresOriginatingTurnAuthority(t *testing.T) {
@@ -20,10 +20,10 @@ func TestSessionDirectoryRequiresOriginatingTurnAuthority(t *testing.T) {
 	}
 	bound := ContextWithSessionDirectory(context.Background(), "parent", list)
 	for name, ctx := range map[string]context.Context{
-		"ordinary turn": llm.ContextWithSessionID(context.Background(), "parent"),
+		"ordinary turn": core.ContextWithSessionID(context.Background(), "parent"),
 		"no session":    bound,
-		"child session": llm.ContextWithSessionID(bound, "child"),
-		"foreign turn":  llm.ContextWithSessionID(ContextWithSessionDirectory(context.Background(), "other", list), "parent"),
+		"child session": core.ContextWithSessionID(bound, "child"),
+		"foreign turn":  core.ContextWithSessionID(ContextWithSessionDirectory(context.Background(), "other", list), "parent"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tool.Execute(ctx, json.RawMessage(`{}`))
@@ -36,7 +36,7 @@ func TestSessionDirectoryRequiresOriginatingTurnAuthority(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("unauthorized callbacks = %d", calls)
 	}
-	ctx := llm.ContextWithSessionID(bound, "parent")
+	ctx := core.ContextWithSessionID(bound, "parent")
 	out, err := tool.Execute(ctx, json.RawMessage(`{"limit":5}`))
 	if err != nil || calls != 1 || !strings.Contains(out.Content, `"session_id":"sess"`) || !strings.Contains(out.Content, `"number":7`) {
 		t.Fatalf("authorized output = %+v, %v; calls=%d", out, err, calls)
@@ -45,10 +45,10 @@ func TestSessionDirectoryRequiresOriginatingTurnAuthority(t *testing.T) {
 
 func TestSessionDirectoryDeniesMissingAndEmptyBindings(t *testing.T) {
 	tool := &SessionDirectoryTool{}
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	for name, candidate := range map[string]context.Context{
-		"nil callback":    llm.ContextWithSessionID(ContextWithSessionDirectory(context.Background(), "parent", nil), "parent"),
-		"empty session":   llm.ContextWithSessionID(ContextWithSessionDirectory(context.Background(), "", func(context.Context, SessionDirectoryQuery) ([]SessionDirectoryEntry, error) { return nil, nil }), "parent"),
+		"nil callback":    core.ContextWithSessionID(ContextWithSessionDirectory(context.Background(), "parent", nil), "parent"),
+		"empty session":   core.ContextWithSessionID(ContextWithSessionDirectory(context.Background(), "", func(context.Context, SessionDirectoryQuery) ([]SessionDirectoryEntry, error) { return nil, nil }), "parent"),
 		"unbound context": ctx,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -70,7 +70,7 @@ func TestSessionDirectoryArgumentsAndFailures(t *testing.T) {
 		}
 		return []SessionDirectoryEntry{{ID: "ok"}}, nil
 	})
-	ctx = llm.ContextWithSessionID(ctx, "chat")
+	ctx = core.ContextWithSessionID(ctx, "chat")
 	tool := &SessionDirectoryTool{}
 	for name, args := range map[string]string{
 		"unknown field":  `{"sessions":"all"}`,

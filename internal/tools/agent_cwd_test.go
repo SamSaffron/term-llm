@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -44,7 +44,7 @@ func TestSpawnAgentCWDAndContinuation(t *testing.T) {
 	defer store.Close()
 	runner := &cwdLifecycleRunner{lifecycleRunner: &lifecycleRunner{entered: make(chan string, 8), release: make(chan struct{})}, store: store, dir: root, seen: make(chan SpawnAgentRunOptions, 3)}
 	close(runner.release)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	for _, tc := range []struct{ cwd, want string }{{"child", child}, {child, child}, {"", root}} {
 		tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 		tool.SetRunner(runner)
@@ -77,7 +77,7 @@ func TestSpawnAgentSessionlessWaitIsNotExecutionDeadline(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(runner)
-	result := make(chan llm.ToolOutput, 1)
+	result := make(chan core.ToolOutput, 1)
 	go func() {
 		out, _ := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"work","wait":0}`))
 		result <- out
@@ -102,13 +102,13 @@ func TestSpawnAgentRejectsInvalidCWD(t *testing.T) {
 	tool.SetRunner(runner)
 	for _, cwd := range []string{"missing", filepath.Join(root, "missing")} {
 		args, _ := json.Marshal(SpawnAgentArgs{AgentName: "developer", Prompt: "work", CWD: cwd})
-		out := lifecycleCall(t, tool, llm.ContextWithSessionID(context.Background(), "parent"), string(args))
+		out := lifecycleCall(t, tool, core.ContextWithSessionID(context.Background(), "parent"), string(args))
 		if !out.IsError || !strings.Contains(out.Content, "cwd must be an existing directory") {
 			t.Fatalf("cwd %q: %+v", cwd, out)
 		}
 	}
 	runner.dir = ""
-	out := lifecycleCall(t, tool, llm.ContextWithSessionID(context.Background(), "parent"), `{"agent_name":"developer","prompt":"work","cwd":"child"}`)
+	out := lifecycleCall(t, tool, core.ContextWithSessionID(context.Background(), "parent"), `{"agent_name":"developer","prompt":"work","cwd":"child"}`)
 	if !out.IsError || !strings.Contains(out.Content, "relative cwd requires a bound parent") {
 		t.Fatalf("unbound: %+v", out)
 	}

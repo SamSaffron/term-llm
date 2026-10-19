@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -37,7 +39,7 @@ func newTurnLeaseTestModelWithHistory(t *testing.T, withHistory bool) (*Model, *
 		t.Fatal(err)
 	}
 	if withHistory {
-		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("earlier"), -1)); err != nil {
+		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText("earlier"), -1)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -133,7 +135,7 @@ func TestSendMessageRefusedWhenTranscriptChangedElsewhere(t *testing.T) {
 	ctx := context.Background()
 	// A web turn appended after this process loaded the conversation.
 	web := otherProcessStore(t, path)
-	if err := web.AddMessage(ctx, m.SessionID(), session.NewMessage(m.SessionID(), llm.AssistantText("web answer"), -1)); err != nil {
+	if err := web.AddMessage(ctx, m.SessionID(), session.NewMessage(m.SessionID(), core.AssistantText("web answer"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	m.setTextareaValue("continue")
@@ -164,7 +166,7 @@ func TestSendMessageRefusedWhenFreshSessionWasWrittenElsewhere(t *testing.T) {
 	// a web turn that lands first must not be silently dropped from the request.
 	m, _, path := newTurnLeaseTestModelWithHistory(t, false)
 	web := otherProcessStore(t, path)
-	if err := web.AddMessage(context.Background(), m.SessionID(), session.NewMessage(m.SessionID(), llm.UserText("from the web"), -1)); err != nil {
+	if err := web.AddMessage(context.Background(), m.SessionID(), session.NewMessage(m.SessionID(), core.UserText("from the web"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	m.setTextareaValue("hello")
@@ -181,7 +183,7 @@ func TestSendMessageAcceptsThisProcessesOwnWritesBetweenTurns(t *testing.T) {
 	// this process's store. They move the revision but are not another process.
 	m, store := newTurnLeaseTestModel(t)
 	ctx := context.Background()
-	if err := store.AddMessage(ctx, m.SessionID(), session.NewMessage(m.SessionID(), llm.AssistantText("skill activated"), -1)); err != nil {
+	if err := store.AddMessage(ctx, m.SessionID(), session.NewMessage(m.SessionID(), core.AssistantText("skill activated"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	m.setTextareaValue("continue")
@@ -239,9 +241,9 @@ func TestLostLeaseCancelsTheRun(t *testing.T) {
 
 func TestTurnLeaseRunsAndReleasesForCompletedTurn(t *testing.T) {
 	m, store := newTurnLeaseTestModel(t)
-	provider := llm.NewMockProvider("mock").AddTextResponse("an answer")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("an answer")
 	m.provider = provider
-	m.engine = llm.NewEngine(provider, nil)
+	m.engine = engine.NewEngine(provider, nil)
 	manager := NewMainRunManager(context.Background())
 	t.Cleanup(func() { manager.Close(time.Second) })
 	m.SetMainRunManager(manager)
@@ -288,7 +290,7 @@ func TestTurnLeaseRunsAndReleasesForCompletedTurn(t *testing.T) {
 	}
 	var assistant bool
 	for _, message := range messages {
-		if message.Role == llm.RoleAssistant && strings.Contains(message.TextContent, "an answer") {
+		if message.Role == core.RoleAssistant && strings.Contains(message.TextContent, "an answer") {
 			assistant = true
 		}
 	}

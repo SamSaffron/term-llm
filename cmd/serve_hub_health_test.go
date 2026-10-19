@@ -56,11 +56,11 @@ func TestHubHealthCacheIdentityAndPruning(t *testing.T) {
 			}
 			cache.retain([]hub.Node{replacement})
 			cache.publish(context.Background(), n, now.Add(time.Second), hub.Status{State: "ok", Reachable: true})
-			if len(cache.entries) != 1 {
-				t.Fatalf("late observation reinserted removed identity: %d entries", len(cache.entries))
+			if cache.len() != 1 {
+				t.Fatalf("late observation reinserted removed identity: %d entries", cache.len())
 			}
 			cache.retain(nil)
-			if len(cache.entries) != 0 {
+			if cache.len() != 0 {
 				t.Fatal("removed entries were not pruned")
 			}
 		})

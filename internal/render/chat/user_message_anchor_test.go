@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -13,9 +13,9 @@ func TestRenderer_UserMessageAnchorsMatchRenderedBlocks(t *testing.T) {
 	renderer := NewRenderer(40, 12)
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
 	messages := []session.Message{
-		{ID: 1, Role: llm.RoleUser, TextContent: "  first prompt\nwith more detail  ", Parts: []llm.Part{{Type: llm.PartText, Text: "  first prompt\nwith more detail  "}}},
-		{ID: 2, Role: llm.RoleAssistant, TextContent: "first answer", Parts: []llm.Part{{Type: llm.PartText, Text: "first answer"}}},
-		{ID: 3, Role: llm.RoleUser, TextContent: "second prompt", Parts: []llm.Part{{Type: llm.PartText, Text: "second prompt"}}},
+		{ID: 1, Role: core.RoleUser, TextContent: "  first prompt\nwith more detail  ", Parts: []core.Part{{Type: core.PartText, Text: "  first prompt\nwith more detail  "}}},
+		{ID: 2, Role: core.RoleAssistant, TextContent: "first answer", Parts: []core.Part{{Type: core.PartText, Text: "first answer"}}},
+		{ID: 3, Role: core.RoleUser, TextContent: "second prompt", Parts: []core.Part{{Type: core.PartText, Text: "second prompt"}}},
 	}
 
 	output := renderer.Render(RenderState{
@@ -49,8 +49,8 @@ func TestRenderer_UserMessageAnchorsMatchRenderedBlocks(t *testing.T) {
 func TestRenderer_UserMessageAnchorsSkipInternalCompactionSummary(t *testing.T) {
 	renderer := NewRenderer(40, 12)
 	messages := []session.Message{
-		{ID: 1, Role: llm.RoleUser, TextContent: "[Context Compaction]\nhidden summary"},
-		{ID: 2, Role: llm.RoleUser, TextContent: "visible prompt", Parts: []llm.Part{{Type: llm.PartText, Text: "visible prompt"}}},
+		{ID: 1, Role: core.RoleUser, TextContent: "[Context Compaction]\nhidden summary"},
+		{ID: 2, Role: core.RoleUser, TextContent: "visible prompt", Parts: []core.Part{{Type: core.PartText, Text: "visible prompt"}}},
 	}
 	_ = renderer.Render(RenderState{Messages: messages, Mode: RenderModeAltScreen, Width: 40, Height: 12})
 

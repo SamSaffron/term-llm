@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -664,7 +664,7 @@ func (m *ApprovalManager) GrantWorkspace(ctx context.Context, canonicalPath stri
 	}
 
 	if m.parent == nil {
-		m.BindWorkspaceSessionID(llm.SessionIDFromContext(ctx))
+		m.BindWorkspaceSessionID(core.SessionIDFromContext(ctx))
 	}
 	existing, baseline, yoloOverlay, version, idempotent := root.workspaceGrantState(canonicalPath, access)
 	if idempotent {
@@ -960,7 +960,7 @@ func (m *ApprovalManager) workspacePersistence(ctx context.Context) (session.Wor
 	sessionID := root.workspaceSessionID
 	root.workspaceMu.RUnlock()
 	if sessionID == "" {
-		sessionID = strings.TrimSpace(llm.SessionIDFromContext(ctx))
+		sessionID = strings.TrimSpace(core.SessionIDFromContext(ctx))
 	}
 	return store, strings.TrimSpace(sessionID)
 }

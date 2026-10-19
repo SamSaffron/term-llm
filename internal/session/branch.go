@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 // GetBranchByIdempotencyKey returns an already-materialized child without
@@ -54,16 +55,16 @@ func (s *SQLiteStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessi
 // anchor. Provider-context-only rows (system, developer, and events) and
 // compaction artifacts are not continuation boundaries.
 func IsBranchableMessage(message Message) bool {
-	if message.CompactionTail || message.IsGoalSteering() || llm.IsInternalCompactionSummaryText(message.TextContent) {
+	if message.CompactionTail || message.IsGoalSteering() || engine.IsInternalCompactionSummaryText(message.TextContent) {
 		return false
 	}
 	for _, part := range message.Parts {
-		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+		if part.Type == core.PartText && engine.IsInternalCompactionSummaryText(part.Text) {
 			return false
 		}
 	}
 	switch message.Role {
-	case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+	case core.RoleUser, core.RoleAssistant, core.RoleTool:
 		return true
 	default:
 		return false
@@ -155,7 +156,7 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			} else if err != nil {
 				return fmt.Errorf("resolve branch anchor: %w", err)
 			}
-			anchor := Message{Role: llm.Role(anchorRole), TextContent: anchorText, CompactionTail: anchorCompactionTail}
+			anchor := Message{Role: core.Role(anchorRole), TextContent: anchorText, CompactionTail: anchorCompactionTail}
 			if !IsBranchableMessage(anchor) {
 				return ErrNotFound
 			}
@@ -341,7 +342,7 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 
 // MessagesAfterBranchAnchor returns the visible conversation suffix omitted by
 // CreateBranch for the given source anchor. Anchor zero selects the full transcript.
-func MessagesAfterBranchAnchor(messages []Message, anchorMessageID int64) ([]llm.Message, error) {
+func MessagesAfterBranchAnchor(messages []Message, anchorMessageID int64) ([]core.Message, error) {
 	anchorSequence := -1
 	if anchorMessageID > 0 {
 		found := false
@@ -356,16 +357,16 @@ func MessagesAfterBranchAnchor(messages []Message, anchorMessageID int64) ([]llm
 			return nil, ErrNotFound
 		}
 	}
-	out := make([]llm.Message, 0, len(messages))
+	out := make([]core.Message, 0, len(messages))
 	for i := range messages {
 		message := &messages[i]
 		if message.Sequence <= anchorSequence || message.CompactionTail || message.IsGoalSteering() || message.isInternalCompactionSummary() {
 			continue
 		}
 		switch message.Role {
-		case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+		case core.RoleUser, core.RoleAssistant, core.RoleTool:
 			out = append(out, message.ToLLMMessage())
-		case llm.RoleDeveloper:
+		case core.RoleDeveloper:
 			provenance, ok := message.PathNoteProvenance()
 			if !ok {
 				continue
@@ -377,9 +378,9 @@ func MessagesAfterBranchAnchor(messages []Message, anchorMessageID int64) ([]llm
 			provenanceCopy := *provenance
 			provenanceCopy.ReadFiles = append([]string(nil), provenance.ReadFiles...)
 			provenanceCopy.ModifiedFiles = append([]string(nil), provenance.ModifiedFiles...)
-			out = append(out, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{
-				{Type: llm.PartPathNote, PathNote: &provenanceCopy},
-				{Type: llm.PartText, Text: message.PathNoteDisplayText()},
+			out = append(out, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{
+				{Type: core.PartPathNote, PathNote: &provenanceCopy},
+				{Type: core.PartText, Text: message.PathNoteDisplayText()},
 			}})
 		}
 	}

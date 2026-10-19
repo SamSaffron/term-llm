@@ -6,15 +6,15 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/subagentview"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type persistedSubagentSource struct {
-	call   llm.ToolCall
-	result llm.ToolResult
+	call   core.ToolCall
+	result core.ToolResult
 	parsed tools.SpawnAgentResult
 }
 
@@ -25,13 +25,13 @@ type persistedSubagentsLoadedMsg struct {
 }
 
 func discoverPersistedSubagents(messages []session.Message) []persistedSubagentSource {
-	calls := make(map[string]llm.ToolCall)
+	calls := make(map[string]core.ToolCall)
 	order := make([]string, 0)
-	results := make(map[string]llm.ToolResult)
+	results := make(map[string]core.ToolResult)
 	for _, message := range messages {
 		for _, part := range message.Parts {
 			switch part.Type {
-			case llm.PartToolCall:
+			case core.PartToolCall:
 				if part.ToolCall == nil || part.ToolCall.Name != tools.SpawnAgentToolName || strings.TrimSpace(part.ToolCall.ID) == "" {
 					continue
 				}
@@ -39,7 +39,7 @@ func discoverPersistedSubagents(messages []session.Message) []persistedSubagentS
 					order = append(order, part.ToolCall.ID)
 				}
 				calls[part.ToolCall.ID] = *part.ToolCall
-			case llm.PartToolResult:
+			case core.PartToolResult:
 				if part.ToolResult == nil || strings.TrimSpace(part.ToolResult.ID) == "" {
 					continue
 				}

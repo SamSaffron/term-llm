@@ -109,7 +109,7 @@ func importsModule(p Pkg, mod string) bool {
 type state struct {
 	goFiles                                                                []string
 	goChanged, sourceChanged, nestedChanged, frontend, plans, ledger, docs bool
-	unknownGo                                                              bool
+	unknownGo, apiTypes                                                    bool
 	nested                                                                 map[string]bool
 	changedPkgs                                                            map[string]bool
 }
@@ -131,10 +131,36 @@ func nestedOwner(f string, mods []string) string {
 	return owner
 }
 
+// apiTypeSources are the Go trees whose JSON contracts internal/tsgen reads.
+// tsgen parses source rather than importing these packages, so reverse
+// dependencies alone do not select its drift test.
+var apiTypeSources = []string{"internal/app/serve", "internal/serve", "internal/session", "internal/share", "internal/hub", "internal/llm/core", "internal/plan", "internal/tools"}
+
+func affectsAPITypes(f string) bool {
+	if isUnder(f, "frontend/src/api") || isUnder(f, "internal/tsgen") || isUnder(f, "cmd/gentsapi") {
+		return true
+	}
+	if !strings.HasSuffix(f, ".go") {
+		return false
+	}
+	if isUnder(f, "cmd") && strings.HasPrefix(path.Base(f), "serve") {
+		return true
+	}
+	for _, dir := range apiTypeSources {
+		if isUnder(f, dir) {
+			return true
+		}
+	}
+	return false
+}
+
 // classify records the effect of one changed file.
 func (st *state) classify(f string, in Input, byDir map[string]Pkg) {
 	if isUnder(f, "docs-site") {
 		st.docs = true
+	}
+	if affectsAPITypes(f) {
+		st.apiTypes = true
 	}
 	if m := nestedOwner(f, in.NestedMods); m != "" {
 		st.nested[m] = true
@@ -230,9 +256,10 @@ func (st *state) resolveTargets(in Input, pl *Plan) []string {
 	return pl.Affected
 }
 
-func hasGendocs(targets []string) bool {
+// hasTarget reports whether go test already covers the named command package.
+func hasTarget(targets []string, name string) bool {
 	for _, t := range targets {
-		if t == "./..." || path.Base(t) == "gendocs" {
+		if t == "./..." || path.Base(t) == name {
 			return true
 		}
 	}
@@ -290,7 +317,10 @@ func BuildPlan(in Input) Plan {
 	}
 	// Docs drift is a gendocs test: go test already runs it when gendocs is a
 	// target, so only add it for docs-site changes that miss it.
-	if st.docs && !hasGendocs(targets) {
+	if st.apiTypes && !hasTarget(targets, "gentsapi") {
+		pl.Steps = append(pl.Steps, Step{Name: "api types drift", Args: []string{"go", "test", "./cmd/gentsapi", "-run", "^TestAPITypesUpToDate$"}})
+	}
+	if st.docs && !hasTarget(targets, "gendocs") {
 		if !st.goChanged {
 			pl.Steps = append(pl.Steps, Step{Name: "make frontend", Args: []string{"make", "frontend"}})
 		}

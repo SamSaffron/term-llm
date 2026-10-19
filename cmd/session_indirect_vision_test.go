@@ -8,7 +8,8 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -48,7 +49,7 @@ func TestNewVisionProviderForTargetUsesProviderDefaultModel(t *testing.T) {
 func TestSetupToolManagerAutoEnablesIndirectVisionViewImage(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	cfg := indirectVisionTestConfig()
-	engine := llm.NewEngine(llm.NewMockProvider("primary"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("primary"), nil)
 	settings := SessionSettings{Provider: "text", Model: "tiny-text"}
 
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
@@ -72,7 +73,7 @@ func TestSetupToolManagerAutoEnablesIndirectVisionViewImage(t *testing.T) {
 func TestIndirectVisionUploadsPermissionScopedToViewImage(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	cfg := indirectVisionTestConfig()
-	engine := llm.NewEngine(llm.NewMockProvider("primary"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("primary"), nil)
 	settings := SessionSettings{Provider: "text", Model: "tiny-text", Tools: tools.ReadFileToolName}
 
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
@@ -115,7 +116,7 @@ func TestAlignSettingsToActiveProviderUsesResolvedConfig(t *testing.T) {
 	cfg.Providers["text"] = config.ProviderConfig{Model: "resolved-model"}
 	settings := SessionSettings{Provider: "stale", Model: "stale-model"}
 
-	alignSettingsToActiveProvider(&settings, cfg, llm.NewMockProvider("primary"))
+	alignSettingsToActiveProvider(&settings, cfg, mockprovider.NewMockProvider("primary"))
 
 	if settings.Provider != "text" || settings.Model != "resolved-model" {
 		t.Fatalf("settings provider/model = %q/%q, want text/resolved-model", settings.Provider, settings.Model)

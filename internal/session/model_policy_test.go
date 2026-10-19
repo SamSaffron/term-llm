@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
 
@@ -26,7 +26,7 @@ func TestSessionModelPolicyPersistsAndBranches(t *testing.T) {
 	if err != nil || !got.ModelPolicy.Restricted() {
 		t.Fatalf("Get = %+v, %v", got, err)
 	}
-	anchor := addBranchTestMessage(t, store, source.ID, llm.UserText("branch me"))
+	anchor := addBranchTestMessage(t, store, source.ID, core.UserText("branch me"))
 	branch, branchErr := store.CreateBranch(ctx, source.ID, CreateBranchOptions{AnchorMessageID: anchor.ID})
 	if branchErr != nil {
 		t.Fatal(branchErr)
@@ -92,7 +92,7 @@ func TestBranchModelPolicyCopyFailureRollsBackChild(t *testing.T) {
 	if err := store.Create(ctx, source); err != nil {
 		t.Fatal(err)
 	}
-	anchor := addBranchTestMessage(t, store, source.ID, llm.UserText("anchor"))
+	anchor := addBranchTestMessage(t, store, source.ID, core.UserText("anchor"))
 	if _, err := store.db.Exec(`CREATE TRIGGER reject_branch_policy BEFORE UPDATE OF model_policy ON sessions
  WHEN NEW.id <> '` + source.ID + `' BEGIN SELECT RAISE(ABORT, 'policy copy failed'); END`); err != nil {
 		t.Fatal(err)

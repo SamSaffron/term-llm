@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -28,7 +29,7 @@ func TestFreshCmdRunnerWaitsForDetachedResultOnNextTurn(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}, Sessions: config.SessionsConfig{Enabled: true, Path: path}}
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	firstStore, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: path})
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +38,7 @@ func TestFreshCmdRunnerWaitsForDetachedResultOnNextTurn(t *testing.T) {
 	prepare := func(store session.Store, own *agentHostOwner) *cmdRunEnvironment {
 		t.Helper()
 		runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store, Tools: "spawn_agent", ToolsSet: true, AgentOwner: own}).(*cmdRunner)
-		env, err := runner.prepare(ctx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: "parent", ProviderInstance: llm.NewMockProvider("mock"), Cwd: t.TempDir(), DeferSession: true}, nil)
+		env, err := runner.prepare(ctx, runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: "parent", ProviderInstance: mockprovider.NewMockProvider("mock"), Cwd: t.TempDir(), DeferSession: true}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

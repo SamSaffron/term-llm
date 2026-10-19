@@ -13,7 +13,8 @@ import (
 	"github.com/muesli/reflow/truncate"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -439,14 +440,14 @@ func renderUpdatePlanChecklist(args json.RawMessage, running bool, width int) (s
 // RenderToolCallFromPart renders a historical tool call from an llm.ToolCall.
 // Uses success styling since historical calls without matching results are assumed completed.
 // width is the terminal width used to truncate long lines (0 = no truncation).
-func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
+func RenderToolCallFromPart(tc *core.ToolCall, width int, expanded bool) string {
 	return RenderToolCallFromPartWithStatus(tc, width, expanded, ToolSuccess)
 }
 
 // RenderToolCallFromPartWithStatus renders a historical tool call from an llm.ToolCall
 // using the supplied execution status.
 // width is the terminal width used to truncate long lines (0 = no truncation).
-func RenderToolCallFromPartWithStatus(tc *llm.ToolCall, width int, expanded bool, status ToolStatus) string {
+func RenderToolCallFromPartWithStatus(tc *core.ToolCall, width int, expanded bool, status ToolStatus) string {
 	if tc == nil {
 		return ""
 	}
@@ -477,7 +478,7 @@ func RenderToolCallFromPartWithStatus(tc *llm.ToolCall, width int, expanded bool
 
 	info := terminaltext.SanitizeSingleLine(tc.ToolInfo)
 	if info == "" {
-		info = terminaltext.SanitizeSingleLine(llm.ExtractToolInfo(*tc))
+		info = terminaltext.SanitizeSingleLine(engine.ExtractToolInfo(*tc))
 	}
 	info = truncateToolInfo(toolName, info, width)
 	if info != "" {

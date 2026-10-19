@@ -13,18 +13,21 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type liveContextProbeTool struct{ calls atomic.Int32 }
 
-func (*liveContextProbeTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "live_probe", Description: "Test probe", Schema: map[string]any{"type": "object", "properties": map[string]any{}}}
+func (*liveContextProbeTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "live_probe", Description: "Test probe", Schema: map[string]any{"type": "object", "properties": map[string]any{}}}
 }
-func (t *liveContextProbeTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+func (t *liveContextProbeTool) Execute(context.Context, json.RawMessage) (core.ToolOutput, error) {
 	t.calls.Add(1)
-	return llm.TextOutput("probe result"), nil
+	return core.TextOutput("probe result"), nil
 }
 func (*liveContextProbeTool) Preview(json.RawMessage) string { return "probe" }
 
@@ -42,7 +45,7 @@ func TestLiveDelegationUsesConfiguredToolsAndCleanTranscript(t *testing.T) {
 			if denied {
 				rt.engine.SetAllowedToolsFilter([]string{})
 			}
-			provider := rt.provider.(*llm.MockProvider)
+			provider := rt.provider.(*mockprovider.MockProvider)
 			provider.AddToolCall("probe-1", "live_probe", map[string]any{}).AddTextResponse("```go\npackage main\n```")
 			record := newLiveSession("call", "live-tools")
 			record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
@@ -93,7 +96,7 @@ func TestLiveDelegationUsesConfiguredToolsAndCleanTranscript(t *testing.T) {
 				t.Fatalf("visual output stripped: %s", output.String())
 			}
 			rt.mu.Lock()
-			history := append([]llm.Message(nil), rt.history...)
+			history := append([]core.Message(nil), rt.history...)
 			rt.mu.Unlock()
 			var rows []session.Message
 			for i, msg := range history {
@@ -113,7 +116,7 @@ func TestLiveDelegationUsesConfiguredToolsAndCleanTranscript(t *testing.T) {
 				t.Fatal("no visible request")
 			}
 			contextMessage, ok := llm.PlatformContextFrom(history)
-			if !ok || !strings.Contains(llm.MessageText(contextMessage), live.ExecutionInstructions) || !strings.Contains(llm.MessageText(contextMessage), "cove") {
+			if !ok || !strings.Contains(core.MessageText(contextMessage), live.ExecutionInstructions) || !strings.Contains(core.MessageText(contextMessage), "cove") {
 				t.Fatalf("missing mode/capabilities: %+v", contextMessage)
 			}
 			if !requests[0].IncludeDeveloperInContinuation {
@@ -138,14 +141,14 @@ func TestLiveDelegationUsesConfiguredToolsAndCleanTranscript(t *testing.T) {
 func TestLiveModeContextTransitionsAndRestart(t *testing.T) {
 	record := newLiveSession("call", "chat")
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	for range 6 {
 		provider.AddTextResponse("answer")
 	}
-	rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), platform: "web", liveContext: record.executionContextFor("chat")}
+	rt := &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), platform: "web", liveContext: record.executionContextFor("chat")}
 	run := func() {
 		t.Helper()
-		if _, err := rt.Run(context.Background(), true, false, []llm.Message{llm.UserText("request")}, llm.Request{SessionID: "chat"}); err != nil {
+		if _, err := rt.Run(context.Background(), true, false, []core.Message{core.UserText("request")}, core.Request{SessionID: "chat"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -170,22 +173,22 @@ func TestLiveModeContextTransitionsAndRestart(t *testing.T) {
 		t.Fatalf("mode reset count = %d", count())
 	}
 	latest, _ := llm.PlatformContextFrom(rt.history)
-	if llm.MessageText(latest) != liveTextModeContext {
-		t.Fatalf("latest context=%q", llm.MessageText(latest))
+	if core.MessageText(latest) != liveTextModeContext {
+		t.Fatalf("latest context=%q", core.MessageText(latest))
 	}
 	// Restart after an active call: no callback can survive, but history does.
-	rt.history = []llm.Message{llm.PlatformContextMessageForMode("Live voice mode is active. "+live.ExecutionInstructions, "live"), llm.UserText("old")}
+	rt.history = []core.Message{llm.PlatformContextMessageForMode("Live voice mode is active. "+live.ExecutionInstructions, "live"), core.UserText("old")}
 	rt.liveContext = nil
 	run()
 	latest, _ = llm.PlatformContextFrom(rt.history)
-	if llm.MessageText(latest) != liveTextModeContext {
-		t.Fatalf("stale mode after restart: %q", llm.MessageText(latest))
+	if core.MessageText(latest) != liveTextModeContext {
+		t.Fatalf("stale mode after restart: %q", core.MessageText(latest))
 	}
-	rt.history = []llm.Message{llm.PlatformContextMessageForMode("previous live rules", "live"), llm.UserText("old")}
+	rt.history = []core.Message{llm.PlatformContextMessageForMode("previous live rules", "live"), core.UserText("old")}
 	rt.platformMessages.Web = "web presentation rules"
 	run()
 	latest, _ = llm.PlatformContextFrom(rt.history)
-	if !strings.Contains(llm.MessageText(latest), liveTextModeContext) || !strings.Contains(llm.MessageText(latest), "web presentation rules") || llm.PlatformContextMode(latest) != "text" {
+	if !strings.Contains(core.MessageText(latest), liveTextModeContext) || !strings.Contains(core.MessageText(latest), "web presentation rules") || llm.PlatformContextMode(latest) != "text" {
 		t.Fatalf("normal platform context did not explicitly reset live mode: %+v", latest)
 	}
 
@@ -248,13 +251,13 @@ func TestLiveStartupContextIsBoundedVisibleHistoryAndHostFacts(t *testing.T) {
 	if err := store.Create(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
-	messages := []llm.Message{llm.SystemText("secret-system-instructions"), llm.PlatformContextMessage("private-developer-context")}
+	messages := []core.Message{core.SystemText("secret-system-instructions"), llm.PlatformContextMessage("private-developer-context")}
 	for i := 0; i < 20; i++ {
-		msg := llm.UserText("provider-wrapper-private")
+		msg := core.UserText("provider-wrapper-private")
 		msg.DisplayText = strings.Repeat("🙂", 1024)
 		messages = append(messages, msg)
 	}
-	messages = append(messages, llm.AssistantText("latest visible answer"))
+	messages = append(messages, core.AssistantText("latest visible answer"))
 	for i, msg := range messages {
 		if err := store.AddMessage(context.Background(), meta.ID, session.NewMessage(meta.ID, msg, i)); err != nil {
 			t.Fatal(err)
@@ -292,7 +295,7 @@ func TestLiveSettingsRunsThroughDelegatedEngineContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt.platform = "web"
-	provider := rt.provider.(*llm.MockProvider)
+	provider := rt.provider.(*mockprovider.MockProvider)
 	provider.AddToolCall("settings", tools.LiveSettingsToolName, map[string]any{"voice": "maple"}).AddTextResponse("Selected Maple.")
 	// A continuation or explicitly configured schema must not be duplicated.
 	rt.engine.RegisterTool(&tools.LiveSettingsTool{})
@@ -350,17 +353,17 @@ func TestLiveDelegationRejectsMissingSpeech(t *testing.T) {
 
 type liveSteeringGateTool struct{ entered, release chan struct{} }
 
-func (*liveSteeringGateTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "live_gate", Description: "Block until test releases", Schema: map[string]any{"type": "object"}}
+func (*liveSteeringGateTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "live_gate", Description: "Block until test releases", Schema: map[string]any{"type": "object"}}
 }
 func (*liveSteeringGateTool) Preview(json.RawMessage) string { return "gate" }
-func (t *liveSteeringGateTool) Execute(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+func (t *liveSteeringGateTool) Execute(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
 	close(t.entered)
 	select {
 	case <-t.release:
-		return llm.TextOutput("released"), nil
+		return core.TextOutput("released"), nil
 	case <-ctx.Done():
-		return llm.ToolOutput{}, ctx.Err()
+		return core.ToolOutput{}, ctx.Err()
 	}
 }
 func TestLiveSteeringIsVisibleBeforeConsumptionAndConsumedBySameRun(t *testing.T) {
@@ -381,7 +384,7 @@ func TestLiveSteeringIsVisibleBeforeConsumptionAndConsumedBySameRun(t *testing.T
 	rt.store = store
 	gate := &liveSteeringGateTool{entered: make(chan struct{}), release: make(chan struct{})}
 	rt.engine.RegisterTool(gate)
-	provider := rt.provider.(*llm.MockProvider)
+	provider := rt.provider.(*mockprovider.MockProvider)
 	provider.AddToolCall("gate", "live_gate", map[string]any{}).AddTextResponse("the changeset is ready")
 	d := &serveLiveDelegator{server: s, live: newLiveSession("call", "live-steering")}
 	idle, err := d.Steer(ctx, live.DelegationRequest{ID: "idle", Input: "not running"})
@@ -465,7 +468,7 @@ func TestLiveSteeringIsVisibleBeforeConsumptionAndConsumedBySameRun(t *testing.T
 	for _, msg := range requests[1].Messages {
 		if msg.ClientMessageID == id {
 			found++
-			if !strings.Contains(llm.MessageText(msg), "private voice context") {
+			if !strings.Contains(core.MessageText(msg), "private voice context") {
 				t.Fatal("lost provider context")
 			}
 		}

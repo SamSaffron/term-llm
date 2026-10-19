@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/debug"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -21,11 +22,11 @@ import (
 func init() {
 	registerServeBrowserFixtureRoutes = func(mux *http.ServeMux, server *serveServer) {
 		mux.HandleFunc("POST /__browser_fixture/response-gates", func(w http.ResponseWriter, r *http.Request) {
-			gate := llm.NewDebugBrowserGate()
+			gate := debug.NewBrowserGate()
 			writeJSON(w, http.StatusCreated, map[string]string{"prompt": gate.Prompt})
 		})
 		mux.HandleFunc("GET /__browser_fixture/response-gates/{prompt}/started", func(w http.ResponseWriter, r *http.Request) {
-			gate, ok := llm.LookupDebugBrowserGate(r.PathValue("prompt"))
+			gate, ok := debug.LookupBrowserGate(r.PathValue("prompt"))
 			if !ok {
 				http.NotFound(w, r)
 				return
@@ -36,7 +37,7 @@ func init() {
 			w.WriteHeader(http.StatusNoContent)
 		})
 		mux.HandleFunc("POST /__browser_fixture/response-gates/{prompt}/release", func(w http.ResponseWriter, r *http.Request) {
-			if gate, ok := llm.LookupDebugBrowserGate(r.PathValue("prompt")); ok {
+			if gate, ok := debug.LookupBrowserGate(r.PathValue("prompt")); ok {
 				gate.Release()
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -73,7 +74,7 @@ func init() {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
-				ctx = llm.ContextWithCallID(ctx, callID)
+				ctx = core.ContextWithCallID(ctx, callID)
 				runtime.prepareAskUser(callID, questions)
 				close(ready)
 				_, _ = runtime.awaitAskUser(ctx, questions)
@@ -155,7 +156,7 @@ func init() {
 					return
 				}
 				task := []string{"Review the browser child lifecycle", "Verify the browser child failure"}[index]
-				if err := server.store.AddMessage(r.Context(), child.ID, session.NewMessage(child.ID, llm.UserText(task), -1)); err != nil {
+				if err := server.store.AddMessage(r.Context(), child.ID, session.NewMessage(child.ID, core.UserText(task), -1)); err != nil {
 					http.Error(w, "fixture child message failed", http.StatusInternalServerError)
 					return
 				}

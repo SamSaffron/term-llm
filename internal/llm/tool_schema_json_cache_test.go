@@ -1,6 +1,11 @@
 package llm
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+)
 
 type countingSchemaValue struct {
 	count *int
@@ -18,9 +23,9 @@ func TestToolSchemaJSONCacheReusesImmutableSchema(t *testing.T) {
 		"properties": map[string]interface{}{},
 		"x-count":    countingSchemaValue{count: &marshalCount},
 	}
-	specs := []ToolSpec{{Name: "cached", Description: "cached schema", Schema: schema}}
+	specs := []core.ToolSpec{{Name: "cached", Description: "cached schema", Schema: schema}}
 
-	compatTools, err := buildCompatTools(specs)
+	compatTools, err := opencompat.BuildCompatTools(specs)
 	if err != nil {
 		t.Fatalf("buildCompatTools first call: %v", err)
 	}
@@ -28,20 +33,12 @@ func TestToolSchemaJSONCacheReusesImmutableSchema(t *testing.T) {
 		t.Fatalf("buildCompatTools returned empty parameters: %#v", compatTools)
 	}
 
-	compatTools, err = buildCompatTools(specs)
+	compatTools, err = opencompat.BuildCompatTools(specs)
 	if err != nil {
 		t.Fatalf("buildCompatTools second call: %v", err)
 	}
 	if len(compatTools) != 1 || len(compatTools[0].Function.Parameters) == 0 {
 		t.Fatalf("buildCompatTools returned empty cached parameters: %#v", compatTools)
-	}
-
-	ollamaTools, err := buildOllamaTools(specs)
-	if err != nil {
-		t.Fatalf("buildOllamaTools: %v", err)
-	}
-	if len(ollamaTools) != 1 || len(ollamaTools[0].Function.Parameters) == 0 {
-		t.Fatalf("buildOllamaTools returned empty cached parameters: %#v", ollamaTools)
 	}
 
 	if marshalCount != 1 {

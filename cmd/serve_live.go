@@ -20,10 +20,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
-
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -1615,7 +1614,7 @@ func (s *serveServer) lastUserMessageText(ctx context.Context, sessionID string)
 		return ""
 	}
 	for _, message := range messages {
-		if message.Role != llm.RoleUser {
+		if message.Role != core.RoleUser {
 			continue
 		}
 		if text := strings.TrimSpace(message.DisplayText()); text != "" {
@@ -1802,7 +1801,7 @@ func (d *serveLiveDelegator) steerSession(ctx context.Context, sessionID string,
 		id = d.live.id + ":" + id
 	}
 	id = "live-steering:" + id
-	message := llm.UserText(live.DelegationPrompt(request.Input, request.TranscriptDelta))
+	message := core.UserText(live.DelegationPrompt(request.Input, request.TranscriptDelta))
 	message.DisplayText = strings.TrimSpace(request.Input)
 	var admissionErr error
 	owned := manager.withExpectedActiveRun(sessionID, run.id, run.runEpoch, func() {
@@ -1861,12 +1860,12 @@ func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationReq
 		}
 		return err
 	}
-	message := llm.UserText(live.DelegationPrompt(request.Input, request.TranscriptDelta))
+	message := core.UserText(live.DelegationPrompt(request.Input, request.TranscriptDelta))
 	message.DisplayText = strings.TrimSpace(request.Input)
 	// The page tools are read once, so every round of this delegation offers the
 	// same ones; a declaration that changes meanwhile applies to the next.
 	tools := d.pageTools()
-	run, err := d.startDelegatedRun(runtime, sessionID, d.previousResponseID(ctx, runtime, sessionID), []llm.Message{message}, tools)
+	run, err := d.startDelegatedRun(runtime, sessionID, d.previousResponseID(ctx, runtime, sessionID), []core.Message{message}, tools)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			return live.ErrDelegationBusy
@@ -1887,7 +1886,7 @@ func (d *serveLiveDelegator) previousResponseID(ctx context.Context, runtime *se
 // startDelegatedRun starts one host-owned turn in sessionID: the delegation
 // itself, or a continuation carrying page tool results. Both run with the call's
 // live context and offer the same page tools.
-func (d *serveLiveDelegator) startDelegatedRun(runtime *serveRuntime, sessionID, previousResponseID string, messages []llm.Message, tools []json.RawMessage, expectedLatest ...string) (*responseRun, error) {
+func (d *serveLiveDelegator) startDelegatedRun(runtime *serveRuntime, sessionID, previousResponseID string, messages []core.Message, tools []json.RawMessage, expectedLatest ...string) (*responseRun, error) {
 	s := d.server
 	req := s.buildResponsesLLMRequest(responsesCreateRequest{Model: runtime.defaultModel, Tools: tools}, runtime, sessionID, true)
 	options := startResponseRunOptions{
@@ -1900,7 +1899,7 @@ func (d *serveLiveDelegator) startDelegatedRun(runtime *serveRuntime, sessionID,
 			return d.previousResponseID(context.Background(), runtime, sessionID) == expected
 		}
 	}
-	options.runtimeSetup = func(req *llm.Request) error {
+	options.runtimeSetup = func(req *core.Request) error {
 		if d.live != nil {
 			runtime.liveContext = d.live.executionContextFor(sessionID)
 		}

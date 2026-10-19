@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -18,8 +18,8 @@ func TestNew(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello, world!"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello, world!"}},
 			TextContent: "Hello, world!",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -27,8 +27,8 @@ func TestNew(t *testing.T) {
 		{
 			ID:          2,
 			SessionID:   "test-session",
-			Role:        llm.RoleAssistant,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello! How can I help you today?"}},
+			Role:        core.RoleAssistant,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello! How can I help you today?"}},
 			TextContent: "Hello! How can I help you today?",
 			CreatedAt:   time.Now(),
 			Sequence:    1,
@@ -55,14 +55,14 @@ func TestNew(t *testing.T) {
 }
 
 func TestInspectorRendersToolDiscoveryDiagnostics(t *testing.T) {
-	diagnostics := &llm.ToolDiscoveryDiagnostics{
+	diagnostics := &core.ToolDiscoveryDiagnostics{
 		ConfiguredMode: "auto", ResolvedMode: "deferred", ConfiguredStrategy: "auto", Strategy: "native",
 		Reason: "42 MCP tools exceed configured threshold 24", StrategyReason: "exact verified support", PinnedCount: 2, ActiveMCPCount: 3,
 		DeferredCount: 37, PinnedTokens: 100, ActiveMCPTokens: 200, DeferredTokens: 9000,
 		DynamicActive: 3, DynamicLimit: 16,
-		Recent: []llm.ToolActivationDiagnostic{{Name: "github__merge_pull_request", Reason: "search: merge pull request"}},
+		Recent: []core.ToolActivationDiagnostic{{Name: "github__merge_pull_request", Reason: "search: merge pull request"}},
 	}
-	m := NewWithConfig([]session.Message{{Role: llm.RoleUser, TextContent: "hello"}}, 100, 40, ui.DefaultStyles(), nil, &Config{ToolDiscovery: diagnostics})
+	m := NewWithConfig([]session.Message{{Role: core.RoleUser, TextContent: "hello"}}, 100, 40, ui.DefaultStyles(), nil, &Config{ToolDiscovery: diagnostics})
 	content := strings.Join(m.contentLines, "\n")
 	for _, want := range []string{"Tool Discovery", "auto / deferred", "auto / native", "exact verified support", "42 MCP tools exceed configured threshold 24", "37 tools, ~9000 tokens avoided", "github__merge_pull_request"} {
 		if !strings.Contains(content, want) {
@@ -82,8 +82,8 @@ func TestScrolling(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleAssistant,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: longText}},
+			Role:        core.RoleAssistant,
+			Parts:       []core.Part{{Type: core.PartText, Text: longText}},
 			TextContent: longText,
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -127,8 +127,8 @@ func TestQuit(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Test"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Test"}},
 			TextContent: "Test",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -155,8 +155,8 @@ func TestView(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello"}},
 			TextContent: "Hello",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -186,30 +186,30 @@ func TestViewMarksCompactionBoundaryAndExpandsCompactionStory(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:          1,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "before compaction"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "before compaction"}},
 			TextContent: "before compaction",
 			Sequence:    0,
 		},
 		{
 			ID:          2,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: body}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: body}},
 			TextContent: body,
 			Sequence:    1,
 		},
 		{
 			ID:             3,
-			Role:           llm.RoleAssistant,
-			Parts:          []llm.Part{{Type: llm.PartText, Text: "retained assistant turn"}},
+			Role:           core.RoleAssistant,
+			Parts:          []core.Part{{Type: core.PartText, Text: "retained assistant turn"}},
 			TextContent:    "retained assistant turn",
 			Sequence:       2,
 			CompactionTail: true,
 		},
 		{
 			ID:             4,
-			Role:           llm.RoleUser,
-			Parts:          []llm.Part{{Type: llm.PartText, Text: "retained user turn"}},
+			Role:           core.RoleUser,
+			Parts:          []core.Part{{Type: core.PartText, Text: "retained user turn"}},
 			TextContent:    "retained user turn",
 			Sequence:       3,
 			CompactionTail: true,
@@ -243,8 +243,8 @@ func TestExpandAllWorksAtViewportBottom(t *testing.T) {
 	var messages []session.Message
 	messages = append(messages, session.Message{
 		ID:          1,
-		Role:        llm.RoleSystem,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: "system prompt used by the real inspector path"}},
+		Role:        core.RoleSystem,
+		Parts:       []core.Part{{Type: core.PartText, Text: "system prompt used by the real inspector path"}},
 		TextContent: "system prompt used by the real inspector path",
 		Sequence:    0,
 	})
@@ -252,8 +252,8 @@ func TestExpandAllWorksAtViewportBottom(t *testing.T) {
 		text := fmt.Sprintf("older filler message %02d\n%s", i, strings.Repeat("filler line\n", 3))
 		messages = append(messages, session.Message{
 			ID:          int64(i + 2),
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: text}},
 			TextContent: text,
 			Sequence:    i + 1,
 		})
@@ -262,15 +262,15 @@ func TestExpandAllWorksAtViewportBottom(t *testing.T) {
 	messages = append(messages,
 		session.Message{
 			ID:          100,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: body}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: body}},
 			TextContent: body,
 			Sequence:    summaryIdx,
 		},
 		session.Message{
 			ID:             101,
-			Role:           llm.RoleAssistant,
-			Parts:          []llm.Part{{Type: llm.PartText, Text: "retained assistant tail"}},
+			Role:           core.RoleAssistant,
+			Parts:          []core.Part{{Type: core.PartText, Text: "retained assistant tail"}},
 			TextContent:    "retained assistant tail",
 			Sequence:       summaryIdx + 1,
 			CompactionTail: true,
@@ -279,7 +279,7 @@ func TestExpandAllWorksAtViewportBottom(t *testing.T) {
 	cfg := &Config{
 		ProviderName:            "anthropic",
 		ModelName:               "claude-opus",
-		ToolSpecs:               []llm.ToolSpec{{Name: "debug_tool", Description: "debug tool", Schema: map[string]interface{}{"type": "object"}}},
+		ToolSpecs:               []core.ToolSpec{{Name: "debug_tool", Description: "debug tool", Schema: map[string]interface{}{"type": "object"}}},
 		HasCompactionBoundary:   true,
 		CompactionBoundaryIndex: summaryIdx,
 		CompactionBoundarySeq:   summaryIdx,
@@ -326,15 +326,15 @@ func TestViewMarksCompactionBoundaryBeforePlainActiveMessage(t *testing.T) {
 	messages := []session.Message{
 		{
 			ID:          1,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "older scrollback"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "older scrollback"}},
 			TextContent: "older scrollback",
 			Sequence:    3,
 		},
 		{
 			ID:          2,
-			Role:        llm.RoleAssistant,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "active answer"}},
+			Role:        core.RoleAssistant,
+			Parts:       []core.Part{{Type: core.PartText, Text: "active answer"}},
 			TextContent: "active answer",
 			Sequence:    4,
 		},
@@ -430,8 +430,8 @@ func TestNewWithConfig(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello"}},
 			TextContent: "Hello",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -441,7 +441,7 @@ func TestNewWithConfig(t *testing.T) {
 	cfg := &Config{
 		ProviderName: "anthropic",
 		ModelName:    "claude-3-opus",
-		ToolSpecs: []llm.ToolSpec{
+		ToolSpecs: []core.ToolSpec{
 			{Name: "read_file", Description: "Read a file from disk"},
 			{Name: "write_file", Description: "Write content to a file"},
 		},
@@ -471,8 +471,8 @@ func TestNewWithConfigNil(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello"}},
 			TextContent: "Hello",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -504,8 +504,8 @@ func TestViewWithModelInfo(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello"}},
 			TextContent: "Hello",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -539,8 +539,8 @@ func TestViewWithToolDefinitions(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello"}},
 			TextContent: "Hello",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -548,7 +548,7 @@ func TestViewWithToolDefinitions(t *testing.T) {
 	}
 
 	cfg := &Config{
-		ToolSpecs: []llm.ToolSpec{
+		ToolSpecs: []core.ToolSpec{
 			{Name: "read_file", Description: "Read a file from disk"},
 			{Name: "write_file", Description: "Write content to a file"},
 		},
@@ -579,12 +579,12 @@ func TestViewWithReasoningSummary(t *testing.T) {
 	messages := []session.Message{{
 		ID:        1,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:                  llm.PartText,
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:                  core.PartText,
 			Text:                  "Final answer.",
 			ReasoningContent:      "**Inspecting files**\n\nI checked the renderer.",
-			ReasoningKind:         llm.ReasoningKindSummary,
+			ReasoningKind:         core.ReasoningKindSummary,
 			ReasoningSummaryTitle: "Inspecting files",
 		}},
 		TextContent: "Final answer.",
@@ -609,12 +609,12 @@ func TestViewWithReasoningRawVisibleByDefault(t *testing.T) {
 	messages := []session.Message{{
 		ID:        1,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Final answer.",
 			ReasoningContent: "raw qwen thinking chain",
-			ReasoningKind:    llm.ReasoningKindRaw,
+			ReasoningKind:    core.ReasoningKindRaw,
 		}},
 		TextContent: "Final answer.",
 		CreatedAt:   time.Now(),
@@ -641,12 +641,12 @@ func TestViewWithReasoningUnknownVisibleInInspector(t *testing.T) {
 	messages := []session.Message{{
 		ID:        1,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Final answer.",
 			ReasoningContent: "provider thought without classification",
-			ReasoningKind:    llm.ReasoningKindUnknown,
+			ReasoningKind:    core.ReasoningKindUnknown,
 		}},
 		TextContent: "Final answer.",
 		CreatedAt:   time.Now(),
@@ -664,12 +664,12 @@ func TestViewWithReasoningEncryptedHidden(t *testing.T) {
 	messages := []session.Message{{
 		ID:        1,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:             llm.PartText,
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:             core.PartText,
 			Text:             "Final answer.",
 			ReasoningContent: "encrypted thought plaintext should not appear",
-			ReasoningKind:    llm.ReasoningKindEncrypted,
+			ReasoningKind:    core.ReasoningKindEncrypted,
 		}},
 		TextContent: "Final answer.",
 		CreatedAt:   time.Now(),
@@ -690,12 +690,12 @@ func TestViewWithReasoningRawUsesProviderTitle(t *testing.T) {
 	messages := []session.Message{{
 		ID:        1,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:                  llm.PartText,
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:                  core.PartText,
 			Text:                  "Final answer.",
 			ReasoningContent:      "raw visible chain",
-			ReasoningKind:         llm.ReasoningKindRaw,
+			ReasoningKind:         core.ReasoningKindRaw,
 			ReasoningSummaryTitle: "Exploring options",
 		}},
 		TextContent: "Final answer.",
@@ -718,12 +718,12 @@ func TestViewWithReasoningSummaryWrapsLongThoughtText(t *testing.T) {
 	messages := []session.Message{{
 		ID:        1,
 		SessionID: "test-session",
-		Role:      llm.RoleAssistant,
-		Parts: []llm.Part{{
-			Type:                  llm.PartText,
+		Role:      core.RoleAssistant,
+		Parts: []core.Part{{
+			Type:                  core.PartText,
 			Text:                  "Final answer.",
 			ReasoningContent:      "**Analyzing wrapping**\n\n" + longBody,
-			ReasoningKind:         llm.ReasoningKindSummary,
+			ReasoningKind:         core.ReasoningKindSummary,
 			ReasoningSummaryTitle: "Analyzing wrapping",
 		}},
 		TextContent: "Final answer.",
@@ -748,8 +748,8 @@ func TestViewWithSystemMessage(t *testing.T) {
 		{
 			ID:          1,
 			SessionID:   "test-session",
-			Role:        llm.RoleSystem,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "You are a helpful assistant."}},
+			Role:        core.RoleSystem,
+			Parts:       []core.Part{{Type: core.PartText, Text: "You are a helpful assistant."}},
 			TextContent: "You are a helpful assistant.",
 			CreatedAt:   time.Now(),
 			Sequence:    0,
@@ -757,8 +757,8 @@ func TestViewWithSystemMessage(t *testing.T) {
 		{
 			ID:          2,
 			SessionID:   "test-session",
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			Role:        core.RoleUser,
+			Parts:       []core.Part{{Type: core.PartText, Text: "Hello"}},
 			TextContent: "Hello",
 			CreatedAt:   time.Now(),
 			Sequence:    1,

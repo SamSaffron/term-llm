@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
@@ -563,7 +563,7 @@ func (s *SQLiteStore) SavePendingSteering(ctx context.Context, entry PendingStee
 		entry.CreatedAt = time.Now()
 	}
 	if entry.Origin == "" {
-		entry.Origin = llm.SteeringOriginLegacy
+		entry.Origin = engine.SteeringOriginLegacy
 	}
 	messageJSON, err := json.Marshal(entry.Message)
 	if err != nil {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestFallbackTranscriptIndexerProvidesMonotonicCoherentContract(t *testing.T) {
@@ -12,9 +12,9 @@ func TestFallbackTranscriptIndexerProvidesMonotonicCoherentContract(t *testing.T
 	ctx := context.Background()
 	adapter := NewFallbackTranscriptIndexer(store)
 
-	user := NewMessage(sess.ID, llm.Message{
-		Role:            llm.RoleUser,
-		Parts:           llm.UserText("hello").Parts,
+	user := NewMessage(sess.ID, core.Message{
+		Role:            core.RoleUser,
+		Parts:           core.UserText("hello").Parts,
 		ClientMessageID: "client-fallback",
 	}, -1)
 	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
@@ -28,7 +28,7 @@ func TestFallbackTranscriptIndexerProvidesMonotonicCoherentContract(t *testing.T
 		t.Fatalf("first fallback snapshot = %#v", first)
 	}
 
-	assistant := NewMessage(sess.ID, llm.AssistantText("answer"), -1)
+	assistant := NewMessage(sess.ID, core.AssistantText("answer"), -1)
 	assistant.ClientMessageID = "must-not-leak"
 	if err := store.AddMessage(ctx, sess.ID, assistant); err != nil {
 		t.Fatal(err)

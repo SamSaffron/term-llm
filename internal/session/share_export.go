@@ -5,7 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 // ShareScope identifies the transcript content included in a share.
@@ -27,7 +28,7 @@ type ShareSelection struct {
 	Messages []Message
 	// Media holds artifacts referenced by term-llm-media:// URLs in Messages
 	// whose producing tool results are not themselves part of the selection.
-	Media []llm.MediaArtifact
+	Media []core.MediaArtifact
 }
 
 // SelectShareMessages validates anchorMessageID and returns an authoritative,
@@ -59,7 +60,7 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 			break
 		}
 	}
-	if anchorIndex < 0 || ordered[anchorIndex].Role != llm.RoleAssistant || !shareMessageVisible(ordered[anchorIndex]) {
+	if anchorIndex < 0 || ordered[anchorIndex].Role != core.RoleAssistant || !shareMessageVisible(ordered[anchorIndex]) {
 		return ShareSelection{}, ErrInvalidShareAnchor
 	}
 
@@ -68,7 +69,7 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 	// to the anchored response, and their media is referenced by its text.
 	end := anchorIndex
 	anchorResponse := ordered[anchorIndex].ResponseID
-	for end+1 < len(ordered) && ordered[end+1].Role == llm.RoleTool &&
+	for end+1 < len(ordered) && ordered[end+1].Role == core.RoleTool &&
 		(anchorResponse == "" || ordered[end+1].ResponseID == anchorResponse) {
 		end++
 	}
@@ -79,7 +80,7 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 	case ShareScopeResponse:
 		anchor := ordered[anchorIndex]
 		start := anchorIndex
-		for start > 0 && ordered[start-1].Role != llm.RoleUser {
+		for start > 0 && ordered[start-1].Role != core.RoleUser {
 			start--
 		}
 		// A response share is the answer, not the work: only text written
@@ -89,8 +90,8 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 		// text written before it is used instead.
 		var segments [][]string
 		current := []string{}
-		var images []llm.Part
-		var media []llm.MediaArtifact
+		var images []core.Part
+		var media []core.MediaArtifact
 		closeSegment := func() {
 			if len(current) > 0 {
 				segments = append(segments, current)
@@ -102,30 +103,30 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 			if anchor.ResponseID != "" && msg.ResponseID != anchor.ResponseID {
 				continue
 			}
-			if msg.Role == llm.RoleTool {
+			if msg.Role == core.RoleTool {
 				for _, part := range msg.Parts {
-					if part.Type != llm.PartToolResult || part.ToolResult == nil {
+					if part.Type != core.PartToolResult || part.ToolResult == nil {
 						continue
 					}
 					media = append(media, part.ToolResult.Media...)
 					for _, source := range toolResultDisplayedImages(part.ToolResult) {
-						images = append(images, llm.Part{Type: llm.PartImage, ImagePath: source.Path})
+						images = append(images, core.Part{Type: core.PartImage, ImagePath: source.Path})
 					}
 				}
 				continue
 			}
-			if msg.Role != llm.RoleAssistant || !shareMessageVisible(msg) {
+			if msg.Role != core.RoleAssistant || !shareMessageVisible(msg) {
 				continue
 			}
 			parts := msg.Parts
 			if len(parts) == 0 && msg.TextContent != "" {
-				parts = []llm.Part{{Type: llm.PartText, Text: msg.TextContent}}
+				parts = []core.Part{{Type: core.PartText, Text: msg.TextContent}}
 			}
 			for _, part := range parts {
 				switch part.Type {
-				case llm.PartToolCall:
+				case core.PartToolCall:
 					closeSegment()
-				case llm.PartText:
+				case core.PartText:
 					if text := strings.TrimSpace(part.Text); text != "" {
 						current = append(current, text)
 					}
@@ -138,7 +139,7 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 		}
 		finalText := strings.Join(segments[len(segments)-1], "\n\n")
 		response := anchor
-		response.Parts = append(images, llm.Part{Type: llm.PartText, Text: finalText})
+		response.Parts = append(images, core.Part{Type: core.PartText, Text: finalText})
 		response.TextContent = finalText
 		response.CompactionTail = false
 		return ShareSelection{Messages: []Message{response}, Media: media}, nil
@@ -148,7 +149,7 @@ func SelectShare(messages []Message, anchorMessageID int64, scope ShareScope) (S
 }
 
 func shareMessageVisible(message Message) bool {
-	if message.CompactionTail || message.IsGoalSteering() || llm.IsInternalCompactionSummaryText(message.TextContent) {
+	if message.CompactionTail || message.IsGoalSteering() || engine.IsInternalCompactionSummaryText(message.TextContent) {
 		return false
 	}
 	return true
@@ -161,13 +162,13 @@ func shareMessageVisible(message Message) bool {
 // — are kept as assistant images in their original position, and the returned
 // media resolves term-llm-media:// references in assistant text. Consecutive
 // assistant content from one response is merged into a single message.
-func StripToolActivity(messages []Message) ([]Message, []llm.MediaArtifact) {
+func StripToolActivity(messages []Message) ([]Message, []core.MediaArtifact) {
 	out := make([]Message, 0, len(messages))
-	var media []llm.MediaArtifact
+	var media []core.MediaArtifact
 	// mergeable is the index in out of the assistant message produced by this
 	// function that later content of the same response may extend.
 	mergeable := -1
-	appendAssistant := func(source Message, parts []llm.Part) {
+	appendAssistant := func(source Message, parts []core.Part) {
 		if len(parts) == 0 {
 			return
 		}
@@ -184,7 +185,7 @@ func StripToolActivity(messages []Message) ([]Message, []llm.MediaArtifact) {
 			return
 		}
 		msg := source
-		msg.Role = llm.RoleAssistant
+		msg.Role = core.RoleAssistant
 		msg.Parts = parts
 		msg.TextContent = text
 		out = append(out, msg)
@@ -192,26 +193,26 @@ func StripToolActivity(messages []Message) ([]Message, []llm.MediaArtifact) {
 	}
 	for _, msg := range messages {
 		switch msg.Role {
-		case llm.RoleTool:
-			var images []llm.Part
+		case core.RoleTool:
+			var images []core.Part
 			for _, part := range msg.Parts {
-				if part.Type != llm.PartToolResult || part.ToolResult == nil {
+				if part.Type != core.PartToolResult || part.ToolResult == nil {
 					continue
 				}
 				media = append(media, part.ToolResult.Media...)
 				for _, source := range toolResultDisplayedImages(part.ToolResult) {
-					images = append(images, llm.Part{Type: llm.PartImage, ImagePath: source.Path})
+					images = append(images, core.Part{Type: core.PartImage, ImagePath: source.Path})
 				}
 			}
 			appendAssistant(msg, images)
-		case llm.RoleAssistant:
+		case core.RoleAssistant:
 			parts := msg.Parts
 			if len(parts) == 0 && msg.TextContent != "" {
-				parts = []llm.Part{{Type: llm.PartText, Text: msg.TextContent}}
+				parts = []core.Part{{Type: core.PartText, Text: msg.TextContent}}
 			}
-			kept := make([]llm.Part, 0, len(parts))
+			kept := make([]core.Part, 0, len(parts))
 			for _, part := range parts {
-				if part.Type == llm.PartToolCall || part.Type == llm.PartToolResult {
+				if part.Type == core.PartToolCall || part.Type == core.PartToolResult {
 					continue
 				}
 				kept = append(kept, part)
@@ -225,10 +226,10 @@ func StripToolActivity(messages []Message) ([]Message, []llm.MediaArtifact) {
 	return out, media
 }
 
-func assistantPartsText(parts []llm.Part) string {
+func assistantPartsText(parts []core.Part) string {
 	var texts []string
 	for _, part := range parts {
-		if part.Type == llm.PartText && strings.TrimSpace(part.Text) != "" {
+		if part.Type == core.PartText && strings.TrimSpace(part.Text) != "" {
 			texts = append(texts, strings.TrimSpace(part.Text))
 		}
 	}
@@ -238,7 +239,7 @@ func assistantPartsText(parts []llm.Part) string {
 // HasAudioMedia reports whether a selected transcript contains registered
 // recordings, including artifacts whose tool rows were removed. It performs
 // no filesystem access and does not grant permission to embed them.
-func HasAudioMedia(messages []Message, extra []llm.MediaArtifact) bool {
+func HasAudioMedia(messages []Message, extra []core.MediaArtifact) bool {
 	for _, item := range htmlMediaReferences(messages, extra) {
 		if strings.HasPrefix(normalizedMediaType(item.MediaType), "audio/") {
 			return true

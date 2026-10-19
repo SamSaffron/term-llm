@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -23,7 +23,7 @@ type agentControlTool struct {
 	spawn *SpawnAgentTool
 }
 
-func (t *agentControlTool) Spec() llm.ToolSpec {
+func (t *agentControlTool) Spec() core.ToolSpec {
 	props := map[string]any{}
 	required := []string{}
 	description := ""
@@ -52,7 +52,7 @@ func (t *agentControlTool) Spec() llm.ToolSpec {
 		}
 		description = "List agents belonging to this parent session, including interrupted agents from earlier processes."
 	}
-	return llm.ToolSpec{Name: t.name, Description: description, Schema: map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}}
+	return core.ToolSpec{Name: t.name, Description: description, Schema: map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}}
 }
 
 // Preview names the agents a call targets; the tool name is already shown.
@@ -80,7 +80,7 @@ type agentControlArgs struct {
 	Status       string   `json:"status"`
 }
 
-func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a agentControlArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return agentControlError(fmt.Sprintf("invalid arguments: %v", err)), nil
@@ -94,7 +94,7 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 	if parent == "" {
 		return agentControlError("agent lifecycle requires a parent session"), nil
 	}
-	var out llm.ToolOutput
+	var out core.ToolOutput
 	switch t.name {
 	case ListAgentsToolName:
 		out = t.list(ctx, parent, a)
@@ -113,7 +113,7 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 	return out, nil
 }
 
-func (t *agentControlTool) list(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+func (t *agentControlTool) list(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
 	records, err := t.spawn.manager.snapshot(ctx, parent)
 	if err != nil {
 		return agentControlError(err.Error())
@@ -131,10 +131,10 @@ func (t *agentControlTool) list(ctx context.Context, parent string, a agentContr
 		})
 	}
 	data, _ := json.Marshal(filtered)
-	return llm.TextOutput(string(data))
+	return core.TextOutput(string(data))
 }
 
-func (t *agentControlTool) wait(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+func (t *agentControlTool) wait(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
 	if len(a.AgentIDs) == 0 {
 		return agentControlError("agent_ids is required")
 	}
@@ -145,7 +145,7 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 	results := make([]json.RawMessage, 0, len(a.AgentIDs))
 	// Media produced by detached children is only delivered when collected;
 	// releaseCollected drops it afterwards, so carry it on this tool result.
-	var media []llm.MediaArtifact
+	var media []core.MediaArtifact
 	// Resolve every ID before waiting or collecting anything: an unknown ID
 	// must not discard results (and media) already collected for earlier IDs,
 	// which cannot be delivered again once their entries are released.
@@ -166,7 +166,7 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			continue
 		}
 		if e != nil && a.MaxWait > 0 {
-			attached := m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))
+			attached := m.attach(e, SubagentEventCallbackFromContext(ctx), core.CallIDFromContext(ctx))
 			if remaining := time.Until(deadline); remaining > 0 {
 				m.wait(ctx, e, remaining)
 			}
@@ -178,8 +178,8 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 		media = append(media, out.Media...)
 	}
 	data, _ := json.Marshal(results)
-	out := llm.TextOutput(string(data))
-	out.Media = llm.NormalizeMedia(media, nil)
+	out := core.TextOutput(string(data))
+	out.Media = core.NormalizeMedia(media, nil)
 	return out
 }
 
@@ -191,7 +191,7 @@ func agentTerminal(status string) bool {
 	return false
 }
 
-func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
 	m := t.spawn.manager
 	record, e, err := m.get(ctx, a.AgentID, parent)
 	if err != nil {
@@ -205,7 +205,7 @@ func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentCon
 	return agentOutput(record)
 }
 
-func (t *agentControlTool) continueRun(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+func (t *agentControlTool) continueRun(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
 	m := t.spawn.manager
 	record, e, err := m.get(ctx, a.AgentID, parent)
 	if err != nil {
@@ -253,7 +253,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if !resume && strings.TrimSpace(a.Instructions) != "" {
 		prompt += "\n\nAdditional instructions: " + a.Instructions
 	}
-	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
+	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, core.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
 	if startErr != nil {
 		return agentControlError(startErr.Error())
 	}
@@ -267,7 +267,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	return out
 }
 
-func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agentControlArgs) llm.ToolOutput {
+func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agentControlArgs) core.ToolOutput {
 	e.manager.mu.Lock()
 	runner := e.manager.runner
 	e.manager.mu.Unlock()
@@ -288,11 +288,11 @@ func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agent
 		result["next"] = fmt.Sprintf("instruction was NOT delivered; call continue_agent({\"agent_id\":%q,\"instructions\":%q}) again after the agent stops", a.AgentID, a.Instructions)
 	}
 	data, _ := json.Marshal(result)
-	return llm.TextOutput(string(data))
+	return core.TextOutput(string(data))
 }
 
-func agentControlError(message string) llm.ToolOutput {
-	out := llm.TextOutput(message)
+func agentControlError(message string) core.ToolOutput {
+	out := core.TextOutput(message)
 	out.IsError = true
 	return out
 }

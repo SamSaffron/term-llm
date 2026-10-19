@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // FallbackTranscriptIndexer adapts a Store without native revisioned transcript
@@ -56,7 +56,7 @@ func (f *FallbackTranscriptIndexer) read(ctx context.Context, sessionID string) 
 	visible := make([]Message, 0, len(messages))
 	for i := range messages {
 		msg := messages[i]
-		if msg.Role == llm.RoleSystem || msg.Role == llm.RoleDeveloper || msg.IsGoalSteering() {
+		if msg.Role == core.RoleSystem || msg.Role == core.RoleDeveloper || msg.IsGoalSteering() {
 			continue
 		}
 		visible = append(visible, msg)
@@ -94,7 +94,7 @@ func (f *FallbackTranscriptIndexer) read(ctx context.Context, sessionID string) 
 	planToolCalls := make(map[string]bool)
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.Name == "update_plan" {
+			if part.Type == core.PartToolCall && part.ToolCall != nil && part.ToolCall.Name == "update_plan" {
 				planToolCalls[part.ToolCall.ID] = true
 			}
 		}
@@ -107,7 +107,7 @@ func (f *FallbackTranscriptIndexer) read(ctx context.Context, sessionID string) 
 			ResponseID:              msg.ResponseID,
 			AssistantSegmentOrdinal: msg.AssistantSegmentOrdinal,
 		}
-		if msg.Role == llm.RoleUser {
+		if msg.Role == core.RoleUser {
 			item.ClientMessageID = msg.ClientMessageID
 		}
 		if msg.CompactionTail {

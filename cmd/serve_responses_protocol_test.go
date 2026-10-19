@@ -25,6 +25,9 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -32,7 +35,7 @@ import (
 func TestResponsesStreamCanResumeAfterClientDisconnect(t *testing.T) {
 	provider := newStagedProvider("hello ", "world")
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -177,7 +180,7 @@ func TestResponsesCompletedRunExpiresAfterRetention(t *testing.T) {
 	close(provider.releaseSecond)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -279,9 +282,9 @@ func TestHandleResponseCancelDiscardsPendingSteering(t *testing.T) {
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
 
-	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
-	engine.QueueSteering(llm.QueuedSteering{ID: "steer-1", Message: llm.UserText("please also do x")})
-	rt := &serveRuntime{engine: engine}
+	eng := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
+	eng.QueueSteering(engine.QueuedSteering{ID: "steer-1", Message: core.UserText("please also do x")})
+	rt := &serveRuntime{engine: eng}
 	putTestSession(mgr, "sess-cancel-steer", rt)
 
 	runCancel := func() {}
@@ -298,7 +301,7 @@ func TestHandleResponseCancelDiscardsPendingSteering(t *testing.T) {
 		t.Fatalf("cancel status = %d, want 200 body=%s", rr.Code, rr.Body.String())
 	}
 	waitForServeCondition(t, time.Second, func() bool {
-		return len(engine.ListPendingSteering()) == 0
+		return len(eng.ListPendingSteering()) == 0
 	}, "pending steering to be discarded after explicit cancel")
 }
 
@@ -370,14 +373,14 @@ func TestHandleResponseCancelIsIdempotentWhileRunIsFinishing(t *testing.T) {
 }
 
 func TestHandleResponseByID_CancelStopsActiveToolRun(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	provider.AddToolCall("call_1", "slow_tool", map[string]any{})
 	provider.AddTextResponse("done")
 
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&testServeDelayTool{delay: 5 * time.Second})
 
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
@@ -390,13 +393,13 @@ func TestHandleResponseByID_CancelStopsActiveToolRun(t *testing.T) {
 		responseRuns: newServeResponseRunManager(),
 	}
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
-		llm.UserText("sleep for a while"),
-	}, llm.Request{
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{
+		core.UserText("sleep for a while"),
+	}, core.Request{
 		SessionID:  "sess_cancel_tool",
 		MaxTurns:   5,
-		Tools:      []llm.ToolSpec{(&testServeDelayTool{}).Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{(&testServeDelayTool{}).Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 	}, "sess_cancel_tool", startResponseRunOptions{})
 	if err != nil {
 		t.Fatalf("startResponseRun failed: %v", err)
@@ -558,8 +561,8 @@ func TestResponseRunDeadlineMessageUsesConfiguredLimitOnlyWhenRunContextExpired(
 }
 
 func TestStartResponseRunProviderDeadlineDoesNotClaimRunTimeout(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddError(context.DeadlineExceeded)
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock").AddError(context.DeadlineExceeded)
+	engine := engine.NewEngine(provider, nil)
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
@@ -576,9 +579,9 @@ func TestStartResponseRunProviderDeadlineDoesNotClaimRunTimeout(t *testing.T) {
 	}
 	defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
-		llm.UserText("take too long"),
-	}, llm.Request{SessionID: "sess_timeout"}, "sess_timeout", startResponseRunOptions{})
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{
+		core.UserText("take too long"),
+	}, core.Request{SessionID: "sess_timeout"}, "sess_timeout", startResponseRunOptions{})
 	if err != nil {
 		t.Fatalf("startResponseRun failed: %v", err)
 	}
@@ -634,11 +637,11 @@ func TestStartResponseRunProviderDeadlineDoesNotClaimRunTimeout(t *testing.T) {
 
 func TestStartResponseRunTimeoutPreservesDeferredUIError(t *testing.T) {
 	const timeout = 50 * time.Millisecond
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Delay: time.Second, Text: "too late"})
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Delay: time.Second, Text: "too late"})
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 	}
 	rt.Touch()
@@ -648,7 +651,7 @@ func TestStartResponseRunTimeoutPreservesDeferredUIError(t *testing.T) {
 	}
 	defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("wait")}, llm.Request{
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("wait")}, core.Request{
 		SessionID: "sess_ui_timeout",
 	}, "sess_ui_timeout", startResponseRunOptions{uiSession: true})
 	if err != nil {
@@ -665,11 +668,11 @@ func TestStartResponseRunTimeoutPreservesDeferredUIError(t *testing.T) {
 }
 
 func TestStartResponseRunExplicitCancelClearsDeferredUIError(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Delay: time.Second, Text: "too late"})
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Delay: time.Second, Text: "too late"})
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 	}
 	rt.Touch()
@@ -679,7 +682,7 @@ func TestStartResponseRunExplicitCancelClearsDeferredUIError(t *testing.T) {
 	}
 	defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("wait")}, llm.Request{
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("wait")}, core.Request{
 		SessionID: "sess_ui_cancel",
 	}, "sess_ui_cancel", startResponseRunOptions{uiSession: true})
 	if err != nil {
@@ -730,13 +733,13 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 	defer store.Close()
 
 	provider := &cancelPreserveProvider{secondStarted: make(chan struct{})}
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	tool := &testServeDelayTool{}
 	registry.Register(tool)
 	runtime := &serveRuntime{
 		provider:     provider,
 		providerKey:  provider.Name(),
-		engine:       llm.NewEngine(provider, registry),
+		engine:       engine.NewEngine(provider, registry),
 		defaultModel: "test-model",
 		store:        store,
 	}
@@ -751,11 +754,11 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 	}
 	defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(runtime, true, false, []llm.Message{llm.UserText("gather context")}, llm.Request{
+	run, err := srv.startResponseRun(runtime, true, false, []core.Message{core.UserText("gather context")}, core.Request{
 		SessionID:  sessionID,
 		MaxTurns:   5,
-		Tools:      []llm.ToolSpec{tool.Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{tool.Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 	}, sessionID, startResponseRunOptions{uiSession: true})
 	if err != nil {
 		t.Fatalf("startResponseRun: %v", err)
@@ -767,11 +770,11 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 		t.Fatal("provider did not reach the post-tool turn")
 	}
 
-	action, _, err := runtime.InterruptMessage(context.Background(), llm.UserText("/stop"), "/stop", "msg-stop-now", nil, interruptDeliveryAuto)
+	action, _, err := runtime.InterruptMessage(context.Background(), core.UserText("/stop"), "/stop", "msg-stop-now", nil, interruptDeliveryAuto)
 	if err != nil {
 		t.Fatalf("InterruptMessage: %v", err)
 	}
-	if action != llm.InterruptCancel {
+	if action != engine.InterruptCancel {
 		t.Fatalf("action = %v, want cancel", action)
 	}
 
@@ -792,7 +795,7 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 	foundToolResult := false
 	for _, message := range stored {
 		for _, part := range message.Parts {
-			if message.Role == llm.RoleTool && part.ToolResult != nil && strings.Contains(part.ToolResult.Content, "slept") {
+			if message.Role == core.RoleTool && part.ToolResult != nil && strings.Contains(part.ToolResult.Content, "slept") {
 				foundToolResult = true
 			}
 		}
@@ -812,7 +815,7 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 	foundPriorToolResult := false
 	for _, message := range requests[len(requests)-1].Messages {
 		for _, part := range message.Parts {
-			if message.Role == llm.RoleTool && part.ToolResult != nil && strings.Contains(part.ToolResult.Content, "slept") {
+			if message.Role == core.RoleTool && part.ToolResult != nil && strings.Contains(part.ToolResult.Content, "slept") {
 				foundPriorToolResult = true
 			}
 		}
@@ -823,17 +826,17 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 }
 
 func TestHandleResponseByID_CancelStopsShellToolRun(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	provider.AddToolCall("call_1", tools.ShellToolName, map[string]any{
 		"command": "sleep 10",
 	})
 	provider.AddTextResponse("done")
 
 	shellTool := tools.NewShellTool(nil, nil, tools.DefaultOutputLimits())
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(shellTool)
 
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
@@ -846,13 +849,13 @@ func TestHandleResponseByID_CancelStopsShellToolRun(t *testing.T) {
 		responseRuns: newServeResponseRunManager(),
 	}
 
-	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
-		llm.UserText("sleep for a while"),
-	}, llm.Request{
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{
+		core.UserText("sleep for a while"),
+	}, core.Request{
 		SessionID:  "sess_cancel_shell_tool",
 		MaxTurns:   5,
-		Tools:      []llm.ToolSpec{shellTool.Spec()},
-		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		Tools:      []core.ToolSpec{shellTool.Spec()},
+		ToolChoice: core.ToolChoice{Mode: core.ToolChoiceAuto},
 	}, "sess_cancel_shell_tool", startResponseRunOptions{})
 	if err != nil {
 		t.Fatalf("startResponseRun failed: %v", err)
@@ -917,10 +920,10 @@ func TestHandleResponseByID_CancelStopsShellToolRun(t *testing.T) {
 
 func TestResponsesCompactedRunRequiresSnapshotRecovery(t *testing.T) {
 	longText := strings.Repeat("abcdefghij", 3000)
-	provider := llm.NewMockProvider("mock").AddTextResponse(longText)
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse(longText)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1056,8 +1059,8 @@ func TestResponsesCompactedRunRequiresSnapshotRecovery(t *testing.T) {
 
 func TestResponseToSessionMap_CleanedOnEviction(t *testing.T) {
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
-		engine := llm.NewEngine(provider, nil)
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1098,14 +1101,14 @@ func TestResponseToSessionMap_CleanedOnEviction(t *testing.T) {
 }
 
 func TestStreamResponses_EmitsSteeringEvent(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	provider.AddToolCall("call_1", "slow_tool", map[string]any{})
 	provider.AddTextResponse("done")
 
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&testServeDelayTool{delay: 20 * time.Millisecond})
 
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	engine.Steer("keep sleeping")
 
 	rt := &serveRuntime{
@@ -1155,11 +1158,11 @@ func TestParsePreviousResponseID(t *testing.T) {
 }
 
 func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
-	var capturedProvider *llm.MockProvider
+	var capturedProvider *mockprovider.MockProvider
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 		capturedProvider = provider
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "openai",
@@ -1197,11 +1200,11 @@ func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
 }
 
 func TestResponsesHandler_NormalizesSuffixedModelAndExplicitEffort(t *testing.T) {
-	var capturedProvider *llm.MockProvider
+	var capturedProvider *mockprovider.MockProvider
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 		capturedProvider = provider
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "chatgpt",
@@ -1254,12 +1257,12 @@ func TestHandleResponses_ModelAndEffortLockedAfterFirstMessage(t *testing.T) {
 	}
 	defer store.Close()
 
-	providers := make([]*llm.MockProvider, 0, 4)
+	providers := make([]*mockprovider.MockProvider, 0, 4)
 	newRuntime := func() *serveRuntime {
-		provider := llm.NewMockProvider("mock")
+		provider := mockprovider.NewMockProvider("mock")
 		provider.AddTextResponse("r1").AddTextResponse("r2").AddTextResponse("r3")
 		providers = append(providers, provider)
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "mock",
@@ -1331,13 +1334,13 @@ func TestHandleResponses_FreshConversationReusedSessionIDUpdatesPersistedModelAn
 	}
 	defer store.Close()
 
-	providers := make([]*llm.MockProvider, 0, 4)
+	providers := make([]*mockprovider.MockProvider, 0, 4)
 	var createNum atomic.Int32
 	newRuntime := func() *serveRuntime {
 		n := createNum.Add(1)
-		provider := llm.NewMockProvider("mock").AddTextResponse(fmt.Sprintf("runtime %d", n))
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse(fmt.Sprintf("runtime %d", n))
 		providers = append(providers, provider)
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "mock",
@@ -1415,11 +1418,11 @@ func TestHandleResponses_FreshConversationReusedSessionIDUpdatesPersistedModelAn
 }
 
 func TestResponsesHandler_ReasoningEffortDefaultNormalizedToEmpty(t *testing.T) {
-	var capturedProvider *llm.MockProvider
+	var capturedProvider *mockprovider.MockProvider
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 		capturedProvider = provider
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -1449,10 +1452,10 @@ func TestResponsesHandler_ReasoningEffortDefaultNormalizedToEmpty(t *testing.T) 
 }
 
 func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
-		AddTurn(llm.MockTurn{Text: "a", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}}).
-		AddTurn(llm.MockTurn{Text: "b", Usage: llm.Usage{InputTokens: 20, OutputTokens: 8}})
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{Text: "a", Usage: core.Usage{InputTokens: 10, OutputTokens: 5}}).
+		AddTurn(mockprovider.MockTurn{Text: "b", Usage: core.Usage{InputTokens: 20, OutputTokens: 8}})
+	engine := engine.NewEngine(provider, nil)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -1461,10 +1464,10 @@ func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
 	}
 	rt.Touch()
 
-	req := llm.Request{SessionID: "cumul-test", MaxTurns: 1}
+	req := core.Request{SessionID: "cumul-test", MaxTurns: 1}
 
-	result1, err := rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("first"),
+	result1, err := rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("first"),
 	}, req)
 	if err != nil {
 		t.Fatalf("Run 1: %v", err)
@@ -1476,8 +1479,8 @@ func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
 		t.Fatalf("session output tokens after 1st run = %d, want 5", result1.SessionUsage.OutputTokens)
 	}
 
-	result2, err := rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("second"),
+	result2, err := rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("second"),
 	}, req)
 	if err != nil {
 		t.Fatalf("Run 2: %v", err)
@@ -1491,10 +1494,10 @@ func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
 }
 
 func TestServeRuntime_CumulativeUsageResetsOnFreshConversation(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
-		AddTurn(llm.MockTurn{Text: "a", Usage: llm.Usage{InputTokens: 100, OutputTokens: 50}}).
-		AddTurn(llm.MockTurn{Text: "b", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}})
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{Text: "a", Usage: core.Usage{InputTokens: 100, OutputTokens: 50}}).
+		AddTurn(mockprovider.MockTurn{Text: "b", Usage: core.Usage{InputTokens: 10, OutputTokens: 5}})
+	engine := engine.NewEngine(provider, nil)
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -1503,11 +1506,11 @@ func TestServeRuntime_CumulativeUsageResetsOnFreshConversation(t *testing.T) {
 	}
 	rt.Touch()
 
-	req := llm.Request{SessionID: "reset-test", MaxTurns: 1}
+	req := core.Request{SessionID: "reset-test", MaxTurns: 1}
 
 	// First run accumulates usage
-	result1, err := rt.Run(context.Background(), true, false, []llm.Message{
-		llm.UserText("first"),
+	result1, err := rt.Run(context.Background(), true, false, []core.Message{
+		core.UserText("first"),
 	}, req)
 	if err != nil {
 		t.Fatalf("Run 1: %v", err)
@@ -1517,8 +1520,8 @@ func TestServeRuntime_CumulativeUsageResetsOnFreshConversation(t *testing.T) {
 	}
 
 	// Second run with replaceHistory=true should reset cumulative usage
-	result2, err := rt.Run(context.Background(), true, true, []llm.Message{
-		llm.UserText("fresh start"),
+	result2, err := rt.Run(context.Background(), true, true, []core.Message{
+		core.UserText("fresh start"),
 	}, req)
 	if err != nil {
 		t.Fatalf("Run 2: %v", err)
@@ -1574,16 +1577,16 @@ func TestResponseRunManagerCloseWaitsForDetachedRunShutdown(t *testing.T) {
 	provider := newShutdownBlockingProvider()
 	rt := &serveRuntime{
 		provider:     provider,
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 	}
 	rt.Touch()
 
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 
-	if _, err := srv.startResponseRun(rt, false, true, []llm.Message{
-		llm.UserText("hi"),
-	}, llm.Request{Model: "mock-model"}, "", startResponseRunOptions{}); err != nil {
+	if _, err := srv.startResponseRun(rt, false, true, []core.Message{
+		core.UserText("hi"),
+	}, core.Request{Model: "mock-model"}, "", startResponseRunOptions{}); err != nil {
 		t.Fatalf("startResponseRun: %v", err)
 	}
 
@@ -1633,12 +1636,12 @@ func TestResponseRunManagerCloseWaitsForDetachedRunShutdown(t *testing.T) {
 }
 
 func TestStartResponseRun_StatelessCleanupRemovesResponseIDMapping(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	provider.AddTextResponse("hello")
 
 	rt := &serveRuntime{
 		provider:     provider,
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 	}
 	rt.Touch()
@@ -1646,9 +1649,9 @@ func TestStartResponseRun_StatelessCleanupRemovesResponseIDMapping(t *testing.T)
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 	defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, false, true, []llm.Message{
-		llm.UserText("hi"),
-	}, llm.Request{Model: "mock-model"}, "", startResponseRunOptions{})
+	run, err := srv.startResponseRun(rt, false, true, []core.Message{
+		core.UserText("hi"),
+	}, core.Request{Model: "mock-model"}, "", startResponseRunOptions{})
 	if err != nil {
 		t.Fatalf("startResponseRun: %v", err)
 	}
@@ -1670,7 +1673,7 @@ func TestStartResponseRun_BusyConcurrentRunKeepsActiveSessionTracking(t *testing
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "staged",
-		engine:       llm.NewEngine(provider, nil),
+		engine:       engine.NewEngine(provider, nil),
 		defaultModel: "mock-model",
 	}
 	rt.Touch()
@@ -1679,9 +1682,9 @@ func TestStartResponseRun_BusyConcurrentRunKeepsActiveSessionTracking(t *testing
 	defer srv.responseRuns.Close()
 
 	const sessionID = "sess_busy_active_tracking"
-	run1, err := srv.startResponseRun(rt, true, false, []llm.Message{
-		llm.UserText("first"),
-	}, llm.Request{SessionID: sessionID}, sessionID, startResponseRunOptions{})
+	run1, err := srv.startResponseRun(rt, true, false, []core.Message{
+		core.UserText("first"),
+	}, core.Request{SessionID: sessionID}, sessionID, startResponseRunOptions{})
 	if err != nil {
 		t.Fatalf("startResponseRun first: %v", err)
 	}
@@ -1690,9 +1693,9 @@ func TestStartResponseRun_BusyConcurrentRunKeepsActiveSessionTracking(t *testing
 		return rt.hasActiveRun() && srv.responseRuns.activeRunID(sessionID) == run1.id
 	}, "first response run to become active")
 
-	run2, err := srv.startResponseRun(rt, true, false, []llm.Message{
-		llm.UserText("second"),
-	}, llm.Request{SessionID: sessionID}, sessionID, startResponseRunOptions{})
+	run2, err := srv.startResponseRun(rt, true, false, []core.Message{
+		core.UserText("second"),
+	}, core.Request{SessionID: sessionID}, sessionID, startResponseRunOptions{})
 	if !errors.Is(err, errServeSessionBusy) || run2 != nil {
 		t.Fatalf("busy admission returned run=%v err=%v", run2, err)
 	}
@@ -1731,8 +1734,8 @@ func TestStreamResponseRunConflictsWhenAnotherProcessOwnsTheTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
-	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: llm.NewEngine(provider, nil), defaultModel: "mock-model", store: store}
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("must not run")
+	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: engine.NewEngine(provider, nil), defaultModel: "mock-model", store: store}
 	rt.Touch()
 	srv := &serveServer{store: store, responseRuns: newServeResponseRunManager(), shutdownCh: make(chan struct{})}
 	t.Cleanup(func() {
@@ -1744,8 +1747,8 @@ func TestStreamResponseRunConflictsWhenAnotherProcessOwnsTheTurn(t *testing.T) {
 	})
 
 	recorder := httptest.NewRecorder()
-	if srv.streamResponseRun(ctx, recorder, rt, true, false, []llm.Message{llm.UserText("from the web")},
-		llm.Request{SessionID: sess.ID, Model: "mock-model"}, sess.ID, startResponseRunOptions{uiSession: true}) {
+	if srv.streamResponseRun(ctx, recorder, rt, true, false, []core.Message{core.UserText("from the web")},
+		core.Request{SessionID: sess.ID, Model: "mock-model"}, sess.ID, startResponseRunOptions{uiSession: true}) {
 		t.Fatal("stream started while another process owned the turn")
 	}
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "conflict_error") {
@@ -2273,10 +2276,10 @@ func TestHandleModels_WithProviderParam(t *testing.T) {
 	}
 	// Pre-seed the cache so getModelsProvider doesn't try to construct a real
 	// Anthropic provider (which requires auth not present in CI).
-	mock := llm.NewMockProvider("anthropic")
+	mock := mockprovider.NewMockProvider("anthropic")
 	srv := &serveServer{
 		cfgRef:          cfg,
-		modelsProviders: map[string]llm.Provider{"anthropic": mock},
+		modelsProviders: map[string]core.Provider{"anthropic": mock},
 	}
 
 	// Without provider param — uses default
@@ -2308,7 +2311,7 @@ func TestHandleModels_WithProviderParam(t *testing.T) {
 func TestHandleModels_PrefersUpstreamListOverLocalFallback(t *testing.T) {
 	provider := &countingListModelsProvider{
 		name:   "acme",
-		models: []llm.ModelInfo{{ID: "from-upstream", InputPrice: 0.22, OutputPrice: 0.59}},
+		models: []core.ModelInfo{{ID: "from-upstream", InputPrice: 0.22, OutputPrice: 0.59}},
 	}
 	srv := &serveServer{
 		cfgRef: &config.Config{
@@ -2322,7 +2325,7 @@ func TestHandleModels_PrefersUpstreamListOverLocalFallback(t *testing.T) {
 				},
 			},
 		},
-		modelsProviders: map[string]llm.Provider{"acme": provider},
+		modelsProviders: map[string]core.Provider{"acme": provider},
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -2360,7 +2363,7 @@ func TestHandleModels_PrefersUpstreamListOverLocalFallback(t *testing.T) {
 func TestHandleModels_CachesUpstreamListResults(t *testing.T) {
 	provider := &countingListModelsProvider{
 		name: "custom",
-		models: []llm.ModelInfo{
+		models: []core.ModelInfo{
 			{ID: "custom-a"},
 			{ID: "custom-b"},
 		},
@@ -2375,7 +2378,7 @@ func TestHandleModels_CachesUpstreamListResults(t *testing.T) {
 				},
 			},
 		},
-		modelsProviders: map[string]llm.Provider{"custom": provider},
+		modelsProviders: map[string]core.Provider{"custom": provider},
 	}
 
 	for i := 0; i < 2; i++ {
@@ -2394,9 +2397,9 @@ func TestHandleModels_CachesUpstreamListResults(t *testing.T) {
 func TestHandleModels_ReportsFastModeMetadata(t *testing.T) {
 	provider := &countingListModelsProvider{
 		name: "chatgpt",
-		models: []llm.ModelInfo{{
+		models: []core.ModelInfo{{
 			ID:                   "gpt-fast",
-			ServiceTiers:         []llm.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
+			ServiceTiers:         []core.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
 			AdditionalSpeedTiers: []string{"fast"},
 		}},
 	}
@@ -2405,7 +2408,7 @@ func TestHandleModels_ReportsFastModeMetadata(t *testing.T) {
 			DefaultProvider: "chatgpt",
 			Providers:       map[string]config.ProviderConfig{"chatgpt": {Model: "gpt-fast"}},
 		},
-		modelsProviders: map[string]llm.Provider{"chatgpt": provider},
+		modelsProviders: map[string]core.Provider{"chatgpt": provider},
 	}
 
 	rr := httptest.NewRecorder()
@@ -2415,9 +2418,9 @@ func TestHandleModels_ReportsFastModeMetadata(t *testing.T) {
 	}
 	var result struct {
 		Data []struct {
-			ID                   string                 `json:"id"`
-			ServiceTiers         []llm.ModelServiceTier `json:"service_tiers"`
-			AdditionalSpeedTiers []string               `json:"additional_speed_tiers"`
+			ID                   string                  `json:"id"`
+			ServiceTiers         []core.ModelServiceTier `json:"service_tiers"`
+			AdditionalSpeedTiers []string                `json:"additional_speed_tiers"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
@@ -2441,10 +2444,10 @@ func TestHandleModels_DropsEffortSuffixDuplicates(t *testing.T) {
 	}
 	// Use the MockProvider so ListModels returns nothing and we fall back
 	// to the curated claude-bin list (which contains opus-low/medium/high/...).
-	mock := llm.NewMockProvider("claude-bin")
+	mock := mockprovider.NewMockProvider("claude-bin")
 	srv := &serveServer{
 		cfgRef:          cfg,
-		modelsProviders: map[string]llm.Provider{"claude-bin": mock},
+		modelsProviders: map[string]core.Provider{"claude-bin": mock},
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models?provider=claude-bin", nil)
@@ -2505,7 +2508,7 @@ func TestHandleModels_ReportsConfiguredReasoningDefault(t *testing.T) {
 	}
 	srv := &serveServer{
 		cfgRef:          cfg,
-		modelsProviders: map[string]llm.Provider{"cdck_deepseek": llm.NewMockProvider("cdck_deepseek")},
+		modelsProviders: map[string]core.Provider{"cdck_deepseek": mockprovider.NewMockProvider("cdck_deepseek")},
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models?provider=cdck_deepseek", nil)
@@ -2546,10 +2549,10 @@ func TestHandleModels_ReportsGPT5EffortsWithoutMax(t *testing.T) {
 		DefaultProvider: "chatgpt",
 		Providers:       map[string]config.ProviderConfig{"chatgpt": {Model: "gpt-5.5"}},
 	}
-	mock := llm.NewMockProvider("chatgpt")
+	mock := mockprovider.NewMockProvider("chatgpt")
 	srv := &serveServer{
 		cfgRef:          cfg,
-		modelsProviders: map[string]llm.Provider{"chatgpt": mock},
+		modelsProviders: map[string]core.Provider{"chatgpt": mock},
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models?provider=chatgpt", nil)
@@ -2594,9 +2597,9 @@ func stringAnySliceContains(values []any, want string) bool {
 }
 
 func TestHandleResponses_WithProviderField(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "mock",
@@ -2614,7 +2617,7 @@ func TestHandleResponses_WithProviderField(t *testing.T) {
 		sessionMgr: manager,
 		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
 			providerName := request.Provider
-			engine := llm.NewEngine(provider, nil)
+			engine := engine.NewEngine(provider, nil)
 			rt := &serveRuntime{
 				provider:     provider,
 				providerKey:  providerName,
@@ -2640,11 +2643,11 @@ func TestHandleResponses_WithProviderField(t *testing.T) {
 }
 
 func TestHandleResponses_PreservesClientDefinedPassthroughTools(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 	provider.AddToolCall("call_passthrough_1", "client_tool", map[string]any{"value": "ok"})
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		engine := llm.NewEngine(provider, nil)
+		engine := engine.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			providerKey:  "mock",
@@ -2693,7 +2696,7 @@ func TestHandleResponses_PreservesClientDefinedPassthroughTools(t *testing.T) {
 	if req.Tools[0].Description != "Client-defined passthrough tool" {
 		t.Fatalf("tool description = %q", req.Tools[0].Description)
 	}
-	if req.ToolChoice.Mode != llm.ToolChoiceName || req.ToolChoice.Name != "client_tool" {
+	if req.ToolChoice.Mode != core.ToolChoiceName || req.ToolChoice.Name != "client_tool" {
 		t.Fatalf("tool choice = %#v, want name client_tool", req.ToolChoice)
 	}
 	props, ok := req.Tools[0].Schema["properties"].(map[string]interface{})
@@ -2779,7 +2782,7 @@ func TestParseAnthropicMessages_SimpleText(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len = %d, want 1", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleUser {
+	if msgs[0].Role != core.RoleUser {
 		t.Fatalf("role = %s, want user", msgs[0].Role)
 	}
 	if msgs[0].Parts[0].Text != "Hello" {
@@ -2818,7 +2821,7 @@ func TestParseAnthropicMessages_ImageContentSavesPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAnthropicMessages: %v", err)
 	}
-	if len(msgs) != 1 || len(msgs[0].Parts) != 1 || msgs[0].Parts[0].Type != llm.PartImage {
+	if len(msgs) != 1 || len(msgs[0].Parts) != 1 || msgs[0].Parts[0].Type != core.PartImage {
 		t.Fatalf("messages = %#v, want one image part", msgs)
 	}
 	part := msgs[0].Parts[0]
@@ -2857,7 +2860,7 @@ func TestParseAnthropicMessages_ToolUseRoundTrip(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("len = %d, want 2", len(msgs))
 	}
-	if msgs[0].Role != llm.RoleAssistant {
+	if msgs[0].Role != core.RoleAssistant {
 		t.Fatalf("first role = %s, want assistant", msgs[0].Role)
 	}
 	if msgs[0].Parts[0].ToolCall == nil || msgs[0].Parts[0].ToolCall.Name != "read_file" {
@@ -2887,16 +2890,16 @@ func TestParseAnthropicSystem(t *testing.T) {
 }
 
 func TestParseAnthropicToolChoice(t *testing.T) {
-	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"auto"}`)); got.Mode != llm.ToolChoiceAuto {
+	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"auto"}`)); got.Mode != core.ToolChoiceAuto {
 		t.Fatalf("auto mode = %s", got.Mode)
 	}
-	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"any"}`)); got.Mode != llm.ToolChoiceRequired {
+	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"any"}`)); got.Mode != core.ToolChoiceRequired {
 		t.Fatalf("any mode = %s", got.Mode)
 	}
-	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"tool","name":"shell"}`)); got.Mode != llm.ToolChoiceName || got.Name != "shell" {
+	if got := parseAnthropicToolChoice(json.RawMessage(`{"type":"tool","name":"shell"}`)); got.Mode != core.ToolChoiceName || got.Name != "shell" {
 		t.Fatalf("tool mode = %#v", got)
 	}
-	if got := parseAnthropicToolChoice(nil); got.Mode != llm.ToolChoiceAuto {
+	if got := parseAnthropicToolChoice(nil); got.Mode != core.ToolChoiceAuto {
 		t.Fatalf("nil mode = %s", got.Mode)
 	}
 }
@@ -2936,10 +2939,10 @@ func TestHandleAnthropicMessages_NonStreaming(t *testing.T) {
 }
 
 func TestHandleAnthropicMessages_DoesNotExposeUnrequestedServerTools(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
-	registry := llm.NewToolRegistry()
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	factory := func(_ context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
@@ -2993,10 +2996,10 @@ func TestHandleAnthropicMessages_DoesNotExposeUnrequestedServerTools(t *testing.
 }
 
 func TestHandleAnthropicMessages_NoToolsDoesNotExposeServerTools(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
-	registry := llm.NewToolRegistry()
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	factory := func(_ context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
@@ -3124,13 +3127,13 @@ func TestHandleAnthropicMessages_MethodNotAllowed(t *testing.T) {
 // "echo" tool and the given toolMap for testing --tool-map behavior.
 func newTestServeServerWithToolMap(toolMap map[string]string, responses ...string) *serveServer {
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider := llm.NewMockProvider("mock")
+		provider := mockprovider.NewMockProvider("mock")
 		for _, r := range responses {
 			provider.AddTextResponse(r)
 		}
-		registry := llm.NewToolRegistry()
+		registry := engine.NewToolRegistry()
 		registry.Register(&echoTool{})
-		engine := llm.NewEngine(provider, registry)
+		engine := engine.NewEngine(provider, registry)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
@@ -3151,10 +3154,10 @@ func newTestServeServerWithToolMap(toolMap map[string]string, responses ...strin
 }
 
 func TestSelectTools_ResolvesToolMapNames(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	registry := llm.NewToolRegistry()
+	provider := mockprovider.NewMockProvider("mock")
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{}) // registers as "echo"
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	rt := &serveRuntime{
 		provider: provider,
@@ -3191,12 +3194,12 @@ func TestSelectTools_ResolvesToolMapNames(t *testing.T) {
 }
 
 func TestSelectTools_OmitsManageWorkspaceInYoloWithoutUnregisteringIt(t *testing.T) {
-	provider := llm.NewMockProvider("mock")
-	registry := llm.NewToolRegistry()
+	provider := mockprovider.NewMockProvider("mock")
+	registry := engine.NewToolRegistry()
 	approval := tools.NewApprovalManager(tools.NewToolPermissions())
 	registry.Register(tools.NewManageWorkspaceTool(approval))
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 	rt := &serveRuntime{
 		provider: provider,
 		engine:   engine,
@@ -3222,7 +3225,7 @@ func TestSelectTools_OmitsManageWorkspaceInYoloWithoutUnregisteringIt(t *testing
 	}
 }
 
-func serveToolSpecNames(specs []llm.ToolSpec) []string {
+func serveToolSpecNames(specs []core.ToolSpec) []string {
 	names := make([]string, len(specs))
 	for i, spec := range specs {
 		names[i] = spec.Name
@@ -3265,8 +3268,8 @@ func TestToolMap_ChatCompletions(t *testing.T) {
 }
 
 func TestChatCompletions_PreservesClientPassthroughTools(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
-	engine := llm.NewEngine(provider, nil)
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+	engine := engine.NewEngine(provider, nil)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
@@ -3332,10 +3335,10 @@ func TestChatCompletions_PreservesClientPassthroughTools(t *testing.T) {
 }
 
 func TestChatCompletions_ToolResultWithoutReplayedToolCallKeepsNameFromSessionHistory(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("call-1", "client_tool", map[string]any{"query": "hi"}).
 		AddTextResponse("all set")
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
@@ -3382,20 +3385,20 @@ func TestChatCompletions_ToolResultWithoutReplayedToolCallKeepsNameFromSessionHi
 	if len(provider.Requests[1].Messages) != 3 {
 		t.Fatalf("second provider request message count = %d, want 3", len(provider.Requests[1].Messages))
 	}
-	if provider.Requests[1].Messages[0].Role != llm.RoleUser || len(provider.Requests[1].Messages[0].Parts) != 1 || provider.Requests[1].Messages[0].Parts[0].Type != llm.PartText || provider.Requests[1].Messages[0].Parts[0].Text != "Hi" {
+	if provider.Requests[1].Messages[0].Role != core.RoleUser || len(provider.Requests[1].Messages[0].Parts) != 1 || provider.Requests[1].Messages[0].Parts[0].Type != core.PartText || provider.Requests[1].Messages[0].Parts[0].Text != "Hi" {
 		t.Fatalf("second request message[0] = %+v, want original user message", provider.Requests[1].Messages[0])
 	}
-	if provider.Requests[1].Messages[1].Role != llm.RoleAssistant || len(provider.Requests[1].Messages[1].Parts) != 1 || provider.Requests[1].Messages[1].Parts[0].Type != llm.PartToolCall || provider.Requests[1].Messages[1].Parts[0].ToolCall == nil || provider.Requests[1].Messages[1].Parts[0].ToolCall.ID != "call-1" {
+	if provider.Requests[1].Messages[1].Role != core.RoleAssistant || len(provider.Requests[1].Messages[1].Parts) != 1 || provider.Requests[1].Messages[1].Parts[0].Type != core.PartToolCall || provider.Requests[1].Messages[1].Parts[0].ToolCall == nil || provider.Requests[1].Messages[1].Parts[0].ToolCall.ID != "call-1" {
 		t.Fatalf("second request message[1] = %+v, want assistant tool call", provider.Requests[1].Messages[1])
 	}
-	if provider.Requests[1].Messages[2].Role != llm.RoleTool || len(provider.Requests[1].Messages[2].Parts) != 1 || provider.Requests[1].Messages[2].Parts[0].Type != llm.PartToolResult || provider.Requests[1].Messages[2].Parts[0].ToolResult == nil || provider.Requests[1].Messages[2].Parts[0].ToolResult.ID != "call-1" {
+	if provider.Requests[1].Messages[2].Role != core.RoleTool || len(provider.Requests[1].Messages[2].Parts) != 1 || provider.Requests[1].Messages[2].Parts[0].Type != core.PartToolResult || provider.Requests[1].Messages[2].Parts[0].ToolResult == nil || provider.Requests[1].Messages[2].Parts[0].ToolResult.ID != "call-1" {
 		t.Fatalf("second request message[2] = %+v, want tool result", provider.Requests[1].Messages[2])
 	}
 
 	var toolResultName string
 	for _, msg := range provider.Requests[1].Messages {
 		for _, part := range msg.Parts {
-			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call-1" {
+			if part.Type != core.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call-1" {
 				continue
 			}
 			toolResultName = part.ToolResult.Name
@@ -3491,13 +3494,13 @@ func TestNonStreamingChat_ShowsServerExecutedToolCalls(t *testing.T) {
 	// Script: model calls the echo tool (server-executed), then returns "done".
 	// The chat completions endpoint is used by the web UI, which needs to see
 	// tool calls so it can display them. They must NOT be filtered here.
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
 		AddTextResponse("done")
 
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
@@ -3540,7 +3543,7 @@ func TestNonStreamingChat_ShowsServerExecutedToolCalls(t *testing.T) {
 func TestChatCompletionFinalResponse_UsageIncludesCachedPromptTokens(t *testing.T) {
 	var result serveRunResult
 	result.Text.WriteString("done")
-	result.Usage = llm.Usage{
+	result.Usage = core.Usage{
 		InputTokens:       100,
 		CachedInputTokens: 20,
 		CacheWriteTokens:  5,
@@ -3570,16 +3573,16 @@ func TestChatCompletionFinalResponse_UsageIncludesCachedPromptTokens(t *testing.
 }
 
 func TestStreamingChatIncludeUsage_UsageIncludesCachedPromptTokens(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{
 		Text: "done",
-		Usage: llm.Usage{
+		Usage: core.Usage{
 			InputTokens:       100,
 			CachedInputTokens: 20,
 			CacheWriteTokens:  5,
 			OutputTokens:      7,
 		},
 	})
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
@@ -3651,13 +3654,13 @@ func TestStreamingChatIncludeUsage_UsageIncludesCachedPromptTokens(t *testing.T)
 }
 
 func TestNonStreamingResponses_FiltersServerExecutedToolCalls(t *testing.T) {
-	provider := llm.NewMockProvider("mock").
+	provider := mockprovider.NewMockProvider("mock").
 		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
 		AddTextResponse("done")
 
-	registry := llm.NewToolRegistry()
+	registry := engine.NewToolRegistry()
 	registry.Register(&echoTool{})
-	engine := llm.NewEngine(provider, registry)
+	engine := engine.NewEngine(provider, registry)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{
@@ -3760,13 +3763,13 @@ func TestWriteJSONConditional_Returns200OnMismatch(t *testing.T) {
 }
 
 func TestHandleModels_ETagConditional(t *testing.T) {
-	mock := llm.NewMockProvider("anthropic")
+	mock := mockprovider.NewMockProvider("anthropic")
 	srv := &serveServer{
 		cfgRef: &config.Config{
 			DefaultProvider: "anthropic",
 			Providers:       map[string]config.ProviderConfig{"anthropic": {Model: "claude-sonnet-4-6"}},
 		},
-		modelsProviders: map[string]llm.Provider{"anthropic": mock},
+		modelsProviders: map[string]core.Provider{"anthropic": mock},
 	}
 
 	req1 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -3964,7 +3967,7 @@ func TestResolveServeToken(t *testing.T) {
 func TestNewServeEngineWithTools_AutoModeInstallsGuardian(t *testing.T) {
 	cfg := &config.Config{DefaultProvider: "mock", Guardian: config.GuardianConfig{Provider: "debug", Model: "mock-model"}, Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 	settings := SessionSettings{Tools: tools.ShellToolName}
-	provider := llm.NewMockProvider("mock")
+	provider := mockprovider.NewMockProvider("mock")
 
 	_, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", false, true, nil, nil)
 	if err != nil {

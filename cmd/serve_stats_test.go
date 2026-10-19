@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -23,11 +25,11 @@ import (
 )
 
 func TestServeStatsRuntimeStreamAndIdleSnapshot(t *testing.T) {
-	p := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Text: "answer", Usage: llm.Usage{InputTokens: 11, OutputTokens: 3, CachedInputTokens: 5, CacheWriteTokens: 7}})
-	rt := &serveRuntime{provider: p, engine: llm.NewEngine(p, nil), defaultModel: "gpt-5.6-luna"}
+	p := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Text: "answer", Usage: core.Usage{InputTokens: 11, OutputTokens: 3, CachedInputTokens: 5, CacheWriteTokens: 7}})
+	rt := &serveRuntime{provider: p, engine: engine.NewEngine(p, nil), defaultModel: "gpt-5.6-luna"}
 	// Observe through the actual web runtime consumer, not a parallel test-only accounting path.
-	_, err := rt.RunWithEvents(context.Background(), false, false, []llm.Message{llm.UserText("hi")}, llm.Request{Model: "gpt-5.6-luna", MaxTurns: 2}, func(e llm.Event) error {
-		if e.Type == llm.EventUsage {
+	_, err := rt.RunWithEvents(context.Background(), false, false, []core.Message{core.UserText("hi")}, core.Request{Model: "gpt-5.6-luna", MaxTurns: 2}, func(e core.Event) error {
+		if e.Type == core.EventUsage {
 			if got := rt.statsSnapshot(); got == nil || got.Metrics.InputTokens != 11 {
 				t.Fatalf("accounting must precede delivery: %+v", got)
 			}
@@ -68,10 +70,10 @@ func TestServeStatsRuntimeStreamAndIdleSnapshot(t *testing.T) {
 func TestServeStatsRetryDiscardHelpersAndParallelTools(t *testing.T) {
 	rt := &serveRuntime{}
 	rt.startStats("gpt-5.6-luna")
-	rt.recordStatsEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100, OutputTokens: 10}})
-	rt.recordHelperStats("compaction", "gpt-5.6-sol", llm.Usage{InputTokens: 20})
-	rt.recordStatsEvent(llm.Event{Type: llm.EventAttemptDiscard})
-	rt.recordStatsEvent(llm.Event{Type: llm.EventRetry, RetryWaitSecs: 3600})
+	rt.recordStatsEvent(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100, OutputTokens: 10}})
+	rt.recordHelperStats("compaction", "gpt-5.6-sol", core.Usage{InputTokens: 20})
+	rt.recordStatsEvent(core.Event{Type: core.EventAttemptDiscard})
+	rt.recordStatsEvent(core.Event{Type: core.EventRetry, RetryWaitSecs: 3600})
 	rt.stats.mu.Lock()
 	before := rt.stats.stats.LLMTime
 	waiting := rt.stats.stats.SnapshotAt(time.Now().Add(time.Minute))
@@ -79,10 +81,10 @@ func TestServeStatsRetryDiscardHelpersAndParallelTools(t *testing.T) {
 	if waiting.LLMTime != before {
 		t.Fatal("retry backoff counted")
 	}
-	rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecStart, ToolCallID: "a"})
-	rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecStart, ToolCallID: "b"})
-	rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecStart, ToolCallID: "b"})
-	rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecEnd, ToolCallID: "a"})
+	rt.recordStatsEvent(core.Event{Type: core.EventToolExecStart, ToolCallID: "a"})
+	rt.recordStatsEvent(core.Event{Type: core.EventToolExecStart, ToolCallID: "b"})
+	rt.recordStatsEvent(core.Event{Type: core.EventToolExecStart, ToolCallID: "b"})
+	rt.recordStatsEvent(core.Event{Type: core.EventToolExecEnd, ToolCallID: "a"})
 	rt.stats.mu.Lock()
 	beforeTool := rt.stats.stats.ToolTime
 	during := rt.stats.stats.SnapshotAt(time.Now().Add(time.Second))
@@ -90,10 +92,10 @@ func TestServeStatsRetryDiscardHelpersAndParallelTools(t *testing.T) {
 	if during.ToolTime < beforeTool+time.Second {
 		t.Fatal("first parallel tool end closed whole interval")
 	}
-	rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecEnd, ToolCallID: "b"})
-	rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecEnd, ToolCallID: "b"})
-	rt.emitGuardianReview(tools.GuardianEvent{Model: "gpt-5.6-sol", Usage: llm.Usage{InputTokens: 7}}) // empty message still bills
-	rt.recordHelperStats("side_question", "unpriced-model-xyz", llm.Usage{OutputTokens: 9})
+	rt.recordStatsEvent(core.Event{Type: core.EventToolExecEnd, ToolCallID: "b"})
+	rt.recordStatsEvent(core.Event{Type: core.EventToolExecEnd, ToolCallID: "b"})
+	rt.emitGuardianReview(tools.GuardianEvent{Model: "gpt-5.6-sol", Usage: core.Usage{InputTokens: 7}}) // empty message still bills
+	rt.recordHelperStats("side_question", "unpriced-model-xyz", core.Usage{OutputTokens: 9})
 	rt.finishStats()
 	got := rt.statsSnapshot()
 	if got.Metrics.InputTokens != 27 || got.Metrics.OutputTokens != 9 || got.Metrics.ToolCalls != 2 || got.Metrics.LLMTurns != 3 {
@@ -113,7 +115,7 @@ func TestServeStatsSubagentBillingAndTiming(t *testing.T) {
 		send(id, tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolCallID: "t", Timestamp: start.Add(time.Second)})
 		send(id, tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: "t", Timestamp: start.Add(3 * time.Second)})
 		send(id, tools.SubagentEvent{Type: tools.SubagentEventUsage, InputTokens: 10, CachedInputTokens: 20, CacheWriteTokens: 30, OutputTokens: 40})
-		send(id, tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Model: "gpt-5.6-sol", Usage: llm.Usage{InputTokens: 5, OutputTokens: 2}}})
+		send(id, tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Model: "gpt-5.6-sol", Usage: core.Usage{InputTokens: 5, OutputTokens: 2}}})
 		send(id, tools.SubagentEvent{Type: tools.SubagentEventDone, Timestamp: start.Add(5 * time.Second)})
 	}
 	got := rt.statsSnapshot()
@@ -182,11 +184,11 @@ func TestServeStatsEndpointHistoricAndBusyNonmutating(t *testing.T) {
 	if history.Scope != "durable_history" || history.Metrics.InputTokens != 100 || history.ActiveMS != nil || history.CostUSD != nil || len(history.Models) != 0 || len(history.Unavailable) == 0 {
 		t.Fatalf("history %+v", history)
 	}
-	rt.engine = llm.NewEngine(nil, nil)
-	rt.engine.SetCompaction(1000, llm.CompactionConfig{SoftThresholdRatio: 0.7, HardThresholdRatio: 0.9})
+	rt.engine = engine.NewEngine(nil, nil)
+	rt.engine.SetCompaction(1000, engine.CompactionConfig{SoftThresholdRatio: 0.7, HardThresholdRatio: 0.9})
 	rt.engine.SetContextEstimateBaseline(123, 1)
 	rt.startStats("gpt-5.6-luna")
-	rt.recordStatsEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3}})
+	rt.recordStatsEvent(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 3}})
 	rt.finishStats()
 	rt.mu.Lock()
 	done := make(chan serveStatsResponse, 1)
@@ -248,7 +250,7 @@ func TestServeStatsConcurrentCallbacksAndSnapshots(t *testing.T) {
 			defer wg.Done()
 			id := string(rune('a' + n))
 			for range 40 {
-				rt.recordHelperStats("guardian", "unknown", llm.Usage{InputTokens: 1})
+				rt.recordHelperStats("guardian", "unknown", core.Usage{InputTokens: 1})
 				rt.recordSubagentStats(id, tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: "unknown", OutputTokens: 1})
 				_ = rt.statsSnapshot()
 			}
@@ -271,15 +273,13 @@ func TestServeStatsActualWebRunnerSpawnWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{DefaultProvider: "debug", Providers: map[string]config.ProviderConfig{"debug": {Model: "fast", FastModel: "fast"}}, Agents: config.AgentsConfig{SearchPaths: []string{root}}}
-	oldTools := serveTools
-	serveTools = "spawn_agent"
-	t.Cleanup(func() { serveTools = oldTools })
+	flags := &ServeOptions{Tools: "spawn_agent"}
 	command := &cobra.Command{}
 	command.Flags().String("tools", "spawn_agent", "")
 	if err := command.Flags().Set("tools", "spawn_agent"); err != nil {
 		t.Fatal(err)
 	}
-	rt, err := newServeAgentRuntime(context.Background(), serveRuntimeRequest{SessionID: "stats-parent", Provider: "debug", Model: "fast", RuntimeDir: t.TempDir()}, serveAgentRuntimeOptions{cfg: cfg, cmd: command, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
+	rt, err := newServeAgentRuntime(context.Background(), serveRuntimeRequest{SessionID: "stats-parent", Provider: "debug", Model: "fast", RuntimeDir: t.TempDir()}, serveAgentRuntimeOptions{flags: flags, cfg: cfg, cmd: command, approval: resolvedApprovalMode{Mode: tools.ModePrompt}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestServeStatsActualWebRunnerSpawnWiring(t *testing.T) {
 	if spawn == nil {
 		t.Fatal("spawn not enabled")
 	}
-	ctx := llm.ContextWithCallID(llm.ContextWithSessionID(context.Background(), "stats-parent"), "child")
+	ctx := core.ContextWithCallID(core.ContextWithSessionID(context.Background(), "stats-parent"), "child")
 	output, err := spawn.Execute(ctx, json.RawMessage(`{"agent_name":"stats-child","prompt":"Say hello","model":"debug:fast"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -307,11 +307,11 @@ func TestServeStatsChildSinkDiscardAndActualModels(t *testing.T) {
 	sink := &spawnRunSink{callID: "child", cb: rt.recordSubagentStats, model: "preview"}
 	sink.Start()
 	sink.SetResolvedModel("mock", "gpt-5.6-luna")
-	sink.Event(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100}})
-	sink.Event(llm.Event{Type: llm.EventAttemptDiscard})
-	sink.Event(llm.Event{Type: llm.EventModelSwitch, Model: "gpt-5.6-sol"})
-	sink.Event(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 5}})
-	sink.CompactionUsage(&llm.CompactionResult{Model: "gpt-5.6-luna", Usage: llm.Usage{InputTokens: 2}})
+	sink.Event(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100}})
+	sink.Event(core.Event{Type: core.EventAttemptDiscard})
+	sink.Event(core.Event{Type: core.EventModelSwitch, Model: "gpt-5.6-sol"})
+	sink.Event(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 5}})
+	sink.CompactionUsage(&engine.CompactionResult{Model: "gpt-5.6-luna", Usage: core.Usage{InputTokens: 2}})
 	sink.Done()
 	sink.Done()
 	got := rt.statsSnapshot()
@@ -340,10 +340,10 @@ func TestServeStatsChildSinkDiscardAndActualModels(t *testing.T) {
 }
 
 func TestServeStatsHelperWiringAndRollback(t *testing.T) {
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Text: "answer", Usage: llm.Usage{InputTokens: 11, OutputTokens: 3}})
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Text: "answer", Usage: core.Usage{InputTokens: 11, OutputTokens: 3}})
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "gpt-5.6-luna"}
 	rt.configureSideQuestionContext()
-	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
 	if err != nil {
 		t.Fatal(err)
@@ -355,16 +355,16 @@ func TestServeStatsHelperWiringAndRollback(t *testing.T) {
 		t.Fatalf("side question accounting %+v", got)
 	}
 	// Helper work remains billable even if applying the compaction fails.
-	rt.compactionCB = func(context.Context, *llm.CompactionResult) error { return context.Canceled }
+	rt.compactionCB = func(context.Context, *engine.CompactionResult) error { return context.Canceled }
 	persistence := &serveRunPersistence{rt: rt}
-	err = persistence.applyCompaction(context.Background(), &llm.CompactionResult{Model: "gpt-5.6-sol", Usage: llm.Usage{InputTokens: 20}})
+	err = persistence.applyCompaction(context.Background(), &engine.CompactionResult{Model: "gpt-5.6-sol", Usage: core.Usage{InputTokens: 20}})
 	if err != context.Canceled {
 		t.Fatalf("compaction error %v", err)
 	}
 	rt.startStats("gpt-5.6-luna")
-	rt.recordStatsEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100}})
-	rt.recordHelperStats("handover", "gpt-5.6-sol", llm.Usage{InputTokens: 7})
-	rt.recordStatsEvent(llm.Event{Type: llm.EventAttemptDiscard})
+	rt.recordStatsEvent(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100}})
+	rt.recordHelperStats("handover", "gpt-5.6-sol", core.Usage{InputTokens: 7})
+	rt.recordStatsEvent(core.Event{Type: core.EventAttemptDiscard})
 	rt.finishStats()
 	got := rt.statsSnapshot()
 	if got.Metrics.InputTokens != 38 || got.Metrics.LLMTurns != 3 {
@@ -389,7 +389,7 @@ func TestServeStatsManualCompactionWiring(t *testing.T) {
 	if err := store.Create(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
-	messages := []llm.Message{llm.UserText("first question"), llm.AssistantText("first answer"), llm.UserText("second question"), llm.AssistantText("second answer")}
+	messages := []core.Message{core.UserText("first question"), core.AssistantText("first answer"), core.UserText("second question"), core.AssistantText("second answer")}
 	var rows []session.Message
 	for i, m := range messages {
 		rows = append(rows, *session.NewMessage(meta.ID, m, i))
@@ -397,8 +397,8 @@ func TestServeStatsManualCompactionWiring(t *testing.T) {
 	if err := store.ReplaceMessages(ctx, meta.ID, rows); err != nil {
 		t.Fatal(err)
 	}
-	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Text: "Continue from the second answer.", Usage: llm.Usage{InputTokens: 20, OutputTokens: 5}})
-	rt := &serveRuntime{provider: provider, providerKey: "mock", defaultModel: meta.Model, engine: llm.NewEngine(provider, nil), store: store, sessionMeta: meta, history: messages, historyPersisted: true}
+	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Text: "Continue from the second answer.", Usage: core.Usage{InputTokens: 20, OutputTokens: 5}})
+	rt := &serveRuntime{provider: provider, providerKey: "mock", defaultModel: meta.Model, engine: engine.NewEngine(provider, nil), store: store, sessionMeta: meta, history: messages, historyPersisted: true}
 	if _, err := rt.compactSession(ctx, meta.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestServeStatsPricesRequestsBeforeModelAggregation(t *testing.T) {
 	// An unknown Guardian model is never silently priced as the parent/child.
 	// Guardian spend is the session's own, so it reaches the runtime cost —
 	// unpriced here, which only marks the total as a lower bound.
-	rt.recordSubagentStats("child", tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Usage: llm.Usage{InputTokens: 1}}})
+	rt.recordSubagentStats("child", tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Usage: core.Usage{InputTokens: 1}}})
 	if got := rt.statsSnapshot(); !got.CostPartial || got.CostUSD != nil {
 		t.Fatalf("unknown Guardian fallback %+v", got)
 	}
@@ -434,9 +434,9 @@ func TestServeStatsPricesRequestsBeforeModelAggregation(t *testing.T) {
 func TestServeStatsDiscardRetainsTimeAndRestartsAttempt(t *testing.T) {
 	rt := &serveRuntime{}
 	rt.startStats("gpt-5.6-luna")
-	rt.recordStatsEvent(llm.Event{Type: llm.EventTextDelta, Text: "discard me"})
+	rt.recordStatsEvent(core.Event{Type: core.EventTextDelta, Text: "discard me"})
 	before := rt.stats.stats.SnapshotAt(time.Now()).LLMTime
-	rt.recordStatsEvent(llm.Event{Type: llm.EventAttemptDiscard})
+	rt.recordStatsEvent(core.Event{Type: core.EventAttemptDiscard})
 	if got := rt.stats.stats.LLMTime; got < before {
 		t.Fatalf("discard lost failed-attempt time: %v < %v", got, before)
 	}
@@ -445,7 +445,7 @@ func TestServeStatsDiscardRetainsTimeAndRestartsAttempt(t *testing.T) {
 	if got := rt.stats.stats.SnapshotAt(time.Now().Add(time.Second)).LLMTime; got < before+time.Second {
 		t.Fatalf("replacement attempt not timed: %v, baseline %v", got, before)
 	}
-	rt.recordStatsEvent(llm.Event{Type: llm.EventRetry, RetryWaitSecs: 3600})
+	rt.recordStatsEvent(core.Event{Type: core.EventRetry, RetryWaitSecs: 3600})
 	before = rt.stats.stats.LLMTime
 	if got := rt.stats.stats.SnapshotAt(time.Now().Add(time.Minute)).LLMTime; got != before {
 		t.Fatalf("backoff counted as model time: %v != %v", got, before)
@@ -463,17 +463,17 @@ func TestServeStatsToolBoundariesDoNotInventActivity(t *testing.T) {
 			rt.startStats("unknown")
 			rt.finishStats()
 			before := *rt.stats.stats
-			rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecEnd, ToolCallID: id})
+			rt.recordStatsEvent(core.Event{Type: core.EventToolExecEnd, ToolCallID: id})
 			if !reflect.DeepEqual(before, *rt.stats.stats) {
 				t.Fatal("unmatched end changed idle stats")
 			}
 			rt.startStats("unknown")
-			rt.recordStatsEvent(llm.Event{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: id}})
-			rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecStart, ToolCallID: id})
-			rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecEnd, ToolCallID: id})
-			rt.recordStatsEvent(llm.Event{Type: llm.EventDone})
+			rt.recordStatsEvent(core.Event{Type: core.EventToolCall, Tool: &core.ToolCall{ID: id}})
+			rt.recordStatsEvent(core.Event{Type: core.EventToolExecStart, ToolCallID: id})
+			rt.recordStatsEvent(core.Event{Type: core.EventToolExecEnd, ToolCallID: id})
+			rt.recordStatsEvent(core.Event{Type: core.EventDone})
 			before = *rt.stats.stats
-			rt.recordStatsEvent(llm.Event{Type: llm.EventToolExecEnd, ToolCallID: id})
+			rt.recordStatsEvent(core.Event{Type: core.EventToolExecEnd, ToolCallID: id})
 			if !reflect.DeepEqual(before, *rt.stats.stats) || rt.stats.running {
 				t.Fatal("duplicate end changed terminal stats or run stayed active")
 			}
@@ -489,20 +489,20 @@ func TestServeStatsCompactionContextContract(t *testing.T) {
 		name, enabled          string
 		engine                 bool
 		limit                  int
-		config                 *llm.CompactionConfig
+		config                 *engine.CompactionConfig
 		soft, hard             string
 		softBuffer, hardBuffer string
 	}{
 		{name: "unavailable", enabled: "unavailable"},
 		{name: "disabled", enabled: "false", engine: true},
-		{name: "unknown window", enabled: "false", engine: true, config: &llm.CompactionConfig{}},
-		{name: "enabled", enabled: "true", engine: true, limit: 1000, config: &llm.CompactionConfig{SoftThresholdRatio: 0.7, HardThresholdRatio: 0.9}, soft: "700", hard: "900", softBuffer: "300", hardBuffer: "100"},
-		{name: "equal thresholds", enabled: "true", engine: true, limit: 1000, config: &llm.CompactionConfig{SoftThresholdRatio: 0.8, HardThresholdRatio: 0.8}, soft: "800", hard: "800", softBuffer: "200", hardBuffer: "200"},
+		{name: "unknown window", enabled: "false", engine: true, config: &engine.CompactionConfig{}},
+		{name: "enabled", enabled: "true", engine: true, limit: 1000, config: &engine.CompactionConfig{SoftThresholdRatio: 0.7, HardThresholdRatio: 0.9}, soft: "700", hard: "900", softBuffer: "300", hardBuffer: "100"},
+		{name: "equal thresholds", enabled: "true", engine: true, limit: 1000, config: &engine.CompactionConfig{SoftThresholdRatio: 0.8, HardThresholdRatio: 0.8}, soft: "800", hard: "800", softBuffer: "200", hardBuffer: "200"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := &serveRuntime{sessionMeta: &session.Session{ID: "context"}}
 			if tc.engine {
-				rt.engine = llm.NewEngine(nil, nil)
+				rt.engine = engine.NewEngine(nil, nil)
 				if tc.config != nil {
 					rt.engine.SetCompaction(tc.limit, *tc.config)
 				}
@@ -550,9 +550,9 @@ func TestServeStatsConcurrentDiscardAndSnapshotIsolation(t *testing.T) {
 		defer wg.Done()
 		for range 100 {
 			rt.startStats("unknown")
-			rt.recordStatsEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 100}})
-			rt.recordHelperStats("guardian", "unknown", llm.Usage{InputTokens: 1})
-			rt.recordStatsEvent(llm.Event{Type: llm.EventAttemptDiscard})
+			rt.recordStatsEvent(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 100}})
+			rt.recordHelperStats("guardian", "unknown", core.Usage{InputTokens: 1})
+			rt.recordStatsEvent(core.Event{Type: core.EventAttemptDiscard})
 			rt.finishStats()
 		}
 	}()
@@ -574,9 +574,9 @@ func TestServeStatsConcurrentDiscardAndSnapshotIsolation(t *testing.T) {
 }
 
 func TestServeStatsConcurrentRuntimeHistorySnapshot(t *testing.T) {
-	rt := &serveRuntime{sessionMeta: &session.Session{ID: "live"}, engine: llm.NewEngine(nil, nil)}
+	rt := &serveRuntime{sessionMeta: &session.Session{ID: "live"}, engine: engine.NewEngine(nil, nil)}
 	for range 100 {
-		rt.history = append(rt.history, llm.UserText("original"))
+		rt.history = append(rt.history, core.UserText("original"))
 	}
 	srv := &serveServer{sessionMgr: &serveSessionManager{sessions: map[string]*serveRuntime{"live": rt}}}
 	var wg sync.WaitGroup
@@ -590,7 +590,7 @@ func TestServeStatsConcurrentRuntimeHistorySnapshot(t *testing.T) {
 			}
 			rt.mu.Unlock()
 			rt.engine.SetContextEstimateBaseline(n+1, 1)
-			rt.engine.SetCompaction(1000, llm.CompactionConfig{SoftThresholdRatio: 0.7, HardThresholdRatio: 0.9})
+			rt.engine.SetCompaction(1000, engine.CompactionConfig{SoftThresholdRatio: 0.7, HardThresholdRatio: 0.9})
 		}
 	}()
 	for range 100 {

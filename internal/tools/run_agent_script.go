@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 type runAgentScriptCommandFunc func(context.Context, string, []string, string, *limitedBuffer, *limitedBuffer) error
@@ -58,8 +58,8 @@ type RunAgentScriptArgs struct {
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
-func (t *RunAgentScriptTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *RunAgentScriptTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name:        RunAgentScriptToolName,
 		Description: "Execute a script bundled with the current agent. Scripts are referenced by filename only (e.g. \"create.sh\"), not by path.",
 		Schema: map[string]interface{}{
@@ -100,7 +100,7 @@ func (t *RunAgentScriptTool) Preview(args json.RawMessage) string {
 	return preview
 }
 
-func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a RunAgentScriptArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, err.Error())), nil
@@ -228,7 +228,7 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 		result.TimedOut = timedOut
 		result.Canceled = !timedOut
-		return llm.ToolOutput{Content: formatShellResult(result, t.limits), IsError: true, TimedOut: timedOut}, nil
+		return core.ToolOutput{Content: formatShellResult(result, t.limits), IsError: true, TimedOut: timedOut}, nil
 	}
 
 	if execErr != nil {
@@ -241,7 +241,7 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 
 	// Agent scripts use the same success contract as shell and custom scripts:
 	// every nonzero exit is a failed tool call.
-	output := llm.TextOutput(formatShellResult(result, t.limits))
+	output := core.TextOutput(formatShellResult(result, t.limits))
 	output.IsError = result.ExitCode != 0
 	return output, nil
 }

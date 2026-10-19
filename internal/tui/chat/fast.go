@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 )
 
 type serviceTierOverride int
@@ -71,10 +73,10 @@ func (m *Model) currentModelSupportsFast() bool {
 	return chatModelSupportsFast(m.modelMetadata, m.modelName)
 }
 
-func chatModelSupportsFast(models []llm.ModelInfo, modelName string) bool {
-	modelName, _ = llm.ParseModelEffort(strings.TrimSpace(modelName))
+func chatModelSupportsFast(models []core.ModelInfo, modelName string) bool {
+	modelName, _ = opencompat.ParseModelEffort(strings.TrimSpace(modelName))
 	for _, model := range models {
-		id, _ := llm.ParseModelEffort(strings.TrimSpace(model.ID))
+		id, _ := opencompat.ParseModelEffort(strings.TrimSpace(model.ID))
 		if id == modelName && llm.ModelSupportsFast(model) {
 			return true
 		}
@@ -132,13 +134,13 @@ func (m *Model) loadModelMetadataCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if provider, ok := m.provider.(interface {
-			ListModelsWithFreshness(context.Context) ([]llm.ModelInfo, bool, error)
+			ListModelsWithFreshness(context.Context) ([]core.ModelInfo, bool, error)
 		}); ok {
 			models, fresh, err := provider.ListModelsWithFreshness(ctx)
 			return chatGPTModelsLoadedMsg{models: models, fresh: fresh, err: err}
 		}
 		provider, ok := m.provider.(interface {
-			ListModels(context.Context) ([]llm.ModelInfo, error)
+			ListModels(context.Context) ([]core.ModelInfo, error)
 		})
 		if !ok {
 			return chatGPTModelsLoadedMsg{err: fmt.Errorf("provider does not expose model metadata")}

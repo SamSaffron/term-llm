@@ -10,28 +10,13 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/lifecycle"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
-
-type forcedCleanupReporter struct {
-	steps *[]string
-}
-
-func (r *forcedCleanupReporter) Report(lifecycle.Snapshot) termhost.Control {
-	return termhost.Control{}
-}
-func (r *forcedCleanupReporter) RestoreOSC() string {
-	*r.steps = append(*r.steps, "restore")
-	return "clear"
-}
-func (r *forcedCleanupReporter) Close() {
-	*r.steps = append(*r.steps, "close")
-}
 
 func TestChatTerminalHostAuthorityRequiresInteractiveInvokingStreams(t *testing.T) {
 	original := chatLifecycleInteractive
@@ -52,18 +37,6 @@ func TestChatTerminalHostAuthorityRequiresInteractiveInvokingStreams(t *testing.
 				t.Fatalf("chatOwnsTerminalHost() = %v, want %v", got, test.want)
 			}
 		})
-	}
-}
-
-func TestForcedLifecycleCleanupRestoresOSCBeforeClosingAdapters(t *testing.T) {
-	var steps []string
-	reporter := &forcedCleanupReporter{steps: &steps}
-	forcedLifecycleCleanup(reporter, func(sequence string) (int, error) {
-		steps = append(steps, "write:"+sequence)
-		return len(sequence), nil
-	})
-	if got := strings.Join(steps, ","); got != "restore,write:clear,close" {
-		t.Fatalf("forced cleanup order = %q", got)
 	}
 }
 
@@ -132,7 +105,7 @@ func TestSessionIsConversationBranchUsesDurableLineage(t *testing.T) {
 	if err := store.Create(ctx, source); err != nil {
 		t.Fatal(err)
 	}
-	anchor := session.NewMessage(source.ID, llm.AssistantText("branch here"), -1)
+	anchor := session.NewMessage(source.ID, core.AssistantText("branch here"), -1)
 	if err := store.AddMessage(ctx, source.ID, anchor); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +128,7 @@ func TestSessionIsConversationBranchUsesDurableLineage(t *testing.T) {
 func TestConfigureChatMCPServersInstallsSamplingBeforeEnable(t *testing.T) {
 	manager := &recordingChatMCPManager{}
 	var warnings strings.Builder
-	configureChatMCPServers(context.Background(), manager, llm.NewMockProvider("mock"), "model", true, " first, second ", &warnings)
+	configureChatMCPServers(context.Background(), manager, mockprovider.NewMockProvider("mock"), "model", true, " first, second ", &warnings)
 	want := []string{"sampling:model:true", "enable:first", "enable:second"}
 	if len(manager.events) != len(want) {
 		t.Fatalf("events = %#v, want %#v", manager.events, want)
@@ -174,7 +147,7 @@ type recordingChatMCPManager struct {
 	events []string
 }
 
-func (m *recordingChatMCPManager) SetSamplingProvider(_ llm.Provider, model string, yolo bool) {
+func (m *recordingChatMCPManager) SetSamplingProvider(_ core.Provider, model string, yolo bool) {
 	m.events = append(m.events, "sampling:"+model+":"+map[bool]string{true: "true", false: "false"}[yolo])
 }
 
@@ -295,7 +268,7 @@ func TestResolveChatRuntimeSystemContextUsesExplicitDirectoryWithoutChdir(t *tes
 			t.Fatalf("resolved prompt missing %q: %s", want, resolved.SystemPrompt)
 		}
 	}
-	engine := llm.NewEngine(llm.NewMockProvider("test"), nil)
+	engine := engine.NewEngine(mockprovider.NewMockProvider("test"), nil)
 	resolved.ApplySkills(engine, nil)
 	if _, ok := engine.Tools().Get(tools.ActivateSkillToolName); !ok {
 		t.Fatal("runtime context did not install activate_skill registry")

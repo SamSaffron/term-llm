@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -67,15 +69,15 @@ func (s *numberedServeSkillStore) GetByNumber(_ context.Context, number int64) (
 
 func TestSessionMessageEntriesExposeSkillProvenance(t *testing.T) {
 	srv := &serveServer{}
-	provenance := &llm.SkillActivationProvenance{
+	provenance := &core.SkillActivationProvenance{
 		Name: "review", Source: "local", SourcePath: "/repo/.skills/review", Origin: "user",
 		Execution: "isolated", RawArguments: "staged", Agent: "reviewer", RunID: "skill-1",
 		ChildSessionID: "child-1", Status: "complete", StartedAt: time.Now().Add(-time.Second).Format(time.RFC3339Nano),
 		CompletedAt: time.Now().Format(time.RFC3339Nano), ActivatedAt: time.Now().Add(-time.Second).Format(time.RFC3339Nano),
 	}
 	entries := srv.sessionMessageEntries([]session.Message{{
-		ID: 1, Role: llm.RoleEvent, CreatedAt: time.Now(),
-		Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: "result"}},
+		ID: 1, Role: core.RoleEvent, CreatedAt: time.Now(),
+		Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: provenance}, {Type: core.PartText, Text: "result"}},
 	}})
 	if len(entries) != 1 || len(entries[0].Parts) != 2 {
 		t.Fatalf("skill event entries = %#v", entries)
@@ -352,7 +354,7 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 	store := newServeRuntimeTestStore()
 	store.sessions["sess-main"] = &session.Session{ID: "sess-main", CWD: root, Provider: "mock", Model: "mock-model"}
 	provider := newStagedProvider("Main skill ", "response")
-	engine := llm.NewEngine(provider, nil)
+	engine := engine.NewEngine(provider, nil)
 	engine.RegisterTool(tools.NewReadFileTool(nil, tools.OutputLimits{}))
 	runtime := &serveRuntime{provider: provider, providerKey: "mock", engine: engine, store: store, defaultModel: "mock-model"}
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) { return runtime, nil })
@@ -428,7 +430,7 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 
 	deadline := time.Now().Add(2 * time.Second)
 	provider.mu.Lock()
-	requests := append([]llm.Request(nil), provider.requests...)
+	requests := append([]core.Request(nil), provider.requests...)
 	provider.mu.Unlock()
 	if len(requests) == 0 {
 		t.Fatal("main skill response never reached provider")
@@ -439,9 +441,9 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 	var contextText strings.Builder
 	sawClientMessageID := false
 	for _, message := range requests[0].Messages {
-		contextText.WriteString(llm.MessageText(message))
+		contextText.WriteString(core.MessageText(message))
 		contextText.WriteByte('\n')
-		if message.Role == llm.RoleUser && message.ClientMessageID == "skill-client-1" {
+		if message.Role == core.RoleUser && message.ClientMessageID == "skill-client-1" {
 			sawClientMessageID = true
 		}
 	}
@@ -453,16 +455,16 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 			t.Fatalf("provider context missing %q: %s", want, contextText.String())
 		}
 	}
-	var provenance *llm.SkillActivationProvenance
+	var provenance *core.SkillActivationProvenance
 	var persistedMessages []session.Message
 	for provenance == nil && time.Now().Before(deadline) {
 		persistedMessages, _ = store.GetMessages(context.Background(), "sess-main", 0, 0)
 		for _, message := range persistedMessages {
-			if message.Role != llm.RoleDeveloper {
+			if message.Role != core.RoleDeveloper {
 				continue
 			}
 			for _, part := range message.Parts {
-				if part.Type == llm.PartSkillActivation && part.SkillActivation != nil {
+				if part.Type == core.PartSkillActivation && part.SkillActivation != nil {
 					provenance = part.SkillActivation
 					break
 				}
@@ -478,11 +480,11 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 	activationCount := 0
 	persistedClientMessageID := false
 	for _, message := range persistedMessages {
-		if message.Role == llm.RoleUser && message.ClientMessageID == "skill-client-1" {
+		if message.Role == core.RoleUser && message.ClientMessageID == "skill-client-1" {
 			persistedClientMessageID = true
 		}
 		for _, part := range message.Parts {
-			if part.Type == llm.PartSkillActivation && part.SkillActivation != nil && part.SkillActivation.Name == "default" {
+			if part.Type == core.PartSkillActivation && part.SkillActivation != nil && part.SkillActivation.Name == "default" {
 				activationCount++
 			}
 		}
@@ -563,7 +565,7 @@ func TestServeSkillRunResultWaitsForParentTurnBoundary(t *testing.T) {
 		t.Fatal("skill result did not flush after parent turn")
 	}
 	messages, _ = store.GetMessages(context.Background(), "sess-boundary", 0, 0)
-	if len(messages) != 2 || messages[0].Role != llm.RoleEvent || messages[1].Role != llm.RoleDeveloper {
+	if len(messages) != 2 || messages[0].Role != core.RoleEvent || messages[1].Role != core.RoleDeveloper {
 		t.Fatalf("flushed skill result messages = %#v", messages)
 	}
 }
@@ -576,7 +578,7 @@ func TestServeSkillRunResultSerializesWithRuntimeAndUpdatesHistory(t *testing.T)
 	}
 	store := newServeRuntimeTestStore()
 	store.sessions["sess-runtime-boundary"] = &session.Session{ID: "sess-runtime-boundary"}
-	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), nil), store: store, history: []llm.Message{llm.UserText("parent")}, historyPersisted: true}
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), nil), store: store, history: []core.Message{core.UserText("parent")}, historyPersisted: true}
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) { return runtime, nil })
 	defer manager.Close()
 	if _, err := manager.GetOrCreate(context.Background(), "sess-runtime-boundary"); err != nil {
@@ -609,9 +611,9 @@ func TestServeSkillRunResultSerializesWithRuntimeAndUpdatesHistory(t *testing.T)
 		t.Fatalf("runtime boundary messages = %#v", messages)
 	}
 	runtime.mu.Lock()
-	history := append([]llm.Message(nil), runtime.history...)
+	history := append([]core.Message(nil), runtime.history...)
 	runtime.mu.Unlock()
-	if len(history) != 2 || history[1].Role != llm.RoleDeveloper || !strings.Contains(llm.MessageText(history[1]), "runtime result") {
+	if len(history) != 2 || history[1].Role != core.RoleDeveloper || !strings.Contains(core.MessageText(history[1]), "runtime result") {
 		t.Fatalf("runtime history after skill result = %#v", history)
 	}
 }
@@ -1002,7 +1004,7 @@ func serveSkillTestSetup(t *testing.T) (*skills.Setup, string) {
 	return setup, root
 }
 
-var _ llm.Provider = (*llm.MockProvider)(nil)
+var _ core.Provider = (*mockprovider.MockProvider)(nil)
 
 func TestConfigureRuntimeSkillsPreservesAgentResolvedPrompt(t *testing.T) {
 	setup := &skills.Setup{XML: "<available_skills>demo</available_skills>"}

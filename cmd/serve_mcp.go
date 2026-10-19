@@ -12,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/search"
@@ -67,21 +68,22 @@ func mcpAllToolNames() []string {
 	return all
 }
 
-var (
-	serveMCPHost       string
-	serveMCPPort       int
-	serveMCPToken      string
-	serveMCPTools      string
-	serveMCPEditFormat string
-	serveMCPReadDirs   []string
-	serveMCPWriteDirs  []string
-	serveMCPShellAllow []string
-	serveMCPApproval   string
-	serveMCPYolo       bool
-	serveMCPAuto       bool
-	serveMCPDebug      bool
-)
+type serveMCPOptions struct {
+	Host       string
+	Port       int
+	Token      string
+	Tools      string
+	EditFormat string
+	ReadDirs   []string
+	WriteDirs  []string
+	ShellAllow []string
+	Approval   string
+	Yolo       bool
+	Auto       bool
+	Debug      bool
+}
 
+var serveMCPFlags serveMCPOptions
 var serveMCPCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Run an MCP server exposing term-llm tools over HTTP",
@@ -107,24 +109,24 @@ Tools available:
 func init() {
 	serveCmd.AddCommand(serveMCPCmd)
 
-	serveMCPCmd.Flags().StringVar(&serveMCPTools, "tools", "", "Tools to expose (comma-separated, or 'all') [required]")
-	serveMCPCmd.Flags().StringVar(&serveMCPEditFormat, "edit-format", "edit_file", "Edit tool flavor: edit_file (find/replace) or diff (unified diff)")
-	serveMCPCmd.Flags().StringVar(&serveMCPHost, "host", "127.0.0.1", "Bind address (use 0.0.0.0 for remote access)")
-	serveMCPCmd.Flags().IntVar(&serveMCPPort, "port", 8080, "Bind port")
-	serveMCPCmd.Flags().StringVar(&serveMCPToken, "token", "", "Bearer token for auth (auto-generated if omitted)")
-	serveMCPCmd.Flags().StringArrayVar(&serveMCPReadDirs, "read-dir", nil, "Allowed read directories (repeatable)")
-	serveMCPCmd.Flags().StringArrayVar(&serveMCPWriteDirs, "write-dir", nil, "Allowed write directories (repeatable)")
-	serveMCPCmd.Flags().StringArrayVar(&serveMCPShellAllow, "shell-allow", nil, "Allowed shell patterns (repeatable, glob syntax)")
-	AddApprovalFlag(serveMCPCmd, &serveMCPApproval)
-	serveMCPCmd.Flags().BoolVar(&serveMCPYolo, "yolo", false, "Auto-approve all tool actions")
-	serveMCPCmd.Flags().BoolVar(&serveMCPAuto, "auto", false, "Use guardian LLM review for unmatched shell and file approvals (requires configured LLM provider)")
+	serveMCPCmd.Flags().StringVar(&serveMCPFlags.Tools, "tools", "", "Tools to expose (comma-separated, or 'all') [required]")
+	serveMCPCmd.Flags().StringVar(&serveMCPFlags.EditFormat, "edit-format", "edit_file", "Edit tool flavor: edit_file (find/replace) or diff (unified diff)")
+	serveMCPCmd.Flags().StringVar(&serveMCPFlags.Host, "host", "127.0.0.1", "Bind address (use 0.0.0.0 for remote access)")
+	serveMCPCmd.Flags().IntVar(&serveMCPFlags.Port, "port", 8080, "Bind port")
+	serveMCPCmd.Flags().StringVar(&serveMCPFlags.Token, "token", "", "Bearer token for auth (auto-generated if omitted)")
+	serveMCPCmd.Flags().StringArrayVar(&serveMCPFlags.ReadDirs, "read-dir", nil, "Allowed read directories (repeatable)")
+	serveMCPCmd.Flags().StringArrayVar(&serveMCPFlags.WriteDirs, "write-dir", nil, "Allowed write directories (repeatable)")
+	serveMCPCmd.Flags().StringArrayVar(&serveMCPFlags.ShellAllow, "shell-allow", nil, "Allowed shell patterns (repeatable, glob syntax)")
+	AddApprovalFlag(serveMCPCmd, &serveMCPFlags.Approval)
+	serveMCPCmd.Flags().BoolVar(&serveMCPFlags.Yolo, "yolo", false, "Auto-approve all tool actions")
+	serveMCPCmd.Flags().BoolVar(&serveMCPFlags.Auto, "auto", false, "Use guardian LLM review for unmatched shell and file approvals (requires configured LLM provider)")
 	serveMCPCmd.MarkFlagsMutuallyExclusive("approval", "yolo", "auto")
-	serveMCPCmd.Flags().BoolVarP(&serveMCPDebug, "debug", "d", false, "Verbose logging")
+	serveMCPCmd.Flags().BoolVarP(&serveMCPFlags.Debug, "debug", "d", false, "Verbose logging")
 
 	_ = serveMCPCmd.RegisterFlagCompletionFunc("tools", MCPToolsFlagCompletion)
 }
 
-func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config) (resolvedApprovalMode, error) {
+func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config, opts *serveMCPOptions) (resolvedApprovalMode, error) {
 	childExplicit := cmd != nil && (cmd.Flags().Changed("approval") || cmd.Flags().Changed("auto") || cmd.Flags().Changed("yolo"))
 	// Pre-command normalization rewrites `term-llm --approval auto serve mcp`
 	// to a flag on the parent serve command. Preserve that explicit choice for
@@ -134,36 +136,40 @@ func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config) (resolv
 		return resolvedApprovalMode{}, fmt.Errorf("--approval, --auto, and --yolo are mutually exclusive across serve and serve mcp")
 	}
 	if parentExplicit {
-		return resolveCommandApprovalMode(serveCmd, approvalSurfaceServeMCP, cfg, nil, serveApproval, serveAuto, serveYolo)
+		return resolveCommandApprovalMode(serveCmd, approvalSurfaceServeMCP, cfg, nil, serveFlags.Approval, serveFlags.Auto, serveFlags.Yolo)
 	}
-	return resolveCommandApprovalMode(cmd, approvalSurfaceServeMCP, cfg, nil, serveMCPApproval, serveMCPAuto, serveMCPYolo)
+	return resolveCommandApprovalMode(cmd, approvalSurfaceServeMCP, cfg, nil, opts.Approval, opts.Auto, opts.Yolo)
 }
 
 func runServeMCP(cmd *cobra.Command, args []string) error {
-	if serveMCPTools == "" {
+	return runServeMCPWithOptions(cmd, args, &serveMCPFlags)
+}
+
+func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOptions) error {
+	if opts.Tools == "" {
 		return fmt.Errorf("--tools is required\n\nExamples:\n  term-llm serve mcp --tools all\n  term-llm serve mcp --tools read_file,grep,glob,shell")
 	}
-	if serveMCPPort <= 0 || serveMCPPort > 65535 {
-		return fmt.Errorf("invalid --port %d (must be 1-65535)", serveMCPPort)
+	if opts.Port <= 0 || opts.Port > 65535 {
+		return fmt.Errorf("invalid --port %d (must be 1-65535)", opts.Port)
 	}
-	if serveMCPEditFormat != "edit_file" && serveMCPEditFormat != "diff" {
-		return fmt.Errorf("invalid --edit-format %q (must be edit_file or diff)", serveMCPEditFormat)
+	if opts.EditFormat != "edit_file" && opts.EditFormat != "diff" {
+		return fmt.Errorf("invalid --edit-format %q (must be edit_file or diff)", opts.EditFormat)
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	resolvedApproval, err := resolveServeMCPApprovalMode(cmd, cfg)
+	resolvedApproval, err := resolveServeMCPApprovalMode(cmd, cfg, opts)
 	if err != nil {
 		return err
 	}
-	serveMCPApproval = resolvedApproval.Mode.String()
-	serveMCPYolo = resolvedApproval.Mode == tools.ModeYolo
-	serveMCPAuto = resolvedApproval.Mode == tools.ModeAuto
+	opts.Approval = resolvedApproval.Mode.String()
+	opts.Yolo = resolvedApproval.Mode == tools.ModeYolo
+	opts.Auto = resolvedApproval.Mode == tools.ModeAuto
 
 	// Resolve requested tool names.
-	requestedTools := parseMCPToolsFlag(serveMCPTools)
+	requestedTools := parseMCPToolsFlag(opts.Tools)
 
 	// Validate every requested name against the curated allowlist.
 	if err := validateMCPToolNames(requestedTools); err != nil {
@@ -185,16 +191,16 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	}
 
 	// Apply edit format: swap edit_file for unified_diff if --edit-format=diff.
-	if serveMCPEditFormat == "diff" {
+	if opts.EditFormat == "diff" {
 		localToolNames = swapEditTool(localToolNames, tools.EditFileToolName, tools.UnifiedDiffToolName)
 	}
 
 	// Build local tool registry.
 	toolConfig := tools.ToolConfig{
 		Enabled:    localToolNames,
-		ReadDirs:   serveMCPReadDirs,
-		WriteDirs:  serveMCPWriteDirs,
-		ShellAllow: serveMCPShellAllow,
+		ReadDirs:   opts.ReadDirs,
+		WriteDirs:  opts.WriteDirs,
+		ShellAllow: opts.ShellAllow,
 	}
 
 	perms, err := toolConfig.BuildPermissions()
@@ -206,7 +212,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{Headless: true}); err != nil {
 		return err
 	}
-	reportApprovalMode(cmd.ErrOrStderr(), serveMCPDebug, resolvedApproval, approvalMgr)
+	reportApprovalMode(cmd.ErrOrStderr(), opts.Debug, resolvedApproval, approvalMgr)
 
 	registry, err := tools.NewLocalToolRegistry(&toolConfig, cfg, approvalMgr)
 	if err != nil {
@@ -304,7 +310,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve auth token.
-	token := strings.TrimSpace(serveMCPToken)
+	token := strings.TrimSpace(opts.Token)
 	if token == "" {
 		token = mcpReloadToken
 	}
@@ -318,14 +324,14 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 
 	// Start MCP server.
 	server := mcphttp.NewServer(executor)
-	server.SetDebug(serveMCPDebug)
+	server.SetDebug(opts.Debug)
 	server.HandlerMiddleware = restart.Default.Handler
 	server.ConnState = restart.Default.HTTPConnections()
 
 	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
 	defer stop()
 
-	url, actualToken, err := server.StartOnAddress(serveMCPHost, serveMCPPort, token, mcpTools)
+	url, actualToken, err := server.StartOnAddress(opts.Host, opts.Port, token, mcpTools)
 	if err != nil {
 		return fmt.Errorf("start MCP server: %w", err)
 	}
@@ -351,9 +357,9 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "MCP server listening on %s\n", url)
 	fmt.Fprintf(os.Stderr, "auth token: %s\n", actualToken)
 	fmt.Fprintf(os.Stderr, "tools: %s\n", strings.Join(toolNames, ", "))
-	if serveMCPYolo {
+	if opts.Yolo {
 		fmt.Fprintf(os.Stderr, "yolo: true (all operations auto-approved)\n")
-	} else if serveMCPAuto {
+	} else if opts.Auto {
 		fmt.Fprintf(os.Stderr, "auto: true (unmatched shell and file operations require guardian approval; unavailable reviewer denies)\n")
 	}
 
@@ -364,7 +370,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	return server.Stop(shutdownCtx)
 }
 
-func serveMCPToolResult(out llm.ToolOutput) mcphttp.ToolResult {
+func serveMCPToolResult(out core.ToolOutput) mcphttp.ToolResult {
 	return mcphttp.ToolResult{Content: out.Content, IsError: out.IsError || out.TimedOut}
 }
 

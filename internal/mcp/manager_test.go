@@ -20,7 +20,7 @@ import (
 	"time"
 
 	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 )
 
@@ -227,7 +227,7 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 	if !strings.Contains(got.Content, "hi Ada") {
 		t.Fatalf("CallTool result = %q, want greeting", got.Content)
 	}
-	if len(got.ContentParts) != 1 || got.ContentParts[0].Type != llm.ToolContentPartText || got.ContentParts[0].Text != "hi Ada" {
+	if len(got.ContentParts) != 1 || got.ContentParts[0].Type != core.ToolContentPartText || got.ContentParts[0].Text != "hi Ada" {
 		t.Fatalf("text-only ContentParts = %#v, want one text part", got.ContentParts)
 	}
 
@@ -240,11 +240,11 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 		t.Fatalf("mixed Content = %q, want %q", mixed.Content, "beforeafter")
 	}
 	if len(mixed.ContentParts) != 3 ||
-		mixed.ContentParts[0].Type != llm.ToolContentPartText || mixed.ContentParts[0].Text != "before" ||
-		mixed.ContentParts[1].Type != llm.ToolContentPartImageData || mixed.ContentParts[1].ImageData == nil ||
+		mixed.ContentParts[0].Type != core.ToolContentPartText || mixed.ContentParts[0].Text != "before" ||
+		mixed.ContentParts[1].Type != core.ToolContentPartImageData || mixed.ContentParts[1].ImageData == nil ||
 		mixed.ContentParts[1].ImageData.MediaType != "image/png" ||
 		mixed.ContentParts[1].ImageData.Base64 != base64.StdEncoding.EncodeToString([]byte("image bytes")) ||
-		mixed.ContentParts[2].Type != llm.ToolContentPartText || mixed.ContentParts[2].Text != "after" {
+		mixed.ContentParts[2].Type != core.ToolContentPartText || mixed.ContentParts[2].Text != "after" {
 		t.Fatalf("mixed ContentParts = %#v, want ordered text/image/text", mixed.ContentParts)
 	}
 
@@ -253,7 +253,7 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 		t.Fatalf("call image-only MCP tool: %v", err)
 	}
 	if imageOnly.Content != "" || len(imageOnly.ContentParts) != 1 ||
-		imageOnly.ContentParts[0].Type != llm.ToolContentPartImageData || imageOnly.ContentParts[0].ImageData == nil {
+		imageOnly.ContentParts[0].Type != core.ToolContentPartImageData || imageOnly.ContentParts[0].ImageData == nil {
 		t.Fatalf("image-only result = %#v, want one structured image", imageOnly)
 	}
 

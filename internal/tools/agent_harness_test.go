@@ -7,16 +7,18 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
 type scriptedLifecycleProvider struct {
-	*llm.MockProvider
+	*mockprovider.MockProvider
 	turn int
 }
 
-func (p *scriptedLifecycleProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+func (p *scriptedLifecycleProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	p.turn++
 	switch p.turn {
 	case 1:
@@ -25,7 +27,7 @@ func (p *scriptedLifecycleProvider) Stream(ctx context.Context, req llm.Request)
 		id := ""
 		for _, msg := range req.Messages {
 			for _, part := range msg.Parts {
-				if part.Type != llm.PartToolResult || part.ToolResult == nil {
+				if part.Type != core.PartToolResult || part.ToolResult == nil {
 					continue
 				}
 				var result SpawnAgentResult
@@ -64,7 +66,7 @@ func TestAgentLifecycleEngineHarness(t *testing.T) {
 	manager.GetSpawnAgentTool().SetRunner(runner)
 	harness := testutil.NewEngineHarness()
 	provider := &scriptedLifecycleProvider{MockProvider: harness.Provider}
-	harness.Engine = llm.NewEngine(provider, harness.Registry)
+	harness.Engine = engine.NewEngine(provider, harness.Registry)
 	for _, name := range []string{SpawnAgentToolName, WaitAgentToolName, ContinueAgentToolName, CancelAgentToolName, ListAgentsToolName} {
 		tool, ok := manager.Registry.Get(name)
 		if !ok {
@@ -72,7 +74,7 @@ func TestAgentLifecycleEngineHarness(t *testing.T) {
 		}
 		harness.AddTool(tool)
 	}
-	text, err := harness.Run(llm.ContextWithSessionID(context.Background(), "parent"), llm.Request{Messages: []llm.Message{llm.UserText("delegate then check")}, Tools: manager.GetSpecs(), MaxTurns: 8})
+	text, err := harness.Run(core.ContextWithSessionID(context.Background(), "parent"), core.Request{Messages: []core.Message{core.UserText("delegate then check")}, Tools: manager.GetSpecs(), MaxTurns: 8})
 	if err != nil {
 		t.Fatal(err)
 	}

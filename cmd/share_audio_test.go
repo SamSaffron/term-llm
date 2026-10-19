@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/share"
 	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
@@ -22,10 +22,10 @@ func addShareAudioFixture(t *testing.T, store session.Store, id string) int64 {
 	if err := os.WriteFile(path, mediafixture.MP3(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	item := llm.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: path, Name: "narration.mp3", MediaType: "audio/mpeg"}
-	messages := []llm.Message{
-		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: "show_media", Media: []llm.MediaArtifact{item}}}}},
-		llm.AssistantText("![Listen](term-llm-media://" + item.Reference + ")"),
+	item := core.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: path, Name: "narration.mp3", MediaType: "audio/mpeg"}
+	messages := []core.Message{
+		{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: "show_media", Media: []core.MediaArtifact{item}}}}},
+		core.AssistantText("![Listen](term-llm-media://" + item.Reference + ")"),
 	}
 	for _, message := range messages {
 		if err := store.AddMessage(context.Background(), id, session.NewMessage(id, message, -1)); err != nil {
@@ -324,9 +324,9 @@ func TestSessionExportAudioFilenameSelection(t *testing.T) {
 	if err := os.WriteFile(path, mediafixture.MP3(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	item := llm.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: path, Name: "recording.mp3", MediaType: "audio/mpeg"}
+	item := core.MediaArtifact{Reference: "0123456789abcdef0123456789abcdef", SourcePath: path, Name: "recording.mp3", MediaType: "audio/mpeg"}
 	value := "![Listen](term-llm-media://" + item.Reference + ")"
-	messages := []session.Message{*session.NewMessage("s", llm.AssistantText(value), -1)}
+	messages := []session.Message{*session.NewMessage("s", core.AssistantText(value), -1)}
 	for _, tc := range []struct {
 		name string
 		html bool
@@ -334,7 +334,7 @@ func TestSessionExportAudioFilenameSelection(t *testing.T) {
 		{"export.html", true}, {"export.HTML", true}, {"export.htm", true}, {"export.md", false}, {"export.txt", false}, {"export", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			content, result, err := renderSessionExport(&session.Session{ID: "s"}, messages, session.ExportOptions{IncludeAudio: true, Media: []llm.MediaArtifact{item}}, tc.name)
+			content, result, err := renderSessionExport(&session.Session{ID: "s"}, messages, session.ExportOptions{IncludeAudio: true, Media: []core.MediaArtifact{item}}, tc.name)
 			if err != nil {
 				t.Fatal(err)
 			}

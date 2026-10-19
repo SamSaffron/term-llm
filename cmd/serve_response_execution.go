@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
-func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID, previousResponseID string, modelSwapExec *responseModelSwapExecution, resetResponseIDsOnSuccess bool) {
+func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID, previousResponseID string, modelSwapExec *responseModelSwapExecution, resetResponseIDsOnSuccess bool) {
 	if stateful && s.sessionMgr != nil {
 		var retained *serveRuntime
 		if modelSwapExec != nil {
@@ -37,7 +37,7 @@ func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.Res
 	}
 
 	if s.cfg.suppressServerTools {
-		filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
+		filtered := make([]core.ToolCall, 0, len(result.ToolCalls))
 		for _, call := range result.ToolCalls {
 			if !runtime.isServerExecutedTool(call.Name) {
 				filtered = append(filtered, call)

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -38,7 +38,7 @@ func TestHandleSessionsStatusActivityChangesOnMessageUpdate(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := session.NewMessage(sess.ID, llm.AssistantText("initial partial answer"), -1)
+	msg := session.NewMessage(sess.ID, core.AssistantText("initial partial answer"), -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestHandleSessionsStatusActivityChangesOnMessageUpdate(t *testing.T) {
 	}
 
 	time.Sleep(5 * time.Millisecond)
-	updated := session.NewMessage(sess.ID, llm.AssistantText("updated partial answer"), msg.Sequence)
+	updated := session.NewMessage(sess.ID, core.AssistantText("updated partial answer"), msg.Sequence)
 	updated.ID = msg.ID
 	updated.CreatedAt = msg.CreatedAt
 	if err := store.UpdateMessage(ctx, sess.ID, updated); err != nil {
@@ -127,7 +127,7 @@ func TestHandleSessionsStatusUsesListTranscriptRevisionsWithoutNPlusOne(t *testi
 		if err := base.Create(ctx, sess); err != nil {
 			t.Fatalf("Create %d: %v", i, err)
 		}
-		if err := base.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+		if err := base.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.UserText("hello"), -1)); err != nil {
 			t.Fatalf("AddMessage %d: %v", i, err)
 		}
 	}
@@ -179,7 +179,7 @@ func TestSessionMessagesETagIgnoresSessionMetadataOnlyUpdates(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.AssistantText("same visible transcript"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, core.AssistantText("same visible transcript"), -1)); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
 

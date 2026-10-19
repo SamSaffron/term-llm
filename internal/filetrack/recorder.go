@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -22,7 +22,7 @@ func NewRecorder(store *Store) *Recorder {
 }
 
 // RecordAttributedChange persists one explicitly classified attributed transition.
-func (r *Recorder) RecordAttributedChange(ctx context.Context, rec ChangeRecord) (*llm.FileChange, error) {
+func (r *Recorder) RecordAttributedChange(ctx context.Context, rec ChangeRecord) (*core.FileChange, error) {
 	change, err := r.store.RecordAttributedChange(ctx, rec)
 	if err != nil {
 		return nil, err
@@ -31,12 +31,12 @@ func (r *Recorder) RecordAttributedChange(ctx context.Context, rec ChangeRecord)
 }
 
 // RecordFilesystemObservation persists metadata in the independent sidecar.
-func (r *Recorder) RecordFilesystemObservation(ctx context.Context, obs FilesystemObservation) (*llm.FilesystemObservationSummary, error) {
+func (r *Recorder) RecordFilesystemObservation(ctx context.Context, obs FilesystemObservation) (*core.FilesystemObservationSummary, error) {
 	persisted, err := r.store.RecordFilesystemObservation(ctx, obs)
 	if err != nil || persisted == nil {
 		return nil, err
 	}
-	return &llm.FilesystemObservationSummary{ID: persisted.ID, Classification: persisted.Classification,
+	return &core.FilesystemObservationSummary{ID: persisted.ID, Classification: persisted.Classification,
 		Root: persisted.Root, CreatedCount: persisted.CreatedCount, ModifiedCount: persisted.ModifiedCount,
 		DeletedCount: persisted.DeletedCount, SampledPaths: append([]string(nil), persisted.SampledPaths...),
 		SamplesTruncated: persisted.SamplesTruncated, CoverageStatus: persisted.CoverageStatus, EventSeq: persisted.EventSeq}, nil
@@ -56,7 +56,7 @@ func (r *Recorder) RecordFileTrackingRunComplete(ctx context.Context, sessionID,
 }
 
 // RecordChange is the compatibility adapter for older direct integrations.
-func (r *Recorder) RecordChange(ctx context.Context, rec ChangeRecord) *llm.FileChange {
+func (r *Recorder) RecordChange(ctx context.Context, rec ChangeRecord) *core.FileChange {
 	change, err := r.store.RecordChange(ctx, rec)
 	if err != nil {
 		r.warnOnce.Do(func() {
@@ -67,11 +67,11 @@ func (r *Recorder) RecordChange(ctx context.Context, rec ChangeRecord) *llm.File
 	return llmChange(change)
 }
 
-func llmChange(change *Change) *llm.FileChange {
+func llmChange(change *Change) *core.FileChange {
 	if change == nil {
 		return nil
 	}
-	return &llm.FileChange{
+	return &core.FileChange{
 		Path: change.Path, Kind: change.Kind, Adds: change.Adds, Dels: change.Dels,
 		Seq: change.Seq, EventSeq: change.EventSeq, Truncated: change.Truncated,
 		Provenance: change.Provenance, Provenances: append([]string(nil), change.Provenances...),

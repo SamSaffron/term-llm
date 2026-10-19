@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/subagentview"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -419,10 +419,10 @@ func (r *Renderer) renderHistory(state RenderState) string {
 		// Skip non-renderable roles. Path notes are developer context, but their
 		// compact non-authoritative placeholder is intentionally visible.
 		pathNote := false
-		if msg.Role == llm.RoleDeveloper {
+		if msg.Role == core.RoleDeveloper {
 			_, pathNote = msg.PathNoteProvenance()
 		}
-		if msg.Role != llm.RoleUser && msg.Role != llm.RoleAssistant && msg.Role != llm.RoleEvent && !pathNote {
+		if msg.Role != core.RoleUser && msg.Role != core.RoleAssistant && msg.Role != core.RoleEvent && !pathNote {
 			continue
 		}
 		block := r.getOrRenderBlock(msg, i, state.Messages, reasoningOrdinal, state.ReasoningExpansionOverrides, state.PersistedSubagents)
@@ -581,7 +581,7 @@ func persistedSubagentSignature(msg *session.Message, runs map[string]subagentvi
 	h := uint64(fnv64Offset)
 	matched := false
 	for _, part := range msg.Parts {
-		if part.Type != llm.PartToolCall || part.ToolCall == nil {
+		if part.Type != core.PartToolCall || part.ToolCall == nil {
 			continue
 		}
 		if run, ok := runs[part.ToolCall.ID]; ok {

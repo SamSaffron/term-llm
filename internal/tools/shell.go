@@ -14,7 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 const (
@@ -63,7 +64,7 @@ func (t *ShellTool) collaborativeShell() (CollaborativeShellController, ShellRou
 }
 
 // PrepareRequestContext implements llm.RequestContextTool.
-func (t *ShellTool) PrepareRequestContext(ctx context.Context, sessionID string, messages []llm.Message) ([]llm.Message, error) {
+func (t *ShellTool) PrepareRequestContext(ctx context.Context, sessionID string, messages []core.Message) ([]core.Message, error) {
 	controller, _ := t.collaborativeShell()
 	if controller == nil {
 		return messages, nil
@@ -72,7 +73,7 @@ func (t *ShellTool) PrepareRequestContext(ctx context.Context, sessionID string,
 }
 
 // PrepareCompactionContext implements llm.RequestContextTool.
-func (t *ShellTool) PrepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error {
+func (t *ShellTool) PrepareCompactionContext(ctx context.Context, sessionID string, result *engine.CompactionResult) error {
 	controller, _ := t.collaborativeShell()
 	if controller == nil {
 		return nil
@@ -81,7 +82,7 @@ func (t *ShellTool) PrepareCompactionContext(ctx context.Context, sessionID stri
 }
 
 func approvalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
-	msgs := llm.ApprovalTranscriptFromContext(ctx)
+	msgs := core.ApprovalTranscriptFromContext(ctx)
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -100,23 +101,23 @@ func approvalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
 	return entries
 }
 
-func renderApprovalMessageText(msg llm.Message) string {
+func renderApprovalMessageText(msg core.Message) string {
 	if approvalText := strings.TrimSpace(msg.ApprovalText); approvalText != "" {
 		return approvalText
 	}
 	var b strings.Builder
 	for _, part := range msg.Parts {
 		switch part.Type {
-		case llm.PartText, llm.PartFile:
+		case core.PartText, core.PartFile:
 			if strings.TrimSpace(part.Text) != "" {
 				appendApprovalSection(&b, part.Text)
 			}
-		case llm.PartToolCall:
+		case core.PartToolCall:
 			if part.ToolCall == nil {
 				continue
 			}
 			appendApprovalSection(&b, renderToolCallForApproval(part.ToolCall))
-		case llm.PartToolResult:
+		case core.PartToolResult:
 			if part.ToolResult == nil {
 				continue
 			}
@@ -124,7 +125,7 @@ func renderApprovalMessageText(msg llm.Message) string {
 		}
 	}
 	if b.Len() == 0 {
-		return llm.MessageAttachmentSummary(msg)
+		return core.MessageAttachmentSummary(msg)
 	}
 	return b.String()
 }
@@ -140,7 +141,7 @@ func appendApprovalSection(b *strings.Builder, text string) {
 	b.WriteString(text)
 }
 
-func renderToolCallForApproval(call *llm.ToolCall) string {
+func renderToolCallForApproval(call *core.ToolCall) string {
 	args := strings.TrimSpace(string(call.Arguments))
 	if args == "" {
 		args = "{}"
@@ -152,7 +153,7 @@ func renderToolCallForApproval(call *llm.ToolCall) string {
 	return fmt.Sprintf("tool_call name=%q id=%q arguments:\n%s", call.Name, call.ID, args)
 }
 
-func renderToolResultForApproval(result *llm.ToolResult) string {
+func renderToolResultForApproval(result *core.ToolResult) string {
 	status := "ok"
 	if result.IsError {
 		status = "error"
@@ -163,10 +164,10 @@ func renderToolResultForApproval(result *llm.ToolResult) string {
 		fmt.Fprintf(&b, "\ncontent:\n%s", strings.TrimSpace(result.Content))
 	}
 	for _, part := range result.ContentParts {
-		if part.Type == llm.ToolContentPartText && strings.TrimSpace(part.Text) != "" {
+		if part.Type == core.ToolContentPartText && strings.TrimSpace(part.Text) != "" {
 			fmt.Fprintf(&b, "\ncontent_part_text:\n%s", strings.TrimSpace(part.Text))
 		}
-		if part.Type == llm.ToolContentPartImageData && part.ImageData != nil {
+		if part.Type == core.ToolContentPartImageData && part.ImageData != nil {
 			fmt.Fprintf(&b, "\ncontent_part_image: media_type=%q detail=%q bytes=%d", part.ImageData.MediaType, part.ImageData.Detail, len(part.ImageData.Base64))
 		}
 	}
@@ -251,7 +252,7 @@ type ShellResult struct {
 	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
 }
 
-func (t *ShellTool) Spec() llm.ToolSpec {
+func (t *ShellTool) Spec() core.ToolSpec {
 	description := "Execute a shell command."
 	properties := map[string]interface{}{
 		"command": map[string]interface{}{
@@ -298,7 +299,7 @@ func (t *ShellTool) Spec() llm.ToolSpec {
 			},
 		}
 	}
-	return llm.ToolSpec{
+	return core.ToolSpec{
 		Name:        ShellToolName,
 		Description: description,
 		Schema: map[string]interface{}{
@@ -331,11 +332,11 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 	return cmd
 }
 
-func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env", "affected_paths", "output_claims"})
-	errorOutput := func(err error) (llm.ToolOutput, error) {
+	errorOutput := func(err error) (core.ToolOutput, error) {
 		if toolErr, ok := err.(*ToolError); ok {
-			out := llm.TextOutput(warning + formatToolError(toolErr))
+			out := core.TextOutput(warning + formatToolError(toolErr))
 			out.IsError = true
 			return out, nil
 		}
@@ -343,19 +344,19 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		if kind := CollaborativeShellErrorKind(err); kind != "" {
 			message = fmt.Sprintf("shared shell %s: %s", kind, message)
 		}
-		out := llm.TextOutput(warning + formatToolError(NewToolError(ErrExecutionFailed, message)))
+		out := core.TextOutput(warning + formatToolError(NewToolError(ErrExecutionFailed, message)))
 		out.IsError = true
 		return out, nil
 	}
 
 	var a ShellArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		out := llm.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, err.Error())))
+		out := core.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, err.Error())))
 		out.IsError = true
 		return out, nil
 	}
 	if a.Command == "" {
-		out := llm.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, "command is required")))
+		out := core.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, "command is required")))
 		out.IsError = true
 		return out, nil
 	}
@@ -373,7 +374,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 			return errorOutput(NewCollaborativeShellError("controller_unavailable", "collaborative shell controller is not installed"))
 		}
 		if a.WorkingDir != "" || len(a.Env) != 0 || len(a.AffectedPaths) != 0 || len(a.OutputClaims) != 0 {
-			out := llm.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, "Shared shell commands cannot use working_dir, env, affected_paths, or output_claims. Express directory and environment changes in the command with cd, export, or command prefixes.")))
+			out := core.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, "Shared shell commands cannot use working_dir, env, affected_paths, or output_claims. Express directory and environment changes in the command with cd, export, or command prefixes.")))
 			out.IsError = true
 			return out, nil
 		}
@@ -390,30 +391,30 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 				return errorOutput(err)
 			}
 			if outcome == Cancel {
-				out := llm.TextOutput(warning + formatToolError(NewToolErrorf(ErrPermissionDenied, "shared shell command not allowed: %s", truncateCommand(a.Command))))
+				out := core.TextOutput(warning + formatToolError(NewToolErrorf(ErrPermissionDenied, "shared shell command not allowed: %s", truncateCommand(a.Command))))
 				out.IsError = true
 				return out, nil
 			}
 		}
-		result, err := controller.Execute(ctx, llm.SessionIDFromContext(ctx), SharedShellArgs{
-			Command: a.Command, TimeoutSeconds: timeout, ToolCallID: llm.CallIDFromContext(ctx),
+		result, err := controller.Execute(ctx, core.SessionIDFromContext(ctx), SharedShellArgs{
+			Command: a.Command, TimeoutSeconds: timeout, ToolCallID: core.CallIDFromContext(ctx),
 			OutputLimit: t.limits.MaxBytes, ExpectedShellID: binding.ShellID, ActivityFence: binding.Fence,
 		})
 		if err != nil {
 			if CollaborativeShellErrorKind(err) == "terminal_changed" {
-				out := llm.TextOutput(warning + formatShellResult(result, t.limits) + "\n\nshared shell terminal_changed: " + err.Error())
+				out := core.TextOutput(warning + formatShellResult(result, t.limits) + "\n\nshared shell terminal_changed: " + err.Error())
 				out.IsError = true
 				return out, nil
 			}
 			if result.RecoveryFailed && CollaborativeShellErrorKind(err) == "recovery_failed" {
-				out := llm.TextOutput(warning + formatShellResult(result, t.limits) + "\n\nshared shell recovery_failed: " + err.Error())
+				out := core.TextOutput(warning + formatShellResult(result, t.limits) + "\n\nshared shell recovery_failed: " + err.Error())
 				out.TimedOut = result.TimedOut
 				out.IsError = true
 				return out, nil
 			}
 			return errorOutput(err)
 		}
-		out := llm.TextOutput(warning + formatShellResult(result, t.limits))
+		out := core.TextOutput(warning + formatShellResult(result, t.limits))
 		out.TimedOut = result.TimedOut
 		out.IsError = result.ExitCode != 0 || result.TimedOut || result.Canceled || result.RecoveryFailed
 		return out, nil
@@ -421,14 +422,14 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	return t.executeLocal(ctx, args)
 }
 
-func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	recorder := t.fileChangeRecorder()
 	trackingEnabled := recorder != nil
 	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env", "affected_paths", "output_claims"})
-	textOutput := func(message string) llm.ToolOutput {
-		return llm.TextOutput(warning + message)
+	textOutput := func(message string) core.ToolOutput {
+		return core.TextOutput(warning + message)
 	}
-	errorOutput := func(message string) llm.ToolOutput {
+	errorOutput := func(message string) core.ToolOutput {
 		output := textOutput(message)
 		output.IsError = true
 		return output
@@ -593,7 +594,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (llm
 		timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 		result.TimedOut = timedOut
 		result.Canceled = !timedOut
-		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits) + trackingText, TimedOut: timedOut, IsError: true, FileChanges: tracking.FileChanges, FilesystemObservations: tracking.Observations, OutputClaimDiagnostics: tracking.Diagnostics}, nil
+		return core.ToolOutput{Content: warning + formatShellResult(result, t.limits) + trackingText, TimedOut: timedOut, IsError: true, FileChanges: tracking.FileChanges, FilesystemObservations: tracking.Observations, OutputClaimDiagnostics: tracking.Diagnostics}, nil
 	}
 
 	// Get exit code

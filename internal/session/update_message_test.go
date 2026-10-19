@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestSQLiteStoreUpdateMessageMovesSessionByLatestResponseActivity(t *testing.T) {
@@ -25,7 +25,7 @@ func TestSQLiteStoreUpdateMessageMovesSessionByLatestResponseActivity(t *testing
 	if err := store.Create(ctx, first); err != nil {
 		t.Fatalf("Create first session: %v", err)
 	}
-	streaming := NewMessage(first.ID, llm.AssistantText("response started first"), -1)
+	streaming := NewMessage(first.ID, core.AssistantText("response started first"), -1)
 	streaming.CreatedAt = base.Add(time.Minute)
 	if err := store.AddMessage(ctx, first.ID, streaming); err != nil {
 		t.Fatalf("AddMessage first session: %v", err)
@@ -35,7 +35,7 @@ func TestSQLiteStoreUpdateMessageMovesSessionByLatestResponseActivity(t *testing
 	if err := store.Create(ctx, second); err != nil {
 		t.Fatalf("Create second session: %v", err)
 	}
-	laterStart := NewMessage(second.ID, llm.AssistantText("response started later"), -1)
+	laterStart := NewMessage(second.ID, core.AssistantText("response started later"), -1)
 	laterStart.CreatedAt = base.Add(3 * time.Minute)
 	if err := store.AddMessage(ctx, second.ID, laterStart); err != nil {
 		t.Fatalf("AddMessage second session: %v", err)
@@ -49,7 +49,7 @@ func TestSQLiteStoreUpdateMessageMovesSessionByLatestResponseActivity(t *testing
 		t.Fatalf("order before response update = %#v, want second session first", summaries)
 	}
 
-	streaming.Parts = []llm.Part{{Type: llm.PartText, Text: "response finished last"}}
+	streaming.Parts = []core.Part{{Type: core.PartText, Text: "response finished last"}}
 	streaming.TextContent = "response finished last"
 	if err := store.UpdateMessage(ctx, first.ID, streaming); err != nil {
 		t.Fatalf("UpdateMessage first session: %v", err)
@@ -84,9 +84,9 @@ func TestSQLiteStoreUpdateMessageOverwrites(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := NewMessage(sess.ID, llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartText, Text: "initial draft"}},
+	msg := NewMessage(sess.ID, core.Message{
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartText, Text: "initial draft"}},
 	}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
@@ -99,9 +99,9 @@ func TestSQLiteStoreUpdateMessageOverwrites(t *testing.T) {
 	originalCreated := msg.CreatedAt
 
 	// Update content in place: same ID, different parts.
-	msg.Parts = []llm.Part{
-		{Type: llm.PartText, Text: "updated draft"},
-		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "some_tool"}},
+	msg.Parts = []core.Part{
+		{Type: core.PartText, Text: "updated draft"},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "some_tool"}},
 	}
 	msg.TextContent = "updated draft"
 	if err := store.UpdateMessage(ctx, sess.ID, msg); err != nil {
@@ -131,7 +131,7 @@ func TestSQLiteStoreUpdateMessageOverwrites(t *testing.T) {
 	if got.Parts[0].Text != "updated draft" {
 		t.Errorf("updated text = %q, want %q", got.Parts[0].Text, "updated draft")
 	}
-	if got.Parts[1].Type != llm.PartToolCall || got.Parts[1].ToolCall == nil || got.Parts[1].ToolCall.ID != "call-1" {
+	if got.Parts[1].Type != core.PartToolCall || got.Parts[1].ToolCall == nil || got.Parts[1].ToolCall.ID != "call-1" {
 		t.Errorf("updated tool call part = %+v, want tool call with ID call-1", got.Parts[1])
 	}
 }
@@ -151,9 +151,9 @@ func TestSQLiteStoreUpdateMessageAdjustsVisibleMessageCountOnRoleChange(t *testi
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := NewMessage(sess.ID, llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartText, Text: "visible"}},
+	msg := NewMessage(sess.ID, core.Message{
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartText, Text: "visible"}},
 	}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
@@ -167,8 +167,8 @@ func TestSQLiteStoreUpdateMessageAdjustsVisibleMessageCountOnRoleChange(t *testi
 		t.Fatalf("MessageCount before role change = %d, want 1", summaries[0].MessageCount)
 	}
 
-	msg.Role = llm.RoleTool
-	msg.Parts = []llm.Part{{Type: llm.PartText, Text: "tool result"}}
+	msg.Role = core.RoleTool
+	msg.Parts = []core.Part{{Type: core.PartText, Text: "tool result"}}
 	msg.TextContent = "tool result"
 	if err := store.UpdateMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("UpdateMessage to tool: %v", err)
@@ -204,14 +204,14 @@ func TestSQLiteStoreUpdateMessageAdjustsVisibleMessageCountOnAssistantTextChange
 	}
 	assertListedMessageCount(t, store, 0)
 
-	msg.Parts = []llm.Part{{Type: llm.PartText, Text: "final answer"}}
+	msg.Parts = []core.Part{{Type: core.PartText, Text: "final answer"}}
 	msg.TextContent = "final answer"
 	if err := store.UpdateMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("UpdateMessage to assistant text: %v", err)
 	}
 	assertListedMessageCount(t, store, 1)
 
-	msg.Parts = []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-2", Name: "shell", Arguments: []byte(`{"command":"pwd"}`)}}}
+	msg.Parts = []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-2", Name: "shell", Arguments: []byte(`{"command":"pwd"}`)}}}
 	msg.TextContent = ""
 	if err := store.UpdateMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("UpdateMessage back to tool-call-only assistant: %v", err)
@@ -234,17 +234,17 @@ func TestSQLiteStoreUpdateStreamingMessageDefersFTSRewriteUntilFinalized(t *test
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := NewMessage(sess.ID, llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartText, Text: "partial"}},
+	msg := NewMessage(sess.ID, core.Message{
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartText, Text: "partial"}},
 	}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
-	updated := NewMessage(sess.ID, llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartText, Text: "partial plus final tail"}},
+	updated := NewMessage(sess.ID, core.Message{
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartText, Text: "partial plus final tail"}},
 	}, -1)
 	updated.ID = msg.ID
 	updated.CreatedAt = msg.CreatedAt
@@ -319,8 +319,8 @@ func TestSQLiteStoreUpdateMessageReturnsErrNotFound(t *testing.T) {
 	ghost := &Message{
 		ID:        99999,
 		SessionID: sess.ID,
-		Role:      llm.RoleAssistant,
-		Parts:     []llm.Part{{Type: llm.PartText, Text: "ghost"}},
+		Role:      core.RoleAssistant,
+		Parts:     []core.Part{{Type: core.PartText, Text: "ghost"}},
 	}
 	err = store.UpdateMessage(ctx, sess.ID, ghost)
 	if !errors.Is(err, ErrNotFound) {
@@ -328,7 +328,7 @@ func TestSQLiteStoreUpdateMessageReturnsErrNotFound(t *testing.T) {
 	}
 
 	// Persisted row, but wrong session ID.
-	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "real"}}}, -1)
+	msg := NewMessage(sess.ID, core.Message{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartText, Text: "real"}}}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -356,9 +356,9 @@ func TestSQLiteStoreUpdateMessageConcurrent(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := NewMessage(sess.ID, llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: []llm.Part{{Type: llm.PartText, Text: "seed"}},
+	msg := NewMessage(sess.ID, core.Message{
+		Role:  core.RoleAssistant,
+		Parts: []core.Part{{Type: core.PartText, Text: "seed"}},
 	}, -1)
 	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
@@ -377,8 +377,8 @@ func TestSQLiteStoreUpdateMessageConcurrent(t *testing.T) {
 				update := &Message{
 					ID:        msg.ID,
 					SessionID: sess.ID,
-					Role:      llm.RoleAssistant,
-					Parts:     []llm.Part{{Type: llm.PartText, Text: "concurrent"}},
+					Role:      core.RoleAssistant,
+					Parts:     []core.Part{{Type: core.PartText, Text: "concurrent"}},
 				}
 				if err := store.UpdateMessage(ctx, sess.ID, update); err != nil {
 					errs <- err

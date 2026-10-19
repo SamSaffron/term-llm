@@ -8,6 +8,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -16,7 +17,7 @@ type preparedAskConversation struct {
 	session          *session.Session
 	sessionID        string
 	settings         SessionSettings
-	messages         []llm.Message
+	messages         []core.Message
 	instructions     string
 	historyHasSystem bool
 	startedAt        time.Time
@@ -24,7 +25,7 @@ type preparedAskConversation struct {
 
 // prepareAskConversation establishes/refreshes durable session inputs and then
 // projects system, active history, grounding, and the new user message in order.
-func prepareAskConversation(ctx context.Context, cfg *config.Config, provider llm.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings SessionSettings, ticket *sessionInputTicket, basePrompt string, userMessage llm.Message, approval tools.ApprovalMode) (preparedAskConversation, error) {
+func prepareAskConversation(ctx context.Context, cfg *config.Config, provider core.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings SessionSettings, ticket *sessionInputTicket, basePrompt string, userMessage core.Message, approval tools.ApprovalMode) (preparedAskConversation, error) {
 	if !resuming && store != nil {
 		if sessionID == "" {
 			sessionID = session.NewID()
@@ -59,7 +60,7 @@ func prepareAskConversation(ctx context.Context, cfg *config.Config, provider ll
 	if !resuming && sess != nil {
 		registerOwnedSessionInputs(store, sess, sessionInputSelection{BasePrompt: basePrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
 	}
-	var history []llm.Message
+	var history []core.Message
 	if resuming {
 		rows, err := session.LoadActiveMessages(ctx, store, sess)
 		if err != nil && ticket != nil {
@@ -77,16 +78,16 @@ func prepareAskConversation(ctx context.Context, cfg *config.Config, provider ll
 		history = session.ProjectSelectedSessionPrompt(history, settings.SystemPrompt)
 	}
 	instructions := settings.SystemPrompt
-	historyHasSystem := len(history) > 0 && history[0].Role == llm.RoleSystem
-	messages := make([]llm.Message, 0, len(history)+3)
+	historyHasSystem := len(history) > 0 && history[0].Role == core.RoleSystem
+	messages := make([]core.Message, 0, len(history)+3)
 	if instructions != "" && !historyHasSystem {
-		messages = append(messages, llm.SystemText(instructions))
+		messages = append(messages, core.SystemText(instructions))
 	}
 	messages = append(messages, history...)
 	var started time.Time
 	if !resuming && settings.TimeGrounding {
 		started = time.Now()
-		messages = llm.InsertConversationStart(messages, []llm.Message{llm.ConversationStartMessage(started)})
+		messages = llm.InsertConversationStart(messages, []core.Message{llm.ConversationStartMessage(started)})
 	}
 	messages = append(messages, userMessage)
 	if sess != nil {

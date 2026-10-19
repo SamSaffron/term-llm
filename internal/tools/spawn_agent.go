@@ -13,7 +13,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -103,32 +104,32 @@ const (
 
 // SubagentEvent represents an event from a running subagent.
 type SubagentEvent struct {
-	Type              SubagentEventType   // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
-	Text              string              // for "text" events
-	ToolName          string              // for tool events
-	ToolCallID        string              // nested tool invocation ID
-	ToolArgs          json.RawMessage     // nested tool arguments
-	Guardian          *GuardianEvent      // for guardian events
-	ToolInfo          string              // for tool events
-	ToolOutput        string              // for "tool_end" events - text content
-	Diffs             []llm.DiffData      // for "tool_end" events - structured diffs
-	Images            []string            // for "tool_end" events - legacy image paths
-	Media             []llm.MediaArtifact // for "tool_end" events - ordered image/video/audio artifacts
-	Success           bool                // for "tool_end" events
-	Phase             string              // for "phase" events
-	InputTokens       int                 // fresh input tokens for "usage" events
-	OutputTokens      int                 // output tokens for "usage" events
-	CountsTurn        bool                // usage from a completed child model turn, not compaction or nested usage
-	CachedInputTokens int                 // cache-read tokens for "usage" events
-	CacheWriteTokens  int                 // cache-write tokens for "usage" events
-	Provider          string              // resolved provider for init/usage events
-	Model             string              // resolved model for init/usage events
-	Timestamp         time.Time           // authoritative child lifecycle/event time when available
-	Deadline          time.Time           // independently enforced child/run deadline when available
-	RunID             string              // queued run identity; never model-provided display text
-	JobID             string              // queued job identity
-	EventID           int64               // monotonic persisted queued-event identity; zero for synchronous events
-	ProgressTruncated bool                // queued event history could not be read completely
+	Type              SubagentEventType    // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
+	Text              string               // for "text" events
+	ToolName          string               // for tool events
+	ToolCallID        string               // nested tool invocation ID
+	ToolArgs          json.RawMessage      // nested tool arguments
+	Guardian          *GuardianEvent       // for guardian events
+	ToolInfo          string               // for tool events
+	ToolOutput        string               // for "tool_end" events - text content
+	Diffs             []core.DiffData      // for "tool_end" events - structured diffs
+	Images            []string             // for "tool_end" events - legacy image paths
+	Media             []core.MediaArtifact // for "tool_end" events - ordered image/video/audio artifacts
+	Success           bool                 // for "tool_end" events
+	Phase             string               // for "phase" events
+	InputTokens       int                  // fresh input tokens for "usage" events
+	OutputTokens      int                  // output tokens for "usage" events
+	CountsTurn        bool                 // usage from a completed child model turn, not compaction or nested usage
+	CachedInputTokens int                  // cache-read tokens for "usage" events
+	CacheWriteTokens  int                  // cache-write tokens for "usage" events
+	Provider          string               // resolved provider for init/usage events
+	Model             string               // resolved model for init/usage events
+	Timestamp         time.Time            // authoritative child lifecycle/event time when available
+	Deadline          time.Time            // independently enforced child/run deadline when available
+	RunID             string               // queued run identity; never model-provided display text
+	JobID             string               // queued job identity
+	EventID           int64                // monotonic persisted queued-event identity; zero for synchronous events
+	ProgressTruncated bool                 // queued event history could not be read completely
 }
 
 // SubagentEventCallback is called to bubble up events from a running subagent.
@@ -333,8 +334,8 @@ func (t *SpawnAgentTool) GetEventCallback() SubagentEventCallback {
 }
 
 // Spec returns the tool specification.
-func (t *SpawnAgentTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{
+func (t *SpawnAgentTool) Spec() core.ToolSpec {
+	return core.ToolSpec{
 		Name: SpawnAgentToolName,
 		Description: `Spawn a sub-agent to handle a specific task autonomously. Use this to delegate work to specialized agents that can run in parallel.
 
@@ -510,15 +511,15 @@ func (t *SpawnAgentTool) PermittedAgentNames() ([]string, error) {
 	return permitted, nil
 }
 
-func spawnAgentErrorOutput(content string, timedOut bool) llm.ToolOutput {
-	output := llm.TextOutput(content)
+func spawnAgentErrorOutput(content string, timedOut bool) core.ToolOutput {
+	output := core.TextOutput(content)
 	output.IsError = true
 	output.TimedOut = timedOut
 	return output
 }
 
 // Execute runs the spawn_agent tool.
-func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a SpawnAgentArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err)), false), nil
@@ -571,7 +572,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	if a.NotifyWhenDone && origin == "" {
 		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "notify_when_done requires a persistent web parent session with loop reactivation"), false), nil
 	}
-	callID := llm.CallIDFromContext(ctx)
+	callID := core.CallIDFromContext(ctx)
 	executionCallback := SubagentEventCallbackFromContext(ctx)
 	cb := func(eventCallID string, event SubagentEvent) {
 		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
@@ -634,7 +635,7 @@ func resolveAgentCWD(runner SpawnAgentRunner, cwd string) (string, error) {
 }
 
 func (t *SpawnAgentTool) trustedCompletionOrigin(ctx context.Context) string {
-	parent := llm.SessionIDFromContext(ctx)
+	parent := core.SessionIDFromContext(ctx)
 	origin, ok := QueueAgentOriginFromContext(ctx)
 	if parent != "" && ok && origin.Origin == QueueAgentOriginWeb && origin.SessionID == parent && agentCompletionWake(ctx) != nil && t.manager.store != nil {
 		return QueueAgentOriginWeb
@@ -644,7 +645,7 @@ func (t *SpawnAgentTool) trustedCompletionOrigin(ctx context.Context) string {
 
 // withoutLifecycleHints drops resume/wait guidance that a session-less host
 // cannot act on: every lifecycle tool requires a parent session.
-func withoutLifecycleHints(out llm.ToolOutput) llm.ToolOutput {
+func withoutLifecycleHints(out core.ToolOutput) core.ToolOutput {
 	var result SpawnAgentResult
 	if json.Unmarshal([]byte(out.Content), &result) != nil {
 		return out
@@ -685,7 +686,7 @@ func (t *SpawnAgentTool) Preview(args json.RawMessage) string {
 
 // classifySpawnAgentError maps runner/context errors to a stable tool error type.
 func classifySpawnAgentError(err error, parentCtx, childCtx context.Context) ToolErrorType {
-	if llm.IsMaxTurnsExceeded(err) {
+	if engine.IsMaxTurnsExceeded(err) {
 		return ErrExecutionFailed
 	}
 	if errors.Is(err, context.DeadlineExceeded) || parentCtx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {

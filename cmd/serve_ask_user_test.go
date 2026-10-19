@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -14,7 +14,7 @@ func TestAwaitAskUserPausesResponseTimeoutWhileWaiting(t *testing.T) {
 	runCtx, runTimer := newResponseRunTimerWithClock(500*time.Millisecond, clock)
 	defer runTimer.stop()
 	rt := &serveRuntime{pauseResponseTimeout: runTimer.pause}
-	callCtx := llm.ContextWithCallID(runCtx, "call-ask")
+	callCtx := core.ContextWithCallID(runCtx, "call-ask")
 	questions := []tools.AskUserQuestion{{
 		Header:   "Choice",
 		Question: "Pick one",

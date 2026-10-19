@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -21,7 +21,7 @@ func TestAgentCompletionCollectionSuppressesWakeAndPreservesMedia(t *testing.T) 
 	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(&mediaPersistentRunner{mediaRunner: child, store: store})
 	wake := make(chan string, 1)
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	ctx = ContextWithQueueAgentOrigin(ctx, QueueAgentOriginContext{Origin: QueueAgentOriginWeb, SessionID: "parent"})
 	ctx = ContextWithAgentCompletionWake(ctx, func(parent string) { wake <- parent })
 	spawned := lifecycleResult(t, lifecycleCall(t, tool, ctx, `{"agent_name":"developer","prompt":"draw","notify_when_done":true,"wait":0}`))
@@ -92,7 +92,7 @@ func TestAgentNotifyRequiresTrustedHost(t *testing.T) {
 	defer store.Close()
 	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(&persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{}, store: store})
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	for _, origin := range []QueueAgentOriginContext{{}, {Origin: QueueAgentOriginWeb, SessionID: "other"}, {Origin: QueueAgentOriginTelegram, SessionID: "parent"}} {
 		requestCtx := ContextWithQueueAgentOrigin(ctx, origin)
 		requestCtx = ContextWithAgentCompletionWake(requestCtx, func(string) { t.Fatal("untrusted wake") })
@@ -106,7 +106,7 @@ func TestAgentNotifyRequiresTrustedHost(t *testing.T) {
 func TestHostLifecycleNoticeCannotResumeChild(t *testing.T) {
 	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(&lifecycleRunner{})
-	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	ctx = ContextWithAgentRecoveryNotice(ctx)
 	out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: tool}, ctx, `{"agent_id":"interrupted-child"}`)
 	if !out.IsError || !strings.Contains(out.Content, "explicit user confirmation") {

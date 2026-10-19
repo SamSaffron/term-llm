@@ -1,62 +1,16 @@
-export interface HubNodeStatus {
-  reachable: boolean;
-  state: string;
-  latency_ms: number;
-  version?: string;
-  agent?: string;
-  capabilities?: string[];
-  details?: Record<string, string>;
-  error?: string;
-}
+import type {
+  HubStatus,
+  HubNodeDiagnostic as GeneratedHubNodeDiagnostic,
+  HubNodeSessionView,
+  HubNodeSessionsView,
+  HubNodeView,
+} from '../../api/generated/types';
 
-export interface HubNodeDiagnostic {
-  severity: string;
-  code: string;
-  message: string;
-}
-
-export interface HubNodeSession {
-  id: string;
-  number?: number;
-  short_title: string;
-  long_title?: string;
-  pinned?: boolean;
-  active_run?: boolean;
-  interaction_required?: boolean;
-  pending_interaction_count?: number;
-  pending_interaction_kinds?: string[];
-  last_message_at?: number;
-  message_count?: number;
-  resume_path: string;
-}
-
-export interface HubNodeSessions {
-  count_label: string;
-  has_more?: boolean;
-  active_count?: number;
-  input_required_count?: number;
-  unseen_count?: number;
-  attention_capability?: string;
-  attention_last_success_at?: number;
-  active?: HubNodeSession[];
-  recent?: HubNodeSession[];
-  resume_path?: string;
-}
-
-export interface HubNode {
-  id: string;
-  name: string;
-  source: string;
-  connection: string;
-  url: string;
-  base_path: string;
-  proxy_path: string;
-  new_session_path: string;
-  has_token: boolean;
-  status: HubNodeStatus;
-  sessions?: HubNodeSessions;
-  diagnostics?: HubNodeDiagnostic[];
-}
+export type HubNodeStatus = HubStatus;
+export type HubNodeDiagnostic = GeneratedHubNodeDiagnostic;
+export type HubNodeSession = HubNodeSessionView;
+export type HubNodeSessions = HubNodeSessionsView;
+export type HubNode = HubNodeView;
 
 export interface NodesResponse {
   nodes: HubNode[];

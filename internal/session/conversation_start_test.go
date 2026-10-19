@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
 
 func TestConversationStartSurvivesPersistenceAndCompactionBoundary(t *testing.T) {
@@ -22,13 +24,13 @@ func TestConversationStartSurvivesPersistenceAndCompactionBoundary(t *testing.T)
 	}
 	start := llm.ConversationStartMessage(time.Date(2026, time.September, 9, 13, 42, 0, 0, time.FixedZone("AEST", 10*60*60)))
 	platform := llm.PlatformContextMessage("web context")
-	for _, message := range []llm.Message{llm.SystemText("system"), platform, start, llm.UserText("question"), llm.AssistantText("answer")} {
+	for _, message := range []core.Message{core.SystemText("system"), platform, start, core.UserText("question"), core.AssistantText("answer")} {
 		if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, message, -1)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	result := llm.CompactionResultFromBrief("rebuilt system", "continue", []llm.Message{llm.SystemText("system"), platform, start, llm.UserText("question"), llm.AssistantText("answer")}, llm.CompactionConfig{})
+	result := llm.CompactionResultFromBrief("rebuilt system", "continue", []core.Message{core.SystemText("system"), platform, start, core.UserText("question"), core.AssistantText("answer")}, engine.CompactionConfig{})
 	if _, _, refreshed, err := ApplyCompaction(ctx, store, sess, nil, result); err != nil {
 		t.Fatal(err)
 	} else if refreshed != nil {

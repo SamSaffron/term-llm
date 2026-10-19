@@ -9,36 +9,37 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func inspectMessage(id int64, role llm.Role, parts ...llm.Part) session.Message {
+func inspectMessage(id int64, role core.Role, parts ...core.Part) session.Message {
 	return session.Message{ID: id, Role: role, Sequence: int(id), CreatedAt: time.Unix(1760000000, 0), Parts: parts}
 }
 
 func TestInspectProjectionKinds(t *testing.T) {
 	tests := []struct {
 		name                      string
-		role                      llm.Role
-		parts                     []llm.Part
+		role                      core.Role
+		parts                     []core.Part
 		kind, text, title, format string
 	}{
-		{"system", llm.RoleSystem, []llm.Part{{Type: llm.PartText, Text: "system instructions"}}, "system", "system instructions", "system", "text"},
-		{"developer", llm.RoleDeveloper, []llm.Part{{Type: llm.PartText, Text: "developer instructions"}}, "developer", "developer instructions", "developer", "text"},
-		{"goal", llm.RoleUser, []llm.Part{{Type: llm.PartGoalSteering}, {Type: llm.PartText, Text: "hidden goal"}}, "goal_steering", "hidden goal", "goal_steering", "text"},
-		{"path note", llm.RoleDeveloper, []llm.Part{{Type: llm.PartPathNote}, {Type: llm.PartText, Text: "path context"}}, "path_note", "path context", "path_note", "text"},
-		{"user", llm.RoleUser, []llm.Part{{Type: llm.PartText, Text: "question"}}, "user", "question", "user", "text"},
-		{"assistant", llm.RoleAssistant, []llm.Part{{Type: llm.PartText, Text: "answer"}}, "assistant_text", "answer", "assistant_text", "text"},
-		{"event", llm.RoleEvent, []llm.Part{{Type: llm.PartText, Text: "model changed"}}, "event", "model changed", "event", "text"},
-		{"image", llm.RoleUser, []llm.Part{{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: base64.StdEncoding.EncodeToString([]byte("image-bytes"))}}}, "image", "[Image: image/png, 11 bytes]", "image/png", "text"},
-		{"file", llm.RoleUser, []llm.Part{{Type: llm.PartFile, FileData: &llm.ToolFileData{Filename: "file.pdf", MediaType: "application/pdf", SizeBytes: 123, Base64: "PRIVATE"}}}, "file", "[File: file.pdf, application/pdf, 123 bytes]", "file.pdf", "text"},
-		{"file text", llm.RoleUser, []llm.Part{{Type: llm.PartFile, Text: "readable file"}}, "file", "readable file", "file", "text"},
-		{"tool args", llm.RoleAssistant, []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call1", Name: "shell", Arguments: json.RawMessage(`{"z":2,"a":"ok"}`)}}}, "tool_call", "{\n  \"a\": \"ok\",\n  \"z\": 2\n}", "shell", "json"},
-		{"tool result", llm.RoleTool, []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call1", Name: "shell", Content: strings.Repeat("line\n", 100), IsError: true}}}, "tool_result", strings.Repeat("line\n", 100), "shell", "text"},
-		{"structured result", llm.RoleTool, []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: "shell", ContentParts: []llm.ToolContentPart{{Type: llm.ToolContentPartText, Text: "first"}, {Type: llm.ToolContentPartImageData, ImageData: &llm.ToolImageData{Base64: "PRIVATE"}}, {Type: llm.ToolContentPartText, Text: " second"}}}}}, "tool_result", "first second\n[1 image(s) attached]", "shell", "text"},
-		{"attachments", llm.RoleTool, []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: "show_media", Content: "done", Images: []string{"secret-path"}, Media: []llm.MediaArtifact{{}}, ContentParts: []llm.ToolContentPart{{ImageData: &llm.ToolImageData{Base64: "PRIVATE"}}}}}}, "tool_result", "done\n[3 image(s) attached]", "show_media", "text"},
-		{"skill", llm.RoleDeveloper, []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: &llm.SkillActivationProvenance{Name: "testing", Source: "local", AllowedToolsPresent: true}}}, "skill_activation", "Skill activation: testing\nSource: local\nAllowed tools: (none)", "testing", "text"},
+		{"system", core.RoleSystem, []core.Part{{Type: core.PartText, Text: "system instructions"}}, "system", "system instructions", "system", "text"},
+		{"developer", core.RoleDeveloper, []core.Part{{Type: core.PartText, Text: "developer instructions"}}, "developer", "developer instructions", "developer", "text"},
+		{"goal", core.RoleUser, []core.Part{{Type: core.PartGoalSteering}, {Type: core.PartText, Text: "hidden goal"}}, "goal_steering", "hidden goal", "goal_steering", "text"},
+		{"path note", core.RoleDeveloper, []core.Part{{Type: core.PartPathNote}, {Type: core.PartText, Text: "path context"}}, "path_note", "path context", "path_note", "text"},
+		{"user", core.RoleUser, []core.Part{{Type: core.PartText, Text: "question"}}, "user", "question", "user", "text"},
+		{"assistant", core.RoleAssistant, []core.Part{{Type: core.PartText, Text: "answer"}}, "assistant_text", "answer", "assistant_text", "text"},
+		{"event", core.RoleEvent, []core.Part{{Type: core.PartText, Text: "model changed"}}, "event", "model changed", "event", "text"},
+		{"image", core.RoleUser, []core.Part{{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: base64.StdEncoding.EncodeToString([]byte("image-bytes"))}}}, "image", "[Image: image/png, 11 bytes]", "image/png", "text"},
+		{"file", core.RoleUser, []core.Part{{Type: core.PartFile, FileData: &core.ToolFileData{Filename: "file.pdf", MediaType: "application/pdf", SizeBytes: 123, Base64: "PRIVATE"}}}, "file", "[File: file.pdf, application/pdf, 123 bytes]", "file.pdf", "text"},
+		{"file text", core.RoleUser, []core.Part{{Type: core.PartFile, Text: "readable file"}}, "file", "readable file", "file", "text"},
+		{"tool args", core.RoleAssistant, []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call1", Name: "shell", Arguments: json.RawMessage(`{"z":2,"a":"ok"}`)}}}, "tool_call", "{\n  \"a\": \"ok\",\n  \"z\": 2\n}", "shell", "json"},
+		{"tool result", core.RoleTool, []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call1", Name: "shell", Content: strings.Repeat("line\n", 100), IsError: true}}}, "tool_result", strings.Repeat("line\n", 100), "shell", "text"},
+		{"structured result", core.RoleTool, []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: "shell", ContentParts: []core.ToolContentPart{{Type: core.ToolContentPartText, Text: "first"}, {Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{Base64: "PRIVATE"}}, {Type: core.ToolContentPartText, Text: " second"}}}}}, "tool_result", "first second\n[1 image(s) attached]", "shell", "text"},
+		{"attachments", core.RoleTool, []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: "show_media", Content: "done", Images: []string{"secret-path"}, Media: []core.MediaArtifact{{}}, ContentParts: []core.ToolContentPart{{ImageData: &core.ToolImageData{Base64: "PRIVATE"}}}}}}, "tool_result", "done\n[3 image(s) attached]", "show_media", "text"},
+		{"skill", core.RoleDeveloper, []core.Part{{Type: core.PartSkillActivation, SkillActivation: &core.SkillActivationProvenance{Name: "testing", Source: "local", AllowedToolsPresent: true}}}, "skill_activation", "Skill activation: testing\nSource: local\nAllowed tools: (none)", "testing", "text"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -68,24 +69,24 @@ func TestInspectProjectionKinds(t *testing.T) {
 func TestInspectReasoning(t *testing.T) {
 	tests := []struct {
 		name        string
-		part        llm.Part
-		kind        llm.ReasoningKind
+		part        core.Part
+		kind        core.ReasoningKind
 		title, text string
 		encrypted   int
 	}{
-		{"legacy summary", llm.Part{ReasoningContent: "**Plan**\n\nDo this"}, llm.ReasoningKindSummary, "Plan", "Do this", 0},
-		{"summary parts", llm.Part{ReasoningKind: llm.ReasoningKindSummary, ReasoningContent: "old", ReasoningSummaryParts: []string{" **Plan** ", " first ", " ", " second "}}, llm.ReasoningKindSummary, "Plan", "first\n\nsecond", 0},
-		{"raw", llm.Part{ReasoningKind: llm.ReasoningKindRaw, ReasoningContent: " raw thoughts ", ReasoningSummaryTitle: "Explicit"}, llm.ReasoningKindRaw, "Explicit", "raw thoughts", 0},
-		{"unknown", llm.Part{ReasoningKind: llm.ReasoningKindUnknown, ReasoningContent: "unknown text"}, llm.ReasoningKindUnknown, "Thinking...", "unknown text", 0},
-		{"encrypted", llm.Part{ReasoningKind: llm.ReasoningKindEncrypted, ReasoningContent: "CIPHERTEXT", ReasoningSummaryParts: []string{"HIDDEN"}, ReasoningEncryptedContent: "SECRET"}, llm.ReasoningKindEncrypted, "Encrypted reasoning", "", 16},
-		{"blank summary and encrypted", llm.Part{ReasoningSummaryParts: []string{" ", "\n"}, ReasoningEncryptedContent: "SECRET"}, llm.ReasoningKindEncrypted, "Encrypted reasoning", "", 6},
-		{"only encrypted", llm.Part{ReasoningEncryptedContent: "SECRET"}, llm.ReasoningKindEncrypted, "Encrypted reasoning", "", 6},
-		{"summary and replay", llm.Part{ReasoningContent: "safe", ReasoningEncryptedContent: "SECRET"}, llm.ReasoningKindSummary, "Thinking...", "safe", 6},
+		{"legacy summary", core.Part{ReasoningContent: "**Plan**\n\nDo this"}, core.ReasoningKindSummary, "Plan", "Do this", 0},
+		{"summary parts", core.Part{ReasoningKind: core.ReasoningKindSummary, ReasoningContent: "old", ReasoningSummaryParts: []string{" **Plan** ", " first ", " ", " second "}}, core.ReasoningKindSummary, "Plan", "first\n\nsecond", 0},
+		{"raw", core.Part{ReasoningKind: core.ReasoningKindRaw, ReasoningContent: " raw thoughts ", ReasoningSummaryTitle: "Explicit"}, core.ReasoningKindRaw, "Explicit", "raw thoughts", 0},
+		{"unknown", core.Part{ReasoningKind: core.ReasoningKindUnknown, ReasoningContent: "unknown text"}, core.ReasoningKindUnknown, "Thinking...", "unknown text", 0},
+		{"encrypted", core.Part{ReasoningKind: core.ReasoningKindEncrypted, ReasoningContent: "CIPHERTEXT", ReasoningSummaryParts: []string{"HIDDEN"}, ReasoningEncryptedContent: "SECRET"}, core.ReasoningKindEncrypted, "Encrypted reasoning", "", 16},
+		{"blank summary and encrypted", core.Part{ReasoningSummaryParts: []string{" ", "\n"}, ReasoningEncryptedContent: "SECRET"}, core.ReasoningKindEncrypted, "Encrypted reasoning", "", 6},
+		{"only encrypted", core.Part{ReasoningEncryptedContent: "SECRET"}, core.ReasoningKindEncrypted, "Encrypted reasoning", "", 6},
+		{"summary and replay", core.Part{ReasoningContent: "safe", ReasoningEncryptedContent: "SECRET"}, core.ReasoningKindSummary, "Thinking...", "safe", 6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.part.Type, tt.part.Text = llm.PartText, "answer"
-			d := Project([]session.Message{inspectMessage(1, llm.RoleAssistant, tt.part)}, Options{})
+			tt.part.Type, tt.part.Text = core.PartText, "answer"
+			d := Project([]session.Message{inspectMessage(1, core.RoleAssistant, tt.part)}, Options{})
 			if len(d.Blocks) != 2 || d.Blocks[0].ID != "m1.p0.reasoning" || d.Blocks[1].ID != "m1.p0.assistant_text" {
 				t.Fatalf("blocks = %+v", d.Blocks)
 			}
@@ -111,10 +112,10 @@ func TestInspectReasoning(t *testing.T) {
 }
 
 func TestInspectExclusions(t *testing.T) {
-	excluded := []llm.PartType{llm.PartProviderReplay, llm.PartDiscoveryCall, llm.PartDiscoveryOutput, llm.PartToolActivity, llm.PartConversationStart, llm.PartPlatformContext, llm.PartDisplayText, llm.PartAgentMention, llm.PartDiffComment, llm.PartGoalSteering, llm.PartPathNote}
+	excluded := []core.PartType{core.PartProviderReplay, core.PartDiscoveryCall, core.PartDiscoveryOutput, core.PartToolActivity, core.PartConversationStart, core.PartPlatformContext, core.PartDisplayText, core.PartAgentMention, core.PartDiffComment, core.PartGoalSteering, core.PartPathNote}
 	for _, typ := range excluded {
 		t.Run(string(typ), func(t *testing.T) {
-			msg := inspectMessage(3, llm.RoleAssistant, llm.Part{Type: typ, Text: "SECRET", ReasoningContent: "SECRET", ReasoningEncryptedContent: "SECRET"})
+			msg := inspectMessage(3, core.RoleAssistant, core.Part{Type: typ, Text: "SECRET", ReasoningContent: "SECRET", ReasoningEncryptedContent: "SECRET"})
 			msg.TextContent = "SECRET fallback"
 			d := Project([]session.Message{msg}, Options{})
 			if len(d.Blocks) != 0 {
@@ -132,16 +133,16 @@ func TestInspectExclusions(t *testing.T) {
 
 func TestInspectCompaction(t *testing.T) {
 	summary := "[Context Compaction]\nsummary"
-	if !llm.IsInternalCompactionSummaryText(summary) {
+	if !engine.IsInternalCompactionSummaryText(summary) {
 		t.Fatal("invalid fixture summary")
 	}
 	messages := []session.Message{
-		inspectMessage(1, llm.RoleSystem, llm.Part{Type: llm.PartText, Text: "system"}),
-		inspectMessage(2, llm.RoleUser, llm.Part{Type: llm.PartText, Text: summary}),
-		inspectMessage(3, llm.RoleAssistant, llm.Part{Type: llm.PartText, Text: "tail"}),
-		inspectMessage(4, llm.RoleUser, llm.Part{Type: llm.PartText, Text: "active"}),
-		inspectMessage(5, llm.RoleUser, llm.Part{Type: llm.PartText, Text: summary}),
-		inspectMessage(6, llm.RoleAssistant, llm.Part{Type: llm.PartText, Text: "tail2"}),
+		inspectMessage(1, core.RoleSystem, core.Part{Type: core.PartText, Text: "system"}),
+		inspectMessage(2, core.RoleUser, core.Part{Type: core.PartText, Text: summary}),
+		inspectMessage(3, core.RoleAssistant, core.Part{Type: core.PartText, Text: "tail"}),
+		inspectMessage(4, core.RoleUser, core.Part{Type: core.PartText, Text: "active"}),
+		inspectMessage(5, core.RoleUser, core.Part{Type: core.PartText, Text: summary}),
+		inspectMessage(6, core.RoleAssistant, core.Part{Type: core.PartText, Text: "tail2"}),
 	}
 	messages[2].CompactionTail = true
 	messages[5].CompactionTail = true
@@ -181,9 +182,9 @@ func TestInspectCompaction(t *testing.T) {
 }
 
 func TestInspectStableIDsAndLegacyFallback(t *testing.T) {
-	msg := inspectMessage(80, llm.RoleAssistant, llm.Part{Type: llm.PartText, Text: "answer", CreatedAt: 123})
+	msg := inspectMessage(80, core.RoleAssistant, core.Part{Type: core.PartText, Text: "answer", CreatedAt: 123})
 	first := Project([]session.Message{msg}, Options{}).Blocks[0]
-	second := Project([]session.Message{inspectMessage(79, llm.RoleUser), msg}, Options{}).Blocks[0]
+	second := Project([]session.Message{inspectMessage(79, core.RoleUser), msg}, Options{}).Blocks[0]
 	if first.ID != second.ID || first.CreatedAt != 123 {
 		t.Fatalf("unstable IDs: %+v / %+v", first, second)
 	}
@@ -206,7 +207,7 @@ func TestInspectStableIDsAndLegacyFallback(t *testing.T) {
 }
 
 func TestInspectRuntime(t *testing.T) {
-	messages := []session.Message{inspectMessage(1, llm.RoleSystem, llm.Part{Type: llm.PartText, Text: "persisted"})}
+	messages := []session.Message{inspectMessage(1, core.RoleSystem, core.Part{Type: core.PartText, Text: "persisted"})}
 	for _, tt := range []struct {
 		name    string
 		opts    RuntimeOptions
@@ -218,8 +219,8 @@ func TestInspectRuntime(t *testing.T) {
 		{name: "different", opts: RuntimeOptions{Loaded: true, SystemPrompt: "new"}, matches: boolPointer(false)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.opts.Tools = []llm.ToolSpec{{Name: "shell", Description: "Execute", Schema: map[string]any{"type": "object"}}}
-			tt.opts.ToolDiscovery = &llm.ToolDiscoveryDiagnostics{ResolvedMode: "on"}
+			tt.opts.Tools = []core.ToolSpec{{Name: "shell", Description: "Execute", Schema: map[string]any{"type": "object"}}}
+			tt.opts.ToolDiscovery = &core.ToolDiscoveryDiagnostics{ResolvedMode: "on"}
 			d := Project(messages, Options{Runtime: tt.opts})
 			rt := d.Header.Runtime
 			if !reflect.DeepEqual(rt.SystemPromptMatchesPersisted, tt.matches) {
@@ -252,7 +253,7 @@ func boolPointer(b bool) *bool { return &b }
 
 func TestInspectHeaderAndToolMetadata(t *testing.T) {
 	meta := &session.Session{Provider: "provider", ProviderKey: "provider-key", Model: "model", ReasoningEffort: "high", Agent: "developer", CompactionSeq: 20, CompactionCount: 2}
-	messages := []session.Message{inspectMessage(1, llm.RoleTool, llm.Part{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call1", Name: "shell", Content: "error details", IsError: true}})}
+	messages := []session.Message{inspectMessage(1, core.RoleTool, core.Part{Type: core.PartToolResult, ToolResult: &core.ToolResult{ID: "call1", Name: "shell", Content: "error details", IsError: true}})}
 	d := Project(messages, Options{Session: meta})
 	if d.Header.Provider != meta.Provider || d.Header.Model != meta.Model || d.Header.ReasoningEffort != meta.ReasoningEffort || d.Header.Agent != meta.Agent || d.Header.CompactionSeq != 20 || d.Header.CompactionCount != 2 {
 		t.Fatalf("header = %+v", d.Header)
@@ -263,7 +264,7 @@ func TestInspectHeaderAndToolMetadata(t *testing.T) {
 }
 
 func TestInspectInvalidRuntimeSchema(t *testing.T) {
-	d := Project(nil, Options{Runtime: RuntimeOptions{Loaded: true, Tools: []llm.ToolSpec{{Name: "malformed", Schema: map[string]any{"invalid": make(chan int)}}}}})
+	d := Project(nil, Options{Runtime: RuntimeOptions{Loaded: true, Tools: []core.ToolSpec{{Name: "malformed", Schema: map[string]any{"invalid": make(chan int)}}}}})
 	if len(d.Header.Runtime.Tools) != 0 || len(d.ResolveBodies([]string{"runtime.tool.0"}).Missing) != 1 {
 		t.Fatal("malformed runtime schema advertised a JSON body")
 	}

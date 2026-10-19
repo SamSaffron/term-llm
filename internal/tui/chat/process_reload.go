@@ -6,7 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
@@ -35,7 +35,7 @@ func (m *Model) presentationTick(d time.Duration, fn func(time.Time) tea.Msg) te
 // ReloadState preserves presentation and an optional settled engine boundary.
 // Messages are included only for --no-session runtimes.
 type ReloadState struct {
-	Continuation *llm.Continuation
+	Continuation *core.Continuation
 	SessionID    string
 	Provider     string
 	Model        string
@@ -152,7 +152,7 @@ func (m *Model) reloadBlocksInput(msg tea.Msg) bool {
 // replacement initialization. It does not send a new user message.
 type ReloadResumeMsg struct{}
 
-func (m *Model) suspendForReload(saved *llm.Continuation) (tea.Model, tea.Cmd) {
+func (m *Model) suspendForReload(saved *core.Continuation) (tea.Model, tea.Cmd) {
 	m.reloadContinuation = saved
 	m.streaming = false
 	m.mainRunViewComplete = true
@@ -188,7 +188,7 @@ func (m *Model) suspendForReload(saved *llm.Continuation) (tea.Model, tea.Cmd) {
 		m.releaseTurnLease(lease, session.ResponseRunCancelled)
 		m.messages = nil
 		for _, message := range saved.Request.Messages {
-			if message.Role != llm.RoleSystem {
+			if message.Role != core.RoleSystem {
 				m.messages = append(m.messages, *session.NewMessage(m.SessionID(), message, -1))
 			}
 		}

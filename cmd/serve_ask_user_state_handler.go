@@ -5,7 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -36,7 +37,7 @@ type webSessionStateData struct {
 	persistedGoalRead      bool
 	runtimeDefaultModel    string
 	runtimeMetaRead        bool
-	availability           llm.SteeringAvailability
+	availability           engine.SteeringAvailability
 	pendingItems           []map[string]any
 	pendingIDs             map[string]struct{}
 	pendingAuthoritative   bool
@@ -101,7 +102,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	}
 	s.addSessionStatePlan(state.response, r, sessionID)
 
-	state.availability = llm.SteeringAvailability{Protocol: 1, UnavailableReason: "run_not_consuming"}
+	state.availability = engine.SteeringAvailability{Protocol: 1, UnavailableReason: "run_not_consuming"}
 	s.addSessionStateRush(state.response, r, sessionID)
 	state.pendingItems = make([]map[string]any, 0)
 	state.pendingIDs = make(map[string]struct{})
@@ -183,7 +184,7 @@ func (s *serveServer) loadSessionStatePendingSteering(state *webSessionStateData
 					"id":     entry.ID,
 					"text":   entry.DisplayText,
 					"origin": entry.Origin,
-					"status": string(llm.SteeringQueued),
+					"status": string(core.SteeringQueued),
 				}
 				if entry.AttachmentSummary != "" {
 					item["attachment_summary"] = entry.AttachmentSummary
@@ -241,17 +242,17 @@ func (s *serveServer) addSessionStateRuntimeSteering(state *webSessionStateData,
 				}
 				text := strings.TrimSpace(entry.DisplayText)
 				if text == "" {
-					text = strings.TrimSpace(llm.MessageText(entry.Message))
+					text = strings.TrimSpace(core.MessageText(entry.Message))
 				}
 				if text == "" {
-					text = strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message))
+					text = strings.TrimSpace(core.MessageAttachmentSummary(entry.Message))
 				}
 				item := map[string]any{
 					"id":     entry.ID,
 					"text":   text,
 					"status": string(entry.Status),
 				}
-				if summary := strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message)); summary != "" {
+				if summary := strings.TrimSpace(core.MessageAttachmentSummary(entry.Message)); summary != "" {
 					item["attachment_summary"] = summary
 				}
 				state.pendingItems = append(state.pendingItems, item)
@@ -306,7 +307,7 @@ func (s *serveServer) finalizeSessionStateSteering(state *webSessionStateData) {
 	}
 	eligiblePending := false
 	for _, item := range state.pendingItems {
-		if item["origin"] != llm.SteeringOriginJobNotification {
+		if item["origin"] != engine.SteeringOriginJobNotification {
 			eligiblePending = true
 		}
 	}

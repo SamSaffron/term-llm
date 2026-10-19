@@ -14,6 +14,19 @@ import (
 	"github.com/samsaffron/term-llm/internal/openaiapi"
 )
 
+func TestTranscribeWithConfig_ChatGPTDispatchesToOAuthBackend(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	audio := filepath.Join(t.TempDir(), "memo.ogg")
+	if err := os.WriteFile(audio, []byte("audio-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Transcription: config.TranscriptionConfig{Model: "ignored-model"}}
+	_, err := TranscribeWithConfig(context.Background(), cfg, audio, "en", "chatgpt")
+	if err == nil || !strings.Contains(err.Error(), "ChatGPT transcription is not configured") {
+		t.Fatalf("TranscribeWithConfig error = %v, want ChatGPT OAuth setup guidance", err)
+	}
+}
+
 func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
 	origClient := defaultHTTPClient
 	origProbe := probeAudioDuration

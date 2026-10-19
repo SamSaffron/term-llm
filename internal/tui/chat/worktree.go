@@ -10,7 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
 	worktreerecovery "github.com/samsaffron/term-llm/internal/worktree/recovery"
@@ -382,11 +382,11 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 	var oldMessage *session.Message
 	m.messagesMu.Lock()
 	for i := range m.messages {
-		if m.messages[i].Role == llm.RoleSystem {
+		if m.messages[i].Role == core.RoleSystem {
 			copyMsg := m.messages[i]
 			oldMessage = &copyMsg
 			updated := copyMsg
-			updated.Parts = []llm.Part{{Type: llm.PartText, Text: prompt}}
+			updated.Parts = []core.Part{{Type: core.PartText, Text: prompt}}
 			updated.TextContent = prompt
 			if m.store != nil && m.sess != nil && updated.ID != 0 {
 				if err := m.store.UpdateMessage(context.Background(), m.sess.ID, &updated); err != nil {

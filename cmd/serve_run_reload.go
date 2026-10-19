@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runboundary"
@@ -22,8 +22,8 @@ type webReloadState struct {
 	Runs  []webRunContinuation
 }
 type webRunContinuation struct {
-	Engine          *llm.Continuation
-	CumulativeUsage llm.Usage
+	Engine          *core.Continuation
+	CumulativeUsage core.Usage
 	Provider        string
 	Stateful        bool
 	UI              bool
@@ -85,8 +85,8 @@ type webRunView struct {
 	Status                  string
 	ErrorType               string
 	ErrorMessage            string
-	Usage                   llm.Usage
-	SessionUsage            llm.Usage
+	Usage                   core.Usage
+	SessionUsage            core.Usage
 	LastSequenceNumber      int64
 	Events                  []responseRunEvent
 	EventStart              int
@@ -104,7 +104,7 @@ type webRunView struct {
 	CancelRequested         bool
 }
 
-func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *llm.Continuation, runtime *serveRuntime, stateful bool, options startResponseRunOptions) (*webRunContinuation, error) {
+func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *core.Continuation, runtime *serveRuntime, stateful bool, options startResponseRunOptions) (*webRunContinuation, error) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	if run.cancelRequested {
@@ -345,7 +345,7 @@ func (s *serveServer) failWebRunRestore(saved *webRunContinuation) {
 // pauseResponseRun executes inside the response owner after the producer and
 // persistence callbacks have returned. Failed exec resumes this same goroutine,
 // response object, subscribers and timer rather than starting a duplicate run.
-func (s *serveServer) pauseResponseRun(run *responseRun, runtime *serveRuntime, stream *responseRunStreamState, continuation *llm.Continuation, stateful bool, options startResponseRunOptions, runCtx context.Context, release *func(), timer *responseRunTimer) (context.Context, error) {
+func (s *serveServer) pauseResponseRun(run *responseRun, runtime *serveRuntime, stream *responseRunStreamState, continuation *core.Continuation, stateful bool, options startResponseRunOptions, runCtx context.Context, release *func(), timer *responseRunTimer) (context.Context, error) {
 	saved, err := snapshotWebRun(run, stream, continuation, runtime, stateful, options)
 	if err != nil {
 		return runCtx, err

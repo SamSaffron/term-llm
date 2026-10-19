@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/benchmark"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -428,9 +429,9 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 // resolveBenchmarkModels determines which models a target provider run covers and
 // returns their metadata. Local Ollama providers may enumerate installed models;
 // the returned skipped messages stay in the order the caller reports them.
-func resolveBenchmarkModels(ctx context.Context, cfg *config.Config, providerKey string, providerCfg config.ProviderConfig, configured bool, providerType config.ProviderType, model string, localOllama bool) ([]string, map[string]llm.ModelInfo, []string, error) {
+func resolveBenchmarkModels(ctx context.Context, cfg *config.Config, providerKey string, providerCfg config.ProviderConfig, configured bool, providerType config.ProviderType, model string, localOllama bool) ([]string, map[string]core.ModelInfo, []string, error) {
 	models := []string{model}
-	modelInfoByID := make(map[string]llm.ModelInfo)
+	modelInfoByID := make(map[string]core.ModelInfo)
 	var skipped []string
 	listOllamaModels := localOllama && (model == "" || providerType == config.ProviderTypeOllama)
 	if listOllamaModels {
@@ -488,7 +489,7 @@ type benchmarkModelContext struct {
 
 // resolveBenchmarkModelContext applies the configured model metadata, provider
 // num_ctx and assumed-limit precedence for a single selected model.
-func resolveBenchmarkModelContext(cfg *config.Config, providerKey string, providerCfg config.ProviderConfig, selectedModel string, modelInfoByID map[string]llm.ModelInfo, localOllama bool, assumedContextLimit int) benchmarkModelContext {
+func resolveBenchmarkModelContext(cfg *config.Config, providerKey string, providerCfg config.ProviderConfig, selectedModel string, modelInfoByID map[string]core.ModelInfo, localOllama bool, assumedContextLimit int) benchmarkModelContext {
 	modelContext := benchmarkModelContext{inputLimit: llm.InputLimitForProviderModel(providerKey, selectedModel)}
 	if info := modelInfoByID[selectedModel]; info.ID != "" {
 		if info.InputLimit > 0 {
@@ -570,7 +571,7 @@ func benchmarkUsesLocalOllama(providerKey string, providerType config.ProviderTy
 			(providerType == config.ProviderTypeOpenAICompat || providerType == config.ProviderTypeVLLM))
 }
 
-func listBenchmarkModels(ctx context.Context, cfg *config.Config, providerKey string) ([]llm.ModelInfo, error) {
+func listBenchmarkModels(ctx context.Context, cfg *config.Config, providerKey string) ([]core.ModelInfo, error) {
 	provider, err := newBenchmarkProvider(cfg, providerKey, "")
 	if err != nil {
 		return nil, err
@@ -579,7 +580,7 @@ func listBenchmarkModels(ctx context.Context, cfg *config.Config, providerKey st
 		defer cleaner.CleanupMCP()
 	}
 	lister, ok := provider.(interface {
-		ListModels(context.Context) ([]llm.ModelInfo, error)
+		ListModels(context.Context) ([]core.ModelInfo, error)
 	})
 	if !ok {
 		return nil, fmt.Errorf("adapter %T cannot list models", provider)

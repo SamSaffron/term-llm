@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -61,9 +63,9 @@ func TestServeContinuesExistingUnsafeSessionID(t *testing.T) {
 	if err := store.Create(context.Background(), legacy); err != nil {
 		t.Fatal(err)
 	}
-	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
-		return &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), defaultModel: "mock-model"}, nil
+		return &serveRuntime{provider: provider, engine: engine.NewEngine(provider, nil), defaultModel: "mock-model"}, nil
 	})
 	defer manager.Close()
 	srv := &serveServer{sessionMgr: manager, store: store}
@@ -90,7 +92,7 @@ func TestHubLegacySessionNumberRoutes(t *testing.T) {
 	if err := store.Create(context.Background(), legacy); err != nil {
 		t.Fatal(err)
 	}
-	message := session.NewMessage(legacy.ID, llm.UserText("saved conversation"), -1)
+	message := session.NewMessage(legacy.ID, core.UserText("saved conversation"), -1)
 	if err := store.AddMessage(context.Background(), legacy.ID, message); err != nil {
 		t.Fatal(err)
 	}

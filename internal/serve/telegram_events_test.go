@@ -4,23 +4,23 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestTelegramEventAccumulatorMatrixAndSnapshotIsolation(t *testing.T) {
 	t.Parallel()
-	a := newTelegramEventAccumulator(&telegramContinuation{Text: "prior", Images: []string{"old.png"}, Media: []llm.MediaArtifact{{Name: "old"}}})
-	events := []llm.Event{
-		{Type: llm.EventTextDelta, Text: " text"},
-		{Type: llm.EventReasoningDelta, Text: "hidden"},
-		{Type: llm.EventToolExecStart, ToolCallID: "1", ToolName: "shell"},
-		{Type: llm.EventPhase, Text: "working"},
-		{Type: llm.EventRetry, RetryAttempt: 1, RetryMaxAttempts: 3},
-		{Type: llm.EventSteering, Text: "new direction"},
-		{Type: llm.EventToolCall}, {Type: llm.EventUsage}, {Type: llm.EventDone},
-		{Type: llm.EventToolExecEnd, ToolCallID: "1", ToolImages: []string{"new.png"}, ToolMedia: []llm.MediaArtifact{{Name: "new"}}},
-		{Type: llm.EventError, Err: errors.New("boom")},
-		{Type: llm.EventType("unknown_test")},
+	a := newTelegramEventAccumulator(&telegramContinuation{Text: "prior", Images: []string{"old.png"}, Media: []core.MediaArtifact{{Name: "old"}}})
+	events := []core.Event{
+		{Type: core.EventTextDelta, Text: " text"},
+		{Type: core.EventReasoningDelta, Text: "hidden"},
+		{Type: core.EventToolExecStart, ToolCallID: "1", ToolName: "shell"},
+		{Type: core.EventPhase, Text: "working"},
+		{Type: core.EventRetry, RetryAttempt: 1, RetryMaxAttempts: 3},
+		{Type: core.EventSteering, Text: "new direction"},
+		{Type: core.EventToolCall}, {Type: core.EventUsage}, {Type: core.EventDone},
+		{Type: core.EventToolExecEnd, ToolCallID: "1", ToolImages: []string{"new.png"}, ToolMedia: []core.MediaArtifact{{Name: "new"}}},
+		{Type: core.EventError, Err: errors.New("boom")},
+		{Type: core.EventType("unknown_test")},
 	}
 	for _, event := range events {
 		a.Apply(event)
@@ -34,9 +34,9 @@ func TestTelegramEventAccumulatorMatrixAndSnapshotIsolation(t *testing.T) {
 	}
 	snapshot.Images[0] = "mutated"
 	snapshot.Media[0].Name = "mutated"
-	snapshot.OtherTypes[llm.EventType("unknown_test")] = 99
+	snapshot.OtherTypes[core.EventType("unknown_test")] = 99
 	again := a.Snapshot()
-	if again.Images[0] != "old.png" || again.Media[0].Name != "old" || again.OtherTypes[llm.EventType("unknown_test")] != 1 {
+	if again.Images[0] != "old.png" || again.Media[0].Name != "old" || again.OtherTypes[core.EventType("unknown_test")] != 1 {
 		t.Fatal("snapshot exposed mutable accumulator state")
 	}
 }

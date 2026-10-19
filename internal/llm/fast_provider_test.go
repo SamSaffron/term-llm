@@ -7,7 +7,7 @@ import (
 )
 
 func TestProviderFastModelsCoverBuiltIns(t *testing.T) {
-	for _, name := range GetBuiltInProviderNames() {
+	for _, name := range config.GetBuiltInProviderNames() {
 		if ProviderFastModels[name] == "" {
 			t.Fatalf("missing fast model for provider %q", name)
 		}

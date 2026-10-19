@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 	"github.com/spf13/cobra"
 )
 
@@ -24,30 +25,10 @@ func init() {
 }
 
 func runNotifyTelegram(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
-	message := args[0]
-	parseMode, err := normalizeTelegramParseMode(notifyTelegramParseMode)
-	if err != nil {
-		return err
-	}
-
-	cfg, err := loadConfigWithSetup()
-	if err != nil {
-		return err
-	}
-
-	token, err := cfg.Serve.Telegram.TokenRef().Resolve()
-	if err != nil {
-		return fmt.Errorf("serve.telegram.token: %w", err)
-	}
-	if token == "" {
-		return fmt.Errorf("telegram token is not configured (serve.telegram.token)")
-	}
-
-	if err := sendTelegramMessage(ctx, token, notifyTelegramChatID, message, parseMode); err != nil {
-		return err
-	}
-
-	logTelegramNotifySession(ctx, cfg, notifyTelegramChatID, message, cmd.ErrOrStderr())
-	return nil
+	return appnotify.RunTelegram(cmd.Context(), notifyDeps(), appnotify.TelegramOptions{
+		Message:   args[0],
+		ChatID:    notifyTelegramChatID,
+		ParseMode: notifyTelegramParseMode,
+		Stderr:    cmd.ErrOrStderr(),
+	})
 }

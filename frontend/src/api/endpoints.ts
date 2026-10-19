@@ -1,5 +1,12 @@
 import type { SessionInspect, SessionInspectBodies } from '../domain/inspect';
-
+import type {
+  CreateWebSessionRequest,
+  WebSessionMetrics,
+  ChildRunProjection,
+  SharingCapabilitiesResponse as GeneratedSharingCapabilitiesResponse,
+  SessionShareResponse as GeneratedSessionShareResponse,
+  ShareVisibility as GeneratedShareVisibility,
+} from './generated/types';
 export interface LiveSessionStartResponse {
   live_id: string;
   session_id: string;
@@ -32,14 +39,7 @@ export interface LiveSessionSwitchResponse {
 export type LiveToolCallResult =
   { outputs: Array<{ call_id: string; output: string }> } | { error: string };
 
-export interface SessionMetrics {
-  input_tokens: number;
-  output_tokens: number;
-  cached_input_tokens: number;
-  cache_write_tokens: number;
-  tool_calls: number;
-  llm_turns: number;
-}
+export type SessionMetrics = WebSessionMetrics;
 export interface StatsModel extends SessionMetrics {
   model: string;
   /** Why the model was billed: main, guardian, compaction, side_question, handover, subagent. */
@@ -70,21 +70,7 @@ export interface SessionStats {
   scope: 'runtime_local' | 'durable_history';
   unavailable?: string[];
 }
-export interface StatsChild extends SessionMetrics {
-  session_id: string;
-  parent_session_id?: string;
-  parent_spawn_item_id?: number;
-  parent_spawn_call_id?: string;
-  title: string;
-  agent?: string;
-  model?: string;
-  state: string;
-  started_at?: number;
-  ended_at?: number;
-  approximate_times?: boolean;
-  cost_usd?: number;
-  cost_partial?: boolean;
-}
+export type StatsChild = ChildRunProjection;
 
 export interface SessionChildrenResponse {
   children: StatsChild[];
@@ -118,33 +104,9 @@ export interface ApprovalPolicyResponse {
   guardian_auto_suspended: boolean;
 }
 
-export type ShareVisibility = 'public' | 'unlisted' | 'private';
-
-export interface SharingCapabilitiesResponse {
-  enabled: boolean;
-  provider: { id: string; name: string };
-  operations: Array<'create' | 'update'>;
-  visibilities: ShareVisibility[];
-  default_visibility: ShareVisibility;
-  help?: string;
-  notes?: string[];
-  limits?: Record<string, unknown>;
-  asset_media_types?: string[];
-}
-
-export interface SessionShareResponse {
-  provider: string;
-  id: string;
-  url: string;
-  source_url?: string;
-  visibility: ShareVisibility;
-  ready: boolean;
-  scope: 'response' | 'conversation' | 'session';
-  gist_id?: string;
-  gist_url?: string;
-  preview_url?: string;
-  public?: boolean;
-}
+export type ShareVisibility = GeneratedShareVisibility;
+export type SharingCapabilitiesResponse = GeneratedSharingCapabilitiesResponse;
+export type SessionShareResponse = GeneratedSessionShareResponse;
 
 export type ShellCollaborationState = 'off' | 'ready' | 'agent_running' | 'desynchronized';
 
@@ -300,7 +262,7 @@ export const endpoints = (api: APIClient) => ({
   },
   sessions: (query = '') =>
     api.get<Record<string, unknown>>(`/v1/sessions${query ? `?${query}` : ''}`),
-  createBlankSession: (body: unknown) =>
+  createBlankSession: (body: CreateWebSessionRequest) =>
     api.json<CreateBlankSessionResponse>(
       '/v1/sessions',
       { method: 'POST', body: JSON.stringify(body) },

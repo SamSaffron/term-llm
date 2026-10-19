@@ -9,7 +9,8 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -275,11 +276,11 @@ func (m *Model) oldestMemoryPrompt() (int, string, bool) {
 }
 
 func memoryPromptText(msg session.Message) (string, bool) {
-	if msg.Role != llm.RoleUser || msg.CompactionTail {
+	if msg.Role != core.RoleUser || msg.CompactionTail {
 		return "", false
 	}
 	text := strings.TrimSpace(msg.TextContent)
-	if text == "" || llm.IsInternalCompactionSummaryText(text) {
+	if text == "" || engine.IsInternalCompactionSummaryText(text) {
 		return "", false
 	}
 	if _, ok := directShellCommandFromResult(msg.TextContent); ok {

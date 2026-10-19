@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -277,7 +277,7 @@ func TestShouldUseWordDiff(t *testing.T) {
 }
 
 func TestRenderDiffSegmentCreateHeader(t *testing.T) {
-	result := RenderDiffSegmentWithOperation("demo.rb", "", "puts \"hello\"\n", 120, 1, llm.DiffOperationCreate)
+	result := RenderDiffSegmentWithOperation("demo.rb", "", "puts \"hello\"\n", 120, 1, core.DiffOperationCreate)
 
 	plain := ansiRegexp.ReplaceAllString(result, "")
 	if !strings.Contains(plain, "Create: demo.rb") {

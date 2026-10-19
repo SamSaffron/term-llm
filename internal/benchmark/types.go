@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 const SchemaVersion = 1
@@ -36,7 +36,7 @@ type Target struct {
 	ProviderKey         string
 	ProviderType        string
 	RequestedModel      string
-	Provider            llm.Provider
+	Provider            core.Provider
 	Capabilities        AdapterCapabilities
 	InputLimit          int
 	ConfiguredNumCtx    int

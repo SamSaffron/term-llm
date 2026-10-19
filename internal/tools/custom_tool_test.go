@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 // makeCustomTool creates a test CustomScriptTool.
@@ -419,7 +419,7 @@ func TestCustomScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
 
 func TestRegisterCustomTools_BuiltinCollision(t *testing.T) {
 	r := &LocalToolRegistry{
-		tools: make(map[string]llm.Tool),
+		tools: make(map[string]core.Tool),
 	}
 
 	err := r.RegisterCustomTools([]agents.CustomToolDef{
@@ -432,7 +432,7 @@ func TestRegisterCustomTools_BuiltinCollision(t *testing.T) {
 
 func TestRegisterCustomTools_DuplicateCustomNameOverwrites(t *testing.T) {
 	r := &LocalToolRegistry{
-		tools: make(map[string]llm.Tool),
+		tools: make(map[string]core.Tool),
 	}
 
 	first := []agents.CustomToolDef{{Name: "job_run", Description: "first", Script: "first.sh"}}
@@ -455,7 +455,7 @@ func TestRegisterCustomTools_DuplicateCustomNameOverwrites(t *testing.T) {
 
 func TestRegisterCustomTools_InvalidName(t *testing.T) {
 	r := &LocalToolRegistry{
-		tools: make(map[string]llm.Tool),
+		tools: make(map[string]core.Tool),
 	}
 
 	err := r.RegisterCustomTools([]agents.CustomToolDef{
@@ -469,7 +469,7 @@ func TestRegisterCustomTools_InvalidName(t *testing.T) {
 func TestRegisterCustomTools_WarnsMissingScript(t *testing.T) {
 	dir := t.TempDir()
 	r := &LocalToolRegistry{
-		tools:  make(map[string]llm.Tool),
+		tools:  make(map[string]core.Tool),
 		limits: DefaultOutputLimits(),
 	}
 

@@ -6,6 +6,9 @@ import (
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // ConfigModelLimit holds per-model token limits from user config.
@@ -307,19 +310,19 @@ func InputLimitForProviderModel(providerName, model string) int {
 	// ChatGPT model limits are account- and rollout-specific. The authenticated
 	// Codex catalog's active context_window wins over bundled fallback metadata.
 	if providerType == string(config.ProviderTypeChatGPT) {
-		id := chatGPTContextModelID(providerName, model)
-		info, _ := chatGPTCachedModelInfo(id)
+		id := rp.ChatGPTContextModelID(providerName, model)
+		info, _ := rp.ChatGPTCachedModelInfo(id)
 		if info.ID == "" {
 			info.ID = id
 		}
-		return resolveChatGPTContext(providerName, info).InputLimit
+		return rp.ResolveChatGPTContext(providerName, info).InputLimit
 	}
 
 	// Copilot model metadata is account/provider-specific and fetched from the
 	// live /models endpoint. Do not fall back to canonical OpenAI/Gemini/Claude
 	// prefix tables here: those numbers can be wrong for Copilot's routed models.
 	if providerType == string(config.ProviderTypeCopilot) {
-		if result := copilotCachedInputLimit(model); result > 0 {
+		if result := rp.CopilotCachedInputLimit(model); result > 0 {
 			return result
 		}
 		return configInputLimitForProvider(providerName, model)
@@ -328,7 +331,7 @@ func InputLimitForProviderModel(providerName, model string) int {
 	// OpenCode Go model limits are dynamic and provider-specific. Prefer the
 	// merged live catalog and avoid direct-provider prefix assumptions.
 	if providerType == string(config.ProviderTypeOpenCodeGo) {
-		if result := opencodeGoCachedInputLimit(model); result > 0 {
+		if result := rp.OpenCodeGoCachedInputLimit(model); result > 0 {
 			return result
 		}
 		return configInputLimitForProvider(providerName, model)
@@ -337,7 +340,7 @@ func InputLimitForProviderModel(providerName, model string) int {
 	// Grok subscription limits come from the authenticated account catalog. A
 	// positive live value overrides the generic xAI Grok prefix fallback.
 	if providerType == string(config.ProviderTypeGrok) {
-		if result := grokCachedInputLimit(model); result > 0 {
+		if result := rp.GrokCachedInputLimit(model); result > 0 {
 			return result
 		}
 	}
@@ -380,7 +383,7 @@ func InputLimitForProviderModel(providerName, model string) int {
 	// move faster than the curated static table. Consult those provider caches
 	// before generic canonical prefix tables so provider-reported metadata wins.
 	if providerType == string(config.ProviderTypeOpenRouter) {
-		if result := openRouterCachedInputLimit(model); result > 0 {
+		if result := opencompat.OpenRouterCachedInputLimit(model); result > 0 {
 			return result
 		}
 	}
@@ -389,7 +392,7 @@ func InputLimitForProviderModel(providerName, model string) int {
 	// Venice /models. Do not fall back to canonical prefix tables here: they can
 	// be wrong for routed/renamed models and create a second source of truth.
 	if providerType == string(config.ProviderTypeVenice) {
-		if result := veniceCachedInputLimit(model); result > 0 {
+		if result := opencompat.VeniceCachedInputLimit(model); result > 0 {
 			return result
 		}
 		return configInputLimitForProvider(providerName, model)
@@ -412,9 +415,9 @@ func anthropicInputLimit(model string) int {
 		model = base // claude-sonnet-4-5-1m-high keeps the 1M budget
 	}
 	if strings.HasSuffix(model, "-1m") {
-		return lookupPrefix(anthropicModelAlias(model)+"-1m", inputLimitTable)
+		return lookupPrefix(anthropic.ModelAlias(model)+"-1m", inputLimitTable)
 	}
-	if info, ok := anthropicCachedModelInfoForRequest(model); ok {
+	if info, ok := anthropic.CachedModelInfoForRequest(model); ok {
 		return info.InputLimit
 	}
 	return 0

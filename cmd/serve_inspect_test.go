@@ -16,7 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/inspect"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/share"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -28,7 +29,7 @@ func inspectRequest(s *serveServer, method, path string) *httptest.ResponseRecor
 	return rr
 }
 
-func appendInspectMessage(t *testing.T, store session.Store, id string, message llm.Message) *session.Message {
+func appendInspectMessage(t *testing.T, store session.Store, id string, message core.Message) *session.Message {
 	t.Helper()
 	msg := session.NewMessage(id, message, -1)
 	if err := store.AddMessage(context.Background(), id, msg); err != nil {
@@ -51,19 +52,19 @@ func decodeInspect(t *testing.T, rr *httptest.ResponseRecorder) inspect.Document
 
 func TestServeInspectHiddenRowsAndExclusions(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
-	for _, message := range []llm.Message{
-		{Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "hidden system"}}},
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "hidden developer"}}},
-		llm.GoalSteeringText("hidden goal"),
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartPathNote}, {Type: llm.PartText, Text: "hidden path note"}}},
-		{Role: llm.RoleAssistant, Parts: []llm.Part{
-			{Type: llm.PartText, Text: "answer", ReasoningContent: "**Plan**\n\nsafe reasoning", ReasoningEncryptedContent: "SECRET_CIPHERTEXT"},
-			{Type: llm.PartText, ReasoningKind: llm.ReasoningKindEncrypted, ReasoningContent: "SECRET_ENCRYPTED_TEXT", ReasoningEncryptedContent: "SECRET_CIPHERTEXT"},
-			{Type: llm.PartProviderReplay, ProviderReplay: &llm.ProviderReplayItem{Raw: json.RawMessage(`{"secret":"SECRET_REPLAY"}`)}},
-			{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{Arguments: json.RawMessage(`{"secret":"SECRET_DISCOVERY"}`)}},
-			{Type: llm.PartDiscoveryOutput, DiscoveryOutput: &llm.ToolDiscoveryOutput{CatalogueHash: "SECRET_DISCOVERY"}},
+	for _, message := range []core.Message{
+		{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "hidden system"}}},
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "hidden developer"}}},
+		core.GoalSteeringText("hidden goal"),
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartPathNote}, {Type: core.PartText, Text: "hidden path note"}}},
+		{Role: core.RoleAssistant, Parts: []core.Part{
+			{Type: core.PartText, Text: "answer", ReasoningContent: "**Plan**\n\nsafe reasoning", ReasoningEncryptedContent: "SECRET_CIPHERTEXT"},
+			{Type: core.PartText, ReasoningKind: core.ReasoningKindEncrypted, ReasoningContent: "SECRET_ENCRYPTED_TEXT", ReasoningEncryptedContent: "SECRET_CIPHERTEXT"},
+			{Type: core.PartProviderReplay, ProviderReplay: &core.ProviderReplayItem{Raw: json.RawMessage(`{"secret":"SECRET_REPLAY"}`)}},
+			{Type: core.PartDiscoveryCall, DiscoveryCall: &core.ToolDiscoveryCall{Arguments: json.RawMessage(`{"secret":"SECRET_DISCOVERY"}`)}},
+			{Type: core.PartDiscoveryOutput, DiscoveryOutput: &core.ToolDiscoveryOutput{CatalogueHash: "SECRET_DISCOVERY"}},
 		}},
-		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "SECRET_BASE64"}}}},
+		{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartImage, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "SECRET_BASE64"}}}},
 	} {
 		appendInspectMessage(t, store, sess.ID, message)
 	}
@@ -99,7 +100,7 @@ func TestServeInspectHiddenRowsAndExclusions(t *testing.T) {
 
 func TestServeInspectColdRuntimeAndHTTP(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
-	appendInspectMessage(t, store, sess.ID, llm.UserText(strings.Repeat("hello world ", 200)))
+	appendInspectMessage(t, store, sess.ID, core.UserText(strings.Repeat("hello world ", 200)))
 	created := 0
 	srv.sessionMgr = &serveSessionManager{sessions: map[string]*serveRuntime{}, factory: func(context.Context) (*serveRuntime, error) { created++; return nil, errors.New("must not create") }}
 	path := "/v1/sessions/" + sess.ID + "/inspect"
@@ -149,12 +150,12 @@ func TestServeInspectColdRuntimeAndHTTP(t *testing.T) {
 }
 
 type inspectRuntimeTestTool struct {
-	llm.Tool
-	spec   llm.ToolSpec
+	core.Tool
+	spec   core.ToolSpec
 	onSpec func()
 }
 
-func (t inspectRuntimeTestTool) Spec() llm.ToolSpec {
+func (t inspectRuntimeTestTool) Spec() core.ToolSpec {
 	if t.onSpec != nil {
 		t.onSpec()
 	}
@@ -162,21 +163,21 @@ func (t inspectRuntimeTestTool) Spec() llm.ToolSpec {
 }
 
 type inspectDiscoveryPlanner struct {
-	llm.ToolSurfacePlanner
+	core.ToolSurfacePlanner
 	onRead func()
-	specs  []llm.ToolSpec
+	specs  []core.ToolSpec
 }
 
-func (p inspectDiscoveryPlanner) ActiveToolSpecs(string) []llm.ToolSpec { p.onRead(); return p.specs }
-func (p inspectDiscoveryPlanner) Diagnostics(string) llm.ToolDiscoveryDiagnostics {
+func (p inspectDiscoveryPlanner) ActiveToolSpecs(string) []core.ToolSpec { p.onRead(); return p.specs }
+func (p inspectDiscoveryPlanner) Diagnostics(string) core.ToolDiscoveryDiagnostics {
 	p.onRead()
-	return llm.ToolDiscoveryDiagnostics{ResolvedMode: "on"}
+	return core.ToolDiscoveryDiagnostics{ResolvedMode: "on"}
 }
 
 func TestServeInspectWarmAndBusyRuntime(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
-	appendInspectMessage(t, store, sess.ID, llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old prompt"}}})
-	rt := &serveRuntime{systemPrompt: "new prompt", engine: llm.NewEngine(nil, nil)}
+	appendInspectMessage(t, store, sess.ID, core.Message{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "old prompt"}}})
+	rt := &serveRuntime{systemPrompt: "new prompt", engine: engine.NewEngine(nil, nil)}
 	rt.Touch()
 	lastUsed := rt.LastUsed()
 	checkUnlocked := func() {
@@ -190,9 +191,9 @@ func TestServeInspectWarmAndBusyRuntime(t *testing.T) {
 	approval.SetYoloMode(true)
 	rt.toolMgr = &tools.ToolManager{ApprovalMgr: approval}
 	for _, name := range []string{"z_tool", "a_tool", tools.ManageWorkspaceToolName} {
-		rt.engine.Tools().Register(inspectRuntimeTestTool{spec: llm.ToolSpec{Name: name, Description: "description", Schema: map[string]any{"type": "object"}}, onSpec: checkUnlocked})
+		rt.engine.Tools().Register(inspectRuntimeTestTool{spec: core.ToolSpec{Name: name, Description: "description", Schema: map[string]any{"type": "object"}}, onSpec: checkUnlocked})
 	}
-	rt.engine.SetToolSurfacePlanner(inspectDiscoveryPlanner{onRead: checkUnlocked, specs: []llm.ToolSpec{{Name: "mcp_active"}, {Name: "a_tool"}}})
+	rt.engine.SetToolSurfacePlanner(inspectDiscoveryPlanner{onRead: checkUnlocked, specs: []core.ToolSpec{{Name: "mcp_active"}, {Name: "a_tool"}}})
 	srv.sessionMgr = &serveSessionManager{sessions: map[string]*serveRuntime{sess.ID: rt}}
 	path := "/v1/sessions/" + sess.ID + "/inspect"
 	d := decodeInspect(t, inspectRequest(srv, "GET", path))
@@ -230,7 +231,7 @@ func TestServeInspectWarmAndBusyRuntime(t *testing.T) {
 
 func TestServeInspectRuntimeHistoryFallback(t *testing.T) {
 	meta := &session.Session{ID: "runtime-only", Provider: "mock", Model: "test"}
-	rt := &serveRuntime{sessionMeta: meta, history: []llm.Message{llm.UserText("runtime question")}}
+	rt := &serveRuntime{sessionMeta: meta, history: []core.Message{core.UserText("runtime question")}}
 	srv := &serveServer{sessionMgr: &serveSessionManager{sessions: map[string]*serveRuntime{meta.ID: rt}}}
 	path := "/v1/sessions/" + meta.ID + "/inspect"
 	first := inspectRequest(srv, "GET", path)
@@ -252,13 +253,13 @@ func TestServeInspectRuntimeHistoryFallback(t *testing.T) {
 
 func TestServeInspectBodiesValidationAndIsolation(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
-	msg := appendInspectMessage(t, store, sess.ID, llm.UserText(strings.Repeat("世", inspect.MaxBodyBytes)))
+	msg := appendInspectMessage(t, store, sess.ID, core.UserText(strings.Repeat("世", inspect.MaxBodyBytes)))
 	id := fmt.Sprintf("m%d.p0.user", msg.ID)
 	other := &session.Session{ID: "other", Provider: "mock", Model: "test"}
 	if err := store.Create(context.Background(), other); err != nil {
 		t.Fatal(err)
 	}
-	foreign := appendInspectMessage(t, store, other.ID, llm.UserText("other session secret"))
+	foreign := appendInspectMessage(t, store, other.ID, core.UserText("other session secret"))
 	foreignID := fmt.Sprintf("m%d.p0.user", foreign.ID)
 	path := "/v1/sessions/" + sess.ID + "/inspect/bodies?ids="
 	for _, raw := range []string{"../secret", "m1.p0.user/../../x", "runtime.tool.-1", "m1.p0.user,", "m1.p-1.user", strings.Repeat("m1.p0.user,", 64) + "m1.p0.user", strings.Repeat("x", inspectBodiesMaxQueryBytes+1)} {
@@ -303,7 +304,7 @@ func TestServeInspectValidatedChildren(t *testing.T) {
 		{"other_tool", `{"session_id":"child"}`, nil},
 	} {
 		t.Run(tt.name+tt.content, func(t *testing.T) {
-			msg := appendInspectMessage(t, store, sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: tt.name, Content: tt.content}}}})
+			msg := appendInspectMessage(t, store, sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: tt.name, Content: tt.content}}}})
 			d := decodeInspect(t, inspectRequest(srv, "GET", "/v1/sessions/"+sess.ID+"/inspect"))
 			block := d.Blocks[len(d.Blocks)-1]
 			if block.MessageID != fmt.Sprint(msg.ID) || !reflect.DeepEqual(block.ChildSessionIDs, tt.want) {
@@ -315,7 +316,7 @@ func TestServeInspectValidatedChildren(t *testing.T) {
 
 func TestServeInspectNotInShares(t *testing.T) {
 	srv, anchor := newServeShareFixture(t)
-	appendInspectMessage(t, srv.store, "share-session", llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "INSPECT_ONLY_SYSTEM"}}})
+	appendInspectMessage(t, srv.store, "share-session", core.Message{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "INSPECT_ONLY_SYSTEM"}}})
 	srv.sessionMgr = &serveSessionManager{sessions: map[string]*serveRuntime{"share-session": {systemPrompt: "INSPECT_ONLY_RUNTIME"}}}
 	decodeInspect(t, inspectRequest(srv, "GET", "/v1/sessions/share-session/inspect"))
 	publisher := &serveSharePublisherMock{}
@@ -336,7 +337,7 @@ func TestServeInspectBodiesAggregateBudget(t *testing.T) {
 	text := strings.Repeat("x", inspect.MaxBodyBytes+10)
 	var ids []string
 	for range 10 {
-		msg := appendInspectMessage(t, store, sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{Name: "read_file", Content: text}}}})
+		msg := appendInspectMessage(t, store, sess.ID, core.Message{Role: core.RoleTool, Parts: []core.Part{{Type: core.PartToolResult, ToolResult: &core.ToolResult{Name: "read_file", Content: text}}}})
 		ids = append(ids, fmt.Sprintf("m%d.p0.tool_result", msg.ID))
 	}
 	rr := inspectRequest(srv, "GET", "/v1/sessions/"+sess.ID+"/inspect/bodies?ids="+strings.Join(ids, ","))
@@ -406,9 +407,9 @@ func TestServeInspectModelTimeline(t *testing.T) {
 	if err := store.Update(context.Background(), sess); err != nil {
 		t.Fatalf("update inspect model metadata: %v", err)
 	}
-	marker := llm.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5-high", FromAgent: "dev", ToProvider: "claude-bin", ToModel: "opus-max", ToAgent: "reviewer", Strategy: "handover", Status: "succeeded"}
-	appendInspectMessage(t, store, sess.ID, llm.ModelSwapEventMessage(marker))
-	for _, message := range llm.ReconstructHandoverHistory("", "outgoing briefing", "openai:gpt-5-high", "claude-bin:opus-max") {
+	marker := core.ModelSwapMarker{FromProvider: "openai", FromModel: "gpt-5-high", FromAgent: "dev", ToProvider: "claude-bin", ToModel: "opus-max", ToAgent: "reviewer", Strategy: "handover", Status: "succeeded"}
+	appendInspectMessage(t, store, sess.ID, core.ModelSwapEventMessage(marker))
+	for _, message := range engine.ReconstructHandoverHistory("", "outgoing briefing", "openai:gpt-5-high", "claude-bin:opus-max") {
 		appendInspectMessage(t, store, sess.ID, message)
 	}
 	path := "/v1/sessions/" + sess.ID + "/inspect"
@@ -420,7 +421,7 @@ func TestServeInspectModelTimeline(t *testing.T) {
 		t.Fatalf("blocks = %+v", d.Blocks)
 	}
 	change, doc, ack := d.Blocks[0], d.Blocks[1], d.Blocks[2]
-	if change.Kind != "model_change" || change.ModelChange == nil || change.ModelChange.To.Agent != "reviewer" || change.Title != llm.FormatModelSwapMarker(marker) {
+	if change.Kind != "model_change" || change.ModelChange == nil || change.ModelChange.To.Agent != "reviewer" || change.Title != core.FormatModelSwapMarker(marker) {
 		t.Fatalf("change = %+v", change)
 	}
 	if doc.Kind != "handover_document" || doc.Handover == nil || doc.Handover.Source != "openai:gpt-5-high" || !ack.Synthetic {
@@ -431,7 +432,7 @@ func TestServeInspectModelTimeline(t *testing.T) {
 	if rr.Code != http.StatusOK || json.Unmarshal(rr.Body.Bytes(), &bodies) != nil || len(bodies.Bodies) != 2 {
 		t.Fatalf("bodies: %d %s", rr.Code, rr.Body.String())
 	}
-	if bodies.Bodies[0].Text != llm.FormatModelSwapMarker(marker) || bodies.Bodies[1].Text != "outgoing briefing" {
+	if bodies.Bodies[0].Text != core.FormatModelSwapMarker(marker) || bodies.Bodies[1].Text != "outgoing briefing" {
 		t.Fatalf("model timeline bodies = %+v", bodies.Bodies)
 	}
 }

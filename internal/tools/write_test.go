@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/diff"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 func TestWriteFileTool_NewSmallFileEmitsDiff(t *testing.T) {
@@ -56,8 +56,8 @@ func TestWriteFileTool_NewSmallFileEmitsDiff(t *testing.T) {
 	if d.Line != 1 {
 		t.Errorf("diff line = %d, want 1", d.Line)
 	}
-	if d.Operation != llm.DiffOperationCreate {
-		t.Errorf("diff operation = %q, want %q", d.Operation, llm.DiffOperationCreate)
+	if d.Operation != core.DiffOperationCreate {
+		t.Errorf("diff operation = %q, want %q", d.Operation, core.DiffOperationCreate)
 	}
 }
 

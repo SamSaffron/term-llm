@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -545,13 +545,13 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 	provenance := serveSkillProvenance(activation)
 	provenance.Status = "running"
 	instructions := skills.RenderActivationInstructions(activation)
-	userMessage := llm.UserText(display)
+	userMessage := core.UserText(display)
 	userMessage.ClientMessageID = clientMessageID
-	inputMessages := []llm.Message{
-		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: instructions}}},
+	inputMessages := []core.Message{
+		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: provenance}, {Type: core.PartText, Text: instructions}}},
 		userMessage,
 	}
-	run, err := s.startResponseRun(runtime, true, false, inputMessages, llm.Request{
+	run, err := s.startResponseRun(runtime, true, false, inputMessages, core.Request{
 		SessionID:           sess.ID,
 		Model:               runtime.defaultModel,
 		AllowedTools:        append([]string(nil), activation.AllowedTools...),
@@ -560,7 +560,7 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 		previousResponseID: runtime.getLastResponseID(),
 		uiSession:          true,
 		idempotencyKey:     idempotencyKey,
-		runtimeSetup: func(req *llm.Request) error {
+		runtimeSetup: func(req *core.Request) error {
 			return setupServeMainSkillRequest(runtime, activation, req)
 		},
 	})
@@ -571,7 +571,7 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 	writeServeMainSkillResponse(w, run)
 }
 
-func setupServeMainSkillRequest(runtime *serveRuntime, activation *skills.Activation, req *llm.Request) error {
+func setupServeMainSkillRequest(runtime *serveRuntime, activation *skills.Activation, req *core.Request) error {
 	if runtime == nil || runtime.engine == nil || req == nil {
 		return fmt.Errorf("session runtime is unavailable")
 	}
@@ -590,9 +590,9 @@ func setupServeMainSkillRequest(runtime *serveRuntime, activation *skills.Activa
 	}
 	req.Tools = runtime.selectTools(nil)
 	if len(req.Tools) > 0 {
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
 	} else {
-		req.ToolChoice = llm.ToolChoice{}
+		req.ToolChoice = core.ToolChoice{}
 	}
 	return nil
 }
@@ -1069,10 +1069,10 @@ func (s *serveServer) persistServeSkillActivationEvent(sessionID, display string
 	provenance.ChildSessionID = childSessionID
 	message := &session.Message{
 		SessionID: sessionID,
-		Role:      llm.RoleEvent,
-		Parts: []llm.Part{
-			{Type: llm.PartSkillActivation, SkillActivation: provenance},
-			{Type: llm.PartText, Text: display},
+		Role:      core.RoleEvent,
+		Parts: []core.Part{
+			{Type: core.PartSkillActivation, SkillActivation: provenance},
+			{Type: core.PartText, Text: display},
 		},
 		TextContent: "↳ Skill invocation " + display + " · " + activation.Metadata.Execution.String(),
 		CreatedAt:   time.Now(),
@@ -1083,8 +1083,8 @@ func (s *serveServer) persistServeSkillActivationEvent(sessionID, display string
 	}
 }
 
-func serveSkillProvenance(activation *skills.Activation) *llm.SkillActivationProvenance {
-	return &llm.SkillActivationProvenance{
+func serveSkillProvenance(activation *skills.Activation) *core.SkillActivationProvenance {
+	return &core.SkillActivationProvenance{
 		Name:                activation.Skill.Name,
 		Source:              activation.Skill.Source.SourceName(),
 		SourcePath:          activation.Skill.SourcePath,
@@ -1159,7 +1159,7 @@ func (s *serveServer) waitForServeSkillBoundaryRetry(ctx context.Context, delay 
 	}
 }
 
-func (s *serveServer) persistServeSkillRunResult(run *serveSkillRun, runErr error) *llm.Message {
+func (s *serveServer) persistServeSkillRunResult(run *serveSkillRun, runErr error) *core.Message {
 	if s.store == nil || run == nil || run.Activation == nil {
 		return nil
 	}
@@ -1182,14 +1182,14 @@ func (s *serveServer) persistServeSkillRunResult(run *serveSkillRun, runErr erro
 	if strings.TrimSpace(output) != "" {
 		resultText += "\n\n" + output
 	}
-	visible := &session.Message{SessionID: run.SessionID, Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: resultText}}, TextContent: resultText, CreatedAt: completedAt, Sequence: -1}
+	visible := &session.Message{SessionID: run.SessionID, Role: core.RoleEvent, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: provenance}, {Type: core.PartText, Text: resultText}}, TextContent: resultText, CreatedAt: completedAt, Sequence: -1}
 	if err := s.store.AddMessage(context.Background(), run.SessionID, visible); err != nil {
 		log.Printf("[serve] persist skill result event for %s: %v", run.SessionID, err)
 	}
-	var activeContext *llm.Message
+	var activeContext *core.Message
 	if strings.TrimSpace(output) != "" {
 		contextText := fmt.Sprintf("<isolated_skill_result name=%q run_id=%q child_session_id=%q status=%q>\n%s\n</isolated_skill_result>", run.SkillName, run.ID, childSessionID, status, output)
-		developer := &session.Message{SessionID: run.SessionID, Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: contextText}}, TextContent: contextText, CreatedAt: completedAt, Sequence: -1}
+		developer := &session.Message{SessionID: run.SessionID, Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: provenance}, {Type: core.PartText, Text: contextText}}, TextContent: contextText, CreatedAt: completedAt, Sequence: -1}
 		if err := s.store.AddMessage(context.Background(), run.SessionID, developer); err != nil {
 			log.Printf("[serve] persist skill result context for %s: %v", run.SessionID, err)
 		} else {

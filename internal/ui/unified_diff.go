@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	diff "github.com/shogoki/gotextdiff"
 )
@@ -690,7 +690,7 @@ type bufferedRemoval struct {
 }
 
 func diffSegmentHeader(operation string) string {
-	if strings.EqualFold(operation, llm.DiffOperationCreate) {
+	if strings.EqualFold(operation, core.DiffOperationCreate) {
 		return "Create:"
 	}
 	return "Edit:"

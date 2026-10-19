@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -90,7 +90,7 @@ func (m *Model) toggleCurrentReasoningBlock() bool {
 	if m.currentReasoningExpanded != nil {
 		current = *m.currentReasoningExpanded
 	} else {
-		kind := llm.NormalizeReasoningKind(part.ReasoningKind)
+		kind := core.NormalizeReasoningKind(part.ReasoningKind)
 		current = internalreasoning.HistoryExpanded(string(kind), m.effectiveReasoningConfig())
 	}
 	next := !current
@@ -255,7 +255,7 @@ func (m *Model) toggleHistoryReasoningOrdinal(ordinal int) bool {
 	if m.reasoningExpansionOverrides == nil {
 		m.reasoningExpansionOverrides = make(map[int]bool)
 	}
-	defaultExpanded := internalreasoning.HistoryExpanded(string(llm.ReasoningKindRaw), m.effectiveReasoningConfig())
+	defaultExpanded := internalreasoning.HistoryExpanded(string(core.ReasoningKindRaw), m.effectiveReasoningConfig())
 	current := defaultExpanded
 	if v, ok := m.reasoningExpansionOverrides[ordinal]; ok {
 		current = v
@@ -277,7 +277,7 @@ func (m *Model) reasoningSegmentExpanded(seg ui.ReasoningSegment) bool {
 	if seg.Expanded != nil {
 		return *seg.Expanded
 	}
-	kind := llm.NormalizeReasoningKind(llm.ReasoningKind(seg.Kind))
+	kind := core.NormalizeReasoningKind(core.ReasoningKind(seg.Kind))
 	return internalreasoning.HistoryExpanded(string(kind), m.effectiveReasoningConfig())
 }
 

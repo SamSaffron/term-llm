@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
@@ -28,7 +28,7 @@ func createPinTestSession(t *testing.T, store *SQLiteStore, id string, activity 
 // touchPinTestSession records conversation activity at the given time.
 func touchPinTestSession(t *testing.T, store *SQLiteStore, id string, at time.Time) {
 	t.Helper()
-	message := NewMessage(id, llm.UserText("message for "+id), -1)
+	message := NewMessage(id, core.UserText("message for "+id), -1)
 	message.CreatedAt = at
 	if err := store.AddMessage(context.Background(), id, message); err != nil {
 		t.Fatalf("AddMessage(%s): %v", id, err)

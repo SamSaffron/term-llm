@@ -1,7 +1,7 @@
 package inspect
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -21,8 +21,8 @@ type RuntimeOptions struct {
 	Loaded            bool
 	UnavailableReason string
 	SystemPrompt      string
-	Tools             []llm.ToolSpec
-	ToolDiscovery     *llm.ToolDiscoveryDiagnostics
+	Tools             []core.ToolSpec
+	ToolDiscovery     *core.ToolDiscoveryDiagnostics
 }
 
 type Document struct {
@@ -69,12 +69,12 @@ type Header struct {
 }
 
 type Runtime struct {
-	Loaded                       bool                          `json:"loaded"`
-	UnavailableReason            string                        `json:"unavailable_reason,omitempty"`
-	SystemPromptBlockID          string                        `json:"system_prompt_block_id,omitempty"`
-	SystemPromptMatchesPersisted *bool                         `json:"system_prompt_matches_persisted,omitempty"`
-	ToolDiscovery                *llm.ToolDiscoveryDiagnostics `json:"tool_discovery,omitempty"`
-	Tools                        []RuntimeTool                 `json:"tools,omitempty"`
+	Loaded                       bool                           `json:"loaded"`
+	UnavailableReason            string                         `json:"unavailable_reason,omitempty"`
+	SystemPromptBlockID          string                         `json:"system_prompt_block_id,omitempty"`
+	SystemPromptMatchesPersisted *bool                          `json:"system_prompt_matches_persisted,omitempty"`
+	ToolDiscovery                *core.ToolDiscoveryDiagnostics `json:"tool_discovery,omitempty"`
+	Tools                        []RuntimeTool                  `json:"tools,omitempty"`
 }
 
 type RuntimeTool struct {
@@ -85,28 +85,28 @@ type RuntimeTool struct {
 }
 
 type Block struct {
-	ModelChange         *ModelChange      `json:"model_change,omitempty"`
-	Handover            *Handover         `json:"handover,omitempty"`
-	Synthetic           bool              `json:"synthetic,omitempty"`
-	ID                  string            `json:"id"`
-	Kind                string            `json:"kind"`
-	Role                llm.Role          `json:"role,omitempty"`
-	MessageID           string            `json:"message_id,omitempty"`
-	Sequence            int               `json:"sequence"`
-	PartIndex           int               `json:"part_index"`
-	CreatedAt           int64             `json:"created_at,omitempty"`
-	Title               string            `json:"title,omitempty"`
-	Preview             string            `json:"preview,omitempty"`
-	TotalBytes          int               `json:"total_bytes"`
-	TotalLines          int               `json:"total_lines"`
-	HasBody             bool              `json:"has_body"`
-	CompactionTail      bool              `json:"compaction_tail,omitempty"`
-	CompactionSummaryID string            `json:"compaction_summary_id,omitempty"`
-	Tool                *Tool             `json:"tool,omitempty"`
-	ReasoningKind       llm.ReasoningKind `json:"reasoning_kind,omitempty"`
-	EncryptedBytes      int               `json:"encrypted_bytes,omitempty"`
-	Compaction          *Compaction       `json:"compaction,omitempty"`
-	ChildSessionIDs     []string          `json:"child_session_ids,omitempty"`
+	ModelChange         *ModelChange       `json:"model_change,omitempty"`
+	Handover            *Handover          `json:"handover,omitempty"`
+	Synthetic           bool               `json:"synthetic,omitempty"`
+	ID                  string             `json:"id"`
+	Kind                string             `json:"kind"`
+	Role                core.Role          `json:"role,omitempty"`
+	MessageID           string             `json:"message_id,omitempty"`
+	Sequence            int                `json:"sequence"`
+	PartIndex           int                `json:"part_index"`
+	CreatedAt           int64              `json:"created_at,omitempty"`
+	Title               string             `json:"title,omitempty"`
+	Preview             string             `json:"preview,omitempty"`
+	TotalBytes          int                `json:"total_bytes"`
+	TotalLines          int                `json:"total_lines"`
+	HasBody             bool               `json:"has_body"`
+	CompactionTail      bool               `json:"compaction_tail,omitempty"`
+	CompactionSummaryID string             `json:"compaction_summary_id,omitempty"`
+	Tool                *Tool              `json:"tool,omitempty"`
+	ReasoningKind       core.ReasoningKind `json:"reasoning_kind,omitempty"`
+	EncryptedBytes      int                `json:"encrypted_bytes,omitempty"`
+	Compaction          *Compaction        `json:"compaction,omitempty"`
+	ChildSessionIDs     []string           `json:"child_session_ids,omitempty"`
 }
 
 type Tool struct {
