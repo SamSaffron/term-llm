@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,7 +229,7 @@ Use this demo skill when appropriate.
 	}
 	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "Target prompt"}
 
-	got, err := resolveChatHandoverSystemPromptWithConfig(&cobra.Command{Use: "test"}, cfg, targetAgent, "openai", "gpt-4o")
+	got, err := resolveChatHandoverSystemPromptWithConfig(&cobra.Command{Use: "test"}, cfg, targetAgent, "openai", "gpt-4o", appmemory.Paths{})
 	if err != nil {
 		t.Fatalf("resolveChatHandoverSystemPromptWithConfig() error = %v", err)
 	}
@@ -259,7 +260,7 @@ func TestResolveChatRuntimeSystemContextUsesExplicitDirectoryWithoutChdir(t *tes
 	cfg := &config.Config{}
 	cfg.Skills = config.SkillsConfig{Enabled: true, AutoInvoke: true, MetadataBudgetTokens: 8000, MaxVisibleSkills: 8, IncludeProjectSkills: true, IncludeEcosystemPaths: false}
 	agent := &agents.Agent{Name: "target", SystemPrompt: "cwd={{cwd}}\n{{agents}}"}
-	resolved, err := resolveChatRuntimeSystemContextWithConfig(&cobra.Command{Use: "test"}, cfg, agent, "openai", "model", projectDir, "", "")
+	resolved, err := resolveChatRuntimeSystemContextWithConfig(&cobra.Command{Use: "test"}, cfg, agent, "openai", "model", projectDir, "", "", appmemory.Paths{})
 	if err != nil {
 		t.Fatalf("resolve runtime context: %v", err)
 	}

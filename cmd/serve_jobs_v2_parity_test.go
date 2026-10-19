@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"io"
 	"os"
 	"path/filepath"
@@ -446,7 +448,7 @@ func TestJobsV2LLMJobCwdRootsShellExecutionWithoutChdir(t *testing.T) {
 	}
 
 	persist := false
-	executor := newServeJobsExecutor(&config.Config{}, resolvedApprovalMode{Mode: tools.ModeYolo, Source: approvalModeSourceCLI})
+	executor := newServeJobsExecutor(&config.Config{}, resolvedApprovalMode{Mode: tools.ModeYolo, Source: approvalModeSourceCLI}, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
 	if _, err := executor(context.Background(), jobsV2LLMConfig{
 		AgentName:      agentDir, // contains a path separator → loaded from disk
 		Instructions:   "shell touch " + sentinel,

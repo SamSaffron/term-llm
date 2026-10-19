@@ -22,62 +22,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-type cmdRunnerOptions struct {
-	RestoreSettings    *SessionSettings
-	RestoreAgentSkills *string
-	Inputs             *sessionInputSelection
-	ToolsSet           bool
-	SystemMessageSet   bool
-	Provider           string
-	Fast               bool
-	ConfigSet          bool
-	ConfigProvider     string
-	ConfigModel        string
-	ConfigInstructions string
-	ConfigMaxTurns     int
-	Tools              string
-	ReadDirs           []string
-	WriteDirs          []string
-	ShellAllow         []string
-	MCP                string
-	SystemMessage      string
-	MaxTurns           int
-	DefaultMaxTurns    int
-	Search             bool
-	NoSearch           bool
-
-	NativeSearch   bool
-	NoNativeSearch bool
-
-	Yolo                bool // Deprecated compatibility input; prefer ApprovalMode.
-	Auto                bool // Deprecated compatibility input; prefer ApprovalMode.
-	ApprovalMode        tools.ApprovalMode
-	ApprovalModeSet     bool
-	ApprovalSource      approvalModeSource
-	ApprovalHeadless    bool
-	ApprovalPrepare     bool
-	ApprovalDiagnostics bool
-	Debug               bool
-	DebugRaw            bool
-
-	ErrWriter         io.Writer
-	WireSpawn         func(*config.Config, *tools.ToolManager, bool) error
-	Store             session.Store
-	ParentApprovalMgr *tools.ApprovalManager
-	// ChildRunObserver is the host's view of delegated runs. It must propagate
-	// into nested runners, because a runner built for a child knows nothing
-	// about serve otherwise.
-	ChildRunObserver childRunObserver
-	AgentOwner       *runtime.AgentHostOwner
-}
-
 type cmdRunner struct {
 	baseCfg  *config.Config
 	defaults cmdRunnerOptions
-}
-
-func newRunner(cfg *config.Config) runpkg.Runner {
-	return newCmdRunner(cfg, cmdRunnerOptions{})
 }
 
 func newCmdRunner(cfg *config.Config, opts cmdRunnerOptions) runpkg.Runner {
@@ -323,6 +270,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if prior := r.defaults.RestoreSettings; prior != nil && req.Engine == nil {
 		selected := settings
 		settings = *prior
+		settings.MemoryPaths = selected.MemoryPaths
 		settings.SystemPrompt, settings.Tools = selected.SystemPrompt, selected.Tools
 		settings.BaseDir, settings.ShellWorkingDir = selected.BaseDir, selected.ShellWorkingDir
 		settings.PrimaryWorkspace = selected.PrimaryWorkspace
@@ -361,7 +309,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if r.defaults.Store != nil {
 		store = r.defaults.Store
 	} else if req.Persist {
-		store, closeStore = InitSessionStore(cfg, r.errWriter())
+		store, closeStore = runtime.InitSessionStoreWith(cfg, r.errWriter(), r.defaults.SessionStore)
 	}
 	var runtime *serveRuntime
 	var spawnRunner *SpawnAgentRunner
@@ -386,7 +334,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if wireSpawn == nil {
 		wireSpawn = func(cfg *config.Config, toolMgr *tools.ToolManager, _ bool) error {
 			var err error
-			spawnRunner, err = wireSpawnAgentWithBudget(cfg, toolMgr, yoloMode, store, req.SessionID, req.Depth, req.RemainingDepth)
+			spawnRunner, err = wireSpawnAgentWithBudget(cfg, toolMgr, yoloMode, store, req.SessionID, req.Depth, req.RemainingDepth, r.defaults.SessionStore, r.defaults.MemoryPaths)
 			// Propagate the host observer down the nesting chain here rather than
 			// inside the wiring helper: a grandchild runner is built by a child's
 			// own cmdRunner, which would otherwise lose the host entirely.
@@ -693,6 +641,7 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 		Search:           search,
 		NoSearch:         noSearch,
 		Platform:         templatePlatform(req.Platform),
+		MemoryPaths:      r.defaults.MemoryPaths,
 	}, cmdProvider, cmdModel, cmdInstructions, cmdMaxTurns, defaultMaxTurns, req.Cwd)
 	if err != nil {
 		return SessionSettings{}, err

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -210,8 +211,8 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	return res, err
 }
 
-func newServeJobsV2Manager(cfg *config.Config, workers int, approval resolvedApprovalMode, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
-	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg, approval), notifyDone)
+func newServeJobsV2Manager(cfg *config.Config, workers int, approval resolvedApprovalMode, notifyDone jobsV2RunDoneNotifier, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths) (*jobsV2Manager, error) {
+	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg, approval, sessionStore, paths), notifyDone)
 }
 
 func cloneConfigForServeJob(src *config.Config) *config.Config {
@@ -232,6 +233,7 @@ type jobLLMServeDefaults struct {
 	MaxTurns      int
 	Search        bool
 	NoSearch      bool
+	MemoryPaths   appmemory.Paths
 }
 
 // applyJobLLMProviderModel applies the job's provider/model selection onto jobCfg,
@@ -304,6 +306,7 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 		Search:          def.Search || cfg.Search,
 		NoSearch:        def.NoSearch && !cfg.Search,
 		Platform:        runpkg.PlatformJob,
+		MemoryPaths:     def.MemoryPaths,
 	}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50, cfg.Cwd)
 	if err != nil {
 		return SessionSettings{}, "", err
@@ -315,7 +318,7 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 	return settings, cfg.Instructions, nil
 }
 
-func serveJobsRunnerOptions(approval resolvedApprovalMode) cmdRunnerOptions {
+func serveJobsRunnerOptions(approval resolvedApprovalMode, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths) cmdRunnerOptions {
 	return cmdRunnerOptions{
 		Provider:         serveFlags.Provider,
 		Tools:            serveFlags.Tools,
@@ -336,10 +339,12 @@ func serveJobsRunnerOptions(approval resolvedApprovalMode) cmdRunnerOptions {
 		Debug:            serveFlags.Debug,
 		DebugRaw:         debugRaw,
 		ErrWriter:        io.Discard,
+		SessionStore:     sessionStore,
+		MemoryPaths:      paths,
 	}
 }
 
-func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode) serveJobsExecutor {
+func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode, sessionStore runtime.SessionStoreOverrides, paths appmemory.Paths) serveJobsExecutor {
 	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(core.Event)) (serveJobsExecResult, error) {
 		var search *bool
 		if cfg.Search {
@@ -355,7 +360,7 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode)
 			}
 		}
 
-		runner := newCmdRunner(baseCfg, serveJobsRunnerOptions(approval))
+		runner := NewCmdRunner(baseCfg, serveJobsRunnerOptions(approval, sessionStore, paths))
 
 		result, err := runner.Run(ctx, runpkg.Request{
 			Platform:        runpkg.PlatformJob,

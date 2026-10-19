@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,7 +108,7 @@ func TestSpawnAgentRejectsOverridesOutsideProviderWildcard(t *testing.T) {
 
 func TestJobsExecutorRejectsOverrideOutsideProviderWildcard(t *testing.T) {
 	cfg, agentDir := modelAllowlistFixture(t, "debug:*")
-	execute := newServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt})
+	execute := newServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
 	_, err := execute(context.Background(), jobsV2LLMConfig{AgentName: agentDir, Model: "other:denied", Instructions: "hello"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "allowed: debug:*") {
 		t.Fatalf("job execution error = %v, want allowlist denial", err)

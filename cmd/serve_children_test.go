@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -220,7 +222,7 @@ func TestRuntimeSpawnPersistsChildForStats(t *testing.T) {
 				requestParent = ""
 			}
 			if tc.job {
-				defaults = serveJobsRunnerOptions(resolvedApprovalMode{Mode: tools.ModePrompt})
+				defaults = serveJobsRunnerOptions(resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
 				platform = runpkg.PlatformJob
 			}
 			defaults.Tools = "spawn_agent"

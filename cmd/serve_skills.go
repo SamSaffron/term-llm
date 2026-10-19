@@ -889,6 +889,7 @@ func (s *serveServer) serveSkillChildRunner(ctx context.Context, sessionID strin
 	if err != nil {
 		return nil, err
 	}
+	runner.SetRuntimeInputs(s.sessionStore, s.memoryPaths)
 	state := ParentModelState{}
 	if runtime != nil {
 		state = ParentModelState{Policy: runtime.modelPolicy, Provider: runtime.providerKey, Model: runtime.defaultModel}

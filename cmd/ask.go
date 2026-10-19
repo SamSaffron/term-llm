@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/app/ask"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -270,6 +272,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		deferredInputs = &sessionInputSelection{}
 	}
 	// Resolve all settings: CLI > agent > config
+	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
 	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		inputs:           deferredInputs,
@@ -291,6 +294,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		NoSearch:         askNoSearch,
 		Files:            askFiles,
 		Platform:         "console",
+		MemoryPaths:      runtimeMemoryPaths,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return err
@@ -299,7 +303,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
 	// so that session settings can override settings.Tools, settings.MCP, etc.
-	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
+	store, storeCleanup := appruntime.InitSessionStoreWith(cfg, cmd.ErrOrStderr(), runtimeSessionStore)
 	var spawnRunner *SpawnAgentRunner
 	// userInterrupted is set when the rich renderer handled Ctrl-C itself: the
 	// signal context is not cancelled in that case, but the user still asked
@@ -387,7 +391,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if toolMgr != nil && toolMgr.ApprovalMgr != nil {
 		defer toolMgr.ApprovalMgr.Close()
 	}
-	spawnRunner, err = configureAskToolManager(ctx, cmd, cfg, toolMgr, store, sessionID, resolvedApproval)
+	spawnRunner, err = configureAskToolManager(ctx, cmd, cfg, toolMgr, store, sessionID, resolvedApproval, runtimeSessionStore, runtimeMemoryPaths)
 	if err != nil {
 		return err
 	}
@@ -573,6 +577,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		DebugRaw:           debugRaw,
 		ErrWriter:          cmd.ErrOrStderr(),
 		Store:              store,
+		SessionStore:       runtimeSessionStore,
+		MemoryPaths:        runtimeMemoryPaths,
 		ParentApprovalMgr:  parentApprovalMgr,
 	})
 	includeConfiguredTools := false
@@ -687,7 +693,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 }
 
-func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sessionID string, approval resolvedApprovalMode) (*SpawnAgentRunner, error) {
+func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sessionID string, approval resolvedApprovalMode, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
 	if toolMgr == nil {
 		return nil, nil
 	}
@@ -701,7 +707,7 @@ func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *confi
 	reportApprovalMode(cmd.ErrOrStderr(), askDebug, approval, toolMgr.ApprovalMgr)
 	// PromptFunc is set in ask.StreamWithRenderer to use bubbletea UI.
 	// Wire spawn_agent runner with session tracking.
-	return WireSpawnAgentRunnerWithStore(cfg, toolMgr, approval.Mode == tools.ModeYolo, store, sessionID)
+	return WireSpawnAgentRunnerWithInputs(cfg, toolMgr, approval.Mode == tools.ModeYolo, store, sessionID, 0, sessionStore, paths)
 }
 
 // Restoring exact-file grants must use structured parts from both the durable

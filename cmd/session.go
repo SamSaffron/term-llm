@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -27,100 +28,6 @@ var (
 	builtinAgentFileIncludePattern = regexp.MustCompile(`\{\{\s*file\s*:`)
 	builtinAgentResourceDirPattern = regexp.MustCompile(`\{\{\s*resource_dir\s*\}\}`)
 )
-
-// SessionSettings holds the resolved settings for a session, merged from
-// config defaults, agent settings, and CLI flags.
-type SessionSettings struct {
-	// Provider/model
-	Provider string
-	Model    string
-
-	// Agent name (if any)
-	AgentName    string
-	PlanGuidance bool   // Built-in developer's callable-only update_plan guidance
-	Workspace    string // Agent workspace policy: auto/default or none
-
-	// Session ID (if any)
-	SessionID string
-
-	// Tool settings
-	Tools        string
-	AutoTools    []string // Transient tools required by structured user attachments; never persisted as configured tools.
-	ReadDirs     []string
-	WriteDirs    []string
-	ShellAllow   []string
-	ShellAutoRun bool
-	Scripts      []string
-	Spawn        tools.SpawnConfig
-
-	// BaseDir is the unified per-session working directory for all tools. It is
-	// threaded through ToolConfig and never applied with os.Chdir.
-	BaseDir string
-	// PrimaryWorkspace is non-empty only when a local launch or explicit
-	// session/request binding proposes a canonical primary workspace. It grants
-	// no file authority until the human confirms it on first access.
-	PrimaryWorkspace string
-
-	// RequireExplicitWorkingDir makes unbound remote runtimes reject relative
-	// tool paths and default process execution instead of using daemon CWD.
-	RequireExplicitWorkingDir bool
-
-	// Agent directory (for run_agent_script and custom tools)
-	AgentDir string
-
-	// ShellWorkingDir roots the shell tool's command execution (exec.Cmd.Dir) at
-	// a per-run directory without a process-wide os.Chdir. Empty preserves the
-	// process-CWD default for local/legacy callers; unbound remote runtimes reject it.
-	ShellWorkingDir string
-
-	// CustomTools holds script-backed custom tool definitions from agent.yaml
-	CustomTools []agents.CustomToolDef
-
-	// MCP servers (comma-separated)
-	MCP string
-
-	// System prompt (already expanded)
-	SystemPrompt string
-
-	// Behavior
-	MaxTurns        int
-	MaxOutputTokens int // 0 = use provider default
-	Search          bool
-	TimeGrounding   bool
-
-	// Memory / insights
-	InsightsExpansion bool
-	InsightsMaxTokens int // 0 → default 500
-}
-
-// CLIFlags holds the CLI flag values that can override settings.
-type CLIFlags struct {
-	Provider         string
-	Tools            string
-	ToolsSet         bool
-	SystemMessageSet bool
-	inputs           *sessionInputSelection
-	ReadDirs         []string
-	WriteDirs        []string
-	ShellAllow       []string
-	MCP              string
-	SystemMessage    string
-	MaxTurns         int
-	MaxTurnsSet      bool // true if --max-turns was explicitly set
-	MaxOutputTokens  int  // 0 = use provider default
-	Search           bool
-	NoSearch         bool
-	Files            []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
-	Platform         string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
-
-	// ActiveProvider and ActiveModel name the provider/model the caller has
-	// resolved for this run after CLI, request, agent, and config overrides.
-	// When ActiveProvider is set the pair wins over the agent's preference for
-	// prompt templating ({{provider}}, {{model}}) and model-gated user
-	// AGENTS.md blocks, so the prompt describes the model that actually runs.
-	ActiveProvider string
-	ActiveModel    string
-}
 
 // activeLLMFlags returns the ActiveProvider/ActiveModel pair for cfg once the
 // caller has applied its provider overrides.
@@ -152,7 +59,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	if err != nil {
 		return SessionSettings{}, err
 	}
-	s := SessionSettings{}
+	s := SessionSettings{MemoryPaths: cli.MemoryPaths}
 	if agent != nil {
 		s.AgentName = agent.Name
 		s.Workspace = agent.Workspace
@@ -273,7 +180,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 // resolveSessionPromptTools resolves only the two refreshable inputs. Callers
 // resuming durable history must supply the saved agent and canonical directory.
 func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configInstructions, runtimeDir, provider, model string) (string, string, error) {
-	s := SessionSettings{Provider: provider, Model: model}
+	s := SessionSettings{Provider: provider, Model: model, MemoryPaths: cli.MemoryPaths}
 	if agent != nil {
 		if agent.Provider != "" {
 			s.Provider = agent.Provider
@@ -357,16 +264,16 @@ func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIF
 		}
 	}
 
-	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens)
+	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens, s.MemoryPaths)
 	return s.SystemPrompt, s.Tools, nil
 }
 
-func injectInsightsMetadata(instructions, agentName string, enabled bool, maxTokens int) string {
+func injectInsightsMetadata(instructions, agentName string, enabled bool, maxTokens int, paths appmemory.Paths) string {
 	if !enabled || strings.TrimSpace(agentName) == "" {
 		return instructions
 	}
 
-	store, err := openMemoryStore()
+	store, err := appmemory.OpenStore(paths)
 	if err != nil {
 		return instructions
 	}
@@ -539,7 +446,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *engine.En
 			engine.SetIndirectVision(true)
 		}
 	}
-	wireImageRecorder(toolMgr.Registry, s.AgentName, s.SessionID)
+	appmemory.WireImageRecorder(toolMgr.Registry, s.MemoryPaths, s.AgentName, s.SessionID)
 	wireFileRecorder(toolMgr.Registry, cfg)
 
 	// Register any custom script-backed tools declared in agent.yaml
@@ -688,8 +595,8 @@ func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManage
 }
 
 // wireSpawnAgentWithBudget wires a child runner and caps its spawn allowance.
-func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, remaining *int) (*SpawnAgentRunner, error) {
-	runner, err := WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, depth)
+func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, remaining *int, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
+	runner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, yoloMode, store, parentSessionID, depth, sessionStore, paths)
 	if err == nil && remaining != nil && toolMgr != nil {
 		if spawn := toolMgr.GetSpawnAgentTool(); spawn != nil {
 			spawn.SetRemainingDepth(*remaining)
@@ -701,6 +608,12 @@ func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yo
 // WireSpawnAgentRunnerWithStoreAndDepth is WireSpawnAgentRunnerWithStore with an
 // explicit current depth for nested spawn_agent tools.
 func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int) (*SpawnAgentRunner, error) {
+	return WireSpawnAgentRunnerWithInputs(cfg, toolMgr, yoloMode, store, parentSessionID, depth, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
+}
+
+// WireSpawnAgentRunnerWithInputs constructs a child runner with invocation-local
+// persistence and memory inputs before exposing it through the spawn tool.
+func WireSpawnAgentRunnerWithInputs(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
 	if toolMgr == nil {
 		return nil, nil
 	}
@@ -712,6 +625,7 @@ func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.To
 	if err != nil {
 		return nil, fmt.Errorf("setup spawn_agent: %w", err)
 	}
+	runner.SetRuntimeInputs(sessionStore, paths)
 	// Keep a snapshot for legacy callers and as a fallback if the live resolver
 	// cannot provide a directory.
 	runner.SetBaseDir(toolMgr.BaseDir())

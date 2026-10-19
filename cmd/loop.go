@@ -276,6 +276,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve all settings: CLI > agent > config
+	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
 	promptProvider, promptModel := activeLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:        loopProvider,
@@ -293,6 +294,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		Search:          loopSearch,
 		NoSearch:        loopNoSearch,
 		Platform:        "console",
+		MemoryPaths:     runtimeMemoryPaths,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 100)
 	if err != nil {
 		return err
@@ -340,7 +342,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		}
 
 		// Wire spawn_agent runner if enabled
-		spawnRunner, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, nil, "")
+		spawnRunner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, nil, "", 0, runtimeSessionStore, runtimeMemoryPaths)
 		if err != nil {
 			return err
 		}

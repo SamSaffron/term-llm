@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"errors"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -144,7 +146,7 @@ func TestJobsExecutorParentSelectionAndPolicyPersistence(t *testing.T) {
 	cfg := &config.Config{DefaultProvider: "other", Providers: map[string]config.ProviderConfig{"other": {Model: "wrong"}, "debug": {Model: "allowed"}}, Sessions: config.SessionsConfig{Enabled: true, Path: filepath.Join(t.TempDir(), "jobs.db")}}
 	policy := modelpolicy.Policy{}.With("boss", []string{"debug:allowed"})
 	parent := runpkg.ParentModel{Provider: "debug", Model: "allowed"}
-	executor := newServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt})
+	executor := newServeJobsExecutor(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
 	id := session.NewID()
 	request := jobsV2LLMConfig{Instructions: "hello", Cwd: t.TempDir(), ParentModel: &parent, ModelPolicy: &policy, SessionID: id}
 	if _, err := executor(context.Background(), request, nil); err != nil {

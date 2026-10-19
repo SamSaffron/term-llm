@@ -66,7 +66,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
 	if _, supported := session.AsSessionInputRefresher(store); !supported {
 		var err error
-		settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, agent, CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console"}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
+		settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, agent, CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
@@ -114,7 +114,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 			}
 			settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
 				Provider: askProvider, ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
-				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console",
+				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths,
 			}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
 			if err != nil {
 				ticket.fail()

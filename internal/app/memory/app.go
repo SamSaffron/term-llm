@@ -68,12 +68,39 @@ func ResolveDBPath(flagValue, defaultFlagValue string) string {
 	return flagValue
 }
 
+// Paths captures the memory database flag value and the default that was bound
+// when the owning command initialized. Keeping both preserves env override semantics.
+type Paths struct {
+	DBPath        string
+	DefaultDBPath string
+}
+
+func (paths Paths) normalized() Paths {
+	if paths.DefaultDBPath == "" {
+		paths.DefaultDBPath = DefaultDBPath()
+	}
+	if paths.DBPath == "" {
+		paths.DBPath = paths.DefaultDBPath
+	}
+	return paths
+}
+
+func (paths Paths) resolve() string {
+	paths = paths.normalized()
+	return ResolveDBPath(paths.DBPath, paths.DefaultDBPath)
+}
+
 // AgentFilter returns the trimmed --agent value.
 func (e Env) AgentFilter() string { return strings.TrimSpace(e.Agent) }
 
 // OpenStore opens the memory store selected by the environment.
 func (e Env) OpenStore() (*memorydb.Store, error) {
-	return OpenStoreAtPath(ResolveDBPath(e.DBPath, e.DefaultDBPath))
+	return OpenStore(Paths{DBPath: e.DBPath, DefaultDBPath: e.DefaultDBPath})
+}
+
+// OpenStore opens the memory store selected by paths.
+func OpenStore(paths Paths) (*memorydb.Store, error) {
+	return OpenStoreAtPath(paths.resolve())
 }
 
 // OpenStoreAtPath opens the memory store at path.
@@ -112,19 +139,19 @@ func openImageRecordStore(path string) (imageRecordStore, error) {
 
 // WireImageRecorder attaches a recorder that opens the memory store only when
 // an image is generated, then closes it after recording. Recording remains
-// non-fatal if the store cannot be opened. dbPath is the --db flag value.
-func WireImageRecorder(registry *tools.LocalToolRegistry, dbPath, defaultDBPath, agent, sessionID string) {
-	wireImageRecorderWithOpener(registry, dbPath, defaultDBPath, agent, sessionID, openImageRecordStore)
+// non-fatal if the store cannot be opened.
+func WireImageRecorder(registry *tools.LocalToolRegistry, paths Paths, agent, sessionID string) {
+	wireImageRecorderWithOpener(registry, paths, agent, sessionID, openImageRecordStore)
 }
 
-func wireImageRecorderWithOpener(registry *tools.LocalToolRegistry, dbPath, defaultDBPath, agent, sessionID string, open imageRecordStoreOpener) {
+func wireImageRecorderWithOpener(registry *tools.LocalToolRegistry, paths Paths, agent, sessionID string, open imageRecordStoreOpener) {
 	if registry == nil {
 		return
 	}
 	recorder := &lazyImageRecorder{
-		// Runtime setup has already applied flags and environment overrides. Keep
-		// that selected path stable for the lifetime of this registry.
-		path: ResolveDBPath(dbPath, defaultDBPath),
+		// Runtime setup has already captured flags. Resolve the selected path once
+		// so it remains stable for the lifetime of this registry.
+		path: paths.resolve(),
 		open: open,
 	}
 	registry.SetImageRecorder(recorder, agent, sessionID)
@@ -132,11 +159,11 @@ func wireImageRecorderWithOpener(registry *tools.LocalToolRegistry, dbPath, defa
 
 // RecordImageDirect records a generated image in the memory store, ignoring
 // failures.
-func RecordImageDirect(dbPath, defaultDBPath string, cfg *config.Config, prompt, outputPath string, result *image.ImageResult, providerName string) {
+func RecordImageDirect(paths Paths, cfg *config.Config, prompt, outputPath string, result *image.ImageResult, providerName string) {
 	if cfg == nil || outputPath == "" || result == nil {
 		return
 	}
-	store, err := OpenStoreAtPath(ResolveDBPath(dbPath, defaultDBPath))
+	store, err := OpenStore(paths)
 	if err != nil {
 		return
 	}

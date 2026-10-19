@@ -7,7 +7,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/image"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
 
@@ -81,15 +80,14 @@ func memoryEnv() memory.Env {
 	}
 }
 
-func openMemoryStore() (*memorydb.Store, error) {
-	return memoryEnv().OpenStore()
+func memoryPaths() memory.Paths {
+	return memory.Paths{DBPath: memoryDBPath, DefaultDBPath: defaultMemoryDBPath}
 }
 
-// wireImageRecorder attaches a lazy image recorder to the tool registry.
-func wireImageRecorder(registry *tools.LocalToolRegistry, agent, sessionID string) {
-	memory.WireImageRecorder(registry, memoryDBPath, defaultMemoryDBPath, agent, sessionID)
+func openMemoryStore() (*memorydb.Store, error) {
+	return memory.OpenStore(memoryPaths())
 }
 
 func recordImageDirect(cfg *config.Config, prompt, outputPath string, result *image.ImageResult, providerName string) {
-	memory.RecordImageDirect(memoryDBPath, defaultMemoryDBPath, cfg, prompt, outputPath, result, providerName)
+	memory.RecordImageDirect(memoryPaths(), cfg, prompt, outputPath, result, providerName)
 }

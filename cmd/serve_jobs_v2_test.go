@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,9 +22,14 @@ func TestServeJobsRunnerOptionsUseCapturedResolvedApproval(t *testing.T) {
 	t.Cleanup(func() { serveFlags.Auto, serveFlags.Yolo = oldAuto, oldYolo })
 
 	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceSurfaceConfig}
-	opts := serveJobsRunnerOptions(resolved)
+	sessionStore := appruntime.SessionStoreOverrides{NoSession: true, DBPath: "sessions.db"}
+	paths := appmemory.Paths{DBPath: "memory.db", DefaultDBPath: "default.db"}
+	opts := serveJobsRunnerOptions(resolved, sessionStore, paths)
 	if opts.ApprovalMode != tools.ModeAuto || opts.ApprovalSource != approvalModeSourceSurfaceConfig || !opts.ApprovalModeSet || !opts.ApprovalHeadless {
 		t.Fatalf("serve jobs approval options = mode:%v source:%s set:%t headless:%t", opts.ApprovalMode, opts.ApprovalSource, opts.ApprovalModeSet, opts.ApprovalHeadless)
+	}
+	if opts.SessionStore != sessionStore || opts.MemoryPaths != paths {
+		t.Fatalf("serve jobs runtime inputs = %#v / %#v, want %#v / %#v", opts.SessionStore, opts.MemoryPaths, sessionStore, paths)
 	}
 }
 

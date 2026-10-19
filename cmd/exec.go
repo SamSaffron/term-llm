@@ -180,6 +180,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		lastTurnForceTool = core.SuggestCommandsToolName
 	}
 
+	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
 	runner := NewRunner(cfg, RunnerOptions{
 		Provider:           execProvider,
 		ConfigSet:          true,
@@ -202,6 +203,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		Debug:              execDebug,
 		DebugRaw:           debugRaw,
 		ErrWriter:          cmd.ErrOrStderr(),
+		SessionStore:       runtimeSessionStore,
+		MemoryPaths:        runtimeMemoryPaths,
 	})
 	execEnv, err := runner.Prepare(ctx, runpkg.Request{
 		Platform:                runpkg.PlatformExec,
