@@ -1,9 +1,9 @@
-package cmd
+// Package liveprogress renders delegated-run events as templated voice progress notes.
+package liveprogress
 
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -25,7 +25,8 @@ import (
 // Both are marked Progress, so a transport that can only deliver a final result
 // drops them rather than appending stale notes to that result.
 const (
-	liveProgressTick         = time.Second
+	// TickInterval is the cadence at which callers should tick a progress tracker.
+	TickInterval             = time.Second
 	liveStatusMinSpacing     = 4 * time.Second
 	liveStatusRefresh        = 15 * time.Second
 	liveStartedAtSlack       = time.Minute
@@ -56,9 +57,9 @@ type liveWaiting struct {
 	announced bool
 }
 
-// liveProgress tracks one delegated run. It is owned by the goroutine consuming
+// Progress tracks one delegated run. It is owned by the goroutine consuming
 // the run's events and is not safe for concurrent use.
-type liveProgress struct {
+type Progress struct {
 	emit func(live.DelegationChunk)
 	now  func() time.Time
 
@@ -81,24 +82,25 @@ type liveProgress struct {
 	progressSpoken bool
 }
 
-func newLiveProgress(emit func(live.DelegationChunk), now func() time.Time) *liveProgress {
+// New tracks a run with the supplied emitter and clock.
+func New(emit func(live.DelegationChunk), now func() time.Time) *Progress {
 	start := now()
-	return &liveProgress{
+	return &Progress{
 		emit: emit, now: now, began: start, spokeAt: start,
 		ended: make(map[string]bool), subagents: make(map[string]string),
 	}
 }
 
-// observe folds one run event into the tracked state. It never emits: the
+// Observe folds one run event into the tracked state. It never emits: the
 // caller ticks once a batch of events (such as a replayed backlog) is folded,
 // so notes describe where the run is rather than where it passed through.
-func (p *liveProgress) observe(event responseRunEvent) {
-	switch event.Event {
+func (p *Progress) Observe(event string, data []byte) {
+	switch event {
 	case "response.output_text.delta":
 		var payload struct {
 			Delta string `json:"delta"`
 		}
-		if json.Unmarshal(event.Data, &payload) != nil || payload.Delta == "" {
+		if json.Unmarshal(data, &payload) != nil || payload.Delta == "" {
 			return // nothing was said, so nothing moved on
 		}
 		p.spokeAt, p.progressSpoken = p.now(), false
@@ -106,26 +108,26 @@ func (p *liveProgress) observe(event responseRunEvent) {
 		// even if a resolution event never reached this stream.
 		p.clearWaiting()
 	case "response.tool_exec.start":
-		p.toolStarted(event.Data)
+		p.toolStarted(data)
 	case "response.tool_exec.end":
-		p.toolEnded(event.Data)
+		p.toolEnded(data)
 	case "response.tool_exec.progress":
-		p.subagentProgress(event.Data)
+		p.subagentProgress(data)
 	case "response.approval.prompt":
-		p.approvalRequested(event.Data)
+		p.approvalRequested(data)
 	case "response.ask_user.prompt":
-		p.questionAsked(event.Data)
+		p.questionAsked(data)
 	case "response.approval.resolved":
-		p.inputResolved(event.Data, "approval_id")
+		p.inputResolved(data, "approval_id")
 	case "response.ask_user.resolved":
-		p.inputResolved(event.Data, "call_id")
+		p.inputResolved(data, "call_id")
 	}
 }
 
-// tick sends whatever is due: an input request not yet announced, else a spoken
+// Tick sends whatever is due: an input request not yet announced, else a spoken
 // note after a silence, then a status snapshot if the state changed since the
 // last one.
-func (p *liveProgress) tick() {
+func (p *Progress) Tick() {
 	now := p.now()
 	if !p.announceInput(now) && p.silenceDue(now) {
 		p.speak(p.stillWorkingLine(now), now)
@@ -146,7 +148,7 @@ func (p *liveProgress) tick() {
 	p.emit(live.DelegationChunk{Channel: live.ChannelQuiet, Text: status, Progress: true})
 }
 
-func (p *liveProgress) silenceDue(now time.Time) bool {
+func (p *Progress) silenceDue(now time.Time) bool {
 	if len(p.waiting) > 0 {
 		// The user was already told what the run needs from them; repeating it
 		// while they act on it is nagging, not progress.
@@ -159,12 +161,12 @@ func (p *liveProgress) silenceDue(now time.Time) bool {
 	return now.Sub(p.spokeAt) >= gap
 }
 
-func (p *liveProgress) speak(text string, now time.Time) {
+func (p *Progress) speak(text string, now time.Time) {
 	p.spokeAt, p.progressSpoken = now, true
 	p.emit(live.DelegationChunk{Channel: live.ChannelSpeakable, Text: text, Progress: true})
 }
 
-func (p *liveProgress) toolStarted(data []byte) {
+func (p *Progress) toolStarted(data []byte) {
 	var payload struct {
 		CallID    string `json:"call_id"`
 		ToolName  string `json:"tool_name"`
@@ -198,7 +200,7 @@ func (p *liveProgress) toolStarted(data []byte) {
 	p.dirty = true
 }
 
-func (p *liveProgress) toolEnded(data []byte) {
+func (p *Progress) toolEnded(data []byte) {
 	var payload struct {
 		CallID     string `json:"call_id"`
 		ToolName   string `json:"tool_name"`
@@ -246,7 +248,7 @@ func (p *liveProgress) toolEnded(data []byte) {
 
 // subagentProgress summarises the rate-limited progress events of spawned
 // agents and jobs, which report counters rather than a transcript.
-func (p *liveProgress) subagentProgress(data []byte) {
+func (p *Progress) subagentProgress(data []byte) {
 	var payload struct {
 		CallID       string `json:"call_id"`
 		State        string `json:"state"`
@@ -280,7 +282,7 @@ func (p *liveProgress) subagentProgress(data []byte) {
 	}
 }
 
-func (p *liveProgress) approvalRequested(data []byte) {
+func (p *Progress) approvalRequested(data []byte) {
 	var payload struct {
 		ApprovalID string `json:"approval_id"`
 		Title      string `json:"title"`
@@ -300,7 +302,7 @@ func (p *liveProgress) approvalRequested(data []byte) {
 	p.awaitInput(payload.ApprovalID, text)
 }
 
-func (p *liveProgress) questionAsked(data []byte) {
+func (p *Progress) questionAsked(data []byte) {
 	var payload struct {
 		CallID    string `json:"call_id"`
 		Questions []struct {
@@ -327,7 +329,7 @@ func (p *liveProgress) questionAsked(data []byte) {
 // awaitInput records a pause on the user. The next tick announces it at once:
 // the run cannot continue until they act, so this is the one note that must
 // not wait out a silence.
-func (p *liveProgress) awaitInput(id, text string) {
+func (p *Progress) awaitInput(id, text string) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		// Nothing could ever resolve an unnamed wait, so recording one would
@@ -345,7 +347,7 @@ func (p *liveProgress) awaitInput(id, text string) {
 
 // announceInput speaks every input request nobody has been told about, in one
 // note, and reports whether it spoke.
-func (p *liveProgress) announceInput(now time.Time) bool {
+func (p *Progress) announceInput(now time.Time) bool {
 	var pending []string
 	for i := range p.waiting {
 		if !p.waiting[i].announced {
@@ -386,7 +388,7 @@ func waitingSentence(texts []string) string {
 	return lead + strings.Join(bounded, separator) + more
 }
 
-func (p *liveProgress) waitingTexts() []string {
+func (p *Progress) waitingTexts() []string {
 	texts := make([]string, len(p.waiting))
 	for i, waiting := range p.waiting {
 		texts[i] = waiting.text
@@ -394,7 +396,7 @@ func (p *liveProgress) waitingTexts() []string {
 	return texts
 }
 
-func (p *liveProgress) inputResolved(data []byte, idField string) {
+func (p *Progress) inputResolved(data []byte, idField string) {
 	var payload map[string]any
 	if json.Unmarshal(data, &payload) != nil {
 		return
@@ -404,7 +406,7 @@ func (p *liveProgress) inputResolved(data []byte, idField string) {
 }
 
 // resolveWaiting ends the wait with this id, if any.
-func (p *liveProgress) resolveWaiting(id string) {
+func (p *Progress) resolveWaiting(id string) {
 	id = strings.TrimSpace(id)
 	for i, waiting := range p.waiting {
 		if waiting.id == id {
@@ -416,7 +418,7 @@ func (p *liveProgress) resolveWaiting(id string) {
 }
 
 // clearWaiting ends every wait.
-func (p *liveProgress) clearWaiting() {
+func (p *Progress) clearWaiting() {
 	if len(p.waiting) > 0 {
 		p.waiting = nil
 		p.inputResumed()
@@ -425,14 +427,14 @@ func (p *liveProgress) clearWaiting() {
 
 // inputResumed restarts the silence clock: the run resumes from here, so the
 // next note is measured from now rather than from the prompt just answered.
-func (p *liveProgress) inputResumed() {
+func (p *Progress) inputResumed() {
 	p.dirty = true
 	p.spokeAt, p.progressSpoken = p.now(), false
 }
 
 // statusLine renders the quiet snapshot, most useful facts first because the
 // line is cut to liveStatusMaxBytes.
-func (p *liveProgress) statusLine(now time.Time) string {
+func (p *Progress) statusLine(now time.Time) string {
 	parts := make([]string, 0, 5)
 	if len(p.waiting) > 0 {
 		parts = append(parts, waitingSentence(p.waitingTexts()))
@@ -453,7 +455,7 @@ func (p *liveProgress) statusLine(now time.Time) string {
 }
 
 // stillWorkingLine renders the spoken silence filler.
-func (p *liveProgress) stillWorkingLine(now time.Time) string {
+func (p *Progress) stillWorkingLine(now time.Time) string {
 	line := liveProgressPrefix + "Still working, no result yet: " +
 		lowerFirst(p.activitySentence(now)) + ". " + p.totalsSentence(now) + "."
 	return truncateProgress(line, liveStatusMaxBytes)
@@ -467,7 +469,7 @@ func lowerFirst(text string) string {
 	return string(unicode.ToLower(r)) + text[size:]
 }
 
-func (p *liveProgress) activitySentence(now time.Time) string {
+func (p *Progress) activitySentence(now time.Time) string {
 	if len(p.active) == 0 {
 		return "The agent is thinking"
 	}
@@ -483,7 +485,7 @@ func (p *liveProgress) activitySentence(now time.Time) string {
 	return sentence
 }
 
-func (p *liveProgress) totalsSentence(now time.Time) string {
+func (p *Progress) totalsSentence(now time.Time) string {
 	sentence := formatProgressDuration(now.Sub(p.began)) + " elapsed"
 	if p.done == 0 {
 		return sentence
@@ -511,147 +513,6 @@ func describeFinishedTool(tool *liveFinishedTool) string {
 }
 
 func quoteProgress(text string) string { return "\"" + text + "\"" }
-
-// liveSecretPatterns catch credentials a tool preview can carry, such as a
-// shell command with an auth header or a key in a URL. Previews are sent to the
-// voice provider, and the model may repeat them aloud. This is a conservative
-// backstop, not a guarantee.
-var liveSecretPatterns = []struct {
-	pattern     *regexp.Regexp
-	replacement string
-}{
-	// Whatever follows an Authorization or Cookie header name, quoted or not.
-	{regexp.MustCompile(`(?i)\b(authorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:(?:basic|bearer|token)\s+)?[^\s"',;}]+)`), "${1}[redacted]"},
-	{regexp.MustCompile(`(?i)\b((?:set-)?cookie["']?\s*:\s*)(?:"[^"]*"|'[^']*'|[^"'\n]+)`), "${1}[redacted]"},
-	// curl's -b sends cookies. Only curl's: -b means something else elsewhere
-	// (git checkout -b names a branch). --cookie is caught by the flag rule.
-	{regexp.MustCompile(`(\bcurl\b[^|;&\n]*?\s-b\s+)(?:"[^"]*"|'[^']*'|[^\s"']+)`), "${1}[redacted]"},
-	// curl's -u/--user carries user:password; elsewhere, only a --user value
-	// shaped like user:password is treated as a credential.
-	{regexp.MustCompile(`(\bcurl\b[^|;&\n]*?\s(?:-u|--user)(?:\s+|=))(?:"[^"]*"|'[^']*'|[^\s"']+)`), "${1}[redacted]"},
-	{regexp.MustCompile(`(?i)((?:^|\s)--?user(?:name)?(?:\s+|=))["']?[^\s"':]+:[^\s"']+["']?`), "${1}[redacted]"},
-	// user:password@ in URLs.
-	{regexp.MustCompile(`://[^/\s:@]+:[^/\s@]+@`), "://[redacted]@"},
-	// Well-known key prefixes, however short the rest.
-	{regexp.MustCompile(`\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}|\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{8,}|\bxox[abeoprs]-[A-Za-z0-9-]{8,}|\bglpat-[A-Za-z0-9_-]{8,}|\bAKIA[0-9A-Z]{12,}|\bAIza[0-9A-Za-z_-]{20,}`), "[redacted]"},
-}
-
-// liveSecretKey matches a field or flag name that may hold a secret;
-// isLiveSecretKey then rejects the few names that only look like one.
-const liveSecretKey = `[a-z0-9_.-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|cookie)[a-z0-9_.-]*`
-
-// liveKeyedSecrets match a value named by its key: key=value, key: value and
-// "key": "value", then --flag value. Group 1 is kept, group 2 is the key.
-var liveKeyedSecrets = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)((["']?)\b(` + liveSecretKey + `)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s"'&,;}]+)`),
-	regexp.MustCompile(`(?i)((^|\s)--?(` + liveSecretKey + `)\s+)(?:"[^"]*"|'[^']*'|[^\s"'-][^\s"']*)`),
-}
-
-var liveSecretKeyExact = regexp.MustCompile(`^` + liveSecretKey + `$`)
-
-// isLiveSecretKey rejects names that match only through "author", such as
-// git's --author or co-author, while --author-token still names a secret.
-func isLiveSecretKey(key string) bool {
-	key = strings.ToLower(key)
-	if !strings.Contains(key, "authoriz") {
-		key = strings.ReplaceAll(key, "author", "")
-	}
-	return liveSecretKeyExact.MatchString(key)
-}
-
-// liveBearer matches a bearer credential, quoted or bare. Group 1 is kept.
-var liveBearer = regexp.MustCompile(`(?i)\b(bearer\s+["']?)([A-Za-z0-9._~+/=-]+)`)
-
-// credentialShaped reports whether a bearer value looks like a credential
-// rather than the next word of prose ("fix bearer handling"): it has a digit or
-// symbol, mixed case after its first letter, or is long.
-func credentialShaped(value string) bool {
-	if len(value) >= 16 || strings.ContainsFunc(value, func(r rune) bool { return !unicode.IsLetter(r) }) {
-		return true
-	}
-	_, size := utf8.DecodeRuneInString(value)
-	rest := value[size:]
-	return strings.ContainsFunc(rest, unicode.IsUpper) && strings.ContainsFunc(rest, unicode.IsLower)
-}
-
-// liveLongToken matches opaque runs long enough to be a credential. Slashes and
-// dots are excluded so ordinary paths and file names survive.
-var liveLongToken = regexp.MustCompile(`[A-Za-z0-9_+=-]{32,}`)
-
-func redactLiveProgress(text string) string {
-	for _, secret := range liveSecretPatterns {
-		text = secret.pattern.ReplaceAllString(text, secret.replacement)
-	}
-	for _, keyed := range liveKeyedSecrets {
-		text = keyed.ReplaceAllStringFunc(text, func(match string) string {
-			parts := keyed.FindStringSubmatch(match)
-			if !isLiveSecretKey(parts[3]) {
-				return match
-			}
-			return parts[1] + "[redacted]"
-		})
-	}
-	text = liveBearer.ReplaceAllStringFunc(text, func(match string) string {
-		parts := liveBearer.FindStringSubmatch(match)
-		if credentialShaped(parts[2]) {
-			return parts[1] + "[redacted]"
-		}
-		return match
-	})
-	return liveLongToken.ReplaceAllStringFunc(text, func(token string) string {
-		// Identifiers such as test names are long too; only a mix of letters and
-		// digits looks like a key or hash.
-		if strings.ContainsFunc(token, unicode.IsDigit) && strings.ContainsFunc(token, unicode.IsLetter) {
-			return "[redacted]"
-		}
-		return token
-	})
-}
-
-// liveProgressText reduces event text to one bounded line: credential-like
-// tokens redacted, control characters dropped, whitespace collapsed, double
-// quotes swapped so a quoted field keeps its boundary, and the result cut on a
-// rune boundary with an ellipsis.
-func liveProgressText(text string, limit int) string {
-	text = redactLiveProgress(text)
-	var b strings.Builder
-	space := false
-	for _, r := range text {
-		switch {
-		case unicode.IsSpace(r):
-			space = b.Len() > 0
-			continue
-		case !unicode.IsPrint(r):
-			continue
-		case r == '"':
-			r = '\''
-		}
-		if space {
-			b.WriteByte(' ')
-			space = false
-		}
-		b.WriteRune(r)
-	}
-	return truncateProgress(b.String(), limit)
-}
-
-// truncateProgress cuts text to at most limit bytes on a rune boundary, marking
-// the cut with an ellipsis.
-func truncateProgress(text string, limit int) string {
-	if len(text) <= limit {
-		return text
-	}
-	const ellipsis = "…"
-	marker := ellipsis
-	if limit < len(ellipsis) {
-		marker = ""
-	}
-	cut := max(limit-len(marker), 0)
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + marker
-}
 
 // formatProgressDuration renders a duration the way it would be said: tenths
 // under ten seconds, whole seconds under a minute, then minutes and seconds.

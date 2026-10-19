@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/app/serve/liveprogress"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -1919,13 +1920,12 @@ func (d *serveLiveDelegator) startDelegatedRun(runtime *serveRuntime, sessionID,
 // sequence when a slow subscriber is dropped. A ticker drives progress notes
 // through quiet stretches, when no event arrives to prompt them.
 func (d *serveLiveDelegator) streamRun(ctx context.Context, run *responseRun, emit func(live.DelegationChunk)) error {
-	return d.streamRunProgress(ctx, run, emit, newLiveProgress(emit, time.Now))
+	return d.streamRunProgress(ctx, run, emit, liveprogress.New(emit, time.Now))
 }
 
-// streamRunProgress is streamRun reporting into a progress tracker the caller
-// owns, so one account of the work can span every run of a delegation.
-func (d *serveLiveDelegator) streamRunProgress(ctx context.Context, run *responseRun, emit func(live.DelegationChunk), progress *liveProgress) error {
-	ticker := time.NewTicker(liveProgressTick)
+// streamRunProgress lets the caller's tracker span every run of a delegation.
+func (d *serveLiveDelegator) streamRunProgress(ctx context.Context, run *responseRun, emit func(live.DelegationChunk), progress *liveprogress.Progress) error {
+	ticker := time.NewTicker(liveprogress.TickInterval)
 	defer ticker.Stop()
 	after := int64(0)
 	for {
@@ -1943,7 +1943,7 @@ func (d *serveLiveDelegator) streamRunProgress(ctx context.Context, run *respons
 			}
 			return err
 		}
-		progress.tick()
+		progress.Tick()
 		if events == nil {
 			return liveRunStatusError(subscription.status)
 		}
@@ -1960,7 +1960,7 @@ func (d *serveLiveDelegator) streamRunProgress(ctx context.Context, run *respons
 					run.unsubscribe(events)
 					return err
 				}
-				progress.tick()
+				progress.Tick()
 			case event, open := <-events:
 				if !open {
 					closed = true
@@ -1971,7 +1971,7 @@ func (d *serveLiveDelegator) streamRunProgress(ctx context.Context, run *respons
 					run.unsubscribe(events)
 					return err
 				}
-				progress.tick()
+				progress.Tick()
 				if d.live != nil {
 					d.live.touch()
 				}
@@ -1990,7 +1990,7 @@ const liveRunDrainLimit = 256
 // leaves: a prompt and its answer that arrive together are never announced. It
 // never waits for an event; a nil or closed channel ends the batch, and the
 // caller's next receive sees the close.
-func (d *serveLiveDelegator) applyRunBacklog(backlog []responseRunEvent, events <-chan responseRunEvent, after *int64, emit func(live.DelegationChunk), progress *liveProgress) (bool, error) {
+func (d *serveLiveDelegator) applyRunBacklog(backlog []responseRunEvent, events <-chan responseRunEvent, after *int64, emit func(live.DelegationChunk), progress *liveprogress.Progress) (bool, error) {
 	for _, event := range backlog {
 		*after = event.Sequence
 		if done, err := d.applyRunEvent(event, emit, progress); done {
@@ -2017,7 +2017,7 @@ func (d *serveLiveDelegator) applyRunBacklog(backlog []responseRunEvent, events 
 // applyRunEvent maps one run event to voice output and reports whether the run
 // reached a terminal state. Progress state is updated but not ticked; the
 // caller decides when notes are due.
-func (d *serveLiveDelegator) applyRunEvent(event responseRunEvent, emit func(live.DelegationChunk), progress *liveProgress) (bool, error) {
+func (d *serveLiveDelegator) applyRunEvent(event responseRunEvent, emit func(live.DelegationChunk), progress *liveprogress.Progress) (bool, error) {
 	switch event.Event {
 	case "response.output_text.delta":
 		var payload struct {
@@ -2033,7 +2033,7 @@ func (d *serveLiveDelegator) applyRunEvent(event responseRunEvent, emit func(liv
 	case "response.failed":
 		return true, liveRunFailure(event.Data)
 	}
-	progress.observe(event)
+	progress.Observe(event.Event, event.Data)
 	return false, nil
 }
 
