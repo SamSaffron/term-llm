@@ -1,4 +1,4 @@
-package cmd
+package guardian
 
 import (
 	"bytes"
@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
+	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/guardian"
+	coreguardian "github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
@@ -78,13 +79,13 @@ func TestPreflightHeadlessApproval(t *testing.T) {
 		return nil, errors.New("guardian unavailable")
 	})
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}
-	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}); err != nil {
+	if err := PreflightHeadlessApproval(cfg, runapproval.ResolvedMode{Mode: tools.ModePrompt}); err != nil {
 		t.Fatalf("prompt preflight: %v", err)
 	}
 	if calls != 0 {
 		t.Fatalf("prompt preflight initialized guardian %d times", calls)
 	}
-	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModeAuto}); err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
+	if err := PreflightHeadlessApproval(cfg, runapproval.ResolvedMode{Mode: tools.ModeAuto}); err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
 		t.Fatalf("auto preflight error = %v", err)
 	}
 	if calls != 1 {
@@ -100,10 +101,10 @@ func TestApplyResolvedApprovalModeInteractiveFailureWarnsOnceAndFallsBack(t *tes
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	var warnings bytes.Buffer
-	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceBuiltinDefault}
+	resolved := runapproval.ResolvedMode{Mode: tools.ModeAuto, Source: runapproval.ModeSourceBuiltinDefault}
 
-	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, approvalRuntimeOptions{WarningWriter: &warnings}); err != nil {
-		t.Fatalf("applyResolvedApprovalMode() error = %v", err)
+	if err := ApplyResolvedMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, runapproval.RuntimeOptions{WarningWriter: &warnings}); err != nil {
+		t.Fatalf("ApplyResolvedMode() error = %v", err)
 	}
 	if mgr.ApprovalMode() != tools.ModePrompt {
 		t.Fatalf("actual mode = %v, want prompt fallback", mgr.ApprovalMode())
@@ -122,10 +123,10 @@ func TestApplyResolvedApprovalModePromptPreparationFailureWarnsOnce(t *testing.T
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	var warnings bytes.Buffer
-	resolved := resolvedApprovalMode{Mode: tools.ModePrompt, Source: approvalModeSourceSession}
+	resolved := runapproval.ResolvedMode{Mode: tools.ModePrompt, Source: runapproval.ModeSourceSession}
 
-	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, approvalRuntimeOptions{PrepareCallbacks: true, WarningWriter: &warnings}); err != nil {
-		t.Fatalf("applyResolvedApprovalMode() error = %v", err)
+	if err := ApplyResolvedMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, runapproval.RuntimeOptions{PrepareCallbacks: true, WarningWriter: &warnings}); err != nil {
+		t.Fatalf("ApplyResolvedMode() error = %v", err)
 	}
 	if mgr.ApprovalMode() != tools.ModePrompt {
 		t.Fatalf("actual mode = %v, want prompt", mgr.ApprovalMode())
@@ -140,11 +141,11 @@ func TestApplyResolvedApprovalModeHeadlessFailureIsStartupError(t *testing.T) {
 		return nil, errors.New("guardian unavailable")
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceBuiltinDefault}
+	resolved := runapproval.ResolvedMode{Mode: tools.ModeAuto, Source: runapproval.ModeSourceBuiltinDefault}
 
-	err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, approvalRuntimeOptions{Headless: true})
+	err := ApplyResolvedMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, runapproval.RuntimeOptions{Headless: true})
 	if err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
-		t.Fatalf("applyResolvedApprovalMode() error = %v, want startup error", err)
+		t.Fatalf("ApplyResolvedMode() error = %v, want startup error", err)
 	}
 	if mgr.ApprovalMode() != tools.ModePrompt {
 		t.Fatalf("actual mode = %v, want prompt after failed startup", mgr.ApprovalMode())
@@ -209,7 +210,7 @@ func TestInstallGuardianReviewerCallbacksUsesDefaultTimeoutWhenUnset(t *testing.
 	if _, err := mgr.ReviewPolicy(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
 		t.Fatalf("PolicyReviewFunc: %v", err)
 	}
-	assertDeadlineNear(t, provider.deadline, provider.ok, guardian.DefaultTimeout)
+	assertDeadlineNear(t, provider.deadline, provider.ok, coreguardian.DefaultTimeout)
 }
 
 func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *testing.T) {
@@ -403,8 +404,8 @@ func TestApplyResolvedApprovalModeWiresClassifyAllShell(t *testing.T) {
 		Guardian:        config.GuardianConfig{ClassifyAllShell: true},
 		Providers:       map[string]config.ProviderConfig{"active": {Model: "main", FastModel: "fast"}},
 	}
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{}); err != nil {
-		t.Fatalf("applyResolvedApprovalMode: %v", err)
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{}); err != nil {
+		t.Fatalf("ApplyResolvedMode: %v", err)
 	}
 	if outcome, err := mgr.CheckShellApproval("git status", t.TempDir()); err != nil || outcome != tools.ProceedAlways {
 		t.Fatalf("classified narrow pattern = %v, %v", outcome, err)
@@ -559,22 +560,5 @@ func TestResolveGuardianTargetIgnoresRuntimeProviderOverride(t *testing.T) {
 	want := guardianTarget{Provider: "trusted", Model: "trusted-fast"}
 	if got != want {
 		t.Fatalf("target = %#v, want %#v", got, want)
-	}
-}
-
-func TestSubagentApprovalTranscriptPrefixMarksParentEvidence(t *testing.T) {
-	parent := []core.Message{
-		core.UserText("please run tests"),
-		core.AssistantText("I will delegate"),
-	}
-	prefix := subagentApprovalTranscriptPrefix(core.ContextWithApprovalTranscript(context.Background(), parent))
-	if len(prefix) != 2 {
-		t.Fatalf("prefix len = %d, want 2", len(prefix))
-	}
-	if prefix[0].ApprovalRole != "parent_user" {
-		t.Fatalf("first approval role = %q, want parent_user", prefix[0].ApprovalRole)
-	}
-	if prefix[1].ApprovalRole != "parent_assistant" {
-		t.Fatalf("second approval role = %q, want parent_assistant", prefix[1].ApprovalRole)
 	}
 }

@@ -1,4 +1,4 @@
-package cmd
+package guardian
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	"github.com/samsaffron/term-llm/internal/classify"
 	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -58,7 +59,7 @@ func TestGuardianClassifySetupAndConfidenceBreaker(t *testing.T) {
 	cfg := &config.Config{Guardian: config.GuardianConfig{Backend: "classify", PolicyPath: policyPath, TimeoutSeconds: 2, Classify: config.GuardianClassifyConfig{MinConfidence: 0.5}}, Classify: config.ClassifyConfig{DefaultProvider: "alias", Providers: map[string]config.ClassifyProviderConfig{"alias": {Type: "typesafe", APIKey: "test-key", BaseURL: "http://localhost:1234", TimeoutSeconds: 3}}}}
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 	if factories != 1 || stub.calls != 0 {
@@ -108,14 +109,14 @@ func TestGuardianClassifySetupFailuresAndYolo(t *testing.T) {
 			if err := installGuardianReviewerCallbacks(&tc.cfg, mgr, true); err == nil || mgr.GuardianReviewerAvailable() {
 				t.Fatalf("installation: %v", err)
 			}
-			if err := applyResolvedApprovalMode(&tc.cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err == nil {
+			if err := ApplyResolvedMode(&tc.cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err == nil {
 				t.Fatal("headless accepted invalid setup")
 			}
 			var warnings bytes.Buffer
-			if err := applyResolvedApprovalMode(&tc.cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{WarningWriter: &warnings}); err != nil || mgr.ApprovalMode() != tools.ModePrompt || warnings.Len() == 0 {
+			if err := ApplyResolvedMode(&tc.cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{WarningWriter: &warnings}); err != nil || mgr.ApprovalMode() != tools.ModePrompt || warnings.Len() == 0 {
 				t.Fatalf("interactive: %v %s", err, warnings.String())
 			}
-			if err := applyResolvedApprovalMode(&tc.cfg, mgr, resolvedApprovalMode{Mode: tools.ModeYolo}, approvalRuntimeOptions{Headless: true}); err != nil || !mgr.YoloEnabled() {
+			if err := ApplyResolvedMode(&tc.cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeYolo}, runapproval.RuntimeOptions{Headless: true}); err != nil || !mgr.YoloEnabled() {
 				t.Fatalf("yolo: %v", err)
 			}
 		})
@@ -133,23 +134,6 @@ func TestGuardianClassifyUnknownCost(t *testing.T) {
 		t.Fatal("unknown TypeSafe cost must not borrow chat price")
 	}
 }
-
-func TestGuardianClassifyConfigRenderingAndCompletion(t *testing.T) {
-	if got := formatDefaultValue(config.GetDefaults()["guardian.classify.min_confidence"]); got != "0.15" {
-		t.Fatalf("default render: %s", got)
-	}
-	if !valueMatchesDefault("0.5", 0.5) {
-		t.Fatal("float default comparison")
-	}
-	cfg := &config.Config{Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"alias": {Type: "typesafe"}}}}
-	if got := capabilityConfigValueCompletions(cfg, "guardian.backend", ""); strings.Join(got, ",") != "llm,classify" {
-		t.Fatalf("backend: %v", got)
-	}
-	if got := capabilityConfigValueCompletions(cfg, "guardian.classify.provider", "a"); strings.Join(got, ",") != "alias" {
-		t.Fatalf("provider: %v", got)
-	}
-}
-
 func TestGuardianClassifyOversizeFailsClosedWithoutCallingProvider(t *testing.T) {
 	stub := &guardianClassifyStub{}
 	original := newGuardianClassifyBackend
@@ -161,7 +145,7 @@ func TestGuardianClassifyOversizeFailsClosedWithoutCallingProvider(t *testing.T)
 	}
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 	var events []tools.GuardianEvent
@@ -196,7 +180,7 @@ func TestGuardianClassifyLongHistoryStillReviewsShell(t *testing.T) {
 	}
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 	transcript := []tools.TranscriptEntry{

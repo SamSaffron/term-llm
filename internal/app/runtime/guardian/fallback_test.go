@@ -1,4 +1,4 @@
-package cmd
+package guardian
 
 import (
 	"bytes"
@@ -7,17 +7,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	"github.com/samsaffron/term-llm/internal/classify"
 	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/guardian"
+	coreguardian "github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -73,20 +73,20 @@ func (s *guardianFallbackClassifyStub) stateBytes() int {
 // guardianEscalationStub records escalations written by the composite reviewer.
 type guardianEscalationStub struct {
 	mu      sync.Mutex
-	records []guardian.Escalation
+	records []coreguardian.Escalation
 }
 
-func (s *guardianEscalationStub) LogEscalation(record guardian.Escalation) error {
+func (s *guardianEscalationStub) LogEscalation(record coreguardian.Escalation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records = append(s.records, record)
 	return nil
 }
 
-func (s *guardianEscalationStub) snapshot() []guardian.Escalation {
+func (s *guardianEscalationStub) snapshot() []coreguardian.Escalation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]guardian.Escalation(nil), s.records...)
+	return append([]coreguardian.Escalation(nil), s.records...)
 }
 
 func withGuardianClassifyClient(t *testing.T, stub classify.Backend) {
@@ -96,10 +96,10 @@ func withGuardianClassifyClient(t *testing.T, stub classify.Backend) {
 	t.Cleanup(func() { newGuardianClassifyBackend = original })
 }
 
-func withGuardianEscalationLogger(t *testing.T, logger guardian.EscalationLogger) {
+func withGuardianEscalationLogger(t *testing.T, logger coreguardian.EscalationLogger) {
 	t.Helper()
 	original := newGuardianEscalationLogger
-	newGuardianEscalationLogger = func(*config.Config) guardian.EscalationLogger { return logger }
+	newGuardianEscalationLogger = func(*config.Config) coreguardian.EscalationLogger { return logger }
 	t.Cleanup(func() { newGuardianEscalationLogger = original })
 }
 
@@ -131,7 +131,7 @@ func TestGuardianClassifyFallbackEscalatesDenial(t *testing.T) {
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 	var events []tools.GuardianEvent
@@ -186,7 +186,7 @@ func TestGuardianClassifyFallbackNotUsedOnAllow(t *testing.T) {
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 	var events []tools.GuardianEvent
@@ -218,7 +218,7 @@ func TestGuardianClassifyFallbackDenialTripsBreaker(t *testing.T) {
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,7 +253,7 @@ func TestGuardianClassifyFallbackErrorAfterClassifyDenyCountsTowardBreaker(t *te
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 	var events []tools.GuardianEvent
@@ -307,7 +307,7 @@ func TestGuardianClassifyFallbackErrorAfterClassifyErrorDoesNotTripBreaker(t *te
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -350,7 +350,7 @@ func TestGuardianClassifyFallbackContradictoryAllowIsDenied(t *testing.T) {
 	cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 		t.Fatal(err)
 	}
 	var events []tools.GuardianEvent
@@ -408,11 +408,11 @@ func TestGuardianClassifyFallbackSetupFailures(t *testing.T) {
 		if mgr.GuardianReviewerAvailable() {
 			t.Fatal("reviewer was installed despite the fallback failure")
 		}
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
 			t.Fatalf("headless error = %v", err)
 		}
 		var warnings bytes.Buffer
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{WarningWriter: &warnings}); err != nil || mgr.ApprovalMode() != tools.ModePrompt || !strings.Contains(warnings.String(), "guardian auto-approval unavailable") {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{WarningWriter: &warnings}); err != nil || mgr.ApprovalMode() != tools.ModePrompt || !strings.Contains(warnings.String(), "guardian auto-approval unavailable") {
 			t.Fatalf("interactive: %v %s", err, warnings.String())
 		}
 	})
@@ -425,7 +425,7 @@ func TestGuardianClassifyFallbackSetupFailures(t *testing.T) {
 		if err := installGuardianReviewerCallbacks(cfg, mgr, true); err == nil || !strings.Contains(err.Error(), "guardian.fallback requires guardian.backend: classify") {
 			t.Fatalf("install error = %v", err)
 		}
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err == nil {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err == nil {
 			t.Fatal("headless accepted a fallback on the llm backend")
 		}
 	})
@@ -437,7 +437,7 @@ func TestGuardianClassifyFallbackSetupFailures(t *testing.T) {
 		if err := installGuardianReviewerCallbacks(cfg, mgr, true); err == nil || !strings.Contains(err.Error(), "guardian.fallback.log_path requires") {
 			t.Fatalf("install error = %v", err)
 		}
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err == nil {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err == nil {
 			t.Fatal("headless accepted a log path without a fallback reviewer")
 		}
 	})
@@ -451,7 +451,7 @@ func TestGuardianClassifyFallbackSetupFailures(t *testing.T) {
 		cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 		mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 		defer mgr.Close()
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeYolo}, approvalRuntimeOptions{Headless: true}); err != nil || !mgr.YoloEnabled() {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeYolo}, runapproval.RuntimeOptions{Headless: true}); err != nil || !mgr.YoloEnabled() {
 			t.Fatalf("yolo: %v", err)
 		}
 		if factoryCalls.Load() != 0 || stub.callCount() != 0 {
@@ -490,20 +490,6 @@ func TestGuardianClassifyFallbackCleansReplacedPool(t *testing.T) {
 	}
 }
 
-func TestGuardianFallbackConfigKeysAndCompletion(t *testing.T) {
-	for _, key := range []string{"guardian.fallback.provider", "guardian.fallback.model", "guardian.fallback.log_path"} {
-		if !config.IsKnownKey(key) {
-			t.Fatalf("known key missing %s", key)
-		}
-		if _, ok := config.GetDefaults()[key]; ok {
-			t.Fatalf("%s must not carry a persisted default", key)
-		}
-	}
-	if got := configValueCompletions("guardian.fallback.provider", "chat"); !slices.Contains(got, "chatgpt") {
-		t.Fatalf("guardian.fallback.provider completions = %v, want provider names", got)
-	}
-}
-
 // TestGuardianEscalationLoggerPathResolution covers the custom-path rules: a
 // relative path is refused and a `~` path expands to an absolute file.
 func TestGuardianEscalationLoggerPathResolution(t *testing.T) {
@@ -521,11 +507,11 @@ func TestGuardianEscalationLoggerPathResolution(t *testing.T) {
 			t.Skip("platform resolves the home directory without HOME")
 		}
 		cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", LogPath: "~/.cache/guardian/escalations.jsonl"})
-		fileLogger, ok := newGuardianEscalationLogger(cfg).(*guardian.FileEscalationLogger)
+		fileLogger, ok := newGuardianEscalationLogger(cfg).(*coreguardian.FileEscalationLogger)
 		if !ok {
 			t.Fatal("expanded log_path did not produce a file logger")
 		}
-		if err := fileLogger.LogEscalation(guardian.Escalation{SchemaVersion: guardian.EscalationSchemaVersion}); err != nil {
+		if err := fileLogger.LogEscalation(coreguardian.Escalation{SchemaVersion: coreguardian.EscalationSchemaVersion}); err != nil {
 			t.Fatalf("LogEscalation: %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(home, ".cache", "guardian", "escalations.jsonl")); err != nil {
@@ -552,7 +538,7 @@ func TestGuardianClassifyFallbackEscalationLogFile(t *testing.T) {
 		cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low"})
 		mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 		defer mgr.Close()
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 			t.Fatal(err)
 		}
 		if outcome, err := mgr.CheckShellApproval("echo logged", t.TempDir()); err != nil || outcome != tools.ProceedAlways {
@@ -579,7 +565,7 @@ func TestGuardianClassifyFallbackEscalationLogFile(t *testing.T) {
 		if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
 			t.Fatal(err)
 		}
-		if record["schema_version"] != float64(guardian.EscalationSchemaVersion) || record["classify_stage"] != "decision" || record["classify_request_sent"] != true {
+		if record["schema_version"] != float64(coreguardian.EscalationSchemaVersion) || record["classify_stage"] != "decision" || record["classify_request_sent"] != true {
 			t.Fatalf("record = %+v", record)
 		}
 		request, ok := record["classify_request"].(map[string]any)
@@ -615,7 +601,7 @@ func TestGuardianClassifyFallbackEscalationLogFile(t *testing.T) {
 		cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low", LogPath: path})
 		mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 		defer mgr.Close()
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 			t.Fatal(err)
 		}
 		if outcome, err := mgr.CheckShellApproval("echo custom", t.TempDir()); err != nil || outcome != tools.ProceedAlways {
@@ -640,7 +626,7 @@ func TestGuardianClassifyFallbackEscalationLogFile(t *testing.T) {
 		cfg := guardianFallbackTestConfig(config.GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low", LogPath: "OFF"})
 		mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 		defer mgr.Close()
-		if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+		if err := ApplyResolvedMode(cfg, mgr, runapproval.ResolvedMode{Mode: tools.ModeAuto}, runapproval.RuntimeOptions{Headless: true}); err != nil {
 			t.Fatal(err)
 		}
 		if outcome, err := mgr.CheckShellApproval("echo silent", t.TempDir()); err != nil || outcome != tools.ProceedAlways {
