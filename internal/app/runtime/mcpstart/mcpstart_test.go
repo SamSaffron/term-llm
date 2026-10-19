@@ -1,4 +1,4 @@
-package cmd
+package mcpstart
 
 import (
 	"bytes"
@@ -8,19 +8,42 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/app/ask"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
 	"golang.org/x/oauth2"
 )
+
+func TestMain(m *testing.M) {
+	mcptest.RunIfChild()
+	os.Exit(m.Run())
+}
+
+func runMCPStartOAuthTestIsolated(t *testing.T) bool {
+	t.Helper()
+	const childEnv = "TERM_LLM_TEST_MCPSTART_OAUTH"
+	if os.Getenv(childEnv) == t.Name() {
+		mcpoauth.DefaultCoordinator()
+		return true
+	}
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.v")
+	cmd.Env = append(os.Environ(), childEnv+"="+t.Name(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, "config"), "XDG_DATA_HOME="+filepath.Join(home, "data"), "XDG_CACHE_HOME="+filepath.Join(home, "cache"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("isolated OAuth test: %v\n%s", err, output)
+	}
+	return false
+}
 
 type stuckMCPStartup struct{}
 
@@ -47,7 +70,7 @@ func TestWaitForMCPStartupBounded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := tc.context()
 			defer cancel()
-			err := ask.WaitForMCPStartup(ctx, stuckMCPStartup{}, []string{"slow", "stuck"}, io.Discard, false, 20*time.Millisecond)
+			err := WaitForMCPStartup(ctx, stuckMCPStartup{}, []string{"slow", "stuck"}, io.Discard, false, 20*time.Millisecond)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || (tc.wantErr != nil && !errors.Is(err, tc.wantErr)) {
 				t.Fatalf("error = %v, want %q (cause %v)", err, tc.want, tc.wantErr)
 			}
@@ -92,9 +115,9 @@ func TestAskMCPStartup(t *testing.T) {
 				cancel()
 				httpServer.Close()
 			}()
-			writeServeMCPConfig(t, map[string]mcp.ServerConfig{"slow": {Type: "http", URL: httpServer.URL}})
+			mcptest.WriteConfig(t, map[string]mcp.ServerConfig{"slow": {Type: "http", URL: httpServer.URL}})
 			var feedback bytes.Buffer
-			manager, err := ask.EnableMCPServersWithFeedback(ctx, "slow", engine.NewEngine(nil, nil), &feedback, nil)
+			manager, err := EnableMCPServersWithFeedback(ctx, "slow", engine.NewEngine(nil, nil), &feedback, nil)
 			if got := feedback.String(); strings.ContainsAny(got, "\r⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") || !strings.HasPrefix(got, "Starting MCP: slow\n") {
 				t.Fatalf("non-terminal startup feedback = %q", got)
 			}
@@ -135,7 +158,7 @@ func TestCheckMCPServerFailures(t *testing.T) {
 		handler.ServeHTTP(w, r)
 	}))
 	defer httpServer.Close()
-	writeServeMCPConfig(t, map[string]mcp.ServerConfig{})
+	mcptest.WriteConfig(t, map[string]mcp.ServerConfig{})
 	manager := mcp.NewManagerWithConfig(&mcp.Config{Servers: map[string]mcp.ServerConfig{
 		"ready":      {URL: httpServer.URL + "/ready"},
 		"failed":     {Command: filepath.Join(t.TempDir(), "missing-command")},
@@ -150,7 +173,7 @@ func TestCheckMCPServerFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := ask.WaitForMCPStartup(ctx, manager, manager.AvailableServers(), io.Discard, false, 5*time.Second); err != nil {
+	if err := WaitForMCPStartup(ctx, manager, manager.AvailableServers(), io.Discard, false, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -167,7 +190,7 @@ func TestCheckMCPServerFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var feedback bytes.Buffer
-			err := ask.CheckMCPServerFailures(manager, tc.servers, &feedback, true)
+			err := CheckMCPServerFailures(manager, tc.servers, &feedback, true)
 			if len(tc.want) == 0 {
 				if err != nil || feedback.Len() != 0 {
 					t.Fatalf("ready check: err=%v feedback=%q", err, feedback.String())
@@ -197,12 +220,12 @@ func TestEnableMCPServersWithFeedbackRequiresSignIn(t *testing.T) {
 	defer protected.Close()
 	for _, selection := range []string{"protected", "greeter,protected"} {
 		t.Run(selection, func(t *testing.T) {
-			writeServeMCPConfig(t, map[string]mcp.ServerConfig{
+			mcptest.WriteConfig(t, map[string]mcp.ServerConfig{
 				"protected": {URL: protected.URL},
-				"greeter":   {Command: os.Args[0], Env: map[string]string{runServeMCPHandlerTestServerEnv: "1"}},
+				"greeter":   {Command: os.Args[0], Env: map[string]string{mcptest.ChildEnv: "1"}},
 			})
 			var feedback bytes.Buffer
-			manager, err := ask.EnableMCPServersWithFeedback(t.Context(), selection, engine.NewEngine(nil, engine.NewToolRegistry()), &feedback, nil)
+			manager, err := EnableMCPServersWithFeedback(t.Context(), selection, engine.NewEngine(nil, engine.NewToolRegistry()), &feedback, nil)
 			if manager != nil {
 				defer manager.StopAll()
 				t.Error("startup with missing authorization returned a manager")
@@ -218,7 +241,7 @@ func TestEnableMCPServersWithFeedbackRequiresSignIn(t *testing.T) {
 }
 
 func TestCheckMCPServerFailuresInsufficientScope(t *testing.T) {
-	if !runServeMCPOAuthTestIsolated(t) {
+	if !runMCPStartOAuthTestIsolated(t) {
 		return
 	}
 	path, err := mcpoauth.DefaultStorePath()
@@ -243,13 +266,13 @@ func TestCheckMCPServerFailuresInsufficientScope(t *testing.T) {
 	if err := manager.Enable(ctx, "protected"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ask.WaitForMCPStartup(ctx, manager, []string{"protected"}, io.Discard, false, 5*time.Second); err != nil {
+	if err := WaitForMCPStartup(ctx, manager, []string{"protected"}, io.Discard, false, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if manager.AuthStatuses()["protected"].State != mcpoauth.AuthSignedIn {
 		t.Fatal("scope challenge invalidated stored grant")
 	}
-	err = ask.CheckMCPServerFailures(manager, []string{"protected"}, io.Discard, false)
+	err = CheckMCPServerFailures(manager, []string{"protected"}, io.Discard, false)
 	if err == nil || !strings.Contains(err.Error(), "term-llm mcp login --force protected") {
 		t.Fatalf("scope step-up hint = %v", err)
 	}

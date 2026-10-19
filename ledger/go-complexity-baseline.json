@@ -1314,7 +1314,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/app/ask/mcp_feedback.go|ask||EnableMCPServersWithFeedback",
+      "key": ".|internal/app/runtime/mcpstart/mcpstart.go|mcpstart||EnableMCPServersWithFeedback",
       "complexity": 26,
       "owner": "internal/app/ask",
       "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",
