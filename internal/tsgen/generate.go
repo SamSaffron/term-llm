@@ -19,7 +19,7 @@ import (
 // Roots must name declarations directly, not cmd compatibility aliases: an alias
 // can emit a duplicate, self-referential wire name after its declaration moves.
 var Registry = []string{
-	"cmd.childRunProjection", "cmd.webSessionEntry", "cmd.webSelectedSessionEntry", "cmd.createWebSessionRequest", "cmd.serveEvent", "cmd.serveSkillRunEvent", "cmd.jobsV2RunEvent", "cmd.hubNodeView", "cmd.webSessionMetrics",
+	"cmd.childRunProjection", "cmd.webSessionEntry", "cmd.webSelectedSessionEntry", "cmd.createWebSessionRequest", "cmd.serveEvent", "cmd.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "cmd.hubNodeView", "cmd.webSessionMetrics",
 	"cmd.serveMentionSearchRequest", "cmd.serveMentionSearchResponse",
 	"cmd.sessionShareRequest", "cmd.sessionShareResponse", "cmd.sharingCapabilitiesResponse",
 	"cmd.serveShellCreateRequest", "cmd.serveShellInputRequest", "cmd.sessionInterruptRequest", "cmd.sessionRuntimeGoalRequest",

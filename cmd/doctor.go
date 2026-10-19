@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/doctor"
@@ -317,7 +318,7 @@ func buildJobsReference(ctx context.Context, path string) error {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	return initJobsV2Schema(ctx, db)
+	return servejobs.InitSchema(ctx, db)
 }
 
 func buildFileHistoryReference(ctx context.Context, path string) error {

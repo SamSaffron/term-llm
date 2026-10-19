@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -209,25 +210,25 @@ type jobsClient struct {
 }
 
 type jobsListResponse struct {
-	Data []jobsV2Job `json:"data"`
+	Data []servejobs.Job `json:"data"`
 }
 
 type jobsRunsListResponse struct {
-	Data []jobsV2Run `json:"data"`
+	Data []servejobs.Run `json:"data"`
 }
 
 type jobsActiveRun struct {
-	JobID        string          `json:"job_id"`
-	JobName      string          `json:"job_name"`
-	RunID        string          `json:"run_id"`
-	Status       jobsV2RunStatus `json:"status"`
-	StartedAt    *time.Time      `json:"started_at,omitempty"`
-	ScheduledFor time.Time       `json:"scheduled_for"`
-	WorkerID     string          `json:"worker_id,omitempty"`
+	JobID        string              `json:"job_id"`
+	JobName      string              `json:"job_name"`
+	RunID        string              `json:"run_id"`
+	Status       servejobs.RunStatus `json:"status"`
+	StartedAt    *time.Time          `json:"started_at,omitempty"`
+	ScheduledFor time.Time           `json:"scheduled_for"`
+	WorkerID     string              `json:"worker_id,omitempty"`
 }
 
 type jobsRunEventsListResponse struct {
-	Data []jobsV2RunEvent `json:"data"`
+	Data []servejobs.RunEvent `json:"data"`
 }
 
 const jobsActiveRunsPageSize = 10
@@ -301,7 +302,7 @@ func (c *jobsClient) do(ctx context.Context, method, path string, body []byte, o
 	return nil
 }
 
-func (c *jobsClient) listJobs(ctx context.Context) ([]jobsV2Job, error) {
+func (c *jobsClient) listJobs(ctx context.Context) ([]servejobs.Job, error) {
 	var resp jobsListResponse
 	if err := c.do(ctx, http.MethodGet, "/v2/jobs?limit=500", nil, &resp); err != nil {
 		return nil, err
@@ -309,15 +310,15 @@ func (c *jobsClient) listJobs(ctx context.Context) ([]jobsV2Job, error) {
 	return resp.Data, nil
 }
 
-func (c *jobsClient) listRuns(ctx context.Context, jobID string, limit, offset int) ([]jobsV2Run, error) {
+func (c *jobsClient) listRuns(ctx context.Context, jobID string, limit, offset int) ([]servejobs.Run, error) {
 	return c.listRunsWithSummary(ctx, jobID, limit, offset, false)
 }
 
-func (c *jobsClient) listRunSummaries(ctx context.Context, jobID string, limit, offset int) ([]jobsV2Run, error) {
+func (c *jobsClient) listRunSummaries(ctx context.Context, jobID string, limit, offset int) ([]servejobs.Run, error) {
 	return c.listRunsWithSummary(ctx, jobID, limit, offset, true)
 }
 
-func (c *jobsClient) listRunsWithSummary(ctx context.Context, jobID string, limit, offset int, summary bool) ([]jobsV2Run, error) {
+func (c *jobsClient) listRunsWithSummary(ctx context.Context, jobID string, limit, offset int, summary bool) ([]servejobs.Run, error) {
 	path := fmt.Sprintf("/v2/runs?limit=%d&offset=%d", limit, offset)
 	if summary {
 		path += "&summary=true"
@@ -384,9 +385,9 @@ func (c *jobsClient) listActiveRuns(ctx context.Context) ([]jobsActiveRun, error
 	return active, nil
 }
 
-func isActiveRunStatus(status jobsV2RunStatus) bool {
+func isActiveRunStatus(status servejobs.RunStatus) bool {
 	switch status {
-	case jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning:
+	case servejobs.RunQueued, servejobs.RunClaimed, servejobs.RunRunning:
 		return true
 	default:
 		return false
@@ -538,8 +539,8 @@ func runJobsList(cmd *cobra.Command, args []string) error {
 
 	// Fetch recent runs (all jobs, newest first) to determine per-job active status and last run.
 	type jobRunSummary struct {
-		activeRun *jobsV2Run // first queued/claimed/running run found
-		lastRun   *jobsV2Run // most recent terminal run
+		activeRun *servejobs.Run // first queued/claimed/running run found
+		lastRun   *servejobs.Run // most recent terminal run
 	}
 	summaries := make(map[string]*jobRunSummary)
 	recentRuns, _ := client.listRunSummaries(ctx, "", 500, 0)
@@ -565,11 +566,11 @@ func runJobsList(cmd *cobra.Command, args []string) error {
 	// They remain visible for 6 hours so you can see what just happened, then drop off.
 	// Manual LLM jobs are spawned sub-agents that are no longer useful once complete.
 	const onceJobGrace = 6 * time.Hour
-	isEphemeral := func(j jobsV2Job) bool {
-		if j.TriggerType == jobsV2TriggerOnce && !j.Enabled && j.NextRunAt == nil {
+	isEphemeral := func(j servejobs.Job) bool {
+		if j.TriggerType == servejobs.TriggerOnce && !j.Enabled && j.NextRunAt == nil {
 			return time.Since(j.UpdatedAt) > onceJobGrace
 		}
-		if j.TriggerType == jobsV2TriggerManual && j.RunnerType == jobsV2RunnerLLM {
+		if j.TriggerType == servejobs.TriggerManual && j.RunnerType == servejobs.RunnerLLM {
 			s := summaries[j.ID]
 			if s != nil && s.lastRun != nil {
 				return true
@@ -578,7 +579,7 @@ func runJobsList(cmd *cobra.Command, args []string) error {
 		return false
 	}
 
-	var visible []jobsV2Job
+	var visible []servejobs.Job
 	hidden := 0
 	for _, j := range items {
 		if !jobsListAll && isEphemeral(j) {
@@ -665,17 +666,17 @@ func relativeTime(t time.Time) string {
 }
 
 // shortRunStatus returns a compact label for a terminal run status.
-func shortRunStatus(s jobsV2RunStatus) string {
+func shortRunStatus(s servejobs.RunStatus) string {
 	switch s {
-	case jobsV2RunSucceeded:
+	case servejobs.RunSucceeded:
 		return "ok"
-	case jobsV2RunFailed:
+	case servejobs.RunFailed:
 		return "FAIL"
-	case jobsV2RunCancelled:
+	case servejobs.RunCancelled:
 		return "cancelled"
-	case jobsV2RunTimedOut:
+	case servejobs.RunTimedOut:
 		return "timeout"
-	case jobsV2RunSkipped:
+	case servejobs.RunSkipped:
 		return "skipped"
 	default:
 		return string(s)
@@ -691,7 +692,7 @@ func runJobsGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var job jobsV2Job
+	var job servejobs.Job
 	if err := client.do(cmd.Context(), http.MethodGet, "/v2/jobs/"+jobID, nil, &job); err != nil {
 		return err
 	}
@@ -707,7 +708,7 @@ func runJobsCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var job jobsV2Job
+	var job servejobs.Job
 	if err := client.do(cmd.Context(), http.MethodPost, "/v2/jobs", payload, &job); err != nil {
 		return err
 	}
@@ -727,7 +728,7 @@ func runJobsUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var job jobsV2Job
+	var job servejobs.Job
 	if err := client.do(cmd.Context(), http.MethodPatch, "/v2/jobs/"+jobID, payload, &job); err != nil {
 		return err
 	}
@@ -763,7 +764,7 @@ func runJobsTrigger(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var run jobsV2Run
+	var run servejobs.Run
 	if err := client.do(cmd.Context(), http.MethodPost, "/v2/jobs/"+jobID+"/trigger", nil, &run); err != nil {
 		return err
 	}
@@ -779,7 +780,7 @@ func runJobsPause(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var job jobsV2Job
+	var job servejobs.Job
 	if err := client.do(cmd.Context(), http.MethodPost, "/v2/jobs/"+jobID+"/pause", nil, &job); err != nil {
 		return err
 	}
@@ -795,7 +796,7 @@ func runJobsResume(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var job jobsV2Job
+	var job servejobs.Job
 	if err := client.do(cmd.Context(), http.MethodPost, "/v2/jobs/"+jobID+"/resume", nil, &job); err != nil {
 		return err
 	}
@@ -857,7 +858,7 @@ func runJobsRuns(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-	var items []jobsV2Run
+	var items []servejobs.Run
 	if jobsJSON {
 		items, err = client.listRuns(cmd.Context(), jobID, jobsRunsLimit, jobsRunsOffset)
 	} else {
@@ -885,7 +886,7 @@ func runJobsRunGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var run jobsV2Run
+	var run servejobs.Run
 	if err := client.do(cmd.Context(), http.MethodGet, "/v2/runs/"+strings.TrimSpace(args[0]), nil, &run); err != nil {
 		return err
 	}
@@ -897,7 +898,7 @@ func runJobsRunCancel(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var run jobsV2Run
+	var run servejobs.Run
 	if err := client.do(cmd.Context(), http.MethodPost, "/v2/runs/"+strings.TrimSpace(args[0])+"/cancel", nil, &run); err != nil {
 		return err
 	}
