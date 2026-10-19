@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"io"
 	"log"
 	"net"
@@ -917,7 +918,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}(p)
 	}
 
-	stopReload, reloadErr := bindProcessReload(ctx, "TERM_LLM_SERVE_RELOAD_TOKEN="+token)
+	stopReload, reloadErr := reload.Bind(ctx, "TERM_LLM_SERVE_RELOAD_TOKEN="+token)
 	if reloadErr != nil {
 		return reloadErr
 	}
@@ -1160,15 +1161,6 @@ func resolveServeToken(flagValue, envValue string, requireAuth bool, generate fu
 		return "", tokenSourceNone, fmt.Errorf("generate auth token: %w", err)
 	}
 	return t, tokenSourceGenerated, nil
-}
-
-// Only the fallback token comes from private reload state. Explicit flags and
-// the user's public environment keep their normal precedence.
-func restoreOrGenerateServeToken() (string, error) {
-	if serveReloadToken != "" {
-		return serveReloadToken, nil
-	}
-	return generateServeToken()
 }
 
 func generateServeToken() (string, error) {

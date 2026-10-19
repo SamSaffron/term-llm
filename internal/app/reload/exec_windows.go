@@ -1,9 +1,9 @@
 //go:build windows
 
-package cmd
+package reload
 
 import "errors"
 
-func replaceProcess(string, []string, []string) error {
+func ReplaceProcess(string, []string, []string) error {
 	return errors.New("process replacement is not supported on Windows")
 }

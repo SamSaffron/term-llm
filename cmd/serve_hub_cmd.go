@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"io"
 	"net"
 	"net/http"
@@ -327,7 +328,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 	finished := make(chan error, 1)
 	go func() { finished <- srv.Serve(listener) }()
-	stopReload, err := bindProcessReload(ctx, "TERM_LLM_HUB_TOKEN="+token)
+	stopReload, err := reload.Bind(ctx, "TERM_LLM_HUB_TOKEN="+token)
 	if err != nil {
 		_ = srv.Close()
 		<-finished

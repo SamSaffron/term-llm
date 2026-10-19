@@ -1,4 +1,5 @@
-package cmd
+// Package reload owns private successor state and process replacement.
+package reload
 
 import (
 	"context"
@@ -50,14 +51,16 @@ func takeReloadEnv(key string) string {
 	return value
 }
 
-func processReloadEnviron(extra ...string) []string {
+func Environ(extra ...string) []string {
 	env := append(os.Environ(), tools.HubDelegationEnviron()...)
-	env = append(env, hubRegistrationEnviron()...)
+	for _, provider := range environProviders {
+		env = append(env, provider()...)
+	}
 	env = append(env, process.HandoffEnviron()...)
 	return append(env, extra...)
 }
 
-func bindProcessReload(ctx context.Context, extraEnv ...string) (func(), error) {
+func Bind(ctx context.Context, extraEnv ...string) (func(), error) {
 	// Server logs only; never write diagnostics into a live TUI or the restart
 	// CLI's progress table. Fast idle restarts produce no extra output.
 	restart.Default.Diagnostic = func(phase string, blockers []restart.Blocker) {
@@ -75,6 +78,21 @@ func bindProcessReload(ctx context.Context, extraEnv ...string) (func(), error) 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return replaceProcess(reloadExecutable, append([]string(nil), os.Args...), processReloadEnviron(extraEnv...))
+		return ReplaceProcess(reloadExecutable, append([]string(nil), os.Args...), Environ(extraEnv...))
 	})
 }
+
+// Executable returns the installed pathname captured at process startup.
+func Executable() string { return reloadExecutable }
+
+// MCPToken returns the private MCP bearer token captured from a predecessor.
+func MCPToken() string { return mcpReloadToken }
+
+// ServeToken returns the private serve bearer token captured from a predecessor.
+func ServeToken() string { return serveReloadToken }
+
+// Providers are installed by host initialization, before commands can reload.
+var environProviders []func() []string
+
+// RegisterEnviron installs a host handoff provider in registration order.
+func RegisterEnviron(provider func() []string) { environProviders = append(environProviders, provider) }

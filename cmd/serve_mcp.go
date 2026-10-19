@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"log"
 	"os"
 	"sort"
@@ -312,7 +313,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	// Resolve auth token.
 	token := strings.TrimSpace(opts.Token)
 	if token == "" {
-		token = mcpReloadToken
+		token = reload.MCPToken()
 	}
 	if token == "" {
 		generated, err := generateServeToken()
@@ -338,7 +339,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 
 	// MCP HTTP is stateless. Keep listeners live until exec (Go sockets are
 	// close-on-exec), so a failed exec leaves the original service usable.
-	stopReload, err := bindProcessReload(ctx, "TERM_LLM_MCP_RELOAD_TOKEN="+actualToken)
+	stopReload, err := reload.Bind(ctx, "TERM_LLM_MCP_RELOAD_TOKEN="+actualToken)
 	if err != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

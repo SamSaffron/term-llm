@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 
 	"github.com/samsaffron/term-llm/internal/app/service"
 	"github.com/samsaffron/term-llm/internal/userservice"
@@ -95,7 +96,7 @@ var serviceApp = service.App{Hooks: service.Hooks{
 	NormalizeHubBasePath:        normalizeHubBasePath,
 	GenerateToken:               generateServeToken,
 	OpenBrowser:                 openBrowser,
-	ReplaceProcess:              replaceProcess,
+	ReplaceProcess:              reload.ReplaceProcess,
 	OutputIsTerminal:            func(w any) bool { return hubOutputIsTerminal(w) },
 	RegistrationTokenEnv:        hubRegistrationTokenEnv,
 }}

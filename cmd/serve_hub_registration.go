@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"io"
 	"log"
 	"net/http"
@@ -25,7 +26,10 @@ var hubRegistrationCfg struct {
 	tokenFromEnv bool
 }
 
-func init() { captureHubRegistrationEnv() }
+func init() {
+	captureHubRegistrationEnv()
+	reload.RegisterEnviron(hubRegistrationEnviron)
+}
 
 func captureHubRegistrationEnv() {
 	v := strings.TrimSpace(os.Getenv(hubRegistrationTokenEnv))

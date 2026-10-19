@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"os"
 	"strings"
 )
@@ -18,7 +19,7 @@ func execReload(sessionID string) error {
 	// and registration tokens that startup scrubbed from the environment, or the
 	// next generation would silently lose hub access. This env goes only to
 	// ourselves, never to tool subprocesses.
-	return replaceProcess(reloadExecutable, chatReloadArgs(os.Args, sessionID), processReloadEnviron())
+	return reload.ReplaceProcess(reload.Executable(), chatReloadArgs(os.Args, sessionID), reload.Environ())
 }
 
 // --resume has NoOptDefVal: a bare --resume/-r never consumes the next token.
