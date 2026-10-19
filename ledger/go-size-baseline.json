@@ -8,23 +8,23 @@
     },
     {
       "path": "cmd/chat.go",
-      "lines": 1663
+      "lines": 1572
     },
     {
       "path": "cmd/config.go",
       "lines": 1485
     },
     {
-      "path": "cmd/jobs.go",
-      "lines": 1006
+      "path": "cmd/skills.go",
+      "lines": 1117
     },
     {
-      "path": "cmd/serve.go",
-      "lines": 1832
+      "path": "internal/app/memory/mine.go",
+      "lines": 1540
     },
     {
       "path": "internal/app/serve/serve_handlers.go",
-      "lines": 4343
+      "lines": 4282
     },
     {
       "path": "internal/app/serve/serve_handlers_responses.go",
@@ -36,7 +36,7 @@
     },
     {
       "path": "internal/app/serve/serve_projects.go",
-      "lines": 1157
+      "lines": 1088
     },
     {
       "path": "internal/app/serve/serve_response_run_manager.go",
@@ -44,19 +44,11 @@
     },
     {
       "path": "internal/app/serve/serve_runtime.go",
-      "lines": 2525
+      "lines": 2510
     },
     {
       "path": "internal/app/serve/serve_skills.go",
-      "lines": 1201
-    },
-    {
-      "path": "cmd/skills.go",
-      "lines": 1117
-    },
-    {
-      "path": "internal/app/memory/mine.go",
-      "lines": 1540
+      "lines": 1146
     },
     {
       "path": "internal/config/config.go",
@@ -76,7 +68,7 @@
     },
     {
       "path": "internal/llm/providers/clibin/claude_bin.go",
-      "lines": 2211
+      "lines": 2148
     },
     {
       "path": "internal/llm/providers/clibin/cursor_bin.go",
@@ -196,7 +188,7 @@
     },
     {
       "path": "internal/tui/inspector/content.go",
-      "lines": 1630
+      "lines": 1527
     },
     {
       "path": "internal/tui/skills/browse.go",
@@ -226,7 +218,11 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 84368
+      "lines": 21354
+    },
+    {
+      "dir": "internal/app/serve",
+      "lines": 59585
     },
     {
       "dir": "internal/session",
@@ -239,10 +235,6 @@
     {
       "dir": "internal/tui/chat",
       "lines": 33218
-    },
-    {
-      "lines": 59600,
-      "dir": "internal/app/serve"
     }
   ]
 }

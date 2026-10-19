@@ -246,7 +246,7 @@ func TestServeDoesNotTransitivelyImportCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "./internal/app/serve/...")
+	cmd := exec.Command("go", "list", "-deps", "-test", "-f", "{{.ImportPath}}", "./internal/app/serve/...")
 	cmd.Dir = repoRoot
 	output, err := cmd.CombinedOutput()
 	if err != nil {
