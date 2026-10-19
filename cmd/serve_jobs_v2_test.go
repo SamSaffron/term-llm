@@ -2326,6 +2326,193 @@ func TestJobsV2LLMRunnerConfigValidationRequiresCwdOnCreateAndUpdate(t *testing.
 	}
 }
 
+func TestJobsV2InjectedRunnerAndNotifierDriveExecution(t *testing.T) {
+	runnerJobs := make(chan jobsV2Job, 1)
+	notifications := make(chan struct {
+		run    jobsV2Run
+		job    jobsV2Job
+		status jobsV2RunStatus
+		result jobsV2RunResult
+	}, 1)
+	wantResult := jobsV2RunResult{
+		ExitCode:     7,
+		Stdout:       "runner stdout",
+		Stderr:       "runner stderr",
+		Thinking:     "runner thinking",
+		Response:     "runner response",
+		SessionID:    "runner-session",
+		TurnCount:    2,
+		InputTokens:  30,
+		OutputTokens: 12,
+		ExitReason:   exitReasonNatural,
+	}
+	runner := jobsV2RunnerFunc(func(_ context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+		runnerJobs <- job
+		pw("phase", "injected runner", map[string]any{"source": "test"})
+		return wantResult, nil
+	})
+	notify := func(_ context.Context, run jobsV2Run, job jobsV2Job, status jobsV2RunStatus, result jobsV2RunResult, _ string, _ bool, _ string) error {
+		notifications <- struct {
+			run    jobsV2Run
+			job    jobsV2Job
+			status jobsV2RunStatus
+			result jobsV2RunResult
+		}{run: run, job: job, status: status, result: result}
+		return nil
+	}
+	mgr, err := newJobsV2ManagerWithRunners(":memory:", 1, map[jobsV2RunnerType]jobsV2Runner{
+		jobsV2RunnerProgram: runner,
+	}, notify)
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithRunners: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "injected-execution",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"ignored"}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+
+	select {
+	case calledJob := <-runnerJobs:
+		if calledJob.ID != job.ID {
+			t.Fatalf("runner job ID = %q, want %q", calledJob.ID, job.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("injected runner was not called")
+	}
+
+	select {
+	case got := <-notifications:
+		if got.run.ID != run.ID || got.job.ID != job.ID {
+			t.Fatalf("notification run/job = %q/%q, want %q/%q", got.run.ID, got.job.ID, run.ID, job.ID)
+		}
+		if got.status != jobsV2RunSucceeded {
+			t.Fatalf("notification status = %q, want %q", got.status, jobsV2RunSucceeded)
+		}
+		if got.result != wantResult {
+			t.Fatalf("notification result = %+v, want %+v", got.result, wantResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("injected notifier was not called")
+	}
+
+	stored, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Status != jobsV2RunSucceeded || stored.Stdout != wantResult.Stdout || stored.Stderr != wantResult.Stderr || stored.Thinking != wantResult.Thinking || stored.Response != wantResult.Response || stored.SessionID != wantResult.SessionID || stored.TurnCount != wantResult.TurnCount || stored.InputTokens != wantResult.InputTokens || stored.OutputTokens != wantResult.OutputTokens || stored.ExitReason != wantResult.ExitReason {
+		t.Fatalf("stored run did not preserve injected result: %+v", stored)
+	}
+	events, _, err := mgr.ListRunEvents(run.ID, 0, 100, 0)
+	if err != nil {
+		t.Fatalf("ListRunEvents: %v", err)
+	}
+	foundPhase := false
+	for _, event := range events {
+		if event.EventType == "phase" && event.Message == "injected runner" {
+			foundPhase = true
+		}
+	}
+	if !foundPhase {
+		t.Fatalf("run events missing injected progress event: %#v", events)
+	}
+}
+
+func TestJobsV2ValidationDoesNotRequireInstalledRunner(t *testing.T) {
+	mgr, err := newJobsV2ManagerWithRunners(":memory:", 0, map[jobsV2RunnerType]jobsV2Runner{}, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithRunners: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+	if len(mgr.runners) != 0 {
+		t.Fatalf("installed runners = %d, want 0", len(mgr.runners))
+	}
+
+	created, err := mgr.CreateJob(jobsV2Job{
+		Name:          "validated-without-runner",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerLLM,
+		RunnerConfig:  json.RawMessage(`{"agent_name":"planner","instructions":"plan","cwd":"."}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob without installed runner: %v", err)
+	}
+	if _, err := mgr.UpdateJobPatch(created.ID, jobsV2JobRequest{
+		RunnerConfig: json.RawMessage(`{"agent_name":"planner","instructions":"plan again","cwd":"/tmp/work"}`),
+	}); err != nil {
+		t.Fatalf("UpdateJobPatch without installed runner: %v", err)
+	}
+	if _, err := mgr.UpdateJobPatch(created.ID, jobsV2JobRequest{
+		RunnerConfig: json.RawMessage(`{"agent_name":"planner","instructions":"missing cwd"}`),
+	}); err == nil || !strings.Contains(err.Error(), "runner_config.cwd is required") {
+		t.Fatalf("invalid UpdateJobPatch err = %v, want runner_config.cwd is required", err)
+	}
+}
+
+func TestJobsV2ManagerWrapperKeepsNilExecutorFailure(t *testing.T) {
+	notifications := make(chan struct {
+		status  jobsV2RunStatus
+		errText string
+	}, 1)
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 1, nil, func(_ context.Context, _ jobsV2Run, _ jobsV2Job, status jobsV2RunStatus, _ jobsV2RunResult, _ string, _ bool, errText string) error {
+		notifications <- struct {
+			status  jobsV2RunStatus
+			errText string
+		}{status: status, errText: errText}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "nil-executor",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerLLM,
+		RunnerConfig:  json.RawMessage(`{"agent_name":"developer","instructions":"work","cwd":"."}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+
+	select {
+	case got := <-notifications:
+		if got.status != jobsV2RunFailed || got.errText != "llm runner is not configured" {
+			t.Fatalf("notification = status %q error %q, want failed nil-executor error", got.status, got.errText)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("nil-executor completion notification was not called")
+	}
+	stored, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Status != jobsV2RunFailed || stored.Error != "llm runner is not configured" {
+		t.Fatalf("stored run = status %q error %q, want failed nil-executor error", stored.Status, stored.Error)
+	}
+}
+
 // TestJobsV2LLMRunnerRequiresCwd asserts an llm job is rejected before execution
 // when cwd is missing, so a run never silently inherits the jobs server's working
 // directory. The executor must not be invoked.
