@@ -1,29 +1,19 @@
 package cmd
 
 import (
-	"bytes"
-	"compress/gzip"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"image"
 	"io"
-	"mime"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
-	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/filemime"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -49,31 +39,13 @@ type sessionRuntimeGoalRequest struct {
 }
 
 func writeChatStreamChunk(w io.Writer, payload any) error {
-	b, err := steeringWireJSON(w, payload)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", b)
-	return err
+	return wire.WriteChatStreamChunk(w, payload)
 }
 
-func setSSEHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-}
+func setSSEHeaders(w http.ResponseWriter) { wire.SetSSEHeaders(w) }
 
 func writeSSEEvent(w io.Writer, event string, payload any) error {
-	b, err := steeringWireJSON(w, payload)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", steeringWireEvent(w, event)); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", b)
-	return err
+	return wire.WriteSSEEvent(w, event, payload)
 }
 
 func extractMessageText(content json.RawMessage) string {
@@ -104,150 +76,6 @@ func extractItemContent(content json.RawMessage) string {
 	return extractMessageText(content)
 }
 
-// parseDataURL splits a data URL into its media type and base64 payload.
-// Format: data:image/png;base64,iVBORw0KGgo...
-func parseDataURL(dataURL string) (mediaType, base64Data string) {
-	if !strings.HasPrefix(dataURL, "data:") {
-		return "", ""
-	}
-	rest := dataURL[5:]
-	idx := strings.Index(rest, ";base64,")
-	if idx < 0 {
-		return "", ""
-	}
-	return rest[:idx], rest[idx+8:]
-}
-
-// isLLMImageType returns true for image media types that LLM providers handle natively.
-func isLLMImageType(mediaType string) bool {
-	switch filemime.NormalizeMediaType(mediaType) {
-	case "image/jpeg", "image/png", "image/gif", "image/webp":
-		return true
-	default:
-		return false
-	}
-}
-
-const (
-	maxAttachments     = 10
-	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
-)
-
-func stripBase64Newlines(b64Data string) string {
-	if !strings.ContainsAny(b64Data, "\r\n") {
-		return b64Data
-	}
-	return strings.NewReplacer("\r", "", "\n", "").Replace(b64Data)
-}
-
-func decodedBase64Len(b64Data string) (int, error) {
-	b64Data = stripBase64Newlines(b64Data)
-	if b64Data == "" {
-		return 0, nil
-	}
-	if len(b64Data)%4 != 0 {
-		return 0, fmt.Errorf("decode base64: invalid length %d", len(b64Data))
-	}
-	decodedLen := base64.StdEncoding.DecodedLen(len(b64Data))
-	if strings.HasSuffix(b64Data, "=") {
-		decodedLen--
-	}
-	if strings.HasSuffix(b64Data, "==") {
-		decodedLen--
-	}
-	return decodedLen, nil
-}
-
-func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
-	b64Data = stripBase64Newlines(b64Data)
-	decodedLen, err := decodedBase64Len(b64Data)
-	if err != nil {
-		return nil, err
-	}
-	if decodedLen > maxAttachmentBytes {
-		return nil, fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
-	}
-	raw := make([]byte, decodedLen)
-	n, err := base64.StdEncoding.Decode(raw, []byte(b64Data))
-	if err != nil {
-		return nil, fmt.Errorf("decode base64: %w", err)
-	}
-	return raw[:n], nil
-}
-
-func uploadFilenameForMediaType(prefix, mediaType string) string {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" {
-		prefix = "upload"
-	}
-	switch strings.ToLower(strings.TrimSpace(mediaType)) {
-	case "image/jpeg":
-		return prefix + ".jpg"
-	case "image/png":
-		return prefix + ".png"
-	case "image/gif":
-		return prefix + ".gif"
-	case "image/webp":
-		return prefix + ".webp"
-	default:
-		return prefix
-	}
-}
-
-func saveUploadedBytes(filename string, raw []byte) (string, error) {
-	return saveUploadedBytesWithLimit(filename, raw, maxAttachmentBytes)
-}
-
-func saveUploadedBytesWithLimit(filename string, raw []byte, maxBytes int64) (string, error) {
-	dataDir, err := session.GetDataDir()
-	if err != nil {
-		return "", fmt.Errorf("get data dir: %w", err)
-	}
-	uploadsDir := filepath.Join(dataDir, "uploads")
-	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
-		return "", fmt.Errorf("create uploads dir: %w", err)
-	}
-
-	if maxBytes <= 0 {
-		return "", fmt.Errorf("invalid upload size limit %d", maxBytes)
-	}
-	if int64(len(raw)) > maxBytes {
-		if maxBytes == maxAttachmentBytes {
-			return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxBytes>>20)
-		}
-		return "", fmt.Errorf("file %q exceeds %d byte limit", filename, maxBytes)
-	}
-
-	safeName := filepath.Base(filename)
-	if safeName == "." || safeName == "/" {
-		safeName = "upload"
-	}
-	ext := filepath.Ext(safeName)
-	prefix := strings.TrimSuffix(safeName, ext) + "_"
-
-	f, err := os.CreateTemp(uploadsDir, prefix+"*"+ext)
-	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
-	}
-	dest := f.Name()
-
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(dest)
-		return "", fmt.Errorf("chmod: %w", err)
-	}
-	if _, err := f.Write(raw); err != nil {
-		f.Close()
-		os.Remove(dest)
-		return "", fmt.Errorf("write file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(dest)
-		return "", fmt.Errorf("close file: %w", err)
-	}
-	return dest, nil
-}
-
 // abbreviatePath replaces the user's home directory prefix with ~ for privacy.
 func abbreviatePath(path string) string {
 	home, err := os.UserHomeDir()
@@ -258,224 +86,6 @@ func abbreviatePath(path string) string {
 		return "~" + path[len(home):]
 	}
 	return path
-}
-
-func normalizeUploadMediaType(filename, mediaType string, raw []byte) string {
-	mediaType = filemime.NormalizeMediaType(mediaType)
-	if mediaType == "" || mediaType == "application/octet-stream" {
-		if extType := filemime.NormalizeMediaType(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); extType != "" {
-			mediaType = extType
-		}
-	}
-	if (mediaType == "" || mediaType == "application/octet-stream") && len(raw) > 0 {
-		if detected := filemime.NormalizeMediaType(http.DetectContentType(raw)); detected != "" {
-			mediaType = detected
-		}
-	}
-	if mediaType == "application/octet-stream" && isTextUploadExtension(filename) && rawLooksLikeText(raw) {
-		mediaType = "text/plain"
-	}
-	// Store a canonical, provider-recognized label for new uploads: Chrome reports
-	// source files with labels such as text/x-ruby-script for .rb, which the
-	// Responses API rejects outright. The extension may only override a
-	// binary-sounding label once the bytes are known to be text, so an image or
-	// archive keeps its label. Provider input builders canonicalize again, so
-	// uploads stored before this existed heal without a migration. Images keep
-	// their label so isLLMImageType keeps routing them down the image path.
-	if !isLLMImageType(mediaType) {
-		if rawLooksLikeText(raw) {
-			mediaType = filemime.CanonicalTextUploadMediaType(filename, mediaType)
-		} else {
-			mediaType = filemime.CanonicalUploadMediaType(filename, mediaType)
-		}
-	}
-	if mediaType == "" {
-		mediaType = "application/octet-stream"
-	}
-	return mediaType
-}
-
-func uploadFallbackText(filename, mediaType, path string, raw []byte) string {
-	if text, ok := textUploadContent(filename, mediaType, raw); ok {
-		return llm.FormatEmbeddedFileText(filename, mediaType, text)
-	}
-	return llm.FormatUploadedFileNotice(filename, mediaType, path, int64(len(raw)))
-}
-
-func textUploadContent(filename, mediaType string, raw []byte) (string, bool) {
-	if len(raw) == 0 {
-		return "", true
-	}
-	if !rawLooksLikeText(raw) {
-		return "", false
-	}
-	mediaType = filemime.NormalizeMediaType(mediaType)
-	genericMediaType := mediaType == "" || mediaType == "application/octet-stream"
-	if isTextUploadMIME(mediaType) || isTextUploadExtension(filename) || (genericMediaType && looksLikePlainText(raw)) {
-		return string(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))), true
-	}
-	return "", false
-}
-
-// rawLooksLikeText reports whether upload bytes are safe to embed as prompt text.
-// Callers use it both to decide whether a file body can be inlined and, when it
-// can, to let a filename extension override a binary-sounding MIME label.
-func rawLooksLikeText(raw []byte) bool {
-	return len(raw) > 0 && !bytes.Contains(raw, []byte{0}) && utf8.Valid(raw)
-}
-
-// isTextUploadMIME reports whether a label's content is text or code. It defers to
-// the provider MIME tables so a label like application/toml is embedded instead of
-// being written off as binary.
-func isTextUploadMIME(mediaType string) bool {
-	return filemime.IsTextLikeMediaType(mediaType)
-}
-
-func isTextUploadExtension(filename string) bool {
-	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".txt", ".text", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".xml", ".html", ".htm",
-		".go", ".js", ".jsx", ".ts", ".tsx", ".py", ".rb", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".sh", ".bash", ".zsh", ".fish", ".sql", ".css", ".scss", ".toml", ".ini", ".conf", ".log":
-		return true
-	default:
-		return false
-	}
-}
-
-func looksLikePlainText(raw []byte) bool {
-	checkLen := len(raw)
-	if checkLen > 8192 {
-		checkLen = 8192
-	}
-	if checkLen == 0 {
-		return true
-	}
-	printable := 0
-	for _, r := range string(raw[:checkLen]) {
-		switch {
-		case r == '\n' || r == '\r' || r == '\t':
-			printable++
-		case r >= 0x20 && r != utf8.RuneError:
-			printable++
-		}
-	}
-	return printable*100/checkLen >= 95
-}
-
-const maxImageMetadataBytes = 1 << 20
-
-func imageDisplayDimensions(raw []byte) (width, height int) {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		return 0, 0
-	}
-	width, height = cfg.Width, cfg.Height
-	if orientation := jpegEXIFOrientation(raw); orientation >= 5 && orientation <= 8 {
-		width, height = height, width
-	}
-	return width, height
-}
-
-func uploadedImageDimensions(raw []byte, clientWidth, clientHeight int) (width, height int) {
-	width, height = imageDisplayDimensions(raw)
-	if width <= 0 || height <= 0 {
-		return 0, 0
-	}
-	// Browser dimensions account for EXIF orientation. Only accept an exact match
-	// for the server-derived display dimensions, so callers cannot reserve
-	// arbitrary or incorrectly rotated geometry.
-	if clientWidth == width && clientHeight == height {
-		return clientWidth, clientHeight
-	}
-	return width, height
-}
-
-func jsonImageDimension(raw json.RawMessage) int {
-	var value int64
-	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value <= 0 || value > int64(^uint(0)>>1) {
-		return 0
-	}
-	return int(value)
-}
-
-func jpegEXIFOrientation(raw []byte) int {
-	if len(raw) < 4 || raw[0] != 0xff || raw[1] != 0xd8 {
-		return 0
-	}
-	for offset := 2; offset+4 <= len(raw); {
-		if raw[offset] != 0xff {
-			offset++
-			continue
-		}
-		for offset < len(raw) && raw[offset] == 0xff {
-			offset++
-		}
-		if offset >= len(raw) {
-			return 0
-		}
-		marker := raw[offset]
-		offset++
-		if marker == 0xd9 || marker == 0xda {
-			return 0
-		}
-		if marker == 0x00 || marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7) {
-			continue
-		}
-		if offset+2 > len(raw) {
-			return 0
-		}
-		segmentLength := int(binary.BigEndian.Uint16(raw[offset : offset+2]))
-		if segmentLength < 2 || offset+segmentLength > len(raw) {
-			return 0
-		}
-		payload := raw[offset+2 : offset+segmentLength]
-		if marker == 0xe1 && len(payload) >= 6 && bytes.Equal(payload[:6], []byte("Exif\x00\x00")) {
-			if orientation := tiffOrientation(payload[6:]); orientation != 0 {
-				return orientation
-			}
-		}
-		offset += segmentLength
-	}
-	return 0
-}
-
-func tiffOrientation(tiff []byte) int {
-	if len(tiff) < 8 {
-		return 0
-	}
-	var order binary.ByteOrder
-	switch string(tiff[:2]) {
-	case "II":
-		order = binary.LittleEndian
-	case "MM":
-		order = binary.BigEndian
-	default:
-		return 0
-	}
-	if order.Uint16(tiff[2:4]) != 42 {
-		return 0
-	}
-	ifdOffset := uint64(order.Uint32(tiff[4:8]))
-	if ifdOffset+2 > uint64(len(tiff)) {
-		return 0
-	}
-	entryCount := uint64(order.Uint16(tiff[ifdOffset : ifdOffset+2]))
-	entriesStart := ifdOffset + 2
-	if entryCount > (uint64(len(tiff))-entriesStart)/12 {
-		return 0
-	}
-	for index := uint64(0); index < entryCount; index++ {
-		entryOffset := entriesStart + index*12
-		entry := tiff[entryOffset : entryOffset+12]
-		if order.Uint16(entry[0:2]) != 0x0112 || order.Uint16(entry[2:4]) != 3 || order.Uint32(entry[4:8]) != 1 {
-			continue
-		}
-		orientation := int(order.Uint16(entry[8:10]))
-		if orientation >= 1 && orientation <= 8 {
-			return orientation
-		}
-		return 0
-	}
-	return 0
 }
 
 const (
@@ -598,45 +208,45 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 				if !strings.HasPrefix(imageURL, "data:") {
 					return core.Message{}, fmt.Errorf("attachment %q must use an inline data URL", filename)
 				}
-				mt, b64 := parseDataURL(imageURL)
-				mt = normalizeUploadMediaType(filename, mt, nil)
+				mt, b64 := uploads.ParseDataURL(imageURL)
+				mt = uploads.NormalizeMediaType(filename, mt, nil)
 				if mt == "" || b64 == "" {
 					return core.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", filename)
 				}
-				if isLLMImageType(mt) {
+				if uploads.IsLLMImageType(mt) {
 					fileCount++
-					if fileCount > maxAttachments {
-						return core.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+					if fileCount > uploads.MaxAttachments {
+						return core.Message{}, fmt.Errorf("too many attachments (max %d)", uploads.MaxAttachments)
 					}
 					if filename == "" {
 						filename = "image"
 					}
 
-					b64 = stripBase64Newlines(b64)
-					raw, err := decodeUploadedFile(filename, b64)
+					b64 = uploads.StripBase64Newlines(b64)
+					raw, err := uploads.DecodeFile(filename, b64)
 					if err != nil {
 						return core.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 					}
-					path, err := saveUploadedBytes(filename, raw)
+					path, err := uploads.SaveBytes(filename, raw)
 					if err != nil {
 						return core.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
 
 					sendB64 := b64
 					sendMT := mt
-					if len(raw) > maxLLMImageBytes {
+					if len(raw) > uploads.MaxLLMImageBytes {
 						// Resize only the inline payload sent to the model. Keep ImagePath
 						// pointing at the original upload so tools can inspect high-res data.
-						resized, resMT := resizeImageForLLM(raw, mt)
+						resized, resMT := uploads.ResizeImageForLLM(raw, mt)
 						if len(resized) != len(raw) || resMT != mt {
 							sendB64 = base64.StdEncoding.EncodeToString(resized)
 							sendMT = resMT
 						}
 					}
 
-					clientWidth := jsonImageDimension(part["width"])
-					clientHeight := jsonImageDimension(part["height"])
-					width, height := uploadedImageDimensions(raw, clientWidth, clientHeight)
+					clientWidth := uploads.JSONImageDimension(part["width"])
+					clientHeight := uploads.JSONImageDimension(part["height"])
+					width, height := uploads.UploadedImageDimensions(raw, clientWidth, clientHeight)
 					llmParts = append(llmParts, core.Part{
 						Type: core.PartImage,
 						ImageData: &core.ToolImageData{
@@ -649,8 +259,8 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 					})
 				} else {
 					fileCount++
-					if fileCount > maxAttachments {
-						return core.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+					if fileCount > uploads.MaxAttachments {
+						return core.Message{}, fmt.Errorf("too many attachments (max %d)", uploads.MaxAttachments)
 					}
 					filePart, err := parseUploadedFilePart(filename, mt, b64)
 					if err != nil {
@@ -668,14 +278,14 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 				if !strings.HasPrefix(fileData, "data:") {
 					return core.Message{}, fmt.Errorf("attachment %q must use an inline data URL", displayFilename)
 				}
-				mt, b64 := parseDataURL(fileData)
-				mt = normalizeUploadMediaType(displayFilename, mt, nil)
+				mt, b64 := uploads.ParseDataURL(fileData)
+				mt = uploads.NormalizeMediaType(displayFilename, mt, nil)
 				if mt == "" || b64 == "" {
 					return core.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", displayFilename)
 				}
 				fileCount++
-				if fileCount > maxAttachments {
-					return core.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+				if fileCount > uploads.MaxAttachments {
+					return core.Message{}, fmt.Errorf("too many attachments (max %d)", uploads.MaxAttachments)
 				}
 				filePart, err := parseUploadedFilePart(displayFilename, mt, b64)
 				if err != nil {
@@ -725,99 +335,28 @@ func jsonString(raw json.RawMessage) string {
 }
 
 func writeOpenAIError(w http.ResponseWriter, status int, errorType, message string) {
-	writeJSON(w, status, map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    errorType,
-		},
-	})
+	wire.WriteOpenAIError(w, status, errorType, message)
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	b, _ := steeringWireJSON(w, payload)
-	_, _ = w.Write(append(b, '\n'))
-}
+func writeJSON(w http.ResponseWriter, status int, payload any) { wire.WriteJSON(w, status, payload) }
 
-const jsonGzipMinBytes = 512
+const jsonGzipMinBytes = wire.JSONGzipMinBytes
 
-// writeJSONGzip writes payload as JSON and gzip-compresses the response when
-// the client advertises gzip support and the marshaled payload is larger than
-// jsonGzipMinBytes. Small responses stay uncompressed to avoid gzip overhead.
 func writeJSONGzip(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	body, err := steeringWireJSON(w, payload)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSONGzipBody(w, r, status, body)
+	wire.WriteJSONGzip(w, r, status, payload)
 }
 
 func writeJSONGzipBody(w http.ResponseWriter, r *http.Request, status int, body []byte) {
-	h := w.Header()
-	h.Set("Content-Type", "application/json")
-	uiAddVary(h, "Accept-Encoding")
-
-	if len(body) > jsonGzipMinBytes && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
-		var buf bytes.Buffer
-		gz, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
-		if err == nil {
-			_, err = gz.Write(body)
-			if closeErr := gz.Close(); err == nil {
-				err = closeErr
-			}
-		}
-		if err == nil {
-			body = buf.Bytes()
-			h.Set("Content-Encoding", "gzip")
-		}
-	}
-
-	h.Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	wire.WriteJSONGzipBody(w, r, status, body)
 }
 
-// writeJSONConditional marshals payload, sets an ETag, and returns 304 Not
-// Modified when the client's If-None-Match header already holds the current
-// ETag. Cache-Control: no-cache tells browsers to always revalidate, so they
-// issue a conditional GET rather than skipping the request entirely.
-func jsonPayloadETag(body []byte) string {
-	sum := sha256.Sum256(body)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
-}
+func jsonPayloadETag(body []byte) string { return wire.JSONPayloadETag(body) }
 
 func writeJSONConditional(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	body, err := steeringWireJSON(w, payload)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	h := w.Header()
-	h.Set("Cache-Control", "no-cache")
-	etag := jsonPayloadETag(body)
-	h.Set("ETag", etag)
-	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
-		h.Set("Content-Type", "application/json")
-		uiAddVary(h, "Accept-Encoding")
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	writeJSONGzipBody(w, r, status, body)
+	wire.WriteJSONConditional(w, r, status, payload)
 }
 
-func decodeJSONBody(r *http.Request, dst any) error {
-	defer r.Body.Close()
-	dec := json.NewDecoder(io.LimitReader(r.Body, 50<<20))
-	if err := dec.Decode(dst); err != nil {
-		return err
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return fmt.Errorf("request body must contain a single JSON object")
-	}
-	return nil
-}
+func decodeJSONBody(r *http.Request, dst any) error { return wire.DecodeJSONBody(r, dst) }
 
 const (
 	requestSessionIDHeader        = "X-Term-LLM-Session-ID"
@@ -845,20 +384,7 @@ func setSessionNumberHeader(w http.ResponseWriter, rt *serveRuntime) {
 	}
 }
 
-func requireJSONContentType(r *http.Request) error {
-	contentType := r.Header.Get("Content-Type")
-	if strings.TrimSpace(contentType) == "" {
-		return fmt.Errorf("Content-Type must be application/json")
-	}
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return fmt.Errorf("invalid Content-Type header")
-	}
-	if mediaType != "application/json" {
-		return fmt.Errorf("Content-Type must be application/json")
-	}
-	return nil
-}
+func requireJSONContentType(r *http.Request) error { return wire.RequireJSONContentType(r) }
 
 func sessionOrRandomID(sessionID string) string {
 	if sessionID != "" {
@@ -880,31 +406,25 @@ func sanitizeID(s string) string {
 	return b.String()
 }
 
-func randomSuffix() string {
-	buf := make([]byte, 9)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return base64.RawURLEncoding.EncodeToString(buf)
-}
+func randomSuffix() string { return wire.RandomSuffix() }
 
 // parseUploadedFilePart stores any file independently of provider comprehension.
 // Providers decide whether FileData can travel natively; Text is the safe fallback.
 func parseUploadedFilePart(filename, mediaType, b64 string) (core.Part, error) {
 	filename = llm.EmbeddedFileDisplayName(filename)
-	b64 = stripBase64Newlines(b64)
-	raw, err := decodeUploadedFile(filename, b64)
+	b64 = uploads.StripBase64Newlines(b64)
+	raw, err := uploads.DecodeFile(filename, b64)
 	if err != nil {
 		return core.Part{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 	}
-	mediaType = normalizeUploadMediaType(filename, mediaType, raw)
-	path, err := saveUploadedBytes(filename, raw)
+	mediaType = uploads.NormalizeMediaType(filename, mediaType, raw)
+	path, err := uploads.SaveBytes(filename, raw)
 	if err != nil {
 		return core.Part{}, fmt.Errorf("save attachment %q: %w", filename, err)
 	}
 	return core.Part{
 		Type:     core.PartFile,
-		Text:     uploadFallbackText(filename, mediaType, path, raw),
+		Text:     uploads.FallbackText(filename, mediaType, path, raw),
 		FileData: &core.ToolFileData{MediaType: mediaType, Base64: b64, Filename: filename, SizeBytes: int64(len(raw))},
 		FilePath: path,
 	}, nil

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
@@ -109,24 +110,24 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]core.Message, error) {
 					return nil, fmt.Errorf("image attachment source is required")
 				}
 				mediaType := strings.ToLower(strings.TrimSpace(block.Source.MediaType))
-				if !isLLMImageType(mediaType) {
+				if !uploads.IsLLMImageType(mediaType) {
 					return nil, fmt.Errorf("unsupported attachment type %q for image", mediaType)
 				}
 				attachmentCount++
-				if attachmentCount > maxAttachments {
-					return nil, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+				if attachmentCount > uploads.MaxAttachments {
+					return nil, fmt.Errorf("too many attachments (max %d)", uploads.MaxAttachments)
 				}
 				{
 					imagePart := core.Part{
 						Type:      core.PartImage,
 						ImageData: &core.ToolImageData{MediaType: mediaType, Base64: block.Source.Data},
 					}
-					raw, err := decodeUploadedFile("image", block.Source.Data)
+					raw, err := uploads.DecodeFile("image", block.Source.Data)
 					if err != nil {
 						return nil, fmt.Errorf("decode image attachment: %w", err)
 					}
-					filename := uploadFilenameForMediaType("image", mediaType)
-					path, err := saveUploadedBytes(filename, raw)
+					filename := uploads.FilenameForMediaType("image", mediaType)
+					path, err := uploads.SaveBytes(filename, raw)
 					if err != nil {
 						return nil, fmt.Errorf("save image attachment: %w", err)
 					}

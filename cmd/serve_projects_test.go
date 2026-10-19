@@ -2015,13 +2015,13 @@ func TestUIResponseInputBindingConflictRejectsSend(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	ticket, err := processSessionInputs.acquire(ctx, store, sess.ID, inputBinding("", t.TempDir()))
+	ticket, err := ProcessSessionInputs().Acquire(ctx, store, sess.ID, InputBinding("", t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ticket.finish(sessionInputSelection{Prompt: "original"})
+	ticket.Finish(SessionInputSelection{Prompt: "original"})
 	t.Cleanup(func() {
-		processSessionInputs.invalidate(store, sess.ID)
+		ProcessSessionInputs().Invalidate(store, sess.ID)
 		if srv.responseRuns != nil {
 			srv.responseRuns.Close()
 		}

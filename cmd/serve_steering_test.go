@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
@@ -151,7 +152,7 @@ func TestSteeringWireProjectionPreservesUserContentAndSequence(t *testing.T) {
 	event := responseRunEvent{Sequence: 42, Event: "response.interjection", Data: []byte(`{"type":"response.interjection","interjection_id":"id","text":"interject literally","sequence_number":42}`)}
 	for _, canonical := range []bool{false, true} {
 		recorder := httptest.NewRecorder()
-		writer := &steeringWireWriter{ResponseWriter: recorder, canonical: canonical}
+		writer := wire.NewSteeringWriter(recorder, canonical)
 		if err := writeStoredResponseEvent(writer, event); err != nil {
 			t.Fatal(err)
 		}

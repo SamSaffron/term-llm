@@ -292,22 +292,28 @@ func TestLiveClassifyStatusIncludesRunningSessionAndJobs(t *testing.T) {
 	runs.setActiveRun("status-running", "response-running")
 	t.Cleanup(func() { runs.clearActiveRun("status-running", "response-running") })
 
-	jobs, err := newJobsV2Manager(":memory:", 0, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jobs.Close()
-	srv.jobsV2 = jobs
-	activeJob, err := jobs.CreateJob(jobsV2Job{
-		Name: "active backup", Enabled: true, RunnerType: jobsV2RunnerProgram,
-		RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`),
+	activeStarted := make(chan struct{})
+	releaseActive := make(chan struct{})
+	defer close(releaseActive)
+	completions := make(chan jobsV2Run, 2)
+	jobs := newJobsV2HostManager(t, 1, map[jobsV2RunnerType]jobsV2Runner{
+		jobsV2RunnerProgram: jobsV2HostRunnerFunc(func(ctx context.Context, job jobsV2Job, _ progressWriter) (jobsV2RunResult, error) {
+			if job.Name != "active backup" {
+				return jobsV2RunResult{}, nil
+			}
+			close(activeStarted)
+			select {
+			case <-releaseActive:
+				return jobsV2RunResult{}, nil
+			case <-ctx.Done():
+				return jobsV2RunResult{}, ctx.Err()
+			}
+		}),
+	}, func(_ context.Context, run jobsV2Run, _ jobsV2Job, _ jobsV2RunStatus, _ jobsV2RunResult, _ string, _ bool, _ string) error {
+		completions <- run
+		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := jobs.TriggerJob(activeJob.ID); err != nil {
-		t.Fatal(err)
-	}
+	srv.jobsV2 = jobs
 	recentJob, err := jobs.CreateJob(jobsV2Job{
 		Name: "recent report", Enabled: true, RunnerType: jobsV2RunnerProgram,
 		RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`),
@@ -319,8 +325,24 @@ func TestLiveClassifyStatusIncludesRunningSessionAndJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := jobs.finishRun(recentRun.ID, jobsV2RunSucceeded, jobsV2RunResult{}, nil, recentRun.Attempt); err != nil {
+	completed := waitJobsV2HostCompletion(t, completions)
+	if completed.ID != recentRun.ID {
+		t.Fatalf("completed run ID = %q, want %q", completed.ID, recentRun.ID)
+	}
+	activeJob, err := jobs.CreateJob(jobsV2Job{
+		Name: "active backup", Enabled: true, RunnerType: jobsV2RunnerProgram,
+		RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := jobs.TriggerJob(activeJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-activeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active job runner did not start")
 	}
 
 	answer, err := srv.liveClassifyStatus(context.Background())
@@ -337,10 +359,7 @@ func TestLiveClassifyStatusIncludesRunningSessionAndJobs(t *testing.T) {
 func TestLiveClassifyStatusDegradesToSessionsWhenJobsUnavailable(t *testing.T) {
 	store := newSessionDirectoryTestStore(t)
 	createDirectorySession(t, store, &session.Session{ID: "status-session-only", GeneratedShortTitle: "Session fallback"})
-	jobs, err := newJobsV2Manager(":memory:", 0, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	jobs := newJobsV2HostManager(t, 0, map[jobsV2RunnerType]jobsV2Runner{}, nil)
 	if err := jobs.Close(); err != nil {
 		t.Fatal(err)
 	}

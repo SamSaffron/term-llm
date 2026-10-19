@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/liveprogress"
 	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
@@ -490,7 +491,7 @@ func (d *serveLiveDelegator) pageTools() []json.RawMessage {
 // their results. One progress tracker spans every round, so the voice model
 // hears one account of the work instead of a restart per run.
 func (d *serveLiveDelegator) streamDelegation(ctx context.Context, sessionID string, run *responseRun, tools []json.RawMessage, emit func(live.DelegationChunk)) error {
-	progress := newLiveProgress(emit, time.Now)
+	progress := liveprogress.New(emit, time.Now)
 	names := liveClientToolNames(tools)
 	for round := 0; ; round++ {
 		if err := d.streamRunProgress(ctx, run, emit, progress); err != nil {
@@ -541,12 +542,12 @@ func pendingPageToolCalls(run *responseRun, names map[string]bool) []liveClientT
 // runPageTools has the client run one round of page tool calls and returns the
 // tool results that continue the turn. Progress shows the round as tools
 // running on the user's device, so a slow device reads as work, not silence.
-func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string, run *responseRun, calls []liveClientToolCall, progress *liveProgress) ([]core.Message, error) {
+func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string, run *responseRun, calls []liveClientToolCall, progress *liveprogress.Progress) ([]core.Message, error) {
 	var started time.Time
 	published := func() {
 		started = time.Now()
 		observePageTools(progress, "response.tool_exec.start", calls, map[string]any{"started_at": started.UnixMilli()})
-		progress.tick()
+		progress.Tick()
 	}
 	outputs, err := d.pageToolRound(ctx, sessionID, run.id, calls, progress, published)
 	// Only a round the client was asked to run is reported as having run.
@@ -569,7 +570,7 @@ func (d *serveLiveDelegator) runPageTools(ctx context.Context, sessionID string,
 // client's outputs, one per call in call order. progress may be nil when the
 // run's own event stream already reports the round; published, if set, runs
 // once the round has been published.
-func (d *serveLiveDelegator) pageToolRound(ctx context.Context, sessionID, responseID string, calls []liveClientToolCall, progress *liveProgress, published func()) ([]string, error) {
+func (d *serveLiveDelegator) pageToolRound(ctx context.Context, sessionID, responseID string, calls []liveClientToolCall, progress *liveprogress.Progress, published func()) ([]string, error) {
 	if d.live == nil {
 		return nil, errors.New("the live call is unavailable")
 	}
@@ -681,14 +682,14 @@ func (r inlinePageToolRun) RunClientTool(ctx context.Context, call core.ToolCall
 
 // observePageTools feeds progress the tool events a round would have had if the
 // engine had run it, so status notes name the tools the device is running.
-func observePageTools(progress *liveProgress, event string, calls []liveClientToolCall, fields map[string]any) {
+func observePageTools(progress *liveprogress.Progress, event string, calls []liveClientToolCall, fields map[string]any) {
 	for _, call := range calls {
 		payload := map[string]any{"call_id": call.CallID, "tool_name": call.Name, "tool_info": "on the user's device"}
 		for key, value := range fields {
 			payload[key] = value
 		}
 		if data, err := json.Marshal(payload); err == nil {
-			progress.observe(responseRunEvent{Event: event, Data: data})
+			progress.Observe(event, data)
 		}
 	}
 }
@@ -696,7 +697,7 @@ func observePageTools(progress *liveProgress, event string, calls []liveClientTo
 // awaitPageTools blocks until the round resolves, republishing the request and
 // ticking progress meanwhile, and reports why the wait ended when it was not the
 // client answering.
-func (d *serveLiveDelegator) awaitPageTools(ctx context.Context, done <-chan struct{}, requestID string, progress *liveProgress) error {
+func (d *serveLiveDelegator) awaitPageTools(ctx context.Context, done <-chan struct{}, requestID string, progress *liveprogress.Progress) error {
 	interval, limit := d.toolResendInterval, d.toolTimeout
 	if interval <= 0 {
 		interval = liveClientDelegationResendInterval
@@ -706,7 +707,7 @@ func (d *serveLiveDelegator) awaitPageTools(ctx context.Context, done <-chan str
 	}
 	resend := time.NewTicker(interval)
 	defer resend.Stop()
-	tick := time.NewTicker(liveProgressTick)
+	tick := time.NewTicker(liveprogress.TickInterval)
 	defer tick.Stop()
 	timeout := time.NewTimer(limit)
 	defer timeout.Stop()
@@ -718,7 +719,7 @@ func (d *serveLiveDelegator) awaitPageTools(ctx context.Context, done <-chan str
 			d.live.resendClientToolRequest(requestID)
 		case <-tick.C:
 			if progress != nil {
-				progress.tick()
+				progress.Tick()
 			}
 		case <-timeout.C:
 			return errors.New("the device did not run its tools in time")

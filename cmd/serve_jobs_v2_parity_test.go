@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"io"
 	"os"
 	"path/filepath"
@@ -200,36 +202,6 @@ func TestApplyJobLLMProviderModel(t *testing.T) {
 				t.Errorf("base claude-bin model mutated to %q", base.Providers["claude-bin"].Model)
 			}
 		})
-	}
-}
-
-// TestCloneConfigForServeJobDeepCopiesProviderPointers asserts the clone does not
-// alias the base config's per-provider slice/pointer fields, so per-run overrides
-// can never leak into the shared base (mirrors spawn_runner.go's deep copy).
-func TestCloneConfigForServeJobDeepCopiesProviderPointers(t *testing.T) {
-	yes := true
-	base := &config.Config{
-		DefaultProvider: "p",
-		Providers: map[string]config.ProviderConfig{
-			"p": {Model: "m", Models: []string{"m"}, UseNativeSearch: &yes},
-		},
-	}
-
-	clone := cloneConfigForServeJob(base)
-
-	cp := clone.Providers["p"]
-	if len(cp.Models) == 0 || cp.UseNativeSearch == nil {
-		t.Fatalf("clone lost provider fields: %+v", cp)
-	}
-	cp.Models[0] = "MUTATED"
-	*cp.UseNativeSearch = false
-	clone.Providers["p"] = cp
-
-	if base.Providers["p"].Models[0] != "m" {
-		t.Errorf("base Models aliased the clone: %v", base.Providers["p"].Models)
-	}
-	if base.Providers["p"].UseNativeSearch == nil || *base.Providers["p"].UseNativeSearch != true {
-		t.Errorf("base UseNativeSearch aliased the clone: %v", base.Providers["p"].UseNativeSearch)
 	}
 }
 
@@ -476,7 +448,7 @@ func TestJobsV2LLMJobCwdRootsShellExecutionWithoutChdir(t *testing.T) {
 	}
 
 	persist := false
-	executor := newServeJobsExecutor(&config.Config{}, resolvedApprovalMode{Mode: tools.ModeYolo, Source: approvalModeSourceCLI})
+	executor := newServeJobsExecutor(&config.Config{}, resolvedApprovalMode{Mode: tools.ModeYolo, Source: approvalModeSourceCLI}, appruntime.SessionStoreOverrides{}, appmemory.Paths{}, serveRuntimeFixtureOptions(), false)
 	if _, err := executor(context.Background(), jobsV2LLMConfig{
 		AgentName:      agentDir, // contains a path separator → loaded from disk
 		Instructions:   "shell touch " + sentinel,

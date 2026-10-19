@@ -27,6 +27,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -148,65 +150,15 @@ func uiGetOrBuildEntry(data []byte, compressible bool) *uiAssetCacheEntry {
 	return actual.(*uiAssetCacheEntry)
 }
 
-func uiETagMatches(headerValue, etag string) bool {
-	if headerValue == "" || etag == "" {
-		return false
-	}
-	for _, part := range strings.Split(headerValue, ",") {
-		candidate := strings.TrimSpace(part)
-		if candidate == "*" || candidate == etag || candidate == "W/"+etag {
-			return true
-		}
-	}
-	return false
-}
+func uiETagMatches(headerValue, etag string) bool { return wire.ETagMatches(headerValue, etag) }
 
-func uiAcceptsGzip(headerValue string) bool {
-	for _, part := range strings.Split(headerValue, ",") {
-		pieces := strings.Split(part, ";")
-		if strings.TrimSpace(strings.ToLower(pieces[0])) != "gzip" {
-			continue
-		}
-		accepted := true
-		for _, param := range pieces[1:] {
-			param = strings.TrimSpace(strings.ToLower(param))
-			if strings.HasPrefix(param, "q=") {
-				q, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(param, "q=")), 64)
-				if err == nil && q <= 0 {
-					accepted = false
-				}
-			}
-		}
-		return accepted
-	}
-	return false
-}
+func uiAcceptsGzip(headerValue string) bool { return wire.AcceptsGzip(headerValue) }
 
 func uiCompressibleContentType(contentType string) bool {
-	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	if strings.HasPrefix(mediaType, "text/") {
-		return true
-	}
-	switch mediaType {
-	case "application/javascript", "application/json", "application/manifest+json", "application/x-javascript", "image/svg+xml":
-		return true
-	default:
-		return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
-	}
+	return wire.CompressibleContentType(contentType)
 }
 
-func uiAddVary(header http.Header, value string) {
-	for _, existing := range strings.Split(header.Get("Vary"), ",") {
-		if strings.EqualFold(strings.TrimSpace(existing), value) {
-			return
-		}
-	}
-	if current := header.Get("Vary"); current != "" {
-		header.Set("Vary", current+", "+value)
-		return
-	}
-	header.Set("Vary", value)
-}
+func uiAddVary(header http.Header, value string) { wire.AddVary(header, value) }
 
 func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, contentType, cacheControl string, conditional bool) {
 	entry := uiGetOrBuildEntry(data, uiCompressibleContentType(contentType))
@@ -662,7 +614,7 @@ func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
 // ensureFileServeable makes the given file available from the configured
 // files-dir when it already comes from an approved source directory. Approved
 // sources are: the files-dir itself, the image output directory, the uploads
-// directory used by saveUploadedBytes, and any directory granted to tools via
+// directory used by uploads.SaveBytes, and any directory granted to tools via
 // --write-dir or cfg.Tools.WriteDirs. Tool output in those locations is
 // operator- or server-sanctioned, so republishing it under /files/ respects
 // the documented --files-dir contract while still blocking tool results that
@@ -791,7 +743,7 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 // ensureImageServeable makes the given image path servable via /images/ by
 // copying it into the configured image output directory when the source is
 // already under an approved location (image output dir itself, the uploads
-// dir used by saveUploadedBytes, or any operator-granted tool write-dir).
+// dir used by uploads.SaveBytes, or any operator-granted tool write-dir).
 // Tool-reported paths outside every approved dir are rejected so arbitrary
 // host files can't be republished through /images/. Returns the serveable
 // path and true on success, or ("", false) otherwise.
@@ -930,15 +882,8 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	return destPath, true
 }
 
-// serveUploadsDir returns the first-party uploads directory used by
-// saveUploadedBytes. Returns empty string if the data dir is unavailable.
-func serveUploadsDir() string {
-	dataDir, err := session.GetDataDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dataDir, "uploads")
-}
+// serveUploadsDir returns the first-party uploads directory.
+func serveUploadsDir() string { return uploads.Dir() }
 
 const (
 	sessionMessagesPageSize          = 200
@@ -1239,11 +1184,11 @@ func (s *serveServer) materializeInlineSessionImage(mediaType, base64Data string
 }
 
 func imageDimensionsFromReader(reader io.Reader) (width, height int) {
-	metadata, err := io.ReadAll(io.LimitReader(reader, maxImageMetadataBytes))
+	metadata, err := io.ReadAll(io.LimitReader(reader, uploads.MaxImageMetadataBytes))
 	if err != nil {
 		return 0, 0
 	}
-	return imageDisplayDimensions(metadata)
+	return uploads.ImageDisplayDimensions(metadata)
 }
 
 func sessionMessageImageDimensions(part core.Part, serveablePath string) (width, height int) {
@@ -3081,7 +3026,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
 			w.Header().Add("Vary", steeringProtocolHeader)
-			w = &steeringWireWriter{ResponseWriter: w, canonical: version == "1" || strings.Contains(r.URL.Path, "/steering")}
+			w = wire.NewSteeringWriter(w, version == "1" || strings.Contains(r.URL.Path, "/steering"))
 		}
 		next(w, r)
 	}
@@ -3497,7 +3442,7 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRun
 		if keyErr != nil {
 			return nil, keyErr
 		}
-		c := processSessionInputs
+		c := ProcessSessionInputs()
 		c.mu.Lock()
 		entry := c.entries[key]
 		if entry != nil && entry.selection != nil {
@@ -3624,7 +3569,7 @@ func (s *serveServer) persistedRuntimeIdentity(ctx context.Context, sessionID st
 //
 // The manager only ever applies this to idle runtimes, so an in-flight turn,
 // side question or compaction is never yanked out from under its run.
-func runtimeReplacementPredicate(agentName string, selectedInputs *sessionInputSelection, provider string) func(*serveRuntime) bool {
+func runtimeReplacementPredicate(agentName string, selectedInputs *SessionInputSelection, provider string) func(*serveRuntime) bool {
 	return func(existing *serveRuntime) bool {
 		if !runtimeHasAgent(existing, agentName) || !runtimeHasSelectedInputs(existing, selectedInputs) {
 			return true
@@ -3676,7 +3621,7 @@ func (s *serveServer) metadataRuntime(ctx context.Context, sessionID string) (*s
 
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
 	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
-	selectedInputs := processSessionInputs.ready(s.store, sessionID)
+	selectedInputs := ProcessSessionInputs().Ready(s.store, sessionID)
 	provider, model := s.persistedRuntimeIdentity(ctx, sessionID)
 	create := func(ctx context.Context) (*serveRuntime, error) {
 		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: provider, Model: model, Agent: agentName})
@@ -3815,7 +3760,7 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	providerName = strings.TrimSpace(providerName)
 	modelName = strings.TrimSpace(modelName)
 	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
-	selectedInputs := processSessionInputs.ready(s.store, sessionID)
+	selectedInputs := ProcessSessionInputs().Ready(s.store, sessionID)
 	if sessionID == "" {
 		rt, err := s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: providerName, Model: modelName, Agent: agentName})
 		if err != nil {
@@ -3931,7 +3876,7 @@ func (s *serveServer) runtimeForFreshAgentProviderRequest(ctx context.Context, s
 	}
 	// This is an explicit whole-history replacement, not compatibility access
 	// to an existing conversation. It discards readiness without selecting.
-	processSessionInputs.invalidate(s.store, sessionID)
+	ProcessSessionInputs().Invalidate(s.store, sessionID)
 	return rt, true, nil
 }
 

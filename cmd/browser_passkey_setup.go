@@ -3,21 +3,21 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/spf13/cobra"
 )
 
 type browserPasskeyOptions struct {
 	userName, displayName string
 	trustedProxies        []string
-	bootstrap             func(*cobra.Command, bool) ([]byte, string, error)
+	bootstrap             func(bool) ([]byte, string, error)
 	recovery              func(bool) ([]byte, error)
 }
 
 // openBrowserPasskeys centralizes private storage, locking and secret lifetimes.
-func openBrowserPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint, authFile string, opts browserPasskeyOptions) (_ *hubPasskeyRuntime, _ string, cleanup func() error, err error) {
+func openBrowserPasskeys(stderr io.Writer, endpoint passkeyauth.Endpoint, authFile string, opts browserPasskeyOptions) (_ *hubPasskeyRuntime, _ string, cleanup func() error, err error) {
 	unlockPasskeyState, err := lockHubPasskeyState(authFile)
 	if err != nil {
 		return nil, "", nil, err
@@ -28,7 +28,7 @@ func openBrowserPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint, auth
 			_ = closeState()
 		}
 	}()
-	authStore, err := passkeyauth.OpenStore(passkeyauth.StoreOptions{Path: authFile, RPID: endpoint.RPID, UserName: opts.userName, Warnf: func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: "+format+"\n", args...) }})
+	authStore, err := passkeyauth.OpenStore(passkeyauth.StoreOptions{Path: authFile, RPID: endpoint.RPID, UserName: opts.userName, Warnf: func(format string, args ...any) { fmt.Fprintf(stderr, "SECURITY: "+format+"\n", args...) }})
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -38,13 +38,13 @@ func openBrowserPasskeys(cmd *cobra.Command, endpoint passkeyauth.Endpoint, auth
 		RPID:            endpoint.RPID,
 		UserID:          authStore.User().ID,
 		ValidCredential: authStore.HasCredential,
-		Warnf:           func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: "+format+"\n", args...) },
+		Warnf:           func(format string, args ...any) { fmt.Fprintf(stderr, "SECURITY: "+format+"\n", args...) },
 	})
 	if err != nil {
 		return nil, "", nil, err
 	}
 	closeState = func() error { return errors.Join(sessions.Close(), unlockPasskeyState()) }
-	bootstrapSecret, display, err := opts.bootstrap(cmd, authStore.CredentialCount() == 0)
+	bootstrapSecret, display, err := opts.bootstrap(authStore.CredentialCount() == 0)
 	if err != nil {
 		return nil, "", nil, err
 	}

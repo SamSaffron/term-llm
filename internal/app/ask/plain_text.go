@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	runtimeguardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -218,10 +219,5 @@ func StreamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 
 // WriteGuardianStatus writes a sanitized guardian status line to w.
 func WriteGuardianStatus(w io.Writer, event tools.GuardianEvent) {
-	if w == nil {
-		return
-	}
-	if message := strings.TrimSpace(terminaltext.SanitizeSingleLine(event.Message)); message != "" {
-		fmt.Fprintln(w, message)
-	}
+	runtimeguardian.WriteStatus(w, event)
 }

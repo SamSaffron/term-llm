@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -557,11 +558,10 @@ func TestResolveSettings_BuiltinAgentFileIncludeStillExtractsResources(t *testin
 }
 
 func TestResolveSettings_AppendsInsightsToSystemPrompt(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "memory.db")
-	t.Setenv("TERM_LLM_MEMORY_DB", dbPath)
-	oldMemoryDBPath := memoryDBPath
-	memoryDBPath = defaultMemoryDBPath
-	t.Cleanup(func() { memoryDBPath = oldMemoryDBPath })
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "override", "memory.db")
+	defaultPath := filepath.Join(dir, "default", "memory.db")
+	t.Setenv("TERM_LLM_MEMORY_DB", filepath.Join(dir, "env", "memory.db"))
 
 	store, err := memorydb.NewStore(memorydb.Config{Path: dbPath})
 	if err != nil {
@@ -588,7 +588,7 @@ func TestResolveSettings_AppendsInsightsToSystemPrompt(t *testing.T) {
 		},
 	}
 
-	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{}, "", "", "", 0, 20)
+	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{MemoryPaths: appmemory.Paths{DBPath: dbPath, DefaultDBPath: defaultPath}}, "", "", "", 0, 20)
 	if err != nil {
 		t.Fatalf("ResolveSettings() error = %v", err)
 	}
@@ -600,6 +600,11 @@ func TestResolveSettings_AppendsInsightsToSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(settings.SystemPrompt, "Avoid filler.") {
 		t.Fatalf("SystemPrompt missing insight content: %q", settings.SystemPrompt)
+	}
+	for _, untouched := range []string{defaultPath, filepath.Join(dir, "env", "memory.db")} {
+		if _, err := os.Stat(untouched); !os.IsNotExist(err) {
+			t.Fatalf("non-selected memory DB %q was touched: %v", untouched, err)
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
 // Regression for 8232: a runtime warmed by an endpoint that carries no
@@ -17,12 +18,10 @@ import (
 // global default provider and then reused for chat turns, so the session's
 // model ran against the wrong provider.
 func TestRuntimeWarmingBindsPersistedSessionProvider(t *testing.T) {
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 
 	ctx := context.Background()
-	store := inputTestStore(t, filepath.Join(t.TempDir(), "sessions.db"))
+	store := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "sessions.db"))
 	cfg := &config.Config{
 		DefaultProvider: "other",
 		Providers: map[string]config.ProviderConfig{
@@ -137,13 +136,11 @@ func TestRuntimeReplacementPredicate(t *testing.T) {
 // match. A runtime left on another provider must not be reused by that
 // shortcut, or the session keeps running its model against the wrong provider.
 func TestPrepareUIRuntimeRejectsForeignProviderRuntime(t *testing.T) {
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 
 	ctx := context.Background()
 	dir := t.TempDir()
-	store := &session.LoggingStore{Store: inputTestStore(t, filepath.Join(t.TempDir(), "sessions.db"))}
+	store := &session.LoggingStore{Store: testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "sessions.db"))}
 	cfg := &config.Config{
 		DefaultProvider: "mock",
 		Providers:       map[string]config.ProviderConfig{"mock": {Model: "mock-model"}, "other": {Model: "other-model"}},
@@ -210,12 +207,10 @@ func TestPrepareUIRuntimeRejectsForeignProviderRuntime(t *testing.T) {
 // turn persists, the session still names the previous provider. A status poll in
 // that window must not "correct" the candidate away and strand the swap.
 func TestRuntimeForRequestKeepsAModelSwapCandidate(t *testing.T) {
-	oldCoordinator := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = oldCoordinator })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 
 	ctx := context.Background()
-	store := inputTestStore(t, filepath.Join(t.TempDir(), "sessions.db"))
+	store := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "sessions.db"))
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {}, "swapped": {}}}
 	sess := &session.Session{
 		ID: session.NewID(), Provider: "mock", ProviderKey: "mock", Model: "mock-model",

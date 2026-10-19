@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,24 +16,21 @@ import (
 	"testing"
 	"time"
 
-	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	internalmcp "github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
 )
 
-const runServeMCPHandlerTestServerEnv = "TERM_LLM_SERVE_MCP_HANDLER_TEST_SERVER"
+const runServeMCPHandlerTestServerEnv = mcptest.ChildEnv
 
 var bindingTestRepoTemplate string
 
 func TestMain(m *testing.M) {
-	if os.Getenv(runServeMCPHandlerTestServerEnv) != "" {
-		runServeMCPHandlerTestServer()
-		os.Exit(0)
-	}
+	mcptest.RunIfChild()
 	// Root-command tests execute multiple commands in one process. Do not let a
 	// developer's profiling environment make them contend for a fixed port.
 	if err := os.Unsetenv("TERM_LLM_PPROF"); err != nil {
@@ -114,37 +110,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-type serveMCPHandlerGreetingParams struct {
-	Name string `json:"name"`
-}
-
-func runServeMCPHandlerTestServer() {
-	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "serve-mcp-handler-test", Version: "v0.0.1"}, nil)
-	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "greet", Description: "say hi"}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args serveMCPHandlerGreetingParams) (*sdkmcp.CallToolResult, any, error) {
-		return &sdkmcp.CallToolResult{
-			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "hi " + args.Name}},
-		}, nil, nil
-	})
-	if err := server.Run(context.Background(), &sdkmcp.StdioTransport{}); err != nil {
-		log.Fatal(err)
-	}
-}
-
 func writeServeMCPConfig(t *testing.T, servers map[string]internalmcp.ServerConfig) {
 	t.Helper()
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	path := filepath.Join(configHome, "term-llm", "mcp.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	data, err := json.Marshal(internalmcp.Config{Servers: servers})
-	if err != nil {
-		t.Fatalf("Marshal config: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("WriteFile config: %v", err)
-	}
+	mcptest.WriteConfig(t, servers)
 }
 
 func newServeMCPTestStore(t *testing.T) session.Store {

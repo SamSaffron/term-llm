@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -276,7 +277,8 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve all settings: CLI > agent > config
-	promptProvider, promptModel := activeLLMFlags(cfg)
+	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
+	promptProvider, promptModel := appruntime.ActiveLLMFlags(cfg)
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:        loopProvider,
 		ActiveProvider:  promptProvider,
@@ -293,6 +295,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		Search:          loopSearch,
 		NoSearch:        loopNoSearch,
 		Platform:        "console",
+		MemoryPaths:     runtimeMemoryPaths,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 100)
 	if err != nil {
 		return err
@@ -319,7 +322,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize tools
-	alignSettingsToActiveProvider(&settings, cfg, provider)
+	AlignSettingsToActiveProvider(&settings, cfg, provider)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
 		return err
@@ -340,7 +343,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		}
 
 		// Wire spawn_agent runner if enabled
-		spawnRunner, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, nil, "")
+		spawnRunner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, nil, "", 0, runtimeSessionStore, runtimeMemoryPaths)
 		if err != nil {
 			return err
 		}

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -12,6 +11,9 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -20,7 +22,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -29,107 +30,10 @@ var (
 	builtinAgentResourceDirPattern = regexp.MustCompile(`\{\{\s*resource_dir\s*\}\}`)
 )
 
-// SessionSettings holds the resolved settings for a session, merged from
-// config defaults, agent settings, and CLI flags.
-type SessionSettings struct {
-	// Provider/model
-	Provider string
-	Model    string
-
-	// Agent name (if any)
-	AgentName    string
-	PlanGuidance bool   // Built-in developer's callable-only update_plan guidance
-	Workspace    string // Agent workspace policy: auto/default or none
-
-	// Session ID (if any)
-	SessionID string
-
-	// Tool settings
-	Tools        string
-	AutoTools    []string // Transient tools required by structured user attachments; never persisted as configured tools.
-	ReadDirs     []string
-	WriteDirs    []string
-	ShellAllow   []string
-	ShellAutoRun bool
-	Scripts      []string
-	Spawn        tools.SpawnConfig
-
-	// BaseDir is the unified per-session working directory for all tools. It is
-	// threaded through ToolConfig and never applied with os.Chdir.
-	BaseDir string
-	// PrimaryWorkspace is non-empty only when a local launch or explicit
-	// session/request binding proposes a canonical primary workspace. It grants
-	// no file authority until the human confirms it on first access.
-	PrimaryWorkspace string
-
-	// RequireExplicitWorkingDir makes unbound remote runtimes reject relative
-	// tool paths and default process execution instead of using daemon CWD.
-	RequireExplicitWorkingDir bool
-
-	// Agent directory (for run_agent_script and custom tools)
-	AgentDir string
-
-	// ShellWorkingDir roots the shell tool's command execution (exec.Cmd.Dir) at
-	// a per-run directory without a process-wide os.Chdir. Empty preserves the
-	// process-CWD default for local/legacy callers; unbound remote runtimes reject it.
-	ShellWorkingDir string
-
-	// CustomTools holds script-backed custom tool definitions from agent.yaml
-	CustomTools []agents.CustomToolDef
-
-	// MCP servers (comma-separated)
-	MCP string
-
-	// System prompt (already expanded)
-	SystemPrompt string
-
-	// Behavior
-	MaxTurns        int
-	MaxOutputTokens int // 0 = use provider default
-	Search          bool
-	TimeGrounding   bool
-
-	// Memory / insights
-	InsightsExpansion bool
-	InsightsMaxTokens int // 0 → default 500
-}
-
-// CLIFlags holds the CLI flag values that can override settings.
-type CLIFlags struct {
-	Provider         string
-	Tools            string
-	ToolsSet         bool
-	SystemMessageSet bool
-	inputs           *sessionInputSelection
-	ReadDirs         []string
-	WriteDirs        []string
-	ShellAllow       []string
-	MCP              string
-	SystemMessage    string
-	MaxTurns         int
-	MaxTurnsSet      bool // true if --max-turns was explicitly set
-	MaxOutputTokens  int  // 0 = use provider default
-	Search           bool
-	NoSearch         bool
-	Files            []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
-	Platform         string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
-
-	// ActiveProvider and ActiveModel name the provider/model the caller has
-	// resolved for this run after CLI, request, agent, and config overrides.
-	// When ActiveProvider is set the pair wins over the agent's preference for
-	// prompt templating ({{provider}}, {{model}}) and model-gated user
-	// AGENTS.md blocks, so the prompt describes the model that actually runs.
-	ActiveProvider string
-	ActiveModel    string
-}
-
 // activeLLMFlags returns the ActiveProvider/ActiveModel pair for cfg once the
 // caller has applied its provider overrides.
 func activeLLMFlags(cfg *config.Config) (string, string) {
-	if cfg == nil {
-		return "", ""
-	}
-	return strings.TrimSpace(cfg.DefaultProvider), strings.TrimSpace(activeModel(cfg))
+	return appruntime.ActiveLLMFlags(cfg)
 }
 
 // applyActiveLLM replaces provider/model with the caller's resolved pair when
@@ -142,66 +46,6 @@ func (cli CLIFlags) applyActiveLLM(provider, model string) (string, string) {
 	return provider, model
 }
 
-// LoadAgent loads and validates an agent by name or path.
-// Returns nil if agentName is empty.
-// If agentName contains a path separator, it is loaded directly from the filesystem.
-// Otherwise, it is looked up in the agent registry.
-func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
-	if agentName == "" {
-		return nil, nil
-	}
-
-	// If the value contains a path separator, load directly from filesystem
-	if agents.IsAgentPath(agentName) {
-		agent, err := agents.LoadFromPath(agentName)
-		if err != nil {
-			return nil, fmt.Errorf("load agent from path: %w", err)
-		}
-		if err := agent.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid agent at %s: %w", agentName, err)
-		}
-		// Apply preferences by agent name if configured
-		if pref, ok := cfg.Agents.Preferences[agent.Name]; ok {
-			agent.Merge(pref)
-		}
-		return agent, nil
-	}
-
-	registry, err := agents.NewRegistry(agents.RegistryConfig{
-		UseBuiltin:  cfg.Agents.UseBuiltin,
-		SearchPaths: cfg.Agents.SearchPaths,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create agent registry: %w", err)
-	}
-
-	// Apply agent preferences from config
-	registry.SetPreferences(cfg.Agents.Preferences)
-
-	agent, err := registry.Get(agentName)
-	if err != nil {
-		return nil, fmt.Errorf("load agent: %w", err)
-	}
-
-	if err := agent.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid agent: %w", err)
-	}
-
-	return agent, nil
-}
-
-// ListAgentNames returns all available agent names for completions.
-func ListAgentNames(cfg *config.Config) ([]string, error) {
-	registry, err := agents.NewRegistry(agents.RegistryConfig{
-		UseBuiltin:  cfg.Agents.UseBuiltin,
-		SearchPaths: cfg.Agents.SearchPaths,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return registry.ListNames()
-}
-
 // ResolveSettings merges config, agent, and CLI flags into final settings.
 // Priority: CLI > agent > config
 func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) (SessionSettings, error) {
@@ -212,11 +56,11 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 // template values and instruction discovery without changing process CWD.
 func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int, runtimeDir string) (SessionSettings, error) {
 	var err error
-	runtimeDir, err = canonicalRuntimeDir(runtimeDir)
+	runtimeDir, err = CanonicalRuntimeDir(runtimeDir)
 	if err != nil {
 		return SessionSettings{}, err
 	}
-	s := SessionSettings{}
+	s := SessionSettings{MemoryPaths: cli.MemoryPaths}
 	if agent != nil {
 		s.AgentName = agent.Name
 		s.Workspace = agent.Workspace
@@ -316,10 +160,10 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		s.InsightsExpansion = agent.Memory.InsightsExpansion
 		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
 	}
-	if cli.inputs != nil {
-		s.SystemPrompt, s.Tools = cli.inputs.BasePrompt, cli.inputs.Tools
+	if cli.Inputs != nil {
+		s.SystemPrompt, s.Tools = cli.Inputs.BasePrompt, cli.Inputs.Tools
 	} else {
-		s.SystemPrompt, s.Tools, err = resolveSessionPromptTools(cfg, agent, cli, configInstructions, runtimeDir, s.Provider, s.Model)
+		s.SystemPrompt, s.Tools, err = ResolveSessionPromptTools(cfg, agent, cli, configInstructions, runtimeDir, s.Provider, s.Model)
 		if err != nil {
 			return s, err
 		}
@@ -334,10 +178,10 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	return s, nil
 }
 
-// resolveSessionPromptTools resolves only the two refreshable inputs. Callers
+// ResolveSessionPromptTools resolves only the two refreshable inputs. Callers
 // resuming durable history must supply the saved agent and canonical directory.
-func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configInstructions, runtimeDir, provider, model string) (string, string, error) {
-	s := SessionSettings{Provider: provider, Model: model}
+func ResolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configInstructions, runtimeDir, provider, model string) (string, string, error) {
+	s := SessionSettings{Provider: provider, Model: model, MemoryPaths: cli.MemoryPaths}
 	if agent != nil {
 		if agent.Provider != "" {
 			s.Provider = agent.Provider
@@ -421,16 +265,16 @@ func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIF
 		}
 	}
 
-	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens)
+	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens, s.MemoryPaths)
 	return s.SystemPrompt, s.Tools, nil
 }
 
-func injectInsightsMetadata(instructions, agentName string, enabled bool, maxTokens int) string {
+func injectInsightsMetadata(instructions, agentName string, enabled bool, maxTokens int, paths appmemory.Paths) string {
 	if !enabled || strings.TrimSpace(agentName) == "" {
 		return instructions
 	}
 
-	store, err := openMemoryStore()
+	store, err := appmemory.OpenStore(paths)
 	if err != nil {
 		return instructions
 	}
@@ -503,7 +347,7 @@ func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext
 	return ctx
 }
 
-func canonicalRuntimeDir(runtimeDir string) (string, error) {
+func CanonicalRuntimeDir(runtimeDir string) (string, error) {
 	runtimeDir = strings.TrimSpace(runtimeDir)
 	if runtimeDir == "" {
 		var err error
@@ -603,7 +447,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *engine.En
 			engine.SetIndirectVision(true)
 		}
 	}
-	wireImageRecorder(toolMgr.Registry, s.AgentName, s.SessionID)
+	appmemory.WireImageRecorder(toolMgr.Registry, s.MemoryPaths, s.AgentName, s.SessionID)
 	wireFileRecorder(toolMgr.Registry, cfg)
 
 	// Register any custom script-backed tools declared in agent.yaml
@@ -693,20 +537,7 @@ func newVisionProviderForTarget(cfg *config.Config, target string) (core.Provide
 	return provider, modelName, nil
 }
 
-func uploadsReadDir() string {
-	dataDir, err := session.GetDataDir()
-	if err != nil {
-		return ""
-	}
-	dir := filepath.Join(dataDir, "uploads")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return ""
-	}
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		return resolved
-	}
-	return dir
-}
+func uploadsReadDir() string { return uploads.ReadDir() }
 
 func appendUniqueString(values []string, value string) []string {
 	value = strings.TrimSpace(value)
@@ -721,7 +552,7 @@ func appendUniqueString(values []string, value string) []string {
 	return append(values, value)
 }
 
-func alignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider core.Provider) {
+func AlignSettingsToActiveProvider(settings *SessionSettings, cfg *config.Config, provider core.Provider) {
 	if settings == nil || cfg == nil {
 		return
 	}
@@ -747,13 +578,15 @@ func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMo
 // WireSpawnAgentRunnerWithStore sets up the spawn_agent runner with session tracking.
 // store is used to save subagent turns, parentSessionID links child sessions to parent.
 // Returns the runner so callers can call Wait() to drain in-flight runs before closing the store.
+// Uses default persistence/memory inputs. Custom WireSpawn callbacks must capture
+// invocation inputs and call WireSpawnAgentRunnerWithInputs to preserve overrides.
 func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) (*SpawnAgentRunner, error) {
 	return WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, 0)
 }
 
 // wireSpawnAgentWithBudget wires a child runner and caps its spawn allowance.
-func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, remaining *int) (*SpawnAgentRunner, error) {
-	runner, err := WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, parentSessionID, depth)
+func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, remaining *int, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
+	runner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, yoloMode, store, parentSessionID, depth, sessionStore, paths)
 	if err == nil && remaining != nil && toolMgr != nil {
 		if spawn := toolMgr.GetSpawnAgentTool(); spawn != nil {
 			spawn.SetRemainingDepth(*remaining)
@@ -764,7 +597,14 @@ func wireSpawnAgentWithBudget(cfg *config.Config, toolMgr *tools.ToolManager, yo
 
 // WireSpawnAgentRunnerWithStoreAndDepth is WireSpawnAgentRunnerWithStore with an
 // explicit current depth for nested spawn_agent tools.
+// It uses default persistence/memory inputs; use WithInputs for captured overrides.
 func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int) (*SpawnAgentRunner, error) {
+	return WireSpawnAgentRunnerWithInputs(cfg, toolMgr, yoloMode, store, parentSessionID, depth, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
+}
+
+// WireSpawnAgentRunnerWithInputs constructs a child runner with invocation-local
+// persistence and memory inputs before exposing it through the spawn tool.
+func WireSpawnAgentRunnerWithInputs(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, depth int, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
 	if toolMgr == nil {
 		return nil, nil
 	}
@@ -776,6 +616,7 @@ func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.To
 	if err != nil {
 		return nil, fmt.Errorf("setup spawn_agent: %w", err)
 	}
+	runner.SetRuntimeInputs(sessionStore, paths)
 	// Keep a snapshot for legacy callers and as a fallback if the live resolver
 	// cannot provide a directory.
 	runner.SetBaseDir(toolMgr.BaseDir())
@@ -786,24 +627,10 @@ func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.To
 	return runner, nil
 }
 
-func sessionStoreConfig(cfg *config.Config) session.Config {
-	path := strings.TrimSpace(cfg.Sessions.Path)
-	if cliPath := strings.TrimSpace(sessionDBPath); cliPath != "" {
-		path = cliPath
-	}
-	return session.Config{
-		Enabled:          cfg.Sessions.Enabled && !noSession,
-		MaxAgeDays:       cfg.Sessions.MaxAgeDays,
-		MaxCount:         cfg.Sessions.MaxCount,
-		Path:             path,
-		StripImageBase64: cfg.Sessions.StripImageBase64,
-	}
-}
-
-// ensureRequestSessionID returns a stable request/session key for provider-side
+// EnsureRequestSessionID returns a stable request/session key for provider-side
 // continuity and prompt caching. This is intentionally independent of the local
 // session store so --no-session only disables DB persistence, not upstream cache hints.
-func ensureRequestSessionID(sessionID string, resuming bool) string {
+func EnsureRequestSessionID(sessionID string, resuming bool) string {
 	if sessionID != "" || resuming {
 		return sessionID
 	}
@@ -821,134 +648,6 @@ func applyPersistedContextEstimate(engine *engine.Engine, sess *session.Session)
 		return
 	}
 	engine.SetContextEstimateBaseline(sess.LastTotalTokens, sess.LastMessageCount)
-}
-
-// InitSessionStore creates a session store if enabled in config.
-// Returns the store (may be nil if disabled) and a cleanup function.
-// The cleanup function is always safe to call (handles nil store).
-// Warnings are written to errWriter.
-func InitSessionStore(cfg *config.Config, errWriter io.Writer) (session.Store, func()) {
-	storeCfg := sessionStoreConfig(cfg)
-	if !storeCfg.Enabled {
-		return nil, func() {}
-	}
-
-	store, err := session.NewStore(storeCfg)
-	if err != nil {
-		// Check if this is a schema error that can be recovered by reset
-		if isSchemaError(err) {
-			dbPath, _ := session.ResolveDBPath(storeCfg.Path)
-			fmt.Fprintf(errWriter, "Session database has schema errors: %v\n\n", err)
-			fmt.Fprintf(errWriter, "Would you like to reset the sessions database? [y/N]: ")
-
-			if promptForReset() {
-				if resetErr := resetSessionDatabase(storeCfg.Path); resetErr != nil {
-					fmt.Fprintf(errWriter, "warning: failed to reset database: %v\n", resetErr)
-					return nil, func() {}
-				}
-				fmt.Fprintln(errWriter, "Session database reset. Creating new store...")
-				// Retry store creation
-				store, err = session.NewStore(storeCfg)
-				if err != nil {
-					fmt.Fprintf(errWriter, "warning: session store still unavailable after reset: %v\n", err)
-					return nil, func() {}
-				}
-			} else {
-				fmt.Fprintf(errWriter, "\nTo fix manually, run: term-llm sessions reset\n")
-				fmt.Fprintf(errWriter, "Or delete: %s\n", dbPath)
-				return nil, func() {}
-			}
-		} else {
-			fmt.Fprintf(errWriter, "warning: session store unavailable: %v\n", err)
-			return nil, func() {}
-		}
-	}
-
-	// Wrap store with logging to surface persistence errors
-	store = session.NewLoggingStore(store, func(format string, args ...any) {
-		fmt.Fprintf(errWriter, "warning: "+format+"\n", args...)
-	})
-
-	cleanup := func() {
-		if store != nil {
-			store.Close()
-		}
-	}
-
-	return store, cleanup
-}
-
-// isSchemaError checks if an error indicates a database schema problem
-// that could be fixed by resetting the database.
-func isSchemaError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	schemaPatterns := []string{
-		"no such column",
-		"no such table",
-		"SQL logic error",
-		"database disk image is malformed",
-		"file is not a database",
-		"create base schema",
-		"initialize schema",
-	}
-	for _, pattern := range schemaPatterns {
-		if strings.Contains(errStr, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// promptForReset asks the user if they want to reset the session database.
-// Returns true if user confirms with 'y' or 'yes'.
-func promptForReset() bool {
-	if !terminalpolicy.OutputInteractive(os.Stderr) {
-		return false
-	}
-
-	// Use /dev/tty directly; never consume redirected stdin for an implicit,
-	// destructive recovery prompt.
-	tty, err := os.Open("/dev/tty")
-	if err != nil {
-		return false
-	}
-	defer tty.Close()
-
-	reader := bufio.NewReader(tty)
-	response, err := reader.ReadString('\n')
-	if err != nil {
-		return false
-	}
-	response = strings.TrimSpace(strings.ToLower(response))
-	return response == "yes" || response == "y"
-}
-
-// resetSessionDatabase deletes the session database files.
-func resetSessionDatabase(pathOverride string) error {
-	dbPath, err := session.ResolveDBPath(pathOverride)
-	if err != nil {
-		return fmt.Errorf("get db path: %w", err)
-	}
-	if dbPath == ":memory:" {
-		return nil
-	}
-
-	filesToDelete := []string{
-		dbPath,
-		dbPath + "-wal",
-		dbPath + "-shm",
-	}
-
-	for _, f := range filesToDelete {
-		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("delete %s: %w", f, err)
-		}
-	}
-
-	return nil
 }
 
 // SetupSkills initializes the skills system if enabled.

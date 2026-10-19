@@ -13,28 +13,28 @@ import (
 )
 
 // Immutable selections contain no runtime, provider, manager, or store references.
-type sessionInputSelection struct{ BasePrompt, Prompt, Tools string }
-type sessionInputBinding struct{ Agent, Dir string }
+type SessionInputSelection struct{ BasePrompt, Prompt, Tools string }
+type SessionInputBinding struct{ Agent, Dir string }
 type sessionInputEntry struct {
-	binding   sessionInputBinding
+	binding   SessionInputBinding
 	done      chan struct{}
-	selection *sessionInputSelection
+	selection *SessionInputSelection
 }
-type sessionInputCoordinator struct {
+type SessionInputCoordinator struct {
 	mu      sync.Mutex
 	entries map[string]*sessionInputEntry
-	pairs   map[sessionInputSelection]*sessionInputSelection
+	pairs   map[SessionInputSelection]*SessionInputSelection
 	strings map[string]string
 }
 
-func newSessionInputCoordinator() *sessionInputCoordinator {
-	return &sessionInputCoordinator{entries: make(map[string]*sessionInputEntry), pairs: make(map[sessionInputSelection]*sessionInputSelection), strings: make(map[string]string)}
+func NewSessionInputCoordinator() *SessionInputCoordinator {
+	return &SessionInputCoordinator{entries: make(map[string]*sessionInputEntry), pairs: make(map[SessionInputSelection]*SessionInputSelection), strings: make(map[string]string)}
 }
 
-var processSessionInputs = newSessionInputCoordinator()
+var processSessionInputs = NewSessionInputCoordinator()
 
-type sessionInputTicket struct {
-	coordinator *sessionInputCoordinator
+type SessionInputTicket struct {
+	coordinator *SessionInputCoordinator
 	key         string
 	entry       *sessionInputEntry
 	owner       bool
@@ -48,7 +48,7 @@ func sessionInputKey(store session.Store, id string) (string, error) {
 
 // acquire must run before acquiring runtime/session-operation locks. Failed
 // owners wake waiters to retry election rather than caching failures.
-func (c *sessionInputCoordinator) acquire(ctx context.Context, store session.Store, id string, binding sessionInputBinding) (*sessionInputTicket, error) {
+func (c *SessionInputCoordinator) Acquire(ctx context.Context, store session.Store, id string, binding SessionInputBinding) (*SessionInputTicket, error) {
 	key, err := sessionInputKey(store, id)
 	if err != nil {
 		return nil, err
@@ -63,7 +63,7 @@ func (c *sessionInputCoordinator) acquire(ctx context.Context, store session.Sto
 			e = &sessionInputEntry{binding: binding, done: make(chan struct{})}
 			c.entries[key] = e
 			c.mu.Unlock()
-			return &sessionInputTicket{coordinator: c, key: key, entry: e, owner: true}, nil
+			return &SessionInputTicket{coordinator: c, key: key, entry: e, owner: true}, nil
 		}
 		if e.binding != binding {
 			c.mu.Unlock()
@@ -71,7 +71,7 @@ func (c *sessionInputCoordinator) acquire(ctx context.Context, store session.Sto
 		}
 		if e.selection != nil {
 			c.mu.Unlock()
-			return &sessionInputTicket{coordinator: c, key: key, entry: e}, nil
+			return &SessionInputTicket{coordinator: c, key: key, entry: e}, nil
 		}
 		done := e.done
 		c.mu.Unlock()
@@ -82,14 +82,14 @@ func (c *sessionInputCoordinator) acquire(ctx context.Context, store session.Sto
 		}
 	}
 }
-func (t *sessionInputTicket) current() bool {
+func (t *SessionInputTicket) current() bool {
 	c := t.coordinator
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.entries[t.key] == t.entry
 }
-func (t *sessionInputTicket) selected() *sessionInputSelection { return t.entry.selection }
-func (t *sessionInputTicket) finish(pair sessionInputSelection) *sessionInputSelection {
+func (t *SessionInputTicket) Selected() *SessionInputSelection { return t.entry.selection }
+func (t *SessionInputTicket) Finish(pair SessionInputSelection) *SessionInputSelection {
 	c := t.coordinator
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -116,7 +116,7 @@ func (t *sessionInputTicket) finish(pair sessionInputSelection) *sessionInputSel
 	close(t.entry.done)
 	return p
 }
-func (t *sessionInputTicket) fail() {
+func (t *SessionInputTicket) Fail() {
 	if t == nil {
 		return
 	}
@@ -132,7 +132,7 @@ func (t *sessionInputTicket) fail() {
 	}
 	t.owner = false
 }
-func (c *sessionInputCoordinator) invalidate(store session.Store, id string) {
+func (c *SessionInputCoordinator) Invalidate(store session.Store, id string) {
 	key, err := sessionInputKey(store, id)
 	if err != nil {
 		return
@@ -146,7 +146,7 @@ func (c *sessionInputCoordinator) invalidate(store session.Store, id string) {
 		}
 	}
 }
-func equalSessionTools(a, b string) bool {
+func EqualSessionTools(a, b string) bool {
 	canonical := func(s string) []string {
 		names := tools.ParseToolsFlag(s)
 		slices.Sort(names)
@@ -154,11 +154,11 @@ func equalSessionTools(a, b string) bool {
 	}
 	return slices.Equal(canonical(a), canonical(b))
 }
-func inputBinding(agent, dir string) sessionInputBinding {
-	return sessionInputBinding{Agent: strings.TrimSpace(agent), Dir: dir}
+func InputBinding(agent, dir string) SessionInputBinding {
+	return SessionInputBinding{Agent: strings.TrimSpace(agent), Dir: dir}
 }
 
-func (c *sessionInputCoordinator) ready(store session.Store, id string) *sessionInputSelection {
+func (c *SessionInputCoordinator) Ready(store session.Store, id string) *SessionInputSelection {
 	key, err := sessionInputKey(store, id)
 	if err != nil {
 		return nil
@@ -182,12 +182,12 @@ type serveRuntimeRequest struct {
 	swapCandidate                                 bool
 	SessionID, Provider, Model, Agent, RuntimeDir string
 	RefreshInputs                                 bool
-	Inputs                                        *sessionInputSelection
+	Inputs                                        *SessionInputSelection
 }
 
 // A deliberate fresh-history replacement stages a new selection but keeps the
 // former ready entry available for rollback until durable preparation succeeds.
-func (c *sessionInputCoordinator) acquireFresh(ctx context.Context, store session.Store, id string, binding sessionInputBinding) (*sessionInputTicket, error) {
+func (c *SessionInputCoordinator) AcquireFresh(ctx context.Context, store session.Store, id string, binding SessionInputBinding) (*SessionInputTicket, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -199,17 +199,17 @@ func (c *sessionInputCoordinator) acquireFresh(ctx context.Context, store sessio
 	previous := c.entries[key]
 	if previous != nil && previous.selection == nil {
 		c.mu.Unlock()
-		return c.acquire(ctx, store, id, binding)
+		return c.Acquire(ctx, store, id, binding)
 	}
 	e := &sessionInputEntry{binding: binding, done: make(chan struct{})}
 	c.entries[key] = e
 	c.mu.Unlock()
-	return &sessionInputTicket{coordinator: c, key: key, entry: e, owner: true, previous: previous}, nil
+	return &SessionInputTicket{coordinator: c, key: key, entry: e, owner: true, previous: previous}, nil
 }
 
 // registerOwnedSessionInputs is called only after explicit owning-surface
 // creation/rebinding succeeds. It performs no refresh transaction or reset.
-func registerOwnedSessionInputs(store session.Store, sess *session.Session, pair sessionInputSelection) {
+func RegisterOwnedSessionInputs(store session.Store, sess *session.Session, pair SessionInputSelection) {
 	if sess == nil {
 		return
 	}
@@ -222,31 +222,45 @@ func registerOwnedSessionInputs(store session.Store, sess *session.Session, pair
 	if err != nil || persisted == nil {
 		return
 	}
-	binding := inputBinding(sess.Agent, effectiveSessionDirectory(sess))
+	binding := InputBinding(sess.Agent, effectiveSessionDirectory(sess))
 	key, err := sessionInputKey(store, sess.ID)
 	if err != nil {
 		return
 	}
-	c := processSessionInputs
+	c := ProcessSessionInputs()
 	c.mu.Lock()
 	e := c.entries[key]
-	if e != nil && e.selection != nil && e.binding == binding && e.selection.Prompt == pair.Prompt && equalSessionTools(e.selection.Tools, pair.Tools) {
+	if e != nil && e.selection != nil && e.binding == binding && e.selection.Prompt == pair.Prompt && EqualSessionTools(e.selection.Tools, pair.Tools) {
 		c.mu.Unlock()
 		return
 	}
 	c.mu.Unlock()
-	ticket, err := c.acquireFresh(ctx, store, sess.ID, binding)
+	ticket, err := c.AcquireFresh(ctx, store, sess.ID, binding)
 	if err != nil {
 		return
 	}
-	defer ticket.fail()
+	defer ticket.Fail()
 	if ticket.owner {
-		ticket.finish(pair)
+		ticket.Finish(pair)
 	}
 }
 
 // Compatibility access never elects a refresh owner. After a session has been
 // selected, however, a metadata-warmed runtime must not bypass that selection.
-func runtimeHasSelectedInputs(rt *serveRuntime, selection *sessionInputSelection) bool {
+func runtimeHasSelectedInputs(rt *serveRuntime, selection *SessionInputSelection) bool {
 	return selection == nil || (rt != nil && rt.inputs.Load() == selection)
 }
+
+// ProcessSessionInputs returns the single process-owned input coordinator.
+func ProcessSessionInputs() *SessionInputCoordinator { return processSessionInputs }
+
+// SwapProcessSessionInputs temporarily replaces the process coordinator and returns
+// an exact-pointer restore function. Callers must serialize swaps with its users.
+func SwapProcessSessionInputs(c *SessionInputCoordinator) func() {
+	previous := processSessionInputs
+	processSessionInputs = c
+	return func() { processSessionInputs = previous }
+}
+
+// Owner reports whether this ticket owns selection preparation.
+func (t *SessionInputTicket) Owner() bool { return t.owner }

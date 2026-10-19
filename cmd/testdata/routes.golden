@@ -1,104 +1,125 @@
-extensions * /admin/extensions/activate serve-auth
-extensions * /admin/extensions/config serve-auth
-extensions * /admin/extensions/reload serve-auth
-extensions * /admin/extensions/status serve-auth
-extensions * /extensions/ serve-auth
-hub * / hub-mux-auth
-hub * /api/attention hub-mux-auth
-hub * /api/attention/clear hub-mux-auth
-hub * /api/attention/seen hub-mux-auth
-hub * /api/connect node-or-registration-auth
-hub * /api/delegations hub-or-node-auth
-hub * /api/delegations/ hub-or-node-auth
-hub * /api/nodes hub-mux-auth
-hub * /api/nodes/ hub-mux-auth
-hub * /api/nodes/order hub-or-node-auth
-hub * /api/nodes/test hub-mux-auth
-hub * /api/register-node node-or-registration-auth
-hub * /api/register-node/ node-or-registration-auth
-hub * /api/registration-info hub-mux-auth
-hub * /dist/hub.css public
-hub * /dist/hub.js public
-hub * /healthz public
-hub * /node/ hub-mux-auth
-passkey * /api/auth/bootstrap/register/begin outer-passkey-auth
-passkey * /api/auth/bootstrap/register/finish outer-passkey-auth
-passkey * /api/auth/bootstrap/verify outer-passkey-auth
-passkey * /api/auth/credentials outer-passkey-auth
-passkey * /api/auth/credentials/ outer-passkey-auth
-passkey * /api/auth/credentials/register/begin outer-passkey-auth
-passkey * /api/auth/credentials/register/finish outer-passkey-auth
-passkey * /api/auth/login/begin outer-passkey-auth
-passkey * /api/auth/login/finish outer-passkey-auth
-passkey * /api/auth/logout outer-passkey-auth
-passkey * /api/auth/native/authorize outer-passkey-auth
-passkey * /api/auth/native/redeem outer-passkey-auth
-passkey * /api/auth/reauth/begin outer-passkey-auth
-passkey * /api/auth/reauth/finish outer-passkey-auth
-passkey * /api/auth/recovery/register/begin outer-passkey-auth
-passkey * /api/auth/recovery/register/finish outer-passkey-auth
-passkey * /api/auth/recovery/verify outer-passkey-auth
-passkey * /api/auth/session outer-passkey-auth
-passkey * /api/auth/sessions/revoke-others outer-passkey-auth
-passkey * /auth/login outer-passkey-auth
-passkey * /auth/native/ outer-passkey-auth
-passkey * /auth/recover outer-passkey-auth
-passkey * /auth/setup outer-passkey-auth
-web * / public
-web * / public
-web * /api/sessions/ serve-auth
-web * /auth/security public
-web * /dist/hub.css public
-web * /dist/hub.js public
-web * /files/ serve-auth
-web * /healthz public
-web * /images/ serve-auth
-web * /media/ serve-auth
-web * /uploads/ serve-auth
-web * /v1/attention serve-auth
-web * /v1/capabilities serve-auth
-web * /v1/chat/completions serve-auth
-web * /v1/events serve-auth
-web * /v1/events/poll serve-auth
-web * /v1/live/sessions serve-auth
-web * /v1/live/sessions/ serve-auth
-web * /v1/mcp/catalogue serve-auth
-web * /v1/mcp/oauth/callback public
-web * /v1/mcp/oauth/flows/ serve-auth
-web * /v1/mcp/servers serve-auth
-web * /v1/mcp/servers/ serve-auth
-web * /v1/mentions/search serve-auth
-web * /v1/messages serve-auth
-web * /v1/models serve-auth
-web * /v1/project-directories serve-auth
-web * /v1/projects serve-auth
-web * /v1/projects/ serve-auth
-web * /v1/projects/order serve-auth
-web * /v1/providers serve-auth
-web * /v1/push/subscribe serve-auth
-web * /v1/responses serve-auth
-web * /v1/responses/ serve-auth
-web * /v1/sessions serve-auth
-web * /v1/sessions/ serve-auth
-web * /v1/sessions/pinned-order serve-auth
-web * /v1/sessions/search serve-auth
-web * /v1/sessions/status serve-auth
-web * /v1/sharing/capabilities serve-auth
-web * /v1/sidebar serve-auth
-web * /v1/transcribe serve-auth
-web * /v1/worktrees serve-auth
-web * /v1/worktrees/assisted-merge serve-auth
-web * /v1/worktrees/diff serve-auth
-web * /v1/worktrees/merge serve-auth
-web * /v1/worktrees/promote serve-auth
-web * /v2/jobs serve-auth
-web * /v2/jobs/ serve-auth
-web * /v2/runs serve-auth
-web * /v2/runs/ serve-auth
-web GET /v1/live/sessions/{liveID}/audio serve-auth
-widgets * /admin/widgets/ serve-auth
-widgets * /admin/widgets/reload serve-auth
-widgets * /admin/widgets/status serve-auth
-widgets * /admin/widgets/stop serve-auth
-widgets * /widgets serve-auth
-widgets * /widgets/ serve-auth
+extensions * /admin/extensions/activate serve-auth wrappers=auth(cors(h))
+extensions * /admin/extensions/config serve-auth wrappers=auth(cors(h))
+extensions * /admin/extensions/reload serve-auth wrappers=auth(cors(h))
+extensions * /admin/extensions/status serve-auth wrappers=auth(cors(h))
+extensions * /extensions/ serve-auth wrappers=auth(h)
+hub * / outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/attention outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/attention/clear outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/attention/seen outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/connect outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS wrappers=h
+hub * /api/delegations outer-admits=hub-bearer,node-missing,node-bad,node-good,node-unknown,OPTIONS wrappers=h
+hub * /api/delegations/ outer-admits=hub-bearer,node-missing,node-bad,node-good,node-unknown,OPTIONS wrappers=h
+hub * /api/nodes outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/nodes/ outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/nodes/order outer-admits=hub-bearer,node-missing,node-bad,node-good,node-unknown,OPTIONS wrappers=h
+hub * /api/nodes/test outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/register-node outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS wrappers=h
+hub * /api/register-node/ outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS wrappers=h
+hub * /api/registration-info outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /dist/hub.css outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS wrappers=h
+hub * /dist/hub.js outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS wrappers=h
+hub * /healthz outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS wrappers=h
+hub * /node/ outer-admits=hub-bearer,OPTIONS wrappers=h
+passkey * /api/auth/bootstrap/register/begin outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/bootstrap/register/finish outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/bootstrap/verify outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/credentials outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/credentials/ outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/credentials/register/begin outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/credentials/register/finish outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/login/begin outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/login/finish outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/logout outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/native/authorize outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/native/redeem outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/reauth/begin outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/reauth/finish outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/recovery/register/begin outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/recovery/register/finish outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/recovery/verify outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /api/auth/session outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /api/auth/sessions/revoke-others outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /auth/login outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /auth/native/ outer-admits=hub-bearer,OPTIONS,session wrappers=h
+passkey * /auth/recover outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+passkey * /auth/setup outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS,session wrappers=h
+web * / public wrappers=cors(h)
+web * / public wrappers=cors(h)
+web * /api/sessions/ serve-auth wrappers=auth(cors(h))
+web * /auth/security public wrappers=h
+web * /dist/hub.css public wrappers=h
+web * /dist/hub.js public wrappers=h
+web * /files/ serve-auth wrappers=auth(cors(h))
+web * /healthz public wrappers=h
+web * /images/ serve-auth wrappers=auth(cors(h))
+web * /media/ serve-auth wrappers=auth(cors(h))
+web * /uploads/ serve-auth wrappers=auth(cors(h))
+web * /v1/attention serve-auth wrappers=auth(cors(h))
+web * /v1/capabilities serve-auth wrappers=auth(cors(h))
+web * /v1/chat/completions serve-auth wrappers=auth(cors(h))
+web * /v1/events serve-auth wrappers=auth(cors(h))
+web * /v1/events/poll serve-auth wrappers=auth(cors(h))
+web * /v1/live/sessions serve-auth wrappers=auth(cors(h))
+web * /v1/live/sessions/ serve-auth wrappers=auth(cors(h))
+web * /v1/mcp/catalogue serve-auth wrappers=auth(cors(h))
+web * /v1/mcp/oauth/callback public wrappers=h
+web * /v1/mcp/oauth/flows/ serve-auth wrappers=auth(cors(h))
+web * /v1/mcp/servers serve-auth wrappers=auth(cors(h))
+web * /v1/mcp/servers/ serve-auth wrappers=auth(cors(h))
+web * /v1/mentions/search serve-auth wrappers=auth(cors(h))
+web * /v1/messages serve-auth wrappers=auth(cors(h))
+web * /v1/models serve-auth wrappers=auth(cors(h))
+web * /v1/project-directories serve-auth wrappers=auth(cors(h))
+web * /v1/projects serve-auth wrappers=auth(cors(h))
+web * /v1/projects/ serve-auth wrappers=auth(cors(h))
+web * /v1/projects/order serve-auth wrappers=auth(cors(h))
+web * /v1/providers serve-auth wrappers=auth(cors(h))
+web * /v1/push/subscribe serve-auth wrappers=auth(cors(h))
+web * /v1/responses serve-auth wrappers=auth(cors(h))
+web * /v1/responses/ serve-auth wrappers=auth(cors(h))
+web * /v1/sessions serve-auth wrappers=auth(cors(h))
+web * /v1/sessions/ serve-auth wrappers=auth(cors(h))
+web * /v1/sessions/pinned-order serve-auth wrappers=auth(cors(h))
+web * /v1/sessions/search serve-auth wrappers=auth(cors(h))
+web * /v1/sessions/status serve-auth wrappers=auth(cors(h))
+web * /v1/sharing/capabilities serve-auth wrappers=auth(cors(h))
+web * /v1/sidebar serve-auth wrappers=auth(cors(h))
+web * /v1/transcribe serve-auth wrappers=auth(cors(h))
+web * /v1/worktrees serve-auth wrappers=auth(cors(h))
+web * /v1/worktrees/assisted-merge serve-auth wrappers=auth(cors(h))
+web * /v1/worktrees/diff serve-auth wrappers=auth(cors(h))
+web * /v1/worktrees/merge serve-auth wrappers=auth(cors(h))
+web * /v1/worktrees/promote serve-auth wrappers=auth(cors(h))
+web * /v2/jobs serve-auth wrappers=auth(cors(h))
+web * /v2/jobs/ serve-auth wrappers=auth(cors(h))
+web * /v2/runs serve-auth wrappers=auth(cors(h))
+web * /v2/runs/ serve-auth wrappers=auth(cors(h))
+web GET /v1/live/sessions/{liveID}/audio serve-auth wrappers=auth(h)
+widgets * /admin/widgets/ serve-auth wrappers=auth(cors(h))
+widgets * /admin/widgets/reload serve-auth wrappers=auth(cors(h))
+widgets * /admin/widgets/status serve-auth wrappers=auth(cors(h))
+widgets * /admin/widgets/stop serve-auth wrappers=auth(cors(h))
+widgets * /widgets serve-auth wrappers=auth(h)
+widgets * /widgets/ serve-auth wrappers=auth(h)
+
+[outer hub]
+return s.mountBasePath(s.auth(mux))
+
+[outer web]
+if s.jobsV2 != nil && !s.cfg.ui && !s.cfg.api {
+	return s.reloadTransport().Handler(inner)
+}
+prefix := s.cfg.basePath
+mux := http.NewServeMux()
+var handler http.Handler = inner
+if s.browserAuth != nil {
+	handler = s.browserAuth.passkeyAuth(handler)
+}
+mux.Handle(prefix+"/", http.StripPrefix(prefix, handler))
+if s.cfg.ui {
+	mux.HandleFunc("/", s.cors(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, prefix+"/", http.StatusTemporaryRedirect)
+	}))
+}
+return s.reloadTransport().Handler(mux)

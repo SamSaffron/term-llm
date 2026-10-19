@@ -56,7 +56,7 @@ const (
 	defaultResponseRunRetention        = 5 * time.Minute
 	defaultResponseRunReplayLimit      = 2048
 	defaultResponseRunSubscriberBuffer = 256
-	defaultServeRequestTimeout         = 30 * time.Minute
+	DefaultServeRequestTimeout         = 30 * time.Minute
 	responseRunHoldGrace               = 30 * time.Second
 	maxResponseRunDelegationHold       = time.Hour + responseRunHoldGrace
 )

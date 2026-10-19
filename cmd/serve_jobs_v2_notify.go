@@ -13,6 +13,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -280,6 +283,13 @@ func (s *serveServer) notifyQueuedAgentTelegram(ctx context.Context, chatID int6
 	if err := sendTelegramMessage(ctx, token, chatID, message, ""); err != nil {
 		return err
 	}
-	logTelegramNotifySession(ctx, s.cfgRef, chatID, message, io.Discard)
+	s.logTelegramNotifySession(ctx, chatID, message)
 	return nil
+}
+
+func (s *serveServer) logTelegramNotifySession(ctx context.Context, chatID int64, message string) {
+	deps := appnotify.Deps{InitSessionStore: func(cfg *config.Config, warnings io.Writer) (session.Store, func()) {
+		return appruntime.InitSessionStoreWith(cfg, warnings, s.sessionStore)
+	}}
+	appnotify.LogTelegramNotifySession(ctx, deps, s.cfgRef, chatID, message, io.Discard)
 }

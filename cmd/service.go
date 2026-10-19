@@ -3,6 +3,10 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/samsaffron/term-llm/internal/app/reload"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/app/service"
 	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
@@ -86,16 +90,16 @@ var serviceApp = service.App{Hooks: service.Hooks{
 		}
 		return []*pflag.FlagSet{command.Flags(), command.InheritedFlags(), rootCmd.PersistentFlags()}
 	},
-	ResolveWebAuthMode:          resolveServeAuthMode,
-	ResolveHubAuthMode:          resolveHubAuthMode,
-	ValidateBind:                validateHubBind,
-	IsLoopbackHost:              isLoopbackHost,
-	ValidateWebPasskeyTransport: validateWebPasskeyTransport,
-	NormalizeBasePath:           normalizeBasePath,
-	NormalizeHubBasePath:        normalizeHubBasePath,
-	GenerateToken:               generateServeToken,
+	ResolveWebAuthMode:          appserve.ResolveAuthMode,
+	ResolveHubAuthMode:          apphub.ResolveAuthMode,
+	ValidateBind:                apphub.ValidateBind,
+	IsLoopbackHost:              appserver.IsLoopbackHost,
+	ValidateWebPasskeyTransport: appserve.ValidateWebPasskeyTransport,
+	NormalizeBasePath:           appserve.NormalizeBasePath,
+	NormalizeHubBasePath:        apphub.NormalizeBasePath,
+	GenerateToken:               appserve.GenerateToken,
 	OpenBrowser:                 openBrowser,
-	ReplaceProcess:              replaceProcess,
-	OutputIsTerminal:            func(w any) bool { return hubOutputIsTerminal(w) },
-	RegistrationTokenEnv:        hubRegistrationTokenEnv,
+	ReplaceProcess:              reload.ReplaceProcess,
+	OutputIsTerminal:            func(w any) bool { return apphub.OutputIsTerminal(w) },
+	RegistrationTokenEnv:        apphub.RegistrationTokenEnv,
 }}

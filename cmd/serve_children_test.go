@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +18,6 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/cobra"
 )
 
 func TestChildReadRevisionIsSafeForProductionEpochs(t *testing.T) {
@@ -212,7 +213,7 @@ func TestRuntimeSpawnPersistsChildForStats(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := &config.Config{DefaultProvider: "debug", Providers: map[string]config.ProviderConfig{"debug": {Model: "fast", FastModel: "fast"}}, Agents: config.AgentsConfig{SearchPaths: []string{root}}}
-			defaults := serveRuntimeRunnerDefaults(serveAgentRuntimeOptions{cfg: cfg, cmd: &cobra.Command{}, store: store}, serveRuntimeRequest{SessionID: parent.ID}, tools.ModePrompt)
+			defaults := serveRuntimeRunnerDefaults(serveAgentRuntimeOptions{flags: serveRuntimeFixtureOptions(), cfg: cfg, store: store}, serveRuntimeRequest{SessionID: parent.ID}, tools.ModePrompt)
 			cfg.Sessions = config.SessionsConfig{Enabled: true, Path: dbPath}
 			platform := runpkg.PlatformWeb
 			requestParent := parent.ID
@@ -220,7 +221,7 @@ func TestRuntimeSpawnPersistsChildForStats(t *testing.T) {
 				requestParent = ""
 			}
 			if tc.job {
-				defaults = serveJobsRunnerOptions(resolvedApprovalMode{Mode: tools.ModePrompt})
+				defaults = serveJobsRunnerOptions(serveRuntimeFixtureOptions(), false, resolvedApprovalMode{Mode: tools.ModePrompt}, appruntime.SessionStoreOverrides{}, appmemory.Paths{})
 				platform = runpkg.PlatformJob
 			}
 			defaults.Tools = "spawn_agent"

@@ -7,6 +7,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/ask"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -14,23 +15,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *sessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
+func finalizeAskSessionSettings(settings *SessionSettings, sess *session.Session, selected *SessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
 	}
-	sessionID = ensureRequestSessionID(sessionID, resuming)
+	sessionID = EnsureRequestSessionID(sessionID, resuming)
 	settings.SessionID = sessionID
 	baseInputPrompt := settings.SystemPrompt
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, setup)
 	if selected != nil {
 		settings.SystemPrompt = selected.Prompt
 	}
-	alignSettingsToActiveProvider(settings, cfg, provider)
+	AlignSettingsToActiveProvider(settings, cfg, provider)
 	return sessionID, baseInputPrompt
 }
 
-func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *SessionSettings) (*session.Session, *sessionInputTicket, *sessionInputSelection, bool, error) {
+func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *SessionSettings) (*session.Session, *SessionInputTicket, *SessionInputSelection, bool, error) {
 	resuming := cmd.Flags().Changed("resume")
 	if !resuming {
 		return nil, nil, nil, false, nil
@@ -61,12 +62,12 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 
 	// ask applied its provider overrides to cfg before resuming; build the
 	// prompt for that provider/model rather than the agent's preference.
-	promptProvider, promptModel := activeLLMFlags(cfg)
+	promptProvider, promptModel := appruntime.ActiveLLMFlags(cfg)
 	_ = store.SetCurrent(ctx, sess.ID)
 	_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
 	if _, supported := session.AsSessionInputRefresher(store); !supported {
 		var err error
-		settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, agent, CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console"}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
+		settings.SystemPrompt, settings.Tools, err = ResolveSessionPromptTools(cfg, agent, CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
@@ -88,36 +89,36 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore session directory: %v\n", err)
 	}
 	if dir := effectiveSessionDirectory(sess); dir != "" {
-		if canonical, err := canonicalRuntimeDir(dir); err == nil {
+		if canonical, err := CanonicalRuntimeDir(dir); err == nil {
 			settings.BaseDir = canonical
 			settings.ShellWorkingDir = canonical
 			settings.PrimaryWorkspace = canonical
 		}
 	}
 
-	var ticket *sessionInputTicket
-	var selected *sessionInputSelection
+	var ticket *SessionInputTicket
+	var selected *SessionInputSelection
 	if _, supported := session.AsSessionInputRefresher(store); supported {
 		var err error
-		ticket, err = processSessionInputs.acquire(ctx, store, sess.ID, inputBinding(sess.Agent, settings.BaseDir))
+		ticket, err = ProcessSessionInputs().Acquire(ctx, store, sess.ID, InputBinding(sess.Agent, settings.BaseDir))
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
-		selected = ticket.selected()
+		selected = ticket.Selected()
 		if selected != nil {
 			settings.SystemPrompt, settings.Tools = selected.BasePrompt, selected.Tools
 		} else {
 			resumedAgent, err := LoadAgent(sess.Agent, cfg)
 			if err != nil {
-				ticket.fail()
+				ticket.Fail()
 				return nil, ticket, nil, true, err
 			}
-			settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
+			settings.SystemPrompt, settings.Tools, err = ResolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
 				Provider: askProvider, ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
-				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console",
+				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths,
 			}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
 			if err != nil {
-				ticket.fail()
+				ticket.Fail()
 				return nil, ticket, nil, true, err
 			}
 		}

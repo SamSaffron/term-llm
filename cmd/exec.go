@@ -180,7 +180,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		lastTurnForceTool = core.SuggestCommandsToolName
 	}
 
-	runner := newCmdRunner(cfg, cmdRunnerOptions{
+	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
+	runner := NewRunner(cfg, RunnerOptions{
 		Provider:           execProvider,
 		ConfigSet:          true,
 		ConfigProvider:     cfg.Exec.Provider,
@@ -202,8 +203,10 @@ func runExec(cmd *cobra.Command, args []string) error {
 		Debug:              execDebug,
 		DebugRaw:           debugRaw,
 		ErrWriter:          cmd.ErrOrStderr(),
-	}).(*cmdRunner)
-	execEnv, err := runner.prepare(ctx, runpkg.Request{
+		SessionStore:       runtimeSessionStore,
+		MemoryPaths:        runtimeMemoryPaths,
+	})
+	execEnv, err := runner.Prepare(ctx, runpkg.Request{
 		Platform:                runpkg.PlatformExec,
 		DeferSession:            true,
 		Provider:                execProvider,
@@ -227,7 +230,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer execEnv.Close()
-	statsModel = execEnv.llmReq.Model
+	statsModel = execEnv.Request().Model
 
 	for {
 		systemPrompt := prompt.SuggestSystemPrompt(shell, instructions, numSuggestions, execSearch)
@@ -248,11 +251,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 		sink := &execRunSink{progressCh: progressCh, stats: stats, debug: debugMode || debugRaw, debugRaw: debugRaw}
 		result, err := ui.RunWithSpinnerProgressAndHooks(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
 			defer close(progressCh)
-			configureInteractiveSink(execEnv.runtime.toolMgr, sink)
-			llmReq := execEnv.llmReq
+			execEnv.ConfigureInteractiveSink(sink)
+			llmReq := execEnv.Request()
 			stats.SetModel(statsModel)
 			stats.RequestStart()
-			_, runErr := execEnv.runtime.RunWithEvents(ctx, false, false, []core.Message{core.SystemText(systemPrompt), core.UserText(userPrompt)}, llmReq, func(ev core.Event) error {
+			_, runErr := execEnv.RunWithEvents(ctx, false, false, []core.Message{core.SystemText(systemPrompt), core.UserText(userPrompt)}, llmReq, func(ev core.Event) error {
 				sink.Event(ev)
 				return nil
 			})
@@ -266,7 +269,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 			if len(suggestions) == 0 {
 				return nil, fmt.Errorf("no suggestions returned")
 			}
-			return execSuggestionsResult{suggestions: suggestions, engine: execEnv.engine}, nil
+			return execSuggestionsResult{suggestions: suggestions, engine: execEnv.Engine()}, nil
 		}, approvalHooks)
 		tools.ClearApprovalHooks() // Safe to call even if hooks weren't set
 		tools.ClearAskUserHooks()  // Safe to call even if hooks weren't set

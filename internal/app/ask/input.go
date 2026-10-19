@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dustin/go-humanize"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
@@ -247,12 +248,12 @@ func prepareAskStructuredBytes(filename, sourceName string, raw []byte, maxBytes
 	filename = sanitizeAskSourceFilename(filename)
 	if mediaType, extension, width, height, ok := classifyAskImage(raw); ok {
 		filename = askFilenameForMediaType(filename, mediaType, extension)
-		path, err := Uploads.SaveBytes(filename, raw, maxBytes)
+		path, err := uploads.SaveBytesWithLimit(filename, raw, maxBytes)
 		if err != nil {
 			return core.Part{}, "", fmt.Errorf("stage %s image: %w", sourceName, err)
 		}
-		sendBytes, sendMediaType := Uploads.ResizeImage(raw, mediaType)
-		if sendWidth, sendHeight := Uploads.ImageDimensions(sendBytes); sendWidth > 0 && sendHeight > 0 {
+		sendBytes, sendMediaType := uploads.ResizeImageForLLMQuiet(raw, mediaType)
+		if sendWidth, sendHeight := uploads.ImageDisplayDimensions(sendBytes); sendWidth > 0 && sendHeight > 0 {
 			width, height = sendWidth, sendHeight
 		}
 		return core.Part{
@@ -273,12 +274,12 @@ func prepareAskStructuredBytes(filename, sourceName string, raw []byte, maxBytes
 		if filename == "stdin" {
 			filename = "stdin.txt"
 		}
-		mediaType = Uploads.NormalizeMediaType(filename, http.DetectContentType(raw), raw)
+		mediaType = uploads.NormalizeMediaType(filename, http.DetectContentType(raw), raw)
 	} else {
-		mediaType = Uploads.NormalizeMediaType(filename, http.DetectContentType(raw), raw)
+		mediaType = uploads.NormalizeMediaType(filename, http.DetectContentType(raw), raw)
 		filename = askFilenameForMediaType(filename, mediaType, askUploadExtension(mediaType))
 	}
-	path, err := Uploads.SaveBytes(filename, raw, maxBytes)
+	path, err := uploads.SaveBytesWithLimit(filename, raw, maxBytes)
 	if err != nil {
 		return core.Part{}, "", fmt.Errorf("stage %s file: %w", sourceName, err)
 	}
@@ -518,7 +519,7 @@ func classifyAskImage(raw []byte) (mediaType, extension string, width, height in
 		return "", "", 0, 0, false
 	}
 	w, h := int64(cfg.Width), int64(cfg.Height)
-	if w <= 0 || h <= 0 || w > Uploads.MaxImagePixels || h > Uploads.MaxImagePixels/w {
+	if w <= 0 || h <= 0 || w > uploads.MaxImagePixels || h > uploads.MaxImagePixels/w {
 		return "", "", 0, 0, false
 	}
 	switch strings.ToLower(format) {
@@ -628,7 +629,7 @@ func GrantUploadedFileReads(toolMgr *tools.ToolManager, messages []core.Message)
 	if toolMgr == nil || toolMgr.ApprovalMgr == nil {
 		return
 	}
-	root := Uploads.Dir()
+	root := uploads.Dir()
 	if root == "" {
 		return
 	}

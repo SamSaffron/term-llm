@@ -180,7 +180,7 @@ func truncateChildText(text string, limit int) string {
 // children's results. The runtime is retained for the whole run, so a lifecycle
 // turn keeps the child's history, tools and approvals, while every turn still
 // goes through the ordinary response-run ownership.
-func (h *childRunHandle) Execute(ctx context.Context, env *cmdRunEnvironment, sink runpkg.EventSink) (runpkg.Result, error) {
+func (h *childRunHandle) Execute(ctx context.Context, env *PreparedRun, sink runpkg.EventSink) (runpkg.Result, error) {
 	if h == nil || h.srv == nil || env == nil || env.runtime == nil {
 		return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: errors.New("hosted child runtime is unavailable")}
 	}

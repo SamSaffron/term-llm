@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 )
 
@@ -18,15 +19,11 @@ func installShutdownFileTrackStore(t *testing.T) (*filetrack.Store, string) {
 
 	closeFileTrackingStore()
 	path := filepath.Join(t.TempDir(), "file_history.db")
-	store, err := filetrack.Open(path, filetrack.Options{})
-	if err != nil {
-		t.Fatal(err)
+	cfg := &config.Config{FileTracking: config.FileTrackingConfig{Enabled: true, Path: path}}
+	store := fileTrackingStore(cfg)
+	if store == nil {
+		t.Fatal("file tracking store unavailable")
 	}
-
-	fileTrackMu.Lock()
-	fileTrackStore = store
-	fileTrackKey = "shutdown-test"
-	fileTrackMu.Unlock()
 	t.Cleanup(closeFileTrackingStore)
 	return store, path
 }

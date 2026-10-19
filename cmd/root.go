@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"io"
 	"log"
 	"os"
@@ -216,7 +217,7 @@ func Execute() {
 		}
 	}
 	stopReload := restart.Default.Listen()
-	publisher := process.Start(versionString(), reloadExecutable)
+	publisher := process.Start(versionString(), reload.Executable())
 	err := executeWithArgs(os.Args[1:])
 	stopReload()
 	publisher.Stop()

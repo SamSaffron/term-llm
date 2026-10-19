@@ -792,7 +792,7 @@ func TestServeHTTPHandler_MountsJobsOnlyAtRoot(t *testing.T) {
 }
 
 func TestQueueAgentCombinedWebJobsCreatesJob(t *testing.T) {
-	mgr := newJobsV2ManagerWithoutLoops(t)
+	mgr := newJobsV2HostManager(t, 0, map[jobsV2RunnerType]jobsV2Runner{}, nil)
 	srv := &serveServer{
 		cfg:    serveServerConfig{ui: true, basePath: "/ui", requireAuth: true, token: "local-token"},
 		jobsV2: mgr,
@@ -806,6 +806,7 @@ func TestQueueAgentCombinedWebJobsCreatesJob(t *testing.T) {
 	}
 	runtime := &serveRuntime{toolMgr: toolMgr}
 	configureServeRuntimeTools(runtime, serveAgentRuntimeOptions{
+		flags:  serveRuntimeFixtureOptions(),
 		hasWeb: true, jobsServerURL: server.URL + "/ui", jobsServerToken: "local-token",
 		approval: resolvedApprovalMode{Mode: tools.ModeYolo},
 	})
@@ -1780,26 +1781,6 @@ func TestAbbreviatePath(t *testing.T) {
 	got = abbreviatePath("/tmp/other.txt")
 	if got != "/tmp/other.txt" {
 		t.Fatalf("abbreviatePath(%q) = %q, want unchanged", "/tmp/other.txt", got)
-	}
-}
-
-func TestParseDataURL(t *testing.T) {
-	mt, b64 := parseDataURL("data:image/jpeg;base64,/9j/4AAQ")
-	if mt != "image/jpeg" {
-		t.Fatalf("media type = %q, want image/jpeg", mt)
-	}
-	if b64 != "/9j/4AAQ" {
-		t.Fatalf("base64 = %q, want /9j/4AAQ", b64)
-	}
-
-	mt, b64 = parseDataURL("not-a-data-url")
-	if mt != "" || b64 != "" {
-		t.Fatalf("expected empty for invalid data URL, got %q %q", mt, b64)
-	}
-
-	mt, b64 = parseDataURL("data:text/plain;charset=utf-8,hello")
-	if mt != "" || b64 != "" {
-		t.Fatalf("expected empty for non-base64 data URL, got %q %q", mt, b64)
 	}
 }
 

@@ -24,7 +24,9 @@ func TestServeWidgetsAreOptOut(t *testing.T) {
 	if enableFlag.DefValue != "false" {
 		t.Fatalf("serve --enable-widgets default = %q, want false", enableFlag.DefValue)
 	}
+}
 
+func TestServeWidgetsEnabledContract(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		hasWeb   bool
@@ -49,7 +51,7 @@ func TestDeprecatedEnableWidgetsWarning(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
 
-	warnDeprecatedEnableWidgets(cmd)
+	warnDeprecatedEnableWidgets(cmd.Flags().Changed("enable-widgets"), &stderr)
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr without flag = %q, want empty", stderr.String())
 	}
@@ -57,7 +59,7 @@ func TestDeprecatedEnableWidgetsWarning(t *testing.T) {
 	if err := cmd.Flags().Set("enable-widgets", "true"); err != nil {
 		t.Fatal(err)
 	}
-	warnDeprecatedEnableWidgets(cmd)
+	warnDeprecatedEnableWidgets(cmd.Flags().Changed("enable-widgets"), &stderr)
 
 	warning := stderr.String()
 	for _, want := range []string{"--enable-widgets is deprecated", "has no effect", "--disable-widgets"} {

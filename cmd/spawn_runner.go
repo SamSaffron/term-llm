@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -38,6 +39,8 @@ type SpawnAgentRunner struct {
 	parentApprovalMgr *tools.ApprovalManager
 	store             session.Store // Session store for tracking subagent turns
 	parentSessionID   string        // Fallback parent session ID when execution context has none
+	sessionStore      runtime.SessionStoreOverrides
+	memoryPaths       appmemory.Paths
 	parentBaseDir     string        // Fallback BaseDir for legacy callers
 	parentBaseDirFunc func() string // Returns the parent's current per-session BaseDir
 	publisherMu       sync.RWMutex
@@ -99,23 +102,6 @@ func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentAppro
 	}, nil
 }
 
-// SetBaseDir sets the fallback per-session BaseDir inherited by spawned agents.
-func (r *SpawnAgentRunner) SetBaseDir(dir string) {
-	if r != nil {
-		r.parentBaseDir = strings.TrimSpace(dir)
-	}
-}
-
-// SetBaseDirFunc sets a resolver for the parent's current BaseDir. Interactive
-// sessions can switch worktrees after the runner is wired, so a copied path is
-// not sufficient. It must be configured before the runner is installed on a
-// SpawnAgentTool; the resolver itself must be safe for concurrent calls.
-func (r *SpawnAgentRunner) SetBaseDirFunc(fn func() string) {
-	if r != nil {
-		r.parentBaseDirFunc = fn
-	}
-}
-
 // SetMediaPublisher propagates a serve-owned publisher into child registries.
 func (r *SpawnAgentRunner) SetMediaPublisher(publisher tools.MediaPublisher) {
 	if r != nil {
@@ -154,18 +140,6 @@ func (r *SpawnAgentRunner) currentChildRunObserver() childRunObserver {
 	r.observerMu.RLock()
 	defer r.observerMu.RUnlock()
 	return r.observer
-}
-
-func (r *SpawnAgentRunner) currentBaseDir() string {
-	if r != nil && r.parentBaseDirFunc != nil {
-		if dir := strings.TrimSpace(r.parentBaseDirFunc()); dir != "" {
-			return dir
-		}
-	}
-	if r == nil {
-		return ""
-	}
-	return strings.TrimSpace(r.parentBaseDir)
 }
 
 // SetWarnFunc sets a function to be called when non-fatal warnings occur
@@ -267,7 +241,7 @@ func (r *SpawnAgentRunner) waitContext(ctx context.Context) error {
 	}
 }
 
-func shutdownSpawnAgentRunner(r *SpawnAgentRunner) {
+func ShutdownSpawnAgentRunner(r *SpawnAgentRunner) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = r.Shutdown(ctx)
@@ -530,7 +504,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	executionRequest.ParentModel = runpkg.ParentModel{Provider: state.Provider, Model: state.Model}
 	runner := &cmdRunner{baseCfg: r.cfg, defaults: cmdRunnerOptions{
 		ConfigSet: true, Yolo: r.yoloMode, DefaultMaxTurns: tools.DefaultSubagentMaxTurns,
-		ErrWriter: io.Discard, Store: r.store, ParentApprovalMgr: approvalScope,
+		ErrWriter: io.Discard, Store: r.store, SessionStore: r.sessionStore, MemoryPaths: r.memoryPaths, ParentApprovalMgr: approvalScope,
 		ChildRunObserver: r.currentChildRunObserver(),
 	}}
 	_, _, selected, _, err := runner.resolveRunModel(ctx, executionRequest)
@@ -897,7 +871,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *engine.En
 
 func (r *SpawnAgentRunner) setupAgentToolsWithBudget(cfg *config.Config, engine *engine.Engine, agent *agents.Agent, depth int, childSessionID string, remaining int) (*tools.ToolManager, error) {
 	baseDir := r.currentBaseDir()
-	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, tools.DefaultSubagentMaxTurns, baseDir)
+	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{MemoryPaths: r.memoryPaths}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, tools.DefaultSubagentMaxTurns, baseDir)
 	if err != nil {
 		return nil, err
 	}
@@ -918,7 +892,7 @@ func (r *SpawnAgentRunner) setupAgentToolsWithBudget(cfg *config.Config, engine 
 			return nil, fmt.Errorf("failed to set parent approval manager: %w", err)
 		}
 	}
-	nested, err := wireSpawnAgentWithBudget(cfg, toolMgr, r.yoloMode, r.store, childSessionID, depth, &remaining)
+	nested, err := wireSpawnAgentWithBudget(cfg, toolMgr, r.yoloMode, r.store, childSessionID, depth, &remaining, r.sessionStore, r.memoryPaths)
 	if err != nil {
 		return nil, err
 	}

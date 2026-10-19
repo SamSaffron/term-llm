@@ -14,6 +14,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	appchat "github.com/samsaffron/term-llm/internal/app/chat"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -22,7 +24,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/providerspec"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -452,12 +453,13 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	rawConfigInstructions := cfg.Chat.Instructions
 
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup.
+	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
 	// Store warnings are raised in the background for the whole TUI lifetime, so
 	// they route through the program instead of stderr once it is rendering.
 	storeWarnings, finishWarningsBuild := appchat.NewSessionWarningWriter(cmd.ErrOrStderr(), launch.warningSink)
 	defer finishWarningsBuild()
 	warnings := storeWarnings
-	store, storeCleanup := InitSessionStore(cfg, storeWarnings)
+	store, storeCleanup := runtime.InitSessionStoreWith(cfg, storeWarnings, runtimeSessionStore)
 	var spawnRunner *SpawnAgentRunner
 	// Failure path: release everything constructed so far, newest first. The
 	// success path hands cleanup ownership to the returned runtime.
@@ -505,22 +507,22 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		return nil, err
 	}
 
-	var inputTicket *sessionInputTicket
-	var selectedInputs *sessionInputSelection
+	var inputTicket *SessionInputTicket
+	var selectedInputs *SessionInputSelection
 	if sess != nil {
 		if _, supported := session.AsSessionInputRefresher(store); supported {
-			inputTicket, err = processSessionInputs.acquire(ctx, store, sess.ID, inputBinding(effectiveAgent, runtimeDir))
+			inputTicket, err = ProcessSessionInputs().Acquire(ctx, store, sess.ID, InputBinding(effectiveAgent, runtimeDir))
 			if err != nil {
 				return nil, err
 			}
-			defer inputTicket.fail()
-			selectedInputs = inputTicket.selected()
+			defer inputTicket.Fail()
+			selectedInputs = inputTicket.Selected()
 		}
 	}
 	// Resolve all settings: CLI > agent > config (resume overrides applied below).
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
 		Provider:         chatProvider,
-		inputs:           selectedInputs,
+		Inputs:           selectedInputs,
 		ToolsSet:         cmd.Flags().Changed("tools"),
 		SystemMessageSet: cmd.Flags().Changed("system"),
 		Tools:            chatTools,
@@ -534,6 +536,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		Search:           chatSearch,
 		NoSearch:         chatNoSearch,
 		Platform:         "chat",
+		MemoryPaths:      runtimeMemoryPaths,
 	}, cfg.Chat.Provider, cfg.Chat.Model, rawConfigInstructions, cfg.Chat.MaxTurns, 200, runtimeDir)
 	if err != nil {
 		return nil, err
@@ -635,7 +638,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	})
 
 	// Initialize tools if enabled (using possibly-updated settings from resume)
-	alignSettingsToActiveProvider(&settings, cfg, provider)
+	AlignSettingsToActiveProvider(&settings, cfg, provider)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
@@ -689,7 +692,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 			parentSessionID = sess.ID
 		}
 		var wireErr error
-		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, store, parentSessionID)
+		spawnRunner, wireErr = WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, store, parentSessionID, 0, runtimeSessionStore, runtimeMemoryPaths)
 		if wireErr != nil {
 			return nil, wireErr
 		}
@@ -729,6 +732,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		if err != nil {
 			return nil, fmt.Errorf("initialize isolated skill runner: %w", err)
 		}
+		spawnRunner.SetRuntimeInputs(runtimeSessionStore, runtimeMemoryPaths)
 		spawnRunner.SetBaseDirFunc(func() string {
 			if toolMgr != nil {
 				if dir := strings.TrimSpace(toolMgr.BaseDir()); dir != "" {
@@ -755,10 +759,10 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	providerKey := cfg.DefaultProvider
 
 	if inputTicket != nil {
-		if inputTicket.owner {
+		if inputTicket.Owner() {
 			result, refreshErr := func() (session.SessionInputRefreshResult, error) {
 				refresher, _ := session.AsSessionInputRefresher(store)
-				return refresher.RefreshSessionInputs(ctx, sess.ID, cfg.Chat.Instructions, settings.Tools, equalSessionTools)
+				return refresher.RefreshSessionInputs(ctx, sess.ID, cfg.Chat.Instructions, settings.Tools, EqualSessionTools)
 			}()
 			if refreshErr != nil {
 				return nil, refreshErr
@@ -824,9 +828,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	if toolMgr != nil && toolMgr.Registry != nil {
 		toolMgr.Registry.SetAgentModelAdmission(liveState, func(ctx context.Context, name, override string, inherited modelpolicy.Policy, parent runpkg.ParentModel) error {
-			checker := &cmdRunner{baseCfg: cfg}
-			_, _, _, _, err := checker.resolveRunModel(ctx, runpkg.Request{AgentName: name, Model: override, ModelPolicy: inherited, ParentModel: parent})
-			return err
+			return NewRunner(cfg, RunnerOptions{}).CheckAgentModel(ctx, runpkg.Request{AgentName: name, Model: override, ModelPolicy: inherited, ParentModel: parent})
 		})
 	}
 	model.SetModelSwitchHook(func(key, name string) {
@@ -854,8 +856,8 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		model.SetFooterWarning("agent output_tool is ignored in chat; use ask for tool-captured output")
 	}
 	model.SetRootContext(ctx)
-	agentOwner := &agentHostOwner{}
-	model.SetRunner(newCmdRunner(cfg, cmdRunnerOptions{
+	agentOwner := &runtime.AgentHostOwner{}
+	model.SetRunner(NewCmdRunner(cfg, RunnerOptions{
 		AgentOwner:         agentOwner,
 		Provider:           chatProvider,
 		ConfigSet:          true,
@@ -881,10 +883,12 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		DebugRaw:           debugRaw,
 		ErrWriter:          appchat.ChildProgressWriter(),
 		Store:              store,
+		SessionStore:       runtimeSessionStore,
+		MemoryPaths:        runtimeMemoryPaths,
 		ParentApprovalMgr:  approvalMgr,
 	}))
 	model.SetChildRunner(spawnRunner)
-	model.SetCommitMutationCoordinator(commitRootCoordinator{})
+	model.SetCommitMutationCoordinator(CommitRootCoordinator{})
 	model.SetMainRunManager(mainRuns)
 
 	// Wire handover auto-send if pending from previous iteration
@@ -929,10 +933,10 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		if targetAgent != agent {
 			systemMessage = ""
 		}
-		return resolveChatRuntimeSystemContextWithConfig(cmd, cfg, targetAgent, providerKey, modelName, dir, rawConfigInstructions, systemMessage)
+		return resolveChatRuntimeSystemContextWithConfig(cmd, cfg, targetAgent, providerKey, modelName, dir, rawConfigInstructions, systemMessage, runtimeMemoryPaths)
 	}, currentRuntimeContext)
 	model.SetHandoverSystemPromptResolver(func(targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
-		return resolveChatHandoverSystemPrompt(cmd, targetAgent, providerKey, modelName)
+		return resolveChatHandoverSystemPrompt(cmd, targetAgent, providerKey, modelName, runtimeMemoryPaths)
 	})
 	model.SetAgentLister(ListAgentNames)
 	if agent != nil {
@@ -943,7 +947,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	cleanupResources := func() {
 		cleanupOnce.Do(func() {
 			if spawnRunner != nil {
-				shutdownSpawnAgentRunner(spawnRunner)
+				ShutdownSpawnAgentRunner(spawnRunner)
 			}
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = agentOwner.Shutdown(shutdownCtx)
@@ -960,12 +964,12 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 
 	built = true
-	if inputTicket != nil && inputTicket.owner {
-		inputTicket.finish(sessionInputSelection{BasePrompt: settings.SystemPrompt, Prompt: cfg.Chat.Instructions, Tools: settings.Tools})
+	if inputTicket != nil && inputTicket.Owner() {
+		inputTicket.Finish(SessionInputSelection{BasePrompt: settings.SystemPrompt, Prompt: cfg.Chat.Instructions, Tools: settings.Tools})
 	}
 	if _, supported := session.AsSessionInputRefresher(store); supported {
 		model.SetSessionInputsObserver(func(bound *session.Session, prompt, toolsSetting string) {
-			registerOwnedSessionInputs(store, bound, sessionInputSelection{BasePrompt: prompt, Prompt: prompt, Tools: toolsSetting})
+			RegisterOwnedSessionInputs(store, bound, SessionInputSelection{BasePrompt: prompt, Prompt: prompt, Tools: toolsSetting})
 		})
 	}
 	return &chatSessionRuntime{
@@ -1419,23 +1423,23 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	return nextResumeID, nextHandoverAutoSend, nil
 }
 
-func resolveChatHandoverSystemPrompt(cmd *cobra.Command, targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
+func resolveChatHandoverSystemPrompt(cmd *cobra.Command, targetAgent *agents.Agent, providerKey, modelName string, paths appmemory.Paths) (string, error) {
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return "", err
 	}
-	return resolveChatHandoverSystemPromptWithConfig(cmd, cfg, targetAgent, providerKey, modelName)
+	return resolveChatHandoverSystemPromptWithConfig(cmd, cfg, targetAgent, providerKey, modelName, paths)
 }
 
-func resolveChatHandoverSystemPromptWithConfig(cmd *cobra.Command, cfg *config.Config, targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
+func resolveChatHandoverSystemPromptWithConfig(cmd *cobra.Command, cfg *config.Config, targetAgent *agents.Agent, providerKey, modelName string, paths appmemory.Paths) (string, error) {
 	if targetAgent == nil {
 		return "", nil
 	}
-	resolved, err := resolveChatRuntimeSystemContextWithConfig(cmd, cfg, targetAgent, providerKey, modelName, "", cfg.Chat.Instructions, "")
+	resolved, err := resolveChatRuntimeSystemContextWithConfig(cmd, cfg, targetAgent, providerKey, modelName, "", cfg.Chat.Instructions, "", paths)
 	return resolved.SystemPrompt, err
 }
 
-func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.Config, targetAgent *agents.Agent, providerKey, modelName, runtimeDir, rawConfigInstructions, systemMessage string) (chat.RuntimeSystemContext, error) {
+func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.Config, targetAgent *agents.Agent, providerKey, modelName, runtimeDir, rawConfigInstructions, systemMessage string, paths appmemory.Paths) (chat.RuntimeSystemContext, error) {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -1471,6 +1475,7 @@ func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.C
 		NoSearch:        chatNoSearch,
 		MaxOutputTokens: 0,
 		Platform:        "chat",
+		MemoryPaths:     paths,
 	}, providerKey, modelName, rawConfigInstructions, cfg.Chat.MaxTurns, 200, runtimeDir)
 	if err != nil {
 		return chat.RuntimeSystemContext{}, err
@@ -1493,23 +1498,6 @@ func skillContextApplier(setup *skills.Setup) func(*engine.Engine, *tools.ToolMa
 		engine.UnregisterTool(tools.SearchSkillsToolName)
 		RegisterSkillToolWithEngine(engine, toolMgr, setup)
 	}
-}
-
-func effectiveSessionDirectory(sess *session.Session) string {
-	if sess != nil {
-		if dir := strings.TrimSpace(sess.WorktreeDir); dir != "" {
-			return dir
-		}
-		// Web/telegram sessions historically recorded the daemon process CWD.
-		// A local interactive resume must not treat that as user-selected state.
-		if sess.Origin != session.OriginWeb && sess.Origin != session.OriginTelegram {
-			if dir := strings.TrimSpace(sess.CWD); dir != "" {
-				return dir
-			}
-		}
-	}
-	cwd, _ := os.Getwd()
-	return cwd
 }
 
 func printChatResumeHint(w io.Writer, store session.Store, sessionID string) {
@@ -1574,93 +1562,10 @@ func resolveChatResumeSession(ctx context.Context, store session.Store, resumeID
 	return sess, nil
 }
 
-func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string {
-	if sess == nil || cfg == nil {
-		return ""
-	}
-
-	resolveKnownProvider := func(candidate string) string {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			return ""
-		}
-		if candidate == "debug" {
-			return candidate
-		}
-		for key := range cfg.Providers {
-			if strings.EqualFold(candidate, key) {
-				return key
-			}
-		}
-		for _, builtIn := range config.GetBuiltInProviderNames() {
-			if strings.EqualFold(candidate, builtIn) {
-				return builtIn
-			}
-		}
-		return ""
-	}
-
-	if known := resolveKnownProvider(sess.ProviderKey); known != "" {
-		return known
-	}
-
-	display := strings.TrimSpace(sess.Provider)
-	if display == "" {
-		return ""
-	}
-	lower := strings.ToLower(display)
-
-	// Custom providers include the provider key in Name() prefix: "<key> (<model>)"
-	for key := range cfg.Providers {
-		lowerKey := strings.ToLower(key)
-		if lower == lowerKey || strings.HasPrefix(lower, lowerKey+" (") {
-			return key
-		}
-	}
-	for _, builtIn := range config.GetBuiltInProviderNames() {
-		lowerBuiltIn := strings.ToLower(builtIn)
-		if lower == lowerBuiltIn || strings.HasPrefix(lower, lowerBuiltIn+" (") {
-			return builtIn
-		}
-	}
-
-	if spec, ok := providerspec.LookupSessionAlias(lower); ok {
-		return spec.Name
-	}
-	if strings.HasPrefix(lower, "debug") {
-		return "debug"
-	}
-	return ""
-}
-
 // getModelName returns the configured model; "" means caller should fall back to extractModelFromProviderName(provider.Name()).
 func getModelName(cfg *config.Config) string {
 	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 		return providerCfg.Model
 	}
 	return ""
-}
-
-// extractModelFromProviderName parses "<Provider> (<model>[, ...])" Name() strings shared by all providers.
-func extractModelFromProviderName(name string) string {
-	if strings.EqualFold(strings.TrimSpace(name), "agy CLI") {
-		// Unlike the other CLI providers, agy intentionally leaves its model empty
-		// so the CLI can select its own default. Do not treat the display label as
-		// a model name and pass `--model "agy CLI"` back to agy.
-		return ""
-	}
-	open := strings.Index(name, "(")
-	if open < 0 {
-		return name
-	}
-	rest := name[open+1:]
-	close := strings.Index(rest, ")")
-	if close < 0 {
-		return name
-	}
-	inner := rest[:close]
-	if comma := strings.Index(inner, ","); comma >= 0 {
-		inner = inner[:comma]
-	}
-	return strings.TrimSpace(inner)
 }

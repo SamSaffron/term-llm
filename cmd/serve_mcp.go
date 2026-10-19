@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/reload"
 	"log"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -60,28 +61,15 @@ func init() {
 	mcpAllowedTools[tools.UnifiedDiffToolName] = true
 }
 
-// mcpAllToolNames returns every tool name the MCP server can expose (for "all").
-func mcpAllToolNames() []string {
+// MCPAllToolNames returns every tool name the MCP server can expose (for "all").
+func MCPAllToolNames() []string {
 	all := make([]string, 0, len(mcpAllLocalTools)+len(mcpAllWebTools))
 	all = append(all, mcpAllLocalTools...)
 	all = append(all, mcpAllWebTools...)
 	return all
 }
 
-type serveMCPOptions struct {
-	Host       string
-	Port       int
-	Token      string
-	Tools      string
-	EditFormat string
-	ReadDirs   []string
-	WriteDirs  []string
-	ShellAllow []string
-	Approval   string
-	Yolo       bool
-	Auto       bool
-	Debug      bool
-}
+type serveMCPOptions = appserve.MCPOptions
 
 var serveMCPFlags serveMCPOptions
 var serveMCPCmd = &cobra.Command{
@@ -142,10 +130,18 @@ func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config, opts *s
 }
 
 func runServeMCP(cmd *cobra.Command, args []string) error {
-	return runServeMCPWithOptions(cmd, args, &serveMCPFlags)
+	approvalOptions := serveMCPFlags
+	invocation := appserve.MCPInvocation{
+		Stdout: cmd.OutOrStdout(),
+		Stderr: cmd.ErrOrStderr(),
+		ResolveApproval: func(cfg *config.Config) (resolvedApprovalMode, error) {
+			return resolveServeMCPApprovalMode(cmd, cfg, &approvalOptions)
+		},
+	}
+	return RunMCP(cmd.Context(), &serveMCPFlags, args, invocation)
 }
 
-func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOptions) error {
+func runServeMCPWithOptions(ctx context.Context, invocation appserve.MCPInvocation, args []string, opts *serveMCPOptions) error {
 	if opts.Tools == "" {
 		return fmt.Errorf("--tools is required\n\nExamples:\n  term-llm serve mcp --tools all\n  term-llm serve mcp --tools read_file,grep,glob,shell")
 	}
@@ -160,7 +156,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	resolvedApproval, err := resolveServeMCPApprovalMode(cmd, cfg, opts)
+	resolvedApproval, err := invocation.ResolveApproval(cfg)
 	if err != nil {
 		return err
 	}
@@ -212,7 +208,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{Headless: true}); err != nil {
 		return err
 	}
-	reportApprovalMode(cmd.ErrOrStderr(), opts.Debug, resolvedApproval, approvalMgr)
+	reportApprovalMode(invocation.Stderr, opts.Debug, resolvedApproval, approvalMgr)
 
 	registry, err := tools.NewLocalToolRegistry(&toolConfig, cfg, approvalMgr)
 	if err != nil {
@@ -312,7 +308,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	// Resolve auth token.
 	token := strings.TrimSpace(opts.Token)
 	if token == "" {
-		token = mcpReloadToken
+		token = reload.MCPToken()
 	}
 	if token == "" {
 		generated, err := generateServeToken()
@@ -328,7 +324,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	server.HandlerMiddleware = restart.Default.Handler
 	server.ConnState = restart.Default.HTTPConnections()
 
-	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
+	runCtx, stop := signal.NotifyContextWithParent(ctx)
 	defer stop()
 
 	url, actualToken, err := server.StartOnAddress(opts.Host, opts.Port, token, mcpTools)
@@ -338,7 +334,7 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 
 	// MCP HTTP is stateless. Keep listeners live until exec (Go sockets are
 	// close-on-exec), so a failed exec leaves the original service usable.
-	stopReload, err := bindProcessReload(ctx, "TERM_LLM_MCP_RELOAD_TOKEN="+actualToken)
+	stopReload, err := reload.Bind(runCtx, "TERM_LLM_MCP_RELOAD_TOKEN="+actualToken)
 	if err != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -354,16 +350,16 @@ func runServeMCPWithOptions(cmd *cobra.Command, args []string, opts *serveMCPOpt
 	}
 	sort.Strings(toolNames)
 
-	fmt.Fprintf(os.Stderr, "MCP server listening on %s\n", url)
-	fmt.Fprintf(os.Stderr, "auth token: %s\n", actualToken)
-	fmt.Fprintf(os.Stderr, "tools: %s\n", strings.Join(toolNames, ", "))
+	fmt.Fprintf(invocation.Stderr, "MCP server listening on %s\n", url)
+	fmt.Fprintf(invocation.Stderr, "auth token: %s\n", actualToken)
+	fmt.Fprintf(invocation.Stderr, "tools: %s\n", strings.Join(toolNames, ", "))
 	if opts.Yolo {
-		fmt.Fprintf(os.Stderr, "yolo: true (all operations auto-approved)\n")
+		fmt.Fprintln(invocation.Stderr, "yolo: true (all operations auto-approved)")
 	} else if opts.Auto {
-		fmt.Fprintf(os.Stderr, "auto: true (unmatched shell and file operations require guardian approval; unavailable reviewer denies)\n")
+		fmt.Fprintln(invocation.Stderr, "auto: true (unmatched shell and file operations require guardian approval; unavailable reviewer denies)")
 	}
 
-	<-ctx.Done()
+	<-runCtx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -379,7 +375,7 @@ func serveMCPToolResult(out core.ToolOutput) mcphttp.ToolResult {
 func parseMCPToolsFlag(value string) []string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "all" || trimmed == "*" {
-		return mcpAllToolNames()
+		return MCPAllToolNames()
 	}
 	parts := strings.Split(value, ",")
 	var result []string
@@ -403,7 +399,7 @@ func validateMCPToolNames(names []string) error {
 		}
 	}
 	if len(invalid) > 0 {
-		allowed := mcpAllToolNames()
+		allowed := MCPAllToolNames()
 		sort.Strings(allowed)
 		return fmt.Errorf("unknown tool(s) for serve mcp: %s\nallowed: %s",
 			strings.Join(invalid, ", "), strings.Join(allowed, ", "))
@@ -426,7 +422,7 @@ func swapEditTool(names []string, oldTool, newTool string) []string {
 
 // MCPToolsFlagCompletion provides completions for the --tools flag on serve mcp.
 func MCPToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	allTools := mcpAllToolNames()
+	allTools := MCPAllToolNames()
 	sort.Strings(allTools)
 
 	// Parse comma-separated list.

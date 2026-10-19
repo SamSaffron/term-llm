@@ -14,10 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/reload"
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"github.com/samsaffron/term-llm/internal/hub"
 )
 
-const hubRegistrationTokenEnv = "TERM_LLM_HUB_REGISTRATION_TOKEN"
+const hubRegistrationTokenEnv = apphub.RegistrationTokenEnv
 
 var hubRegistrationCfg struct {
 	sync.Mutex
@@ -25,7 +27,10 @@ var hubRegistrationCfg struct {
 	tokenFromEnv bool
 }
 
-func init() { captureHubRegistrationEnv() }
+func init() {
+	captureHubRegistrationEnv()
+	reload.RegisterEnviron(hubRegistrationEnviron)
+}
 
 func captureHubRegistrationEnv() {
 	v := strings.TrimSpace(os.Getenv(hubRegistrationTokenEnv))

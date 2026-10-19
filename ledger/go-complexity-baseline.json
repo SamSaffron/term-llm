@@ -298,7 +298,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve.go|cmd||runPlatformSupervisor",
+      "key": ".|cmd/serve_platforms.go|cmd||runPlatformSupervisor",
       "complexity": 24,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -306,7 +306,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve.go|cmd||runServeLegacy",
+      "key": ".|cmd/serve_start.go|cmd||runServeWith",
       "complexity": 88,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -642,7 +642,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_hub_cmd.go|cmd||runServeHub",
+      "key": ".|cmd/serve_hub_cmd.go|cmd||runServeHubWith",
       "complexity": 48,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -682,7 +682,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_jobs_v2.go|cmd|*jobsV2LLMRunner|Run.func1",
+      "key": ".|cmd/jobs_v2_adapter.go|cmd|*jobsV2LLMRunner|Run.func1",
       "complexity": 39,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -706,7 +706,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/serve_jobs_v2.go|cmd||cloneConfigForServeJob",
+      "key": ".|internal/app/runtime/config.go|runtime||CloneConfig",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -802,7 +802,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleCapabilities",
+      "key": ".|cmd/serve_capabilities.go|cmd|*serveServer|handleCapabilities",
       "complexity": 25,
       "owner": "cmd/serve",
       "rationale": "crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; cmd/serve reduction is tracked by M7",
@@ -850,7 +850,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_protocol.go|cmd||jpegEXIFOrientation",
+      "key": ".|internal/app/uploads/image.go|uploads||jpegEXIFOrientation",
       "complexity": 21,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1178,7 +1178,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/serve_steering_wire.go|cmd||normalizeSteeringObject",
+      "key": ".|internal/app/serve/wire/steering.go|wire||NormalizeSteeringObject",
       "complexity": 51,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1250,7 +1250,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/session.go|cmd||resolveSessionPromptTools",
+      "key": ".|cmd/session.go|cmd||ResolveSessionPromptTools",
       "complexity": 46,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -1314,7 +1314,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|internal/app/ask/mcp_feedback.go|ask||EnableMCPServersWithFeedback",
+      "key": ".|internal/app/runtime/mcpstart/mcpstart.go|mcpstart||EnableMCPServersWithFeedback",
       "complexity": 26,
       "owner": "internal/app/ask",
       "rationale": "internal/app/ask extraction owns one ordered domain responsibility; further reduction is tracked by M7",

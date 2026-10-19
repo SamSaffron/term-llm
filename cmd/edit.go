@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/diagnostics"
 	"github.com/samsaffron/term-llm/internal/edit"
@@ -135,6 +137,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
 	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceEdit, cfg, nil, editApproval, editAuto, editYolo)
 	if err != nil {
 		return err
@@ -165,7 +168,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editTools != "" {
 		engine := newEngine(provider, cfg)
 		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
-		runtimeDir, err := canonicalRuntimeDir("")
+		runtimeDir, err := CanonicalRuntimeDir("")
 		if err != nil {
 			return err
 		}
@@ -185,7 +188,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
 		defer toolMgr.ApprovalMgr.Close()
-		wireImageRecorder(toolMgr.Registry, "", "")
+		appmemory.WireImageRecorder(toolMgr.Registry, runtimeMemoryPaths, "", "")
 		// edit runs without a session ID, so file-change recording no-ops;
 		// wiring is kept so recording activates if this flow gains sessions.
 		wireFileRecorder(toolMgr.Registry, cfg)
@@ -204,11 +207,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		toolMgr.SetupEngine(engine)
 
 		// Wire spawn_agent runner if enabled
-		spawnRunner, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, nil, "")
+		spawnRunner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, nil, "", 0, runtimeSessionStore, runtimeMemoryPaths)
 		if err != nil {
 			return err
 		}
-		selected, policy, err := selectRunModel(cloneConfigForServeJob(cfg), modelSelectionInput{})
+		selected, policy, err := selectRunModel(appruntime.CloneConfig(cfg), modelSelectionInput{})
 		if err != nil {
 			return err
 		}

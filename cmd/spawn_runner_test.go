@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -304,9 +306,14 @@ func TestWireSpawnAgentRunnerTracksToolManagerBaseDir(t *testing.T) {
 	if err := toolMgr.SetBaseDir(first); err != nil {
 		t.Fatalf("SetBaseDir first: %v", err)
 	}
-	runner, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, false, nil, "parent-session")
+	sessionStore := appruntime.SessionStoreOverrides{NoSession: true, DBPath: "sessions.db"}
+	paths := appmemory.Paths{DBPath: "memory.db", DefaultDBPath: "default.db"}
+	runner, err := WireSpawnAgentRunnerWithInputs(cfg, toolMgr, false, nil, "parent-session", 0, sessionStore, paths)
 	if err != nil {
-		t.Fatalf("WireSpawnAgentRunnerWithStore: %v", err)
+		t.Fatalf("WireSpawnAgentRunnerWithInputs: %v", err)
+	}
+	if runner.sessionStore != sessionStore || runner.memoryPaths != paths {
+		t.Fatalf("runtime inputs = %#v / %#v, want %#v / %#v", runner.sessionStore, runner.memoryPaths, sessionStore, paths)
 	}
 	if err := toolMgr.SetBaseDir(current); err != nil {
 		t.Fatalf("SetBaseDir current: %v", err)

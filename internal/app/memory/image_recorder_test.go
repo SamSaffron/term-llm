@@ -47,12 +47,14 @@ func TestWireImageRecorderIsLazyAndRecordsWithAttribution(t *testing.T) {
 		t.Fatalf("NewLocalToolRegistry: %v", err)
 	}
 
-	memoryDBPath := filepath.Join(t.TempDir(), "memory.db")
-	t.Setenv("TERM_LLM_MEMORY_DB", "")
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "override", "memory.db")
+	defaultDBPath := filepath.Join(dir, "default", "memory.db")
+	t.Setenv("TERM_LLM_MEMORY_DB", filepath.Join(dir, "env", "memory.db"))
 
 	store := &trackingImageRecordStore{}
 	opens := 0
-	wireImageRecorderWithOpener(registry, memoryDBPath, DefaultDBPath(), "jarvis", "session-123", func(path string) (imageRecordStore, error) {
+	wireImageRecorderWithOpener(registry, Paths{DBPath: memoryDBPath, DefaultDBPath: defaultDBPath}, "jarvis", "session-123", func(path string) (imageRecordStore, error) {
 		opens++
 		if path != memoryDBPath {
 			t.Errorf("opener path = %q, want %q", path, memoryDBPath)

@@ -15,14 +15,13 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
 func TestSessionInputPreparedRuntimeReuseDuringActivity(t *testing.T) {
-	prior := processSessionInputs
-	processSessionInputs = newSessionInputCoordinator()
-	t.Cleanup(func() { processSessionInputs = prior })
+	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
 	ctx := context.Background()
-	store := inputTestStore(t, filepath.Join(t.TempDir(), "sessions.db"))
+	store := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "sessions.db"))
 	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock-model"}
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
@@ -87,7 +86,7 @@ func TestSessionInputSynchronousCallsAllowMetadata(t *testing.T) {
 	for _, surface := range []string{"chat", "chat stream", "responses", "compaction"} {
 		t.Run(surface, func(t *testing.T) {
 			ctx := context.Background()
-			store := inputTestStore(t, filepath.Join(t.TempDir(), "sessions.db"))
+			store := testutil.NewSessionInputStore(t, filepath.Join(t.TempDir(), "sessions.db"))
 			sess := &session.Session{ID: session.NewID(), Provider: "mock", ProviderKey: "mock", Model: "mock-model", Tools: "saved"}
 			if err := store.Create(ctx, sess); err != nil {
 				t.Fatal(err)

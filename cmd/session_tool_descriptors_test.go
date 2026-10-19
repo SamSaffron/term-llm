@@ -11,7 +11,7 @@ import (
 
 func TestAgentLegacyToolDisableUsesDescriptor(t *testing.T) {
 	agent := &agents.Agent{Tools: agents.ToolsConfig{Disabled: []string{tools.ShowImageToolName}}}
-	_, enabled, err := resolveSessionPromptTools(nil, agent, CLIFlags{}, "", t.TempDir(), "", "")
+	_, enabled, err := ResolveSessionPromptTools(nil, agent, CLIFlags{}, "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
