@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -335,10 +336,21 @@ func (rt *serveRuntime) submitAskUser(callID string, answers []tools.AskUserAnsw
 func (rt *serveRuntime) pendingAskUserPrompts() []serveAskUserPrompt {
 	rt.askUserMu.Lock()
 	defer rt.askUserMu.Unlock()
-	return sortedPendingSnapshots(rt.pendingAskUsers,
+	prompts := sortedPendingSnapshots(rt.pendingAskUsers,
 		func(pending *servePendingAskUser) serveAskUserPrompt { return pending.snapshot() },
 		func(prompt serveAskUserPrompt) int64 { return prompt.CreatedAt },
 	)
+	// Answered gates remain available until their worker removes them (including
+	// delegated aliases). They are no longer actionable on session restoration.
+	return slices.DeleteFunc(prompts, func(prompt serveAskUserPrompt) bool {
+		gate := rt.pendingAskUsers[prompt.CallID].gate
+		if gate == nil {
+			return false
+		}
+		gate.mu.Lock()
+		defer gate.mu.Unlock()
+		return gate.responded
+	})
 }
 
 func (rt *serveRuntime) clearPendingAskUsers() {
