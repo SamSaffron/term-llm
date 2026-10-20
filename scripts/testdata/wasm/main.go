@@ -15,12 +15,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
+	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -104,10 +106,30 @@ func (s *smoke) runEngine() {
 
 	s.check(strings.Contains(text.String(), "wasm-ok"), "final text %q does not contain wasm-ok", text.String())
 	s.check(strings.Contains(toolOutput, "echo:ping"), "tool output %q does not contain echo:ping", toolOutput)
-	s.check(len(provider.RecordedRequests()) >= 2, "provider saw %d requests, want 2", len(provider.RecordedRequests()))
+	requests := provider.RecordedRequests()
+	s.check(len(requests) >= 2, "provider saw %d requests, want 2", len(requests))
+	if len(requests) >= 2 {
+		found := false
+		for _, message := range requests[1].Messages {
+			for _, part := range message.Parts {
+				result := part.ToolResult
+				found = found || (part.Type == core.PartToolResult && result != nil && result.ID == "call_1" && result.Name == "wasm_echo" && core.ToolResultTextContent(result) == "echo:ping")
+			}
+		}
+		s.check(found, "second provider request is missing the result for call_1")
+	}
 }
 
 func (s *smoke) runUnsupportedFacilities() {
+	cmd := exec.Command("/bin/true")
+	cleanup, err := procutil.PrepareCommand(cmd)
+	s.check(err == nil, "prepare subprocess: %v", err)
+	if err == nil {
+		defer cleanup()
+		err = cmd.Run()
+		s.check(err != nil && cmd.Process == nil, "subprocess unexpectedly started on js/wasm: %v", err)
+	}
+
 	if db, err := sql.Open("sqlite", ":memory:"); err == nil {
 		_ = db.Close()
 		s.check(false, "sql.Open(sqlite) succeeded on js/wasm; expected unknown driver")
