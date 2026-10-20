@@ -374,7 +374,7 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 	}
 	capabilities, ok := benchmarkAdapterCapabilities(providerType, localOllama)
 	if !ok {
-		return nil, nil, fmt.Errorf("provider %q (type %s) is not supported by benchmark schema version 1; supported adapters: local Ollama (native or OpenAI-compatible), vLLM, chatgpt, claude-bin", providerKey, providerType)
+		return nil, nil, fmt.Errorf("provider %q (type %s) is not supported by benchmark schema version 1; supported adapters: local Ollama (native or OpenAI-compatible), openai_compatible, vLLM, chatgpt, claude-bin", providerKey, providerType)
 	}
 	if capabilities.ManagedContext && !includeManaged {
 		return nil, nil, fmt.Errorf("provider %q manages its own context; use --include-managed-provider to opt into subprocess-inclusive timing", providerKey)
@@ -656,9 +656,17 @@ func benchmarkAdapterCapabilities(providerType config.ProviderType, localOllama 
 		}, true
 	}
 	switch providerType {
-	case config.ProviderTypeVLLM:
+	case config.ProviderTypeOpenAICompat, config.ProviderTypeVLLM:
+		// Generic compatible endpoints may omit cache telemetry. The shared
+		// transport cannot distinguish an omitted cached_tokens field from zero,
+		// so only the vLLM adapter promises cache-read reporting.
+		reportsCacheReads := providerType == config.ProviderTypeVLLM
+		cacheNote := "OpenAI-compatible endpoints may omit cache-read telemetry; state remains unknown"
+		if reportsCacheReads {
+			cacheNote = "OpenAI-compatible prompt_tokens_details.cached_tokens reports prefix-cache reads"
+		}
 		return benchmark.AdapterCapabilities{
-			ReportsCacheReads:       true,
+			ReportsCacheReads:       reportsCacheReads,
 			ReportsCacheWrites:      false,
 			ReportsReasoningTokens:  false,
 			SupportsOutputLimit:     true,
@@ -667,7 +675,7 @@ func benchmarkAdapterCapabilities(providerType config.ProviderType, localOllama 
 			MinimumOutputTokens:     1,
 			IncrementalStream:       true,
 			MeasurementScope:        "direct_http",
-			CacheTelemetryNote:      "OpenAI-compatible prompt_tokens_details.cached_tokens reports prefix-cache reads",
+			CacheTelemetryNote:      cacheNote,
 			OutputLimitSupportNote:  "OpenAI-compatible max_tokens",
 		}, true
 	case config.ProviderTypeChatGPT:

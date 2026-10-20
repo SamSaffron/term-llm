@@ -71,6 +71,10 @@ Long-context mode requires a known input limit unless explicit input targets are
 
 ## Adapter limitations
 
+Supported adapters include local Ollama (native or OpenAI-compatible), `openai_compatible`, `vllm`, `chatgpt`, and `claude-bin`. An existing `openai_compatible` provider entry works for `ask`, `chat`, and `benchmark`; no duplicate provider entry is needed.
+
+Generic OpenAI-compatible endpoints use streamed chat completions with `max_tokens`. Cache-read telemetry is conservatively treated as unknown because endpoints may omit it; use `--allow-unknown-cache` to admit these runs to token fits. Keep `type: vllm` for vLLM-specific thinking controls and prefix-cache reporting, not merely to enable benchmarking.
+
 - Measurements are cold and sequential; warm-cache and concurrent workloads are not implemented in schema version 1.
 - Managed CLI providers require `--include-managed-provider`. Their timing is subprocess-inclusive and is not directly comparable to direct HTTP adapters.
 - Non-incremental or bursty adapters cannot provide comparable decode throughput or TPOT. Provider-reported output usage and end-to-end timing are still recorded.

@@ -132,36 +132,100 @@ func TestResolveBenchmarkTargetsAliasesAndManagedOptIn(t *testing.T) {
 	}
 }
 
-func TestResolveBenchmarkTargetsSupportsConfiguredVLLM(t *testing.T) {
+func TestResolveBenchmarkTargetsSupportsConfiguredCompatibleProviders(t *testing.T) {
+	for _, providerType := range []config.ProviderType{config.ProviderTypeVLLM, config.ProviderTypeOpenAICompat} {
+		t.Run(string(providerType), func(t *testing.T) {
+			cfg := &config.Config{
+				DefaultProvider: "cdck_deepseek",
+				Providers: map[string]config.ProviderConfig{
+					"cdck_deepseek": {
+						Type:          providerType,
+						BaseURL:       "https://vllm.example.test/v1",
+						Model:         "deepseek-ai/DeepSeek-V4-Flash",
+						ContextWindow: 128_000,
+					},
+				},
+			}
+			scenarios := []benchmark.Scenario{{InputTokens: 2_000, OutputTokens: 128, Workload: "decode"}}
+			plans, skipped, err := resolveBenchmarkTargets(context.Background(), cfg, "cdck_deepseek", scenarios, "quick", false, false, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(skipped) != 0 || len(plans) != 1 {
+				t.Fatalf("plans=%#v skipped=%v", plans, skipped)
+			}
+			target := plans[0].target
+			if target.ProviderType != string(providerType) || target.RequestedModel != "deepseek-ai/DeepSeek-V4-Flash" {
+				t.Fatalf("compatible target = %#v", target)
+			}
+			capabilities := target.Capabilities
+			if !capabilities.SupportsOutputLimit || !capabilities.SupportsTemperature || !capabilities.SupportsReasoningEffort || !capabilities.IncrementalStream {
+				t.Fatalf("compatible capabilities = %#v", capabilities)
+			}
+			if capabilities.ReportsCacheReads != (providerType == config.ProviderTypeVLLM) || capabilities.ManagedContext || capabilities.MeasurementScope != "direct_http" {
+				t.Fatalf("compatible capabilities = %#v", capabilities)
+			}
+		})
+	}
+}
+
+func TestBenchmarkOpenAICompatibleEndpoint(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if body["model"] != "custom-model" || body["max_tokens"] != float64(16) || body["stream"] != true {
+			t.Errorf("request = %#v", body)
+		}
+		if _, ok := body["chat_template_kwargs"]; ok {
+			t.Errorf("generic endpoint received vLLM thinking controls: %#v", body)
+		}
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"hello"}}]}`)
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, `data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":16,"total_tokens":116}}`)
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "data: [DONE]")
+		fmt.Fprintln(w)
+	}))
+	defer server.Close()
 	cfg := &config.Config{
-		DefaultProvider: "cdck_deepseek",
+		DefaultProvider: "custom",
 		Providers: map[string]config.ProviderConfig{
-			"cdck_deepseek": {
-				Type:          config.ProviderTypeVLLM,
-				BaseURL:       "https://vllm.example.test/v1",
-				Model:         "deepseek-ai/DeepSeek-V4-Flash",
-				ContextWindow: 128_000,
-			},
+			"custom": {Type: config.ProviderTypeOpenAICompat, BaseURL: server.URL + "/v1", Model: "custom-model"},
 		},
 	}
-	scenarios := []benchmark.Scenario{{InputTokens: 2_000, OutputTokens: 128, Workload: "decode"}}
-	plans, skipped, err := resolveBenchmarkTargets(context.Background(), cfg, "cdck_deepseek", scenarios, "quick", false, false, 0)
+	scenarios := []benchmark.Scenario{{InputTokens: 100, OutputTokens: 16, Workload: "prefill"}}
+	plans, _, err := resolveBenchmarkTargets(context.Background(), cfg, "", scenarios, "prefill", true, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skipped) != 0 || len(plans) != 1 {
-		t.Fatalf("plans=%#v skipped=%v", plans, skipped)
+	opts := benchmark.Options{
+		Mode: "prefill", Cache: "cold", Runs: 1, Timeout: time.Second, TargetTolerance: 0.15,
 	}
-	target := plans[0].target
-	if target.ProviderType != string(config.ProviderTypeVLLM) || target.RequestedModel != "deepseek-ai/DeepSeek-V4-Flash" {
-		t.Fatalf("vLLM target = %#v", target)
+	targets, records, err := executeBenchmarkPlans(context.Background(), cfg, plans, opts, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	capabilities := target.Capabilities
-	if !capabilities.SupportsOutputLimit || !capabilities.SupportsTemperature || !capabilities.SupportsReasoningEffort || !capabilities.IncrementalStream {
-		t.Fatalf("vLLM capabilities = %#v", capabilities)
+	if requests == 0 || len(targets) != 1 || targets[0].Error != "" || len(records) == 0 {
+		t.Fatalf("requests=%d targets=%#v records=%#v", requests, targets, records)
 	}
-	if !capabilities.ReportsCacheReads || capabilities.ManagedContext || capabilities.MeasurementScope != "direct_http" {
-		t.Fatalf("vLLM capabilities = %#v", capabilities)
+	for _, record := range records {
+		if record.Error != "" || record.Usage.TotalInputTokens != 100 || record.Usage.OutputTokens != 16 {
+			t.Fatalf("record = %#v", record)
+		}
+		if record.CacheState != "unknown" || record.Usage.CachedInputTokens != nil {
+			t.Fatalf("missing cache telemetry should remain unknown: %#v", record)
+		}
 	}
 }
 
