@@ -348,7 +348,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		wireStaticAgentModelAdmission(cfg, toolMgr, spawnRunner, loopPolicy, loopSelected)
+		appserve.WireStaticAgentModelAdmission(cfg, toolMgr, spawnRunner, loopPolicy, loopSelected)
 	}
 
 	// Initialize MCP servers

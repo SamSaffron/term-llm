@@ -1,4 +1,4 @@
-package cmd
+package ask
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -36,14 +38,14 @@ func prepareAskConversation(ctx context.Context, cfg *config.Config, provider co
 			model = providerCfg.Model
 		}
 		if model == "" {
-			model = extractModelFromProviderName(provider.Name())
+			model = appruntime.ExtractModelFromProviderName(provider.Name())
 		}
 		agentName := ""
 		if agent != nil {
 			agentName = agent.Name
 		}
 		now := time.Now()
-		sess = &session.Session{ID: sessionID, Provider: provider.Name(), Model: model, Mode: session.ModeAsk, Agent: agentName, CreatedAt: now, UpdatedAt: now, Search: settings.Search, Tools: settings.Tools, MCP: settings.MCP, ApprovalMode: approvalModeForColdPersistence(approval), Status: session.StatusActive}
+		sess = &session.Session{ID: sessionID, Provider: provider.Name(), Model: model, Mode: session.ModeAsk, Agent: agentName, CreatedAt: now, UpdatedAt: now, Search: settings.Search, Tools: settings.Tools, MCP: settings.MCP, ApprovalMode: runapproval.ForColdPersistence(approval), Status: session.StatusActive}
 		sess.CWD = settings.PrimaryWorkspace
 		_ = store.Create(ctx, sess)
 	}

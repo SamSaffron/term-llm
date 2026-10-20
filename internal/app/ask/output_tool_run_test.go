@@ -1,7 +1,8 @@
-package cmd
+package ask
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,28 +83,11 @@ sessions:
 	provider := mockprovider.NewMockProvider("mock").
 		WithCapabilities(core.Capabilities{ToolCalls: true, SupportsToolChoice: true}).
 		AddToolCall("call-1", "set_commit_message", map[string]string{"message": message, "category": "chore"})
-	oldProviderFactory := newAskProvider
-	newAskProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
-	t.Cleanup(func() { newAskProvider = oldProviderFactory })
-
-	oldAgent, oldText, oldPorcelain := askAgent, askText, askPorcelain
-	oldJSON, oldProgressive, oldFast := askJSON, askProgressive, askFast
-	askAgent, askText, askPorcelain = agentDir, true, true
-	askJSON, askProgressive, askFast = false, false, false
-	t.Cleanup(func() {
-		askAgent, askText, askPorcelain = oldAgent, oldText, oldPorcelain
-		askJSON, askProgressive, askFast = oldJSON, oldProgressive, oldFast
-	})
-
 	var stdout, stderr bytes.Buffer
-	oldStdout, oldStderr := askCmd.OutOrStdout(), askCmd.ErrOrStderr()
-	askCmd.SetOut(&stdout)
-	askCmd.SetErr(&stderr)
-	t.Cleanup(func() {
-		askCmd.SetOut(oldStdout)
-		askCmd.SetErr(oldStderr)
-	})
-	if err := runAsk(askCmd, []string{"prepare a commit message"}); err != nil {
+	opts := Options{Agent: agentDir, Text: true, Porcelain: true, MaxTurns: 50}
+	deps := testDependencies(&stdout, &stderr)
+	deps.NewProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
+	if err := Run(context.Background(), []string{"prepare a commit message"}, opts, deps); err != nil {
 		t.Fatalf("runAsk: %v\nstderr: %s", err, stderr.String())
 	}
 

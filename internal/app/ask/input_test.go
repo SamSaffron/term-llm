@@ -20,32 +20,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/cobra"
 )
 
 func testAskConfig() config.AskConfig {
 	return config.AskConfig{StdinInlineMaxBytes: 10, StdinMaxBytes: 1024}
-}
-
-func TestPrepareAskInputUsesCobraInputAndKeepsSmallTextInline(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.SetIn(strings.NewReader("small text"))
-	reader, hasStdin := CommandInput(cmd)
-	if !hasStdin {
-		t.Fatal("SetIn reader was not recognized as piped stdin")
-	}
-
-	got, err := PrepareInput("question", nil, reader, hasStdin, testAskConfig())
-	if err != nil {
-		t.Fatalf("PrepareInput: %v", err)
-	}
-	if len(got.StagedPaths) != 0 {
-		t.Fatalf("staged paths = %v, want none", got.StagedPaths)
-	}
-	want := prompt.AskUserPrompt("question", nil, "small text")
-	if len(got.Message.Parts) != 1 || got.Message.Parts[0].Type != core.PartText || got.Message.Parts[0].Text != want {
-		t.Fatalf("message = %#v, want exact legacy prompt %q", got.Message, want)
-	}
 }
 
 func TestPrepareAskInputAllowsEmptyQuestionWithPipedText(t *testing.T) {

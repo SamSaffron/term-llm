@@ -216,7 +216,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		wireStaticAgentModelAdmission(cfg, toolMgr, spawnRunner, policy, selected)
+		appserve.WireStaticAgentModelAdmission(cfg, toolMgr, spawnRunner, policy, selected)
 	}
 
 	// Initialize MCP servers if --mcp flag is set

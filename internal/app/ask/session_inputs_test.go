@@ -1,4 +1,4 @@
-package cmd
+package ask
 
 import (
 	"bytes"
@@ -14,7 +14,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/testutil"
-	"github.com/spf13/cobra"
 )
 
 func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
@@ -55,32 +54,12 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := mockprovider.NewMockProvider("mock").AddTextResponse("first answer").AddTextResponse("second answer")
-	oldFactory := newAskProvider
-	newAskProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
-	t.Cleanup(func() { newAskProvider = oldFactory })
 	t.Cleanup(appserve.SwapProcessSessionInputs(appserve.NewSessionInputCoordinator()))
-	oldResume, oldTools, oldSystem, oldAgent := askResume, askTools, askSystemMessage, askAgent
-	oldText, oldPorcelain, oldApproval, oldYolo, oldAuto := askText, askPorcelain, askApproval, askYolo, askAuto
-	oldDB, oldNoSession := sessionDBPath, noSession
-	askResume, askTools, askSystemMessage, askAgent = sess.ID, "view_image", "CLI {{file:resume.md}}", ""
-	askText, askPorcelain = true, true
-	sessionDBPath = path
-	noSession = false
-	t.Cleanup(func() {
-		askResume, askTools, askSystemMessage, askAgent = oldResume, oldTools, oldSystem, oldAgent
-		askText, askPorcelain, askApproval, askYolo, askAuto = oldText, oldPorcelain, oldApproval, oldYolo, oldAuto
-		sessionDBPath, noSession = oldDB, oldNoSession
-	})
-	cmd := &cobra.Command{}
-	for _, flag := range []string{"resume", "tools", "system"} {
-		cmd.Flags().String(flag, "", "")
-		if err := cmd.Flags().Set(flag, "set"); err != nil {
-			t.Fatal(err)
-		}
-	}
 	var output bytes.Buffer
-	cmd.SetOut(&output)
-	cmd.SetErr(&output)
+	opts := Options{Resume: sess.ID, Tools: "view_image", SystemMessage: "CLI {{file:resume.md}}", Text: true, Porcelain: true, MaxTurns: 50, Changed: FlagState{Resume: true, Tools: true, System: true}}
+	deps := testDependencies(&output, &output)
+	deps.SessionStore.DBPath = path
+	deps.NewProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
 	for turn := 0; turn < 2; turn++ {
 		if turn == 1 {
 			// A later resume in the same process must not re-expand includes or use
@@ -88,9 +67,9 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 			if err := os.Remove(include); err != nil {
 				t.Fatal(err)
 			}
-			askTools = "shell"
+			opts.Tools = "shell"
 		}
-		if err := runAsk(cmd, []string{"continue"}); err != nil {
+		if err := Run(ctx, []string{"continue"}, opts, deps); err != nil {
 			t.Fatalf("runAsk: %v\n%s", err, output.String())
 		}
 	}

@@ -83,7 +83,8 @@ func TestAskRichRendererDisabledInCI(t *testing.T) {
 		askText, debugRaw = oldText, oldDebugRaw
 	})
 	t.Setenv("CI", "1")
-	if shouldUseAskRichRenderer() {
+	_, deps := captureAskInvocation(askCmd)
+	if deps.Interactive() {
 		t.Fatal("shouldUseAskRichRenderer() = true in CI, want false")
 	}
 }

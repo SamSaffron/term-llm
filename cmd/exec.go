@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"os"
 	"sort"
 	"strings"
@@ -164,7 +165,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	defer func() {
 		if showStats {
 			stats.Finalize()
-			setEstimatedStatsCost(stats, statsModel)
+			appruntime.SetEstimatedStatsCost(stats, statsModel)
 			fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
 		}
 	}()

@@ -1,4 +1,4 @@
-package cmd
+package ask
 
 import (
 	"context"
@@ -8,7 +8,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/app/ask"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
 	runtimeprogressive "github.com/samsaffron/term-llm/internal/app/runtime/progressive"
 	"github.com/samsaffron/term-llm/internal/config"
 	jobcore "github.com/samsaffron/term-llm/internal/jobs"
@@ -22,7 +23,7 @@ type askProgressiveExecution struct {
 	ctx             context.Context
 	stderr          io.Writer
 	stdout          io.Writer
-	flags           ask.Options
+	flags           Options
 	cleanupTimeout  time.Duration
 	cfg             *config.Config
 	toolMgr         *tools.ToolManager
@@ -30,21 +31,21 @@ type askProgressiveExecution struct {
 	session         *session.Session
 	runner          run.Runner
 	request         run.Request
-	options         askProgressiveOptions
+	options         runtimeprogressive.AskOptions
 	applyResult     func(run.Result)
 	WrapEvents      func(<-chan ui.StreamEvent) <-chan ui.StreamEvent
 	useRichRenderer bool
-	jsonEmit        *ask.JSONEmitter
-	jsonInfo        ask.SessionInfo
+	jsonEmit        *JSONEmitter
+	jsonInfo        SessionInfo
 	captureOutput   func(string) error
 }
 
 func (e *askProgressiveExecution) run() (askExecutionResult, error) {
-	bridge := ask.NewProgressiveBridge(ui.DefaultStreamBufferSize)
+	bridge := NewProgressiveBridge(ui.DefaultStreamBufferSize)
 	if e.session != nil {
 		bridge.Stats().SeedTotals(e.session.InputTokens, e.session.OutputTokens, e.session.CachedInputTokens, e.session.CacheWriteTokens, e.session.ToolCalls, e.session.LLMTurns+e.session.CompactionCount)
 	}
-	bridge.Stats().SetModel(activeModel(e.cfg))
+	bridge.Stats().SetModel(bootstrap.ActiveModel(e.cfg))
 	result := askExecutionResult{stats: bridge.Stats()}
 	events := e.WrapEvents(bridge.Events())
 	var drain <-chan struct{}
@@ -55,7 +56,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 			defer close(done)
 			for event := range events {
 				if event.Type == ui.StreamEventGuardian {
-					ask.WriteGuardianStatus(e.stderr, event.Guardian)
+					WriteGuardianStatus(e.stderr, event.Guardian)
 				}
 			}
 		}()
@@ -64,14 +65,14 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	request.Progressive = &run.ProgressiveOptions{Timeout: e.options.Timeout, StopWhen: string(e.options.StopWhen), ContinueWith: e.options.ContinueWith}
 	runProgressive := func() askProgressiveRunResult {
 		bridge.Stats().RequestStart()
-		sink := ask.ProgressiveRunnerSink{Bridge: bridge, OnGuardian: func(event tools.GuardianEvent) {
+		sink := ProgressiveRunnerSink{Bridge: bridge, OnGuardian: func(event tools.GuardianEvent) {
 			if !event.Usage.BillableCountersZero() && e.store != nil && e.session != nil {
-				recordStoreHelperUsage(context.Background(), e.store, e.session.ID, event.Model, session.ModelUsageGuardian, event.Usage)
+				appruntime.RecordStoreHelperUsage(context.Background(), e.store, e.session.ID, event.Model, session.ModelUsageGuardian, event.Usage)
 			}
 		}}
 		runResult, err := e.runner.Run(e.ctx, request, sink)
 		e.applyResult(runResult)
-		progressive := progressiveRunResult{}
+		progressive := runtimeprogressive.RunResult{}
 		if runResult.Progressive != nil {
 			progressive = *runtimeprogressive.FromRunResult(runResult.Progressive)
 		}
@@ -84,18 +85,18 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	}
 	var program *tea.Program
 	if e.useRichRenderer && e.toolMgr != nil {
-		_, program = ask.NewRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
+		_, program = NewRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
 	}
 	render := func(ctx context.Context) error {
 		if program != nil {
-			return ask.RunStreamProgram(ctx, program)
+			return RunStreamProgram(ctx, program)
 		}
-		return ask.StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
+		return StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
 	}
 	var progressive askProgressiveRunResult
 	var jsonStreamErr, displayErr error
 	if e.flags.JSON {
-		if err := ask.EmitSessionStarted(e.jsonEmit, e.jsonInfo); err != nil {
+		if err := EmitSessionStarted(e.jsonEmit, e.jsonInfo); err != nil {
 			return result, err
 		}
 	}
@@ -111,12 +112,12 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 		switch {
 		case e.flags.JSON:
 			var writeErr error
-			result.jsonTotalTokens, jsonStreamErr, writeErr = ask.StreamJSONEvents(displayCtx, events, e.jsonEmit)
+			result.jsonTotalTokens, jsonStreamErr, writeErr = StreamJSONEvents(displayCtx, events, e.jsonEmit)
 			displayErr = writeErr
 		case e.useRichRenderer:
 			displayErr = render(displayCtx)
 		default:
-			displayErr = ask.StreamPlainText(displayCtx, events, false, e.stderr)
+			displayErr = StreamPlainText(displayCtx, events, false, e.stderr)
 		}
 		if displayErr != nil {
 			bridge.Stop()
@@ -126,7 +127,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	tools.ClearAskUserHooks()
 	if displayErr != nil {
 		if e.flags.JSON {
-			_ = ask.EmitFatalError(e.jsonEmit, result.stats, displayErr)
+			_ = EmitFatalError(e.jsonEmit, result.stats, displayErr)
 		}
 		return result, displayErr
 	}
@@ -143,7 +144,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 				_ = e.store.UpdateStatus(context.Background(), e.session.ID, session.StatusError)
 			}
 			if e.flags.JSON {
-				_ = ask.EmitFatalError(e.jsonEmit, result.stats, err)
+				_ = EmitFatalError(e.jsonEmit, result.stats, err)
 			}
 			return result, err
 		}
@@ -158,12 +159,12 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 		_ = e.store.SetCurrent(context.Background(), e.session.ID)
 	}
 	if e.flags.JSON {
-		if err := ask.EmitProgressiveResult(e.jsonEmit, ask.ProgressiveResult(result.progressive)); err != nil {
+		if err := EmitProgressiveResult(e.jsonEmit, ProgressiveResult(result.progressive)); err != nil {
 			return result, fmt.Errorf("emit progressive result: %w", err)
 		}
 		result.jsonFinalPending = true
 		if jsonStreamErr != nil {
-			if err := ask.EmitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
+			if err := EmitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
 				return result, fmt.Errorf("emit final: %w", err)
 			}
 			result.jsonFinalPending = false
@@ -178,6 +179,6 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 }
 
 type askProgressiveRunResult struct {
-	Result progressiveRunResult
+	Result runtimeprogressive.RunResult
 	Err    error
 }

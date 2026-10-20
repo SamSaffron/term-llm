@@ -1,4 +1,4 @@
-package cmd
+package ask
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/app/ask"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -32,7 +31,7 @@ func finalizeAskSessionSettings(settings *appserve.SessionSettings, sess *sessio
 	return sessionID, baseInputPrompt
 }
 
-func prepareAskResume(ctx context.Context, opts ask.Options, stderr io.Writer, cfg *config.Config, agent *agents.Agent, store session.Store, settings *appserve.SessionSettings) (*session.Session, *appserve.SessionInputTicket, *appserve.SessionInputSelection, bool, error) {
+func prepareAskResume(ctx context.Context, opts Options, stderr io.Writer, cfg *config.Config, agent *agents.Agent, store session.Store, settings *appserve.SessionSettings) (*session.Session, *appserve.SessionInputTicket, *appserve.SessionInputSelection, bool, error) {
 	resuming := opts.Changed.Resume
 	if !resuming {
 		return nil, nil, nil, false, nil
@@ -73,7 +72,7 @@ func prepareAskResume(ctx context.Context, opts ask.Options, stderr io.Writer, c
 			return nil, nil, nil, true, err
 		}
 	}
-	settings.Search = resumedSessionSearch(settings.Search, sess.Search, opts.Changed.Search, opts.NoSearch)
+	settings.Search = appruntime.ResumedSessionSearch(settings.Search, sess.Search, opts.Changed.Search, opts.NoSearch)
 	if !opts.Changed.Tools {
 		settings.Tools = sess.Tools
 	}
@@ -81,7 +80,7 @@ func prepareAskResume(ctx context.Context, opts ask.Options, stderr io.Writer, c
 		settings.MCP = sess.MCP
 	}
 	if agent == nil && strings.TrimSpace(sess.Agent) != "" {
-		if resumedAgent, err := LoadAgent(sess.Agent, cfg); err == nil && resumedAgent != nil {
+		if resumedAgent, err := appruntime.LoadAgent(sess.Agent, cfg); err == nil && resumedAgent != nil {
 			settings.PlanGuidance = resumedAgent.Name == "developer" && resumedAgent.Source == agents.SourceBuiltin
 			settings.Workspace = resumedAgent.Workspace
 		}
@@ -89,7 +88,7 @@ func prepareAskResume(ctx context.Context, opts ask.Options, stderr io.Writer, c
 	if err := appserve.RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
 		fmt.Fprintf(stderr, "warning: failed to restore session directory: %v\n", err)
 	}
-	if dir := effectiveSessionDirectory(sess); dir != "" {
+	if dir := appruntime.EffectiveSessionDirectory(sess); dir != "" {
 		if canonical, err := appserve.CanonicalRuntimeDir(dir); err == nil {
 			settings.BaseDir = canonical
 			settings.ShellWorkingDir = canonical
@@ -109,7 +108,7 @@ func prepareAskResume(ctx context.Context, opts ask.Options, stderr io.Writer, c
 		if selected != nil {
 			settings.SystemPrompt, settings.Tools = selected.BasePrompt, selected.Tools
 		} else {
-			resumedAgent, err := LoadAgent(sess.Agent, cfg)
+			resumedAgent, err := appruntime.LoadAgent(sess.Agent, cfg)
 			if err != nil {
 				ticket.Fail()
 				return nil, ticket, nil, true, err
@@ -139,5 +138,5 @@ func deriveAskResumeAutoTools(ctx context.Context, store session.Store, sess *se
 	for i := range rows {
 		history = append(history, rows[i].ToLLMMessage())
 	}
-	settings.AutoTools = ask.AddAutoTools(settings.AutoTools, history)
+	settings.AutoTools = AddAutoTools(settings.AutoTools, history)
 }

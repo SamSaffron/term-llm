@@ -5,7 +5,6 @@ import (
 	"io"
 
 	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/mcp"
 )

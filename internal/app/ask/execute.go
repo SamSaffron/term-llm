@@ -1,4 +1,4 @@
-package cmd
+package ask
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/app/ask"
+	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -18,7 +18,7 @@ import (
 
 type askExecutionResult struct {
 	stats            *ui.SessionStats
-	progressive      progressiveRunResult
+	progressive      progressive.RunResult
 	jsonTotalTokens  int
 	jsonFinalPending bool
 	skipFinalization bool
@@ -32,7 +32,7 @@ type askStreamingExecution struct {
 	ctx             context.Context
 	stderr          io.Writer
 	stdout          io.Writer
-	flags           ask.Options
+	flags           Options
 	cleanupTimeout  time.Duration
 	cfg             *config.Config
 	toolMgr         *tools.ToolManager
@@ -43,11 +43,11 @@ type askStreamingExecution struct {
 	runner          run.Runner
 	request         run.Request
 	applyResult     func(run.Result)
-	persistence     *ask.AssistantPersistence
-	collector       *ask.TextCollector
+	persistence     *AssistantPersistence
+	collector       *TextCollector
 	turnStart       time.Time
-	jsonEmit        *ask.JSONEmitter
-	jsonInfo        ask.SessionInfo
+	jsonEmit        *JSONEmitter
+	jsonInfo        SessionInfo
 	useRichRenderer bool
 	teaProgram      *tea.Program
 }
@@ -56,13 +56,13 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 	result := askExecutionResult{stats: e.adapter.Stats()}
 	events := e.events
 	if e.useRichRenderer && e.toolMgr != nil {
-		_, e.teaProgram = ask.NewRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
+		_, e.teaProgram = NewRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
 	}
 	render := func(ctx context.Context, events <-chan ui.StreamEvent) error {
 		if e.teaProgram != nil {
-			return ask.RunStreamProgram(ctx, e.teaProgram)
+			return RunStreamProgram(ctx, e.teaProgram)
 		}
-		return ask.StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
+		return StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
 	}
 	streamCtx, cancelStream := context.WithCancel(e.ctx)
 	defer cancelStream()
@@ -113,17 +113,17 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 	var displayErr, jsonStreamErr error
 	switch {
 	case e.flags.JSON:
-		if err := ask.EmitSessionStarted(e.jsonEmit, e.jsonInfo); err != nil {
+		if err := EmitSessionStarted(e.jsonEmit, e.jsonInfo); err != nil {
 			cancelStream()
 			wait()
 			return result, err
 		}
-		result.jsonTotalTokens, jsonStreamErr, displayErr = ask.StreamJSONEvents(streamCtx, events, e.jsonEmit)
+		result.jsonTotalTokens, jsonStreamErr, displayErr = StreamJSONEvents(streamCtx, events, e.jsonEmit)
 		result.jsonFinalPending = true
 	case e.useRichRenderer:
 		displayErr = render(streamCtx, events)
 	default:
-		displayErr = ask.StreamPlainText(streamCtx, events, e.flags.Porcelain, e.stderr)
+		displayErr = StreamPlainText(streamCtx, events, e.flags.Porcelain, e.stderr)
 	}
 	tools.ClearAskUserHooks()
 	finishInterrupted := func() (askExecutionResult, error) {
@@ -137,7 +137,7 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 			_ = e.store.SetCurrent(context.Background(), e.session.ID)
 		}
 		if e.flags.JSON && result.jsonFinalPending {
-			if err := ask.EmitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
+			if err := EmitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
 				return result, fmt.Errorf("emit final: %w", err)
 			}
 			result.jsonFinalPending = false
@@ -158,8 +158,8 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 		if interrupted(displayErr) || interrupted(streamErr) {
 			return finishInterrupted()
 		}
-		if e.flags.JSON && !ask.IsTerminalFlushed(displayErr) {
-			_ = ask.EmitFatalError(e.jsonEmit, result.stats, displayErr)
+		if e.flags.JSON && !IsTerminalFlushed(displayErr) {
+			_ = EmitFatalError(e.jsonEmit, result.stats, displayErr)
 			result.jsonFinalPending = false
 		}
 		return result, displayErr
@@ -173,11 +173,11 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 		if interrupted(jsonStreamErr) {
 			return finishInterrupted()
 		}
-		if err := ask.EmitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
+		if err := EmitFinal(e.jsonEmit, result.stats, result.jsonTotalTokens); err != nil {
 			return result, fmt.Errorf("emit final: %w", err)
 		}
 		result.jsonFinalPending = false
-		return result, ask.NewTerminalFlushedError(jsonStreamErr)
+		return result, NewTerminalFlushedError(jsonStreamErr)
 	}
 	if !streamDone {
 		streamErr = wait().err
@@ -195,7 +195,7 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 		}
 		err := fmt.Errorf("streaming failed: %w", streamErr)
 		if e.flags.JSON {
-			_ = ask.EmitFatalError(e.jsonEmit, result.stats, err)
+			_ = EmitFatalError(e.jsonEmit, result.stats, err)
 			result.jsonFinalPending = false
 		}
 		return result, err

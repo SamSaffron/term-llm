@@ -1,4 +1,4 @@
-package cmd
+package ask
 
 import (
 	"strings"
@@ -8,16 +8,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
-
-func setEstimatedStatsCost(stats *ui.SessionStats, model string) {
-	if stats == nil {
-		return
-	}
-	stats.ClearEstimatedCost()
-	if cost, err := ui.EstimateSessionStatsCost(stats, model); err == nil {
-		stats.SetEstimatedCost(cost)
-	}
-}
 
 type compactionUsageEntry struct {
 	model string

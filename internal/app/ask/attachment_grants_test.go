@@ -1,7 +1,10 @@
-package cmd
+package ask
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/ask"
+	"os"
+	"path/filepath"
+	"testing"
+
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -9,9 +12,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"os"
-	"path/filepath"
-	"testing"
 )
 
 func TestAskAttachmentGrantsAreExactAndStructured(t *testing.T) {
@@ -49,7 +49,7 @@ func TestAskAttachmentGrantsAreExactAndStructured(t *testing.T) {
 		}},
 		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartFile, FilePath: sibling}}},
 	}
-	ask.GrantUploadedFileReads(toolMgr, messages)
+	GrantUploadedFileReads(toolMgr, messages)
 
 	if outcome, err := toolMgr.ApprovalMgr.CheckPathApproval(tools.ReadFileToolName, attached, attached, false); err != nil || outcome != tools.ProceedOnce {
 		t.Fatalf("attached read approval = %v, %v", outcome, err)

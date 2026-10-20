@@ -33,6 +33,7 @@ var layeringRules = []rule{
 	{pkgPrefix: "internal/app/serve/jobs", forbidden: []string{"internal/app/serve"}, exact: true},
 	{pkgPrefix: "internal", excludePrefix: "internal/app", forbidden: []string{"internal/app"}},
 	{pkgPrefix: "internal/app/serve", forbidden: []string{"github.com/spf13/cobra", "github.com/spf13/pflag"}},
+	{pkgPrefix: "internal/app/ask", forbidden: []string{"github.com/spf13/cobra", "github.com/spf13/pflag"}},
 }
 
 func hasPackagePrefix(pkg, prefix string) bool {
@@ -117,7 +118,7 @@ func TestLayeringGuardSelfTest(t *testing.T) {
 		{"internal/app/serve/probe.go", "github.com/spf13/cobra", true},
 		{"internal/app/serve/sub/probe_test.go", "github.com/spf13/pflag", true},
 		{"internal/app/serve-extra/probe.go", "github.com/spf13/cobra", false},
-		{"internal/app/ask/probe.go", "github.com/spf13/cobra", false},
+		{"internal/app/ask/probe.go", "github.com/spf13/cobra", true},
 		{"internal/core/probe.go", "cmd", true},
 		{"internal/core/probe_test.go", "cmd/sub", true},
 		{"internal/app/runtime/probe.go", "internal/app/serve", true},

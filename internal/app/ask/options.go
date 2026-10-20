@@ -1,14 +1,15 @@
 package ask
 
 import (
+	"io"
+	"time"
+
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/debug"
-	"io"
-	"time"
 )
 
 // Options is the invocation-scoped snapshot of ask flags.
