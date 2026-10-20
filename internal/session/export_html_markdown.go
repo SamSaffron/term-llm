@@ -6,7 +6,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/text"
@@ -112,7 +111,7 @@ func newHTMLExportMarkdown(media map[string]core.MediaArtifact, images *exportIm
 	// The same audio renderer handles typed audio blocks and AST nodes.
 	// No raw HTML is injected into Markdown and Goldmark unsafe mode stays off.
 	return goldmark.New(
-		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithExtensions(htmlExportExtensions()...),
 		goldmark.WithParserOptions(parser.WithASTTransformers(util.Prioritized(&exportMediaTransformer{media: media, images: images, audio: audio}, 100))),
 		goldmark.WithRendererOptions(renderer.WithNodeRenderers(util.Prioritized(&exportAudioRenderer{}, 100))),
 	)

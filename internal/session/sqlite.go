@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"sync"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
 // SQLiteStore implements Store using SQLite.
