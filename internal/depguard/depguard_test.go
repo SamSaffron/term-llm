@@ -32,7 +32,9 @@ var layeringRules = []rule{
 	{pkgPrefix: "internal/app/serve/server", forbidden: []string{"internal/app/serve"}, exact: true},
 	{pkgPrefix: "internal/app/serve/jobs", forbidden: []string{"internal/app/serve"}, exact: true},
 	{pkgPrefix: "internal", excludePrefix: "internal/app", forbidden: []string{"internal/app"}},
-	{pkgPrefix: "internal/app/serve", forbidden: []string{"github.com/spf13/cobra", "github.com/spf13/pflag"}},
+	{pkgPrefix: "internal/app/serve", forbidden: []string{"github.com/spf13/cobra", "github.com/spf13/pflag", "internal/app/ask", "internal/app/chat"}},
+	{pkgPrefix: "internal/app/chat", forbidden: []string{"github.com/spf13/cobra", "github.com/spf13/pflag", "internal/app/ask"}},
+	{pkgPrefix: "internal/app/ask", forbidden: []string{"github.com/spf13/cobra", "github.com/spf13/pflag"}},
 }
 
 func hasPackagePrefix(pkg, prefix string) bool {
@@ -115,9 +117,13 @@ func TestLayeringGuardSelfTest(t *testing.T) {
 		forbidden      bool
 	}{
 		{"internal/app/serve/probe.go", "github.com/spf13/cobra", true},
+		{"internal/app/serve/probe_test.go", "internal/app/chat", true},
+		{"internal/app/serve/probe_test.go", "internal/app/ask", true},
+		{"internal/app/chat/probe_test.go", "github.com/spf13/cobra", true},
+		{"internal/app/chat/probe_test.go", "internal/app/ask", true},
 		{"internal/app/serve/sub/probe_test.go", "github.com/spf13/pflag", true},
 		{"internal/app/serve-extra/probe.go", "github.com/spf13/cobra", false},
-		{"internal/app/ask/probe.go", "github.com/spf13/cobra", false},
+		{"internal/app/ask/probe.go", "github.com/spf13/cobra", true},
 		{"internal/core/probe.go", "cmd", true},
 		{"internal/core/probe_test.go", "cmd/sub", true},
 		{"internal/app/runtime/probe.go", "internal/app/serve", true},
@@ -253,7 +259,7 @@ func TestServeDoesNotTransitivelyImportCLI(t *testing.T) {
 		t.Fatalf("go list serve dependencies: %v\n%s", err, output)
 	}
 	for _, dependency := range strings.Fields(string(output)) {
-		if hasPackagePrefix(dependency, "github.com/spf13/cobra") || hasPackagePrefix(dependency, "github.com/spf13/pflag") {
+		if hasPackagePrefix(dependency, "github.com/spf13/cobra") || hasPackagePrefix(dependency, "github.com/spf13/pflag") || strings.Contains(dependency, "/internal/app/ask") || strings.Contains(dependency, "/internal/app/chat") {
 			t.Errorf("serve transitively imports CLI dependency %s", dependency)
 		}
 	}

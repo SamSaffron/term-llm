@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"maps"
 	"sort"
 	"strings"
@@ -509,15 +510,8 @@ func CopilotScopeFlagCompletion(cmd *cobra.Command, args []string, toComplete st
 
 // ExtractAgentFromArgs checks args for @agent-name syntax and returns the agent name
 // and filtered args. Returns empty string if no @agent found.
-func ExtractAgentFromArgs(args []string) (agentName string, filteredArgs []string) {
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "@") && len(arg) > 1 {
-			agentName = arg[1:] // strip the @
-		} else {
-			filteredArgs = append(filteredArgs, arg)
-		}
-	}
-	return agentName, filteredArgs
+func ExtractAgentFromArgs(args []string) (string, []string) {
+	return appruntime.ExtractAgentFromArgs(args)
 }
 
 // AtAgentCompletion provides completions for @agent syntax in positional args.

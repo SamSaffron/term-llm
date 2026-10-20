@@ -24,8 +24,10 @@ func TestInteractiveWorkersDoNotBypassDiagnosticSink(t *testing.T) {
 		"interactive_diagnostics.go": true,
 	}
 	const hostDir = "../internal/app/serve"
+	const chatDir = "../internal/app/chat"
+	chatFiles := map[string]bool{"run.go": true, "helpers.go": true, "runtime_inputs.go": true, "session.go": true, "ui.go": true, "once.go": true, "handover.go": true}
 	hostFiles := map[string]bool{"runner.go": true, "session.go": true, "goal_runtime.go": true, "spawn_runner.go": true}
-	for dir, files := range map[string]map[string]bool{".": cmdFiles, hostDir: hostFiles} {
+	for dir, files := range map[string]map[string]bool{".": cmdFiles, hostDir: hostFiles, chatDir: chatFiles} {
 		for name := range files {
 			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 				t.Fatalf("guarded worker missing: %s/%s: %v", dir, name, err)
@@ -33,7 +35,7 @@ func TestInteractiveWorkersDoNotBypassDiagnosticSink(t *testing.T) {
 		}
 	}
 	var violations []string
-	for _, dir := range append(packages, ".", hostDir) {
+	for _, dir := range append(packages, ".", hostDir, chatDir) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -134,7 +136,7 @@ var allowedInteractiveDirectOutput = map[string]bool{
 	"copilot.go:PromptForCopilotAuth:fmt.Print":                        true,
 	"auth_prompt.go:waitForEnterOrInterrupt:fmt.Println":               true,
 	// The forced-exit path runs only after Bubble Tea cannot stop and os.Exit.
-	"chat.go:runChatOnce:fmt.Fprintln(os.Stderr)": true,
+	"once.go:runChatOnce:fmt.Fprintln(os.Stderr)": true,
 	// These are standalone CLI-only paths, not background chat workers.
 	"skills.go:runSkillsAddCLI:fmt.Fprintln(os.Stderr)":             true,
 	"sessions.go:buildSessionExportOptions:fmt.Fprintln(os.Stderr)": true,

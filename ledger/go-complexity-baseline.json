@@ -18,7 +18,7 @@
       "origin": "remeasured"
     },
     {
-      "key": ".|cmd/ask.go|cmd||runAsk",
+      "key": ".|internal/app/ask/run.go|ask||Run",
       "complexity": 65,
       "owner": "cmd/ask",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
@@ -26,7 +26,7 @@
       "origin": "existing"
     },
     {
-      "key": ".|cmd/ask_execute.go|cmd|*askStreamingExecution|run",
+      "key": ".|internal/app/ask/execute.go|ask|*askStreamingExecution|run",
       "complexity": 23,
       "owner": "cmd/ask",
       "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
@@ -34,7 +34,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/ask_execute_progressive.go|cmd|*askProgressiveExecution|run",
+      "key": ".|internal/app/ask/execute_progressive.go|ask|*askProgressiveExecution|run",
       "complexity": 38,
       "owner": "cmd/ask",
       "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
@@ -42,7 +42,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/ask_finalize.go|cmd|*askFinalization|runCompletionHook",
+      "key": ".|internal/app/ask/finalize.go|ask|*askFinalization|runCompletionHook",
       "complexity": 26,
       "owner": "cmd/ask",
       "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
@@ -50,7 +50,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/ask_prepare.go|cmd||prepareAskConversation",
+      "key": ".|internal/app/ask/prepare.go|ask||prepareAskConversation",
       "complexity": 34,
       "owner": "cmd/ask",
       "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
@@ -58,7 +58,7 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/ask_resume.go|cmd||prepareAskResume",
+      "key": ".|internal/app/ask/resume.go|ask||prepareAskResume",
       "complexity": 32,
       "owner": "cmd/ask",
       "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
@@ -98,7 +98,7 @@
       "origin": "moved"
     },
     {
-      "key": ".|cmd/chat.go|cmd||buildChatSessionRuntime",
+      "key": ".|internal/app/chat/session.go|chat|*chatInvocation|buildChatSessionRuntime",
       "complexity": 89,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",

@@ -20,7 +20,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/dustin/go-humanize"
+	humanize "github.com/dustin/go-humanize"
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -30,7 +30,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/filemime"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/cobra"
 	_ "golang.org/x/image/webp"
 	"golang.org/x/term"
 )
@@ -41,15 +40,8 @@ type PreparedInput struct {
 	Question    string
 }
 
-// CommandInput returns Cobra's configured input exactly once. Tests and
-// embedders commonly replace it with Command.SetIn, while normal CLI use still
-// receives os.Stdin.
-func CommandInput(cmd *cobra.Command) (io.Reader, bool) {
-	reader := cmd.InOrStdin()
-	return reader, askReaderHasStdin(reader)
-}
-
-func askReaderHasStdin(reader io.Reader) bool {
+// ReaderHasStdin reports whether a captured input contains piped data.
+func ReaderHasStdin(reader io.Reader) bool {
 	file, ok := reader.(*os.File)
 	if !ok {
 		return reader != nil
