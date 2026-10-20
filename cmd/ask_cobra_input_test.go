@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"io"
 	"strings"
 	"testing"
 
@@ -12,14 +11,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func askInputFromCommand(cmd *cobra.Command) (io.Reader, bool) {
-	r := cmd.InOrStdin()
-	return r, ask.ReaderHasStdin(r)
-}
 func TestPrepareAskInputUsesCobraInputAndKeepsSmallTextInline(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetIn(strings.NewReader("small text"))
-	reader, hasStdin := askInputFromCommand(cmd)
+	_, deps := captureAskInvocation(cmd)
+	reader, hasStdin := deps.Stdin, deps.HasStdin
 	if !hasStdin {
 		t.Fatal("SetIn reader was not recognized as piped stdin")
 	}
