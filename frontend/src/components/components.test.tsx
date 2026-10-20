@@ -5263,6 +5263,49 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('option', { name: /compact/ })).toBeInTheDocument();
   });
 
+  it.each([undefined, 'prompt', 'yolo'] as const)(
+    'hides the approval chip when effective and default modes match (requested: %s)',
+    (requestedMode) => {
+      const store = createStore();
+      store.sessions.value = store.sessions.value.map((entry) => ({
+        ...entry,
+        approvalDefaultMode: 'yolo',
+        approvalRequestedMode: requestedMode,
+        approvalEffectiveMode: 'yolo',
+        guardianAvailable: true,
+        guardianAutoSuspended: false,
+      }));
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+
+      expect(container.querySelector('.approval-mode-chip')).not.toBeInTheDocument();
+    },
+  );
+
+  it('shows the approval chip when the effective mode overrides the default', () => {
+    const store = createStore();
+    store.sessions.value = store.sessions.value.map((entry) => ({
+      ...entry,
+      approvalDefaultMode: 'prompt',
+      approvalRequestedMode: 'yolo',
+      approvalEffectiveMode: 'yolo',
+      guardianAvailable: true,
+      guardianAutoSuspended: false,
+    }));
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Approvals · Yolo for this chat · default prompt' }),
+    ).toBeInTheDocument();
+  });
+
   it('opens approval controls from /approvals and shows a changed-mode chip above the goal', async () => {
     const store = createStore();
     store.sessions.value = store.sessions.value.map((entry) => ({

@@ -495,8 +495,8 @@ function ConversationComposer() {
   const bindingBlocked = store.draftActive.value && Boolean(project && project.available === false);
   const approvalChanged = Boolean(
     session?.approvalDefaultMode &&
-    (session.approvalRequestedMode !== session.approvalDefaultMode ||
-      session.approvalEffectiveMode !== session.approvalDefaultMode ||
+    ((session.approvalEffectiveMode &&
+      session.approvalEffectiveMode !== session.approvalDefaultMode) ||
       session.guardianAutoSuspended ||
       (session.approvalRequestedMode === 'auto' && session.guardianAvailable === false)),
   );
