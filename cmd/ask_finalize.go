@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/ask"
@@ -12,12 +13,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
-	"github.com/spf13/cobra"
 )
 
 type askFinalization struct {
 	ctx               context.Context
-	cmd               *cobra.Command
+	stderr            io.Writer
 	collector         *ask.TextCollector
 	outputTool        *tools.SetOutputTool
 	outputRequest     func() core.Request
@@ -79,7 +79,7 @@ func (f *askFinalization) run() error {
 	if f.showStats && f.stats != nil && !f.json {
 		f.stats.Finalize()
 		setEstimatedStatsCost(f.stats, activeModel(f.config))
-		fmt.Fprintln(f.cmd.ErrOrStderr(), f.stats.Render())
+		fmt.Fprintln(f.stderr, f.stats.Render())
 	}
 	return nil
 }
@@ -123,14 +123,14 @@ func (f *askFinalization) runCompletionHook() error {
 				if emitErr := ask.EmitOnCompleteFailed(f.jsonEmit, result.Stderr, err); emitErr != nil {
 					return emitErr
 				}
-				fmt.Fprintf(f.cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
+				fmt.Fprintf(f.stderr, "warning: on_complete failed: %v\n", err)
 			} else if err := ask.EmitOnCompleteCompleted(f.jsonEmit, result.Stderr); err != nil {
 				return err
 			}
 			return nil
 		}
 		if err := ask.RunOnComplete(f.agent.OnComplete, output); err != nil {
-			fmt.Fprintf(f.cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
+			fmt.Fprintf(f.stderr, "warning: on_complete failed: %v\n", err)
 		}
 		return nil
 	}
@@ -143,10 +143,10 @@ func (f *askFinalization) runCompletionHook() error {
 		}
 		if output != "" {
 			if err := ask.WriteCommitEditMsg(output); err != nil {
-				fmt.Fprintf(f.cmd.ErrOrStderr(), "warning: failed to write commit message: %v\n", err)
+				fmt.Fprintf(f.stderr, "warning: failed to write commit message: %v\n", err)
 			} else {
-				fmt.Fprintln(f.cmd.ErrOrStderr(), "\nCommit message written to .git/COMMIT_EDITMSG and .git/GITGUI_MSG")
-				fmt.Fprintln(f.cmd.ErrOrStderr(), "Run 'git commit' to use it.")
+				fmt.Fprintln(f.stderr, "\nCommit message written to .git/COMMIT_EDITMSG and .git/GITGUI_MSG")
+				fmt.Fprintln(f.stderr, "Run 'git commit' to use it.")
 			}
 		}
 	}

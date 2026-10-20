@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -13,7 +14,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/spf13/cobra"
 )
 
 func finalizeAskSessionSettings(settings *appserve.SessionSettings, sess *session.Session, selected *appserve.SessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {
@@ -32,8 +32,8 @@ func finalizeAskSessionSettings(settings *appserve.SessionSettings, sess *sessio
 	return sessionID, baseInputPrompt
 }
 
-func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Config, agent *agents.Agent, store session.Store, settings *appserve.SessionSettings) (*session.Session, *appserve.SessionInputTicket, *appserve.SessionInputSelection, bool, error) {
-	resuming := cmd.Flags().Changed("resume")
+func prepareAskResume(ctx context.Context, opts ask.Options, stderr io.Writer, cfg *config.Config, agent *agents.Agent, store session.Store, settings *appserve.SessionSettings) (*session.Session, *appserve.SessionInputTicket, *appserve.SessionInputSelection, bool, error) {
+	resuming := opts.Changed.Resume
 	if !resuming {
 		return nil, nil, nil, false, nil
 	}
@@ -41,7 +41,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		return nil, nil, nil, true, fmt.Errorf("session storage is disabled; cannot resume")
 	}
 	var sess *session.Session
-	resumeID := strings.TrimSpace(askResume)
+	resumeID := strings.TrimSpace(opts.Resume)
 	if resumeID == "" {
 		sess, _ = store.GetCurrent(ctx)
 		if sess == nil {
@@ -68,16 +68,16 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
 	if _, supported := session.AsSessionInputRefresher(store); !supported {
 		var err error
-		settings.SystemPrompt, settings.Tools, err = appserve.ResolveSessionPromptTools(cfg, agent, appserve.CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
+		settings.SystemPrompt, settings.Tools, err = appserve.ResolveSessionPromptTools(cfg, agent, appserve.CLIFlags{ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: opts.Tools, ToolsSet: opts.Changed.Tools, SystemMessage: opts.SystemMessage, SystemMessageSet: opts.Changed.System, Files: opts.Files, Platform: "console", MemoryPaths: settings.MemoryPaths}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
 		if err != nil {
 			return nil, nil, nil, true, err
 		}
 	}
-	settings.Search = resumedSessionSearch(settings.Search, sess.Search, cmd.Flags().Changed("search"), askNoSearch)
-	if !cmd.Flags().Changed("tools") {
+	settings.Search = resumedSessionSearch(settings.Search, sess.Search, opts.Changed.Search, opts.NoSearch)
+	if !opts.Changed.Tools {
 		settings.Tools = sess.Tools
 	}
-	if !cmd.Flags().Changed("mcp") {
+	if !opts.Changed.MCP {
 		settings.MCP = sess.MCP
 	}
 	if agent == nil && strings.TrimSpace(sess.Agent) != "" {
@@ -87,7 +87,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		}
 	}
 	if err := appserve.RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore session directory: %v\n", err)
+		fmt.Fprintf(stderr, "warning: failed to restore session directory: %v\n", err)
 	}
 	if dir := effectiveSessionDirectory(sess); dir != "" {
 		if canonical, err := appserve.CanonicalRuntimeDir(dir); err == nil {
@@ -115,8 +115,8 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 				return nil, ticket, nil, true, err
 			}
 			settings.SystemPrompt, settings.Tools, err = appserve.ResolveSessionPromptTools(cfg, resumedAgent, appserve.CLIFlags{
-				Provider: askProvider, ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
-				SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console", MemoryPaths: settings.MemoryPaths,
+				Provider: opts.Provider, ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: opts.Tools, ToolsSet: opts.Changed.Tools,
+				SystemMessage: opts.SystemMessage, SystemMessageSet: opts.Changed.System, Files: opts.Files, Platform: "console", MemoryPaths: settings.MemoryPaths,
 			}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
 			if err != nil {
 				ticket.Fail()

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -168,56 +169,110 @@ func init() {
 }
 
 func runAsk(cmd *cobra.Command, args []string) error {
-	// runAsk may be invoked repeatedly in-process by tests and embedders. Keep
-	// compatibility globals invocation-scoped even though Cobra owns the flags.
-	originalAgent, originalApproval := askAgent, askApproval
-	originalYolo, originalAuto := askYolo, askAuto
-	originalText, originalPorcelain := askText, askPorcelain
-	defer func() {
-		askAgent, askApproval = originalAgent, originalApproval
-		askYolo, askAuto = originalYolo, originalAuto
-		askText, askPorcelain = originalText, originalPorcelain
-	}()
-	// Extract @agent from args if present
-	atAgent, filteredArgs := ExtractAgentFromArgs(args)
-	if atAgent != "" && askAgent == "" {
-		askAgent = atAgent
-	}
-
-	stdinReader, hasStdin := ask.CommandInput(cmd)
-	question := strings.Join(filteredArgs, " ")
 	ctx, stop := signal.NotifyContext()
 	defer stop()
+	opts, deps := captureAskInvocation(cmd)
+	return runAskWith(ctx, args, opts, deps)
+}
+
+func captureAskInvocation(cmd *cobra.Command) (ask.Options, ask.Dependencies) {
+	opts := ask.Options{
+		Debug:           askDebug,
+		Search:          askSearch,
+		NoSearch:        askNoSearch,
+		Text:            askText,
+		Porcelain:       askPorcelain,
+		JSON:            askJSON,
+		Progressive:     askProgressive,
+		Provider:        askProvider,
+		Files:           append([]string(nil), askFiles...),
+		MCP:             askMCP,
+		MaxTurns:        askMaxTurns,
+		MaxOutputTokens: askMaxOutputTokens,
+		InlineMaxBytes:  askInlineMaxBytes,
+		Timeout:         askTimeout,
+		StopWhen:        askStopWhen,
+		ContinueWith:    askContinueWith,
+		NativeSearch:    askNativeSearch,
+		NoNativeSearch:  askNoNativeSearch,
+		NoWebFetch:      askNoWebFetch,
+		Tools:           askTools,
+		ReadDirs:        append([]string(nil), askReadDirs...),
+		WriteDirs:       append([]string(nil), askWriteDirs...),
+		ShellAllow:      append([]string(nil), askShellAllow...),
+		SystemMessage:   askSystemMessage,
+		Agent:           askAgent,
+		Approval:        askApproval,
+		Yolo:            askYolo,
+		Auto:            askAuto,
+		Fast:            askFast,
+		Skills:          askSkills,
+		Resume:          askResume,
+		DebugRaw:        debugRaw, ShowStats: showStats,
+		Changed: ask.FlagState{
+			Resume: cmd.Flags().Changed("resume"), Tools: cmd.Flags().Changed("tools"),
+			System: cmd.Flags().Changed("system"), MaxTurns: cmd.Flags().Changed("max-turns"),
+			Search: cmd.Flags().Changed("search"), MCP: cmd.Flags().Changed("mcp"),
+		},
+	}
+	stdin, hasStdin := ask.CommandInput(cmd)
+	// Capture CLI arbitration now, but defer errors/config resolution to startup.
+	cli, cliErr := approvalModeFromCommand(cmd, opts.Approval, opts.Auto, opts.Yolo)
+	deps := ask.Dependencies{
+		Stdin: stdin, HasStdin: hasStdin, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
+		Interactive:  func() bool { return terminalpolicy.Interactive(os.Stdin, os.Stdout) },
+		SessionStore: sessionStoreOverrides(), MemoryPaths: memoryPaths(),
+		LoadConfig: loadConfigWithSetup, NewProvider: newAskProvider, CreateDebugLogger: createDebugLogger,
+		RunnerCleanupTimeout: askRunnerCleanupTimeout,
+		ResolveApproval: func(cfg *config.Config) (resolvedApprovalMode, error) {
+			if cliErr != nil {
+				return resolvedApprovalMode{}, cliErr
+			}
+			return resolveApprovalMode(approvalModeResolutionInput{Surface: approvalSurfaceAsk, Config: cfg, CLI: cli})
+		},
+	}
+	return opts, deps
+}
+
+func runAskWith(ctx context.Context, args []string, opts ask.Options, deps ask.Dependencies) error {
+	// Extract @agent from args if present
+	atAgent, filteredArgs := ExtractAgentFromArgs(args)
+	if atAgent != "" && opts.Agent == "" {
+		opts.Agent = atAgent
+	}
+
+	stdinReader, hasStdin := deps.Stdin, deps.HasStdin
+	question := strings.Join(filteredArgs, " ")
 	progressiveOpts := askProgressiveOptions{
-		Enabled:      askProgressive,
-		Timeout:      askTimeout,
-		StopWhen:     progressiveStopWhen(strings.TrimSpace(askStopWhen)),
-		ContinueWith: askContinueWith,
+		Enabled:      opts.Progressive,
+		Timeout:      opts.Timeout,
+		StopWhen:     progressiveStopWhen(strings.TrimSpace(opts.StopWhen)),
+		ContinueWith: opts.ContinueWith,
 	}
 	if err := validateAskProgressiveOptions(&progressiveOpts); err != nil {
 		return err
 	}
-	if askTimeout > 0 {
+	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, askTimeout)
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
 	}
 
-	cfg, err := loadConfigWithSetup()
+	cfg, err := deps.LoadConfig()
 	if err != nil {
 		return err
 	}
-	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceAsk, cfg, nil, askApproval, askAuto, askYolo)
+	resolvedApproval, err := deps.ResolveApproval(cfg)
 	if err != nil {
 		return err
 	}
 	resolvedYolo := resolvedApproval.Mode == tools.ModeYolo
-	askApproval = resolvedApproval.Mode.String()
-	askYolo = resolvedYolo
-	askAuto = resolvedApproval.Mode == tools.ModeAuto
+	opts.Approval = resolvedApproval.Mode.String()
+	opts.Yolo = resolvedYolo
+	opts.Auto = resolvedApproval.Mode == tools.ModeAuto
 
 	// Load agent if specified
-	agent, err := LoadAgent(askAgent, cfg)
+	agent, err := LoadAgent(opts.Agent, cfg)
 	if err != nil {
 		return err
 	}
@@ -235,7 +290,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Apply provider overrides: CLI > agent > config
-	askSelected, askPolicy, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Ask.Provider, CmdModel: cfg.Ask.Model, ProviderFlag: askProvider, Fast: askFast})
+	askSelected, askPolicy, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Ask.Provider, CmdModel: cfg.Ask.Model, ProviderFlag: opts.Provider, Fast: opts.Fast})
 	if err != nil {
 		return err
 	}
@@ -243,16 +298,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	initThemeFromConfig(cfg)
 
 	// Create LLM provider
-	provider, err := newAskProvider(cfg, askFast)
+	provider, err := deps.NewProvider(cfg, opts.Fast)
 	if err != nil {
 		return err
 	}
 	engine := newEngine(provider, cfg)
 
 	// Set up debug logger if enabled
-	debugLogger, err := createDebugLogger(cfg)
+	debugLogger, err := deps.CreateDebugLogger(cfg)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+		fmt.Fprintf(deps.Stderr, "warning: %v\n", err)
 	}
 	if debugLogger != nil {
 		engine.SetDebugLogger(debugLogger)
@@ -264,36 +319,36 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if agent != nil {
 		agentSkills = agent.Skills
 	}
-	skillsSetup := appserve.SetupSkills(&cfg.Skills, askSkills, agentSkills, cmd.ErrOrStderr())
+	skillsSetup := appserve.SetupSkills(&cfg.Skills, opts.Skills, agentSkills, deps.Stderr)
 
 	// Durable identity must be known before expanding the two refreshable
 	// inputs. In particular, includes must not resolve against the launch CWD.
 	var deferredInputs *appserve.SessionInputSelection
-	if cmd.Flags().Changed("resume") {
+	if opts.Changed.Resume {
 		deferredInputs = &appserve.SessionInputSelection{}
 	}
 	// Resolve all settings: CLI > agent > config
-	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
+	runtimeSessionStore, runtimeMemoryPaths := deps.SessionStore, deps.MemoryPaths
 	promptProvider, promptModel := appruntime.ActiveLLMFlags(cfg)
 	settings, err := appserve.ResolveSettings(cfg, agent, appserve.CLIFlags{
 		Inputs:           deferredInputs,
-		Provider:         askProvider,
+		Provider:         opts.Provider,
 		ActiveProvider:   promptProvider,
 		ActiveModel:      promptModel,
-		ToolsSet:         cmd.Flags().Changed("tools"),
-		SystemMessageSet: cmd.Flags().Changed("system"),
-		Tools:            askTools,
-		ReadDirs:         askReadDirs,
-		WriteDirs:        askWriteDirs,
-		ShellAllow:       askShellAllow,
-		MCP:              askMCP,
-		SystemMessage:    askSystemMessage,
-		MaxTurns:         askMaxTurns,
-		MaxTurnsSet:      cmd.Flags().Changed("max-turns"),
-		MaxOutputTokens:  askMaxOutputTokens,
-		Search:           askSearch,
-		NoSearch:         askNoSearch,
-		Files:            askFiles,
+		ToolsSet:         opts.Changed.Tools,
+		SystemMessageSet: opts.Changed.System,
+		Tools:            opts.Tools,
+		ReadDirs:         opts.ReadDirs,
+		WriteDirs:        opts.WriteDirs,
+		ShellAllow:       opts.ShellAllow,
+		MCP:              opts.MCP,
+		SystemMessage:    opts.SystemMessage,
+		MaxTurns:         opts.MaxTurns,
+		MaxTurnsSet:      opts.Changed.MaxTurns,
+		MaxOutputTokens:  opts.MaxOutputTokens,
+		Search:           opts.Search,
+		NoSearch:         opts.NoSearch,
+		Files:            opts.Files,
 		Platform:         "console",
 		MemoryPaths:      runtimeMemoryPaths,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
@@ -304,7 +359,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
 	// so that session settings can override settings.Tools, settings.MCP, etc.
-	store, storeCleanup := appruntime.InitSessionStoreWith(cfg, cmd.ErrOrStderr(), runtimeSessionStore)
+	store, storeCleanup := appruntime.InitSessionStoreWith(cfg, deps.Stderr, runtimeSessionStore)
 	var spawnRunner *appserve.SpawnAgentRunner
 	// userInterrupted is set when the rich renderer handled Ctrl-C itself: the
 	// signal context is not cancelled in that case, but the user still asked
@@ -316,12 +371,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			switch {
 			case ctx.Err() != nil || userInterrupted:
 				if len(ids) > 0 {
-					fmt.Fprintf(cmd.ErrOrStderr(), "interrupting child agents (resumable): %s\n", strings.Join(ids, ", "))
+					fmt.Fprintf(deps.Stderr, "interrupting child agents (resumable): %s\n", strings.Join(ids, ", "))
 				}
 				appserve.ShutdownSpawnAgentRunner(spawnRunner)
 			default:
 				if len(ids) > 0 {
-					fmt.Fprintf(cmd.ErrOrStderr(), "waiting for child agents: %s\n", strings.Join(ids, ", "))
+					fmt.Fprintf(deps.Stderr, "waiting for child agents: %s\n", strings.Join(ids, ", "))
 				}
 				if err := spawnRunner.Drain(ctx); err != nil {
 					appserve.ShutdownSpawnAgentRunner(spawnRunner)
@@ -331,7 +386,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		storeCleanup()
 	}()
 	// Apply persisted settings and refreshable inputs before tool/MCP setup.
-	sess, inputTicket, selectedInputs, resuming, err := prepareAskResume(ctx, cmd, cfg, agent, store, &settings)
+	sess, inputTicket, selectedInputs, resuming, err := prepareAskResume(ctx, opts, deps.Stderr, cfg, agent, store, &settings)
 	if err != nil {
 		return err
 	}
@@ -364,11 +419,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if agent != nil {
 		defaultQuestion = agent.DefaultPrompt
 	}
-	askInputCfg, err := ask.ApplyInlineMaxBytesOverride(cfg.Ask, askInlineMaxBytes)
+	askInputCfg, err := ask.ApplyInlineMaxBytesOverride(cfg.Ask, opts.InlineMaxBytes)
 	if err != nil {
 		return err
 	}
-	preparedInput, err := ask.PrepareInput(question, askFiles, stdinReader, hasStdin, askInputCfg, defaultQuestion)
+	preparedInput, err := ask.PrepareInput(question, opts.Files, stdinReader, hasStdin, askInputCfg, defaultQuestion)
 	if err != nil {
 		return err
 	}
@@ -392,7 +447,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if toolMgr != nil && toolMgr.ApprovalMgr != nil {
 		defer toolMgr.ApprovalMgr.Close()
 	}
-	spawnRunner, err = configureAskToolManager(ctx, cmd, cfg, toolMgr, store, sessionID, resolvedApproval, runtimeSessionStore, runtimeMemoryPaths)
+	spawnRunner, err = configureAskToolManager(ctx, deps.Stderr, opts.Debug, cfg, toolMgr, store, sessionID, resolvedApproval, runtimeSessionStore, runtimeMemoryPaths)
 	if err != nil {
 		return err
 	}
@@ -416,7 +471,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model
 		}
-		mcpManager, err = ask.EnableMCPServersWithFeedback(ctx, settings.MCP, engine, cmd.ErrOrStderr(), mcpOpts)
+		mcpManager, err = ask.EnableMCPServersWithFeedback(ctx, settings.MCP, engine, deps.Stderr, mcpOpts)
 		if err != nil {
 			return err
 		}
@@ -437,24 +492,24 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// survive compaction boundaries without trusting text or escaped paths.
 	grantAskResumedUploadedFileReads(ctx, store, sess, resuming, toolMgr, messages)
 
-	debugMode := askDebug
+	debugMode := opts.Debug
 	if sess != nil {
 		sessionID = sess.ID
 	}
-	req := buildAskRequest(cfg, settings, sessionID, messages, engine, toolMgr, mcpManager, outputTool, debugMode, debugRaw)
+	req := buildAskRequest(opts, cfg, settings, sessionID, messages, engine, toolMgr, mcpManager, outputTool, debugMode, opts.DebugRaw)
 
 	// Check if we're in a TTY and can use terminal markdown rendering
-	if askPorcelain {
-		askText = true
+	if opts.Porcelain {
+		opts.Text = true
 	}
-	if askJSON {
-		askText = true
-		askPorcelain = false
+	if opts.JSON {
+		opts.Text = true
+		opts.Porcelain = false
 	}
-	useRichRenderer := shouldUseAskRichRenderer()
+	useRichRenderer := !opts.Text && !opts.DebugRaw && deps.Interactive()
 	var jsonEmit *ask.JSONEmitter
-	if askJSON {
-		jsonEmit = ask.NewJSONEmitter(cmd.OutOrStdout())
+	if opts.JSON {
+		jsonEmit = ask.NewJSONEmitter(deps.Stdout)
 	}
 
 	// Create stream adapter for unified event handling with proper buffering
@@ -463,7 +518,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
 	}
 	adapter.Stats().SetModel(activeModel(cfg))
-	if !askProgressive && toolMgr != nil {
+	if !opts.Progressive && toolMgr != nil {
 		toolMgr.ApprovalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
 			if !event.Usage.BillableCountersZero() && store != nil && sess != nil {
 				recordStoreHelperUsage(context.Background(), store, sess.ID, event.Model, session.ModelUsageGuardian, event.Usage)
@@ -525,7 +580,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	compactionCallback := persistenceCallbacks.Compaction
 
 	var jsonInfo ask.SessionInfo
-	if askJSON {
+	if opts.JSON {
 		agentName := ""
 		if agent != nil {
 			agentName = agent.Name
@@ -553,30 +608,30 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		parentApprovalMgr = toolMgr.ApprovalMgr
 	}
 	askRunner := appserve.NewCmdRunner(cfg, appserve.RunnerOptions{
-		Provider:           askProvider,
-		Fast:               askFast,
+		Provider:           opts.Provider,
+		Fast:               opts.Fast,
 		ConfigSet:          true,
 		ConfigProvider:     cfg.Ask.Provider,
 		ConfigModel:        cfg.Ask.Model,
 		ConfigInstructions: cfg.Ask.Instructions,
 		ConfigMaxTurns:     cfg.Ask.MaxTurns,
 		Tools:              settings.Tools,
-		ReadDirs:           append([]string(nil), askReadDirs...),
-		WriteDirs:          append([]string(nil), askWriteDirs...),
-		ShellAllow:         append([]string(nil), askShellAllow...),
+		ReadDirs:           append([]string(nil), opts.ReadDirs...),
+		WriteDirs:          append([]string(nil), opts.WriteDirs...),
+		ShellAllow:         append([]string(nil), opts.ShellAllow...),
 		MCP:                settings.MCP,
 		MaxTurns:           settings.MaxTurns,
 		DefaultMaxTurns:    50,
 		Search:             settings.Search,
-		NoSearch:           askNoSearch,
-		NativeSearch:       askNativeSearch,
-		NoNativeSearch:     askNoNativeSearch,
+		NoSearch:           opts.NoSearch,
+		NativeSearch:       opts.NativeSearch,
+		NoNativeSearch:     opts.NoNativeSearch,
 		ApprovalMode:       resolvedApproval.Mode,
 		ApprovalModeSet:    true,
 		ApprovalSource:     resolvedApproval.Source,
-		Debug:              askDebug,
-		DebugRaw:           debugRaw,
-		ErrWriter:          cmd.ErrOrStderr(),
+		Debug:              opts.Debug,
+		DebugRaw:           opts.DebugRaw,
+		ErrWriter:          deps.Stderr,
 		Store:              store,
 		SessionStore:       runtimeSessionStore,
 		MemoryPaths:        runtimeMemoryPaths,
@@ -592,30 +647,30 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	baseRunReq := runpkg.Request{
 		Platform:                    runpkg.PlatformConsole,
-		AgentName:                   askAgent,
+		AgentName:                   opts.Agent,
 		Messages:                    messages,
 		Engine:                      engine,
 		ProviderInstance:            provider,
 		SessionID:                   sessionID,
 		DeferSession:                true,
 		DisableRuntimePersistence:   true,
-		Provider:                    askProvider,
+		Provider:                    opts.Provider,
 		Model:                       activeModel(cfg),
 		Tools:                       settings.Tools,
-		ReadDirs:                    append([]string(nil), askReadDirs...),
-		WriteDirs:                   append([]string(nil), askWriteDirs...),
-		ShellAllow:                  append([]string(nil), askShellAllow...),
+		ReadDirs:                    append([]string(nil), opts.ReadDirs...),
+		WriteDirs:                   append([]string(nil), opts.WriteDirs...),
+		ShellAllow:                  append([]string(nil), opts.ShellAllow...),
 		MCP:                         settings.MCP,
-		Skills:                      askSkills,
+		Skills:                      opts.Skills,
 		SystemMessage:               instructions,
 		MaxTurns:                    settings.MaxTurns,
 		MaxTurnsSet:                 true,
 		MaxOutputTokens:             settings.MaxOutputTokens,
 		Search:                      &searchEnabled,
 		Debug:                       debugMode,
-		DebugRaw:                    debugRaw,
+		DebugRaw:                    opts.DebugRaw,
 		ForceExternalSearch:         &forceExternalSearch,
-		DisableExternalWebFetch:     askNoWebFetch,
+		DisableExternalWebFetch:     opts.NoWebFetch,
 		ExtraTools:                  append([]core.ToolSpec(nil), req.Tools...),
 		IncludeConfiguredTools:      &includeConfiguredTools,
 		EnableToolDiscovery:         req.EnableToolDiscovery,
@@ -644,7 +699,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if askProgressive {
+	if opts.Progressive {
 		var captureOutput func(string) error
 		if outputTool != nil {
 			captureOutput = func(text string) error {
@@ -652,7 +707,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 		}
 		execution, executionErr := (&askProgressiveExecution{
-			ctx: ctx, cmd: cmd, cfg: cfg, toolMgr: toolMgr, store: store, session: sess,
+			ctx: ctx, stdout: deps.Stdout, stderr: deps.Stderr, flags: opts, cleanupTimeout: deps.RunnerCleanupTimeout, cfg: cfg, toolMgr: toolMgr, store: store, session: sess,
 			runner: askRunner, request: baseRunReq, options: progressiveOpts, applyResult: applyRunResult,
 			WrapEvents: wrapStreamEvents, useRichRenderer: useRichRenderer, jsonEmit: jsonEmit, jsonInfo: jsonInfo,
 			captureOutput: captureOutput,
@@ -665,7 +720,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	} else {
 		streamEvents = wrapStreamEvents(streamEvents)
 		execution, executionErr := (&askStreamingExecution{
-			ctx: ctx, cmd: cmd, cfg: cfg, toolMgr: toolMgr, store: store, session: sess,
+			ctx: ctx, stdout: deps.Stdout, stderr: deps.Stderr, flags: opts, cleanupTimeout: deps.RunnerCleanupTimeout, cfg: cfg, toolMgr: toolMgr, store: store, session: sess,
 			events: streamEvents, adapter: adapter, runner: askRunner, request: baseRunReq,
 			applyResult: applyRunResult, persistence: askPersistence, collector: collector,
 			turnStart: turnStartTime, jsonEmit: jsonEmit, jsonInfo: jsonInfo, useRichRenderer: useRichRenderer,
@@ -685,16 +740,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	return (&askFinalization{
-		ctx: ctx, cmd: cmd, collector: collector, outputTool: outputTool, outputRequest: outputToolFinalizationReq,
-		progressive: askProgressive, progressiveResult: progressiveResult, provider: provider, engine: engine,
-		store: store, session: sess, agent: agent, json: askJSON, jsonEmit: jsonEmit, stats: stats,
+		ctx: ctx, stderr: deps.Stderr, collector: collector, outputTool: outputTool, outputRequest: outputToolFinalizationReq,
+		progressive: opts.Progressive, progressiveResult: progressiveResult, provider: provider, engine: engine,
+		store: store, session: sess, agent: agent, json: opts.JSON, jsonEmit: jsonEmit, stats: stats,
 		jsonTotalTokens: jsonTotalTokens, jsonFinalPending: jsonFinalPending, compactionUsages: &compactionUsages,
-		showStats: showStats, config: cfg,
+		showStats: opts.ShowStats, config: cfg,
 	}).run()
 
 }
 
-func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sessionID string, approval resolvedApprovalMode, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*appserve.SpawnAgentRunner, error) {
+func configureAskToolManager(ctx context.Context, stderr io.Writer, debug bool, cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sessionID string, approval resolvedApprovalMode, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*appserve.SpawnAgentRunner, error) {
 	if toolMgr == nil {
 		return nil, nil
 	}
@@ -705,7 +760,7 @@ func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *confi
 	if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, approval, approvalRuntimeOptions{}); err != nil {
 		return nil, err
 	}
-	reportApprovalMode(cmd.ErrOrStderr(), askDebug, approval, toolMgr.ApprovalMgr)
+	reportApprovalMode(stderr, debug, approval, toolMgr.ApprovalMgr)
 	// PromptFunc is set in ask.StreamWithRenderer to use bubbletea UI.
 	// Wire spawn_agent runner with session tracking.
 	return appserve.WireSpawnAgentRunnerWithInputs(cfg, toolMgr, approval.Mode == tools.ModeYolo, store, sessionID, 0, sessionStore, paths)
