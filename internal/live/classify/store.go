@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
 	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
+	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
 const (
