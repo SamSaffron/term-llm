@@ -1,0 +1,224 @@
+name: Deploy browser demo
+
+on:
+  schedule:
+    # Daily rebuild/update of demo.term-llm.com. Avoid the top of the hour.
+    - cron: '23 17 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/browser-bonsai/**'
+      - 'frontend/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'scripts/**'
+      - 'ops/browser-demo/**'
+      - '.github/workflows/deploy-browser-demo.yml'
+  pull_request:
+    paths:
+      - 'experiments/browser-bonsai/**'
+      - 'frontend/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'scripts/**'
+      - 'ops/browser-demo/**'
+      - '.github/workflows/deploy-browser-demo.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-demo-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TZ: UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      id: ${{ steps.prepare.outputs.id }}
+      tarball: ${{ steps.prepare.outputs.tarball }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            internal/reflow/go.sum
+            internal/terminal/runtime/go.sum
+            internal/terminal/renderer/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            experiments/browser-bonsai/package-lock.json
+
+      # The pinned CPython archive is ignored by git. Restore it by pin hash so
+      # ordinary runs do not depend on the Alpine package CDN staying online.
+      - name: Restore Python runtime cache
+        uses: actions/cache@v4
+        with:
+          path: experiments/browser-bonsai/web/runtime
+          key: browser-demo-python-runtime-${{ hashFiles('experiments/browser-bonsai/web/python-runtime.mjs') }}
+
+      - name: Install frontend dependencies
+        run: make frontend-deps
+
+      - name: Install browser demo dependencies
+        run: npm --prefix experiments/browser-bonsai ci
+
+      - name: Ensure pinned Python runtime
+        env:
+          PYTHON_RUNTIME_BASE_URL: https://demo.term-llm.com/runtime
+        run: ops/browser-demo/ensure-python-runtime.sh
+
+      - name: Build production frontend and browser demo
+        run: |
+          make frontend
+          ./experiments/browser-bonsai/build.sh
+
+      # The real Linux guest test requires upstream kernel/BIOS assets plus the
+      # Python overlay. CI does not download or redistribute those bytes, so the
+      # guest test reports skipped unless LINUX_TEST_ASSETS is provided locally.
+      - name: Browser demo JavaScript tests
+        run: |
+          npm --prefix experiments/browser-bonsai test
+          npm --prefix experiments/browser-bonsai run test:wasm-startup
+
+      - name: Browser demo Go tests
+        run: go test ./experiments/browser-bonsai
+
+      - name: Validate deployment scripts
+        run: |
+          bash -n ops/browser-demo/*.sh
+          go test ./ops/browser-demo
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck ops/browser-demo/*.sh
+          fi
+          if command -v actionlint >/dev/null 2>&1; then
+            actionlint
+          else
+            echo "actionlint not installed; GitHub validates this workflow on push."
+          fi
+
+      - name: Prepare immutable release
+        id: prepare
+        run: |
+          set -euo pipefail
+          id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA:0:12}"
+          out="tmp/browser-demo-release/$id"
+          tarball="$out.tar.gz"
+          source_date_epoch=$(git log -1 --format=%ct)
+          ops/browser-demo/prepare-release.sh \
+            --dist experiments/browser-bonsai/dist \
+            --out "$out" \
+            --tarball "$tarball" \
+            --id "$id" \
+            --git-sha "$GITHUB_SHA" \
+            --git-ref "$GITHUB_REF" \
+            --built-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --source-date-epoch "$source_date_epoch"
+          {
+            echo "id=$id"
+            echo "tarball=$tarball"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-demo-release
+          path: ${{ steps.prepare.outputs.tarball }}
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Build summary
+        run: |
+          {
+            echo "### Browser demo build"
+            echo
+            echo "- Release: \`${{ steps.prepare.outputs.id }}\`"
+            echo "- Source: \`${{ github.sha }}\`"
+            echo "- Linux guest test: skipped in CI (upstream kernel/BIOS are fetched by the browser, not CI)"
+            echo "- GPU inference: not exercised in CI"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build
+    # Never run on pull requests or from forks. Scheduled/manual runs must still
+    # resolve to the trusted upstream main branch.
+    if: >-
+      github.repository == 'SamSaffron/term-llm' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: browser-demo-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download release artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: browser-demo-release
+          path: tmp/release
+
+      - name: Configure pinned SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/browser-demo-deploy-key"
+          printf '%s\n' "$DEPLOY_SSH_KEY" >"$key"
+          chmod 600 "$key"
+          ssh-keygen -y -f "$key" >/dev/null
+          test -s "$key"
+
+      - name: Deploy release atomically
+        env:
+          DEPLOY_SSH_KEY_FILE: ${{ runner.temp }}/browser-demo-deploy-key
+        run: |
+          set -euo pipefail
+          tarball=$(find tmp/release -type f -name '*.tar.gz' -print -quit)
+          test -n "$tarball"
+          ops/browser-demo/deploy.sh \
+            --tarball "$tarball" \
+            --id "${{ needs.build.outputs.id }}" \
+            --known-hosts ops/browser-demo/known_hosts \
+            --keep 3
+
+      - name: Remove deploy key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/browser-demo-deploy-key"
+
+      - name: Deploy summary
+        if: success()
+        run: |
+          {
+            echo "### Browser demo deployed"
+            echo
+            echo "- Release: \`${{ needs.build.outputs.id }}\`"
+            echo "- Source: \`${{ github.sha }}\`"
+            echo "- URL: https://demo.term-llm.com/"
+            echo "- Rollback: the previous symlink target and release are retained"
+          } >>"$GITHUB_STEP_SUMMARY"

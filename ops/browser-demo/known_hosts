@@ -1,0 +1,5 @@
+# Pinned deployment host key for demo.term-llm.com (143.198.76.107).
+# SHA256 fingerprint: SHA256:hFtk253jgXtR0xarGb8QujeDOippF1uE53pfMNn0/5c
+# Copied from the operator's verified SSH known_hosts. deploy.sh refuses to run
+# if this fingerprint or the exact single host entry changes.
+143.198.76.107 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINxpaPFKeTayQZbbxgtNQofxJrBtcHGKww+knPLrGu3C
