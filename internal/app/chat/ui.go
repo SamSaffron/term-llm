@@ -1,10 +1,11 @@
-package cmd
+package chat
 
 import (
 	"context"
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 )
@@ -64,7 +65,7 @@ func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Progr
 	// Set up spawn_agent event callback for subagent progress visibility
 	if toolMgr != nil {
 		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
-			dispatcher := newSubagentProgressDispatcher(func(callID string, event tools.SubagentEvent) {
+			dispatcher := runtime.NewSubagentProgressDispatcher(func(callID string, event tools.SubagentEvent) {
 				sendSessionUI(chat.SubagentProgressMsg{CallID: callID, Event: event})
 			})
 			spawnTool.SetEventCallback(dispatcher.Callback)

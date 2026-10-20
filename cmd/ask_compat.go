@@ -9,7 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 )
 
-// Remaining MCP startup adapters serve the edit/loop CLI bodies until C3.
+// MCP startup adapters remain for the CLI-owned edit/loop bodies.
 
 // MCPOptions contains options for enabling MCP servers.
 type MCPOptions = mcpstart.MCPOptions

@@ -1,9 +1,8 @@
 package cmd
 
 import (
-	tea "charm.land/bubbletea/v2"
+	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/spf13/cobra"
 )
 
@@ -38,10 +37,6 @@ var (
 	// Text mode (no markdown rendering)
 	chatTextMode bool
 )
-
-var chatOpenTTY = tea.OpenTTY
-var chatLifecycleInteractive = terminalpolicy.Interactive
-var chatOutputInteractive = terminalpolicy.OutputInteractive
 
 var chatCmd = &cobra.Command{
 	Use:   "chat [@agent]",
@@ -155,5 +150,5 @@ func runChat(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 	opts, deps := captureChatInvocation(cmd)
-	return (&chatInvocation{opts: opts, deps: deps}).run(ctx, args)
+	return appchat.Run(ctx, args, opts, deps)
 }

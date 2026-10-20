@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -54,9 +55,6 @@ func TestCaptureChatInvocationFreezesInputsAndDefersApproval(t *testing.T) {
 	if nilOpts.Changed.MaxTurns || nilDeps.Stderr != io.Discard {
 		t.Fatalf("nil helper semantics=%+v %+v", nilOpts, nilDeps)
 	}
-	if got, err := resolveChatHandoverSystemPromptWithConfig(nil, nil, nil, "", "", nilDeps.MemoryPaths); err != nil || got != "" {
-		t.Fatalf("nil target=%q %v", got, err)
-	}
 }
 
 func TestChatStartupPrecedence(t *testing.T) {
@@ -68,20 +66,19 @@ func TestChatStartupPrecedence(t *testing.T) {
 	deps.RestoreReloadState = func(string, any) (bool, error) { return false, nil }
 	configErr := errors.New("config wins")
 	deps.LoadConfig = func() (*config.Config, error) { return nil, configErr }
-	invocation := &chatInvocation{opts: opts, deps: deps}
-	if err := invocation.run(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "interactive terminal") {
+	if err := appchat.Run(context.Background(), nil, opts, deps); err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("terminal before config: %v", err)
 	}
-	invocation.opts.AutoSend = []string{"test"}
-	if err := invocation.run(context.Background(), nil); !errors.Is(err, configErr) {
+	opts.AutoSend = []string{"test"}
+	if err := appchat.Run(context.Background(), nil, opts, deps); !errors.Is(err, configErr) {
 		t.Fatalf("config before approval: %v", err)
 	}
-	invocation.deps.LoadConfig = func() (*config.Config, error) { return &config.Config{}, nil }
-	invocation.deps.SessionStore.NoSession = true
-	if _, err := invocation.buildChatSessionRuntime(context.Background(), chatSessionLaunch{resumeRequested: true}, nil); err == nil || !strings.Contains(err.Error(), "storage is disabled") {
+	deps.LoadConfig = func() (*config.Config, error) { return &config.Config{}, nil }
+	deps.SessionStore.NoSession = true
+	if err := appchat.Run(context.Background(), nil, func() appchat.Options { o := opts; o.Changed.Resume = true; return o }(), deps); err == nil || !strings.Contains(err.Error(), "storage is disabled") {
 		t.Fatalf("resume before approval: %v", err)
 	}
-	if _, err := invocation.buildChatSessionRuntime(context.Background(), chatSessionLaunch{}, nil); err == nil || !strings.Contains(err.Error(), "--auto=false") {
+	if err := appchat.Run(context.Background(), nil, opts, deps); err == nil || !strings.Contains(err.Error(), "--auto=false") {
 		t.Fatalf("approval after settings: %v", err)
 	}
 }

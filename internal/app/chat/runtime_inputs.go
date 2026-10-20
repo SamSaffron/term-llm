@@ -1,4 +1,4 @@
-package cmd
+package chat
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -14,15 +13,16 @@ import (
 )
 
 type chatInvocation struct {
-	opts             appchat.Options
-	deps             appchat.Dependencies
+	opts             Options
+	deps             Dependencies
 	handoverApproval *tools.ApprovalMode
 }
 
 func (r *chatInvocation) ownsTerminalHost() bool     { return r.deps.Interactive() }
 func (r *chatInvocation) rendererOwnsTerminal() bool { return r.deps.OutputInteractive() }
 
-func legacyTerminalProgressEnabled(cfg *config.Config) bool {
+// LegacyTerminalProgressEnabled retains the deprecated smart-title-only progress scope.
+func LegacyTerminalProgressEnabled(cfg *config.Config) bool {
 	if cfg == nil || !cfg.Chat.TerminalProgress {
 		return false
 	}

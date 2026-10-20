@@ -7,10 +7,6 @@
       "lines": 1057
     },
     {
-      "path": "cmd/chat.go",
-      "lines": 1572
-    },
-    {
       "path": "cmd/config.go",
       "lines": 1485
     },
@@ -218,7 +214,7 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 21354
+      "lines": 18504
     },
     {
       "dir": "internal/app/serve",

@@ -98,7 +98,7 @@
       "origin": "moved"
     },
     {
-      "key": ".|cmd/chat_session.go|cmd|*chatInvocation|buildChatSessionRuntime",
+      "key": ".|internal/app/chat/session.go|chat|*chatInvocation|buildChatSessionRuntime",
       "complexity": 89,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",

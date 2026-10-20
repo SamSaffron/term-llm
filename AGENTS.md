@@ -8,7 +8,7 @@
 - Before finishing, inspect `git diff`, run checks for every touched area, and report commands and omissions.
 
 ## Project Map
-- `main.go`, `cmd/` – CLI entry point, extracted-command Cobra glue, and remaining command implementations; serve/ask orchestration lives in `internal/app/<command>/`
+- `main.go`, `cmd/` – CLI entry point, extracted-command Cobra glue, and remaining command implementations; serve/ask/chat orchestration lives in `internal/app/<command>/`
 - `internal/app/serve/` – serve host startup/HTTP/Hub, shared runner/session inputs, child lifecycle, jobs composition, live runtime, and owned leaves; Cobra binding stays in `cmd/`
 - `internal/app/process/`, `internal/app/usage/`, `internal/app/memory/`, `internal/app/ask/`, `internal/app/chat/`, `internal/app/sessions/`, `internal/app/service/`, `internal/app/notify/`, `internal/app/agent/` – extracted command implementations
 - `internal/config/`, `internal/llm/` – config/provider resolution; provider implementations, engine, compaction, and mocks (`llm/factory.go` constructs providers)

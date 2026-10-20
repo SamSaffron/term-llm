@@ -1,4 +1,4 @@
-package cmd
+package chat
 
 import (
 	"context"
@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
+	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
+	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
+	runtimeguardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -45,7 +47,7 @@ type chatSessionRuntime struct {
 	model         *chat.Model
 	store         session.Store
 	storeCleanup  func()
-	storeWarnings *appchat.TUIWarningWriter
+	storeWarnings *TUIWarningWriter
 	sess          *session.Session
 	toolMgr       *tools.ToolManager
 	approvalMgr   *tools.ApprovalManager
@@ -82,7 +84,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	runtimeSessionStore, runtimeMemoryPaths := r.deps.SessionStore, r.deps.MemoryPaths
 	// Store warnings are raised in the background for the whole TUI lifetime, so
 	// they route through the program instead of stderr once it is rendering.
-	storeWarnings, finishWarningsBuild := appchat.NewSessionWarningWriter(r.deps.Stderr, launch.warningSink)
+	storeWarnings, finishWarningsBuild := NewSessionWarningWriter(r.deps.Stderr, launch.warningSink)
 	defer finishWarningsBuild()
 	warnings := storeWarnings
 	store, storeCleanup := runtime.InitSessionStoreWith(cfg, storeWarnings, runtimeSessionStore)
@@ -120,7 +122,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 			fmt.Fprintf(warnings, "warning: failed to restore session directory: %v\n", err)
 		}
 	}
-	runtimeDir := effectiveSessionDirectory(sess)
+	runtimeDir := runtime.EffectiveSessionDirectory(sess)
 
 	// Saved session agent wins on resume.
 	effectiveAgent := strings.TrimSpace(cliAgent)
@@ -128,7 +130,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		effectiveAgent = strings.TrimSpace(sess.Agent)
 	}
 
-	agent, err := LoadAgent(effectiveAgent, cfg)
+	agent, err := runtime.LoadAgent(effectiveAgent, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +199,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	r.opts.AutoApproval = desiredApprovalMode == tools.ModeAuto
 
 	if sess != nil {
-		resumeProvider := resolveSessionProviderKey(cfg, sess)
+		resumeProvider := runtime.ResolveSessionProviderKey(cfg, sess)
 		if resumeProvider == "" {
 			resumeProvider = cfg.DefaultProvider
 			fmt.Fprintf(warnings, "warning: unable to infer provider for session %s; falling back to %s\n", session.ShortID(sess.ID), resumeProvider)
@@ -206,16 +208,16 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		if model := strings.TrimSpace(sess.Model); model != "" {
 			providerOverride = resumeProvider + ":" + model
 		}
-		if _, _, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Chat.Provider, CmdModel: cfg.Chat.Model, ProviderFlag: providerOverride, Inherited: sess.ModelPolicy}); err != nil {
+		if _, _, err := runtime.SelectRunModel(cfg, runtime.ModelSelectionInput{Agent: agent, CmdProvider: cfg.Chat.Provider, CmdModel: cfg.Chat.Model, ProviderFlag: providerOverride, Inherited: sess.ModelPolicy}); err != nil {
 			return nil, err
 		}
 	} else {
-		if _, _, err := selectRunModel(cfg, modelSelectionInput{Agent: agent, CmdProvider: cfg.Chat.Provider, CmdModel: cfg.Chat.Model, ProviderFlag: r.opts.Provider}); err != nil {
+		if _, _, err := runtime.SelectRunModel(cfg, runtime.ModelSelectionInput{Agent: agent, CmdProvider: cfg.Chat.Provider, CmdModel: cfg.Chat.Model, ProviderFlag: r.opts.Provider}); err != nil {
 			return nil, err
 		}
 	}
 
-	initThemeFromConfig(cfg)
+	bootstrap.InitThemeFromConfig(cfg)
 
 	titleMode, titleModeOK := chat.ParseTerminalTitleMode(cfg.Chat.TerminalTitle)
 	if !titleModeOK {
@@ -232,12 +234,12 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	if err != nil {
 		return nil, err
 	}
-	effectivePolicy := modelPolicyForSession(sess, agent)
-	fastProvider, fastErr := auxProviderForPolicy(cfg, effectivePolicy, modelSelection{Provider: cfg.DefaultProvider, Model: activeModel(cfg)}, cfg.DefaultProvider)
+	effectivePolicy := runtime.ModelPolicyForSession(sess, agent)
+	fastProvider, fastErr := runtime.AuxProviderForPolicy(cfg, effectivePolicy, runtime.ModelSelection{Provider: cfg.DefaultProvider, Model: bootstrap.ActiveModel(cfg)}, cfg.DefaultProvider)
 	if fastErr != nil {
 		fmt.Fprintf(warnings, "warning: fast provider setup failed: %v\n", fastErr)
 	}
-	engine := newEngine(provider, cfg)
+	engine := runtime.NewEngine(provider, cfg)
 
 	// Set up debug logger if enabled.
 	// We close the logger manually after MCP cleanup (not via defer) because
@@ -291,7 +293,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	})
 	if toolMgr != nil {
 		approvalMgr = toolMgr.ApprovalMgr
-		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{
+		if err := runtimeguardian.ApplyResolvedMode(cfg, approvalMgr, resolvedApproval, runapproval.RuntimeOptions{
 			PrepareCallbacks: true,
 			WarningWriter:    storeWarnings,
 		}); err != nil {
@@ -315,14 +317,14 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 			return nil, wireErr
 		}
 	} else {
-		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{
+		if err := runtimeguardian.ApplyResolvedMode(cfg, approvalMgr, resolvedApproval, runapproval.RuntimeOptions{
 			PrepareCallbacks: true,
 			WarningWriter:    storeWarnings,
 		}); err != nil {
 			return nil, err
 		}
 	}
-	reportApprovalMode(warnings, r.opts.Debug, resolvedApproval, approvalMgr)
+	runapproval.Report(warnings, r.opts.Debug, resolvedApproval, approvalMgr)
 
 	// Initialize skills system
 	agentSkills := ""
@@ -372,7 +374,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	// Determine model name
 	modelName := getModelName(cfg)
 	if modelName == "" {
-		modelName = extractModelFromProviderName(provider.Name())
+		modelName = runtime.ExtractModelFromProviderName(provider.Name())
 	}
 	providerKey := cfg.DefaultProvider
 
@@ -399,7 +401,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		sess.ProviderKey = providerKey
 		sess.Model = modelName
 		sess.Agent = agentName
-		sess.ApprovalMode = approvalModeToSession(desiredApprovalMode)
+		sess.ApprovalMode = runapproval.ToSession(desiredApprovalMode)
 		_ = store.Update(context.Background(), sess)
 	}
 
@@ -414,7 +416,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	configureChatMCPServers(ctx, mcpManager, provider, modelName, resolvedYolo, settings.MCP, warnings)
 
 	// Resolve force external search setting
-	forceExternalSearch := resolveForceExternalSearch(cfg, r.opts.NativeSearch, r.opts.NoNativeSearch)
+	forceExternalSearch := bootstrap.ResolveForceExternalSearch(cfg, r.opts.NativeSearch, r.opts.NoNativeSearch)
 
 	// Only enable alt-screen when stdout is a terminal (avoid corrupting piped output)
 	// Disable alt-screen in auto-send mode for clean output
@@ -455,9 +457,9 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		liveModelMu.Unlock()
 	})
 	model.SetFastProviderResolver(func(key, name string) (core.Provider, error) {
-		return auxProviderForPolicy(cfg, effectivePolicy, modelSelection{Provider: key, Model: name}, key, cfg.DefaultProvider)
+		return runtime.AuxProviderForPolicy(cfg, effectivePolicy, runtime.ModelSelection{Provider: key, Model: name}, key, cfg.DefaultProvider)
 	})
-	model.SetAgentMentionCapability(appchat.RuntimeAgentMentionCapability{Engine: model.CurrentAgentMentionEngine, Manager: toolMgr})
+	model.SetAgentMentionCapability(RuntimeAgentMentionCapability{Engine: model.CurrentAgentMentionEngine, Manager: toolMgr})
 	if sess != nil {
 		model.SetConversationBranch(sessionIsConversationBranch(context.Background(), store, sess.ID))
 	}
@@ -499,7 +501,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		ApprovalSource:     resolvedApproval.Source,
 		Debug:              r.opts.Debug,
 		DebugRaw:           r.opts.DebugRaw,
-		ErrWriter:          appchat.ChildProgressWriter(),
+		ErrWriter:          ChildProgressWriter(),
 		Store:              store,
 		SessionStore:       runtimeSessionStore,
 		MemoryPaths:        runtimeMemoryPaths,
@@ -540,7 +542,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	model.PersistApprovalMode(desiredApprovalMode)
 
 	// Wire agent resolver, lister, and current agent for /handover support
-	model.SetAgentResolver(LoadAgent)
+	model.SetAgentResolver(runtime.LoadAgent)
 	currentRuntimeContext := chat.RuntimeSystemContext{
 		SystemPrompt: cfg.Chat.Instructions,
 		ApplySkills:  skillContextApplier(skillsSetup),
@@ -556,7 +558,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	model.SetHandoverSystemPromptResolver(func(targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
 		return r.resolveChatHandoverSystemPrompt(targetAgent, providerKey, modelName, runtimeMemoryPaths)
 	})
-	model.SetAgentLister(ListAgentNames)
+	model.SetAgentLister(runtime.ListAgentNames)
 	if agent != nil {
 		model.SetCurrentAgent(agent)
 	}

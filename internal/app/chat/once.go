@@ -1,4 +1,4 @@
-package cmd
+package chat
 
 import (
 	"context"
@@ -9,14 +9,14 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
+	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 )
 
-func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter appchat.LifecycleReporter, launchConfig *config.Config) (string, string, error) {
+func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter LifecycleReporter, launchConfig *config.Config) (string, string, error) {
 	rt, err := r.buildChatSessionRuntime(ctx, chatSessionLaunch{
 		initialText:      initialText,
 		cliAgent:         cliAgent,
@@ -105,7 +105,7 @@ func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent 
 		rt.model.RestoreReloadState(*relaunchHandoff.reloadState)
 		relaunchHandoff.reloadState = nil
 	}
-	programModel := appchat.NewProgramModel(rt.model, lifecycleReporter)
+	programModel := NewProgramModel(rt.model, lifecycleReporter)
 	if reloadEnabled {
 		programModel.EnableReloadScope()
 	}
@@ -186,20 +186,20 @@ func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent 
 			fmt.Fprintln(os.Stderr, "term-llm: forced exit after interrupt")
 			// Bubble Tea failed to stop, so restore OSC directly through /dev/tty
 			// before spending the remaining bounded budget releasing adapters.
-			appchat.RestoreLifecycleOSCToTTY(lifecycleReporter)
+			RestoreLifecycleOSCToTTY(lifecycleReporter)
 			os.Exit(130)
 		}
 	}()
 
 	stopReload := func() {}
 	if reloadEnabled {
-		stopReload = appchat.BindReload(ctx, p, programModel, lifecycleReporter, r.deps.ExecReload)
+		stopReload = BindReload(ctx, p, programModel, lifecycleReporter, r.deps.ExecReload)
 	}
 	defer stopReload()
 	programFinalModel, runErr := p.Run()
 	stopReload()
 	currentRuntime().restoreTitle()
-	appchat.RestoreLifecycleOSC(lifecycleReporter)
+	RestoreLifecycleOSC(lifecycleReporter)
 
 	if runErr != nil {
 		if ctx.Err() != nil && errors.Is(runErr, tea.ErrProgramKilled) {
@@ -207,7 +207,7 @@ func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent 
 		}
 		return "", "", fmt.Errorf("failed to run chat: %w", runErr)
 	}
-	finalModel, err := appchat.FinalModel(programFinalModel)
+	finalModel, err := FinalModel(programFinalModel)
 	if err != nil {
 		return "", "", fmt.Errorf("extract final chat model: %w", err)
 	}
@@ -223,7 +223,7 @@ func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent 
 	// Carry a user-selected mode only into an actual handover. Ordinary /resume
 	// and /new relaunches must resolve the target session/config independently.
 	mode := finalModel.ApprovalModeRequested()
-	r.handoverApproval = chatApprovalCarryForRelaunch(finalModel.ApprovalModeChanged(), nextHandoverAutoSend, mode)
+	r.handoverApproval = runapproval.ChatCarryForRelaunch(finalModel.ApprovalModeChanged(), nextHandoverAutoSend, mode)
 	r.opts.Approval = mode.String()
 	r.opts.Yolo = mode == tools.ModeYolo
 	r.opts.AutoApproval = mode == tools.ModeAuto

@@ -1,4 +1,4 @@
-package cmd
+package chat
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 )
@@ -18,7 +18,7 @@ func (r *chatInvocation) run(ctx context.Context, args []string) error {
 	}
 
 	// Extract @agent from args if present, and get remaining args as initial text
-	atAgent, filteredArgs := ExtractAgentFromArgs(args)
+	atAgent, filteredArgs := runtime.ExtractAgentFromArgs(args)
 	cliAgent := strings.TrimSpace(r.opts.Agent)
 	if atAgent != "" && cliAgent == "" {
 		cliAgent = atAgent
@@ -50,14 +50,14 @@ func (r *chatInvocation) run(ctx context.Context, args []string) error {
 		return err
 	}
 	var lifecycleManager *termhost.Manager
-	var lifecycleReporter appchat.LifecycleReporter
+	var lifecycleReporter LifecycleReporter
 	if interactive {
-		lifecycleManager, err = termhost.New(launchConfig.Lifecycle, legacyTerminalProgressEnabled(launchConfig))
+		lifecycleManager, err = termhost.New(launchConfig.Lifecycle, LegacyTerminalProgressEnabled(launchConfig))
 		if err != nil {
 			return fmt.Errorf("initialize terminal-host lifecycle: %w", err)
 		}
 		defer lifecycleManager.Close()
-		defer appchat.RestoreLifecycleOSC(lifecycleManager)
+		defer RestoreLifecycleOSC(lifecycleManager)
 		lifecycleReporter = lifecycleManager
 	}
 	r.handoverApproval = nil
@@ -77,4 +77,10 @@ func (r *chatInvocation) run(ctx context.Context, args []string) error {
 		initialText = ""
 		handoverAutoSend = nextAutoSend
 	}
+}
+
+// Run owns one invocation, including in-process switches and handover/reload.
+// Method callbacks retain this pointer so later model and policy changes are seen.
+func Run(ctx context.Context, args []string, opts Options, deps Dependencies) error {
+	return (&chatInvocation{opts: opts, deps: deps}).run(ctx, args)
 }

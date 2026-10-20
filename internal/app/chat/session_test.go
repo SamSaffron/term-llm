@@ -1,4 +1,4 @@
-package cmd
+package chat
 
 import (
 	"context"
@@ -17,12 +17,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/spf13/cobra"
 )
 
 func TestChatTerminalHostAuthorityRequiresInteractiveInvokingStreams(t *testing.T) {
-	original := chatLifecycleInteractive
-	t.Cleanup(func() { chatLifecycleInteractive = original })
+	r := testInvocation()
 	for _, test := range []struct {
 		name        string
 		interactive bool
@@ -34,8 +32,8 @@ func TestChatTerminalHostAuthorityRequiresInteractiveInvokingStreams(t *testing.
 		{name: "captured nested child", interactive: false, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			chatLifecycleInteractive = func(*os.File, *os.File) bool { return test.interactive }
-			if got := chatOwnsTerminalHost(); got != test.want {
+			r.deps.Interactive = func() bool { return test.interactive }
+			if got := r.ownsTerminalHost(); got != test.want {
 				t.Fatalf("chatOwnsTerminalHost() = %v, want %v", got, test.want)
 			}
 		})
@@ -57,12 +55,12 @@ func TestDeprecatedTerminalProgressRetainsSmartTitleScope(t *testing.T) {
 			cfg := &config.Config{}
 			cfg.Chat.TerminalProgress = true
 			cfg.Chat.TerminalTitle = test.title
-			if got := legacyTerminalProgressEnabled(cfg); got != test.want {
+			if got := LegacyTerminalProgressEnabled(cfg); got != test.want {
 				t.Fatalf("legacyTerminalProgressEnabled() = %v, want %v", got, test.want)
 			}
 		})
 	}
-	if legacyTerminalProgressEnabled(&config.Config{}) {
+	if LegacyTerminalProgressEnabled(&config.Config{}) {
 		t.Fatal("deprecated progress disabled setting enabled compatibility OSC")
 	}
 }
@@ -215,9 +213,7 @@ Use this demo skill when appropriate.
 		t.Fatal(err)
 	}
 
-	oldChatSkills := chatSkills
-	chatSkills = ""
-	t.Cleanup(func() { chatSkills = oldChatSkills })
+	r := testInvocation()
 
 	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"openai": {Model: "gpt-4o"}}}
 	cfg.Skills = config.SkillsConfig{
@@ -230,7 +226,7 @@ Use this demo skill when appropriate.
 	}
 	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "Target prompt"}
 
-	got, err := resolveChatHandoverSystemPromptWithConfig(&cobra.Command{Use: "test"}, cfg, targetAgent, "openai", "gpt-4o", appmemory.Paths{})
+	got, err := r.resolveChatHandoverSystemPromptWithConfig(cfg, targetAgent, "openai", "gpt-4o", appmemory.Paths{})
 	if err != nil {
 		t.Fatalf("resolveChatHandoverSystemPromptWithConfig() error = %v", err)
 	}
@@ -261,7 +257,7 @@ func TestResolveChatRuntimeSystemContextUsesExplicitDirectoryWithoutChdir(t *tes
 	cfg := &config.Config{}
 	cfg.Skills = config.SkillsConfig{Enabled: true, AutoInvoke: true, MetadataBudgetTokens: 8000, MaxVisibleSkills: 8, IncludeProjectSkills: true, IncludeEcosystemPaths: false}
 	agent := &agents.Agent{Name: "target", SystemPrompt: "cwd={{cwd}}\n{{agents}}"}
-	resolved, err := resolveChatRuntimeSystemContextWithConfig(&cobra.Command{Use: "test"}, cfg, agent, "openai", "model", projectDir, "", "", appmemory.Paths{})
+	resolved, err := testInvocation().resolveChatRuntimeSystemContextWithConfig(cfg, agent, "openai", "model", projectDir, "", "", appmemory.Paths{})
 	if err != nil {
 		t.Fatalf("resolve runtime context: %v", err)
 	}
@@ -281,7 +277,7 @@ func TestResolveChatRuntimeSystemContextUsesExplicitDirectoryWithoutChdir(t *tes
 }
 
 func TestBuildChatProgramInput_AutoSendDisablesInput(t *testing.T) {
-	got, err := buildChatProgramInput(true)
+	got, err := testInvocation().buildChatProgramInput(true)
 	if err != nil {
 		t.Fatalf("buildChatProgramInput(true) error = %v", err)
 	}
@@ -297,10 +293,7 @@ func TestBuildChatProgramInput_AutoSendDisablesInput(t *testing.T) {
 }
 
 func TestBuildChatProgramInput_InteractiveUsesTTYInput(t *testing.T) {
-	origOpenTTY := chatOpenTTY
-	defer func() {
-		chatOpenTTY = origOpenTTY
-	}()
+	r := testInvocation()
 
 	ttyIn, ttyInWriter, err := os.Pipe()
 	if err != nil {
@@ -314,11 +307,11 @@ func TestBuildChatProgramInput_InteractiveUsesTTYInput(t *testing.T) {
 	}
 	defer ttyOutReader.Close()
 
-	chatOpenTTY = func() (*os.File, *os.File, error) {
+	r.deps.OpenTTY = func() (*os.File, *os.File, error) {
 		return ttyIn, ttyOut, nil
 	}
 
-	got, err := buildChatProgramInput(false)
+	got, err := r.buildChatProgramInput(false)
 	if err != nil {
 		t.Fatalf("buildChatProgramInput(false) error = %v", err)
 	}
@@ -393,60 +386,44 @@ func TestGetModelName(t *testing.T) {
 	}
 }
 
-func TestExtractModelFromProviderName(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"Claude CLI (sonnet)", "sonnet"},
-		{"Claude CLI (sonnet, effort=high)", "sonnet"},
-		{"Grok CLI (grok-4.5, effort=xhigh)", "grok-4.5"},
-		{"OpenAI (gpt-5)", "gpt-5"},
-		{"OpenAI (gpt-5, effort=high)", "gpt-5"},
-		{"Anthropic (claude-sonnet-4, thinking=8k)", "claude-sonnet-4"},
-		{"Bedrock (claude-sonnet-4, adaptive, us-west-2)", "claude-sonnet-4"},
-		{"Gemini (gemini-2.5-pro, thinking=high)", "gemini-2.5-pro"},
-		{"xAI (grok-4-1-fast)", "grok-4-1-fast"},
-		{"agy CLI", ""},
-		{"agy CLI (gemini-3.6-flash-high)", "gemini-3.6-flash-high"},
-		{"debug", "debug"},
-		{"debug:slow", "debug:slow"},
-		{"", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			if got := extractModelFromProviderName(tc.in); got != tc.want {
-				t.Fatalf("extractModelFromProviderName(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBuildChatProgramInput_InteractivePropagatesTTYError(t *testing.T) {
-	origOpenTTY := chatOpenTTY
-	defer func() {
-		chatOpenTTY = origOpenTTY
-	}()
+	r := testInvocation()
 
-	chatOpenTTY = func() (*os.File, *os.File, error) {
+	r.deps.OpenTTY = func() (*os.File, *os.File, error) {
 		return nil, nil, errors.New("boom")
 	}
 
-	_, err := buildChatProgramInput(false)
+	_, err := r.buildChatProgramInput(false)
 	if err == nil {
 		t.Fatal("expected error when opening chat TTY fails")
 	}
 }
 
 func TestChatOutputOwnershipIndependentOfInput(t *testing.T) {
-	old := chatOutputInteractive
-	t.Cleanup(func() { chatOutputInteractive = old })
-	chatOutputInteractive = func(*os.File) bool { return true }
-	if !chatRendererOwnsTerminal() {
+	r := testInvocation()
+	r.deps.OutputInteractive = func() bool { return true }
+	if !r.rendererOwnsTerminal() {
 		t.Fatal("redirected input must not disable renderer output protection")
 	}
-	chatOutputInteractive = func(*os.File) bool { return false }
-	if chatRendererOwnsTerminal() {
+	r.deps.OutputInteractive = func() bool { return false }
+	if r.rendererOwnsTerminal() {
 		t.Fatal("captured output is not interactive")
+	}
+}
+
+func TestChatHandoverNilCommandMigration(t *testing.T) {
+	r := testInvocation()
+	// A nil Cobra command formerly meant no explicit max-turn flag and discard
+	// diagnostics; those are now the explicit neutral helper inputs.
+	r.opts.MaxTurns = 1
+	if got, err := r.resolveChatHandoverSystemPromptWithConfig(nil, nil, "", "", appmemory.Paths{}); err != nil || got != "" {
+		t.Fatalf("nil target=%q %v", got, err)
+	}
+	resolved, err := r.resolveChatRuntimeSystemContextWithConfig(nil, nil, "", "", "", "", "", appmemory.Paths{})
+	if err != nil {
+		t.Fatalf("nil config/agent helper: %v", err)
+	}
+	if resolved.ApplySkills == nil {
+		t.Fatal("nil helper must still provide skills cleanup")
 	}
 }

@@ -1,4 +1,4 @@
-package cmd
+package chat
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/app/runtime"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -80,7 +81,7 @@ func (r *chatInvocation) buildChatProgramInput(autoSendMode bool) (chatProgramIn
 }
 
 func buildChatHandoverApprovalManager(cfg *config.Config, settings appserve.SessionSettings) (*tools.ApprovalManager, error) {
-	toolConfig := buildToolConfig("", nil, nil, settings.ShellAllow, cfg)
+	toolConfig := runtime.BuildToolConfig("", nil, nil, settings.ShellAllow, cfg)
 	perms := tools.NewToolPermissions()
 	for _, pattern := range toolConfig.ShellAllow {
 		if err := perms.AddShellPattern(pattern); err != nil {

@@ -1,10 +1,11 @@
-package serve
+package chat
 
 import (
 	"strings"
 	"testing"
 
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
+	"github.com/samsaffron/term-llm/internal/agents"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
@@ -17,10 +18,16 @@ func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) 
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg := &config.Config{}
 	cfg.Agents.UseBuiltin = true
-	runner, err := NewSpawnAgentRunner(cfg, false, nil)
+	runner, err := appserve.NewSpawnAgentRunner(cfg, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	registry, err := agents.NewRegistry(agents.RegistryConfig{UseBuiltin: cfg.Agents.UseBuiltin, SearchPaths: cfg.Agents.SearchPaths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.SetPreferences(cfg.Agents.Preferences)
 
 	tests := []struct {
 		active string
@@ -31,7 +38,7 @@ func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) 
 	}
 	for _, tt := range tests {
 		t.Run(tt.active, func(t *testing.T) {
-			active, err := runner.registry.Get(tt.active)
+			active, err := registry.Get(tt.active)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -51,7 +58,7 @@ func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) 
 			manager.GetSpawnAgentTool().SetRunner(runner)
 			eng := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 			manager.SetupEngine(eng)
-			capability := appchat.RuntimeAgentMentionCapability{Engine: func() *engine.Engine { return eng }, Manager: manager}
+			capability := RuntimeAgentMentionCapability{Engine: func() *engine.Engine { return eng }, Manager: manager}
 
 			got, err := capability.PermittedAgentNames()
 			if err != nil {

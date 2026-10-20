@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/termhost"
@@ -37,7 +38,7 @@ func runLifecycleStatus(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	report, err := termhost.Inspect(cfg.Lifecycle, legacyTerminalProgressEnabled(cfg))
+	report, err := termhost.Inspect(cfg.Lifecycle, appchat.LegacyTerminalProgressEnabled(cfg))
 	if err != nil {
 		return fmt.Errorf("inspect terminal-host lifecycle: %w", err)
 	}

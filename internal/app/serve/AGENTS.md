@@ -8,7 +8,8 @@ root-checkout coordination, jobs composition/notifications, live voice, and medi
 
 - Keep **all** `internal/app/serve/**` production and test code free of Cobra/pflag.
   The transitive dependency check also forbids a Cobra/pflag path through a
-  different application package. Shared title-message selection belongs to
+  different application package. Host production/tests must not import ask/chat.
+  Shared title-message selection belongs to
   `internal/app/runtime`, not the Cobra-bearing sessions application.
   Flag binding, Changed interpretation, MCP parent/child arbitration, and CLI
   completion stay in `cmd`. The depguard scans tests and inactive build tags too.
@@ -37,5 +38,4 @@ Focused checks (isolated HOME/XDG/TMPDIR, preserve Go caches):
 `go test ./internal/app/serve/... ./cmd -count=1`; `go test -race ./internal/app/serve/... ./cmd`;
 `go test ./cmd/gentsapi ./internal/depguard`; then `make check-changed ARGS=--all`.
 The large host package retains measured migration debt in `ledger/`; do not
-regenerate the baselines to hide complexity growth. C3 intentionally still owns
-ask/chat command-body extraction; those callers use the concrete public APIs.
+regenerate the baselines to hide complexity growth. Ask/chat own their orchestration above this host and use its concrete public APIs.

@@ -59,15 +59,6 @@ func effectiveApprovalConfigValue(key string, cfg *config.Config) (string, bool,
 func reportApprovalMode(w io.Writer, enabled bool, resolved resolvedApprovalMode, mgr *tools.ApprovalManager) {
 	runapproval.Report(w, enabled, resolved, mgr)
 }
-func chatApprovalCarryForRelaunch(modeChanged bool, handoverAutoSend string, mode tools.ApprovalMode) *tools.ApprovalMode {
-	return runapproval.ChatCarryForRelaunch(modeChanged, handoverAutoSend, mode)
-}
-func approvalModeToSession(value tools.ApprovalMode) session.SessionApprovalMode {
-	return runapproval.ToSession(value)
-}
-func approvalModeForColdPersistence(value tools.ApprovalMode) session.SessionApprovalMode {
-	return runapproval.ForColdPersistence(value)
-}
 
 // approvalModeFromCommand returns only explicitly supplied CLI state. Cobra's
 // Changed state is authoritative; compatibility aliases are never inferred from

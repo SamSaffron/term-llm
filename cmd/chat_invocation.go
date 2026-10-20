@@ -4,14 +4,13 @@ import (
 	"io"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/agents"
+	tea "charm.land/bubbletea/v2"
 	appchat "github.com/samsaffron/term-llm/internal/app/chat"
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -48,13 +47,13 @@ func captureChatInvocation(cmd *cobra.Command) (appchat.Options, appchat.Depende
 		stderr, stdout = cmd.ErrOrStderr(), cmd.OutOrStdout()
 	}
 	cli, cliErr := approvalModeFromCommand(cmd, opts.Approval, opts.AutoApproval, opts.Yolo)
-	interactive, outputInteractive := chatLifecycleInteractive, chatOutputInteractive
+	interactive, outputInteractive := terminalpolicy.Interactive, terminalpolicy.OutputInteractive
 	deps := appchat.Dependencies{
 		Stdout: stdout, Stderr: stderr, SessionStore: sessionStoreOverrides(), MemoryPaths: memoryPaths(),
 		LoadConfig: loadConfigWithSetup, CreateDebugLogger: createDebugLogger, StartDiagnostics: startInteractiveDiagnostics,
 		Interactive:       func() bool { return interactive(os.Stdin, os.Stdout) },
 		OutputInteractive: func() bool { return outputInteractive(os.Stdout) },
-		StdoutIsTerminal:  func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }, OpenTTY: chatOpenTTY,
+		StdoutIsTerminal:  func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }, OpenTTY: tea.OpenTTY,
 		RestoreReloadState: process.RestoreState, ExecReload: execReload,
 		ResolveApproval: func(cfg *config.Config, persisted *session.SessionApprovalMode, carried *tools.ApprovalMode) (resolvedApprovalMode, error) {
 			if cliErr != nil {
@@ -69,19 +68,4 @@ func captureChatInvocation(cmd *cobra.Command) (appchat.Options, appchat.Depende
 		},
 	}
 	return opts, deps
-}
-func chatInvocationForCommand(cmd *cobra.Command) *chatInvocation {
-	opts, deps := captureChatInvocation(cmd)
-	return &chatInvocation{opts: opts, deps: deps}
-}
-func chatOwnsTerminalHost() bool     { return chatInvocationForCommand(nil).ownsTerminalHost() }
-func chatRendererOwnsTerminal() bool { return chatInvocationForCommand(nil).rendererOwnsTerminal() }
-func buildChatProgramInput(autoSend bool) (chatProgramInput, error) {
-	return chatInvocationForCommand(nil).buildChatProgramInput(autoSend)
-}
-func resolveChatHandoverSystemPromptWithConfig(cmd *cobra.Command, cfg *config.Config, target *agents.Agent, provider, model string, paths appmemory.Paths) (string, error) {
-	return chatInvocationForCommand(cmd).resolveChatHandoverSystemPromptWithConfig(cfg, target, provider, model, paths)
-}
-func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.Config, target *agents.Agent, provider, model, dir, instructions, system string, paths appmemory.Paths) (chat.RuntimeSystemContext, error) {
-	return chatInvocationForCommand(cmd).resolveChatRuntimeSystemContextWithConfig(cfg, target, provider, model, dir, instructions, system, paths)
 }
