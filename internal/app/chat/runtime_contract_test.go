@@ -57,7 +57,7 @@ chat:
 	r.deps.LoadConfig = bootstrap.LoadConfigWithSetup
 	r.deps.CreateDebugLogger = bootstrap.CreateDebugLogger
 	r.deps.StdoutIsTerminal = func() bool { return false }
-	r.deps.ResolveApproval = func(cfg *config.Config, persisted *session.SessionApprovalMode, carried *tools.ApprovalMode) (approval.ResolvedMode, error) {
+	r.deps.ResolveApproval = func(cfg *config.Config, persisted *session.SessionApprovalMode, carried *tools.ApprovalMode, _ string) (approval.ResolvedMode, error) {
 		return approval.Resolve(approval.ResolutionInput{Surface: approval.SurfaceChat, Config: cfg, Session: persisted, CLI: carried})
 	}
 	carried := tools.ModeYolo

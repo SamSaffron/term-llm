@@ -46,7 +46,9 @@ type FlagState struct{ Resume, Tools, System, MaxTurns, Search bool }
 
 // Dependencies captures terminal/reload authority and deferred startup operations.
 // ResolveApproval is called after config, session and settings resolution, with
-// the persisted policy and any actual in-process handover carry supplied then.
+// the persisted policy, any actual in-process handover carry, and the current
+// invocation's requested policy supplied then. Explicit CLI policy must use the
+// current request, not a frozen launch value; carry does not trump explicitness.
 // It is required; startup never invents a fallback policy. Supply the other
 // callbacks needed by the selected execution path before calling Run.
 type Dependencies struct {
@@ -54,7 +56,7 @@ type Dependencies struct {
 	SessionStore                                     runtime.SessionStoreOverrides
 	MemoryPaths                                      appmemory.Paths
 	LoadConfig                                       func() (*config.Config, error)
-	ResolveApproval                                  func(*config.Config, *session.SessionApprovalMode, *tools.ApprovalMode) (approval.ResolvedMode, error)
+	ResolveApproval                                  func(*config.Config, *session.SessionApprovalMode, *tools.ApprovalMode, string) (approval.ResolvedMode, error)
 	CreateDebugLogger                                func(*config.Config) (*debug.Logger, error)
 	StartDiagnostics                                 func(io.Writer) (func(), error)
 	Interactive, OutputInteractive, StdoutIsTerminal func() bool

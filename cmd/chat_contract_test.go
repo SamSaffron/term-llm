@@ -47,7 +47,7 @@ func TestCaptureChatInvocationFreezesInputsAndDefersApproval(t *testing.T) {
 	}
 	carried := tools.ModeYolo
 	persisted := session.ApprovalModePrompt
-	resolved, err := deps.ResolveApproval(&config.Config{}, &persisted, &carried)
+	resolved, err := deps.ResolveApproval(&config.Config{}, &persisted, &carried, opts.Approval)
 	if err != nil || resolved.Mode != carried {
 		t.Fatalf("handover carry=%+v %v", resolved, err)
 	}
