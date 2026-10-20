@@ -93,4 +93,5 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
+// Keep the native clipboard implementation unchanged and exclude it on WASM.
 replace github.com/atotto/clipboard => ./third_party/atotto-clipboard
