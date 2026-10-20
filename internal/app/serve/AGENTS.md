@@ -1,18 +1,41 @@
-# Serve application code
+# Serve application host
 
-- `options.go`: typed serve options passed from Cobra flag binding into startup and runtime helpers.
-- `protocol/`: shared-shell marker parsing, payload construction, and text sanitizing; no Cobra or HTTP dependencies.
-- `hub/`: Hub base-path mounting, trusted-proxy auth/rate limiting, cache identity, health, and delegation helpers.
-- `shell/`: per-session PTY shell management, collaborative controller, and activity tracking.
-- `jobs/`: jobs-v2 SQLite schema/migrations, run indexes, and cron math.
-- `server/`: the reverse-connected Hub node's HTTP request relay, wire frames, and path guards. `cmd/serve_hub_reverse_connector.go` still owns websocket lifecycle and delegates each request to this package.
-- `cmd/serve.go`, `cmd/serve_handlers*.go`: serve startup, `serveServer`, and HTTP route/handler composition. The original-code route and immediate auth-wrapper snapshot is `cmd/testdata/routes.golden`, checked by `TestServeRoutesGolden`.
-- `cmd/serve_runtime*.go`, `cmd/serve_response*.go`, `cmd/serve_session*.go`: runtime, session, and response-run management (still in cmd; shared cmd runner dependencies prevent an isolated move).
-- `cmd/serve_jobs_v2*.go`: jobs scheduler, runners, and HTTP handlers.
-- `cmd/serve_live*.go`: live voice and realtime transport.
-- `cmd/serve_hub*.go`: Hub server, routes, and reverse connection lifecycle; Web and Hub share the passkey implementation here.
-- `cmd/serve.go`, `cmd/serve_media.go`: Telegram/platform startup and media integration still in cmd.
-- `internal/serve/`: existing server primitives and Telegram platform wiring.
+This package owns the residual serve host: startup/lifecycle, HTTP and Hub routes,
+shared runner and prepared runs, session inputs/settings, nested child execution,
+root-checkout coordination, jobs composition/notifications, live voice, and media.
+`Run`, `RunMCP`, and `RunHub` accept plain options and captured invocation values.
+`ResolveApproval` is required, deferred until validation and configuration succeed.
 
-Focused tests (with an isolated HOME/XDG tree): `go test ./internal/app/serve/... -count=1`, `go test ./cmd -run 'ServeRoutesGolden|HubReverse|JobsV2|ServeShell' -count=1`.
-Do not import `cmd` from application packages; keep Cobra flags and reference generation in `cmd`.
+- Keep **all** `internal/app/serve/**` production and test code free of Cobra/pflag.
+  The transitive dependency check also forbids a Cobra/pflag path through a
+  different application package. Shared title-message selection belongs to
+  `internal/app/runtime`, not the Cobra-bearing sessions application.
+  Flag binding, Changed interpretation, MCP parent/child arbitration, and CLI
+  completion stay in `cmd`. The depguard scans tests and inactive build tags too.
+- Runtime/private listener and platform seams stay private. Do not expose fields
+  merely to support callers; use the concrete prepared-run/input APIs.
+- Keep one process owner for session-input coordination, root-checkout leases,
+  registration/reload secrets, and child lifecycle. Pass memory/session overrides
+  explicitly into all descendant runners. Never restore root flags in this host.
+- Preserve validation/config/approval/startup order, secret scrubbing, and shutdown
+  before closing resources used by HTTP. Failed startup has the same ownership
+  requirements as successful shutdown.
+- Host tests, `TestMain`'s git template, browserfixture routes, and route/auth goldens
+  live here. Common process isolation is `internal/testutil/procenv`; both CLI and
+  host test binaries dispatch `mcptest.RunIfChild` before setup.
+- `testdata/routes.golden` and `testdata/hub_auth.golden` pin real registrations and
+  authentication wrappers. Never regenerate to conceal a migration mismatch.
+  `internal/tsgen` roots name actual host declarations, not compatibility aliases;
+  generated TypeScript must remain byte-identical for an ownership-only move.
+
+Leaves remain below the host: `hub/`, `jobs/`, `server/`, `shell/`, `protocol/`,
+`wire/`, and `liveprogress/`. They must not import this root. `internal/serve/`
+continues to own platform/service primitives and Telegram wiring. The shared run
+runtime/approval/bootstrap/progressive code lives in `internal/app/runtime/`.
+
+Focused checks (isolated HOME/XDG/TMPDIR, preserve Go caches):
+`go test ./internal/app/serve/... ./cmd -count=1`; `go test -race ./internal/app/serve/... ./cmd`;
+`go test ./cmd/gentsapi ./internal/depguard`; then `make check-changed ARGS=--all`.
+The large host package retains measured migration debt in `ledger/`; do not
+regenerate the baselines to hide complexity growth. C3 intentionally still owns
+ask/chat command-body extraction; those callers use the concrete public APIs.

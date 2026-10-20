@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
@@ -57,7 +58,7 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 	oldFactory := newAskProvider
 	newAskProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
 	t.Cleanup(func() { newAskProvider = oldFactory })
-	t.Cleanup(SwapProcessSessionInputs(NewSessionInputCoordinator()))
+	t.Cleanup(appserve.SwapProcessSessionInputs(appserve.NewSessionInputCoordinator()))
 	oldResume, oldTools, oldSystem, oldAgent := askResume, askTools, askSystemMessage, askAgent
 	oldText, oldPorcelain, oldApproval, oldYolo, oldAuto := askText, askPorcelain, askApproval, askYolo, askAuto
 	oldDB, oldNoSession := sessionDBPath, noSession

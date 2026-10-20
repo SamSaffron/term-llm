@@ -3,13 +3,14 @@ package cmd
 import (
 	"context"
 	"errors"
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -162,7 +163,7 @@ func TestBuildChatHandoverApprovalManager_SeedsShellPolicy(t *testing.T) {
 	cfg.Tools.Enabled = []string{"read_file"}
 	cfg.Tools.ShellAllow = []string{"git *"}
 
-	mgr, err := buildChatHandoverApprovalManager(cfg, SessionSettings{
+	mgr, err := buildChatHandoverApprovalManager(cfg, appserve.SessionSettings{
 		ShellAllow: []string{"go test *"},
 		Scripts:    []string{"./handover.sh"},
 	})

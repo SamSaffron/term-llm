@@ -8,59 +8,11 @@
     },
     {
       "path": "cmd/chat.go",
-      "lines": 1663
+      "lines": 1572
     },
     {
       "path": "cmd/config.go",
       "lines": 1485
-    },
-    {
-      "path": "cmd/jobs.go",
-      "lines": 1006
-    },
-    {
-      "path": "cmd/runner.go",
-      "lines": 1077
-    },
-    {
-      "path": "cmd/serve.go",
-      "lines": 1832
-    },
-    {
-      "path": "cmd/serve_handlers.go",
-      "lines": 4343
-    },
-    {
-      "path": "cmd/serve_handlers_responses.go",
-      "lines": 1107
-    },
-    {
-      "path": "cmd/serve_jobs_v2.go",
-      "lines": 3063
-    },
-    {
-      "path": "cmd/serve_live.go",
-      "lines": 2067
-    },
-    {
-      "path": "cmd/serve_projects.go",
-      "lines": 1157
-    },
-    {
-      "path": "cmd/serve_response_run_manager.go",
-      "lines": 1169
-    },
-    {
-      "path": "cmd/serve_runtime.go",
-      "lines": 2525
-    },
-    {
-      "path": "cmd/serve_skills.go",
-      "lines": 1201
-    },
-    {
-      "path": "cmd/session.go",
-      "lines": 1077
     },
     {
       "path": "cmd/skills.go",
@@ -69,6 +21,34 @@
     {
       "path": "internal/app/memory/mine.go",
       "lines": 1540
+    },
+    {
+      "path": "internal/app/serve/serve_handlers.go",
+      "lines": 4282
+    },
+    {
+      "path": "internal/app/serve/serve_handlers_responses.go",
+      "lines": 1107
+    },
+    {
+      "path": "internal/app/serve/serve_live.go",
+      "lines": 2067
+    },
+    {
+      "path": "internal/app/serve/serve_projects.go",
+      "lines": 1088
+    },
+    {
+      "path": "internal/app/serve/serve_response_run_manager.go",
+      "lines": 1169
+    },
+    {
+      "path": "internal/app/serve/serve_runtime.go",
+      "lines": 2510
+    },
+    {
+      "path": "internal/app/serve/serve_skills.go",
+      "lines": 1146
     },
     {
       "path": "internal/config/config.go",
@@ -88,7 +68,7 @@
     },
     {
       "path": "internal/llm/providers/clibin/claude_bin.go",
-      "lines": 2211
+      "lines": 2148
     },
     {
       "path": "internal/llm/providers/clibin/cursor_bin.go",
@@ -208,7 +188,7 @@
     },
     {
       "path": "internal/tui/inspector/content.go",
-      "lines": 1630
+      "lines": 1527
     },
     {
       "path": "internal/tui/skills/browse.go",
@@ -238,7 +218,11 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 84368
+      "lines": 21354
+    },
+    {
+      "dir": "internal/app/serve",
+      "lines": 59585
     },
     {
       "dir": "internal/session",

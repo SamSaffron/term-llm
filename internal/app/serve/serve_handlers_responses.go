@@ -1,0 +1,1107 @@
+package serve
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/session"
+)
+
+var errResponseClientMessageAlreadyCommitted = errors.New("response client message is already committed")
+
+const maxResponseClientMessageIDLength = 200
+
+type followUpClaimLease struct {
+	once    sync.Once
+	release func()
+}
+
+func (l *followUpClaimLease) Release() {
+	if l == nil || l.release == nil {
+		return
+	}
+	l.once.Do(l.release)
+}
+
+type resolvedResponsesRequest struct {
+	firstParty                 bool
+	req                        responsesCreateRequest
+	inputMessages              []core.Message
+	replaceHistory             bool
+	sessionID                  string
+	previousResponseID         string
+	previousDurable            bool
+	freshConversation          bool
+	durableRuntime             bool
+	uiStream                   bool
+	idempotencyKey             string
+	idempotencyScope           string
+	requestFingerprint         string
+	notificationSubscriptionID string
+}
+
+func validateResponseReasoningMode(provider, model, mode string, explicit bool) (normalized string, clearStale bool, err error) {
+	normalized = strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		return "", false, nil
+	}
+	if normalized != "standard" && normalized != "pro" {
+		if explicit {
+			return "", false, fmt.Errorf("reasoning.mode must be standard or pro")
+		}
+		return "", true, nil
+	}
+	if !llm.SupportsReasoningMode(provider, model) {
+		if explicit {
+			return "", false, fmt.Errorf("reasoning.mode is not supported by provider %q model %q", provider, model)
+		}
+		return "", true, nil
+	}
+	return normalized, false, nil
+}
+
+func prepareResponseClientMessageIDs(messages []core.Message, requestID string, firstParty bool) (bool, error) {
+	requestID = strings.TrimSpace(requestID)
+	if !firstParty {
+		// Item-level identities are reserved for the first-party UI contract.
+		for i := range messages {
+			messages[i].ClientMessageID = ""
+		}
+		if requestID != "" {
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == core.RoleUser {
+					messages[i].ClientMessageID = requestID
+					break
+				}
+			}
+		}
+		return false, nil
+	}
+
+	userIndexes := make([]int, 0, len(messages))
+	for i := range messages {
+		if messages[i].Role == core.RoleUser {
+			userIndexes = append(userIndexes, i)
+		}
+	}
+	identifiedBatch := len(messages) > 1 && len(userIndexes) == len(messages)
+	if !identifiedBatch {
+		if len(userIndexes) > 0 {
+			last := userIndexes[len(userIndexes)-1]
+			itemID := strings.TrimSpace(messages[last].ClientMessageID)
+			if itemID != "" && itemID != requestID {
+				return false, fmt.Errorf("top-level client_message_id must match the final user message")
+			}
+			for _, index := range userIndexes {
+				messages[index].ClientMessageID = ""
+			}
+			messages[last].ClientMessageID = requestID
+		}
+		return false, nil
+	}
+
+	ids := make([]string, 0, len(messages))
+	seen := make(map[string]struct{}, len(messages))
+	for i := range messages {
+		id := strings.TrimSpace(messages[i].ClientMessageID)
+		if id == "" {
+			return false, fmt.Errorf("each batched user message requires client_message_id")
+		}
+		if len(id) > maxResponseClientMessageIDLength {
+			return false, fmt.Errorf("client_message_id is too long")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return false, fmt.Errorf("duplicate client_message_id %q in user batch", id)
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if ids[len(ids)-1] != requestID {
+		return false, fmt.Errorf("top-level client_message_id must match the final batched user message")
+	}
+	return true, nil
+}
+
+func responseClientMessageIDs(messages []core.Message) []string {
+	ids := make([]string, 0, len(messages))
+	for i := range messages {
+		if messages[i].Role != core.RoleUser {
+			continue
+		}
+		if id := strings.TrimSpace(messages[i].ClientMessageID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	if err := requireJSONContentType(r); err != nil {
+		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())
+	defer cancel()
+
+	var req responsesCreateRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	reqStart := time.Now()
+	s.verboseLog("→ POST /v1/responses model=%s tools=%d stream=%v body=%d bytes",
+		req.Model, len(req.Tools), req.Stream, r.ContentLength)
+	defer func() { s.verboseLog("← POST /v1/responses completed in %s", time.Since(reqStart)) }()
+
+	inputMessages, replaceHistory, err := parseResponsesInput(req.Input)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if len(inputMessages) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
+		return
+	}
+	firstParty, identifiedUserBatch, stop := s.validateResponsesAdmissionRequest(w, r, ctx, &req, inputMessages, &replaceHistory)
+	if stop {
+		return
+	}
+
+	admission, stop := s.prepareResponsesSessionAdmission(w, r, ctx, req)
+	if stop {
+		return
+	}
+	resolved, stop := s.resolveResponsesSession(w, r, ctx, req, inputMessages, identifiedUserBatch, admission, &replaceHistory)
+	if stop {
+		return
+	}
+	notificationSubscriptionID, stop := s.validateResolvedResponsesAdmission(w, r, ctx, req, admission.draftID, resolved.sessionID)
+	if stop {
+		return
+	}
+
+	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
+		firstParty:                 firstParty,
+		req:                        req,
+		inputMessages:              inputMessages,
+		replaceHistory:             replaceHistory,
+		sessionID:                  resolved.sessionID,
+		previousResponseID:         resolved.previousResponseID,
+		previousDurable:            resolved.previousDurable,
+		freshConversation:          req.PreviousResponseID == "",
+		durableRuntime:             resolved.branched,
+		uiStream:                   branchUsesFirstPartyUIStream(r, resolved.branched),
+		idempotencyKey:             admission.runIdempotencyKey,
+		idempotencyScope:           admission.draftID,
+		requestFingerprint:         admission.requestFingerprint,
+		notificationSubscriptionID: notificationSubscriptionID,
+	})
+}
+
+type responsesSessionAdmission struct {
+	headerSessionID    string
+	draftID            string
+	runIdempotencyKey  string
+	requestFingerprint string
+	reservedSessionID  string
+}
+
+type resolvedResponsesSession struct {
+	sessionID          string
+	previousResponseID string
+	previousDurable    bool
+	branched           bool
+}
+
+func (s *serveServer) validateResponsesAdmissionRequest(w http.ResponseWriter, r *http.Request, ctx context.Context, req *responsesCreateRequest, inputMessages []core.Message, replaceHistory *bool) (bool, bool, bool) {
+	clientMessageID := strings.TrimSpace(req.ClientMessageID)
+	firstParty := isFirstPartyUIResponseRequest(r)
+	if req.UIContext != nil {
+		c := req.UIContext
+		if !firstParty || len(c.AssetVersion) > 64 || len(c.Generation) > 64 || len(c.Loaded) > 64 || c.Width < 0 || c.Width > 20000 || c.Height < 0 || c.Height > 20000 {
+			writeOpenAIError(w, 400, "invalid_request_error", "invalid UI context")
+			return false, false, true
+		}
+		for _, id := range c.Loaded {
+			if len(id) > 64 {
+				writeOpenAIError(w, 400, "invalid_request_error", "invalid UI context")
+				return false, false, true
+			}
+		}
+	}
+	req.Agent = strings.TrimSpace(req.Agent)
+	if req.Agent != "" && !firstParty {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is available only to the Web UI")
+		return false, false, true
+	}
+	if req.Agent != "" && !agents.IsSafeLookupName(req.Agent) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid agent name")
+		return false, false, true
+	}
+	if req.Agent != "" && !s.cfg.agentAvailable(req.Agent) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is not available")
+		return false, false, true
+	}
+	if req.NoProject && strings.TrimSpace(req.ProjectID) != "" {
+		writeProjectError(w, http.StatusBadRequest, "invalid_project_selection", "no_project and project_id are mutually exclusive")
+		return false, false, true
+	}
+	if req.NoProject && !firstParty {
+		writeProjectError(w, http.StatusBadRequest, "invalid_project_selection", "no_project is available only to the Web UI")
+		return false, false, true
+	}
+	if req.NoProject && !s.projectsEnabled {
+		writeProjectError(w, http.StatusBadRequest, "projects_disabled", "no_project is not accepted while project mode is disabled")
+		return false, false, true
+	}
+	if req.UseDefaultWorkspace && s.projectsEnabled {
+		bootstrapUsable := false
+		if firstParty && strings.TrimSpace(s.bootstrapProjectID) != "" {
+			if projects, ok := s.projectStore(); ok {
+				if bootstrap, getErr := projects.GetProject(ctx, s.bootstrapProjectID); getErr == nil && bootstrap != nil && !bootstrap.Archived() {
+					bootstrapUsable = projectStatus(*bootstrap).Available
+				}
+			}
+		}
+		if bootstrapUsable {
+			req.ProjectID = s.bootstrapProjectID
+			req.UseDefaultWorkspace = false
+			log.Printf("[serve] deprecated use_default_workspace translated to bootstrap project; refresh Web UI assets")
+		} else {
+			writeProjectError(w, http.StatusConflict, "refresh_required", "the server's project support changed; refresh to continue")
+			return false, false, true
+		}
+	}
+	if firstParty && clientMessageID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is required for first-party requests")
+		return false, false, true
+	}
+	if len(clientMessageID) > maxResponseClientMessageIDLength {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is too long")
+		return false, false, true
+	}
+	identifiedUserBatch, err := prepareResponseClientMessageIDs(inputMessages, clientMessageID, firstParty)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return false, false, true
+	}
+	if identifiedUserBatch && req.PreviousResponseID != "" {
+		*replaceHistory = false
+	}
+	if req.Branch && strings.TrimSpace(req.PreviousResponseID) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch requires previous_response_id")
+		return false, false, true
+	}
+	if req.BranchContext != nil && !req.Branch {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch_context requires branch=true")
+		return false, false, true
+	}
+	return firstParty, identifiedUserBatch, false
+}
+
+func (s *serveServer) prepareResponsesSessionAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest) (responsesSessionAdmission, bool) {
+	// External /v1/responses callers follow OpenAI-style chaining:
+	// previous_response_id continues a conversation; no previous response means a
+	// fresh conversation, even if a session_id header is reused for persistence.
+	headerSessionID := resolveRequestSessionID(r)
+	if err := s.validateRequestSessionID(ctx, headerSessionID); err != nil {
+		status, errorType, message := sessionIDErrorResponse(err)
+		writeOpenAIError(w, status, errorType, message)
+		return responsesSessionAdmission{}, true
+	}
+	// A delegated transcript is readable, not writable. A disabled composer only
+	// communicates that intent; once a child is an ordinary selectable session,
+	// every generic session action becomes reachable through this API, so the
+	// fence has to live here. Corrections use the ordinary session steering and
+	// response cancellation endpoints rather than starting a rival response.
+	//
+	// Checked again below on the resolved session ID: this early rejection keeps
+	// an explicit header from reaching any of the branch/resume machinery.
+	if delegated, delegatedErr := s.sessionIsDelegatedRun(ctx, headerSessionID); delegatedErr != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to look up session")
+		return responsesSessionAdmission{}, true
+	} else if delegated {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", delegatedSessionWriteMessage)
+		return responsesSessionAdmission{}, true
+	}
+	draftID := strings.TrimSpace(r.Header.Get(requestDraftIDHeader))
+	if draftID != "" && (!isFirstPartyUIResponseRequest(r) || headerSessionID != "" || req.PreviousResponseID != "" || !validResponseDraftID(draftID)) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "draft id is only valid for a first-party new conversation")
+		return responsesSessionAdmission{}, true
+	}
+	runIdempotencyKey := responseRunIdempotencyKey(r, req)
+	requestFingerprint := ""
+	if req.Stream && runIdempotencyKey != "" {
+		var fingerprintErr error
+		requestFingerprint, fingerprintErr = responseRequestFingerprint(req)
+		if fingerprintErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to fingerprint response request")
+			return responsesSessionAdmission{}, true
+		}
+	}
+	reservedSessionID := ""
+	if draftID != "" && req.Stream && runIdempotencyKey != "" {
+		var reserveErr error
+		reservedSessionID, reserveErr = s.ensureResponseRuns().reserveSessionForIdempotency(draftID, runIdempotencyKey, requestFingerprint)
+		if errors.Is(reserveErr, errResponseRunKeyConflict) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", reserveErr.Error())
+			return responsesSessionAdmission{}, true
+		}
+		if reserveErr != nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", reserveErr.Error())
+			return responsesSessionAdmission{}, true
+		}
+		if run, found, replayErr := s.ensureResponseRuns().getByIdempotencyClaim(draftID, runIdempotencyKey, requestFingerprint); replayErr != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", replayErr.Error())
+			return responsesSessionAdmission{}, true
+		} else if found {
+			w.Header().Set("x-session-id", run.sessionID)
+			w.Header().Set("x-response-id", run.id)
+			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
+			s.streamResponseRunEvents(ctx, w, run, 0)
+			return responsesSessionAdmission{}, true
+		}
+	}
+	return responsesSessionAdmission{
+		headerSessionID:    headerSessionID,
+		draftID:            draftID,
+		runIdempotencyKey:  runIdempotencyKey,
+		requestFingerprint: requestFingerprint,
+		reservedSessionID:  reservedSessionID,
+	}, false
+}
+
+func (s *serveServer) resolveResponsesSession(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, inputMessages []core.Message, identifiedUserBatch bool, admission responsesSessionAdmission, replaceHistory *bool) (resolvedResponsesSession, bool) {
+	sessionID := ""
+	previousDurable := false
+	resolvedPreviousResponseID := req.PreviousResponseID
+	branched := false
+	if req.PreviousResponseID != "" {
+		if req.Branch {
+			idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+			if idempotencyKey == "" {
+				idempotencyKey = responseIdempotencyKeyFromRequest(r)
+			}
+			durable, status, msg := s.resolveDurableBranch(ctx, req.PreviousResponseID, admission.headerSessionID, inputMessages, identifiedUserBatch, req.ExpectedRev, idempotencyKey, req.BranchContext)
+			if status != 0 {
+				errType := "invalid_request_error"
+				if status == http.StatusConflict {
+					errType = "conflict_error"
+				} else if status >= http.StatusInternalServerError {
+					errType = "server_error"
+				}
+				writeOpenAIError(w, status, errType, msg)
+				return resolvedResponsesSession{}, true
+			}
+			sessionID = durable.sessionID
+			resolvedPreviousResponseID = durable.latestID
+			previousDurable = true
+			branched = true
+			w.Header().Set("x-session-id", sessionID)
+			if durable.latestID != durableResponseMessagePrefix+"0" {
+				w.Header().Set("x-branch-anchor-id", durable.latestID)
+			}
+		} else if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, admission.headerSessionID, inputMessages, identifiedUserBatch); status != 0 {
+			errType := "invalid_request_error"
+			if status == http.StatusConflict {
+				errType = "conflict_error"
+			}
+			writeOpenAIError(w, status, errType, msg)
+			return resolvedResponsesSession{}, true
+		} else if durable.sessionID != "" {
+			sessionID = durable.sessionID
+			previousDurable = true
+		} else {
+			sid, ok := s.responseToSession.Load(req.PreviousResponseID)
+			if !ok {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+					fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
+				return resolvedResponsesSession{}, true
+			}
+			sidStr, isStr := sid.(string)
+			if !isStr || sidStr == "" {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "corrupted session mapping")
+				return resolvedResponsesSession{}, true
+			}
+			if admission.headerSessionID != "" && admission.headerSessionID != sidStr {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error",
+					fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", admission.headerSessionID, sidStr))
+				return resolvedResponsesSession{}, true
+			}
+			sessionID = sidStr
+		}
+	}
+	if sessionID == "" {
+		sessionID = admission.headerSessionID
+		if sessionID == "" {
+			sessionID = admission.reservedSessionID
+		}
+		if sessionID == "" {
+			sessionID = session.NewID()
+		}
+		w.Header().Set("x-session-id", sessionID)
+		// External Responses API semantics: no previous_response_id means the
+		// supplied input is the new whole conversation for this persisted ID.
+		*replaceHistory = true
+	}
+	return resolvedResponsesSession{
+		sessionID:          sessionID,
+		previousResponseID: resolvedPreviousResponseID,
+		previousDurable:    previousDurable,
+		branched:           branched,
+	}, false
+}
+
+func (s *serveServer) validateResolvedResponsesAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, draftID, sessionID string) (string, bool) {
+	// Fence the resolved identity, not just the header. previous_response_id
+	// reaches a session by a different key, and L0 made child transcripts — and
+	// therefore their durable response IDs — ordinary things a client now holds.
+	if delegated, delegatedErr := s.sessionIsDelegatedRun(ctx, sessionID); delegatedErr != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to look up session")
+		return "", true
+	} else if delegated {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", delegatedSessionWriteMessage)
+		return "", true
+	}
+
+	if draftID != "" {
+		if err := s.promoteDraftMCPSelection(ctx, draftID, sessionID); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return "", true
+		}
+	}
+
+	if _, branchContextActive := s.branchNotes.Load(sessionID); branchContextActive {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch context is still being prepared")
+		return "", true
+	}
+
+	notificationSubscriptionID := ""
+	if requestedSubscriptionID := strings.TrimSpace(r.Header.Get(requestPushSubscriptionHeader)); requestedSubscriptionID != "" {
+		if !isFirstPartyUIResponseRequest(r) || !req.Stream {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "completion notification target is only valid for first-party streaming responses")
+			return "", true
+		}
+		var targetErr error
+		notificationSubscriptionID, targetErr = s.validateCompletionPushTarget(ctx, requestedSubscriptionID)
+		if targetErr != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", targetErr.Error())
+			return "", true
+		}
+	}
+	return notificationSubscriptionID, false
+}
+
+func (s *serveServer) handleResponseRuntimeError(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, sessionID, previousResponseID string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errServeSessionBusy) {
+		// No UI send has been admitted yet. Return a definitive rejection so
+		// the browser restores the composer instead of retrying a headerless
+		// synthetic failure stream as an unknown-outcome send.
+		if req.Stream && !isFirstPartyUIResponseRequest(r) {
+			model := strings.TrimSpace(req.Model)
+			if model == "" {
+				if existing, ok := s.sessionMgr.Get(sessionID); ok && existing != nil {
+					model = existing.defaultModel
+				}
+			}
+			s.streamFailedResponseRun(ctx, w, sessionID, previousResponseID, model, "conflict_error", err.Error())
+			return true
+		}
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+		return true
+	}
+	if errors.Is(err, errServeSessionPersistence) {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return true
+	}
+	writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+	return true
+}
+
+func (s *serveServer) validateRuntimePreviousResponse(w http.ResponseWriter, ctx context.Context, sessionID, previousResponseID string, previousDurable bool, runtime *serveRuntime, stateful bool, inputMessages []core.Message) bool {
+	if previousResponseID == "" {
+		return true
+	}
+	if !previousDurable {
+		lastResponseID := runtime.getLastResponseID()
+		if lastResponseID == "" {
+			if latest, ok := s.sessionToResponse.Load(sessionID); ok {
+				if value, ok := latest.(string); ok {
+					lastResponseID = strings.TrimSpace(value)
+				}
+			}
+		}
+		if lastResponseID != "" && previousResponseID != lastResponseID {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastResponseID))
+			if !stateful {
+				s.unregisterResponseIDs(runtime)
+				runtime.Close()
+			}
+			return false
+		}
+	}
+	s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
+	return true
+}
+
+func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest, inputMessages []core.Message, sessionID, idempotencyScope, idempotencyKey string) (serveWorkspaceBinding, func(), bool) {
+	release := func() {}
+	keepAdmission := false
+	defer func() {
+		if !keepAdmission {
+			release()
+		}
+	}()
+	if isFirstPartyUIResponseRequest(r) && len(responseClientMessageIDs(inputMessages)) == 0 {
+		assignFinalResponseClientMessageID(inputMessages, rr.req.ClientMessageID)
+	}
+	if rr.req.Stream && idempotencyKey != "" {
+		admissionRelease, err := s.ensureResponseRuns().admitIdempotency(ctx, idempotencyScope, idempotencyKey)
+		if err != nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+			return serveWorkspaceBinding{}, func() {}, true
+		}
+		release = admissionRelease
+	}
+	binding, err := s.resolveWorkspace(ctx, serveWorkspaceRequest{
+		SessionID: sessionID, ProjectID: rr.req.ProjectID, WorktreeDir: rr.req.WorktreeDir,
+		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: rr.freshConversation, AllowNoProject: rr.req.NoProject,
+	})
+	if err != nil {
+		writeWorkspaceError(w, err)
+		return serveWorkspaceBinding{}, func() {}, true
+	}
+	if rr.req.Stream && idempotencyKey != "" {
+		run, found, replayErr := s.ensureResponseRuns().getByIdempotencyClaim(idempotencyScope, idempotencyKey, rr.requestFingerprint)
+		if errors.Is(replayErr, errResponseRunKeyConflict) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", replayErr.Error())
+			return serveWorkspaceBinding{}, func() {}, true
+		}
+		if found {
+			w.Header().Set("x-session-id", run.sessionID)
+			w.Header().Set("x-response-id", run.id)
+			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
+			keepAdmission = true
+			release()
+			s.streamResponseRunEvents(ctx, w, run, 0)
+			return serveWorkspaceBinding{}, func() {}, true
+		}
+	}
+	if s.commitActiveForSession(ctx, sessionID) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a commit workflow is active for this session or checkout")
+		return serveWorkspaceBinding{}, func() {}, true
+	}
+	keepAdmission = true
+	return binding, release, false
+}
+
+func assignFinalResponseClientMessageID(messages []core.Message, clientMessageID string) {
+	clientMessageID = strings.TrimSpace(clientMessageID)
+	if clientMessageID == "" {
+		return
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == core.RoleUser {
+			messages[i].ClientMessageID = clientMessageID
+			return
+		}
+	}
+}
+
+func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest) {
+	req := rr.req
+	inputMessages := rr.inputMessages
+	replaceHistory := rr.replaceHistory
+	sessionID := rr.sessionID
+	previousResponseID := rr.previousResponseID
+	previousDurable := rr.previousDurable
+	freshConversation := rr.freshConversation
+	idempotencyKey := strings.TrimSpace(rr.idempotencyKey)
+	idempotencyScope := strings.TrimSpace(rr.idempotencyScope)
+	if idempotencyScope == "" {
+		idempotencyScope = sessionID
+	}
+	workspaceBinding, releaseAdmission, stop := s.prepareResolvedResponseAdmission(w, r, ctx, rr, inputMessages, sessionID, idempotencyScope, idempotencyKey)
+	if stop {
+		return
+	}
+	defer releaseAdmission()
+	// Chained requests are locked to the persisted provider/model/
+	// reasoning_effort unless the client explicitly asks for a mid-conversation
+	// model swap. External bare session_id requests start a fresh conversation,
+	// even when reusing an existing session ID, so fresh conversations may choose
+	// new runtime settings and syncPersistedSessionRuntime will update the row.
+	// First-party UI append requests are stateful appends.
+	runtimePlan := s.prepareResponseRuntimePlan(ctx, &req, sessionID, freshConversation)
+	defaultProvider, requestedRuntime := runtimePlan.defaultProvider, runtimePlan.requested
+	swapPlan, reqProvider := runtimePlan.swap, runtimePlan.provider
+
+	var runtime *serveRuntime
+	var stateful bool
+	var modelSwapExec *responseModelSwapExecution
+	var followUpOwner *serveRuntime
+	var followUpOwnerStateful bool
+	var followUpClaims *followUpClaimLease
+
+	freshProvider := reqProvider
+	if freshConversation && freshProvider == "" {
+		freshProvider = defaultProvider
+	}
+	if rr.firstParty && sessionID != "" {
+		if _, supported := session.AsSessionInputRefresher(s.store); supported {
+
+			prepared, prepareErr := s.prepareUIRuntime(ctx, serveRuntimeRequest{
+				SessionID: sessionID, Provider: freshProvider, Model: req.Model, Agent: req.Agent, RefreshInputs: true, fresh: freshConversation,
+			}, workspaceBinding)
+			var workspaceErr *serveWorkspaceError
+			if errors.As(prepareErr, &workspaceErr) {
+				writeWorkspaceError(w, prepareErr)
+				return
+			}
+			if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, prepareErr) {
+				return
+			}
+			runtime, stateful = prepared, true
+		}
+	}
+	if swapPlan.enabled {
+		previousRuntime, previousStateful, getErr := s.runtimeForProviderModelRequest(ctx, sessionID, swapPlan.previousProvider, swapPlan.previousModel)
+		if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, getErr) {
+			return
+		}
+		if !s.validateRuntimePreviousResponse(w, ctx, sessionID, previousResponseID, previousDurable, previousRuntime, previousStateful, inputMessages) {
+			return
+		}
+		var err error
+		modelSwapExec, err = s.beginResponseModelSwap(ctx, sessionID, swapPlan, inputMessages)
+		if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, err) {
+			return
+		}
+		runtime = modelSwapExec.candidate
+		stateful = true
+		followUpOwner = modelSwapExec.previous
+		followUpOwnerStateful = true
+		if followUpOwner == nil {
+			followUpOwner = previousRuntime
+			followUpOwnerStateful = previousStateful
+		}
+	} else {
+		var err error
+		if runtime != nil {
+			// Already prepared before request tool projection and model swap.
+		} else if previousResponseID != "" || rr.durableRuntime {
+			runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
+		} else {
+			runtime, stateful, err = s.runtimeForFreshAgentProviderRequest(ctx, sessionID, freshProvider, req.Agent)
+		}
+		if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, err) {
+			return
+		}
+		if freshConversation {
+			providerForNormalization := reqProvider
+			if providerForNormalization == "" {
+				providerForNormalization = runtimeProviderKey(runtime)
+			}
+			req.Model, req.ReasoningEffort = normalizeProviderModelEffort(providerForNormalization, req.Model, req.ReasoningEffort)
+		}
+
+		if !s.validateRuntimePreviousResponse(w, ctx, sessionID, previousResponseID, previousDurable, runtime, stateful, inputMessages) {
+			return
+		}
+		followUpOwner = runtime
+		followUpOwnerStateful = stateful
+	}
+
+	effectiveProvider := strings.TrimSpace(reqProvider)
+	if effectiveProvider == "" {
+		effectiveProvider = runtimeProviderKey(runtime)
+	}
+	effectiveModel := strings.TrimSpace(req.Model)
+	if effectiveModel == "" {
+		effectiveModel = strings.TrimSpace(runtime.defaultModel)
+	}
+	modeRequestedExplicitly := requestedRuntime.reasoningMode != ""
+	reasoningMode := ""
+	if req.Reasoning != nil {
+		reasoningMode = req.Reasoning.Mode
+	}
+	reasoningMode, clearStaleReasoningMode, reasoningModeErr := validateResponseReasoningMode(effectiveProvider, effectiveModel, reasoningMode, modeRequestedExplicitly)
+	if reasoningModeErr != nil {
+		if modelSwapExec != nil {
+			modelSwapExec.markRolledBack()
+		}
+		if !stateful {
+			s.unregisterResponseIDs(runtime)
+			runtime.Close()
+		}
+		s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, reasoningModeErr)
+		return
+	}
+	if req.Reasoning != nil {
+		req.Reasoning.Mode = reasoningMode
+	}
+	if swapPlan.enabled {
+		swapPlan.requestedReasoningMode = reasoningMode
+		modelSwapExec.plan.requestedReasoningMode = reasoningMode
+	}
+	var claimErr error
+	followUpClaims, claimErr = s.claimUIFollowUp(ctx, isFirstPartyUIResponseRequest(r), followUpOwner, followUpOwnerStateful, sessionID, inputMessages)
+	if claimErr != nil {
+		if modelSwapExec != nil {
+			modelSwapExec.markRolledBack()
+		}
+		if !stateful {
+			s.unregisterResponseIDs(runtime)
+			runtime.Close()
+		}
+		if errors.Is(claimErr, errResponseClientMessageAlreadyCommitted) {
+			writeOpenAIError(w, http.StatusConflict, "client_message_already_committed", claimErr.Error())
+		} else if errors.Is(claimErr, errServeSessionBusy) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", claimErr.Error())
+		} else {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", claimErr.Error())
+		}
+		return
+	}
+	claimsTransferred := false
+	defer func() {
+		if !claimsTransferred {
+			followUpClaims.Release()
+		}
+	}()
+	if freshConversation {
+		if workspaceBinding.ProjectID != "" || strings.TrimSpace(req.ProjectID) != "" || req.NoProject {
+			// Create only an unbound persistence shell first. Runtime/model metadata is
+			// updated after the selected project or explicit No project workspace is
+			// applied, so a conflicting project bind cannot mutate the winner's settings.
+			if err := s.ensurePersistedSessionForProjectBinding(ctx, sessionID, runtime, req.Model); err != nil {
+				if modelSwapExec != nil {
+					modelSwapExec.markRolledBack()
+				}
+				if !stateful {
+					s.unregisterResponseIDs(runtime)
+					runtime.Close()
+				}
+				writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", err.Error())
+				return
+			}
+			if err := s.bindResolvedWorkspace(ctx, sessionID, runtime, workspaceBinding); err != nil {
+				if modelSwapExec != nil {
+					modelSwapExec.markRolledBack()
+				}
+				if !stateful {
+					s.unregisterResponseIDs(runtime)
+					runtime.Close()
+				}
+				writeWorkspaceError(w, err)
+				return
+			}
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, "", false)
+		} else {
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir, req.UseDefaultWorkspace)
+		}
+	}
+
+	cleanupRuntime := !stateful
+	if cleanupRuntime {
+		defer func() {
+			if !cleanupRuntime {
+				return
+			}
+			runtime.Close()
+			s.unregisterResponseIDs(runtime)
+		}()
+	}
+
+	if isFirstPartyUIResponseRequest(r) {
+		s.augmentMessagesWithMentions(ctx, runtime, sessionID, req.WorktreeDir, inputMessages)
+	}
+
+	// Idempotency is currently backed by response-run event replay, so only
+	// streaming stateful requests register keys. Non-streaming responses are not
+	// cached/replayed here.
+	runIdempotencyKey := idempotencyKey
+	if !stateful {
+		runIdempotencyKey = ""
+	}
+	llmReq := s.buildResponsesLLMRequest(req, runtime, sessionID, isFirstPartyUIResponseRequest(r))
+	if !freshConversation && req.Reasoning != nil {
+		if clearStaleReasoningMode || ((reasoningMode == "standard" || reasoningMode == "pro") && llm.SupportsReasoningMode(effectiveProvider, effectiveModel)) {
+			s.syncPersistedSessionReasoningMode(ctx, sessionID, runtime, reasoningMode)
+		}
+	}
+
+	if runtime.toolMgr != nil && runtime.toolMgr.Registry != nil {
+		runtime.toolMgr.Registry.SetUIBrowserContext(req.UIContext)
+	}
+	resetResponseIDsOnSuccess := freshConversation || swapPlan.enabled
+	if req.Stream && s.store != nil {
+		if num, created := runtime.ensureSessionInStore(r.Context(), sessionID, inputMessages); num > 0 {
+			w.Header().Set("x-session-number", strconv.FormatInt(num, 10))
+			if created {
+				s.publishEvent(serveEventInput{Type: serveEventSessionCreated, SessionID: sessionID, OperationID: runIdempotencyKey})
+			}
+		}
+	}
+	if req.Stream {
+		var claimsDone func()
+		if followUpClaims != nil {
+			claimsDone = followUpClaims.Release
+			claimsTransferred = true
+		}
+		if rr.uiStream && stateful {
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone, releaseAdmission)
+		} else {
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, rr.firstParty, claimsDone, releaseAdmission)
+			if !stateful && started {
+				cleanupRuntime = false
+			}
+		}
+		return
+	}
+
+	s.executeSynchronousResponse(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, modelSwapExec, resetResponseIDsOnSuccess)
+}
+func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sessionID string, runtime *serveRuntime, messages []core.Message) {
+	missing := missingResponsesToolResultNames(messages)
+	if len(missing) == 0 {
+		return
+	}
+
+	names := make(map[string]string, len(missing))
+	collectParts := func(parts []core.Part) bool {
+		for _, part := range parts {
+			if part.Type != core.PartToolCall || part.ToolCall == nil {
+				continue
+			}
+			id := strings.TrimSpace(part.ToolCall.ID)
+			if id == "" || !missing[id] || names[id] != "" {
+				continue
+			}
+			if name := strings.TrimSpace(part.ToolCall.Name); name != "" {
+				names[id] = name
+			}
+		}
+		return len(names) == len(missing)
+	}
+	collectHistory := func(history []core.Message) bool {
+		for i := len(history) - 1; i >= 0; i-- {
+			if collectParts(history[i].Parts) {
+				return true
+			}
+		}
+		return len(names) == len(missing)
+	}
+
+	if runtime != nil && collectHistory(runtime.snapshotHistory()) {
+		applyResponsesToolResultNames(messages, names)
+		return
+	}
+	if len(names) < len(missing) && s.store != nil && sessionID != "" {
+		s.collectResponsesToolCallNamesFromStore(ctx, sessionID, collectParts)
+	}
+	applyResponsesToolResultNames(messages, names)
+}
+
+func missingResponsesToolResultNames(messages []core.Message) map[string]bool {
+	missing := map[string]bool{}
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			id := strings.TrimSpace(part.ToolResult.ID)
+			if id == "" || strings.TrimSpace(part.ToolResult.Name) != "" {
+				continue
+			}
+			missing[id] = true
+		}
+	}
+	return missing
+}
+
+const responsesToolNameLookupPageSize = 128
+
+func (s *serveServer) collectResponsesToolCallNamesFromStore(ctx context.Context, sessionID string, collectParts func([]core.Part) bool) {
+	if pager, ok := s.store.(session.MessagesDescendingPager); ok {
+		beforeSeq := 0
+		for {
+			page, err := pager.GetMessagesPageDescending(ctx, sessionID, beforeSeq, responsesToolNameLookupPageSize)
+			if err != nil || len(page) == 0 {
+				return
+			}
+			for i := range page {
+				if collectParts(page[i].Parts) {
+					return
+				}
+			}
+			if len(page) < responsesToolNameLookupPageSize {
+				return
+			}
+			nextBeforeSeq := page[len(page)-1].Sequence
+			if nextBeforeSeq <= 0 || (beforeSeq > 0 && nextBeforeSeq >= beforeSeq) {
+				return
+			}
+			beforeSeq = nextBeforeSeq
+		}
+	}
+
+	stored, err := s.store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		return
+	}
+	for i := len(stored) - 1; i >= 0; i-- {
+		if collectParts(stored[i].Parts) {
+			return
+		}
+	}
+}
+
+func applyResponsesToolResultNames(messages []core.Message, names map[string]string) {
+	if len(names) == 0 {
+		return
+	}
+	for msgIndex := range messages {
+		for partIndex := range messages[msgIndex].Parts {
+			part := &messages[msgIndex].Parts[partIndex]
+			if part.Type != core.PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			if strings.TrimSpace(part.ToolResult.Name) != "" {
+				continue
+			}
+			if name := names[strings.TrimSpace(part.ToolResult.ID)]; name != "" {
+				part.ToolResult.Name = name
+			}
+		}
+	}
+}
+
+func (s *serveServer) setReplaySessionNumberHeader(ctx context.Context, w http.ResponseWriter, sessionID string) {
+	if s == nil || s.store == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil || sess.Number <= 0 {
+		return
+	}
+	w.Header().Set("x-session-number", strconv.FormatInt(sess.Number, 10))
+}
+
+func responseIdempotencyKeyFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	// Prefer the standard header. X-Term-LLM-Request-ID is accepted for the
+	// first-party UI and is only registered for streaming
+	// stateful response runs (see runIdempotencyKey above).
+	for _, name := range []string{"Idempotency-Key", "X-Idempotency-Key", "X-Term-LLM-Request-ID"} {
+		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func validResponseDraftID(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "draft_") || len(value) <= len("draft_") || len(value) > 200 {
+		return false
+	}
+	for _, r := range value[len("draft_"):] {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func responseRunIdempotencyKey(r *http.Request, req responsesCreateRequest) string {
+	key := responseIdempotencyKeyFromRequest(r)
+	if req.Branch && strings.TrimSpace(req.IdempotencyKey) != "" {
+		// The branch body key scopes both child materialization and replay of
+		// that child's first run. Non-branch requests retain header semantics.
+		key = strings.TrimSpace(req.IdempotencyKey)
+	}
+	return key
+}
+
+func branchUsesFirstPartyUIStream(r *http.Request, branched bool) bool {
+	return branched && isFirstPartyUIResponseRequest(r)
+}
+
+func isFirstPartyUIResponseRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.TrimSpace(r.Header.Get("X-Term-LLM-UI-Version")) != ""
+}
+
+func responseServerTools(runtime *serveRuntime, requested map[string]bool, includeServerTools bool) []core.ToolSpec {
+	if includeServerTools {
+		return runtime.selectTools(nil)
+	}
+	return runtime.selectTools(requested)
+}
+
+func appendResponsePassthroughTools(serverTools []core.ToolSpec, passthroughTools []core.ToolSpec, toolMap map[string]string) []core.ToolSpec {
+	if len(passthroughTools) == 0 {
+		return serverTools
+	}
+
+	selected := make(map[string]bool, len(serverTools))
+	for _, spec := range serverTools {
+		selected[spec.Name] = true
+	}
+
+	for _, spec := range passthroughTools {
+		if selected[spec.Name] {
+			continue
+		}
+		if mapped, ok := toolMap[spec.Name]; ok && selected[mapped] {
+			continue
+		}
+		serverTools = append(serverTools, spec)
+		selected[spec.Name] = true
+	}
+
+	return serverTools
+}
+
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, firstParty bool, onDone, onAdmissionDone func()) bool {
+	var runner func(string) core.ClientToolRunner
+	if firstParty {
+		runner = s.typedClientToolRunner(runtime, llmReq.Tools)
+	}
+	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
+		clientToolRunner:           runner,
+		previousResponseID:         previousResponseID,
+		resetResponseIDsOnSuccess:  resetResponseIDsOnSuccess,
+		modelSwap:                  modelSwap,
+		idempotencyKey:             idempotencyKey,
+		idempotencyScope:           idempotencyScope,
+		requestFingerprint:         requestFingerprint,
+		notificationSubscriptionID: notificationSubscriptionID,
+		onDone:                     onDone,
+		onAdmissionDone:            onAdmissionDone,
+	})
+}

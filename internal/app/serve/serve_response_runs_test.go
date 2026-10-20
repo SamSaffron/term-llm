@@ -1,0 +1,2590 @@
+package serve
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
+)
+
+type responseTimeoutDelayTool struct {
+	delay time.Duration
+}
+
+func (t responseTimeoutDelayTool) Spec() core.ToolSpec {
+	return core.ToolSpec{Name: "response_timeout_delay", Description: "wait before continuing", Schema: map[string]any{"type": "object"}}
+}
+
+func (t responseTimeoutDelayTool) Execute(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
+	select {
+	case <-time.After(t.delay):
+		return core.ToolOutput{Content: "done"}, nil
+	case <-ctx.Done():
+		return core.ToolOutput{}, ctx.Err()
+	}
+}
+
+func (responseTimeoutDelayTool) Preview(json.RawMessage) string { return "" }
+
+type fakeResponseRunClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers []*fakeResponseRunTimer
+}
+
+type fakeResponseRunTimer struct {
+	clock   *fakeResponseRunClock
+	at      time.Time
+	fn      func()
+	stopped bool
+}
+
+func newFakeResponseRunClock() *fakeResponseRunClock {
+	return &fakeResponseRunClock{now: time.Unix(0, 0)}
+}
+
+func (c *fakeResponseRunClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeResponseRunClock) AfterFunc(delay time.Duration, fn func()) responseRunTimerHandle {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &fakeResponseRunTimer{clock: c, at: c.now.Add(delay), fn: fn}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
+func (c *fakeResponseRunClock) Advance(elapsed time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(elapsed)
+	var ready []func()
+	for _, timer := range c.timers {
+		if !timer.stopped && !timer.at.After(c.now) {
+			timer.stopped = true
+			ready = append(ready, timer.fn)
+		}
+	}
+	c.mu.Unlock()
+	for _, fn := range ready {
+		fn()
+	}
+}
+
+func (t *fakeResponseRunTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	if t.stopped {
+		return false
+	}
+	t.stopped = true
+	return true
+}
+
+func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{
+			Delay: 60 * time.Millisecond,
+			ToolCalls: []core.ToolCall{{
+				ID:        "call-delay",
+				Name:      "response_timeout_delay",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}).
+		AddTurn(mockprovider.MockTurn{Text: "finished"})
+	registry := engine.NewToolRegistry()
+	registry.Register(responseTimeoutDelayTool{delay: 60 * time.Millisecond})
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       engine.NewEngine(provider, registry),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+	srv := &serveServer{
+		cfg:          serveServerConfig{responseTimeout: timeout},
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("work")}, core.Request{
+		SessionID: "sess_refresh_timeout",
+		Tools:     []core.ToolSpec{responseTimeoutDelayTool{}.Spec()},
+	}, "sess_refresh_timeout", startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		return stringValue(run.snapshot()["status"]) == "completed"
+	}, "response run to complete after refreshed timeout")
+}
+
+func TestResponseRunTimerRefreshStartsFreshInactivityWindow(t *testing.T) {
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(200*time.Millisecond, clock)
+	defer timer.stop()
+
+	clock.Advance(130 * time.Millisecond)
+	timer.refresh()
+	clock.Advance(100 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("timer elapsed at original deadline after refresh: %v", context.Cause(ctx))
+	}
+	clock.Advance(100 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+	}
+}
+
+func TestResponseRunTimerRefreshWhilePausedAppliesOnResume(t *testing.T) {
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(150*time.Millisecond, clock)
+	defer timer.stop()
+
+	clock.Advance(80 * time.Millisecond)
+	resume := timer.pause()
+	timer.refresh()
+	clock.Advance(180 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("timer elapsed while paused after refresh: %v", err)
+	}
+
+	resume()
+	clock.Advance(80 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("refreshed timer elapsed too soon after resume: %v", context.Cause(ctx))
+	}
+	clock.Advance(70 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+	}
+}
+
+func TestResponseRunTimerExcludesInteractiveWait(t *testing.T) {
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(500*time.Millisecond, clock)
+	defer timer.stop()
+	resume := timer.pause()
+	clock.Advance(600 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("timer elapsed while paused: %v", err)
+	}
+	resume()
+	clock.Advance(500 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+	}
+}
+
+func TestResponseRunTimerPauseExpiresExhaustedBudgetImmediately(t *testing.T) {
+	ctx, timer := newResponseRunTimer(time.Hour)
+	defer timer.stop()
+	timer.mu.Lock()
+	timer.activeAt = time.Now().Add(-2 * time.Hour)
+	timer.mu.Unlock()
+
+	resume := timer.pause()
+	resume()
+	select {
+	case <-ctx.Done():
+		if !responseRunTimedOut(ctx) {
+			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("exhausted timer remained alive after pause")
+	}
+}
+
+func TestResponseRunTimerNestedPausesAndResumeAreIdempotent(t *testing.T) {
+	ctx, timer := newResponseRunTimer(time.Hour)
+	defer timer.stop()
+	resumeFirst := timer.pause()
+	resumeSecond := timer.pause()
+	resumeFirst()
+	resumeFirst()
+
+	timer.mu.Lock()
+	pauses := timer.pauses
+	timer.mu.Unlock()
+	if pauses != 1 || ctx.Err() != nil {
+		t.Fatalf("after first resume: pauses=%d err=%v, want one active pause", pauses, ctx.Err())
+	}
+
+	resumeSecond()
+	timer.mu.Lock()
+	pauses = timer.pauses
+	timer.mu.Unlock()
+	if pauses != 0 || ctx.Err() != nil {
+		t.Fatalf("after final resume: pauses=%d err=%v, want active timer", pauses, ctx.Err())
+	}
+}
+
+func TestResponseRunTimerStopIsCancellationNotTimeout(t *testing.T) {
+	ctx, timer := newResponseRunTimer(time.Hour)
+	timer.stop()
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("stop error = %v, want cancellation", ctx.Err())
+	}
+	if responseRunTimedOut(ctx) {
+		t.Fatalf("stop cause = %v, must not be classified as timeout", context.Cause(ctx))
+	}
+}
+
+func TestResponseRunTerminalEmitsPendingInteractionResolutionsFirst(t *testing.T) {
+	run := newResponseRun("resp-interactions", "sess-interactions", "", "test", time.Now().Unix(), nil)
+	sub := run.subscribe(0)
+	if sub.ch == nil {
+		t.Fatal("expected live subscription")
+	}
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{"call_id": "call-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.fail(map[string]any{"response": map[string]any{"id": run.id}}, "provider_error", "failed"); err != nil {
+		t.Fatal(err)
+	}
+	var events []responseRunEvent
+	for event := range sub.ch {
+		events = append(events, event)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want prompts, resolutions, and terminal", len(events))
+	}
+	want := []string{
+		"response.approval.prompt", "response.ask_user.prompt",
+		"response.approval.resolved", "response.ask_user.resolved", "response.failed",
+	}
+	for i, event := range events {
+		if event.Event != want[i] {
+			t.Fatalf("event[%d] = %q, want %q", i, event.Event, want[i])
+		}
+		if event.Sequence != int64(i+1) {
+			t.Fatalf("event[%d].sequence = %d, want %d", i, event.Sequence, i+1)
+		}
+	}
+	for _, key := range []string{"approval:approval-1", "ask_user:call-1"} {
+		resolved, ok := run.resolvedInteractions[key]
+		if !ok || resolved.Outcome != "failed" {
+			t.Fatalf("resolved interaction %q = %#v, %v", key, resolved, ok)
+		}
+	}
+}
+
+func TestResponseRunCancelledSnapshotRetainsDurableContinuationID(t *testing.T) {
+	run := newResponseRun("resp-cancelled-run", "sess-cancelled-run", "", "test-model", time.Now().Unix(), nil)
+	run.finalRevReader = func() (int64, error) { return 4, nil }
+	run.mu.Lock()
+	run.cancelRequested = true
+	run.mu.Unlock()
+
+	cancelled, err := run.finishCancelled(map[string]any{
+		"response": map[string]any{
+			"id":     "resp_msg_42",
+			"status": "cancelled",
+		},
+	})
+	if err != nil {
+		t.Fatalf("finishCancelled: %v", err)
+	}
+	if !cancelled {
+		t.Fatal("finishCancelled did not finalize requested cancellation")
+	}
+	if got := run.snapshot()["continuation_response_id"]; got != "resp_msg_42" {
+		t.Fatalf("continuation_response_id = %v, want resp_msg_42", got)
+	}
+}
+
+func TestResponseRunPersistenceIdentityDoesNotDependOnAssistantContent(t *testing.T) {
+	run := newResponseRun("resp-content-independent", "sess-content-independent", "", "test", time.Now().Unix(), nil)
+	run.finalRevReader = func() (int64, error) { return 3, nil }
+	ctx := withResponseRunContext(context.Background(), run)
+	for _, text := range []string{"partial", "partial complete"} {
+		message := tagResponseRunMessage(ctx, core.AssistantText(text), 0)
+		finish, _ := beginResponseRunPersistence(ctx, []core.Message{message})
+		finish(3, nil)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if run.durableOutputCount != 1 {
+		t.Fatalf("durable output count = %d, want one exact assistant segment", run.durableOutputCount)
+	}
+}
+
+func TestResponseRunTerminalizationFailureStillPublishesTerminalEvent(t *testing.T) {
+	run := newResponseRun("resp-lifecycle-failure", "sess-lifecycle-failure", "", "test", time.Now().Unix(), nil)
+	run.finalizeLifecycle = func(session.ResponseRunState, int64, int) (session.AttentionState, error) {
+		return session.AttentionState{}, errors.New("database unavailable")
+	}
+	err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{})
+	if err == nil {
+		t.Fatal("complete unexpectedly succeeded")
+	}
+	if run.status != "failed" || len(run.events) != 1 || run.events[0].Event != "response.failed" {
+		t.Fatalf("terminal fallback = status %q events %+v", run.status, run.events)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["lifecycle_recovery_required"] != true {
+		t.Fatalf("terminal fallback payload = %+v", payload)
+	}
+	if message := stringValue(mapValue(payload["error"])["message"]); !strings.Contains(message, "lifecycle could not be finalized") {
+		t.Fatalf("terminal fallback error message = %q, want the lifecycle reason", message)
+	}
+}
+
+func TestResponseRunLifecycleFailureKeepsEarlierTerminalCause(t *testing.T) {
+	run := newResponseRun("resp-double-fault", "sess-double-fault", "", "test", time.Now().Unix(), nil)
+	run.finalizeLifecycle = func(session.ResponseRunState, int64, int) (session.AttentionState, error) {
+		return session.AttentionState{}, errors.New("database unavailable")
+	}
+	if _, err := run.fail(map[string]any{
+		"response": map[string]any{"id": run.id},
+		"error":    map[string]any{"type": "timeout_error", "message": "response timed out"},
+	}, "timeout_error", "response timed out"); err == nil {
+		t.Fatal("fail unexpectedly succeeded while lifecycle finalization was broken")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[len(run.events)-1].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	message := stringValue(mapValue(payload["error"])["message"])
+	if !strings.Contains(message, "lifecycle could not be finalized") || !strings.Contains(message, "response timed out") {
+		t.Fatalf("double-fault message = %q, want both the lifecycle failure and the original cause", message)
+	}
+}
+
+func TestResponseRunDurableHandoffFailureCarriesReasonToClients(t *testing.T) {
+	run := newResponseRun("resp-handoff-reason", "sess-handoff-reason", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("visible output"), 0)
+	finish, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
+	finish(0, errors.New("database unavailable"))
+
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if len(run.events) != 1 || run.events[0].Event != "response.failed" {
+		t.Fatalf("events = %+v, want a single terminal failure", run.events)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	message := stringValue(mapValue(payload["error"])["message"])
+	if !strings.Contains(message, "durably verified") || !strings.Contains(message, "database unavailable") {
+		t.Fatalf("terminal error message = %q, want the durable handoff reason", message)
+	}
+	response := mapValue(payload["response"])
+	if stringValue(response["status"]) != "failed" || stringValue(mapValue(response["error"])["message"]) != message {
+		t.Fatalf("response body = %+v, want the failed status and the same reason", response)
+	}
+	for _, key := range []string{"usage", "session_usage", "context_usage"} {
+		if _, present := response[key]; present {
+			t.Fatalf("response body kept %q for an unverified run: %+v", key, response)
+		}
+	}
+	errorRows := 0
+	for _, recovered := range run.recoveryMessages {
+		if recovered.Role == "error" && string(recovered.Content) == message {
+			errorRows++
+		}
+	}
+	if errorRows != 1 {
+		t.Fatalf("recovery messages = %+v, want one error row carrying the reason", run.recoveryMessages)
+	}
+}
+
+func TestResponseRunRecoveryProjectsResponseScopedFailureReason(t *testing.T) {
+	run := &responseRun{id: "resp-legacy-failure"}
+	run.applyRecoveryEventLocked("response.failed", map[string]any{
+		"response": map[string]any{
+			"id":     run.id,
+			"status": "failed",
+			"error":  map[string]any{"type": "server_error", "message": "response lifecycle could not be finalized"},
+		},
+	})
+	if len(run.recoveryMessages) != 1 ||
+		run.recoveryMessages[0].Role != "error" ||
+		string(run.recoveryMessages[0].Content) != "response lifecycle could not be finalized" {
+		t.Fatalf("recovery messages = %+v, want the response-scoped reason projected", run.recoveryMessages)
+	}
+}
+
+func TestConfigureResponseRunRevisionSkipsTrailingNonBranchableRows(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-run-anchor", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	user := session.NewMessage(sess.ID, core.UserText("question"), -1)
+	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatal(err)
+	}
+	developer := session.NewMessage(sess.ID, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: "provider context"}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, developer); err != nil {
+		t.Fatal(err)
+	}
+
+	run := newResponseRun("resp-anchor-scan", sess.ID, "", "test", time.Now().Unix(), nil)
+	(&serveServer{store: store}).configureResponseRunRevision(run, sess.ID)
+	if run.anchorRowID != user.ID || !run.anchorAvailable {
+		t.Fatalf("initial anchor = (%d, %v), want (%d, true)", run.anchorRowID, run.anchorAvailable, user.ID)
+	}
+	boundary := run.boundary.CompletedSnapshot()
+	if !boundary.Durable || boundary.DurableAnchorID != user.ID {
+		t.Fatalf("initial boundary = %#v, want durable row %d", boundary, user.ID)
+	}
+}
+
+func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-run-revisions", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	server := &serveServer{store: store}
+	run := newResponseRun("resp-revisions", sess.ID, "", "test", time.Now().Unix(), nil)
+	server.configureResponseRunRevision(run, sess.ID)
+	if run.startedRev != 0 {
+		t.Fatalf("startedRev=%d before triggering row, want 0", run.startedRev)
+	}
+	runCtx := withResponseRunContext(ctx, run)
+	assistant := tagResponseRunMessage(runCtx, core.AssistantText("durable output"), 0)
+	finishPersistence, _ := beginResponseRunPersistence(runCtx, []core.Message{assistant})
+	message := session.NewMessage(sess.ID, assistant, -1)
+	writer, ok := store.(session.TranscriptRevisionWriter)
+	if !ok {
+		t.Fatal("store does not report transcript revisions")
+	}
+	rev, persistErr := writer.AddMessageWithTranscriptRev(ctx, sess.ID, message)
+	finishPersistence(rev, persistErr)
+	if persistErr != nil {
+		t.Fatalf("AddMessage: %v", persistErr)
+	}
+	if err := run.appendEvent("response.created", map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
+		t.Fatalf("append created: %v", err)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if len(run.events) != 2 {
+		t.Fatalf("events=%d want 2", len(run.events))
+	}
+	var created, completed map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(run.events[1].Data, &completed); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := created["started_rev"].(float64); int64(got) != 0 {
+		t.Fatalf("created started_rev=%v", got)
+	}
+	if got, _ := completed["final_rev"].(float64); int64(got) < 1 {
+		t.Fatalf("completed final_rev=%v, want >= owned output rev", got)
+	}
+	if got, _ := completed["durable_handoff"].(bool); !got {
+		t.Fatalf("completed durable_handoff=%v, want true", completed["durable_handoff"])
+	}
+	if got, _ := completed["durable_output_count"].(float64); got != 1 {
+		t.Fatalf("completed durable_output_count=%v, want 1", got)
+	}
+	run.mu.Lock()
+	run.status = "completed"
+	run.mu.Unlock()
+	snapshot := run.snapshot()
+	if got, _ := snapshot["started_rev"].(int64); got != 0 {
+		t.Fatalf("snapshot started_rev=%d", got)
+	}
+	if got, _ := snapshot["final_rev"].(int64); got < 1 {
+		t.Fatalf("snapshot final_rev=%d", got)
+	}
+	if got, _ := snapshot["durable_handoff"].(bool); !got {
+		t.Fatalf("snapshot durable_handoff=%v, want true", snapshot["durable_handoff"])
+	}
+	if got, _ := snapshot["durable_output_count"].(int); got != 1 {
+		t.Fatalf("snapshot durable_output_count=%v, want 1", snapshot["durable_output_count"])
+	}
+}
+
+type countingResponseRunStartStore struct {
+	*session.SQLiteStore
+	startStateCalls int
+	snapshotCalls   int
+}
+
+func (s *countingResponseRunStartStore) GetResponseRunStartState(ctx context.Context, sessionID string) (session.ResponseRunStartState, error) {
+	s.startStateCalls++
+	return s.SQLiteStore.GetResponseRunStartState(ctx, sessionID)
+}
+
+func (s *countingResponseRunStartStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (session.TranscriptSnapshot, error) {
+	s.snapshotCalls++
+	return s.SQLiteStore.GetTranscriptSnapshot(ctx, sessionID)
+}
+
+func TestConfigureResponseRunRevisionUsesCompactStartStateThroughLoggingStore(t *testing.T) {
+	base, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer base.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-compact-start-state", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := base.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	user := session.NewMessage(sess.ID, core.UserText("question"), -1)
+	if err := base.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	counting := &countingResponseRunStartStore{SQLiteStore: base}
+	store := session.NewLoggingStore(counting, t.Logf)
+	run := newResponseRun("resp-compact-start-state", sess.ID, "", "test", time.Now().Unix(), nil)
+
+	(&serveServer{store: store}).configureResponseRunRevision(run, sess.ID)
+
+	if counting.startStateCalls != 1 || counting.snapshotCalls != 0 {
+		t.Fatalf("start state calls = %d, snapshot calls = %d; want 1, 0", counting.startStateCalls, counting.snapshotCalls)
+	}
+	if run.startedRev != 1 || !run.anchorAvailable || run.anchorRowID != user.ID {
+		t.Fatalf("configured run = rev %d anchor (%d, %v), want rev 1 anchor %d", run.startedRev, run.anchorRowID, run.anchorAvailable, user.ID)
+	}
+}
+
+type unversionedResponseRunStartStore struct {
+	session.Store
+	startStateCalls int
+}
+
+func (s *unversionedResponseRunStartStore) TranscriptVersioned() bool { return false }
+
+func (s *unversionedResponseRunStartStore) GetResponseRunStartState(context.Context, string) (session.ResponseRunStartState, error) {
+	s.startStateCalls++
+	return session.ResponseRunStartState{Rev: 999}, nil
+}
+
+func TestConfigureResponseRunRevisionSkipsCompactReaderForUnversionedStore(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-unversioned-compact", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wrapped := &unversionedResponseRunStartStore{Store: store}
+	run := newResponseRun("resp-unversioned-compact", sess.ID, "", "test", time.Now().Unix(), nil)
+
+	(&serveServer{store: wrapped}).configureResponseRunRevision(run, sess.ID)
+
+	if wrapped.startStateCalls != 0 {
+		t.Fatalf("compact start-state calls = %d, want 0 for unversioned store", wrapped.startStateCalls)
+	}
+	if run.startedRev <= 0 || run.startedRev == 999 {
+		t.Fatalf("started revision = %d, want synthesized fallback revision", run.startedRev)
+	}
+}
+
+func TestConfigureResponseRunRevisionFallsBackThroughLoggingStore(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-logged-fallback", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	user := session.NewMessage(sess.ID, core.UserText("question"), -1)
+	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	wrapped := session.NewLoggingStore(&capabilitylessTranscriptStore{Store: store}, t.Logf)
+	run := newResponseRun("resp-logged-fallback", sess.ID, "", "test", time.Now().Unix(), nil)
+
+	(&serveServer{store: wrapped}).configureResponseRunRevision(run, sess.ID)
+
+	if run.startedRev <= 0 || !run.anchorAvailable || run.anchorRowID != user.ID {
+		t.Fatalf("fallback run = rev %d anchor (%d, %v), want positive rev and anchor %d", run.startedRev, run.anchorRowID, run.anchorAvailable, user.ID)
+	}
+}
+
+type deadlineTranscriptStore struct {
+	*serveRuntimeTestStore
+	deadlineSeen chan bool
+}
+
+func (s *deadlineTranscriptStore) GetTranscriptIndex(context.Context, string) (int64, []session.TranscriptIndexItem, error) {
+	return 0, nil, nil
+}
+
+func (s *deadlineTranscriptStore) GetTranscriptSnapshot(ctx context.Context, _ string) (session.TranscriptSnapshot, error) {
+	_, ok := ctx.Deadline()
+	s.deadlineSeen <- ok
+	return session.TranscriptSnapshot{Rev: 7}, nil
+}
+
+func (s *deadlineTranscriptStore) GetMessagesByTranscriptRanges(context.Context, string, []session.TranscriptRange) (int64, []session.Message, error) {
+	return 0, nil, nil
+}
+
+func (s *deadlineTranscriptStore) TranscriptRev(ctx context.Context, _ string) (int64, error) {
+	_, ok := ctx.Deadline()
+	s.deadlineSeen <- ok
+	return 7, nil
+}
+
+func TestConfigureResponseRunRevisionBoundsStartedRevisionRead(t *testing.T) {
+	store := &deadlineTranscriptStore{
+		serveRuntimeTestStore: newServeRuntimeTestStore(),
+		deadlineSeen:          make(chan bool, 1),
+	}
+	run := newResponseRun("resp-started-timeout", "sess-timeout", "", "test", time.Now().Unix(), nil)
+	(&serveServer{store: store}).configureResponseRunRevision(run, run.sessionID)
+	if !<-store.deadlineSeen {
+		t.Fatal("started revision read had no context deadline")
+	}
+	if run.startedRev != 7 {
+		t.Fatalf("startedRev=%d, want 7", run.startedRev)
+	}
+}
+
+func TestResponseRunUsesFallbackRevisionForUnversionedPersistence(t *testing.T) {
+	run := newResponseRun("resp-fallback-rev", "sess-fallback-rev", "", "test", time.Now().Unix(), nil)
+	run.finalRevReader = func() (int64, error) { return 9, nil }
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("persisted"), 0)
+	finish, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
+	finish(0, nil)
+
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if !run.durableHandoff || run.finalRev != 9 || run.durableHandoffErr != "" {
+		t.Fatalf("handoff valid=%v finalRev=%d error=%q", run.durableHandoff, run.finalRev, run.durableHandoffErr)
+	}
+}
+
+func TestResponseRunUsesFallbackRevisionForCapabilitylessStore(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-capabilityless-rev", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	server := &serveServer{store: &capabilitylessTranscriptStore{Store: store}}
+	run := newResponseRun("resp-capabilityless-rev", sess.ID, "", "test", time.Now().Unix(), nil)
+	server.configureResponseRunRevision(run, sess.ID)
+	runCtx := withResponseRunContext(ctx, run)
+	assistant := tagResponseRunMessage(runCtx, core.AssistantText("persisted"), 0)
+	message := session.NewMessage(sess.ID, assistant, -1)
+	if _, err := runResponseRunPersistence(runCtx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
+		return addResponseRunMessage(session.WithResponseRunFence(ctx, fence), server.store, sess.ID, message)
+	}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if !run.durableHandoff || run.finalRev <= 0 || run.durableHandoffErr != "" {
+		t.Fatalf("handoff valid=%v finalRev=%d error=%q", run.durableHandoff, run.finalRev, run.durableHandoffErr)
+	}
+}
+
+func TestResponseRunPersistenceBarrierTimesOut(t *testing.T) {
+	run := newResponseRun("resp-final-rev-timeout", "sess-timeout", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("persisting"), 0)
+	_, _ = beginResponseRunPersistence(ctx, []core.Message{assistant})
+
+	started := time.Now()
+	handoff := run.readDurableHandoffWithTimeout(20 * time.Millisecond)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("barrier timeout took %s", elapsed)
+	}
+	if handoff.Valid || !strings.Contains(handoff.Error, "timed out") {
+		t.Fatalf("handoff = %#v, want timed-out invalid handoff", handoff)
+	}
+}
+
+func TestResponseRunPersistenceBarrierDoesNotBlockEventMutex(t *testing.T) {
+	run := newResponseRun("resp-final-rev-lock", "sess-lock", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("persisted"), 0)
+	finish, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
+
+	completeDone := make(chan error, 1)
+	go func() {
+		completeDone <- run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{})
+	}()
+	select {
+	case err := <-completeDone:
+		t.Fatalf("terminal completed before persistence barrier: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := run.appendEvent("response.phase", map[string]any{"text": "persisting"}); err != nil {
+		t.Fatalf("append phase while terminal waits: %v", err)
+	}
+	finish(11, nil)
+	if err := <-completeDone; err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 2 || run.events[0].Event != "response.phase" || run.events[1].Event != "response.completed" {
+		t.Fatalf("terminal ordering = %#v", run.events)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[1].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["final_rev"] != float64(11) {
+		t.Fatalf("final_rev=%v, want 11", payload["final_rev"])
+	}
+}
+
+func TestResponseRunRejectsDurableHandoffWhenOwnedWriteFails(t *testing.T) {
+	run := newResponseRun("resp-write-failed", "sess-write-failed", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, core.AssistantText("visible partial"), 0)
+	finishPersistence, _ := beginResponseRunPersistence(ctx, []core.Message{assistant})
+	finishPersistence(0, errors.New("database unavailable"))
+
+	if _, err := run.fail(map[string]any{"error": map[string]any{"message": "failed"}}, "server_error", "failed"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[len(run.events)-1].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := payload["durable_handoff"].(bool); got {
+		t.Fatalf("durable_handoff=%v, want false", payload["durable_handoff"])
+	}
+	if got, _ := payload["durable_output_count"].(float64); got != 1 {
+		t.Fatalf("durable_output_count=%v, want 1", got)
+	}
+	if got := payload["durable_handoff_error"]; got != "database unavailable" {
+		t.Fatalf("durable_handoff_error=%v", got)
+	}
+}
+
+func TestEncodeTextDeltaPayloadWithIdentityMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
+	delta := string([]byte{'o', 'k', 0xff, '!'})
+	data, err := encodeTextDeltaPayloadWithIdentity("resp_identity", 3, 2, 1, 5, delta, 7)
+	if err != nil {
+		t.Fatalf("encodeTextDeltaPayloadWithIdentity() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("encoded payload is invalid JSON: %v; data=%q", err, data)
+	}
+	if got["delta"] != "ok�!" {
+		t.Fatalf("delta = %q, want replacement-char-normalized string", got["delta"])
+	}
+	if got["response_id"] != "resp_identity" || got["run_epoch"] != float64(3) || got["assistant_segment_ordinal"] != float64(1) || got["segment_start_sequence"] != float64(5) || got["output_index"] != float64(2) || got["sequence_number"] != float64(7) {
+		t.Fatalf("payload = %#v, want stable response/segment identity and sequence", got)
+	}
+}
+
+func TestResponseRunAppendEventMarshalErrorDoesNotBurnSequence(t *testing.T) {
+	run := newResponseRun("resp_marshal_gap", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	if err := run.appendEvent("response.created", map[string]any{"ok": true}); err != nil {
+		t.Fatalf("append initial event: %v", err)
+	}
+	if err := run.appendEvent("response.bad", map[string]any{"bad": math.Inf(1)}); err == nil {
+		t.Fatal("appendEvent with non-marshalable payload succeeded, want error")
+	}
+	if err := run.appendEvent("response.phase", map[string]any{"text": "after"}); err != nil {
+		t.Fatalf("append event after marshal error: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.lastSequenceNumber != 2 {
+		t.Fatalf("lastSequenceNumber = %d, want 2", run.lastSequenceNumber)
+	}
+	if len(run.events) != 2 {
+		t.Fatalf("events = %d, want 2", len(run.events))
+	}
+	for i, ev := range run.events {
+		want := int64(i + 1)
+		if ev.Sequence != want {
+			t.Fatalf("event[%d].Sequence = %d, want %d", i, ev.Sequence, want)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(ev.Data, &payload); err != nil {
+			t.Fatalf("event[%d] payload unmarshal: %v", i, err)
+		}
+		if payload["sequence_number"] != float64(want) {
+			t.Fatalf("event[%d] payload sequence_number = %#v, want %d", i, payload["sequence_number"], want)
+		}
+	}
+}
+
+func TestAppendResponseRunEventIncludesToolTiming(t *testing.T) {
+	run := newResponseRun("resp_tool_timing", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := newResponseRunStreamState("mock", "")
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type: core.EventToolExecStart, ToolCallID: "spawn-1", ToolName: "spawn_agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type: core.EventToolExecEnd, ToolCallID: "spawn-1", ToolName: "spawn_agent", ToolSuccess: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 2 {
+		t.Fatalf("events = %d, want 2", len(run.events))
+	}
+	var started, ended map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &started); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(run.events[1].Data, &ended); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := int64(started["started_at"].(float64))
+	endedAt := int64(ended["ended_at"].(float64))
+	durationMs := int64(ended["duration_ms"].(float64))
+	if startedAt <= 0 || endedAt < startedAt || durationMs != endedAt-startedAt {
+		t.Fatalf("start = %d, end = %d, duration = %d", startedAt, endedAt, durationMs)
+	}
+	if _, ok := state.toolStartedAt["spawn-1"]; ok {
+		t.Fatal("completed tool retained its start timestamp")
+	}
+}
+
+func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
+	run := newResponseRun("resp_phase", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{Type: core.EventPhase, Text: "Compacting context..."}); err != nil {
+		t.Fatalf("appendResponseRunEvent() error = %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	ev := run.events[0]
+	if ev.Event != "response.phase" {
+		t.Fatalf("event name = %q, want response.phase", ev.Event)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(ev.Data, &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["text"] != "Compacting context..." {
+		t.Fatalf("payload text = %#v", payload["text"])
+	}
+}
+
+func TestAppendResponseRunEventCompactionSplitsRecoveryToolGroups(t *testing.T) {
+	run := newResponseRun("resp_compaction", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := &responseRunStreamState{}
+	runtime := &serveRuntime{
+		pendingCompactions: []runtimeCompactionIdentity{{sequence: 42, count: 3}},
+	}
+
+	for _, event := range []core.Event{
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "before", Name: "shell"}},
+		{Type: core.EventCompaction},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "after", Name: "shell"}},
+	} {
+		if err := server.appendResponseRunEvent(runtime, run, state, event); err != nil {
+			t.Fatalf("append %v: %v", event.Type, err)
+		}
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 7 {
+		t.Fatalf("events = %d, want 7", len(run.events))
+	}
+	if run.events[3].Event != "response.compaction" {
+		t.Fatalf("boundary event = %q, want response.compaction", run.events[3].Event)
+	}
+	var boundaryPayload map[string]any
+	if err := json.Unmarshal(run.events[3].Data, &boundaryPayload); err != nil {
+		t.Fatalf("decode compaction event: %v", err)
+	}
+	if boundaryPayload["compaction_seq"] != float64(42) || boundaryPayload["compaction_count"] != float64(3) {
+		t.Fatalf("compaction identity payload = %#v", boundaryPayload)
+	}
+	if len(run.recoveryMessages) != 3 {
+		t.Fatalf("recovery messages = %#v, want tool/boundary/tool", run.recoveryMessages)
+	}
+	if run.recoveryMessages[0].Role != "tool-group" || run.recoveryMessages[1].Role != "compaction-boundary" || run.recoveryMessages[2].Role != "tool-group" {
+		t.Fatalf("recovery roles = %q, %q, %q", run.recoveryMessages[0].Role, run.recoveryMessages[1].Role, run.recoveryMessages[2].Role)
+	}
+	if run.recoveryMessages[1].CompactionEventSequence != run.events[3].Sequence {
+		t.Fatalf("recovery compaction event sequence = %d, want %d", run.recoveryMessages[1].CompactionEventSequence, run.events[3].Sequence)
+	}
+	if run.recoveryMessages[1].DurableCompactionSeq != 42 {
+		t.Fatalf("recovery durable compaction sequence = %d, want 42", run.recoveryMessages[1].DurableCompactionSeq)
+	}
+	if run.recoveryMessages[1].CompactionCount != 3 {
+		t.Fatalf("recovery compaction count = %d, want 3", run.recoveryMessages[1].CompactionCount)
+	}
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("recovery payload messages = %#v", recovery["messages"])
+	}
+	if messages[1]["role"] != "compaction-boundary" ||
+		messages[1]["compaction_sequence"] != run.events[3].Sequence ||
+		messages[1]["compaction_seq"] != 42 ||
+		messages[1]["compaction_count"] != 3 {
+		t.Fatalf("recovery compaction payload = %#v", messages[1])
+	}
+}
+
+func TestAppendResponseRunEventCompactionsConsumeDurableIdentitiesInOrder(t *testing.T) {
+	run := newResponseRun("resp_compactions", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	runtime := &serveRuntime{pendingCompactions: []runtimeCompactionIdentity{
+		{sequence: 42, count: 3},
+		{sequence: 84, count: 4},
+	}}
+	for range 2 {
+		if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, core.Event{Type: core.EventCompaction}); err != nil {
+			t.Fatalf("append compaction: %v", err)
+		}
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	for index, want := range []float64{42, 84} {
+		var payload map[string]any
+		if err := json.Unmarshal(run.events[index].Data, &payload); err != nil {
+			t.Fatalf("decode compaction event %d: %v", index, err)
+		}
+		if payload["compaction_seq"] != want {
+			t.Fatalf("compaction event %d sequence = %#v, want %.0f", index, payload["compaction_seq"], want)
+		}
+	}
+}
+
+func TestAppendResponseRunEventCompactionWithoutRecordedIdentityStaysUnmatched(t *testing.T) {
+	run := newResponseRun("resp_compaction_unmatched", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	runtime := &serveRuntime{sessionMeta: &session.Session{CompactionSeq: 42, CompactionCount: 3}}
+	if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, core.Event{Type: core.EventCompaction}); err != nil {
+		t.Fatalf("append compaction: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatalf("decode compaction event: %v", err)
+	}
+	if _, exists := payload["compaction_seq"]; exists {
+		t.Fatalf("unrecorded compaction adopted stale identity: %#v", payload)
+	}
+	if got := run.recoveryMessages[0].DurableCompactionSeq; got != -1 {
+		t.Fatalf("recovery durable compaction sequence = %d, want -1", got)
+	}
+}
+
+func TestAppendResponseRunEventEmitsRetry(t *testing.T) {
+	run := newResponseRun("resp_retry", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type:             core.EventRetry,
+		RetryAttempt:     2,
+		RetryMaxAttempts: 6,
+		RetryWaitSecs:    0.5,
+	}); err != nil {
+		t.Fatalf("appendResponseRunEvent() error = %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	ev := run.events[0]
+	if ev.Event != "response.retry" {
+		t.Fatalf("event name = %q, want response.retry", ev.Event)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(ev.Data, &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["attempt"] != float64(2) || payload["max_attempts"] != float64(6) || payload["wait_seconds"] != 0.5 {
+		t.Fatalf("payload retry fields = %#v", payload)
+	}
+	if !strings.Contains(payload["message"].(string), "reconnecting (2/6)") {
+		t.Fatalf("payload message = %#v", payload["message"])
+	}
+}
+
+func TestPersistResponseRunErrorEventStoresDurableNonLLMMarker(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	runtime := &serveRuntime{store: store}
+	server := &serveServer{}
+
+	server.persistResponseRunErrorEvent(context.Background(), runtime, "sess_error", "resp_error", "timeout_error", "Responses WebSocket retries exhausted")
+
+	store.mu.Lock()
+	messages := append([]session.Message(nil), store.messages["sess_error"]...)
+	store.mu.Unlock()
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messages))
+	}
+	msg := messages[0]
+	if msg.Role != core.RoleEvent {
+		t.Fatalf("role = %q, want event", msg.Role)
+	}
+	marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage())
+	if !ok {
+		t.Fatalf("missing run error marker in %#v", msg.Parts)
+	}
+	if marker.ResponseID != "resp_error" || marker.ErrorType != "timeout_error" || marker.Message != "Responses WebSocket retries exhausted" {
+		t.Fatalf("marker = %#v", marker)
+	}
+	filtered := core.FilterConversationMessages([]core.Message{msg.ToLLMMessage(), core.UserText("continue")})
+	if len(filtered) != 1 || filtered[0].Role != core.RoleUser {
+		t.Fatalf("filtered messages = %#v, want only user message", filtered)
+	}
+}
+
+func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) {
+	run := newResponseRun("resp_model_switch", "sess_test", "", "gpt-5.4", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := newResponseRunStreamState("gpt-5.4", "medium")
+	runtime := &serveRuntime{providerKey: "chatgpt"}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:                    core.EventModelSwitch,
+		PreviousModel:           "gpt-5.4",
+		PreviousReasoningEffort: "medium",
+		Model:                   "gpt-5.4",
+		ReasoningEffort:         "high",
+		ProviderTurnIndex:       1,
+		ProviderTurnIndexSet:    true,
+		ModelSwitchBoundaryID:   "engine-switch-1",
+	}); err != nil {
+		t.Fatalf("appendResponseRunEvent() error = %v", err)
+	}
+
+	run.mu.Lock()
+	if len(run.events) != 1 {
+		run.mu.Unlock()
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	ev := run.events[0]
+	run.mu.Unlock()
+	if ev.Event != "response.model_switch" {
+		t.Fatalf("event name = %q, want response.model_switch", ev.Event)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(ev.Data, &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["model"] != "gpt-5.4" || payload["reasoning_effort"] != "high" {
+		t.Fatalf("payload runtime = %#v/%#v, want gpt-5.4/high", payload["model"], payload["reasoning_effort"])
+	}
+	if payload["from_model"] != "gpt-5.4" || payload["from_reasoning_effort"] != "medium" || payload["to_model"] != "gpt-5.4" {
+		t.Fatalf("payload transition = %#v, want authoritative medium -> high runtime", payload)
+	}
+	if payload["boundary_id"] != "engine-switch-1" {
+		t.Fatalf("payload boundary = %#v", payload["boundary_id"])
+	}
+	if state.model != "gpt-5.4" || state.reasoningEffort != "high" || !state.reasoningEffortSet {
+		t.Fatalf("stream state = %#v, want gpt-5.4/high set", state)
+	}
+	snapshot := run.snapshot()
+	if snapshot["model"] != "gpt-5.4" || snapshot["reasoning_effort"] != "high" {
+		t.Fatalf("snapshot runtime = %#v/%#v, want gpt-5.4/high", snapshot["model"], snapshot["reasoning_effort"])
+	}
+	recovery, ok := snapshot["recovery"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot recovery = %#v", snapshot["recovery"])
+	}
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 || messages[0]["role"] != "model-swap" {
+		t.Fatalf("model-switch recovery messages = %#v", recovery["messages"])
+	}
+	if messages[0]["from_model"] != "gpt-5.4" || messages[0]["to_model"] != "gpt-5.4" || messages[0]["boundary_id"] != "engine-switch-1" {
+		t.Fatalf("model-switch recovery transition = %#v", messages[0])
+	}
+}
+
+func TestAppendResponseRunEventEmitsAskUserPromptWhenServerToolMetadataIsSuppressed(t *testing.T) {
+	registry := engine.NewToolRegistry()
+	registry.Register(tools.NewAskUserTool())
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_ask_user", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:       core.EventToolExecStart,
+		ToolCallID: "call-ask",
+		ToolName:   tools.AskUserToolName,
+		ToolArgs:   json.RawMessage(`{"questions":[{"header":"Theme","question":"Pick a theme","options":[{"label":"Dark","description":"Use dark mode"},{"label":"Light","description":"Use light mode"}]}]}`),
+	}); err != nil {
+		t.Fatalf("append start: %v", err)
+	}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
+		ToolCallID:  "call-ask",
+		ToolName:    tools.AskUserToolName,
+		ToolSuccess: true,
+		ToolOutput:  `{"answers":[{"header":"Theme","selected":"Dark"}]}`,
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 2 || run.events[0].Event != "response.ask_user.prompt" || run.events[1].Event != "response.tool_exec.end" {
+		var names []string
+		for _, ev := range run.events {
+			names = append(names, ev.Event)
+		}
+		t.Fatalf("events = %v, want prompt and minimal ask_user end", names)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal prompt: %v", err)
+	}
+	if payload["call_id"] != "call-ask" {
+		t.Fatalf("call_id = %#v, want call-ask", payload["call_id"])
+	}
+	questions, ok := payload["questions"].([]any)
+	if !ok || len(questions) != 1 {
+		t.Fatalf("questions = %#v, want one question", payload["questions"])
+	}
+	var endPayload map[string]any
+	if err := json.Unmarshal(run.events[1].Data, &endPayload); err != nil {
+		t.Fatalf("unmarshal end: %v", err)
+	}
+	if endPayload["ask_user_summary"] != "Theme: Dark" || endPayload["tool_arguments"] != nil || endPayload["tool_info"] != nil {
+		t.Fatalf("suppressed ask_user end = %#v", endPayload)
+	}
+	if len(run.recoveryMessages) != 1 || len(run.recoveryMessages[0].Tools) != 1 || run.recoveryMessages[0].Tools[0].AskUserAnswer != "Theme: Dark" {
+		t.Fatalf("suppressed ask_user recovery = %#v", run.recoveryMessages)
+	}
+}
+
+func TestAppendResponseRunEventIncludesAskUserAnswerInLiveAndRecoveryTools(t *testing.T) {
+	registry := engine.NewToolRegistry()
+	registry.Register(tools.NewAskUserTool())
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
+	server := &serveServer{}
+	run := newResponseRun("resp_ask_answer", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+	arguments := json.RawMessage(`{"questions":[{"header":"Frontend","question":"Which renderer?","options":[{"label":"Vendor xterm.js","description":"Serve xterm.js"}]}]}`)
+
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:       core.EventToolCall,
+		ToolCallID: "call-ask",
+		ToolName:   tools.AskUserToolName,
+		Tool: &core.ToolCall{
+			ID:        "call-ask",
+			Name:      tools.AskUserToolName,
+			Arguments: arguments,
+		},
+	}); err != nil {
+		t.Fatalf("append call: %v", err)
+	}
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
+		ToolCallID:  "call-ask",
+		ToolName:    tools.AskUserToolName,
+		ToolSuccess: true,
+		ToolOutput:  `{"answers":[{"header":"Frontend","selected":"Vendor xterm.js"}]}`,
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
+	run.mu.Lock()
+	var endPayload map[string]any
+	for _, event := range run.events {
+		if event.Event != "response.tool_exec.end" {
+			continue
+		}
+		if err := json.Unmarshal(event.Data, &endPayload); err != nil {
+			t.Fatalf("decode end event: %v", err)
+		}
+	}
+	run.mu.Unlock()
+	if got := stringValue(endPayload["ask_user_summary"]); got != "Frontend: Vendor xterm.js" {
+		t.Fatalf("live ask_user_summary = %q", got)
+	}
+
+	snapshot := run.snapshot()
+	recovery, ok := snapshot["recovery"].(map[string]any)
+	if !ok {
+		t.Fatalf("recovery = %#v", snapshot["recovery"])
+	}
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("recovery messages = %#v", recovery["messages"])
+	}
+	toolPayloads, ok := messages[0]["tools"].([]map[string]any)
+	if !ok || len(toolPayloads) != 1 || toolPayloads[0]["askUserAnswer"] != "Frontend: Vendor xterm.js" {
+		t.Fatalf("recovery tools = %#v", messages[0]["tools"])
+	}
+}
+
+func TestAppendResponseRunEventSuppressesServerToolMetadata(t *testing.T) {
+	registry := engine.NewToolRegistry()
+	registry.Register(&echoTool{})
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_suppress_tools", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:       core.EventToolExecStart,
+		ToolCallID: "call-1",
+		ToolName:   "echo",
+		ToolArgs:   json.RawMessage(`{"path":"/secret/file.txt"}`),
+	}); err != nil {
+		t.Fatalf("append start: %v", err)
+	}
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
+		ToolCallID:  "call-1",
+		ToolName:    "echo",
+		ToolSuccess: true,
+		ToolFileChanges: []core.FileChange{{
+			Path: "/secret/file.txt",
+			Kind: "modify",
+			Seq:  1,
+		}},
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 0 {
+		var names []string
+		for _, ev := range run.events {
+			names = append(names, ev.Event)
+		}
+		t.Fatalf("events = %v, want none for suppressed server tool", names)
+	}
+}
+
+func TestSuppressedServerToolStillAdvancesAssistantSegmentIdentity(t *testing.T) {
+	registry := engine.NewToolRegistry()
+	registry.Register(&echoTool{})
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_suppressed_boundary", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	for _, event := range []core.Event{
+		{Type: core.EventTextDelta, Text: "before"},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-hidden", Name: "echo"}},
+		{Type: core.EventTextDelta, Text: "after"},
+	} {
+		if err := server.appendResponseRunEvent(runtime, run, state, event); err != nil {
+			t.Fatalf("append %v: %v", event.Type, err)
+		}
+	}
+	if len(run.events) != 3 || run.events[1].Event != "response.output_text.new_segment" {
+		t.Fatalf("events = %+v, want text/boundary/text without hidden tool metadata", run.events)
+	}
+	var first, second map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(run.events[2].Data, &second); err != nil {
+		t.Fatal(err)
+	}
+	if first["assistant_segment_ordinal"] != float64(0) || second["assistant_segment_ordinal"] != float64(1) {
+		t.Fatalf("segment identities first=%v second=%v", first, second)
+	}
+}
+
+func TestProviderTurnIdentitySkipsToolOnlyAssistantSegments(t *testing.T) {
+	server := &serveServer{}
+	run := newResponseRun("resp_tool_only_turns", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	events := []core.Event{
+		{Type: core.EventTextDelta, Text: "first", ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-0", Name: "shell"}, ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-1", Name: "grep"}, ProviderTurnIndex: 1, ProviderTurnIndexSet: true},
+		{Type: core.EventToolCall, Tool: &core.ToolCall{ID: "call-2", Name: "read_file"}, ProviderTurnIndex: 2, ProviderTurnIndexSet: true},
+		{Type: core.EventTextDelta, Text: "after tool-only turns", ProviderTurnIndex: 3, ProviderTurnIndexSet: true},
+	}
+	for _, event := range events {
+		if err := server.appendResponseRunEvent(nil, run, state, event); err != nil {
+			t.Fatalf("append %v: %v", event.Type, err)
+		}
+	}
+
+	var lastText map[string]any
+	for _, event := range run.events {
+		if event.Event != "response.output_text.delta" {
+			continue
+		}
+		if err := json.Unmarshal(event.Data, &lastText); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := lastText["assistant_segment_ordinal"]; got != float64(3) {
+		t.Fatalf("assistant segment ordinal = %v, want provider turn 3", got)
+	}
+}
+
+func TestToolArgumentDeltaCarriesStableIdentityAndProviderTurn(t *testing.T) {
+	server := &serveServer{}
+	run := newResponseRun("resp_tool_identity", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	if err := server.appendResponseRunEvent(nil, run, state, core.Event{
+		Type:                 core.EventToolCall,
+		Tool:                 &core.ToolCall{ID: "call-parallel", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)},
+		ProviderTurnIndex:    4,
+		ProviderTurnIndexSet: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantEvents := map[string]bool{
+		"response.output_item.added":             false,
+		"response.function_call_arguments.delta": false,
+		"response.output_item.done":              false,
+	}
+	for _, event := range run.events {
+		if _, ok := wantEvents[event.Event]; !ok {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["call_id"] != "call-parallel" || payload["item_id"] != "fc_call-parallel" {
+			t.Fatalf("%s identity = %#v", event.Event, payload)
+		}
+		if payload["provider_turn_index"] != float64(4) {
+			t.Fatalf("%s provider turn = %#v", event.Event, payload)
+		}
+		wantEvents[event.Event] = true
+	}
+	for event, found := range wantEvents {
+		if !found {
+			t.Fatalf("missing %s", event)
+		}
+	}
+}
+
+func TestAppendResponseRunEventRejectsUnverifiedClientToolFileChanges(t *testing.T) {
+	registry := engine.NewToolRegistry()
+	runtime := &serveRuntime{engine: engine.NewEngine(mockprovider.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_client_tool", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, core.Event{
+		Type:        core.EventToolExecEnd,
+		ToolCallID:  "call-client",
+		ToolName:    "client_tool",
+		ToolSuccess: true,
+		ToolFileChanges: []core.FileChange{{
+			Path: "/client/file.txt",
+			Kind: "modify",
+			Seq:  1,
+		}},
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	var sawFileChange, sawDiagnostic bool
+	for _, ev := range run.events {
+		if ev.Event == "response.file_change" {
+			sawFileChange = true
+		}
+		if ev.Event == "response.output_claim_diagnostic" {
+			sawDiagnostic = true
+		}
+	}
+	if sawFileChange || !sawDiagnostic {
+		t.Fatalf("events = %+v, want diagnostic and no attributed file change for unverified client metadata", run.events)
+	}
+}
+
+func TestStreamResponseRunEventsReportsAuthoritativeReplayBoundary(t *testing.T) {
+	run := newResponseRun("resp_replay_boundary", "sess_replay_boundary", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.created", map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
+		t.Fatalf("append created event: %v", err)
+	}
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "historical"}); err != nil {
+		t.Fatalf("append text event: %v", err)
+	}
+	run.mu.Lock()
+	run.status = "completed"
+	run.mu.Unlock()
+
+	for _, tc := range []struct {
+		name  string
+		after int64
+		want  string
+	}{
+		{name: "replayed events", after: 0, want: "2"},
+		{name: "empty replay", after: 2, want: "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server := &serveServer{}
+			server.streamResponseRunEvents(context.Background(), recorder, run, tc.after)
+			response := recorder.Result()
+			defer response.Body.Close()
+			if got := response.Header.Get("X-Term-LLM-Replay-Through"); got != tc.want {
+				t.Fatalf("X-Term-LLM-Replay-Through = %q, want %q", got, tc.want)
+			}
+			if got := response.Header.Get("X-Term-LLM-Response-Status"); got != "completed" {
+				t.Fatalf("X-Term-LLM-Response-Status = %q, want completed", got)
+			}
+		})
+	}
+}
+
+func TestStreamResponseRunEventsReportsInProgressSubscription(t *testing.T) {
+	run := newResponseRun("resp_active_header", "sess_active_header", "", "mock", time.Now().Unix(), func() {})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := httptest.NewRecorder()
+	(&serveServer{}).streamResponseRunEvents(ctx, recorder, run, 0)
+	if got := recorder.Result().Header.Get("X-Term-LLM-Response-Status"); got != "in_progress" {
+		t.Fatalf("X-Term-LLM-Response-Status = %q, want in_progress", got)
+	}
+}
+
+func TestResponseRunSubscriberSurvivesUpToBufferLimit(t *testing.T) {
+	run := newResponseRun("resp_test1", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	sub := run.subscribe(0)
+	if sub.ch == nil {
+		t.Fatal("expected live channel from subscribe")
+	}
+	defer run.unsubscribe(sub.ch)
+
+	// Fill the subscriber buffer up to the limit (should not drop)
+	for i := 0; i < defaultResponseRunSubscriberBuffer; i++ {
+		err := run.appendEvent("response.output_text.delta", map[string]any{
+			"delta": "x",
+		})
+		if err != nil {
+			t.Fatalf("appendEvent failed at %d: %v", i, err)
+		}
+	}
+
+	// Subscriber should still be registered
+	run.mu.Lock()
+	subCount := len(run.subscribers)
+	run.mu.Unlock()
+
+	if subCount != 1 {
+		t.Fatalf("expected 1 subscriber, got %d", subCount)
+	}
+
+	// Drain all events from the channel
+	for i := 0; i < defaultResponseRunSubscriberBuffer; i++ {
+		select {
+		case ev := <-sub.ch:
+			if ev.Sequence != int64(i+1) {
+				t.Fatalf("expected sequence %d, got %d", i+1, ev.Sequence)
+			}
+		default:
+			t.Fatalf("expected event at index %d but channel was empty", i)
+		}
+	}
+}
+
+func TestResponseRunSubscriberDroppedWhenBufferFull(t *testing.T) {
+	run := newResponseRun("resp_test2", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	sub := run.subscribe(0)
+	if sub.ch == nil {
+		t.Fatal("expected live channel from subscribe")
+	}
+	defer run.unsubscribe(sub.ch)
+
+	// Fill buffer completely
+	for i := 0; i < defaultResponseRunSubscriberBuffer; i++ {
+		if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "x"}); err != nil {
+			t.Fatalf("appendEvent failed at %d: %v", i, err)
+		}
+	}
+
+	// One more should drop the subscriber
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "overflow"}); err != nil {
+		t.Fatalf("appendEvent failed on overflow: %v", err)
+	}
+
+	run.mu.Lock()
+	subCount := len(run.subscribers)
+	run.mu.Unlock()
+	if subCount != 0 {
+		t.Fatalf("expected 0 subscribers after overflow, got %d", subCount)
+	}
+}
+
+func TestResponseRunCompleteHonorsPendingCancellation(t *testing.T) {
+	run := newResponseRun("resp_cancelled", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	if !run.cancelRun() {
+		t.Fatal("expected cancelRun to succeed")
+	}
+
+	if err := run.complete(map[string]any{
+		"response": map[string]any{
+			"id":            run.id,
+			"object":        "response",
+			"created":       run.created,
+			"model":         run.model,
+			"status":        "completed",
+			"usage":         usagePayload(core.Usage{InputTokens: 3, OutputTokens: 4}),
+			"session_usage": usagePayload(core.Usage{InputTokens: 5, OutputTokens: 6}),
+		},
+	}, core.Usage{InputTokens: 3, OutputTokens: 4}, core.Usage{InputTokens: 5, OutputTokens: 6}); err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+
+	if run.status != "cancelled" {
+		t.Fatalf("run status = %q, want cancelled", run.status)
+	}
+	if run.cancelRequested {
+		t.Fatal("cancelRequested should be cleared after terminal transition")
+	}
+	if len(run.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	if run.events[0].Event != "response.cancelled" {
+		t.Fatalf("event = %q, want response.cancelled", run.events[0].Event)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal terminal payload: %v", err)
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("response payload type = %T", payload["response"])
+	}
+	if response["status"] != "cancelled" {
+		t.Fatalf("response status = %v, want cancelled", response["status"])
+	}
+	if _, ok := response["usage"]; ok {
+		t.Fatalf("cancelled payload unexpectedly retained usage: %#v", response["usage"])
+	}
+	if _, ok := response["session_usage"]; ok {
+		t.Fatalf("cancelled payload unexpectedly retained session_usage: %#v", response["session_usage"])
+	}
+}
+
+func TestResponseRunCompactionKeepsReplayWindowInOrder(t *testing.T) {
+	run := newResponseRun("resp_compact", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	run.maxRetainedEvents = 3
+
+	for i := 0; i < 8; i++ {
+		if err := run.appendTextDeltaSegmentEvent(0, 0, ""); err != nil {
+			t.Fatalf("appendTextDeltaSegmentEvent failed at %d: %v", i, err)
+		}
+	}
+
+	run.mu.Lock()
+	activeLen := len(run.events) - run.eventStart
+	storageLen := len(run.events)
+	minReplayAfter := run.minReplayAfter
+	run.mu.Unlock()
+
+	if activeLen != 3 {
+		t.Fatalf("active retained events = %d, want 3", activeLen)
+	}
+	if storageLen > 6 {
+		t.Fatalf("storage length = %d, want bounded near replay window", storageLen)
+	}
+	if minReplayAfter != 5 {
+		t.Fatalf("minReplayAfter = %d, want 5", minReplayAfter)
+	}
+
+	stale := run.subscribe(4)
+	if !stale.snapshotRequired || stale.minReplayAfter != 5 {
+		t.Fatalf("subscribe before replay window = %#v, want snapshot required at 5", stale)
+	}
+
+	fresh := run.subscribe(5)
+	if fresh.snapshotRequired {
+		t.Fatalf("subscribe at replay window unexpectedly required snapshot: %#v", fresh)
+	}
+	if len(fresh.replay) != 3 {
+		t.Fatalf("replay length = %d, want 3", len(fresh.replay))
+	}
+	for i, ev := range fresh.replay {
+		expected := int64(i + 6)
+		if ev.Sequence != expected {
+			t.Fatalf("replay[%d].Sequence = %d, want %d", i, ev.Sequence, expected)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(ev.Data, &payload); err != nil {
+			t.Fatalf("replay[%d] payload is invalid JSON: %v", i, err)
+		}
+		if payload["sequence_number"] != float64(expected) {
+			t.Fatalf("replay[%d] payload sequence_number = %v, want %d", i, payload["sequence_number"], expected)
+		}
+	}
+	if fresh.ch != nil {
+		run.unsubscribe(fresh.ch)
+	}
+}
+
+func TestResponseRunRecoveryPreservesToolExecutionResults(t *testing.T) {
+	run := newResponseRun("resp_plan_results", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	for _, tc := range []struct {
+		callID  string
+		success bool
+	}{
+		{callID: "call_plan_ok", success: true},
+		{callID: "call_plan_failed", success: false},
+	} {
+		if err := run.appendEvent("response.output_item.added", map[string]any{
+			"item": map[string]any{
+				"type":      "function_call",
+				"call_id":   tc.callID,
+				"name":      "update_plan",
+				"arguments": `{"plan":[]}`,
+			},
+		}); err != nil {
+			t.Fatalf("append %s tool call: %v", tc.callID, err)
+		}
+		if err := run.appendEvent("response.tool_exec.end", map[string]any{
+			"call_id":   tc.callID,
+			"tool_name": "update_plan",
+			"success":   tc.success,
+		}); err != nil {
+			t.Fatalf("append %s tool end: %v", tc.callID, err)
+		}
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("recovery messages = %#v", recovery["messages"])
+	}
+	tools, ok := messages[0]["tools"].([]map[string]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("recovery tools = %#v", messages[0]["tools"])
+	}
+	if tools[0]["status"] != "done" || tools[0]["resultStatus"] != "success" {
+		t.Fatalf("successful recovered tool = %#v", tools[0])
+	}
+	if tools[1]["status"] != "error" || tools[1]["resultStatus"] != "error" {
+		t.Fatalf("failed recovered tool = %#v", tools[1])
+	}
+	if messages[0]["status"] != "done" {
+		t.Fatalf("recovered group status = %v, want done", messages[0]["status"])
+	}
+}
+
+func TestResponseRunRecoveryPreservesToolTiming(t *testing.T) {
+	run := newResponseRun("resp_tool_timing", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.output_item.added", map[string]any{"item": map[string]any{
+		"type": "function_call", "call_id": "spawn-1", "name": "spawn_agent", "arguments": `{}`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.tool_exec.start", map[string]any{
+		"call_id": "spawn-1", "started_at": int64(10_000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.tool_exec.end", map[string]any{
+		"call_id": "spawn-1", "success": true, "started_at": int64(10_000),
+		"ended_at": int64(22_345), "duration_ms": int64(12_345),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages := recovery["messages"].([]map[string]any)
+	tools := messages[0]["tools"].([]map[string]any)
+	if tools[0]["startedAt"] != int64(10_000) || tools[0]["endedAt"] != int64(22_345) || tools[0]["durationMs"] != int64(12_345) {
+		t.Fatalf("recovered timing = %#v", tools[0])
+	}
+}
+
+func TestResponseRunRecoveryAttachesGuardianReviewByCallIDBeforeToolStart(t *testing.T) {
+	run := newResponseRun("resp_guardian", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.guardian.review", map[string]any{
+		"tool_call_id": "call_shell", "outcome": "approved", "message": "guardian: approved (low risk)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.output_item.added", map[string]any{"item": map[string]any{
+		"type": "function_call", "call_id": "call_shell", "name": "shell", "arguments": `{"command":"pwd"}`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	recovery := run.recoveryPayloadLocked()
+	messages := recovery["messages"].([]map[string]any)
+	tools := messages[0]["tools"].([]map[string]any)
+	reviews, ok := tools[0]["guardianReviews"].([]map[string]any)
+	if !ok || len(reviews) != 1 || reviews[0]["outcome"] != "approved" {
+		t.Fatalf("recovered guardian reviews = %#v", tools[0]["guardianReviews"])
+	}
+	if len(messages) != 1 || messages[0]["role"] != "tool-group" {
+		t.Fatalf("guardian review leaked into standalone recovery row: %#v", messages)
+	}
+}
+
+func TestResponseRunRecoveryDropsEmptyUncorrelatedGuardianNotice(t *testing.T) {
+	run := newResponseRun("resp_guardian_empty", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.guardian.review", map[string]any{"outcome": "warning", "message": "  "}); err != nil {
+		t.Fatal(err)
+	}
+	if messages, ok := run.recoveryPayloadLocked()["messages"].([]map[string]any); ok && len(messages) != 0 {
+		t.Fatalf("empty guardian notice created recovery rows: %#v", messages)
+	}
+}
+
+func TestResponseRunRecoveryKeepsGuardianNoticeBeforeLaterText(t *testing.T) {
+	run := newResponseRun("resp_guardian_order", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "before"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.guardian.review", map[string]any{
+		"outcome": "warning", "message": "guardian: auto mode suspended",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "after"}); err != nil {
+		t.Fatal(err)
+	}
+	messages := run.recoveryPayloadLocked()["messages"].([]map[string]any)
+	roles := make([]string, 0, len(messages))
+	for _, message := range messages {
+		roles = append(roles, message["role"].(string))
+	}
+	if len(roles) != 3 || roles[0] != "assistant" || roles[1] != "guardian-notice" || roles[2] != "assistant" {
+		t.Fatalf("recovered roles = %#v", roles)
+	}
+	if content, _ := messages[0]["content"].(string); content != "before" {
+		t.Fatalf("text after the notice merged into the earlier row: %q", content)
+	}
+	if content, _ := messages[2]["content"].(string); content != "after" {
+		t.Fatalf("post-notice assistant content = %q", content)
+	}
+}
+
+func TestResponseRunRecoveryFlushesUnmatchedGuardianReviewAtTerminal(t *testing.T) {
+	run := newResponseRun("resp_guardian_orphan", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.guardian.review", map[string]any{
+		"tool_call_id": "missing-shell", "outcome": "denied", "message": "guardian: denied",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, core.Usage{}, core.Usage{}); err != nil {
+		t.Fatal(err)
+	}
+	messages := run.recoveryPayloadLocked()["messages"].([]map[string]any)
+	if len(messages) != 1 || messages[0]["role"] != "guardian-notice" {
+		t.Fatalf("terminal guardian recovery messages = %#v", messages)
+	}
+	content, _ := messages[0]["content"].(string)
+	if !strings.Contains(content, "guardian: denied") || !strings.Contains(content, "missing-shell") {
+		t.Fatalf("terminal guardian notice content = %q", content)
+	}
+	if len(run.pendingGuardianByCall) != 0 {
+		t.Fatalf("pending guardian reviews not cleared: %#v", run.pendingGuardianByCall)
+	}
+}
+
+func TestResponseRunRecoveryStoresToolImagesAsArtifacts(t *testing.T) {
+	run := newResponseRun("resp_images", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	if err := run.appendEvent("response.output_item.added", map[string]any{
+		"item": map[string]any{
+			"type":      "function_call",
+			"call_id":   "call_img",
+			"name":      "image_generate",
+			"arguments": `{"prompt":"cat"}`,
+		},
+	}); err != nil {
+		t.Fatalf("append tool call: %v", err)
+	}
+	if err := run.appendEvent("response.tool_exec.end", map[string]any{
+		"call_id":   "call_img",
+		"tool_name": "image_generate",
+		"success":   true,
+		"images":    []string{"/ui/images/generated.png"},
+	}); err != nil {
+		t.Fatalf("append tool end: %v", err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok {
+		t.Fatalf("recovery messages type = %T", recovery["messages"])
+	}
+	if len(messages) != 1 {
+		t.Fatalf("recovery message count = %d, want only tool-group", len(messages))
+	}
+	if messages[0]["role"] != "tool-group" {
+		t.Fatalf("recovery role = %v, want tool-group", messages[0]["role"])
+	}
+	tools, ok := messages[0]["tools"].([]map[string]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("recovery tools = %#v, want one tool", messages[0]["tools"])
+	}
+	images, ok := tools[0]["images"].([]string)
+	if !ok || len(images) != 1 || images[0] != "/ui/images/generated.png" {
+		t.Fatalf("tool images = %#v", tools[0]["images"])
+	}
+	if _, hasContent := messages[0]["content"]; hasContent {
+		t.Fatalf("tool artifact should not be injected as assistant markdown: %#v", messages[0]["content"])
+	}
+}
+
+func TestResponseRunInteractiveRecoveryDoesNotDisableCompaction(t *testing.T) {
+	run := newResponseRun("resp_interactive", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	run.maxRetainedEvents = 3
+
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{
+		"call_id": "call_ask",
+		"questions": []any{
+			map[string]any{"header": "Color", "question": "Pick one"},
+		},
+	}); err != nil {
+		t.Fatalf("append ask_user prompt: %v", err)
+	}
+	if err := run.appendEvent("response.approval.prompt", map[string]any{
+		"approval_id": "appr_1",
+		"path":        "/tmp/file.txt",
+		"options": []any{
+			map[string]any{"index": 0, "choice": "once"},
+		},
+	}); err != nil {
+		t.Fatalf("append approval prompt: %v", err)
+	}
+
+	promptRecovery := run.recoveryPayloadLocked()
+	promptEvents, ok := promptRecovery["events"].([]map[string]any)
+	if !ok {
+		t.Fatalf("prompt recovery events type = %T", promptRecovery["events"])
+	}
+	if len(promptEvents) != 2 {
+		t.Fatalf("prompt recovery event count = %d, want 2", len(promptEvents))
+	}
+
+	for i := 0; i < 6; i++ {
+		if err := run.appendTextDeltaSegmentEvent(0, 0, "x"); err != nil {
+			t.Fatalf("appendTextDeltaSegmentEvent failed at %d: %v", i, err)
+		}
+	}
+
+	run.mu.Lock()
+	activeLen := len(run.events) - run.eventStart
+	storageLen := len(run.events)
+	minReplayAfter := run.minReplayAfter
+	run.mu.Unlock()
+
+	if activeLen != 3 {
+		t.Fatalf("active retained events = %d, want 3", activeLen)
+	}
+	if storageLen > 6 {
+		t.Fatalf("storage length = %d, want bounded near replay window", storageLen)
+	}
+	if minReplayAfter != 5 {
+		t.Fatalf("minReplayAfter = %d, want 5", minReplayAfter)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	events, ok := recovery["events"].([]map[string]any)
+	if !ok {
+		t.Fatalf("recovery events type = %T", recovery["events"])
+	}
+	if len(events) != 2 {
+		t.Fatalf("recovery event count = %d, want 2", len(events))
+	}
+	if events[0]["event"] != "response.ask_user.prompt" {
+		t.Fatalf("recovery events[0] = %#v, want ask_user prompt", events[0])
+	}
+	payload, ok := events[0]["payload"].(map[string]any)
+	if !ok || payload["call_id"] != "call_ask" {
+		t.Fatalf("ask_user recovery payload = %#v", events[0]["payload"])
+	}
+	if events[1]["event"] != "response.approval.prompt" {
+		t.Fatalf("recovery events[1] = %#v, want approval prompt", events[1])
+	}
+}
+
+func TestResponseCreatedCarriesExactAnchorIdentity(t *testing.T) {
+	run := newResponseRun("resp_anchor", "sess_anchor", "", "mock", time.Now().Unix(), nil)
+	run.clientMessageID = "client-anchor"
+	run.anchorRowID = 42
+	run.startedCompactionSeq = 3
+	run.startedCompactionCount = 2
+	run.runEpoch = 7
+	if err := run.appendEvent("response.created", map[string]any{
+		"response": map[string]any{"id": run.id, "status": "in_progress"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run.mu.Lock()
+	data := append([]byte(nil), run.events[0].Data...)
+	run.mu.Unlock()
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := payload["client_message_id"].(string); got != "client-anchor" {
+		t.Fatalf("client_message_id=%q, want client-anchor", got)
+	}
+	if got := responseRunInt64Value(payload["anchor_row_id"], 0); got != 42 {
+		t.Fatalf("anchor_row_id=%d, want 42", got)
+	}
+	run.mu.Lock()
+	run.status = "completed"
+	run.mu.Unlock()
+	snapshot := run.snapshot()
+	if got, _ := snapshot["client_message_id"].(string); got != "client-anchor" {
+		t.Fatalf("snapshot client_message_id=%q, want client-anchor", got)
+	}
+	if got := responseRunInt64Value(snapshot["anchor_row_id"], 0); got != 42 {
+		t.Fatalf("snapshot anchor_row_id=%d, want 42", got)
+	}
+	if got := responseRunIntValue(snapshot["handoff_compaction_seq"], -1); got != 3 {
+		t.Fatalf("snapshot handoff_compaction_seq=%d, want 3", got)
+	}
+	if got := responseRunIntValue(snapshot["handoff_compaction_count"], 0); got != 2 {
+		t.Fatalf("snapshot handoff_compaction_count=%d, want 2", got)
+	}
+}
+
+func TestResponseRunRejectsSteeringWithoutClientMessageID(t *testing.T) {
+	run := newResponseRun("resp_missing_steering_id", "sess_test", "", "mock", time.Now().Unix(), nil)
+	state := newResponseRunStreamState("mock", "")
+	err := (&serveServer{}).appendResponseRunEvent(nil, run, state, core.Event{Type: core.EventSteering, Text: "ambiguous"})
+	if err == nil || !strings.Contains(err.Error(), "client_message_id") {
+		t.Fatalf("missing steering identity error = %v", err)
+	}
+}
+
+func TestResponseRunRecoverySynthesizesMissingLegacySteeringID(t *testing.T) {
+	run := newResponseRun("resp_legacy_steering", "sess_test", "", "mock", time.Now().Unix(), nil)
+	if err := run.appendEvent("response.steering", map[string]any{"text": "legacy steering"}); err != nil {
+		t.Fatalf("append legacy steering: %v", err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("recovery messages = %#v, want one synthesized user message", recovery["messages"])
+	}
+	id, _ := messages[0]["client_message_id"].(string)
+	if id == "" || messages[0]["id"] != id || messages[0]["content"] != "legacy steering" {
+		t.Fatalf("legacy recovery message = %#v", messages[0])
+	}
+}
+
+func TestResponseRunSteeringSplitsRecoveryMessages(t *testing.T) {
+	run := newResponseRun("resp_steering", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	streamState := newResponseRunStreamState("mock", "")
+	imageOutputDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	uploadDir := serveUploadsDir()
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(uploadDir, "steering.jpg")
+	if err := os.WriteFile(imagePath, []byte("test image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui"},
+		cfgRef: &config.Config{Image: config.ImageConfig{OutputDir: imageOutputDir}},
+	}
+
+	if err := server.appendResponseRunEvent(nil, run, streamState, core.Event{Type: core.EventTextDelta, Text: "before"}); err != nil {
+		t.Fatalf("appendTextDeltaSegmentEvent before: %v", err)
+	}
+	if err := server.appendResponseRunEvent(nil, run, streamState, core.Event{
+		Type: core.EventSteering, Text: "check X", SteeringID: "client-check-x",
+		Message: core.Message{Parts: []core.Part{{
+			Type: core.PartImage, ImagePath: imagePath, ImageData: &core.ToolImageData{MediaType: "image/jpeg", Width: 200, Height: 400},
+		}}},
+	}); err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+	if err := server.appendResponseRunEvent(nil, run, streamState, core.Event{Type: core.EventTextDelta, Text: "after"}); err != nil {
+		t.Fatalf("appendTextDeltaSegmentEvent after: %v", err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok {
+		t.Fatalf("recovery messages type = %T", recovery["messages"])
+	}
+	if len(messages) != 3 {
+		t.Fatalf("recovery message count = %d, want 3", len(messages))
+	}
+	if got := messages[0]["role"]; got != "assistant" {
+		t.Fatalf("messages[0].role = %v, want assistant", got)
+	}
+	if got := messages[0]["content"]; got != "before" {
+		t.Fatalf("messages[0].content = %v, want before", got)
+	}
+	if got := messages[1]["role"]; got != "user" {
+		t.Fatalf("messages[1].role = %v, want user", got)
+	}
+	if got := messages[1]["content"]; got != "check X" {
+		t.Fatalf("messages[1].content = %v, want check X", got)
+	}
+	if got := messages[1]["client_message_id"]; got != "client-check-x" {
+		t.Fatalf("messages[1].client_message_id = %v, want client-check-x", got)
+	}
+	if got := messages[1]["clientMessageId"]; got != "client-check-x" {
+		t.Fatalf("messages[1].clientMessageId = %v, want client-check-x", got)
+	}
+	if got := messages[1]["interruptState"]; got != "steer" {
+		t.Fatalf("messages[1].interruptState = %v, want steer", got)
+	}
+	if got := messages[1]["interrupt_state"]; got != "steer" {
+		t.Fatalf("messages[1].interrupt_state = %v, want steer", got)
+	}
+	steeringAttachments, ok := messages[1]["attachments"].([]map[string]any)
+	if !ok || len(steeringAttachments) != 1 || steeringAttachments[0]["width"] != 200 || steeringAttachments[0]["height"] != 400 {
+		t.Fatalf("messages[1].attachments = %#v, want orientation-correct 200x400 metadata", messages[1]["attachments"])
+	}
+	imageURL, _ := steeringAttachments[0]["url"].(string)
+	if !strings.HasPrefix(imageURL, "/ui/images/") {
+		t.Fatalf("messages[1].attachments URL = %q, want a serveable image URL", imageURL)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/images/"+filepath.Base(imageURL), nil)
+	rr := httptest.NewRecorder()
+	server.handleImage(rr, req)
+	if rr.Code != http.StatusOK || rr.Body.String() != "test image" {
+		t.Fatalf("steering image response = %d %q, want 200 with original image", rr.Code, rr.Body.String())
+	}
+	if got := messages[2]["content"]; got != "after" {
+		t.Fatalf("messages[2].content = %v, want after", got)
+	}
+	if first, second := messages[0]["assistant_segment_ordinal"], messages[2]["assistant_segment_ordinal"]; first != 0 || second != 1 {
+		t.Fatalf("assistant segment ordinals = %v, %v; want 0, 1 across steering", first, second)
+	}
+	atts := []map[string]any{{"name": "image 1", "type": "image/png", "url": "/ui/images/image-only.png"}}
+	if err := run.appendEvent("response.steering", map[string]any{"text": "", "client_message_id": "img-1", "attachments": atts}); err != nil {
+		t.Fatalf("append image-only steering: %v", err)
+	}
+	recovery = run.recoveryPayloadLocked()
+	messages = recovery["messages"].([]map[string]any)
+	last := messages[len(messages)-1]
+	if got := last["id"]; got != "img-1" {
+		t.Fatalf("image steering id = %v, want img-1", got)
+	}
+	gotAtts, ok := last["attachments"].([]map[string]any)
+	if !ok || len(gotAtts) != 1 || gotAtts[0]["type"] != "image/png" {
+		t.Fatalf("image steering attachments = %#v, want image/png", last["attachments"])
+	}
+	if got := messages[2]["role"]; got != "assistant" {
+		t.Fatalf("messages[2].role = %v, want assistant", got)
+	}
+	if got := messages[2]["content"]; got != "after" {
+		t.Fatalf("messages[2].content = %v, want after", got)
+	}
+}
+
+func TestResponseRunPreservesImageOnlyBoundaryWhenAttachmentCannotBeServed(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "outside.jpg")
+	if err := os.WriteFile(imagePath, []byte("test image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui"},
+		cfgRef: &config.Config{Image: config.ImageConfig{OutputDir: t.TempDir()}},
+	}
+	run := newResponseRun("resp_unserveable_steering", "sess_test", "", "mock", time.Now().Unix(), nil)
+	if err := server.appendResponseRunEvent(nil, run, newResponseRunStreamState("mock", ""), core.Event{
+		Type:       core.EventSteering,
+		SteeringID: "image-only-unserveable",
+		Message: core.Message{Parts: []core.Part{{
+			Type: core.PartImage, ImagePath: imagePath, ImageData: &core.ToolImageData{MediaType: "image/jpeg"},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages := recovery["messages"].([]map[string]any)
+	if len(messages) != 1 || messages[0]["client_message_id"] != "image-only-unserveable" {
+		t.Fatalf("recovery messages = %#v, want preserved image-only user boundary", messages)
+	}
+	if attachments, ok := messages[0]["attachments"].([]map[string]any); ok && len(attachments) > 0 {
+		t.Fatalf("recovery attachments = %#v, want rejected attachment omitted", attachments)
+	}
+}
+
+func TestResponseRunInteractionStateSummarizesEveryBlockingApprovalKind(t *testing.T) {
+	run := newResponseRun("resp_input", "sess_input", "", "test", time.Now().Unix(), nil)
+	run.ownerInstanceID = "owner"
+	run.fencingToken = 7
+	for _, event := range []struct {
+		name    string
+		payload map[string]any
+	}{
+		{name: "response.ask_user.prompt", payload: map[string]any{"call_id": "ask", "created_at": int64(1000)}},
+		{name: "response.approval.prompt", payload: map[string]any{"approval_id": "shell", "is_shell": true, "created_at": int64(2000)}},
+		{name: "response.approval.prompt", payload: map[string]any{"approval_id": "workspace", "is_workspace": true, "created_at": int64(3000)}},
+		{name: "response.approval.prompt", payload: map[string]any{"approval_id": "write", "is_write": true, "created_at": int64(4000)}},
+	} {
+		if err := run.appendEvent(event.name, event.payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := run.interactionState()
+	if state.Count != 4 || state.ResponseID != run.id || state.OwnerInstanceID != "owner" || state.FencingToken != 7 {
+		t.Fatalf("interaction state = %+v", state)
+	}
+	wantKinds := []string{"approval.file_write", "approval.shell", "approval.workspace", "ask_user"}
+	if !slices.Equal(state.Kinds, wantKinds) || state.RequiredSince.UnixMilli() != 1000 {
+		t.Fatalf("interaction kinds/since = %v / %v", state.Kinds, state.RequiredSince)
+	}
+	run.recordResolvedInteraction("approval", "shell", "accepted")
+	state = run.interactionState()
+	if state.Count != 3 || slices.Contains(state.Kinds, "approval.shell") {
+		t.Fatalf("resolved approval remained pending: %+v", state)
+	}
+}
+
+func TestResponseRunTerminalResolutionDoesNotOverwriteSubmittedOutcome(t *testing.T) {
+	run := newResponseRun("resp_decision", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval_1"}); err != nil {
+		t.Fatalf("append approval prompt: %v", err)
+	}
+	resolved := run.recordResolvedInteraction("approval", "approval_1", "accepted")
+
+	run.mu.Lock()
+	run.resolvePendingInteractionsLocked("failed")
+	run.mu.Unlock()
+
+	got, ok := run.resolvedInteraction("approval", "approval_1")
+	if !ok || got.Outcome != "accepted" || got.ResolvedAt != resolved.ResolvedAt {
+		t.Fatalf("resolved interaction = %#v, %t; want accepted %#v", got, ok, resolved)
+	}
+}
+
+func TestResponseRunResolvedInteractivePromptIsRemovedFromRecovery(t *testing.T) {
+	run := newResponseRun("resp_resolve", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{"call_id": "ask_1"}); err != nil {
+		t.Fatalf("append ask prompt: %v", err)
+	}
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval_1"}); err != nil {
+		t.Fatalf("append approval prompt: %v", err)
+	}
+
+	run.resolveAskUserRecovery("ask_1")
+	recovery := run.recoveryPayloadLocked()
+	events, ok := recovery["events"].([]map[string]any)
+	if !ok || len(events) != 1 {
+		t.Fatalf("events after ask resolution = %#v, want only approval prompt", recovery["events"])
+	}
+	if events[0]["event"] != "response.approval.prompt" {
+		t.Fatalf("remaining event = %#v, want approval prompt", events[0])
+	}
+
+	run.resolveApprovalRecovery("approval_1")
+	recovery = run.recoveryPayloadLocked()
+	if _, ok := recovery["events"]; ok {
+		t.Fatalf("events after approval resolution = %#v, want none", recovery["events"])
+	}
+}
+
+func TestResponseRunConcurrentAppendsPreserveOrder(t *testing.T) {
+	const totalEvents = 200
+	const numWriters = 4
+	eventsPerWriter := totalEvents / numWriters
+
+	run := newResponseRun("resp_order", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	sub := run.subscribe(0)
+	if sub.ch == nil {
+		t.Fatal("expected live channel from subscribe")
+	}
+	defer run.unsubscribe(sub.ch)
+
+	// Launch concurrent writers, each appending eventsPerWriter events.
+	var wg sync.WaitGroup
+	for w := 0; w < numWriters; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < eventsPerWriter; i++ {
+				_ = run.appendEvent("response.output_text.delta", map[string]any{"delta": "x"})
+			}
+		}()
+	}
+
+	// Collect all events from subscriber in a separate goroutine.
+	received := make([]int64, 0, totalEvents)
+	done := make(chan struct{})
+	go func() {
+		for ev := range sub.ch {
+			received = append(received, ev.Sequence)
+			if len(received) >= totalEvents {
+				break
+			}
+		}
+		close(done)
+	}()
+
+	wg.Wait()
+
+	// Wait for all events to arrive (or timeout)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for events, got %d/%d", len(received), totalEvents)
+	}
+
+	// Verify strictly increasing sequence numbers
+	for i := 1; i < len(received); i++ {
+		if received[i] <= received[i-1] {
+			t.Fatalf("out of order at index %d: seq %d followed by %d", i, received[i-1], received[i])
+		}
+	}
+
+	// Verify no gaps
+	for i, seq := range received {
+		expected := int64(i + 1)
+		if seq != expected {
+			t.Fatalf("gap at index %d: expected seq %d, got %d", i, expected, seq)
+		}
+	}
+}
+
+type blockingResponseWriter struct {
+	header http.Header
+	gate   <-chan struct{}
+	buf    bytes.Buffer
+}
+
+func (w *blockingResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *blockingResponseWriter) WriteHeader(statusCode int) {}
+
+func (w *blockingResponseWriter) Write(p []byte) (int, error) {
+	<-w.gate
+	return w.buf.Write(p)
+}
+
+func (w *blockingResponseWriter) Flush() {}
+
+func waitForResponseRunCondition(t *testing.T, timeout time.Duration, fn func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(message)
+}
+
+func TestStreamResponseRunEventsWritesTerminalErrorWhenSubscriberOverflows(t *testing.T) {
+	srv := &serveServer{shutdownCh: make(chan struct{})}
+	run := newResponseRun("resp_overflow", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	gate := make(chan struct{})
+	w := &blockingResponseWriter{header: make(http.Header), gate: gate}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	streamDone := make(chan struct{})
+	go func() {
+		srv.streamResponseRunEvents(ctx, w, run, 0)
+		close(streamDone)
+	}()
+
+	waitForResponseRunCondition(t, time.Second, func() bool {
+		run.mu.Lock()
+		defer run.mu.Unlock()
+		return len(run.subscribers) == 1
+	}, "timed out waiting for stream subscriber")
+
+	for i := 0; i < defaultResponseRunSubscriberBuffer+16; i++ {
+		if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "x"}); err != nil {
+			t.Fatalf("appendEvent failed at %d: %v", i, err)
+		}
+	}
+
+	waitForResponseRunCondition(t, time.Second, func() bool {
+		run.mu.Lock()
+		defer run.mu.Unlock()
+		return len(run.subscribers) == 0
+	}, "timed out waiting for subscriber drop")
+
+	if err := run.complete(map[string]any{
+		"response": map[string]any{"id": run.id},
+	}, core.Usage{}, core.Usage{}); err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+
+	close(gate)
+
+	select {
+	case <-streamDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for overflowed stream to finish")
+	}
+
+	body := w.buf.String()
+	if !strings.Contains(body, "event: response.output_text.delta\n") {
+		t.Fatalf("stream body missing replayed delta events: %q", body)
+	}
+	streamErrorIndex := strings.Index(body, "event: response.stream_error\n")
+	if streamErrorIndex < 0 {
+		t.Fatalf("overflowed stream missing terminal stream_error event: %q", body)
+	}
+	if !strings.Contains(body, `"type":"stream_buffer_overflow"`) {
+		t.Fatalf("overflowed stream missing structured overflow error: %q", body)
+	}
+	if !strings.Contains(body, `"min_replay_after"`) || !strings.Contains(body, `"recovery"`) {
+		t.Fatalf("overflowed stream missing recovery fields: %q", body)
+	}
+	doneIndex := strings.Index(body, "data: [DONE]\n\n")
+	if doneIndex < 0 {
+		t.Fatalf("overflowed stream should emit [DONE], got: %q", body)
+	}
+	if streamErrorIndex > doneIndex {
+		t.Fatalf("stream_error should be emitted before [DONE], got: %q", body)
+	}
+}
+
+func TestResponseRunTextDeltaCarriesStableSegmentIdentityAcrossReplayAndRecovery(t *testing.T) {
+	run := newResponseRun("resp_segment_identity", "session_identity", "", "test", time.Now().Unix(), nil)
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	if err := manager.create(run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := run.appendTextDeltaSegmentEvent(0, 0, "prefix"); err != nil {
+		t.Fatalf("append first segment: %v", err)
+	}
+	if err := run.appendEvent("response.output_text.new_segment", map[string]any{
+		"assistant_segment_ordinal": 1,
+	}); err != nil {
+		t.Fatalf("append boundary: %v", err)
+	}
+	if err := run.appendTextDeltaSegmentEvent(1, 1, "suffix"); err != nil {
+		t.Fatalf("append second segment: %v", err)
+	}
+
+	subscription := run.subscribe(0)
+	if len(subscription.replay) != 3 {
+		t.Fatalf("replay events=%d want 3", len(subscription.replay))
+	}
+	for _, event := range []responseRunEvent{subscription.replay[0], subscription.replay[2]} {
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatalf("decode event: %v", err)
+		}
+		if payload["response_id"] != run.id || int64(payload["run_epoch"].(float64)) != run.runEpoch {
+			t.Fatalf("event owner=%v epoch=%v", payload["response_id"], payload["run_epoch"])
+		}
+	}
+	var first, second map[string]any
+	_ = json.Unmarshal(subscription.replay[0].Data, &first)
+	_ = json.Unmarshal(subscription.replay[2].Data, &second)
+	if first["assistant_segment_ordinal"] != float64(0) || second["assistant_segment_ordinal"] != float64(1) {
+		t.Fatalf("segment ordinals first=%v second=%v", first, second)
+	}
+	if first["segment_start_sequence"] != float64(1) || second["segment_start_sequence"] != float64(3) {
+		t.Fatalf("segment start sequences first=%v second=%v", first, second)
+	}
+
+	snapshot := run.snapshot()
+	recovery := snapshot["recovery"].(map[string]any)
+	messages := recovery["messages"].([]map[string]any)
+	if len(messages) != 2 {
+		t.Fatalf("recovery assistant messages=%d want 2", len(messages))
+	}
+	for ordinal, message := range messages {
+		if message["response_id"] != run.id || message["assistant_segment_ordinal"] != ordinal {
+			t.Fatalf("recovery[%d]=%v", ordinal, message)
+		}
+	}
+}
+
+func TestResponseRunManagerAssignsMonotonicSessionEpochs(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	beforeCreate := time.Now().UnixMilli()
+	first := newResponseRun("resp_epoch_A", "session_epoch", "", "test", 1, nil)
+	second := newResponseRun("resp_epoch_B", "session_epoch", "", "test", 2, nil)
+	if err := manager.create(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.create(second); err != nil {
+		t.Fatal(err)
+	}
+	if first.runEpoch < beforeCreate || second.runEpoch <= first.runEpoch {
+		t.Fatalf("restart-safe epochs before=%d first=%d second=%d", beforeCreate, first.runEpoch, second.runEpoch)
+	}
+}
+
+func TestResponseRunManagerSessionBoundaryDoesNotBlockOtherSessions(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		manager.runIfSessionIdle("session-a", func() {
+			close(started)
+			<-release
+		})
+		close(done)
+	}()
+	<-started
+
+	otherDone := make(chan struct{})
+	go func() {
+		manager.setActiveRun("session-b", "run-b")
+		_ = manager.activeRunID("session-b")
+		manager.clearActiveRun("session-b", "run-b")
+		close(otherDone)
+	}()
+	select {
+	case <-otherDone:
+	case <-time.After(time.Second):
+		t.Fatal("session B response-run bookkeeping waited for session A persistence boundary")
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("session A boundary did not finish")
+	}
+}
+
+func TestResponseRunManagerAuthoritativeStartReplacesFinishingOwner(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	if !manager.trySetActiveRun("session", "run-a") {
+		t.Fatal("initial owner was not claimed")
+	}
+	if manager.trySetActiveRun("session", "run-b") {
+		t.Fatal("early claim overwrote an active owner")
+	}
+
+	// onStart runs while the per-session runtime lock is held, so it is the
+	// authoritative handoff even if the previous run is still finishing its tail.
+	manager.setActiveRun("session", "run-b")
+	manager.clearActiveRun("session", "run-a")
+	if got := manager.activeRunID("session"); got != "run-b" {
+		t.Fatalf("active owner after finishing run A = %q, want run-b", got)
+	}
+}
+
+func TestResponseRunIdempotencyFingerprintRejectsDifferentRequest(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	first := newResponseRun("resp_first", "session-one", "", "test", time.Now().Unix(), nil)
+	first.idempotencyScope = "draft_client_one"
+	first.requestFingerprint = "fingerprint-a"
+	if _, duplicate, err := manager.createOrGetByIdempotency(first, "request-one"); err != nil || duplicate {
+		t.Fatalf("create first: duplicate=%t err=%v", duplicate, err)
+	}
+	second := newResponseRun("resp_second", "session-one", "", "test", time.Now().Unix(), nil)
+	second.idempotencyScope = "draft_client_one"
+	second.requestFingerprint = "fingerprint-b"
+	if _, _, err := manager.createOrGetByIdempotency(second, "request-one"); !errors.Is(err, errResponseRunKeyConflict) {
+		t.Fatalf("different fingerprint error = %v, want conflict", err)
+	}
+	if got, found, err := manager.getByIdempotencyClaim("draft_client_one", "request-one", "fingerprint-a"); err != nil || !found || got != first {
+		t.Fatalf("same fingerprint replay = %p found=%t err=%v", got, found, err)
+	}
+}
+
+func TestResponseRunDraftReservationKeepsOneServerSession(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	first, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("reserved sessions = %q and %q, want one stable session", first, second)
+	}
+	if _, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-b"); !errors.Is(err, errResponseRunKeyConflict) {
+		t.Fatalf("different body reservation error = %v, want conflict", err)
+	}
+}

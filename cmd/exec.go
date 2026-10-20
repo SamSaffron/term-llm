@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -181,7 +182,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 
 	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
-	runner := NewRunner(cfg, RunnerOptions{
+	runner := appserve.NewRunner(cfg, appserve.RunnerOptions{
 		Provider:           execProvider,
 		ConfigSet:          true,
 		ConfigProvider:     cfg.Exec.Provider,

@@ -1,0 +1,246 @@
+package serve
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/modelpolicy"
+	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/sessiontitle"
+)
+
+const (
+	serveAutoTitleTimeout     = 35 * time.Second
+	serveAutoTitleMaxAttempts = 2
+	serveAutoTitleConcurrency = 2
+)
+
+type serveAutoTitleAttempt struct {
+	basisSeq int
+	count    int
+}
+
+// scheduleAutoTitle starts a best-effort title request after a successful,
+// persisted serve run. It never delays or changes the response run itself.
+func (s *serveServer) scheduleAutoTitle(sessionID, providerKey string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || s == nil || s.store == nil || s.cfgRef == nil || !s.cfgRef.Serve.AutoTitle {
+		return
+	}
+
+	workCtx, release, err := restart.Default.Root(context.Background())
+	if err != nil {
+		return
+	}
+	defer release()
+	s.autoTitleMu.Lock()
+	if s.autoTitleStopping {
+		s.autoTitleMu.Unlock()
+		return
+	}
+	if _, running := s.autoTitleFlights[sessionID]; running {
+		s.autoTitleMu.Unlock()
+		return
+	}
+	if s.autoTitleAttempts[sessionID].count >= serveAutoTitleMaxAttempts {
+		s.autoTitleMu.Unlock()
+		return
+	}
+	if s.autoTitleFlights == nil {
+		s.autoTitleFlights = make(map[string]struct{})
+	}
+	if s.autoTitleAttempts == nil {
+		s.autoTitleAttempts = make(map[string]serveAutoTitleAttempt)
+	}
+	if s.autoTitleSlots == nil {
+		s.autoTitleSlots = make(chan struct{}, serveAutoTitleConcurrency)
+	}
+	if s.autoTitleCtx == nil {
+		s.autoTitleCtx, s.autoTitleCancel = context.WithCancel(context.Background())
+	}
+	baseCtx := s.autoTitleCtx
+	s.autoTitleFlights[sessionID] = struct{}{}
+	s.autoTitleWG.Add(1)
+	s.autoTitleMu.Unlock()
+
+	_ = restart.Default.Go(workCtx, func(workCtx context.Context) {
+		defer s.autoTitleWG.Done()
+		defer func() {
+			s.autoTitleMu.Lock()
+			delete(s.autoTitleFlights, sessionID)
+			s.autoTitleMu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(workCtx, serveAutoTitleTimeout)
+		stopCancel := context.AfterFunc(baseCtx, cancel)
+		defer stopCancel()
+		defer cancel()
+		s.runAutoTitle(ctx, sessionID, providerKey)
+	})
+}
+
+func (s *serveServer) runAutoTitle(ctx context.Context, sessionID, providerKey string) {
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || !serveSessionNeedsAutoTitle(sess) {
+		return
+	}
+	messages, err := appruntime.LoadTitleMessages(ctx, s.store, sessionID)
+	if err != nil || len(messages) == 0 {
+		return
+	}
+	basisSeq := messages[len(messages)-1].Sequence
+
+	s.autoTitleMu.Lock()
+	attempt := s.autoTitleAttempts[sessionID]
+	if attempt.count >= serveAutoTitleMaxAttempts || (attempt.count > 0 && basisSeq <= attempt.basisSeq) {
+		s.autoTitleMu.Unlock()
+		return
+	}
+	attempt.count++
+	attempt.basisSeq = basisSeq
+	s.autoTitleAttempts[sessionID] = attempt
+	slots := s.autoTitleSlots
+	s.autoTitleMu.Unlock()
+
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return
+	}
+
+	policy, err := s.sessionModelPolicy(sess)
+	if err != nil {
+		log.Printf("[serve] auto-title policy unavailable for %s: %v", sessionID, err)
+		return
+	}
+	var provider core.Provider
+	if !policy.Restricted() {
+		provider, err = s.newAutoTitleProvider(providerKey)
+	} else {
+		provider, err = appruntime.AuxProviderForPolicy(s.cfgRef, policy, appruntime.ModelSelection{Provider: appruntime.ResolveSessionProviderKey(s.cfgRef, sess), Model: sess.Model}, providerKey, s.cfgRef.DefaultProvider)
+	}
+	if err != nil || provider == nil {
+		return
+	}
+	candidate, err := sessiontitle.Generate(ctx, provider, sess, messages)
+	if err != nil {
+		if !errors.Is(err, sessiontitle.ErrRejected) {
+			log.Printf("[serve] automatic title generation failed for %s: %v", sessionID, err)
+		}
+		// Persist the skip as a cross-restart damper. Updated conversations may
+		// retry, while the in-memory attempt cap prevents per-turn amplification.
+		_ = s.store.MarkTitleSkipped(ctx, sessionID, time.Now().UTC())
+		return
+	}
+
+	latest, err := s.store.Get(ctx, sessionID)
+	if err != nil || !serveSessionNeedsAutoTitle(latest) {
+		return
+	}
+	generatedAt := time.Now().UTC()
+	if err := session.UpdateGeneratedTitle(ctx, s.store, latest, candidate.ShortTitle, candidate.LongTitle, generatedAt, basisSeq); err != nil {
+		log.Printf("[serve] automatic title save failed for %s: %v", sessionID, err)
+		return
+	}
+
+	latest.GeneratedShortTitle = candidate.ShortTitle
+	latest.GeneratedLongTitle = candidate.LongTitle
+	latest.TitleGeneratedAt = generatedAt
+	latest.TitleBasisMsgSeq = basisSeq
+	if latest.TitleSource != session.TitleSourceUser && strings.TrimSpace(latest.Name) == "" {
+		latest.TitleSource = session.TitleSourceGenerated
+	}
+	if s.sessionMgr != nil {
+		if runtime, ok := s.sessionMgr.Get(sessionID); ok {
+			trySyncRuntimeSessionMetadata(runtime, latest)
+		}
+	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionMetadataChanged, SessionID: sessionID, Reason: "generated_title"})
+}
+
+func serveSessionNeedsAutoTitle(sess *session.Session) bool {
+	return sess != nil &&
+		strings.TrimSpace(sess.Name) == "" &&
+		strings.TrimSpace(sess.GeneratedShortTitle) == "" &&
+		strings.TrimSpace(sess.GeneratedLongTitle) == ""
+}
+
+func (s *serveServer) newAutoTitleProvider(providerKey string) (core.Provider, error) {
+	providerKey = strings.TrimSpace(providerKey)
+	if s.autoTitleProviderFactory != nil {
+		return s.autoTitleProviderFactory(providerKey)
+	}
+	return s.fastProvider(providerKey)
+}
+
+// fastProvider resolves the cheap model behind term-llm's small background turns —
+// automatic titles and the live session assistant. The named provider wins, and the
+// configured default is the fallback, so a session pinned to a provider that cannot
+// serve a cheap turn still gets an answer instead of failing.
+func (s *serveServer) fastProvider(providerKey string) (core.Provider, error) {
+	providerKey = strings.TrimSpace(providerKey)
+	if s.cfgRef == nil {
+		return nil, nil
+	}
+	if providerKey == "" {
+		providerKey = strings.TrimSpace(s.cfgRef.DefaultProvider)
+	}
+	provider, firstErr := llm.NewFastProvider(s.cfgRef, providerKey)
+	if provider != nil {
+		return provider, nil
+	}
+	fallback := strings.TrimSpace(s.cfgRef.DefaultProvider)
+	if fallback == "" || fallback == providerKey {
+		return nil, firstErr
+	}
+	provider, fallbackErr := llm.NewFastProvider(s.cfgRef, fallback)
+	if provider != nil {
+		return provider, nil
+	}
+	if firstErr != nil && fallbackErr != nil {
+		return nil, fmt.Errorf("fast providers %q and %q unavailable: %v; %v", providerKey, fallback, firstErr, fallbackErr)
+	}
+	if fallbackErr != nil {
+		return nil, fallbackErr
+	}
+	return nil, firstErr
+}
+
+func (s *serveServer) stopAutoTitles() {
+	if s == nil {
+		return
+	}
+	s.autoTitleMu.Lock()
+	s.autoTitleStopping = true
+	if s.autoTitleCancel != nil {
+		s.autoTitleCancel()
+	}
+	s.autoTitleMu.Unlock()
+	s.autoTitleWG.Wait()
+}
+
+func (s *serveServer) sessionModelPolicy(sess *session.Session) (modelpolicy.Policy, error) {
+	if sess == nil {
+		return modelpolicy.Policy{}, fmt.Errorf("session is unavailable")
+	}
+	if strings.TrimSpace(sess.Agent) == "" {
+		return sess.ModelPolicy, nil
+	}
+	if s.cfgRef == nil {
+		return modelpolicy.Policy{}, fmt.Errorf("load session agent %q: configuration is unavailable", sess.Agent)
+	}
+	agent, err := appruntime.LoadPersistedAgent(sess.Agent, s.cfgRef)
+	if err != nil {
+		return modelpolicy.Policy{}, fmt.Errorf("load session agent %q for model policy: %w", sess.Agent, err)
+	}
+	return appruntime.ModelPolicyForSession(sess, agent), nil
+}

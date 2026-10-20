@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -11,7 +12,7 @@ import (
 
 // buildAskRequest projects prepared conversation/runtime values into the engine
 // request. It borrows managers and does not own their cleanup.
-func buildAskRequest(cfg *config.Config, settings SessionSettings, sessionID string, messages []core.Message, engine *engine.Engine, toolMgr *tools.ToolManager, mcpManager *mcp.Manager, outputTool *tools.SetOutputTool, debug, debugRaw bool) core.Request {
+func buildAskRequest(cfg *config.Config, settings appserve.SessionSettings, sessionID string, messages []core.Message, engine *engine.Engine, toolMgr *tools.ToolManager, mcpManager *mcp.Manager, outputTool *tools.SetOutputTool, debug, debugRaw bool) core.Request {
 	req := core.Request{SessionID: sessionID, WorkingDir: settings.BaseDir, Messages: messages, EnableToolDiscovery: mcpManager != nil, Search: settings.Search, ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch), DisableExternalWebFetch: askNoWebFetch, ParallelToolCalls: true, MaxTurns: settings.MaxTurns, MaxOutputTokens: settings.MaxOutputTokens, Debug: debug, DebugRaw: debugRaw}
 	if toolMgr != nil || mcpManager != nil || outputTool != nil {
 		specs := llm.ToolSpecsForRequest(engine.Tools(), settings.Search)

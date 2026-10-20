@@ -16,6 +16,7 @@ import (
 	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -305,7 +306,7 @@ func resumedSessionSearch(resolved, saved, searchFlagSet, noSearch bool) bool {
 	}
 }
 
-func applyChatSearchDefault(settings *SessionSettings, noSearch bool, sess *session.Session, agentActive bool) {
+func applyChatSearchDefault(settings *appserve.SessionSettings, noSearch bool, sess *session.Session, agentActive bool) {
 	if settings == nil || noSearch || sess != nil || agentActive {
 		return
 	}
@@ -371,7 +372,7 @@ func buildChatProgramInput(autoSendMode bool) (chatProgramInput, error) {
 	}, nil
 }
 
-func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettings) (*tools.ApprovalManager, error) {
+func buildChatHandoverApprovalManager(cfg *config.Config, settings appserve.SessionSettings) (*tools.ApprovalManager, error) {
 	toolConfig := buildToolConfig("", nil, nil, settings.ShellAllow, cfg)
 	perms := tools.NewToolPermissions()
 	for _, pattern := range toolConfig.ShellAllow {
@@ -423,7 +424,7 @@ type chatSessionRuntime struct {
 	sess          *session.Session
 	toolMgr       *tools.ToolManager
 	approvalMgr   *tools.ApprovalManager
-	spawnRunner   *SpawnAgentRunner
+	spawnRunner   *appserve.SpawnAgentRunner
 	useAltScreen  bool
 	// cleanupResources is once-guarded: drains sub-agents, stops MCP, closes
 	// Guardian and the debug logger, then closes the session store.
@@ -460,7 +461,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	defer finishWarningsBuild()
 	warnings := storeWarnings
 	store, storeCleanup := runtime.InitSessionStoreWith(cfg, storeWarnings, runtimeSessionStore)
-	var spawnRunner *SpawnAgentRunner
+	var spawnRunner *appserve.SpawnAgentRunner
 	// Failure path: release everything constructed so far, newest first. The
 	// success path hands cleanup ownership to the returned runtime.
 	built := false
@@ -490,7 +491,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		// Normalize persisted directory metadata before resolving any prompt,
 		// project instructions, or skills. A missing worktree falls back to the
 		// root/process directory through the same path used for tool binding.
-		if err := RestoreWorktreeBinding(context.Background(), store, sess, nil); err != nil {
+		if err := appserve.RestoreWorktreeBinding(context.Background(), store, sess, nil); err != nil {
 			fmt.Fprintf(warnings, "warning: failed to restore session directory: %v\n", err)
 		}
 	}
@@ -507,11 +508,11 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		return nil, err
 	}
 
-	var inputTicket *SessionInputTicket
-	var selectedInputs *SessionInputSelection
+	var inputTicket *appserve.SessionInputTicket
+	var selectedInputs *appserve.SessionInputSelection
 	if sess != nil {
 		if _, supported := session.AsSessionInputRefresher(store); supported {
-			inputTicket, err = ProcessSessionInputs().Acquire(ctx, store, sess.ID, InputBinding(effectiveAgent, runtimeDir))
+			inputTicket, err = appserve.ProcessSessionInputs().Acquire(ctx, store, sess.ID, appserve.InputBinding(effectiveAgent, runtimeDir))
 			if err != nil {
 				return nil, err
 			}
@@ -520,7 +521,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		}
 	}
 	// Resolve all settings: CLI > agent > config (resume overrides applied below).
-	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
+	settings, err := appserve.ResolveSettingsInDir(cfg, agent, appserve.CLIFlags{
 		Provider:         chatProvider,
 		Inputs:           selectedInputs,
 		ToolsSet:         cmd.Flags().Changed("tools"),
@@ -638,7 +639,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	})
 
 	// Initialize tools if enabled (using possibly-updated settings from resume)
-	AlignSettingsToActiveProvider(&settings, cfg, provider)
+	appserve.AlignSettingsToActiveProvider(&settings, cfg, provider)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
@@ -655,7 +656,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		}
 	}
 	if sess != nil && toolMgr != nil {
-		if err := RestoreWorktreeBinding(context.Background(), store, sess, toolMgr); err != nil {
+		if err := appserve.RestoreWorktreeBinding(context.Background(), store, sess, toolMgr); err != nil {
 			fmt.Fprintf(warnings, "warning: failed to restore worktree binding: %v\n", err)
 		}
 	}
@@ -692,7 +693,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 			parentSessionID = sess.ID
 		}
 		var wireErr error
-		spawnRunner, wireErr = WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, store, parentSessionID, 0, runtimeSessionStore, runtimeMemoryPaths)
+		spawnRunner, wireErr = appserve.WireSpawnAgentRunnerWithInputs(cfg, toolMgr, resolvedYolo, store, parentSessionID, 0, runtimeSessionStore, runtimeMemoryPaths)
 		if wireErr != nil {
 			return nil, wireErr
 		}
@@ -711,15 +712,15 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	if agent != nil {
 		agentSkills = agent.Skills
 	}
-	skillsSetup := SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, warnings, runtimeDir)
+	skillsSetup := appserve.SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, warnings, runtimeDir)
 
 	// Store resolved instructions in config for chat TUI
-	cfg.Chat.Instructions = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	cfg.Chat.Instructions = appserve.InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 	if selectedInputs != nil {
 		cfg.Chat.Instructions = selectedInputs.Prompt
 	}
 
-	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
+	appserve.RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
 	// Direct isolated skills use the generic child runner even when the current
 	// agent does not expose the model-facing spawn_agent tool.
@@ -728,7 +729,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		if sess != nil {
 			parentSessionID = sess.ID
 		}
-		spawnRunner, err = NewSpawnAgentRunnerWithStore(cfg, resolvedYolo, approvalMgr, store, parentSessionID)
+		spawnRunner, err = appserve.NewSpawnAgentRunnerWithStore(cfg, resolvedYolo, approvalMgr, store, parentSessionID)
 		if err != nil {
 			return nil, fmt.Errorf("initialize isolated skill runner: %w", err)
 		}
@@ -762,7 +763,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		if inputTicket.Owner() {
 			result, refreshErr := func() (session.SessionInputRefreshResult, error) {
 				refresher, _ := session.AsSessionInputRefresher(store)
-				return refresher.RefreshSessionInputs(ctx, sess.ID, cfg.Chat.Instructions, settings.Tools, EqualSessionTools)
+				return refresher.RefreshSessionInputs(ctx, sess.ID, cfg.Chat.Instructions, settings.Tools, appserve.EqualSessionTools)
 			}()
 			if refreshErr != nil {
 				return nil, refreshErr
@@ -821,14 +822,14 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		return effectivePolicy, liveModel
 	}
 	if spawnRunner != nil {
-		spawnRunner.SetModelPolicySource(func() ParentModelState {
+		spawnRunner.SetModelPolicySource(func() appserve.ParentModelState {
 			p, parent := liveState()
-			return ParentModelState{Policy: p, Provider: parent.Provider, Model: parent.Model}
+			return appserve.ParentModelState{Policy: p, Provider: parent.Provider, Model: parent.Model}
 		})
 	}
 	if toolMgr != nil && toolMgr.Registry != nil {
 		toolMgr.Registry.SetAgentModelAdmission(liveState, func(ctx context.Context, name, override string, inherited modelpolicy.Policy, parent runpkg.ParentModel) error {
-			return NewRunner(cfg, RunnerOptions{}).CheckAgentModel(ctx, runpkg.Request{AgentName: name, Model: override, ModelPolicy: inherited, ParentModel: parent})
+			return appserve.NewRunner(cfg, appserve.RunnerOptions{}).CheckAgentModel(ctx, runpkg.Request{AgentName: name, Model: override, ModelPolicy: inherited, ParentModel: parent})
 		})
 	}
 	model.SetModelSwitchHook(func(key, name string) {
@@ -857,7 +858,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	model.SetRootContext(ctx)
 	agentOwner := &runtime.AgentHostOwner{}
-	model.SetRunner(NewCmdRunner(cfg, RunnerOptions{
+	model.SetRunner(appserve.NewCmdRunner(cfg, appserve.RunnerOptions{
 		AgentOwner:         agentOwner,
 		Provider:           chatProvider,
 		ConfigSet:          true,
@@ -888,7 +889,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		ParentApprovalMgr:  approvalMgr,
 	}))
 	model.SetChildRunner(spawnRunner)
-	model.SetCommitMutationCoordinator(CommitRootCoordinator{})
+	model.SetCommitMutationCoordinator(appserve.CommitRootCoordinator{})
 	model.SetMainRunManager(mainRuns)
 
 	// Wire handover auto-send if pending from previous iteration
@@ -947,7 +948,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	cleanupResources := func() {
 		cleanupOnce.Do(func() {
 			if spawnRunner != nil {
-				ShutdownSpawnAgentRunner(spawnRunner)
+				appserve.ShutdownSpawnAgentRunner(spawnRunner)
 			}
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = agentOwner.Shutdown(shutdownCtx)
@@ -965,11 +966,11 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 
 	built = true
 	if inputTicket != nil && inputTicket.Owner() {
-		inputTicket.Finish(SessionInputSelection{BasePrompt: settings.SystemPrompt, Prompt: cfg.Chat.Instructions, Tools: settings.Tools})
+		inputTicket.Finish(appserve.SessionInputSelection{BasePrompt: settings.SystemPrompt, Prompt: cfg.Chat.Instructions, Tools: settings.Tools})
 	}
 	if _, supported := session.AsSessionInputRefresher(store); supported {
 		model.SetSessionInputsObserver(func(bound *session.Session, prompt, toolsSetting string) {
-			RegisterOwnedSessionInputs(store, bound, SessionInputSelection{BasePrompt: prompt, Prompt: prompt, Tools: toolsSetting})
+			appserve.RegisterOwnedSessionInputs(store, bound, appserve.SessionInputSelection{BasePrompt: prompt, Prompt: prompt, Tools: toolsSetting})
 		})
 	}
 	return &chatSessionRuntime{
@@ -1461,7 +1462,7 @@ func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.C
 		errWriter = cmd.ErrOrStderr()
 	}
 
-	settings, err := ResolveSettingsInDir(cfg, promptAgent, CLIFlags{
+	settings, err := appserve.ResolveSettingsInDir(cfg, promptAgent, appserve.CLIFlags{
 		Provider:        "",
 		Tools:           chatTools,
 		ReadDirs:        chatReadDirs,
@@ -1481,9 +1482,9 @@ func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.C
 		return chat.RuntimeSystemContext{}, err
 	}
 
-	skillsSetup := SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, errWriter, runtimeDir)
+	skillsSetup := appserve.SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, errWriter, runtimeDir)
 	return chat.RuntimeSystemContext{
-		SystemPrompt: InjectSkillsMetadata(settings.SystemPrompt, skillsSetup),
+		SystemPrompt: appserve.InjectSkillsMetadata(settings.SystemPrompt, skillsSetup),
 		ApplySkills:  skillContextApplier(skillsSetup),
 		Skills:       skillsSetup,
 	}, nil
@@ -1496,7 +1497,7 @@ func skillContextApplier(setup *skills.Setup) func(*engine.Engine, *tools.ToolMa
 		}
 		engine.UnregisterTool(tools.ActivateSkillToolName)
 		engine.UnregisterTool(tools.SearchSkillsToolName)
-		RegisterSkillToolWithEngine(engine, toolMgr, setup)
+		appserve.RegisterSkillToolWithEngine(engine, toolMgr, setup)
 	}
 }
 

@@ -1,0 +1,668 @@
+package serve
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	progressive "github.com/samsaffron/term-llm/internal/app/runtime/progressive"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/prompt"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/samsaffron/term-llm/internal/session"
+	toolpkg "github.com/samsaffron/term-llm/internal/tools"
+)
+
+const (
+	goalMaxAutoPasses  = 25
+	goalPersistTimeout = 5 * time.Second
+)
+
+type goalRuntimeState struct {
+	mu   sync.Mutex
+	goal *session.Goal
+}
+
+func newGoalRuntimeState(goal *session.Goal) *goalRuntimeState {
+	state := &goalRuntimeState{}
+	state.Set(goal)
+	return state
+}
+
+func (s *goalRuntimeState) Clone() *session.Goal {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.goal.Clone()
+}
+
+func (s *goalRuntimeState) Set(goal *session.Goal) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goal = goal.Clone()
+}
+
+type goalToolCandidate struct {
+	create *toolpkg.CreateGoalArgs
+	update *toolpkg.UpdateGoalArgs
+}
+
+type goalToolCommit struct {
+	Name   string
+	Create *toolpkg.CreateGoalArgs
+	Update *toolpkg.UpdateGoalArgs
+}
+
+type goalToolTracker struct {
+	pending map[string]goalToolCandidate
+}
+
+func newGoalToolTracker() *goalToolTracker {
+	return &goalToolTracker{pending: make(map[string]goalToolCandidate)}
+}
+
+func (t *goalToolTracker) observeToolCall(callID, name string, args json.RawMessage) {
+	if t == nil || strings.TrimSpace(callID) == "" {
+		return
+	}
+	switch strings.TrimSpace(name) {
+	case toolpkg.CreateGoalToolName:
+		parsed, err := toolpkg.ParseCreateGoalArgs(args)
+		if err != nil {
+			return
+		}
+		t.pending[callID] = goalToolCandidate{create: &parsed}
+	case toolpkg.UpdateGoalToolName:
+		parsed, err := toolpkg.ParseUpdateGoalArgs(args)
+		if err != nil {
+			return
+		}
+		t.pending[callID] = goalToolCandidate{update: &parsed}
+	}
+}
+
+func (t *goalToolTracker) commitToolCall(callID, name string, success bool) *goalToolCommit {
+	if t == nil || strings.TrimSpace(callID) == "" {
+		return nil
+	}
+	candidate, ok := t.pending[callID]
+	delete(t.pending, callID)
+	if !ok || !success {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	switch name {
+	case toolpkg.CreateGoalToolName:
+		if candidate.create == nil {
+			return nil
+		}
+		return &goalToolCommit{Name: name, Create: candidate.create}
+	case toolpkg.UpdateGoalToolName:
+		if candidate.update == nil {
+			return nil
+		}
+		return &goalToolCommit{Name: name, Update: candidate.update}
+	default:
+		return nil
+	}
+}
+
+func (rt *serveRuntime) runWithGoal(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error) (serveRunResult, error) {
+	ctx, sweep := withSessionChildrenSweep(ctx)
+	result, err := rt.runWithGoalPasses(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	// runOnce stops the session's detached children, under rt.mu, when a turn
+	// it owns is stopped. This fallback covers a stop that never reached an
+	// owned runOnce, such as one between the passes of an active goal after an
+	// earlier pass spawned in the background. It must not run after runOnce
+	// already swept (that sweep was race-free; a second, unlocked one could
+	// catch a successor turn's children), nor for errServeSessionBusy, where
+	// another turn owns the session and its children are not ours to stop. A
+	// completed invocation (nil error) never stops children.
+	if err != nil && ctx.Err() != nil && !sweep.swept.Load() && !errors.Is(err, errServeSessionBusy) {
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if await := rt.signalStoppedChildren(ctx, req.SessionID); await != nil {
+			await(waitCtx)
+		}
+		cancel()
+	}
+	return result, err
+}
+
+func (rt *serveRuntime) runWithGoalPasses(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error) (serveRunResult, error) {
+	goalStore := rt.goalStateStore()
+	if goalStore == nil || strings.TrimSpace(req.SessionID) == "" {
+		return rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	}
+
+	goal := rt.loadGoal(ctx, req.SessionID)
+	if goal == nil || !goal.IsActive() {
+		return rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	}
+	goal.Normalize(time.Now())
+	if !rt.goalMu.TryLock() {
+		return serveRunResult{}, errServeSessionBusy
+	}
+	defer rt.goalMu.Unlock()
+
+	return rt.runActiveGoalLoop(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent, goal)
+}
+
+func (rt *serveRuntime) goalStateStore() session.Store {
+	if rt == nil {
+		return nil
+	}
+	if rt.goalStore != nil {
+		return rt.goalStore
+	}
+	return rt.store
+}
+
+func (rt *serveRuntime) loadGoal(ctx context.Context, sessionID string) *session.Goal {
+	store := rt.goalStateStore()
+	if store == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	sess, err := store.Get(ctx, sessionID)
+	if err != nil || sess == nil || sess.Goal == nil {
+		return nil
+	}
+	return sess.Goal.Clone()
+}
+
+func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error, goal *session.Goal) (serveRunResult, error) {
+	if refreshed := rt.loadGoal(context.Background(), req.SessionID); refreshed != nil {
+		goal = refreshed
+	}
+	if goal == nil || !goal.IsActive() {
+		return rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	}
+	goal.Normalize(time.Now())
+	goalState := newGoalRuntimeState(goal)
+
+	updateTool := toolpkg.NewUpdateGoalTool()
+	getTool := toolpkg.NewGetGoalTool(func() *session.Goal { return goalState.Clone() })
+	createTool := toolpkg.NewCreateGoalTool()
+	goalTools := []core.Tool{updateTool, getTool, createTool}
+	for _, tool := range goalTools {
+		rt.engine.RegisterTool(tool)
+		defer rt.engine.UnregisterTool(tool.Spec().Name)
+	}
+	goalSpecs := make([]core.ToolSpec, 0, len(goalTools))
+	for _, tool := range goalTools {
+		goalSpecs = append(goalSpecs, tool.Spec())
+	}
+
+	tracker := newGoalToolTracker()
+	currentInput := append([]core.Message(nil), inputMessages...)
+	var aggregate serveRunResult
+	autoPasses := 0
+	budgetWrapupPending := false
+	planCallable := false
+	if rt.provider != nil && rt.provider.Capabilities().ToolCalls {
+		for _, spec := range rt.engine.FilterAllowedToolSpecs(req.Tools) {
+			if spec.Name == toolpkg.UpdatePlanToolName {
+				planCallable = true
+				break
+			}
+		}
+	}
+
+	appendSynthetic := func(kind prompt.GoalPromptKind) error {
+		promptGoal := goalState.Clone()
+		if promptGoal == nil || !promptGoal.Exists() {
+			return nil
+		}
+		text := prompt.BuildGoalPromptWithPlan(goalPromptData(promptGoal), kind, planCallable)
+		msg := core.GoalSteeringText(text)
+		currentInput = append(currentInput, msg)
+		if rt.syntheticUserCB != nil && rt.store == nil {
+			// Callers that disable runtime transcript persistence (notably the TUI)
+			// own message storage themselves and need the synthetic goal prompt so the
+			// visible/persisted history matches what the provider saw. When rt.store is
+			// active, runOnce persists currentInput and invoking this hook as well would
+			// duplicate the synthetic user message.
+			msgCtx, cancel := progressive.SyntheticUserMessageContext(ctx)
+			err := rt.syntheticUserCB(msgCtx, msg)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+		if kind == prompt.GoalPromptObjectiveUpdated {
+			goalState.Set(rt.consumeGoalUpdatedNotice(context.Background(), req.SessionID, promptGoal))
+		}
+		return nil
+	}
+
+	firstKind := prompt.GoalPromptContinuation
+	if goal.UpdatedNotice {
+		firstKind = prompt.GoalPromptObjectiveUpdated
+	}
+	if err := appendSynthetic(firstKind); err != nil {
+		return aggregate, err
+	}
+
+	for {
+		runGoal := rt.loadGoal(context.Background(), req.SessionID)
+		if runGoal == nil || !runGoal.Exists() {
+			goalState.Set(nil)
+			rt.syncSessionMetaGoal(nil)
+			return aggregate, nil
+		}
+		runGoal.Normalize(time.Now())
+		if budgetWrapupPending && runGoal.Status == session.GoalStatusBudgetLimited && sameGoalRuntimeTarget(goalState.Clone(), runGoal) {
+			// This is the single budget wrap-up pass requested by the runner. The
+			// persisted state remains budget_limited so other clients see that new
+			// substantive work should not start.
+		} else {
+			budgetWrapupPending = false
+			if !runGoal.IsActive() {
+				goalState.Set(runGoal)
+				rt.syncSessionMetaGoal(runGoal)
+				return aggregate, nil
+			}
+		}
+		goal = runGoal
+		goalState.Set(goal)
+
+		autoPasses++
+		if autoPasses > goalMaxAutoPasses {
+			paused := rt.updateCurrentGoal(context.Background(), req.SessionID, goalState.Clone(), false, func(g *session.Goal) {
+				g.Status = session.GoalStatusPaused
+				g.PausedAt = time.Now()
+				g.LastReason = fmt.Sprintf("paused after %d automatic goal continuations", goalMaxAutoPasses)
+			})
+			goalState.Set(paused)
+			return aggregate, nil
+		}
+
+		passReq := req
+		passReq.Tools = appendGoalToolSpecs(req.Tools, goalSpecs)
+		maxTurnsWarning := engine.MaxTurnsExceededWarning(passReq.MaxTurns)
+		passUsage := core.Usage{}
+		goalCompleted := false
+		wrappedOnEvent := func(ev core.Event) error {
+			switch ev.Type {
+			case core.EventToolCall:
+				if ev.Tool != nil {
+					callID := strings.TrimSpace(ev.Tool.ID)
+					if callID == "" {
+						callID = strings.TrimSpace(ev.ToolCallID)
+					}
+					tracker.observeToolCall(callID, strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
+				}
+			case core.EventToolExecEnd:
+				if commit := tracker.commitToolCall(strings.TrimSpace(ev.ToolCallID), strings.TrimSpace(ev.ToolName), ev.ToolSuccess); commit != nil {
+					latest := rt.applyGoalCommit(context.Background(), req.SessionID, goalState.Clone(), commit)
+					goalState.Set(latest)
+					goal = latest
+					if goal != nil && (goal.Status == session.GoalStatusComplete || goal.Status == session.GoalStatusBlocked) {
+						goalCompleted = true
+					}
+				}
+			case core.EventUsage:
+				if ev.Use != nil {
+					passUsage.Add(*ev.Use)
+				}
+			}
+			if onEvent != nil {
+				// A goal uses max turns as a per-pass yield boundary. Keep the
+				// transient boundary warning/error internal to the goal runner.
+				if ev.Type == core.EventError && engine.IsMaxTurnsExceeded(ev.Err) {
+					return nil
+				}
+				if ev.Type == core.EventPhase && ev.Text == maxTurnsWarning {
+					return nil
+				}
+				return onEvent(ev)
+			}
+			return nil
+		}
+
+		passStart := time.Now()
+		result, produced, err := rt.runGoalPass(ctx, stateful, replaceHistory, currentInput, passReq, onStart, wrappedOnEvent)
+		onStart = nil
+		replaceHistory = false
+		aggregate.Text.WriteString(result.Text.String())
+		aggregate.ToolCalls = append(aggregate.ToolCalls, result.ToolCalls...)
+		aggregate.clientCalls = result.clientCalls
+		aggregate.Usage.Add(result.Usage)
+		aggregate.SessionUsage = result.SessionUsage
+		if passUsage.IsZero() {
+			passUsage = result.Usage
+		}
+		goal = rt.accountGoalUsage(context.Background(), req.SessionID, passUsage, time.Since(passStart))
+		goalState.Set(goal)
+
+		// Active goals continue in a fresh pass when the engine reaches its
+		// per-pass turn boundary; all other errors still end the goal run.
+		if err != nil && !engine.IsMaxTurnsExceeded(err) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				paused := rt.updateCurrentGoal(context.Background(), req.SessionID, goalState.Clone(), false, func(g *session.Goal) {
+					g.Status = session.GoalStatusPaused
+					g.PausedAt = time.Now()
+					g.LastReason = "paused because the run was cancelled"
+				})
+				goalState.Set(paused)
+			}
+			return aggregate, err
+		}
+
+		if goal == nil || !goal.Exists() {
+			rt.syncSessionMetaGoal(nil)
+			return aggregate, nil
+		}
+		if goalCompleted || goal.Status == session.GoalStatusComplete || goal.Status == session.GoalStatusBlocked {
+			rt.syncSessionMetaGoal(goal)
+			return aggregate, nil
+		}
+		if !goal.IsActive() {
+			rt.syncSessionMetaGoal(goal)
+			return aggregate, nil
+		}
+
+		if goal.BudgetExhausted() {
+			budgetGoal := rt.updateCurrentGoal(context.Background(), req.SessionID, goalState.Clone(), false, func(g *session.Goal) {
+				g.Status = session.GoalStatusBudgetLimited
+				g.PausedAt = time.Now()
+				g.LastReason = "token budget exhausted"
+			})
+			if budgetGoal == nil || !budgetGoal.Exists() {
+				goalState.Set(budgetGoal)
+				rt.syncSessionMetaGoal(budgetGoal)
+				return aggregate, nil
+			}
+			goalChanged := !sameGoalRuntimeTarget(goalState.Clone(), budgetGoal)
+			goal = budgetGoal
+			goalState.Set(goal)
+			if goal.Status != session.GoalStatusBudgetLimited {
+				if !goal.IsActive() {
+					rt.syncSessionMetaGoal(goal)
+					return aggregate, nil
+				}
+				nextKind := prompt.GoalPromptContinuation
+				if goal.UpdatedNotice || goalChanged {
+					nextKind = prompt.GoalPromptObjectiveUpdated
+				}
+				if err := appendSynthetic(nextKind); err != nil {
+					return aggregate, err
+				}
+				continue
+			}
+			budgetWrapupPending = true
+			if err := appendSynthetic(prompt.GoalPromptBudgetLimit); err != nil {
+				return aggregate, err
+			}
+			continue
+		}
+
+		if stateful {
+			currentInput = nil
+		} else {
+			currentInput = append(currentInput, produced...)
+		}
+
+		nextKind := prompt.GoalPromptContinuation
+		latest := rt.loadGoal(context.Background(), req.SessionID)
+		if latest == nil || !latest.Exists() {
+			goalState.Set(nil)
+			rt.syncSessionMetaGoal(nil)
+			return aggregate, nil
+		}
+		latest.Normalize(time.Now())
+		if !latest.IsActive() {
+			goalState.Set(latest)
+			rt.syncSessionMetaGoal(latest)
+			return aggregate, nil
+		}
+		if latest.UpdatedNotice || !sameGoalRuntimeTarget(goal, latest) {
+			nextKind = prompt.GoalPromptObjectiveUpdated
+		}
+		goal = latest
+		goalState.Set(goal)
+		if err := appendSynthetic(nextKind); err != nil {
+			return aggregate, err
+		}
+		if onEvent != nil {
+			if err := onEvent(core.Event{Type: core.EventPhase, Text: "Continuing toward active goal..."}); err != nil {
+				return aggregate, err
+			}
+		}
+	}
+}
+
+func (rt *serveRuntime) runGoalPass(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []core.Message, req core.Request, onStart func(), onEvent func(core.Event) error) (serveRunResult, []core.Message, error) {
+	origResponseCompleted := rt.responseCompletedCB
+	origTurnCompleted := rt.turnCompletedCB
+	var produced []core.Message
+	var producedMu sync.Mutex
+	assistantCaptured := false
+	rt.responseCompletedCB = func(cbCtx context.Context, turnIndex int, assistantMsg core.Message, metrics core.TurnMetrics) error {
+		var err error
+		if origResponseCompleted != nil {
+			err = origResponseCompleted(cbCtx, turnIndex, assistantMsg, metrics)
+		}
+		if err == nil {
+			producedMu.Lock()
+			produced = append(produced, assistantMsg)
+			assistantCaptured = true
+			producedMu.Unlock()
+		}
+		return err
+	}
+	rt.turnCompletedCB = func(cbCtx context.Context, turnIndex int, messages []core.Message, metrics core.TurnMetrics) error {
+		producedMu.Lock()
+		appendStart := 0
+		if assistantCaptured && len(messages) > 0 && messages[0].Role == core.RoleAssistant {
+			appendStart = 1
+			assistantCaptured = false
+		}
+		produced = append(produced, messages[appendStart:]...)
+		producedMu.Unlock()
+		if origTurnCompleted != nil {
+			return origTurnCompleted(cbCtx, turnIndex, messages, metrics)
+		}
+		return nil
+	}
+	defer func() {
+		rt.responseCompletedCB = origResponseCompleted
+		rt.turnCompletedCB = origTurnCompleted
+	}()
+	result, err := rt.runOnce(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	producedMu.Lock()
+	out := append([]core.Message(nil), produced...)
+	producedMu.Unlock()
+	return result, out, err
+}
+
+func appendGoalToolSpecs(base []core.ToolSpec, goalSpecs []core.ToolSpec) []core.ToolSpec {
+	out := append([]core.ToolSpec(nil), base...)
+	for _, spec := range goalSpecs {
+		found := false
+		for _, existing := range out {
+			if existing.Name == spec.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, spec)
+		}
+	}
+	return out
+}
+
+func (rt *serveRuntime) applyGoalCommit(ctx context.Context, sessionID string, expected *session.Goal, commit *goalToolCommit) *session.Goal {
+	if expected == nil || commit == nil {
+		return rt.loadGoal(ctx, sessionID)
+	}
+	latest := rt.loadGoal(ctx, sessionID)
+	if latest == nil || !latest.Exists() {
+		return latest
+	}
+	if !sameGoalRuntimeTarget(expected, latest) {
+		return latest
+	}
+	now := time.Now()
+	if commit.Create != nil {
+		if !latest.IsActive() {
+			return latest
+		}
+		created := session.NewGoal(strings.TrimSpace(commit.Create.Objective), commit.Create.TokenBudget, now)
+		_ = rt.persistGoal(ctx, sessionID, created)
+		return created
+	}
+	if commit.Update == nil {
+		return latest
+	}
+	if latest.Status != session.GoalStatusActive && latest.Status != session.GoalStatusBudgetLimited {
+		return latest
+	}
+	latest.Status = session.GoalStatus(commit.Update.Status)
+	latest.LastReason = firstNonEmptyString(commit.Update.Reason, commit.Update.Message)
+	latest.LastEvidence = commit.Update.Evidence
+	latest.UpdatedNotice = false
+	latest.UpdatedAt = now
+	switch latest.Status {
+	case session.GoalStatusComplete:
+		latest.CompletedAt = now
+	case session.GoalStatusBlocked:
+		latest.BlockedAt = now
+	}
+	_ = rt.persistGoal(ctx, sessionID, latest)
+	return latest
+}
+
+func (rt *serveRuntime) accountGoalUsage(ctx context.Context, sessionID string, usage core.Usage, elapsed time.Duration) *session.Goal {
+	latest := rt.loadGoal(ctx, sessionID)
+	if latest == nil || !latest.Exists() {
+		return latest
+	}
+	tokens := goalUsageTokens(usage)
+	seconds := 0
+	if elapsed > 0 {
+		seconds = int(elapsed.Round(time.Second).Seconds())
+	}
+	if tokens == 0 && seconds == 0 {
+		return latest
+	}
+	latest.TokensUsed += tokens
+	latest.TimeUsedSeconds += seconds
+	latest.UpdatedAt = time.Now()
+	_ = rt.persistGoal(ctx, sessionID, latest)
+	return latest
+}
+
+func (rt *serveRuntime) consumeGoalUpdatedNotice(ctx context.Context, sessionID string, expected *session.Goal) *session.Goal {
+	latest := rt.loadGoal(ctx, sessionID)
+	if latest == nil || !latest.Exists() {
+		return latest
+	}
+	if expected != nil && !sameGoalRuntimeTarget(expected, latest) {
+		return latest
+	}
+	if !latest.UpdatedNotice {
+		return latest
+	}
+	latest.UpdatedNotice = false
+	latest.UpdatedAt = time.Now()
+	_ = rt.persistGoal(ctx, sessionID, latest)
+	return latest
+}
+
+func (rt *serveRuntime) updateCurrentGoal(ctx context.Context, sessionID string, expected *session.Goal, allowBudgetLimited bool, mutate func(*session.Goal)) *session.Goal {
+	latest := rt.loadGoal(ctx, sessionID)
+	if latest == nil || !latest.Exists() {
+		return latest
+	}
+	if !sameGoalRuntimeTarget(expected, latest) {
+		return latest
+	}
+	if !latest.IsActive() && !(allowBudgetLimited && latest.Status == session.GoalStatusBudgetLimited) {
+		return latest
+	}
+	mutate(latest)
+	latest.UpdatedAt = time.Now()
+	_ = rt.persistGoal(ctx, sessionID, latest)
+	return latest
+}
+
+func sameGoalRuntimeTarget(a, b *session.Goal) bool {
+	if a == nil || b == nil || !a.Exists() || !b.Exists() {
+		return false
+	}
+	if strings.TrimSpace(a.Objective) != strings.TrimSpace(b.Objective) {
+		return false
+	}
+	if !a.CreatedAt.IsZero() && !b.CreatedAt.IsZero() && !a.CreatedAt.Equal(b.CreatedAt) {
+		return false
+	}
+	return true
+}
+
+func goalUsageTokens(usage core.Usage) int {
+	total := usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens + usage.OutputTokens
+	if total < 0 {
+		return 0
+	}
+	return total
+}
+
+func (rt *serveRuntime) persistGoal(ctx context.Context, sessionID string, goal *session.Goal) error {
+	store := rt.goalStateStore()
+	if store == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), goalPersistTimeout)
+	defer cancel()
+	if err := session.UpdateGoal(persistCtx, store, sessionID, goal); err != nil {
+		runtimeoutput.Logf("[goal] UpdateGoal failed for %s: %v", sessionID, err)
+		return err
+	}
+	rt.syncSessionMetaGoal(goal)
+	return nil
+}
+
+func (rt *serveRuntime) syncSessionMetaGoal(goal *session.Goal) {
+	if rt == nil || !rt.mu.TryLock() {
+		return
+	}
+	defer rt.mu.Unlock()
+	if rt.sessionMeta != nil {
+		rt.sessionMeta.Goal = goal.Clone()
+	}
+}
+
+func goalPromptData(goal *session.Goal) prompt.GoalPromptData {
+	if goal == nil {
+		return prompt.GoalPromptData{}
+	}
+	return prompt.GoalPromptData{
+		Objective:       goal.Objective,
+		TokenBudget:     goal.TokenBudget,
+		TokensUsed:      goal.TokensUsed,
+		TimeUsedSeconds: goal.TimeUsedSeconds,
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}

@@ -10,7 +10,3 @@ import (
 func auxProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main modelSelection, keys ...string) (core.Provider, error) {
 	return runtime.AuxProviderForPolicy(cfg, policy, main, keys...)
 }
-
-func mainProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main modelSelection) (core.Provider, error) {
-	return runtime.MainProviderForPolicy(cfg, policy, main)
-}

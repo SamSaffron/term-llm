@@ -19,6 +19,14 @@ registration, theme, search preference, and debug logger creation.
 resolution, persistence conversion, and diagnostics. `progressive/` owns the
 progress tracker, work/finalization budget, and progressive engine loop; it
 uses the core jobs exit-reason constants rather than depending on serve jobs.
-Cobra's changed-flag interpretation and guardian callback installation remain
-in `cmd` for now; command implementations not yet extracted use temporary
-compatibility adapters.
+The residual serve host, shared prepared runner, session-input coordinator and
+child execution closure live in `internal/app/serve`; this lower runtime must
+not import that host (directly or transitively). Guardian callback installation
+is owned by `guardian/`. Cobra changed-flag interpretation remains in `cmd`,
+which captures explicit memory/session inputs for the host. Ask/chat command
+bodies intentionally remain in `cmd` pending C3 and call the concrete host APIs.
+
+`LoadTitleMessages` owns bounded head/tail selection shared by serve and
+`sessions autotitle`; keeping it here avoids a serve-to-Cobra dependency through
+the sessions command application. The selection algorithm and paging limit are
+unchanged.

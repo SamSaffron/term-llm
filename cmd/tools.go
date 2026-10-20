@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -12,21 +12,15 @@ import (
 func defaultToolRegistry(cfg *config.Config) *engine.ToolRegistry {
 	return runtime.DefaultToolRegistry(cfg)
 }
-func newReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
-	return runtime.NewReadURLToolForConfig(cfg)
-}
+
 func newEngine(provider core.Provider, cfg *config.Config) *engine.Engine {
 	return runtime.NewEngine(provider, cfg)
 }
+
 func buildToolConfig(toolsFlag string, readDirs, writeDirs, shellAllow []string, cfg *config.Config) tools.ToolConfig {
 	return runtime.BuildToolConfig(toolsFlag, readDirs, writeDirs, shellAllow, cfg)
 }
-func applySpawnConfig(tc *tools.ToolConfig, spawn tools.SpawnConfig) {
-	runtime.ApplySpawnConfig(tc, spawn)
-}
-func cloneStringMap(values map[string]string) map[string]string {
-	return runtime.CloneStringMap(values)
-}
+
 func filterOutTools(enabled []string, exclude ...string) []string {
 	return runtime.FilterOutTools(enabled, exclude...)
 }

@@ -12,6 +12,7 @@ import (
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -263,18 +264,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if agent != nil {
 		agentSkills = agent.Skills
 	}
-	skillsSetup := SetupSkills(&cfg.Skills, askSkills, agentSkills, cmd.ErrOrStderr())
+	skillsSetup := appserve.SetupSkills(&cfg.Skills, askSkills, agentSkills, cmd.ErrOrStderr())
 
 	// Durable identity must be known before expanding the two refreshable
 	// inputs. In particular, includes must not resolve against the launch CWD.
-	var deferredInputs *SessionInputSelection
+	var deferredInputs *appserve.SessionInputSelection
 	if cmd.Flags().Changed("resume") {
-		deferredInputs = &SessionInputSelection{}
+		deferredInputs = &appserve.SessionInputSelection{}
 	}
 	// Resolve all settings: CLI > agent > config
 	runtimeSessionStore, runtimeMemoryPaths := sessionStoreOverrides(), memoryPaths()
 	promptProvider, promptModel := appruntime.ActiveLLMFlags(cfg)
-	settings, err := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := appserve.ResolveSettings(cfg, agent, appserve.CLIFlags{
 		Inputs:           deferredInputs,
 		Provider:         askProvider,
 		ActiveProvider:   promptProvider,
@@ -304,7 +305,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
 	// so that session settings can override settings.Tools, settings.MCP, etc.
 	store, storeCleanup := appruntime.InitSessionStoreWith(cfg, cmd.ErrOrStderr(), runtimeSessionStore)
-	var spawnRunner *SpawnAgentRunner
+	var spawnRunner *appserve.SpawnAgentRunner
 	// userInterrupted is set when the rich renderer handled Ctrl-C itself: the
 	// signal context is not cancelled in that case, but the user still asked
 	// to stop, so outstanding children are interrupted instead of drained.
@@ -317,13 +318,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				if len(ids) > 0 {
 					fmt.Fprintf(cmd.ErrOrStderr(), "interrupting child agents (resumable): %s\n", strings.Join(ids, ", "))
 				}
-				ShutdownSpawnAgentRunner(spawnRunner)
+				appserve.ShutdownSpawnAgentRunner(spawnRunner)
 			default:
 				if len(ids) > 0 {
 					fmt.Fprintf(cmd.ErrOrStderr(), "waiting for child agents: %s\n", strings.Join(ids, ", "))
 				}
 				if err := spawnRunner.Drain(ctx); err != nil {
-					ShutdownSpawnAgentRunner(spawnRunner)
+					appserve.ShutdownSpawnAgentRunner(spawnRunner)
 				}
 			}
 		}
@@ -402,7 +403,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		outputTool = registerAgentOutputTool(agent.OutputTool, toolMgr, engine)
 	}
 
-	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
+	appserve.RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
 	// Initialize MCP servers if any (after session settings are applied)
 	var mcpManager *mcp.Manager
@@ -551,7 +552,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if toolMgr != nil {
 		parentApprovalMgr = toolMgr.ApprovalMgr
 	}
-	askRunner := NewCmdRunner(cfg, RunnerOptions{
+	askRunner := appserve.NewCmdRunner(cfg, appserve.RunnerOptions{
 		Provider:           askProvider,
 		Fast:               askFast,
 		ConfigSet:          true,
@@ -693,7 +694,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 }
 
-func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sessionID string, approval resolvedApprovalMode, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*SpawnAgentRunner, error) {
+func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sessionID string, approval resolvedApprovalMode, sessionStore appruntime.SessionStoreOverrides, paths appmemory.Paths) (*appserve.SpawnAgentRunner, error) {
 	if toolMgr == nil {
 		return nil, nil
 	}
@@ -707,7 +708,7 @@ func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *confi
 	reportApprovalMode(cmd.ErrOrStderr(), askDebug, approval, toolMgr.ApprovalMgr)
 	// PromptFunc is set in ask.StreamWithRenderer to use bubbletea UI.
 	// Wire spawn_agent runner with session tracking.
-	return WireSpawnAgentRunnerWithInputs(cfg, toolMgr, approval.Mode == tools.ModeYolo, store, sessionID, 0, sessionStore, paths)
+	return appserve.WireSpawnAgentRunnerWithInputs(cfg, toolMgr, approval.Mode == tools.ModeYolo, store, sessionID, 0, sessionStore, paths)
 }
 
 // Restoring exact-file grants must use structured parts from both the durable

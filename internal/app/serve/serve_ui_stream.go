@@ -1,0 +1,66 @@
+package serve
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+)
+
+func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone, onAdmissionDone func()) {
+	// Eligibility was handled before factory/tool selection. This is only a
+	// consistency check for a pointer that could have been retired meanwhile.
+	if selected := ProcessSessionInputs().Ready(s.store, sessionID); selected != nil && runtime.selectedSessionInputs() != selected {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session runtime changed before admission")
+		return
+	}
+	// Persist session in the store so the client gets the session number in
+	// headers before the streaming body begins. This is a store-only operation
+	// that does NOT mutate runtime state (safe without rt.mu).
+	if num, created := runtime.ensureSessionInStore(r.Context(), sessionID, inputMessages); num > 0 {
+		w.Header().Set("x-session-number", strconv.FormatInt(num, 10))
+		if created {
+			s.publishEvent(serveEventInput{Type: serveEventSessionCreated, SessionID: sessionID, OperationID: idempotencyKey})
+		}
+	}
+
+	s.streamResponseRun(r.Context(), w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
+		clientToolRunner:           s.typedClientToolRunner(runtime, llmReq.Tools),
+		previousResponseID:         previousResponseID,
+		uiSession:                  true,
+		resetResponseIDsOnSuccess:  resetResponseIDsOnSuccess,
+		modelSwap:                  modelSwap,
+		idempotencyKey:             idempotencyKey,
+		idempotencyScope:           idempotencyScope,
+		requestFingerprint:         requestFingerprint,
+		notificationSubscriptionID: notificationSubscriptionID,
+		onDone:                     onDone,
+		onAdmissionDone:            onAdmissionDone,
+	})
+}
+
+func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, options startResponseRunOptions) bool {
+	run, err := s.startResponseRun(runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, options)
+	if err != nil {
+		if options.modelSwap != nil && options.modelSwap.plan.enabled {
+			options.modelSwap.markRolledBack()
+			s.restoreModelSwapRollback(ctx, sessionID, options.modelSwap, runtime, "failed", "naive")
+		}
+		status := http.StatusInternalServerError
+		errType := "server_error"
+		if errors.Is(err, errResponseRunKeyConflict) || errors.Is(err, errServeSessionBusy) {
+			status = http.StatusConflict
+			errType = "conflict_error"
+		}
+		writeOpenAIError(w, status, errType, err.Error())
+		return false
+	}
+	if options.onAdmissionDone != nil {
+		options.onAdmissionDone()
+	}
+	w.Header().Set("x-response-id", run.id)
+	s.streamResponseRunEvents(ctx, w, run, 0)
+	return true
+}

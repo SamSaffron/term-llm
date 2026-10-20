@@ -8,30 +8,11 @@ import (
 	"testing"
 	"time"
 
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
-
-func TestEnsureRequestSessionID_GeneratesWithoutPersistence(t *testing.T) {
-	got := EnsureRequestSessionID("", false)
-	if got == "" {
-		t.Fatal("expected non-empty request session ID")
-	}
-}
-
-func TestEnsureRequestSessionID_PreservesExistingID(t *testing.T) {
-	const existing = "sess-existing"
-	if got := EnsureRequestSessionID(existing, false); got != existing {
-		t.Fatalf("ensureRequestSessionID() = %q, want %q", got, existing)
-	}
-}
-
-func TestEnsureRequestSessionID_DoesNotInventResumeID(t *testing.T) {
-	if got := EnsureRequestSessionID("", true); got != "" {
-		t.Fatalf("ensureRequestSessionID() = %q, want empty string for resume without session", got)
-	}
-}
 
 func TestInitSessionStore_NoSessionFlagBypassesStore(t *testing.T) {
 	oldNoSession := noSession
@@ -130,7 +111,7 @@ func TestProductionSessionStorePersistsAgentRuns(t *testing.T) {
 	if store == nil {
 		t.Fatal("production session store unavailable")
 	}
-	runner, err := NewSpawnAgentRunnerWithStore(cfg, false, tools.NewApprovalManager(tools.NewToolPermissions()), store, "parent")
+	runner, err := appserve.NewSpawnAgentRunnerWithStore(cfg, false, tools.NewApprovalManager(tools.NewToolPermissions()), store, "parent")
 	if err != nil {
 		t.Fatal(err)
 	}

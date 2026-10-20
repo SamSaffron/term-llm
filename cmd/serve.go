@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/serve"
+	appserve "github.com/samsaffron/term-llm/internal/app/serve"
+	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/spf13/cobra"
 )
 
@@ -101,7 +102,7 @@ func bindServeFlags(cmd *cobra.Command, opts *ServeOptions) {
 	cmd.Flags().StringVar(&opts.ExtensionsDir, "extensions-dir", "", "Directory containing web extension sub-directories")
 	cmd.Flags().BoolVar(&opts.DisableExtensions, "disable-extensions", false, "Disable all web extension code for this process")
 	cmd.Flags().StringVar(&opts.WidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
-	cmd.Flags().DurationVar(&opts.ResponseTimeout, "response-timeout", DefaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
+	cmd.Flags().DurationVar(&opts.ResponseTimeout, "response-timeout", appserve.DefaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
 	cmd.Flags().BoolVar(&opts.EnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
 	cmd.Flags().BoolVar(&opts.Projects, "projects", false, "Strictly enable Web UI project selection")
 	cmd.Flags().BoolVar(&opts.NoProjects, "no-projects", false, "Use the single-workspace Web UI for dedicated agent deployments")
@@ -163,14 +164,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	invocation := captureServeInvocation(cmd, &serveFlags)
 	warnDeprecatedEnableWidgets(invocation.Flags.EnableWidgets, invocation.Stderr)
 
-	svc, err := serve.NewService(serve.Options{
+	svc, err := platform.NewService(platform.Options{
 		Host:      serveFlags.Host,
 		Port:      serveFlags.Port,
 		BasePath:  serveFlags.BasePath,
 		Title:     serveFlags.Title,
 		Platforms: append([]string(nil), args...),
 		Runner: func(ctx context.Context) error {
-			return Run(ctx, &serveFlags, args, invocation)
+			return appserve.Run(ctx, &serveFlags, args, invocation)
 		},
 	})
 	if err != nil {
