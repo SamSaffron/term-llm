@@ -281,12 +281,12 @@ func (c *ToolConfig) Validate() []error {
 
 	// Warn for nonexistent directories (may be mounted later)
 	for _, dir := range readDirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if _, err := toolfsStat(dir); os.IsNotExist(err) {
 			runtimeoutput.Warn("read_dir does not exist", "dir", dir)
 		}
 	}
 	for _, dir := range writeDirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if _, err := toolfsStat(dir); os.IsNotExist(err) {
 			runtimeoutput.Warn("write_dir does not exist", "dir", dir)
 		}
 	}
@@ -430,7 +430,7 @@ func (c *ToolConfig) ResolvePath(path string) string {
 }
 
 func mustGetwd() string {
-	cwd, err := os.Getwd()
+	cwd, err := toolfsGetwd()
 	if err != nil {
 		return ""
 	}

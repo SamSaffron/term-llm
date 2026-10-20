@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
 // InitializeWorkspace creates deterministic JSON/files, a Git repository, and

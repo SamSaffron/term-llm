@@ -105,14 +105,14 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 	existingContent := ""
 	isNew := true
 	var existingMode os.FileMode
-	info, statErr := os.Stat(absPath)
+	info, statErr := toolfsStat(absPath)
 	switch {
 	case statErr == nil:
 		if !info.Mode().IsRegular() {
 			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "target is not a regular file: %s", absPath))), nil
 		}
 		existingMode = info.Mode()
-		data, readErr := os.ReadFile(absPath)
+		data, readErr := toolfsReadFile(absPath)
 		if readErr != nil {
 			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to capture existing file before write: %v", readErr))), nil
 		}
@@ -131,14 +131,14 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 
 	// Create parent directories
 	dir := filepath.Dir(writePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := toolfsMkdirAll(dir, 0755); err != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
 	}
 
 	// Atomic write: write to a uniquely-named temp file, then rename.
 	// Using os.CreateTemp avoids a name collision when concurrent calls target the same destination.
 	base := filepath.Base(writePath)
-	tf, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	tf, err := toolfsCreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
 	}
@@ -146,16 +146,16 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 
 	if _, err := tf.Write([]byte(a.Content)); err != nil {
 		tf.Close()
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
 	}
 	if err := tf.Sync(); err != nil {
 		tf.Close()
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
 	}
 	if err := tf.Close(); err != nil {
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
 	}
 
@@ -165,13 +165,13 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 	if isNew {
 		mode = 0644
 	}
-	if err := os.Chmod(tempPath, mode); err != nil {
-		os.Remove(tempPath)
+	if err := toolfsChmod(tempPath, mode); err != nil {
+		toolfsRemove(tempPath)
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
 	}
 
-	if err := os.Rename(tempPath, writePath); err != nil {
-		os.Remove(tempPath)
+	if err := toolfsRename(tempPath, writePath); err != nil {
+		toolfsRemove(tempPath)
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
 
@@ -223,11 +223,11 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 // the rename then creates the target.
 func resolveWriteTarget(absPath string) string {
 	for i := 0; i < 8; i++ {
-		fi, err := os.Lstat(absPath)
+		fi, err := toolfsLstat(absPath)
 		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
 			return absPath
 		}
-		target, err := os.Readlink(absPath)
+		target, err := toolfsReadlink(absPath)
 		if err != nil {
 			return absPath
 		}

@@ -14,7 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/session"
-	_ "modernc.org/sqlite"
+	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
 // NewManager opens the jobs database and starts its scheduler and workers.

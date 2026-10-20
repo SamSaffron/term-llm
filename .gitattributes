@@ -1,0 +1,3 @@
+# Preserve upstream license/source bytes and collapse vendored code in reviews.
+experiments/browser-bonsai/vendor/** linguist-vendored=true -whitespace
+third_party/atotto-clipboard/** linguist-vendored=true -whitespace

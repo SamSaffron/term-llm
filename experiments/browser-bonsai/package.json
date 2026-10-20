@@ -1,0 +1,16 @@
+{
+  "name": "term-llm-browser-bonsai-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "bundle": "node bundle.mjs",
+    "test:wasm-startup": "node --stack-size=64 startup-smoke.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "v86": "0.5.458"
+  }
+}

@@ -10,9 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -80,9 +78,7 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		//
 		// First pass: SIGKILL the process group so `nohup foo &` style children
 		// that stayed in our pgid die immediately.
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		platformKillProcessGroup(cmd)
 		// Second pass: walk /proc for any process still alive that inherited
 		// the nonce env var. This catches descendants that escaped the pgroup
 		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
@@ -105,7 +101,7 @@ const scriptBusyMaxRetries = 4
 // descriptor and hold it across our exec, e.g. when a script is written and
 // immediately executed while other commands are being spawned.
 func retryScriptBusy(ctx context.Context, err error, attempt int) bool {
-	if attempt >= scriptBusyMaxRetries || ctx.Err() != nil || !errors.Is(err, syscall.ETXTBSY) {
+	if attempt >= scriptBusyMaxRetries || ctx.Err() != nil || !isTextFileBusy(err) {
 		return false
 	}
 	time.Sleep(10 * time.Millisecond)
@@ -138,43 +134,15 @@ func tagCommandWithNonce(cmd *exec.Cmd) string {
 func killTaggedDescendants(nonce string) {
 	needle := []byte(shellNonceEnvVar + "=" + nonce)
 	for attempt := 0; attempt < 3; attempt++ {
-		pids := findPidsWithEnv(needle)
+		pids := platformFindPidsWithEnv(needle)
 		if len(pids) == 0 {
 			return
 		}
 		for _, pid := range pids {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			platformKillPid(pid)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-}
-
-// findPidsWithEnv returns PIDs whose /proc/<pid>/environ contains needle.
-// On systems without /proc, returns nil.
-func findPidsWithEnv(needle []byte) []int {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	selfPid := os.Getpid()
-	var pids []int
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 || pid == selfPid {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
-		if err != nil {
-			continue
-		}
-		if bytes.Contains(data, needle) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
 }
 
 // PrepareCommand configures a tool-owned command for safe, non-interactive

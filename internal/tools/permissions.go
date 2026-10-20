@@ -153,7 +153,7 @@ func isHandoverPath(resolvedPath string) bool {
 		return false
 	}
 	root := filepath.Join(dataDir, "handover")
-	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != "" {
+	if resolved, err := toolfsEvalSymlinks(root); err == nil && resolved != "" {
 		root = resolved
 	}
 	return strings.HasPrefix(resolvedPath, root+string(filepath.Separator))
@@ -195,7 +195,7 @@ func (p *ToolPermissions) isPathInDirs(resolvedPath string, dirs []string) bool 
 			continue
 		}
 		// Resolve symlinks in the allowlist dir too
-		resolvedDir, _ := filepath.EvalSymlinks(absDir)
+		resolvedDir, _ := toolfsEvalSymlinks(absDir)
 		if resolvedDir == "" {
 			resolvedDir = absDir
 		}
@@ -215,7 +215,7 @@ func canonicalizePath(path string) (string, error) {
 	}
 
 	// EvalSymlinks resolves ALL symlinks in path
-	resolved, err := filepath.EvalSymlinks(abs)
+	resolved, err := toolfsEvalSymlinks(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", NewToolError(ErrFileNotFound, abs)
@@ -235,7 +235,7 @@ func canonicalizePathForWrite(path string) (string, error) {
 	}
 
 	// Try to resolve directly
-	resolved, err := filepath.EvalSymlinks(abs)
+	resolved, err := toolfsEvalSymlinks(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// File doesn't exist - resolve parent
@@ -254,7 +254,7 @@ func resolveParentSymlinks(abs string) (string, error) {
 	current := filepath.Clean(abs)
 	var suffix []string
 	for {
-		resolved, err := filepath.EvalSymlinks(current)
+		resolved, err := toolfsEvalSymlinks(current)
 		if err == nil {
 			for i := len(suffix) - 1; i >= 0; i-- {
 				resolved = filepath.Join(resolved, suffix[i])

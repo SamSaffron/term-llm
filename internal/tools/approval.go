@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -493,7 +492,7 @@ func (m *ApprovalManager) AddReadFile(path string) error {
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(resolved)
+	info, err := toolfsStat(resolved)
 	if err != nil {
 		return err
 	}
@@ -1094,7 +1093,7 @@ func guardianExactKey(command, workDir, scope string) (guardianShellKey, bool) {
 func normalizeGuardianWorkDir(workDir string) string {
 	workDir = strings.TrimSpace(workDir)
 	if workDir == "" {
-		if cwd, err := os.Getwd(); err == nil {
+		if cwd, err := toolfsGetwd(); err == nil {
 			return cwd
 		}
 		return ""
@@ -1147,7 +1146,7 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 	if !m.IgnoreProjectApprovals {
 		dir := workDir
 		if dir == "" {
-			dir, _ = os.Getwd()
+			dir, _ = toolfsGetwd()
 		}
 		projectApprovals := m.getProjectApprovals(dir)
 		if projectApprovals != nil && m.matchShellPatterns(projectApprovals.shellPatternsSnapshot(), command) {
@@ -1430,14 +1429,14 @@ func guardianPathSelector(toolName, toolInfo string) string {
 }
 
 func isDirectoryPath(path string) bool {
-	info, err := os.Stat(path)
+	info, err := toolfsStat(path)
 	return err == nil && info.IsDir()
 }
 
 // getDirectoryForApproval determines which directory to ask approval for.
 func getDirectoryForApproval(path string) string {
 	// If it's a directory, use it directly
-	info, err := os.Stat(path)
+	info, err := toolfsStat(path)
 	if err == nil && info.IsDir() {
 		return path
 	}
@@ -1519,7 +1518,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	// so remembered approvals attach to the correct repo.
 	dir := workDir
 	if dir == "" {
-		dir, _ = os.Getwd()
+		dir, _ = toolfsGetwd()
 	}
 	projectApprovals := m.getProjectApprovals(dir)
 

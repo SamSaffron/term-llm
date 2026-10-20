@@ -12,7 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
 // FTSIndex pairs a full-text index with the table it indexes. Both tables use

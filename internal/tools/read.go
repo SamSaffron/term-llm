@@ -125,7 +125,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (core.
 }
 
 func readLineNumberedFile(ctx context.Context, resolvedPath, displayPath string, startLine, endLine int, limits OutputLimits) (string, error) {
-	file, err := os.Open(resolvedPath)
+	file, err := toolfsOpen(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", NewToolError(ErrFileNotFound, displayPath)

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
-	_ "modernc.org/sqlite"
+	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
 const (

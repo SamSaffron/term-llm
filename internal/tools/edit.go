@@ -176,7 +176,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 	defer lockFilePath(absPath)()
 
 	// Read file content and permissions while holding lock
-	info, err := os.Stat(absPath)
+	info, err := toolfsStat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, absPath))), nil
@@ -184,7 +184,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "stat error: %v", err))), nil
 	}
 	origMode := info.Mode()
-	data, err := os.ReadFile(absPath)
+	data, err := toolfsReadFile(absPath)
 	if err != nil {
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
 	}
@@ -211,7 +211,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 	writePath := resolveWriteTarget(absPath)
 	dir := filepath.Dir(writePath)
 	base := filepath.Base(writePath)
-	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	tempFile, err := toolfsCreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
 	}
@@ -219,27 +219,27 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 
 	if _, err := tempFile.WriteString(newContent); err != nil {
 		tempFile.Close()
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
 	}
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close()
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
 	}
 	if err := tempFile.Close(); err != nil {
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
 	}
 
 	// Preserve original file permissions (CreateTemp uses 0600)
-	if err := os.Chmod(tempPath, origMode); err != nil {
-		os.Remove(tempPath)
+	if err := toolfsChmod(tempPath, origMode); err != nil {
+		toolfsRemove(tempPath)
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
 	}
 
-	if err := os.Rename(tempPath, writePath); err != nil {
-		os.Remove(tempPath)
+	if err := toolfsRename(tempPath, writePath); err != nil {
+		toolfsRemove(tempPath)
 		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
 
@@ -401,12 +401,12 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (co
 func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd udiff.FileDiff) (status string, warnings []string, diffData *core.DiffData, fileChange *core.FileChange, diagnostic *core.OutputClaimDiagnostic) {
 	defer lockFilePath(absPath)()
 
-	fileInfo, err := os.Stat(absPath)
+	fileInfo, err := toolfsStat(absPath)
 	if err != nil {
 		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil, nil, nil
 	}
 	fileMode := fileInfo.Mode()
-	data, err := os.ReadFile(absPath)
+	data, err := toolfsReadFile(absPath)
 	if err != nil {
 		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil, nil, nil
 	}
@@ -426,7 +426,7 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 	writePath := resolveWriteTarget(absPath)
 	dir := filepath.Dir(writePath)
 	base := filepath.Base(writePath)
-	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	tempFile, err := toolfsCreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
 		return "", append(warnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err)), nil, nil, nil
 	}
@@ -434,23 +434,23 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 
 	if _, err := tempFile.WriteString(result.Content); err != nil {
 		tempFile.Close()
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return "", append(warnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err)), nil, nil, nil
 	}
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close()
-		os.Remove(tempPath)
+		toolfsRemove(tempPath)
 		return "", append(warnings, fmt.Sprintf("%s: failed to sync temp file: %v", fd.Path, err)), nil, nil, nil
 	}
 	tempFile.Close()
 
-	if err := os.Chmod(tempPath, fileMode); err != nil {
-		os.Remove(tempPath)
+	if err := toolfsChmod(tempPath, fileMode); err != nil {
+		toolfsRemove(tempPath)
 		return "", append(warnings, fmt.Sprintf("%s: failed to set permissions: %v", fd.Path, err)), nil, nil, nil
 	}
 
-	if err := os.Rename(tempPath, writePath); err != nil {
-		os.Remove(tempPath)
+	if err := toolfsRename(tempPath, writePath); err != nil {
+		toolfsRemove(tempPath)
 		return "", append(warnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err)), nil, nil, nil
 	}
 

@@ -1,0 +1,15 @@
+/node_modules/
+/web/inference.bundle.mjs
+/web/ort/
+/web/dist/
+/web/term-llm.wasm
+/web/wasm_exec.js
+/web/index.html
+/web/icon-512.png
+/evidence/
+/dist/
+/tmp/
+
+/web/execution.bundle.mjs
+/web/quickjs.wasm
+/web/runtime/

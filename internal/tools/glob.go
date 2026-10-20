@@ -106,7 +106,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 			basePath = t.config.WorkingDir()
 		} else {
 			var err error
-			basePath, err = os.Getwd()
+			basePath, err = toolfsGetwd()
 			if err != nil {
 				return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
 			}
@@ -141,7 +141,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	if err := validateGlobPattern(pattern); err != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid pattern: %v", err))), nil
 	}
-	fsys := globContextFS{ctx: ctx, root: absBasePath, fsys: os.DirFS(absBasePath)}
+	fsys := globContextFS{ctx: ctx, root: absBasePath, fsys: toolfsDirFS(absBasePath)}
 
 	err = doublestar.GlobWalk(fsys, pattern, func(matchPath string, d fs.DirEntry) error {
 		if err := ctx.Err(); err != nil {
@@ -290,7 +290,7 @@ func (f globContextFS) lstatPath(name string, allowLeafSymlink bool) (fs.FileInf
 		}
 
 		var err error
-		info, err = os.Lstat(current)
+		info, err = toolfsLstat(current)
 		if err != nil {
 			if ctxErr := f.ctx.Err(); ctxErr != nil {
 				return nil, ctxErr

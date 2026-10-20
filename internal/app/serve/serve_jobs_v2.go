@@ -13,7 +13,7 @@ import (
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/samsaffron/term-llm/internal/jobs"
-	_ "modernc.org/sqlite"
+	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
 const exitReasonNatural = jobs.ExitReasonNatural
