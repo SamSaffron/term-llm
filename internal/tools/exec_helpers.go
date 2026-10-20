@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -80,9 +79,7 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		//
 		// First pass: SIGKILL the process group so `nohup foo &` style children
 		// that stayed in our pgid die immediately.
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		platformKillProcessGroup(cmd)
 		// Second pass: walk /proc for any process still alive that inherited
 		// the nonce env var. This catches descendants that escaped the pgroup
 		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
@@ -105,7 +102,7 @@ const scriptBusyMaxRetries = 4
 // descriptor and hold it across our exec, e.g. when a script is written and
 // immediately executed while other commands are being spawned.
 func retryScriptBusy(ctx context.Context, err error, attempt int) bool {
-	if attempt >= scriptBusyMaxRetries || ctx.Err() != nil || !errors.Is(err, syscall.ETXTBSY) {
+	if attempt >= scriptBusyMaxRetries || ctx.Err() != nil || !isTextFileBusy(err) {
 		return false
 	}
 	time.Sleep(10 * time.Millisecond)
@@ -143,7 +140,7 @@ func killTaggedDescendants(nonce string) {
 			return
 		}
 		for _, pid := range pids {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			platformKillPid(pid)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

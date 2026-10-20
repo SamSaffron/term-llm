@@ -26,7 +26,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
 // Default caps, overridable via config.
