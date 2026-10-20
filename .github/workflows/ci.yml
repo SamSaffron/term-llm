@@ -74,6 +74,11 @@ jobs:
       - name: Build
         run: make build
 
+      - name: UI demo smoke
+        run: |
+          node --test demo/mock-api.test.mjs
+          node demo/build.mjs
+
       - name: js/wasm platform smoke
         run: scripts/wasm-smoke.sh
 
