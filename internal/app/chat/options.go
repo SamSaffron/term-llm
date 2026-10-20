@@ -47,6 +47,8 @@ type FlagState struct{ Resume, Tools, System, MaxTurns, Search bool }
 // Dependencies captures terminal/reload authority and deferred startup operations.
 // ResolveApproval is called after config, session and settings resolution, with
 // the persisted policy and any actual in-process handover carry supplied then.
+// It is required; startup never invents a fallback policy. Supply the other
+// callbacks needed by the selected execution path before calling Run.
 type Dependencies struct {
 	Stdout, Stderr                                   io.Writer
 	SessionStore                                     runtime.SessionStoreOverrides

@@ -188,6 +188,9 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	if sess != nil {
 		persistedApprovalMode = &sess.ApprovalMode
 	}
+	if r.deps.ResolveApproval == nil {
+		return nil, fmt.Errorf("chat approval resolver is required")
+	}
 	resolvedApproval, err := r.deps.ResolveApproval(cfg, persistedApprovalMode, r.handoverApproval)
 	if err != nil {
 		return nil, err

@@ -54,6 +54,8 @@ type FlagState struct{ Resume, Tools, System, MaxTurns, Search, MCP bool }
 
 // Dependencies are captured CLI inputs and deferred startup operations. Approval
 // is resolved after progressive validation and config loading, not during capture.
+// ResolveApproval is required; startup never invents a fallback policy. Supply
+// the other callbacks needed by the selected execution path before calling Run.
 type Dependencies struct {
 	Stdin                io.Reader
 	HasStdin             bool

@@ -53,6 +53,9 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 	if err != nil {
 		return err
 	}
+	if deps.ResolveApproval == nil {
+		return fmt.Errorf("ask approval resolver is required")
+	}
 	resolvedApproval, err := deps.ResolveApproval(cfg)
 	if err != nil {
 		return err
