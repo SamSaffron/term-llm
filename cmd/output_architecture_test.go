@@ -17,7 +17,7 @@ import (
 func TestInteractiveWorkersDoNotBypassDiagnosticSink(t *testing.T) {
 	packages := []string{"../internal/llm", "../internal/agents", "../internal/skills", "../internal/mcp", "../internal/session", "../internal/tools", "../internal/termhost"}
 	cmdFiles := map[string]bool{
-		"chat.go":   true,
+		"chat.go": true, "chat_run.go": true, "chat_helpers.go": true, "chat_runtime_inputs.go": true, "chat_session.go": true, "chat_ui.go": true, "chat_once.go": true, "chat_handover.go": true,
 		"skills.go": true, "mcp.go": true, "sessions.go": true, "config_theme.go": true,
 		"filetrack.go": true, "guardian_wiring.go": true,
 		"tools.go":                   true,
@@ -134,7 +134,7 @@ var allowedInteractiveDirectOutput = map[string]bool{
 	"copilot.go:PromptForCopilotAuth:fmt.Print":                        true,
 	"auth_prompt.go:waitForEnterOrInterrupt:fmt.Println":               true,
 	// The forced-exit path runs only after Bubble Tea cannot stop and os.Exit.
-	"chat.go:runChatOnce:fmt.Fprintln(os.Stderr)": true,
+	"chat_once.go:runChatOnce:fmt.Fprintln(os.Stderr)": true,
 	// These are standalone CLI-only paths, not background chat workers.
 	"skills.go:runSkillsAddCLI:fmt.Fprintln(os.Stderr)":             true,
 	"sessions.go:buildSessionExportOptions:fmt.Fprintln(os.Stderr)": true,
