@@ -1,4 +1,3 @@
-import { ThemeStore } from '../theme/theme-store';
 import type { RushOperation } from '../domain/steering';
 import {
   computed,
@@ -153,7 +152,6 @@ export class AppStore {
   readonly shellStore: ShellStore;
   readonly liveStore: LiveStore;
   readonly childSessionStore: ChildSessionStore;
-  readonly theme: ThemeStore;
   readonly keys: StorageKeys;
   readonly api: APIClient;
   readonly endpoints: Endpoints;
@@ -315,7 +313,6 @@ export class AppStore {
     readonly storage: Storage = localStorage,
     persistentCache?: PersistentCache,
   ) {
-    this.theme = new ThemeStore(config.prefix, storage);
     this.services = new AppStoreServices(config, storage, persistentCache);
     this.startupMetrics = this.services.startupMetrics;
     this.keys = this.services.keys;

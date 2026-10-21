@@ -34,7 +34,7 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
     expect((await settings.boundingBox())!.width).toBeGreaterThan(700);
   await page.screenshot({ path: testInfo.outputPath('01-settings-model.png'), fullPage: true });
   await settings.getByRole('tab', { name: 'Extensions', exact: true }).click();
-  await expect(settings.getByRole('checkbox', { name: /^Dracula\b/ })).toBeVisible();
+  await expect(settings.getByText('Dracula', { exact: true })).toBeVisible();
   expect(await settings.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
     true,
   );
@@ -68,7 +68,7 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   await page.locator('#settingsBtn').click();
   await page.getByRole('tab', { name: 'Extensions', exact: true }).click();
   const section = page.getByRole('region', { name: 'Extensions', exact: true });
-  await expect(section.getByRole('checkbox', { name: /^Dracula\b/ })).toBeVisible();
+  await expect(section.getByText('Dracula', { exact: true })).toBeVisible();
   await section.scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('03-interface-settings.png'), fullPage: true });
   await section.getByRole('button', { name: /Make UI Mine/ }).click();

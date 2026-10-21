@@ -161,7 +161,6 @@ export function WorkspaceNotice({ store }: { store: AppStore }) {
 }
 
 export function App({ store }: { store: AppStore }) {
-  useLayoutEffect(() => store.theme.mount(), [store]);
   const shell = useRef<HTMLDivElement>(null);
   const diffWidth = useMemo(() => computed(() => store.diff.value.width), [store]);
   const diffOpen = useMemo(() => computed(() => store.diff.value.open), [store]);
