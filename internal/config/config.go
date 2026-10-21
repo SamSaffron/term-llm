@@ -706,6 +706,8 @@ type ToolsConfig struct {
 	ShellNonTTYEnv     string   `mapstructure:"shell_non_tty_env"`     // Env var for non-TTY execution
 	ImageProvider      string   `mapstructure:"image_provider"`        // Override for image provider
 	MaxToolOutputChars int      `mapstructure:"max_tool_output_chars"` // Global max chars per tool output (default 20000)
+
+	GrepRerank GrepRerankConfig `mapstructure:"grep_rerank" yaml:"grep_rerank"` // Classifier-backed grep intent reranking
 }
 
 // DiagnosticsConfig configures diagnostic data collection
@@ -1174,25 +1176,6 @@ func ParseLiveControlPlane(value any) (LiveControlPlane, error) {
 	return "", errors.New(liveControlPlaneError)
 }
 
-// LiveClassifyMinConfidence configures Phase 1 gates. steer_now and side are
-// accepted now for stable configuration but are always mapped to steer until
-// Phase 2.
-type LiveClassifyMinConfidence struct {
-	Status        float64 `mapstructure:"status" yaml:"status"`
-	NewSession    float64 `mapstructure:"new_session" yaml:"new_session"`
-	SwitchSession float64 `mapstructure:"switch_session" yaml:"switch_session"`
-	SteerNow      float64 `mapstructure:"steer_now" yaml:"steer_now"`
-	Side          float64 `mapstructure:"side" yaml:"side"`
-}
-
-// LiveClassifyConfig configures the low-latency live intent router.
-type LiveClassifyConfig struct {
-	Provider      string                    `mapstructure:"provider" yaml:"provider,omitempty"`
-	LogDecisions  bool                      `mapstructure:"log_decisions" yaml:"log_decisions"`
-	LogState      bool                      `mapstructure:"log_state" yaml:"log_state"`
-	MinConfidence LiveClassifyMinConfidence `mapstructure:"min_confidence" yaml:"min_confidence"`
-}
-
 // RouterEnabled reports whether delegations should pass through any host router.
 func (c LiveConfig) RouterEnabled() bool {
 	return c.ControlPlane == LiveControlPlaneAgent || c.ControlPlane == LiveControlPlaneClassify
@@ -1555,6 +1538,9 @@ func loadUnresolved() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Guardian.Classify.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Tools.GrepRerank.Validate(); err != nil {
 		return nil, err
 	}
 	if err := cfg.Guardian.Fallback.Validate(cfg.Guardian.Backend); err != nil {

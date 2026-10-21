@@ -34,7 +34,9 @@ var builtinTools = []builtinDescriptor{
 	{ToolDescriptor: ToolDescriptor{Name: EditFileToolName, Policy: KindEdit, DefaultEnabled: true, FlagLabel: EditFileToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewEditFileTool(r.approval, r.config) }, pathCapable: true},
 	{ToolDescriptor: ToolDescriptor{Name: UnifiedDiffToolName, Policy: KindEdit, DefaultEnabled: true}, construct: func(r *LocalToolRegistry) core.Tool { return NewUnifiedDiffTool(r.approval, r.config) }, pathCapable: true},
 	{ToolDescriptor: ToolDescriptor{Name: ShellToolName, Policy: KindExecute, DefaultEnabled: true, FlagLabel: ShellToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewShellTool(r.approval, r.config, r.limits) }},
-	{ToolDescriptor: ToolDescriptor{Name: GrepToolName, Policy: KindSearch, DefaultEnabled: true, FlagLabel: GrepToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewGrepTool(r.approval, r.limits, r.config) }, pathCapable: true, guardianSelector: true},
+	{ToolDescriptor: ToolDescriptor{Name: GrepToolName, Policy: KindSearch, DefaultEnabled: true, FlagLabel: GrepToolName}, construct: func(r *LocalToolRegistry) core.Tool {
+		return NewGrepTool(r.approval, r.limits, r.config).WithReranker(r.grepReranker)
+	}, pathCapable: true, guardianSelector: true},
 	{ToolDescriptor: ToolDescriptor{Name: GlobToolName, Policy: KindSearch, DefaultEnabled: true, FlagLabel: GlobToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewGlobTool(r.approval, r.config) }, pathCapable: true, guardianSelector: true},
 	{ToolDescriptor: ToolDescriptor{Name: ViewImageToolName, Policy: KindRead, DefaultEnabled: true, FlagLabel: ViewImageToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewViewImageTool(r.approval, r.config) }, pathCapable: true},
 	{ToolDescriptor: ToolDescriptor{Name: ShowMediaToolName, Aliases: []string{ShowImageToolName}, Policy: KindImage, DefaultEnabled: true, FlagLabel: ShowMediaToolName}, construct: func(r *LocalToolRegistry) core.Tool {

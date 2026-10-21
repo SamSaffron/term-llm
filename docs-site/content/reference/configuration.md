@@ -256,6 +256,11 @@ The index below follows the canonical config schema. A dash means no default or 
 | `tools.shell_non_tty_env` | string | `TERM_LLM_ALLOW_NON_TTY` | — |
 | `tools.image_provider` | string | — | — |
 | `tools.max_tool_output_chars` | integer | `20000` | — |
+| `tools.grep_rerank.enabled` | boolean | `true` | — |
+| `tools.grep_rerank.provider` | string | — | — |
+| `tools.grep_rerank.threshold` | number | `0.5` | — |
+| `tools.grep_rerank.timeout_ms` | integer | `2000` | — |
+| `tools.grep_rerank.max_candidates` | integer | `150` | — |
 | `tool_discovery.mode` | string | `auto` | — |
 | `tool_discovery.strategy` | string | `auto` | — |
 | `tool_discovery.threshold` | integer | `24` | — |
@@ -343,7 +348,21 @@ classify:
 - **Images:** every provider accepts `classify --image`. For `typesafe`-type providers, `images` selects the wire format: `assets` (default) for TypeSafe's experimental assets map, with the `TypeSafe-Danger-Zone-Images` header added to image requests only, or `inline` for an `images` array of data URLs on compatible self-hosted servers. Other values, and `images` on other types, are rejected.
 - **Overrides:** `--provider/-p` replaces `classify.default_provider`; `--model`, `--base-url`, and `--timeout` override one run.
 
-Other commands call a classification provider only when `guardian.backend: classify` or `live.control_plane: classify` is set. State and questions are sent to the configured endpoint; see the [privacy guidance](/guides/classify/#privacy).
+Other commands call a classification provider only when `guardian.backend: classify` or `live.control_plane: classify` is set, or when the `grep` tool is called with its `intent` parameter and [intent reranking](/reference/built-in-tools/#intent-based-grep-reranking) is available. State and questions are sent to the configured endpoint; see the [privacy guidance](/guides/classify/#privacy).
+
+Grep intent reranking is controlled by `tools.grep_rerank` and is on by default, but it only takes effect when the selected classify provider has usable credentials:
+
+```yaml
+tools:
+  grep_rerank:
+    enabled: true        # false removes the grep `intent` parameter entirely
+    provider: ""         # optional classify provider; empty uses classify.default_provider
+    threshold: 0.5       # keep results scoring at or above this (0–1)
+    timeout_ms: 2000     # hard wall-clock budget for all added work (1–10000)
+    max_candidates: 150  # candidates searched and scored per call (2–500)
+```
+
+An unknown `provider` name does not fail config loading; it leaves reranking unavailable. Out-of-range numeric values are rejected.
 
 ## Example
 

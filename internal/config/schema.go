@@ -427,6 +427,11 @@ var keySpecs = []KeySpec{
 	def("tools.shell_non_tty_env", DefaultToolsShellNonTTYEnv),
 	optional("tools.image_provider"),
 	def("tools.max_tool_output_chars", DefaultToolsMaxToolOutputChars),
+	def("tools.grep_rerank.enabled", DefaultGrepRerankEnabled),
+	optional("tools.grep_rerank.provider"),
+	def("tools.grep_rerank.threshold", DefaultGrepRerankThreshold),
+	def("tools.grep_rerank.timeout_ms", DefaultGrepRerankTimeoutMS),
+	def("tools.grep_rerank.max_candidates", DefaultGrepRerankMaxCandidates),
 
 	def("tool_discovery.mode", DefaultToolDiscoveryMode),
 	def("tool_discovery.strategy", DefaultToolDiscoveryStrategy),

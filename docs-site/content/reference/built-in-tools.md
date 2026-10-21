@@ -74,6 +74,18 @@ Pending events survive restart and failed delivery is retried while the owning h
 
 For `term-llm ask`, staged stdin or `-f` text/binary data transiently enables `read_file`; PNG/JPEG/GIF/WebP sources transiently enable both `read_file` and `view_image`. These additions are merged with explicit session tools and do not rewrite the saved tool list. The staged attachment receives an exact-file grant—nearby files, paths mentioned only in text, and symlink escapes receive no automatic access and remain subject to normal approval policy.
 
+### Intent-based grep reranking
+
+When a [classification provider](/guides/classify/) is usable, `grep` accepts an optional `intent` string describing what the agent is looking for (for example, "where session DB writes happen"). Matches are then scored for relevance, incidental matches are dropped, and the rest are returned best first.
+
+- **When it appears:** the `intent` parameter and a short sentence in the tool description are present only if `tools.grep_rerank.enabled` is true (the default), the selected classify provider (`tools.grep_rerank.provider`, else `classify.default_provider`) exists, and its credentials are configured. Otherwise `grep` is unchanged and `intent` is not offered. Credentials are only resolved on the first `intent` call.
+- **When it applies:** `intent` is non-blank, `files_with_matches` is not used, and `max_results` is at most `max_candidates`. Without `intent`, behavior and output are identical to before.
+- **What is sent:** the intent, the pattern, each candidate match with its surrounding context (bounded to 12 lines / 1200 characters), and its path relative to the search root go to the classify provider. See the [privacy guidance](/guides/classify/#privacy).
+- **How it works:** up to `max_candidates` (default 150) matches are searched in one pass and scored in parallel batches of at most 50, with at most four classify calls in flight process-wide. Results scoring at or above `threshold` (default 0.5) are shown in rank order, trimmed to `max_results`. If nothing clears the threshold, the top 3 are shown and the output says so. Fewer than two candidates are returned normally without a classify call.
+- **Notes:** the output starts with a one-line `[intent rerank: …]` note with counts, and tells you when the candidate search was capped.
+- **Fallback:** all added work shares a hard budget of `timeout_ms` (default 2000 ms). On any error, timeout, malformed response, or repeated failures (three in a row pause reranking for 60 seconds), `grep` returns the ordinary unranked results with a one-line `[intent rerank skipped (…); showing unranked results]` note. The note never includes provider error text.
+- **Disable:** set `tools.grep_rerank.enabled: false`.
+
 ### Presenting existing media
 
 Use `show_media` when the user should see or listen to a local artifact, rather

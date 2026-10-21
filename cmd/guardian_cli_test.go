@@ -22,6 +22,9 @@ func TestGuardianClassifyConfigRenderingAndCompletion(t *testing.T) {
 	if got := capabilityConfigValueCompletions(cfg, "guardian.classify.provider", "a"); strings.Join(got, ",") != "alias" {
 		t.Fatalf("provider: %v", got)
 	}
+	if got := capabilityConfigValueCompletions(cfg, "tools.grep_rerank.provider", "a"); strings.Join(got, ",") != "alias" {
+		t.Fatalf("grep_rerank provider: %v", got)
+	}
 }
 
 func TestGuardianFallbackConfigKeysAndCompletion(t *testing.T) {

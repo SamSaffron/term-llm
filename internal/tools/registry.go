@@ -10,6 +10,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/greprerank"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
@@ -22,11 +23,12 @@ import (
 type LocalToolRegistry struct {
 	mu sync.RWMutex
 
-	config      *ToolConfig
-	permissions *ToolPermissions
-	approval    *ApprovalManager
-	limits      OutputLimits
-	appConfig   *config.Config
+	config       *ToolConfig
+	permissions  *ToolPermissions
+	approval     *ApprovalManager
+	limits       OutputLimits
+	appConfig    *config.Config
+	grepReranker *greprerank.Reranker
 
 	memoryStore    ImageRecorder
 	agent          string
@@ -70,6 +72,7 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 		approval:         approvalMgr,
 		limits:           DefaultOutputLimits(),
 		appConfig:        appConfig,
+		grepReranker:     NewGrepReranker(appConfig),
 		shellRoutingMode: ShellRoutingLocalOnly,
 		tools:            make(map[string]core.Tool),
 	}
@@ -397,7 +400,7 @@ func (r *LocalToolRegistry) SetLimits(limits OutputLimits) {
 		case ShellToolName:
 			r.tools[specName] = NewShellTool(r.approval, r.config, r.limits)
 		case GrepToolName:
-			r.tools[specName] = NewGrepTool(r.approval, r.limits, r.config)
+			r.tools[specName] = NewGrepTool(r.approval, r.limits, r.config).WithReranker(r.grepReranker)
 		case RunAgentScriptToolName:
 			r.tools[specName] = NewRunAgentScriptTool(r.config, r.limits)
 		}
