@@ -4334,7 +4334,18 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 		_, _ = w.Write([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08})
 	}))
 	defer imageServer.Close()
-	bot := &fakeBotSender{fileURL: imageServer.URL}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var handlers sync.WaitGroup
+	defer func() {
+		cancel()
+		releasePhoto()
+		handlers.Wait()
+	}()
+	bot := &arrivalOrderBot{
+		fakeBotSender: &fakeBotSender{fileURL: imageServer.URL},
+		ctx:           ctx, photoStarted: provider.firstChunkSent, stopAttempted: make(chan struct{}),
+	}
 
 	photoMessage := &tgbotapi.Message{
 		MessageID: 1,
@@ -4352,10 +4363,10 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 	photoAdmission := mgr.admitMessage(photoMessage)
 	textAdmission := mgr.admitMessage(textMessage)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	photoDone := make(chan struct{})
+	handlers.Add(1)
 	go func() {
+		defer handlers.Done()
 		mgr.handleMessageWithAdmission(ctx, bot, photoMessage, photoAdmission)
 		close(photoDone)
 	}()
@@ -4366,13 +4377,17 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 	}
 
 	textDone := make(chan struct{})
+	handlers.Add(1)
 	go func() {
+		defer handlers.Done()
 		mgr.handleMessageWithAdmission(ctx, bot, textMessage, textAdmission)
 		close(textDone)
 	}()
 	select {
 	case req := <-provider.requests:
 		t.Fatalf("later text reached provider while earlier photo was downloading: %+v", req.Messages)
+	case <-bot.stopAttempted:
+		t.Fatal("later text attempted to interrupt while earlier photo was downloading")
 	case <-time.After(100 * time.Millisecond):
 	}
 
