@@ -5,6 +5,7 @@
   gap: 0.5rem;
   flex-wrap: wrap;
   padding: 0.35rem 0.3rem 0;
+  margin-bottom: 0.45rem;
 }
 
 .attachment-chip {

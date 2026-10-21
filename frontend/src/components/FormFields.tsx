@@ -1,4 +1,5 @@
 import type { ComponentChildren, InputHTMLAttributes, SelectHTMLAttributes } from 'preact';
+import { SelectControl } from './SelectControl';
 
 export function SettingsSelect({
   id,
@@ -17,9 +18,9 @@ export function SettingsSelect({
       <label class="settings-label" for={id}>
         {label}
       </label>
-      <select class="settings-select" id={id} {...select}>
+      <SelectControl class="settings-select" id={id} {...select}>
         {children}
-      </select>
+      </SelectControl>
     </div>
   );
 }

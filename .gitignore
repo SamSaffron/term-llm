@@ -5,8 +5,7 @@ term-llm
 tmp/*
 *.lock
 !frontend/package-lock.json
-frontend/node_modules/
-docs-site/node_modules/
+node_modules/
 docs-site/test-results/
 frontend/test-results/
 frontend/playwright-report/

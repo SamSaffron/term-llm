@@ -1,0 +1,26 @@
+.control-select {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+
+.control-select > select {
+  appearance: none;
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  padding-inline-end: 38px;
+  cursor: pointer;
+}
+
+.control-select > select:disabled {
+  cursor: default;
+}
+
+.control-select-chevron {
+  position: absolute;
+  top: 50%;
+  inset-inline-end: 14px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}

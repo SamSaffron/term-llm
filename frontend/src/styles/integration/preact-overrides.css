@@ -924,6 +924,10 @@ mark.diff-word {
 }
 
 @media (hover: none), (pointer: coarse) {
+  .composer-box {
+    --composer-control-size: 44px;
+  }
+
   .session-menu-trigger,
   .project-group-action,
   .mobile-menu,

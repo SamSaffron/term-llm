@@ -19,18 +19,20 @@ describe('form markup primitives', () => {
     expect(change).toHaveBeenCalledOnce();
   });
 
-  it('retains select labels, options, DOM structure and change events', () => {
+  it('retains accessible select labels, options and change events', () => {
     const change = vi.fn();
-    const { container } = render(
+    render(
       <SettingsSelect id="modelSelect" label="Model" value="one" onChange={change}>
         <option value="one">One</option>
         <option value="two">Two</option>
       </SettingsSelect>,
     );
-    const select = screen.getByLabelText('Model');
-    expect(container.querySelector('.settings-field > label + select.settings-select')).toBe(
-      select,
-    );
+    const select = screen.getByRole('combobox', { name: 'Model', exact: true });
+    expect(screen.getByLabelText('Model')).toBe(select);
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'One',
+      'Two',
+    ]);
     expect(select).toHaveValue('one');
     fireEvent.change(select, { target: { value: 'two' } });
     expect(change).toHaveBeenCalledOnce();
