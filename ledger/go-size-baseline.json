@@ -144,7 +144,7 @@
     },
     {
       "path": "internal/tools/grep.go",
-      "lines": 1298
+      "lines": 1243
     },
     {
       "path": "internal/tools/queue_agent.go",

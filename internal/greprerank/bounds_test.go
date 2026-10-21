@@ -49,7 +49,7 @@ func TestSemaphoreSharedAcrossRerankers(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second Rank error = %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > second.Budget()+500*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > second.Budget()+250*time.Millisecond {
 		t.Fatalf("admission took %s", elapsed)
 	}
 	if otherBackend.calls() != 0 {

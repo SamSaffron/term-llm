@@ -3323,7 +3323,7 @@
     },
     {
       "key": ".|internal/tools/grep.go|tools|*GrepTool|Execute",
-      "complexity": 33,
+      "complexity": 17,
       "owner": "internal/tools",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",

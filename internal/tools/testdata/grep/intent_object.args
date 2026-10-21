@@ -1,0 +1,12 @@
+--no-config
+--color=never
+--hidden
+--glob
+!.git
+--json
+--max-count
+7
+--context
+1
+needle
+{{ROOT}}

@@ -1,0 +1,65 @@
+package tools
+
+// Copied into a scratch checkout of upstream fa7aed75 by regenerate.sh.
+// It drives that checkout's real GrepTool.Execute with a deterministic fake rg
+// and records the rg argv and the tool output. The only normalisation is
+// replacing the scratch fixture root with {{ROOT}}.
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestGenerateGrepGolden(t *testing.T) {
+	fix := os.Getenv("GOLDEN_FIXTURES")
+	if fix == "" {
+		t.Skip("GOLDEN_FIXTURES not set")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := os.ReadFile(filepath.Join(fix, "rg_stream.jsonl.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	data := filepath.Join(bin, "data.jsonl")
+	argsFile := filepath.Join(bin, "args")
+	os.WriteFile(data, []byte(strings.ReplaceAll(string(tmpl), "{{ROOT}}", root)), 0o600)
+	// Builtins only: PATH contains just the fake rg directory.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\nwhile IFS= read -r line || [ -n \"$line\" ]; do printf '%s\\n' \"$line\"; done < '" + data + "'\n"
+	os.WriteFile(filepath.Join(bin, "rg"), []byte(script), 0o755)
+	t.Setenv("PATH", bin)
+
+	var cases []struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	raw, err := os.ReadFile(filepath.Join(fix, "cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	norm := func(s string) string { return strings.ReplaceAll(s, root, "{{ROOT}}") }
+	for _, c := range cases {
+		in := strings.ReplaceAll(string(c.Args), "{{ROOT}}", root)
+		out, err := NewGrepTool(nil, DefaultOutputLimits()).Execute(context.Background(), json.RawMessage(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(argsFile)
+		os.WriteFile(filepath.Join(fix, c.Name+".args"), []byte(norm(string(a))), 0o644)
+		os.WriteFile(filepath.Join(fix, c.Name+".out"), []byte(norm(out.Content)), 0o644)
+	}
+}

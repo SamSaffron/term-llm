@@ -1,0 +1,2 @@
+# Verbatim upstream output includes "N: " prefixes for blank context lines.
+*.out whitespace=-blank-at-eol

@@ -2,6 +2,7 @@ package greprerank
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -27,13 +28,21 @@ func instructions(n int) string {
 	return fmt.Sprintf("Is search result #%d relevant to the search intent, i.e. something the agent actually wants to see (not an incidental pattern match)?", n)
 }
 
-func buildRequests(model, intent, pattern string, items []Item) ([]chunkRequest, error) {
+func buildRequests(ctx context.Context, model, intent, pattern string, items []Item) ([]chunkRequest, error) {
 	var reqs []chunkRequest
 	for start := 0; start < len(items); start += ChunkSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		end := min(start+ChunkSize, len(items))
 		var listing strings.Builder
 		qs := make(map[string]classify.Question, end-start)
 		for i := start; i < end; i++ {
+			if i > start && i%10 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			if i > start {
 				listing.WriteString("\n\n")
 			}

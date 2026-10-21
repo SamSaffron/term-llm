@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,6 +81,7 @@ type GrepTool struct {
 	config          *ToolConfig
 	rgCaptureLimits ripgrepCaptureLimits
 	reranker        *greprerank.Reranker
+	intentScan      grepFileScanner
 }
 
 // NewGrepTool creates a new GrepTool.
@@ -314,7 +314,7 @@ func captureRipgrepStderr(stderr io.Reader) []byte {
 	return data
 }
 
-func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits, maxResults int, filesWithMatches bool) ([]byte, bool, error) {
+func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits, maxResults int, filesWithMatches bool, observers ...ripgrepLineConsumer) ([]byte, bool, error) {
 	limits = limits.normalize()
 	cmd := exec.CommandContext(ctx, "rg", args...)
 
@@ -341,6 +341,18 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits,
 			consumeLine = limiter.consumePathLine
 		} else {
 			consumeLine = limiter.consumeJSONLine
+		}
+	}
+
+	if len(observers) > 0 {
+		normal := consumeLine
+		consumeLine = func(line []byte) (bool, error) {
+			if normal != nil {
+				if stop, err := normal(line); stop || err != nil {
+					return stop, err
+				}
+			}
+			return observers[0](line)
 		}
 	}
 
@@ -938,10 +950,6 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	if err != nil {
 		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
-	searchMax := maxResults
-	if intent != "" {
-		searchMax = t.reranker.MaxCandidates()
-	}
 
 	contextLines := a.ContextLines
 	if contextLines <= 0 {
@@ -967,73 +975,10 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 		}
 	}
 
-	// Try ripgrep first (faster)
-	if ripgrepAvailable() {
-		result, err := t.executeRipgrep(ctx, a, resolvedSearchPath, contextLines, searchMax)
-		if err != nil {
-			if ctx.Err() != nil {
-				return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
-			}
-			// Fall through to Go implementation on ripgrep error
-		} else {
-			matches := result.matches
-			if len(matches) == 0 {
-				return textOutput("No matches found."), nil
-			}
-			if a.FilesWithMatches {
-				return textOutput(formatFilesWithMatches(matches, result.truncated)), nil
-			}
-			return textOutput(t.finishGrep(ctx, a, resolvedSearchPath, intent, result, contextLines, maxResults, true)), nil
-		}
-	}
-
-	// Fallback: Go implementation
-	// Compile regex
-	re, err := regexp.Compile(a.Pattern)
-	if err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid regex pattern: %v", err))), nil
-	}
-
-	// Collect files to search
-	files, err := collectFiles(resolvedSearchPath, a.Include, a.Exclude)
-	if err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))), nil
-	}
-
-	// Sort by modification time (newest first)
-	sortFilesByMtime(files)
-
-	// Search files
-	var matches []GrepMatch
-	for _, file := range files {
-		if ctx.Err() != nil {
-			return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
-		}
-
-		if len(matches) >= searchMax {
-			break
-		}
-
-		fileMatches, err := searchFileBlocks(file, re, searchMax-len(matches), contextLines, intent != "")
-		if err != nil {
-			continue // Skip files that can't be read
-		}
-		matches = append(matches, fileMatches...)
-	}
-
-	if len(matches) == 0 {
-		return textOutput("No matches found."), nil
-	}
-
-	if a.FilesWithMatches {
-		return textOutput(formatFilesWithMatches(matches, len(matches) >= searchMax)), nil
-	}
-
-	// The ordinary Go path is intentionally unchanged when intent is inactive.
 	if intent != "" {
-		return textOutput(t.finishGrep(ctx, a, resolvedSearchPath, intent, ripgrepResult{matches: matches, truncated: len(matches) >= searchMax}, contextLines, maxResults, false)), nil
+		return textOutput(t.executeIntentGrep(ctx, a, resolvedSearchPath, intent, contextLines, maxResults)), nil
 	}
-	return textOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
+	return textOutput(t.executePlainGrep(ctx, a, resolvedSearchPath, contextLines, maxResults)), nil
 }
 
 // collectFiles collects files to search.

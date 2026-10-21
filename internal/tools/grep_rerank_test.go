@@ -1129,7 +1129,7 @@ func TestGrepRerankTimeoutWithNonCooperativeBackend(t *testing.T) {
 	tool, _ := newIntentTool(t, fake, func(c *config.Config) { c.Tools.GrepRerank.TimeoutMS = 50 })
 	start := time.Now()
 	out := execGrep(t, tool, dir, map[string]any{"intent": "x"})
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond+250*time.Millisecond {
 		t.Fatalf("grep took %v with a 50ms budget", elapsed)
 	}
 	if !strings.HasPrefix(out, skipNote("timeout")+"3 matches in 3 files\n") || strings.Contains(out, rerankTestSecret) {
@@ -1146,7 +1146,7 @@ func TestGrepRerankOpenSlowerThanBudgetTimesOut(t *testing.T) {
 	f.block = release
 	start := time.Now()
 	out := execGrep(t, tool, dir, map[string]any{"intent": "x"})
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond+250*time.Millisecond {
 		t.Fatalf("grep took %v with a 50ms budget", elapsed)
 	}
 	if !strings.HasPrefix(out, skipNote("timeout")+"2 matches in 2 files\n") {

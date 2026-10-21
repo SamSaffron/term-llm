@@ -1,84 +1,58 @@
 package tools
 
 import (
-	"bufio"
-	"fmt"
-	"net/http"
-	"os"
+	"context"
 	"regexp"
-	"strings"
+
+	"github.com/samsaffron/term-llm/internal/grepsearch"
 )
 
-// searchFile searches a single file for matches.
-func searchFile(path string, re *regexp.Regexp, maxMatches, contextLines int) ([]GrepMatch, error) {
-	return searchFileBlocks(path, re, maxMatches, contextLines, false)
+type grepFileScanner func(context.Context, string, *regexp.Regexp, int, func([]string, int) error) error
+
+type grepSearchControl struct {
+	ctx    context.Context
+	scan   grepFileScanner
+	match  func(GrepMatch)
+	blocks func([]matchBlock)
 }
 
-// searchFileBlocks keeps structured line windows for the intent-only Go path.
-// Plain grep retains its original unmerged matches and output.
-func searchFileBlocks(path string, re *regexp.Regexp, maxMatches, contextLines int, merge bool) ([]GrepMatch, error) {
-	file, err := os.Open(path)
+func searchFile(path string, re *regexp.Regexp, maxMatches, contextLines int) ([]GrepMatch, error) {
+	return searchFileWithControl(path, re, maxMatches, contextLines)
+}
+
+// The optional controls apply only to intent expansion. Plain grep retains its
+// original read/scan/format ordering and unmerged matches.
+func searchFileWithControl(path string, re *regexp.Regexp, maxMatches, contextLines int, controls ...grepSearchControl) ([]GrepMatch, error) {
+	control := grepSearchControl{scan: grepsearch.Scan}
+	if len(controls) > 0 {
+		control = controls[0]
+	}
+	var matches []GrepMatch
+	var source []string
+	err := control.scan(control.ctx, path, re, maxMatches, func(lines []string, index int) error {
+		source = lines
+		match := GrepMatch{FilePath: path, LineNumber: index + 1, Match: lines[index], Context: buildContext(lines, index, contextLines)}
+		matches = append(matches, match)
+		if control.match != nil {
+			control.match(match)
+		}
+		if control.ctx != nil {
+			return control.ctx.Err()
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-
-	// Check for binary
-	buf := make([]byte, 512)
-	n, err := file.Read(buf)
-	if err != nil && n == 0 {
-		return nil, err
-	}
-
-	contentType := http.DetectContentType(buf[:n])
-	if !strings.HasPrefix(contentType, "text/") &&
-		!strings.Contains(contentType, "json") &&
-		!strings.Contains(contentType, "xml") {
-		return nil, fmt.Errorf("binary file")
-	}
-
-	// Reset to beginning
-	if _, err := file.Seek(0, 0); err != nil {
-		return nil, fmt.Errorf("seek: %w", err)
-	}
-
-	// Read all lines for context support
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	// Search for matches
-	var matches []GrepMatch
-	for lineNum, line := range lines {
-		if re.MatchString(line) {
-			match := GrepMatch{
-				FilePath:   path,
-				LineNumber: lineNum + 1, // 1-indexed
-				Match:      line,
-				Context:    buildContext(lines, lineNum, contextLines),
-			}
-			matches = append(matches, match)
-
-			if len(matches) >= maxMatches {
-				break
-			}
-		}
-	}
-
-	if merge {
-		return mergeSearchMatches(path, lines, matches, contextLines), nil
+	if control.blocks != nil {
+		control.blocks(searchMatchBlocks(path, source, matches, contextLines))
+		return matches, nil
 	}
 	return matches, nil
 }
 
-// Merge directly from the source lines, never by parsing formatted Context.
-func mergeSearchMatches(path string, lines []string, matches []GrepMatch, contextLines int) []GrepMatch {
+// Capture source windows for later merging, never by parsing formatted Context.
+func searchMatchBlocks(path string, lines []string, matches []GrepMatch, contextLines int) []matchBlock {
 	pending := make([]pendingMatch, len(matches))
 	for i, m := range matches {
 		p := pendingMatch{filePath: path, lineNumber: m.LineNumber, matchLine: m.Match}
@@ -91,10 +65,9 @@ func mergeSearchMatches(path string, lines []string, matches []GrepMatch, contex
 		}
 		pending[i] = p
 	}
-	blocks := pendingsToBlocks(pending)
-	out := make([]GrepMatch, len(blocks))
-	for i, b := range blocks {
-		out[i] = blockToGrepMatch(b)
+	blocks := make([]matchBlock, len(pending))
+	for i := range pending {
+		blocks[i] = pendingToBlock(&pending[i])
 	}
-	return out
+	return blocks
 }

@@ -1,0 +1,17 @@
+3 matches in 3 files
+
+{{ROOT}}/pkg/a.go (1 match):
+  9: func before() {
+> 10: 	needle := 1
+  11: 	return needle
+  12: }
+> 30: // needle ünïcode "quoted"
+  31: 
+
+{{ROOT}}/pkg/b.go (1 match):
+  1: package b
+> 2: var needle = 2
+  3: 
+
+{{ROOT}}/docs/c.md (1 match):
+> 5: needle in docs

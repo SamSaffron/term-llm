@@ -78,32 +78,22 @@ func (t *GrepTool) grepIntent(args json.RawMessage, a GrepArgs, maxResults int) 
 	return extra.Intent, nil
 }
 
+// finishGrep keeps ordinary enrichment and ordering unchanged. Intent results
+// use the same bounded pipeline as a streamed search, including direct fixtures.
 func (t *GrepTool) finishGrep(ctx context.Context, a GrepArgs, root, intent string, result ripgrepResult, contextLines, maxResults int, useRG bool) string {
-	matches := result.matches
-	note := ""
-	if intent != "" && len(matches) >= 2 {
-		ranked, message, ok := t.rankGrep(ctx, a.Pattern, root, intent, matches, maxResults)
-		if ctx.Err() != nil {
-			return "grep timed out after 1 minute; try a more specific pattern or path"
-		}
-		if ok {
-			return formatRankedGrepResults(ranked, message)
-		}
-		note = message
-	}
-	// A fallback uses the ordinary ordering and formatter, never partial scores.
-	// Limit before auto-enrichment so it cannot resurrect the larger candidate set.
 	if intent != "" {
-		matches = sortGrepMatchesByMtime(matches)
-		if len(matches) > maxResults {
-			matches = matches[:maxResults]
-		}
+		return t.intentPipeline(ctx, a, root, intent, maxResults, func(_ context.Context, publish func(intentSearchResult), _ *greprerank.Attempt) (intentSearchResult, error) {
+			value := intentSearchResult{ripgrepResult: result}
+			publish(value)
+			return value, nil
+		})
 	}
+	matches := result.matches
 	if useRG {
 		matches, result.truncated = t.autoEnrichGrep(ctx, a, root, matches, contextLines, maxResults, result.truncated)
 		matches = sortGrepMatchesByMtime(matches)
 	}
-	return note + formatGrepResults(matches, result.truncated || len(matches) >= maxResults)
+	return formatGrepResults(matches, result.truncated || len(matches) >= maxResults)
 }
 
 func (t *GrepTool) autoEnrichGrep(ctx context.Context, a GrepArgs, root string, matches []GrepMatch, contextLines, maxResults int, truncated bool) ([]GrepMatch, bool) {
@@ -121,11 +111,72 @@ func (t *GrepTool) autoEnrichGrep(ctx context.Context, a GrepArgs, root string, 
 	return matches, truncated
 }
 
-func (t *GrepTool) rankGrep(ctx context.Context, pattern, root, intent string, matches []GrepMatch, maxResults int) ([]GrepMatch, string, bool) {
-	ctx, cancel := context.WithTimeout(ctx, t.reranker.Budget())
-	defer cancel()
-	// Relative paths are rooted at the directory being searched (or the parent
-	// of a single-file search). Path conversion is lexical: no added file I/O.
+func (t *GrepTool) executeIntentGrep(ctx context.Context, a GrepArgs, root, intent string, contextLines, maxResults int) string {
+	return t.intentPipeline(ctx, a, root, intent, maxResults, func(ctx context.Context, publish func(intentSearchResult), attempt *greprerank.Attempt) (intentSearchResult, error) {
+		return t.searchIntent(ctx, a, root, contextLines, maxResults, attempt, publish)
+	})
+}
+
+func (t *GrepTool) intentPipeline(ctx context.Context, a GrepArgs, root, intent string, maxResults int, search func(context.Context, func(intentSearchResult), *greprerank.Attempt) (intentSearchResult, error)) string {
+	attempt, err := t.reranker.Begin(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "grep timed out after 1 minute; try a more specific pattern or path"
+		}
+		return grepRerankSkipped(err) + t.executePlainGrep(ctx, a, root, grepContextLines(a.ContextLines), maxResults)
+	}
+	text, err := greprerank.RunAttempt(ctx, attempt, func(ctx context.Context, publish func(intentSearchResult)) (intentSearchResult, error) {
+		return search(ctx, publish, attempt)
+	}, func(ctx context.Context, value intentSearchResult) (string, error) {
+		if len(value.matches) < 2 {
+			return "", greprerank.ErrSkipped
+		}
+		items := grepRerankItems(root, value.matches)
+		result, err := attempt.Rank(intent, a.Pattern, items)
+		if err != nil {
+			return "", err
+		}
+		kept := result.Kept[:min(len(result.Kept), maxResults)]
+		matches := make([]GrepMatch, len(kept))
+		for i, index := range kept {
+			matches[i] = value.matches[index]
+		}
+		note := func(shown int) string {
+			if result.BelowThresholdAll {
+				return fmt.Sprintf("[intent rerank: no match scored >= %.2f; showing top %d by relevance — consider a different pattern]\n", t.reranker.Threshold(), shown)
+			}
+			return fmt.Sprintf("[intent rerank: showing %d of %d relevant matches (%d of %d candidates below %.2f dropped); candidate search capped at %d — broaden pattern/path or omit intent for unfiltered results]\n", shown, len(result.Kept), result.Culled, len(value.matches), t.reranker.Threshold(), t.reranker.MaxCandidates())
+		}
+		return formatRankedGrepResults(matches, note), ctx.Err()
+	}, func(value intentSearchResult) string { return formatIntentPrefix(value, maxResults, a.ContextLines) })
+	if ctx.Err() != nil {
+		return "grep timed out after 1 minute; try a more specific pattern or path"
+	}
+	if err != nil && !errors.Is(err, greprerank.ErrSkipped) {
+		return grepRerankSkipped(err) + text
+	}
+	return text
+}
+
+func formatIntentPrefix(value intentSearchResult, maxResults, contextLines int) string {
+	if value.message != "" {
+		return value.message
+	}
+	matches := value.matches
+	if value.snapshot != nil {
+		matches, _ = parseRipgrepOutput(value.snapshot(), maxResults, grepContextLines(contextLines))
+	}
+	if len(matches) == 0 {
+		return "No matches found."
+	}
+	matches = sortGrepMatchesByMtime(matches)
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+	return formatGrepResults(matches, value.truncated || len(matches) >= maxResults)
+}
+
+func grepRerankItems(root string, matches []GrepMatch) []greprerank.Item {
 	if len(matches) > 0 && filepath.Clean(root) == filepath.Clean(matches[0].FilePath) {
 		root = filepath.Dir(root)
 	}
@@ -133,29 +184,11 @@ func (t *GrepTool) rankGrep(ctx context.Context, pattern, root, intent string, m
 	for i, m := range matches {
 		path, err := filepath.Rel(root, m.FilePath)
 		if err != nil {
-			return nil, grepRerankSkipped(nil), false
+			path = filepath.Base(m.FilePath)
 		}
 		items[i] = greprerank.Item{Path: filepath.ToSlash(path), Block: m.Context}
 	}
-	result, err := t.reranker.Rank(ctx, intent, pattern, items)
-	if err != nil {
-		return nil, grepRerankSkipped(err), false
-	}
-	kept := result.Kept
-	if len(kept) > maxResults {
-		kept = kept[:maxResults]
-	}
-	ranked := make([]GrepMatch, len(kept))
-	for i, index := range kept {
-		ranked[i] = matches[index]
-	}
-	var note string
-	if result.BelowThresholdAll {
-		note = fmt.Sprintf("[intent rerank: no match scored >= %.2f; showing top %d by relevance — consider a different pattern]\n", t.reranker.Threshold(), len(ranked))
-	} else {
-		note = fmt.Sprintf("[intent rerank: showing %d of %d relevant matches (%d of %d candidates below %.2f dropped); candidate search capped at %d — broaden pattern/path or omit intent for unfiltered results]\n", len(ranked), len(result.Kept), result.Culled, len(matches), t.reranker.Threshold(), t.reranker.MaxCandidates())
-	}
-	return ranked, note, true
+	return items
 }
 
 func grepRerankSkipped(err error) string {
@@ -171,19 +204,9 @@ func grepRerankSkipped(err error) string {
 	return "[intent rerank skipped (" + category + "); showing unranked results]\n"
 }
 
-// Ranked matches must not pass through formatGrepResults: it regroups by file
-// and caps ten blocks/file, both of which would silently destroy rank order.
-func formatRankedGrepResults(matches []GrepMatch, note string) string {
-	var sb strings.Builder
-	sb.WriteString(note)
-	const capNote = "\n[output capped at 50KB — narrow your search]\n"
-	for _, m := range matches {
-		block := fmt.Sprintf("\n%s:\n%s\n", m.FilePath, m.Context)
-		if sb.Len()+len(block)+len(capNote) > maxOutputBytes {
-			sb.WriteString(capNote)
-			break
-		}
-		sb.WriteString(block)
+func grepContextLines(lines int) int {
+	if lines <= 0 {
+		return 2
 	}
-	return sb.String()
+	return lines
 }

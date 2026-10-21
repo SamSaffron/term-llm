@@ -39,7 +39,13 @@ var (
 	ErrBreakerOpen = errors.New("greprerank: temporarily disabled after repeated failures")
 	// ErrClassifier means the backend failed or returned an invalid response.
 	ErrClassifier = errors.New("greprerank: classifier error")
-	// ErrInput means the request was rejected before any backend call.
+	// ErrSkipped means there was nothing to rank (fewer than two items or an
+	// empty intent). It is neutral for the breaker and not a failure; callers
+	// should omit any classifier note for it.
+	ErrSkipped = errors.New("greprerank: nothing to rank")
+	// ErrInput means the request was invalid (too many candidates or an
+	// oversized intent/pattern) and was rejected before any backend call. It
+	// is neutral for the breaker but callers should report a classifier error.
 	ErrInput = errors.New("greprerank: invalid input")
 )
 
@@ -114,51 +120,34 @@ func (r *Reranker) SetClock(now func() time.Time) {
 	r.mu.Unlock()
 }
 
-// Rank scores items against intent. Errors are ErrInput, ErrUnavailable,
+// Rank scores items against intent in one operation: Begin, Start,
+// Attempt.Rank and Finish. Errors are ErrSkipped, ErrInput, ErrUnavailable,
 // ErrBreakerOpen, ErrClassifier, context.DeadlineExceeded (budget exhausted)
 // or the parent context's error (not counted by the breaker).
 func (r *Reranker) Rank(ctx context.Context, intent, pattern string, items []Item) (Result, error) {
-	if len(items) < 2 || len(items) > r.opts.MaxCandidates ||
-		intent == "" || len(intent) > MaxPromptBytes || len(pattern) > MaxPromptBytes {
-		return Result{}, ErrInput
-	}
-	if err := ctx.Err(); err != nil {
+	if err := r.checkInput(intent, pattern, items); err != nil {
 		return Result{}, err
 	}
-	if !r.allow() {
-		return Result{}, ErrBreakerOpen
-	}
-	dctx, cancel := context.WithTimeout(ctx, r.opts.Budget)
-	defer cancel()
-
-	scores, err := r.score(dctx, intent, pattern, items)
-	var result Result
-	if err == nil {
-		result = rank(scores, r.opts.Threshold)
-		// Results and deadline may race; the budget includes validation and
-		// ranking, and an expired result must never count as success.
-		err = dctx.Err()
-	}
+	a, err := r.Begin(ctx)
 	if err != nil {
-		return Result{}, r.finish(ctx, dctx, err)
+		return Result{}, err
 	}
-	r.record(true)
-	return result, nil
+	a.Start()
+	res, err := a.Rank(intent, pattern, items)
+	if err = a.Finish(err); err != nil {
+		return Result{}, err
+	}
+	return res, nil
 }
 
-// finish normalises err, updating the breaker for countable failures.
-func (r *Reranker) finish(parent, dctx context.Context, err error) error {
-	if perr := parent.Err(); perr != nil {
-		return perr
+func (r *Reranker) checkInput(intent, pattern string, items []Item) error {
+	if len(items) < 2 || intent == "" {
+		return ErrSkipped
 	}
-	r.record(false)
-	switch {
-	case errors.Is(err, ErrUnavailable):
-		return ErrUnavailable
-	case dctx.Err() != nil || errors.Is(err, context.DeadlineExceeded):
-		return context.DeadlineExceeded
+	if len(items) > r.opts.MaxCandidates || len(intent) > MaxPromptBytes || len(pattern) > MaxPromptBytes {
+		return ErrInput
 	}
-	return ErrClassifier
+	return nil
 }
 
 func (r *Reranker) score(ctx context.Context, intent, pattern string, items []Item) ([]float64, error) {
@@ -166,8 +155,11 @@ func (r *Reranker) score(ctx context.Context, intent, pattern string, items []It
 	if err != nil {
 		return nil, err
 	}
-	reqs, err := buildRequests(r.model, intent, pattern, items)
+	reqs, err := buildRequests(ctx, r.model, intent, pattern, items)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, ErrClassifier
 	}
 	type chunkResult struct {

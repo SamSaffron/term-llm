@@ -50,20 +50,49 @@ func TestGrepUnconfiguredIntentBaseline(t *testing.T) {
 	}
 }
 
-func TestGrepUnconfiguredIntentRipgrepBaseline(t *testing.T) {
-	rg := installFakeRG(t, buildSyntheticRipgrepJSON(4))
+// TestGrepUnconfiguredRipgrepGolden compares the current tool with goldens
+// captured from the real GrepTool.Execute at fa7aed75 (rg argv and output
+// bytes) for a fixed fake rg JSON stream. See testdata/grep/regenerate.sh for
+// provenance; the only normalisation is the fixture root, {{ROOT}}.
+func TestGrepUnconfiguredRipgrepGolden(t *testing.T) {
+	const dir = "testdata/grep"
+	read := func(name string) []byte {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	var cases []struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(read("cases.json"), &cases); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := strings.ReplaceAll(string(read("rg_stream.jsonl.tmpl")), "{{ROOT}}", root)
+	rg := installFakeRG(t, []byte(stream))
 	tool := NewGrepTool(nil, DefaultOutputLimits())
-	args := map[string]any{"pattern": "needle", "path": t.TempDir(), "max_results": 7, "context_lines": 1}
-	plain := execGrepRaw(t, context.Background(), tool, args)
-	plainArgv := strings.Join(rg.argv(t), "\x00")
-	for _, intent := range []any{"find writes", 42, map[string]any{"x": true}} {
-		args["intent"] = intent
-		got := execGrepRaw(t, context.Background(), tool, args)
-		if want := "Unknown parameter 'intent' was ignored\n" + plain; got != want {
-			t.Fatalf("intent %v: got %q, want %q", intent, got, want)
-		}
-		if gotArgv := strings.Join(rg.argv(t), "\x00"); gotArgv != plainArgv {
-			t.Fatalf("intent %v changed rg args: %q != %q", intent, gotArgv, plainArgv)
-		}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			in := strings.ReplaceAll(string(c.Args), "{{ROOT}}", root)
+			out, err := tool.Execute(context.Background(), json.RawMessage(in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotArgs := strings.ReplaceAll(strings.Join(rg.argv(t), "\n")+"\n", root, "{{ROOT}}")
+			if want := string(read(c.Name + ".args")); gotArgs != want {
+				t.Fatalf("rg args:\n%s\nwant:\n%s", gotArgs, want)
+			}
+			gotOut := strings.ReplaceAll(out.Content, root, "{{ROOT}}")
+			if want := string(read(c.Name + ".out")); gotOut != want {
+				t.Fatalf("output:\n%s\nwant:\n%s", gotOut, want)
+			}
+		})
 	}
 }

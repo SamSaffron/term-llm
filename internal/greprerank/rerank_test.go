@@ -177,7 +177,12 @@ func TestInputRejected(t *testing.T) {
 		"big pattern":  {"i", big, mkItems(3)},
 		"empty intent": {"", "p", mkItems(3)},
 	} {
-		if _, err := r.Rank(context.Background(), tc.intent, tc.pat, tc.items); !errors.Is(err, ErrInput) {
+		want := ErrInput
+		if name == "one item" || name == "none" || name == "empty intent" {
+			want = ErrSkipped
+		}
+		_, err := r.Rank(context.Background(), tc.intent, tc.pat, tc.items)
+		if !errors.Is(err, want) || (want == ErrSkipped && errors.Is(err, ErrInput)) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -323,7 +328,7 @@ func TestTimeoutNonCooperativeBackend(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
-	if el := time.Since(start); el > 80*time.Millisecond+500*time.Millisecond {
+	if el := time.Since(start); el > 80*time.Millisecond+250*time.Millisecond {
 		t.Fatalf("elapsed %v", el)
 	}
 	// Permit is still held by the stuck backend call.
@@ -547,7 +552,7 @@ func TestSlowOpenExceedsBudgetThenReused(t *testing.T) {
 	if _, err := r.Rank(context.Background(), "i", "p", mkItems(2)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
-	if time.Since(start) > 2*time.Second {
+	if time.Since(start) > 50*time.Millisecond+250*time.Millisecond {
 		t.Fatal("slow")
 	}
 	if fb.calls() != 0 {
@@ -628,8 +633,12 @@ func TestAdmissionWaitBoundedByBudget(t *testing.T) {
 	}()
 	fb := &fakeBackend{fn: scoreBy(func(int) float64 { return 1 })}
 	r := newRR(fb, Options{Budget: 40 * time.Millisecond})
+	start := time.Now()
 	if _, err := r.Rank(context.Background(), "i", "p", mkItems(3)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
+	}
+	if el := time.Since(start); el > 40*time.Millisecond+250*time.Millisecond {
+		t.Fatalf("elapsed %v", el)
 	}
 	if fb.calls() != 0 {
 		t.Fatal("called without permit")
