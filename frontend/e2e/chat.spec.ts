@@ -877,7 +877,7 @@ test.describe('lightbox chunk failures and handoff', () => {
   });
 });
 
-test('lightbox iPhone controls fit the screen and copying shows visible feedback', async ({
+test('lightbox iPhone controls fit the screen and copying writes image bytes with visible feedback', async ({
   page,
   isMobile,
 }, testInfo) => {
@@ -885,7 +885,29 @@ test('lightbox iPhone controls fit the screen and copying shows visible feedback
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
-      value: { writeText: async () => undefined },
+      value: {
+        write: async (items: ClipboardItem[]) => {
+          if (items.length !== 1 || items[0].types.join(',') !== 'image/png')
+            throw new Error('Expected an image-only clipboard item');
+          const blob = await items[0].getType('image/png');
+          const signature = Array.from(new Uint8Array(await blob.slice(0, 8).arrayBuffer()));
+          const bitmap = await createImageBitmap(blob);
+          const dimensions = { width: bitmap.width, height: bitmap.height };
+          bitmap.close();
+          document.documentElement.dataset.copiedImage = JSON.stringify({
+            type: blob.type,
+            size: blob.size,
+            signature,
+            ...dimensions,
+          });
+          await new Promise<void>((resolve) => {
+            window.addEventListener('finish-image-copy', () => resolve(), { once: true });
+          });
+        },
+        writeText: async () => {
+          throw new Error('Copy image must not write text');
+        },
+      },
     });
   });
   await open(page, '', { media: true });
@@ -919,6 +941,15 @@ test('lightbox iPhone controls fit the screen and copying shows visible feedback
       expect(box.width).toBeGreaterThanOrEqual(44);
       expect(box.height).toBeGreaterThanOrEqual(44);
     }
+    const toolbar = (await dialog.locator('.lightbox-actions').boundingBox())!;
+    const feedback = dialog.locator('.lightbox-copy-feedback').filter({ hasText: /\S/ });
+    for (const message of await feedback.all()) {
+      const box = (await message.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(12);
+      expect(box.x + box.width).toBeLessThanOrEqual(width - 12);
+      expect(box.y).toBeGreaterThanOrEqual(toolbar.y + toolbar.height);
+      expect(box.y + box.height).toBeLessThan(page.viewportSize()!.height - 34);
+    }
   };
   await assertFits();
   for (let i = 0; i < 2; i++)
@@ -931,12 +962,48 @@ test('lightbox iPhone controls fit the screen and copying shows visible feedback
         : testInfo.outputPath(`${name}.png`),
     });
   await screenshot('zoomed');
-  await dialog.getByRole('button', { name: 'Copy URL' }).click();
-  await expect(dialog.getByRole('status')).toHaveText('Copied');
-  await screenshot('copied');
-  await expect(dialog.getByRole('button', { name: 'Copy URL' })).toBeVisible();
   await page.setViewportSize({ width: 320, height: 568 });
+  const copy = dialog.getByRole('button', { name: 'Copy image' });
+  await copy.click();
+  await expect(dialog.getByRole('status')).toHaveText('Copying image…');
+  await expect(copy).toHaveAttribute('aria-disabled', 'true');
   await assertFits();
+  await screenshot('copying');
+  await page.waitForFunction(() => Boolean(document.documentElement.dataset.copiedImage));
+  await page.evaluate(() => window.dispatchEvent(new Event('finish-image-copy')));
+  await expect(dialog.getByRole('status')).toHaveText('Image copied');
+  expect(
+    await page.evaluate(() => JSON.parse(document.documentElement.dataset.copiedImage!)),
+  ).toEqual({
+    type: 'image/png',
+    size: expect.any(Number),
+    signature: [137, 80, 78, 71, 13, 10, 26, 10],
+    ...(await image.evaluate((node: HTMLImageElement) => ({
+      width: node.naturalWidth,
+      height: node.naturalHeight,
+    }))),
+  });
+  await expect(copy).toBeFocused();
+  await assertFits();
+  await screenshot('copied');
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        write: async () => {
+          throw new DOMException('Clipboard denied', 'NotAllowedError');
+        },
+      },
+    });
+  });
+  await copy.click();
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'Couldn’t copy image. Try again or use Download.',
+  );
+  await expect(dialog.getByRole('status')).toBeEmpty();
+  await expect(copy).not.toHaveClass(/copied/);
+  await assertFits();
+  await screenshot('copy-error');
 });
 
 test('production build does not expose the browser-test bridge', async ({ page }) => {

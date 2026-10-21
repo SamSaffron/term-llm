@@ -1,7 +1,8 @@
 import '../styles/features/lightbox.css';
+import type { RefObject } from 'preact';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
-import { copyText } from '../platform/clipboard';
+import { copyImage } from '../platform/clipboard';
 import { overlayManager } from '../platform/overlay-manager';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';
@@ -12,43 +13,59 @@ const MIN_PINCH_SPAN = 16;
 const INITIAL_VIEW = { zoom: 1, pan: { x: 0, y: 0 } };
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-function CopyMediaURL({ src, onError }: { src: string; onError: (error: unknown) => void }) {
-  const [copied, setCopied] = useState(false);
+function CopyImage({ image }: { image: RefObject<HTMLImageElement | null> }) {
+  const [state, setState] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle');
   const active = useRef(true);
+  const copying = useRef(false);
   const timer = useRef<number | undefined>(undefined);
   useLayoutEffect(
     () => () => {
       active.current = false;
-      window.clearTimeout(timer.current);
+      clearTimeout(timer.current);
     },
     [],
   );
   const copy = async () => {
+    if (copying.current) return;
+    copying.current = true;
+    clearTimeout(timer.current);
+    setState('copying');
     try {
-      await copyText(src);
+      await copyImage(image.current);
       if (!active.current) return;
-      setCopied(true);
-      window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      if (active.current) onError(error);
+      setState('copied');
+      timer.current = window.setTimeout(() => setState('idle'), 3000);
+    } catch {
+      if (active.current) setState('error');
+    } finally {
+      copying.current = false;
     }
   };
+  const copied = state === 'copied';
+  const pending = state === 'copying';
   return (
-    <button
-      class={`lightbox-btn lightbox-copy ${copied ? 'copied' : ''}`}
-      type="button"
-      aria-label={copied ? 'Copied' : 'Copy URL'}
-      title={copied ? 'Copied' : 'Copy URL'}
-      onClick={() => void copy()}
-    >
-      <Icon name={copied ? 'check' : 'copy'} />
-      {copied && (
-        <span class="lightbox-copy-feedback" role="status">
-          Copied
-        </span>
-      )}
-    </button>
+    <>
+      <button
+        class={`lightbox-btn ${copied ? 'copied' : ''}`}
+        type="button"
+        aria-label="Copy image"
+        aria-disabled={pending || undefined}
+        title="Copy image"
+        onClick={() => void copy()}
+      >
+        {!pending && <Icon name={copied ? 'check' : 'copy'} />}
+      </button>
+      <div
+        class={`lightbox-copy-feedback ${copied ? 'copied' : ''}`}
+        role="status"
+        aria-atomic="true"
+      >
+        {pending ? 'Copying image…' : copied ? 'Image copied' : null}
+      </div>
+      <div class="lightbox-copy-feedback lightbox-copy-error" role="alert">
+        {state === 'error' ? 'Couldn’t copy image. Try again or use Download.' : null}
+      </div>
+    </>
   );
 }
 
@@ -502,13 +519,7 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
         >
           ↓
         </a>
-        {!current.src.startsWith('blob:') && (
-          <CopyMediaURL
-            key={current.src}
-            src={current.src}
-            onError={(error) => store.toast(error, 'error')}
-          />
-        )}
+        {current.type === 'image' && !error && <CopyImage key={current.src} image={image} />}
         <button
           class="lightbox-btn"
           type="button"

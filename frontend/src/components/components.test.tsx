@@ -10078,25 +10078,127 @@ describe('Preact-owned chat surfaces', () => {
       expect(screen.getByRole('button', { name: 'Previous media' })).not.toBeDisabled();
     });
 
-    it('confirms a successful copy visibly and clears the confirmation after two seconds', async () => {
-      const copy = vi.spyOn(clipboard, 'copyText').mockResolvedValue(undefined);
-      setup();
+    it('confirms the image was copied and clears the confirmation after three seconds', async () => {
+      const copy = vi.spyOn(clipboard, 'copyImage').mockResolvedValue(undefined);
+      const { image } = setup();
       vi.useFakeTimers();
       try {
         await act(async () => {
-          fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }));
+          fireEvent.click(screen.getByRole('button', { name: 'Copy image' }));
         });
-        expect(copy).toHaveBeenCalledWith('https://example.com/image.png');
-        expect(screen.getByRole('button', { name: 'Copied' })).toHaveClass('copied');
-        expect(screen.getByRole('status')).toHaveTextContent('Copied');
+        expect(copy).toHaveBeenCalledWith(image);
+        expect(screen.getByRole('button', { name: 'Copy image' })).toHaveClass('copied');
+        expect(screen.getByRole('status')).toHaveTextContent('Image copied');
         act(() => {
-          vi.advanceTimersByTime(2000);
+          vi.advanceTimersByTime(3000);
         });
-        expect(screen.getByRole('button', { name: 'Copy URL' })).not.toHaveClass('copied');
-        expect(screen.queryByRole('status')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Copy image' })).not.toHaveClass('copied');
+        expect(screen.getByRole('status')).toBeEmptyDOMElement();
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('immediately announces progress, keeps focus, and prevents duplicate copies', async () => {
+      let finish!: () => void;
+      const copy = vi.spyOn(clipboard, 'copyImage').mockReturnValue(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      setup();
+      const status = screen.getByRole('status');
+      const button = screen.getByRole('button', { name: 'Copy image' });
+      expect(status).toBeEmptyDOMElement();
+      button.focus();
+      fireEvent.click(button);
+      expect(copy).toHaveBeenCalledOnce();
+      expect(button).toHaveFocus();
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      expect(status).toHaveTextContent('Copying image…');
+      await userEvent.click(button);
+      expect(copy).toHaveBeenCalledOnce();
+      expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled();
+      await act(async () => finish());
+      expect(status).toHaveTextContent('Image copied');
+      expect(button).not.toHaveAttribute('aria-disabled');
+      expect(button).toHaveFocus();
+    });
+
+    it('replaces old success with an in-dialog error when a repeat copy fails, and allows retry', async () => {
+      const copy = vi
+        .spyOn(clipboard, 'copyImage')
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('Clipboard denied'))
+        .mockResolvedValueOnce(undefined);
+      setup();
+      const button = screen.getByRole('button', { name: 'Copy image' });
+      await userEvent.click(button);
+      expect(button).toHaveClass('copied');
+      await userEvent.click(button);
+      expect(button).not.toHaveClass('copied');
+      expect(screen.getByRole('status')).toBeEmptyDOMElement();
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Couldn’t copy image. Try again or use Download.',
+      );
+      await userEvent.click(button);
+      expect(screen.getByRole('alert')).toBeEmptyDOMElement();
+      expect(screen.getByRole('status')).toHaveTextContent('Image copied');
+      expect(copy).toHaveBeenCalledTimes(3);
+    });
+
+    it('hides image copying after a load failure and restores it on retry', () => {
+      const { image } = setup();
+      fireEvent.error(image);
+      expect(screen.queryByRole('button', { name: 'Copy image' })).not.toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent('Media could not be loaded.');
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(screen.getByRole('button', { name: 'Copy image' })).toBeInTheDocument();
+      expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    });
+
+    it.each([
+      ['close', 'resolve'],
+      ['close', 'reject'],
+      ['navigate', 'resolve'],
+      ['navigate', 'reject'],
+    ])('does not leak pending copy feedback after %s then %s', async (action, outcome) => {
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      vi.spyOn(clipboard, 'copyImage').mockReturnValue(
+        new Promise<void>((res, rej) => {
+          resolve = res;
+          reject = rej;
+        }),
+      );
+      const { store } = setup();
+      const items = [
+        { key: 'first', src: 'https://example.com/first.png', type: 'image' as const },
+        { key: 'second', src: 'https://example.com/second.png', type: 'image' as const },
+      ];
+      act(() => {
+        store.lightbox.value = { ...items[0], items, index: 0 };
+      });
+      await userEvent.click(screen.getByRole('button', { name: 'Copy image' }));
+      const status = screen.getByRole('status');
+      expect(status).toHaveTextContent('Copying image…');
+      await userEvent.click(
+        screen.getByRole('button', { name: action === 'close' ? 'Close' : 'Next media' }),
+      );
+      expect(status).not.toBeInTheDocument();
+      await act(async () => {
+        if (outcome === 'resolve') resolve();
+        else reject(new Error('Clipboard denied'));
+      });
+      if (action === 'close') {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByRole('img')).toHaveAttribute('src', items[1].src);
+        expect(screen.getByRole('status')).toBeEmptyDOMElement();
+        expect(screen.getByRole('alert')).toBeEmptyDOMElement();
+        expect(screen.getByRole('button', { name: 'Copy image' })).not.toHaveClass('copied');
+      }
+      expect(store.toasts.value).toEqual([]);
     });
 
     it('shows the current zoom percentage for buttons, pinch, and reset', () => {
@@ -10187,35 +10289,67 @@ describe('Preact-owned chat surfaces', () => {
     });
   });
 
-  it('reports lightbox clipboard failures', async () => {
-    const store = createStore();
-    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: {
-        writeText: vi.fn(async () => {
-          throw new Error('Clipboard denied');
-        }),
-      },
-    });
-    try {
-      store.lightbox.value = { src: 'https://example.com/image.png', type: 'image' };
+  it.each(['https://example.com/image.png', 'blob:attachment-preview'])(
+    'copies the actual lightbox image from %s, not its URL',
+    async (src) => {
+      const copy = vi.spyOn(clipboard, 'copyImage').mockResolvedValue(undefined);
+      const text = vi.spyOn(clipboard, 'copyText');
+      const store = createStore();
+      store.lightbox.value = { src, type: 'image' };
       render(
         <StoreContext.Provider value={store}>
           <Lightbox />
         </StoreContext.Provider>,
       );
-      await userEvent.click(screen.getByRole('button', { name: 'Copy URL' }));
-      await waitFor(() =>
-        expect(store.toasts.value).toEqual([
-          expect.objectContaining({ kind: 'error', message: 'Clipboard denied' }),
-        ]),
-      );
-      expect(store.lightbox.value).not.toBeNull();
-    } finally {
-      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
-      else Reflect.deleteProperty(navigator, 'clipboard');
-    }
+      await userEvent.click(screen.getByRole('button', { name: 'Copy image' }));
+      expect(copy).toHaveBeenCalledWith(screen.getByRole('img'));
+      expect(text).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: 'Copy URL' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('does not offer image copying for videos', () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const store = createStore();
+    store.lightbox.value = { src: 'https://example.com/video.mp4', type: 'video' };
+    render(
+      <StoreContext.Provider value={store}>
+        <Lightbox />
+      </StoreContext.Provider>,
+    );
+    expect(screen.queryByRole('button', { name: /Copy/ })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [new Error('Clipboard denied'), 'Couldn’t copy image. Try again or use Download.'],
+    [
+      new DOMException('Unsupported', 'NotSupportedError'),
+      'Couldn’t copy image. Try again or use Download.',
+    ],
+    [
+      new DOMException('Denied', 'NotAllowedError'),
+      'Couldn’t copy image. Try again or use Download.',
+    ],
+    [
+      new DOMException('Tainted canvas', 'SecurityError'),
+      'Couldn’t copy image. Try again or use Download.',
+    ],
+  ])('reports lightbox image clipboard failures inside the dialog: %s', async (error, message) => {
+    vi.spyOn(clipboard, 'copyImage').mockRejectedValue(error);
+    const store = createStore();
+    store.lightbox.value = { src: 'https://example.com/image.png', type: 'image' };
+    render(
+      <StoreContext.Provider value={store}>
+        <Lightbox />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Copy image' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(message);
+    expect(screen.getByRole('dialog')).toContainElement(screen.getByRole('alert'));
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    expect(store.toasts.value).toEqual([]);
+    expect(store.lightbox.value).not.toBeNull();
   });
 
   it('pauses and clears owned video resources when the lightbox closes', async () => {

@@ -127,20 +127,54 @@
   gap: 0.25rem;
 }
 
-.lightbox-copy {
-  position: relative;
-}
-
 .lightbox-copy-feedback {
   position: absolute;
   top: calc(100% + 0.75rem);
-  right: 0;
-  padding: 0.375rem 0.625rem;
+  right: 0.5rem;
+  width: max-content;
+  max-width: calc(100% - 1rem);
+  box-sizing: border-box;
   border-radius: 8px;
-  background: #14532d;
+  background: #262626;
   color: #fff;
-  font-size: 0.8rem;
-  white-space: nowrap;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.lightbox-copy-feedback:not(:empty) {
+  padding: 0.5rem 0.75rem;
+}
+
+.lightbox-copy-feedback.copied {
+  background: #14532d;
+}
+
+.lightbox-copy-error {
+  background: #7f1d1d;
+}
+
+.lightbox-actions [aria-disabled='true']::before {
+  content: '';
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 2px solid rgb(255 255 255 / 35%);
+  border-top-color: currentcolor;
+  border-radius: 50%;
+  animation: lightbox-copy-spin 0.8s linear infinite;
+}
+
+@keyframes lightbox-copy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lightbox-actions [aria-disabled='true']::before {
+    animation: none;
+  }
 }
 
 .lightbox-btn {
