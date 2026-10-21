@@ -977,6 +977,7 @@ type sessionMessagePartEntry struct {
 	Text                string                          `json:"text,omitempty"`
 	SkillActivation     *core.SkillActivationProvenance `json:"skill_activation,omitempty"`
 	PathNote            *core.PathNoteProvenance        `json:"path_note,omitempty"`
+	JobNotification     *core.JobNotificationProvenance `json:"job_notification,omitempty"`
 	DiffComment         *core.DiffComment               `json:"diff_comment,omitempty"`
 	ModelSwap           *core.ModelSwapMarker           `json:"model_swap,omitempty"`
 	ToolName            string                          `json:"tool_name,omitempty"`
@@ -1899,6 +1900,13 @@ func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index 
 	if isPathNote {
 		entryRole = "path-note"
 	}
+	jobNotice, isJobNotice := core.JobNotificationOf(msg.Parts)
+	if isJobNotice && msg.Role != core.RoleUser {
+		isJobNotice = false
+	}
+	if isJobNotice {
+		entryRole = "job-notice"
+	}
 	entry := sessionMessageEntry{
 		ID:                   msg.ID,
 		Sequence:             msg.Sequence,
@@ -1919,6 +1927,11 @@ func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index 
 		copyProvenance.ReadFiles = append([]string(nil), pathNote.ReadFiles...)
 		copyProvenance.ModifiedFiles = append([]string(nil), pathNote.ModifiedFiles...)
 		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "path_note", Text: msg.PathNoteDisplayText(), PathNote: &copyProvenance})
+		return entry, true
+	}
+	if isJobNotice {
+		copyNotice := *jobNotice
+		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "job_notification", Text: core.MessageText(core.Message{Role: msg.Role, Parts: msg.Parts}), JobNotification: &copyNotice})
 		return entry, true
 	}
 	if msg.Role == core.RoleEvent {

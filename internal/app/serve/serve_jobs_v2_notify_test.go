@@ -409,3 +409,86 @@ func TestNotifyQueuedAgentWeb_RunFinishedTeardownFallsBackWithoutPhantom(t *test
 		t.Fatalf("runtime history = %#v, want one assistant notice", rt.history)
 	}
 }
+
+func TestJobsV2NotifyContinuationCarriesTools(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+	registry := engine.NewToolRegistry()
+	registry.Register(&echoTool{})
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       engine.NewEngine(provider, registry),
+		defaultModel: "mock-model",
+		store:        store,
+		platform:     "web",
+		maxTurns:     7,
+	}
+	mgr := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+	if _, err := mgr.GetOrCreate(context.Background(), "sess-origin"); err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	srv := &serveServer{store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	if err := srv.notifyQueuedAgentWeb(context.Background(), "run_123", "sess-origin", "Queued job job_123 succeeded"); err != nil {
+		t.Fatalf("notifyQueuedAgentWeb: %v", err)
+	}
+	waitForServeCondition(t, 2*time.Second, func() bool { return len(provider.RecordedRequests()) >= 1 }, "continuation request")
+
+	req := provider.RecordedRequests()[0]
+	if len(req.Tools) == 0 {
+		t.Fatalf("continuation request has no tools; a claude-bin turn could not call wait_for_jobs")
+	}
+	if req.MaxTurns != 7 {
+		t.Fatalf("continuation MaxTurns = %d, want 7", req.MaxTurns)
+	}
+}
+
+func TestJobsV2NotifyContinuationMarksJobNotice(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
+	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: engine.NewEngine(provider, nil), defaultModel: "mock-model", store: store, platform: "web"}
+	mgr := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) { return rt, nil })
+	defer mgr.Close()
+	if _, err := mgr.GetOrCreate(context.Background(), "sess-origin"); err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	srv := &serveServer{store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	message := "Queued job job_1 (core-researcher) succeeded: hi\nFull result: call wait_for_jobs with run_id run_1."
+	info := core.JobNotificationProvenance{JobID: "job_1", RunID: "run_1", Agent: "core-researcher", Status: "succeeded"}
+	if err := srv.notifyQueuedAgentWebNotice(context.Background(), "run_1", "sess-origin", message, info); err != nil {
+		t.Fatalf("notifyQueuedAgentWebNotice: %v", err)
+	}
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.messages["sess-origin"]) >= 2
+	}, "marked notice and assistant reply")
+
+	store.mu.Lock()
+	notice := store.messages["sess-origin"][0]
+	store.mu.Unlock()
+	got, ok := core.JobNotificationOf(notice.Parts)
+	if !ok || got.Agent != "core-researcher" || got.Status != "succeeded" || got.RunID != "run_1" {
+		t.Fatalf("stored notice provenance = %#v, ok=%v", got, ok)
+	}
+	entry, ok := srv.sessionMessageEntryForMessage(&notice, sessionMessageProjectionIndex{})
+	if !ok || entry.Role != "job-notice" || len(entry.Parts) != 1 || entry.Parts[0].Type != "job_notification" || !strings.Contains(entry.Parts[0].Text, "wait_for_jobs") {
+		t.Fatalf("web entry = %#v, ok=%v", entry, ok)
+	}
+	for _, req := range provider.RecordedRequests() {
+		for _, m := range req.Messages {
+			for _, p := range m.Parts {
+				if p.Type == core.PartJobNotification {
+					t.Fatalf("provider received the job_notification marker part")
+				}
+			}
+		}
+	}
+}

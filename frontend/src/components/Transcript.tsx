@@ -1181,6 +1181,40 @@ const MessageRow = memo(function MessageRow({
         </div>
       </article>
     );
+  if (message.role === 'job-notice') {
+    const status = String(message.status || 'finished');
+    const failed = !['succeeded', 'completed', 'complete'].includes(status);
+    const agent = String(message.agent || '');
+    return (
+      <article
+        class={`message job-notice${failed ? ' job-notice-failed' : ''}`}
+        data-message-id={message.id}
+        data-durable-id={message.durableRowId}
+      >
+        <div class="message-body">
+          <button
+            type="button"
+            class="job-notice-toggle"
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+          >
+            <Icon name={failed ? 'alert-circle' : 'check'} class="job-notice-icon" />
+            <span>
+              Queued job {status}
+              {agent ? ` · ${agent}` : ''}
+            </span>
+            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} class="job-notice-chevron" />
+          </button>
+          {expanded && (
+            <div>
+              <div class="job-notice-label">What the agent was told</div>
+              <pre class="compaction-raw">{message.content}</pre>
+            </div>
+          )}
+        </div>
+      </article>
+    );
+  }
   if (message.role === 'model-swap') return <ModelSwapBoundary swap={message} />;
   if (message.role === 'phase')
     return (

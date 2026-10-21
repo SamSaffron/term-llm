@@ -105,7 +105,12 @@ func (s *serveServer) notifyJobsV2RunDone(ctx context.Context, run jobsV2Run, jo
 	message := formatQueuedAgentDoneNotification(job.ID, cfg.AgentName, status, result, exitReason, errText)
 	switch strings.TrimSpace(origin.Origin) {
 	case tools.QueueAgentOriginWeb:
-		return s.notifyQueuedAgentWeb(ctx, run.ID, origin.SessionID, message)
+		// The excerpt above is truncated, so tell the model where the full
+		// result is. The card shows this exact text.
+		message += "\nFull result: call wait_for_jobs with run_id " + run.ID + "."
+		return s.notifyQueuedAgentWebNotice(ctx, run.ID, origin.SessionID, message, core.JobNotificationProvenance{
+			JobID: job.ID, RunID: run.ID, Agent: strings.TrimSpace(cfg.AgentName), Status: strings.TrimSpace(string(status)),
+		})
 	case tools.QueueAgentOriginTelegram:
 		return s.notifyQueuedAgentTelegram(ctx, origin.TelegramChatID, message)
 	default:
@@ -166,6 +171,13 @@ func compactNotificationExcerpt(text string, limit int) string {
 }
 
 func (s *serveServer) notifyQueuedAgentWeb(ctx context.Context, runID, sessionID, message string) error {
+	return s.notifyQueuedAgentWebNotice(ctx, runID, sessionID, message, core.JobNotificationProvenance{})
+}
+
+// notifyQueuedAgentWebNotice delivers a queued-job completion notice to its
+// originating web session. A provenance with a job ID marks the notice so the
+// UI can show it as a job card instead of a message the user typed.
+func (s *serveServer) notifyQueuedAgentWebNotice(ctx context.Context, runID, sessionID, message string, info core.JobNotificationProvenance) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil
@@ -181,7 +193,7 @@ func (s *serveServer) notifyQueuedAgentWeb(ctx context.Context, runID, sessionID
 					return nil
 				}
 			}
-			if s.startQueuedAgentNotificationContinuation(ctx, rt, sessionID, message) {
+			if s.startQueuedAgentNotificationContinuation(ctx, rt, sessionID, message, info) {
 				return nil
 			}
 			if err := rt.appendNotificationMessage(ctx, sessionID, message); err == nil {
@@ -195,7 +207,7 @@ func (s *serveServer) notifyQueuedAgentWeb(ctx context.Context, runID, sessionID
 	return appendQueuedAgentNotificationToStore(ctx, s.store, sessionID, message)
 }
 
-func (s *serveServer) startQueuedAgentNotificationContinuation(ctx context.Context, rt *serveRuntime, sessionID, message string) bool {
+func (s *serveServer) startQueuedAgentNotificationContinuation(ctx context.Context, rt *serveRuntime, sessionID, message string, info core.JobNotificationProvenance) bool {
 	if s == nil || rt == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(message) == "" {
 		return false
 	}
@@ -207,10 +219,17 @@ func (s *serveServer) startQueuedAgentNotificationContinuation(ctx context.Conte
 	if previousResponseID == "" {
 		previousResponseID = s.latestDurableResponseIDForSession(ctx, sessionID)
 	}
-	run, err := s.startResponseRun(rt, true, false, []core.Message{core.UserText(message)}, core.Request{
-		SessionID: sessionID,
-		Model:     model,
-	}, sessionID, startResponseRunOptions{
+	// Build the request the same way a typed message is built, so the model
+	// has its tools (e.g. wait_for_jobs), turn limit and effort. A bare
+	// request leaves claude-bin with no tool bridge and a single turn.
+	request := responsesCreateRequest{Model: model}
+	s.prepareResponseRuntimePlan(ctx, &request, sessionID, false)
+	llmRequest := s.buildResponsesLLMRequest(request, rt, sessionID, true)
+	notice := core.UserText(message)
+	if info.JobID != "" {
+		notice = core.JobNotificationText(message, info)
+	}
+	run, err := s.startResponseRun(rt, true, false, []core.Message{notice}, llmRequest, sessionID, startResponseRunOptions{
 		previousResponseID: previousResponseID,
 		uiSession:          true,
 	})

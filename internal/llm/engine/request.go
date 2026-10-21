@@ -90,7 +90,7 @@ func providerSafeRequestMessages(messages []core.Message) []core.Message {
 	for index, message := range messages {
 		needsRewrite := false
 		for _, part := range message.Parts {
-			if part.Type == core.PartDisplayText || part.Type == core.PartConversationStart || part.Type == core.PartPlatformContext || part.Type == core.PartSkillActivation || part.Type == core.PartAgentMention || part.Type == core.PartDiffComment || part.Type == core.PartGoalSteering {
+			if part.Type == core.PartDisplayText || part.Type == core.PartConversationStart || part.Type == core.PartPlatformContext || part.Type == core.PartSkillActivation || part.Type == core.PartAgentMention || part.Type == core.PartDiffComment || part.Type == core.PartGoalSteering || part.Type == core.PartJobNotification {
 				needsRewrite = true
 				break
 			}
@@ -108,7 +108,7 @@ func providerSafeRequestMessages(messages []core.Message) []core.Message {
 		copyMessage.Parts = make([]core.Part, 0, len(message.Parts))
 		for _, part := range message.Parts {
 			switch part.Type {
-			case core.PartDisplayText, core.PartConversationStart, core.PartPlatformContext, core.PartSkillActivation, core.PartDiffComment, core.PartGoalSteering:
+			case core.PartDisplayText, core.PartConversationStart, core.PartPlatformContext, core.PartSkillActivation, core.PartDiffComment, core.PartGoalSteering, core.PartJobNotification:
 				continue
 			case core.PartAgentMention:
 				part.Type = core.PartText
