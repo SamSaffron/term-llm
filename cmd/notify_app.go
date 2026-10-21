@@ -6,10 +6,11 @@ import (
 )
 
 var notifyAppCmd = &cobra.Command{
-	Use:   "app <message>",
-	Short: "Send a Web Push notification to all subscribed apps",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runNotifyApp,
+	Use:               "app <message>",
+	Short:             "Send a Web Push notification to all subscribed apps",
+	Args:              validateNotifyMessage,
+	ValidArgsFunction: cobra.NoFileCompletions,
+	RunE:              runNotifyApp,
 }
 
 func init() {

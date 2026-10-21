@@ -8,10 +8,11 @@ import (
 )
 
 var notifyTelegramCmd = &cobra.Command{
-	Use:   "telegram --chat-id <id> <message>",
-	Short: "Send a Telegram message and log it to the session store",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runNotifyTelegram,
+	Use:               "telegram --chat-id <id> <message>",
+	Short:             "Send a Telegram message and log it to the session store",
+	Args:              validateNotifyMessage,
+	ValidArgsFunction: cobra.NoFileCompletions,
+	RunE:              runNotifyTelegram,
 }
 
 func init() {
@@ -20,6 +21,8 @@ func init() {
 	if err := notifyTelegramCmd.MarkFlagRequired("chat-id"); err != nil {
 		panic(fmt.Sprintf("failed to mark chat-id required: %v", err))
 	}
+
+	registerNotifyCompletions(notifyTelegramCmd)
 
 	notifyCmd.AddCommand(notifyTelegramCmd)
 }
