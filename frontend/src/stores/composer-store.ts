@@ -189,9 +189,36 @@ export class ComposerStore {
   syncRuntimeFromSession(session: Session): void {
     if (session.activeProvider) this.host.setPreference('provider', session.activeProvider, false);
     if (session.activeModel) this.host.setPreference('model', session.activeModel, false);
-    if (session.activeEffort) this.host.setPreference('effort', session.activeEffort, false);
+    // A confirmed effort applies at once, including the server default, so a
+    // revisited conversation never shows the previous one's effort.
+    const effort = session.confirmedEffort ?? (session.activeEffort || undefined);
+    if (effort !== undefined && !this.draftPinsEffort(session.id))
+      this.host.setPreference('effort', effort, false);
     if (session.activeReasoningMode)
       this.host.setPreference('reasoning', session.activeReasoningMode, false);
+  }
+
+  /**
+   * Adopts the confirmed effort of a freshly hydrated session, so the composer
+   * stops showing whichever effort the previously viewed session left in the
+   * shared preference. An unsent draft that pinned its own effort, or a
+   * selection the user changed after `sampledEffort` was read, takes precedence.
+   */
+  syncPersistedEffort(session: Session, sampledEffort: string): void {
+    if (session.confirmedEffort === undefined) return;
+    if (this.host.activeSessionId.peek() !== session.id) return;
+    if (this.host.selectedEffort.peek() !== sampledEffort) return;
+    if (this.draftPinsEffort(session.id)) return;
+    this.host.setPreference('effort', session.confirmedEffort, false);
+  }
+
+  // Leaving any project conversation persists a draft stamped with the shared
+  // effort, so only a draft holding an unsent message records a deliberate one.
+  private draftPinsEffort(sessionId: string): boolean {
+    const draft = readDrafts(this.services.storage, this.services.keys.draftMessages).find(
+      (entry) => entry.sessionId === sessionId,
+    );
+    return Boolean(draft?.effort && (draft.content.trim() || draft.attachments?.length));
   }
 
   clearSubmitted(

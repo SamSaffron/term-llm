@@ -138,6 +138,7 @@ export class SelectionStore {
     updateSessionRoute(this.services.config.prefix, session, replace);
     this.composer.restore(session.id, 'session');
     this.composer.syncRuntimeFromSession(session);
+    const sampledEffort = this.runtime.selectedEffort.peek();
     // Sidebar/status metadata already identifies the running response. Begin
     // adopting it immediately instead of waiting for transcript hydration,
     // which does not own live-run state.
@@ -178,6 +179,10 @@ export class SelectionStore {
       this.sessionsStore.sessions.value.find(
         (entry) => entry.id === this.sessionsStore.activeSessionId.value,
       ) || session;
+    // activeSession also resolves delegated sessions kept outside the catalog.
+    const hydrated = this.sessionsStore.activeSession.peek();
+    if (outcome === 'loaded' && hydrated)
+      this.composer.syncPersistedEffort(hydrated, sampledEffort);
     // Skills are composer metadata, not transcript display: never hold the
     // selection (and therefore startup readiness) behind them.
     void this.skillStore.loadSkills(current.id).catch(() => {
@@ -360,10 +365,16 @@ export class SelectionStore {
     }
   }
 
+  private confirmedEffortOf(id: string): string | undefined {
+    const active = this.sessionsStore.activeSession.peek();
+    return active?.id === id ? active.confirmedEffort : undefined;
+  }
+
   async loadSession(id: string, epoch = this.epoch): Promise<SessionLoadOutcome> {
     const sampledAskUser = this.interactions.askUser.peek();
     const sampledApproval = this.interactions.approval.peek();
     const sampledSteeringRevision = this.runEngine.steeringStateRevision;
+    const sampledConfirmedEffort = this.confirmedEffortOf(id);
     const stillCurrent = () =>
       epoch === this.epoch && this.sessionsStore.activeSessionId.peek() === id;
     try {
@@ -416,6 +427,15 @@ export class SelectionStore {
         const mode = String(value || '');
         return mode === 'prompt' || mode === 'auto' || mode === 'yolo' ? mode : undefined;
       };
+      // Session state always reports the resolved model, and omits the effort
+      // when the session runs at the server default. A live response that
+      // confirmed an effort while these requests were in flight is newer.
+      const confirmedEffort =
+        current?.confirmedEffort !== sampledConfirmedEffort
+          ? current?.confirmedEffort
+          : String(state.model || '').trim()
+            ? String(state.reasoning_effort || '').trim()
+            : undefined;
       const updated = {
         // Selected transcript payloads own message bodies, not live response
         // ownership. Preserve the sidebar/status evidence sampled before this
@@ -429,6 +449,9 @@ export class SelectionStore {
             }
           : {}),
         lastResponseId: lastResponseId || null,
+        ...(confirmedEffort !== undefined
+          ? { activeEffort: confirmedEffort, confirmedEffort }
+          : {}),
         ...(policy
           ? {
               approvalDefaultMode: policyMode(policy.default_mode),

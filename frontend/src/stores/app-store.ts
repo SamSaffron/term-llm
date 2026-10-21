@@ -993,8 +993,13 @@ export class AppStore {
       if (selection.epoch !== this.selectionEpoch) return;
       // A retry after reauthentication re-verifies instead of reselecting.
       if (outcome === 'failed') {
+        const sampledEffort = this.selectedEffort.peek();
         outcome = await this.loadSessionForOutcome(selection.sessionId, selection.epoch);
         selection.outcome = Promise.resolve(outcome);
+        // The selection that failed never adopted the session's effort.
+        const retried = this.activeSession.peek();
+        if (outcome === 'loaded' && retried && selection.epoch === this.selectionEpoch)
+          this.composer.syncPersistedEffort(retried, sampledEffort);
       }
       if (outcome === 'missing' && selection.epoch === this.selectionEpoch) {
         this.services.workspaceCache.forgetSession(selection.sessionId, selection.number);
