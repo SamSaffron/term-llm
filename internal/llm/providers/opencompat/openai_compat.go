@@ -379,7 +379,7 @@ func setNonEmptyHeaders(header http.Header, values map[string]string) {
 }
 
 func (p *OpenAICompatProvider) makeChatRequest(ctx context.Context, req oaiChatRequest) (*http.Response, error) {
-	body, err := json.Marshal(req)
+	body, err := marshalCompatChatRequest(req, p.vllmThinking)
 	if err != nil {
 		return nil, err
 	}
