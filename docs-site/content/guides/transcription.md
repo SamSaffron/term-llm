@@ -78,7 +78,7 @@ term-llm uploads the audio to `https://chatgpt.com/backend-api/transcribe`, the 
 - The endpoint is undocumented and may change or disappear without notice.
 - ChatGPT picks the model. `--model` and `transcription.model` are ignored.
 - `--timestamps` is not supported. The response contains plain text only.
-- Accepted extensions are `.flac`, `.m4a`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.oga`, `.ogg`, `.opus`, `.wav`, and `.webm`. Files over 25 MB are rejected before upload.
+- Accepted CLI extensions are `.flac`, `.m4a`, `.mp3`, `.mp4`, `.ogg`, `.wav`, and `.webm`. Files over 25 MB are rejected before upload.
 - Some networks get a Cloudflare challenge (HTTP 403) on this endpoint. term-llm reports this as an error and does not retry; if it happens, use another provider.
 - Expired sessions are refreshed automatically. If ChatGPT rejects the session, term-llm refreshes it once and retries. If the refresh token is no longer valid, term-llm removes the stored login; run `term-llm auth login chatgpt` again.
 
