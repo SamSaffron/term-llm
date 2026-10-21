@@ -148,7 +148,7 @@ export class NotificationController {
       });
 
     let subscription = await registration.pushManager.getSubscription();
-    const cachedId = this.storage.getItem(this.cacheKey) || '';
+    let cachedId = this.storage.getItem(this.cacheKey) || '';
     if (permission === 'denied') {
       return this.update({
         status: 'blocked',
@@ -177,6 +177,15 @@ export class NotificationController {
           ? 'Notifications are off for this site/agent.'
           : 'Notifications are not enabled.',
       });
+    }
+
+    if (this.nativeBridge && !subscription && cachedId && repair) {
+      // Token rotation can hide the native record before we can read its old
+      // endpoint. Retire its server ID before replacing it. Unlike best-effort
+      // cleanup, a failed deletion must retain the ID for the next reconcile.
+      await this.endpoints.pushUnsubscribe({ id: cachedId });
+      this.storage.removeItem(this.cacheKey);
+      cachedId = '';
     }
 
     const applicationServerKey = base64URLToBytes(this.config.vapidKey);
@@ -263,9 +272,7 @@ export class NotificationController {
           busy: false,
           verified: false,
           subscriptionId: cachedId,
-          detail: this.nativeBridge
-            ? 'This site/agent is subscribed; server verification will retry when online.'
-            : 'This browser is subscribed; server verification will retry when online.',
+          detail: `${this.nativeBridge ? 'This site/agent' : 'This browser'} is subscribed; server verification will retry when online.`,
         });
       }
       return this.update({
@@ -274,9 +281,7 @@ export class NotificationController {
         verified: false,
         subscriptionId: cachedId || undefined,
         detail: navigator.onLine
-          ? this.nativeBridge
-            ? 'The native subscription could not be synchronized with the server.'
-            : 'The browser subscription could not be synchronized with the server.'
+          ? `The ${this.nativeBridge ? 'native' : 'browser'} subscription could not be synchronized with the server.`
           : 'Notification enrollment is waiting for a network connection.',
       });
     }

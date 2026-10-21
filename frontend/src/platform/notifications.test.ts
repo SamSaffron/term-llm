@@ -248,6 +248,84 @@ describe('native notification enrollment', () => {
     },
   );
 
+  it('retires a missing native enrollment before creating its replacement', async () => {
+    const { controller, bridge, endpoints } = nativeFixture('granted', null);
+    localStorage.setItem('native-push-id', 'old-sub');
+    endpoints.pushUnsubscribe.mockImplementationOnce(async () => {
+      expect(localStorage.getItem('native-push-id')).toBe('old-sub');
+      expect(bridge.subscribe).not.toHaveBeenCalled();
+      return {};
+    });
+
+    expect(await controller.reconcile()).toMatchObject({
+      status: 'subscribed',
+      verified: true,
+      subscriptionId: 'native-sub',
+    });
+    expect(endpoints.pushUnsubscribe).toHaveBeenCalledWith({ id: 'old-sub' });
+    expect(endpoints.pushUnsubscribe.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.subscribe.mock.invocationCallOrder[0],
+    );
+    expect(endpoints.pushUnsubscribe.mock.invocationCallOrder[0]).toBeLessThan(
+      endpoints.pushSubscribe.mock.invocationCallOrder[0],
+    );
+    expect(localStorage.getItem('native-push-id')).toBe('native-sub');
+  });
+
+  it('retains the old native enrollment id when retirement fails and retries it', async () => {
+    const { controller, bridge, endpoints } = nativeFixture('granted', null);
+    localStorage.setItem('native-push-id', 'old-sub');
+    endpoints.pushUnsubscribe.mockRejectedValueOnce(new APIError('Unavailable', 503));
+
+    expect(await controller.reconcile()).toMatchObject({
+      status: 'stale',
+      verified: false,
+      busy: false,
+    });
+    expect(localStorage.getItem('native-push-id')).toBe('old-sub');
+    expect(bridge.subscribe).not.toHaveBeenCalled();
+    expect(endpoints.pushSubscribe).not.toHaveBeenCalled();
+
+    expect(await controller.reconcile()).toMatchObject({ status: 'subscribed', verified: true });
+    expect(endpoints.pushUnsubscribe).toHaveBeenNthCalledWith(1, { id: 'old-sub' });
+    expect(endpoints.pushUnsubscribe).toHaveBeenNthCalledWith(2, { id: 'old-sub' });
+    expect(localStorage.getItem('native-push-id')).toBe('native-sub');
+  });
+
+  it('leaves a missing native enrollment untouched when repair is disabled', async () => {
+    const { controller, bridge, endpoints } = nativeFixture('granted', null);
+    localStorage.setItem('native-push-id', 'old-sub');
+
+    expect(await controller.reconcile({ repair: false })).toMatchObject({ status: 'unsubscribed' });
+    expect(endpoints.pushUnsubscribe).not.toHaveBeenCalled();
+    expect(bridge.subscribe).not.toHaveBeenCalled();
+    expect(localStorage.getItem('native-push-id')).toBe('old-sub');
+
+    expect(await controller.reconcile()).toMatchObject({ status: 'subscribed' });
+    expect(endpoints.pushUnsubscribe).toHaveBeenCalledWith({ id: 'old-sub' });
+  });
+
+  it.each([401, 503])(
+    'does not revive a retired native id when replacement synchronization fails with HTTP %s',
+    async (status) => {
+      const { controller, endpoints } = nativeFixture('granted', null);
+      localStorage.setItem('native-push-id', 'old-sub');
+      endpoints.pushSubscribe.mockRejectedValueOnce(new APIError('Unavailable', status));
+
+      const state = await controller.reconcile();
+      expect(state.subscriptionId).toBeUndefined();
+      expect(state.verified).toBe(false);
+      expect(localStorage.getItem('native-push-id')).toBeNull();
+      expect(endpoints.pushUnsubscribe).toHaveBeenCalledOnce();
+
+      expect(await controller.reconcile()).toMatchObject({
+        status: 'subscribed',
+        subscriptionId: 'native-sub',
+      });
+      expect(endpoints.pushUnsubscribe).toHaveBeenCalledOnce();
+    },
+  );
+
   it('repairs VAPID rotation without opting the node out', async () => {
     const old = { ...nativeSubscription, applicationServerKey: 'BAUG' };
     const { controller, bridge, endpoints } = nativeFixture('granted', old);
