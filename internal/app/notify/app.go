@@ -125,25 +125,5 @@ func RunTelegram(ctx context.Context, deps Deps, opts TelegramOptions) error {
 
 // RunWeb sends a Web Push notification to all subscribed browsers.
 func RunWeb(ctx context.Context, deps Deps, opts WebOptions) error {
-	cfg, err := deps.LoadConfig()
-	if err != nil {
-		return err
-	}
-
-	if !WebPushConfigured(cfg) {
-		return fmt.Errorf("VAPID keys not configured (run 'term-llm serve web' to auto-generate)")
-	}
-
-	n, errs := SendWebPushAll(ctx, deps, cfg, opts.Message, opts.Stderr)
-	if n == 0 && len(errs) == 0 {
-		fmt.Fprintln(opts.Stderr, "no push subscriptions found")
-		return nil
-	}
-	if n > 0 {
-		fmt.Fprintf(opts.Stderr, "sent to %d subscription(s)\n", n)
-	}
-	for _, e := range errs {
-		fmt.Fprintf(opts.Stderr, "error: %s\n", e)
-	}
-	return nil
+	return runPush(ctx, deps, opts.Message, opts.Stderr, session.PushClientBrowser)
 }

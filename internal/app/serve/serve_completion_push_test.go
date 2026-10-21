@@ -2,11 +2,18 @@ package serve
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,6 +179,116 @@ func TestCompletionPushTitleIdentifiesNode(t *testing.T) {
 			// The body is intentionally left alone; only the title gains the label.
 			if payload.Body == "" {
 				t.Error("body should not be empty")
+			}
+		})
+	}
+}
+
+func TestCompletionPushRecordSize(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		oversized  bool
+		httpStatus int
+		rejectAll  bool
+	}{
+		{name: "success", httpStatus: http.StatusCreated},
+		{name: "local payload too large", oversized: true, httpStatus: http.StatusCreated},
+		{name: "relay payload too large", httpStatus: http.StatusRequestEntityTooLarge},
+		{name: "relay rejects fallback", httpStatus: http.StatusRequestEntityTooLarge, rejectAll: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests atomic.Int32
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				request := requests.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read push body: %v", err)
+				}
+				if tt.oversized || request > 1 {
+					if len(body) >= appnotify.WebPushRecordSize {
+						t.Errorf("fallback body length = %d, want less than %d", len(body), appnotify.WebPushRecordSize)
+					}
+				} else if len(body) != appnotify.WebPushRecordSize {
+					t.Errorf("push body length = %d, want %d", len(body), appnotify.WebPushRecordSize)
+				}
+				if got := r.Header.Get("TTL"); got != "300" {
+					t.Errorf("TTL = %q, want 300", got)
+				}
+				if request > 1 && !tt.rejectAll {
+					w.WriteHeader(http.StatusCreated)
+				} else {
+					w.WriteHeader(tt.httpStatus)
+				}
+			}))
+			defer endpoint.Close()
+			browserKey, err := ecdh.P256().GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			privateKey, publicKey, err := webpush.GenerateVAPIDKeys()
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "sessions.db")
+			store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			cfg := &config.Config{}
+			cfg.Serve.WebPush.VAPIDPublicKey = publicKey
+			cfg.Serve.WebPush.VAPIDPrivateKey = privateKey
+			s := &serveServer{store: store, cfgRef: cfg}
+			if tt.oversized {
+				s.cfg.uiTitle = strings.Repeat("x", appnotify.WebPushRecordSize)
+			}
+			sub, err := store.UpsertPushSubscription(context.Background(), &session.PushSubscription{
+				Endpoint:   endpoint.URL,
+				KeyP256DH:  base64.RawURLEncoding.EncodeToString(browserKey.PublicKey().Bytes()),
+				KeyAuth:    base64.RawURLEncoding.EncodeToString(make([]byte, 16)),
+				VAPIDKeyID: appnotify.WebPushKeyID(publicKey),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.enqueueCompletionPush("resp-1", "sess-1", sub.ID, "completed", time.Now())
+			s.dispatchCompletionPushes(store)
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var status, lastError string
+			var attempts int
+			if err := db.QueryRow(`SELECT status, attempt_count, last_error FROM completion_push_outbox WHERE response_id = 'resp-1'`).Scan(&status, &attempts, &lastError); err != nil {
+				t.Fatal(err)
+			}
+			wantStatus, wantRequests := "delivered", int32(1)
+			if tt.rejectAll {
+				wantStatus = "dead"
+				if lastError != "push payload too large" {
+					t.Errorf("last_error = %q, want push payload too large", lastError)
+				}
+			}
+			if tt.httpStatus == http.StatusRequestEntityTooLarge {
+				wantRequests = 2
+			}
+			if status != wantStatus || attempts != 1 || requests.Load() != wantRequests {
+				t.Fatalf("status=%s attempts=%d requests=%d; want %s/1/%d", status, attempts, requests.Load(), wantStatus, wantRequests)
+			}
+			due, err := store.ListDueCompletionPushes(context.Background(), time.Now().Add(time.Hour), 25)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(due) != 0 {
+				t.Errorf("push remains eligible for retry: %v", due)
+			}
+			active, err := store.GetPushSubscription(context.Background(), sub.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if active == nil || active.Status != "active" {
+				t.Errorf("payload size failure invalidated subscription: %+v", active)
 			}
 		})
 	}

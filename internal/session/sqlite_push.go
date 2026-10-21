@@ -51,7 +51,7 @@ func scanPushSubscription(scanner interface{ Scan(...any) error }) (*PushSubscri
 	var updated, lastUsed, failureAt sql.NullString
 	if err := scanner.Scan(
 		&sub.ID, &sub.Endpoint, &sub.KeyP256DH, &sub.KeyAuth, &sub.Status, &sub.VAPIDKeyID,
-		&updated, &lastUsed, &sub.LastFailureCode, &sub.LastFailure, &failureAt,
+		&updated, &lastUsed, &sub.LastFailureCode, &sub.LastFailure, &failureAt, &sub.ClientKind,
 	); err != nil {
 		return nil, err
 	}
@@ -76,6 +76,12 @@ func (s *SQLiteStore) UpsertPushSubscription(ctx context.Context, sub *PushSubsc
 	if sub == nil || strings.TrimSpace(sub.Endpoint) == "" || strings.TrimSpace(sub.KeyP256DH) == "" || strings.TrimSpace(sub.KeyAuth) == "" {
 		return nil, fmt.Errorf("save push subscription: endpoint and keys are required")
 	}
+	if sub.ClientKind == "" {
+		sub.ClientKind = PushClientBrowser
+	}
+	if sub.ClientKind != PushClientBrowser && sub.ClientKind != PushClientApp {
+		return nil, fmt.Errorf("save push subscription: invalid client kind %q", sub.ClientKind)
+	}
 	if sub.ID == "" {
 		sub.ID = NewID()
 	}
@@ -83,25 +89,25 @@ func (s *SQLiteStore) UpsertPushSubscription(ctx context.Context, sub *PushSubsc
 		sub.Status = "active"
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO push_subscriptions (id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at, last_used_at)
-		VALUES (?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))
+		INSERT INTO push_subscriptions (id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at, last_used_at, client_kind)
+		VALUES (?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'), ?)
 		ON CONFLICT(endpoint) DO UPDATE SET
 			key_p256dh = excluded.key_p256dh,
 			key_auth = excluded.key_auth,
 			status = 'active',
 			vapid_key_id = excluded.vapid_key_id,
+			client_kind = excluded.client_kind,
 			updated_at = datetime('now'),
 			last_used_at = datetime('now'),
 			last_failure_code = '',
 			last_failure = '',
 			last_failure_at = NULL`,
-		sub.ID, strings.TrimSpace(sub.Endpoint), strings.TrimSpace(sub.KeyP256DH), strings.TrimSpace(sub.KeyAuth), strings.TrimSpace(sub.VAPIDKeyID))
+		sub.ID, strings.TrimSpace(sub.Endpoint), strings.TrimSpace(sub.KeyP256DH), strings.TrimSpace(sub.KeyAuth), strings.TrimSpace(sub.VAPIDKeyID), sub.ClientKind)
 	if err != nil {
 		return nil, fmt.Errorf("save push subscription: %w", err)
 	}
 	stored, err := scanPushSubscription(s.queryDB().QueryRowContext(ctx, `
-		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
-		       last_used_at, last_failure_code, last_failure, last_failure_at
+		SELECT `+s.pushSubscriptionColumns()+`
 		FROM push_subscriptions WHERE endpoint = ?`, strings.TrimSpace(sub.Endpoint)))
 	if err != nil {
 		return nil, fmt.Errorf("read saved push subscription: %w", err)
@@ -111,8 +117,7 @@ func (s *SQLiteStore) UpsertPushSubscription(ctx context.Context, sub *PushSubsc
 
 func (s *SQLiteStore) GetPushSubscription(ctx context.Context, id string) (*PushSubscription, error) {
 	sub, err := scanPushSubscription(s.queryDB().QueryRowContext(ctx, `
-		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
-		       last_used_at, last_failure_code, last_failure, last_failure_at
+		SELECT `+s.pushSubscriptionColumns()+`
 		FROM push_subscriptions WHERE id = ?`, strings.TrimSpace(id)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -160,8 +165,7 @@ func (s *SQLiteStore) MarkPushSubscriptionUsed(ctx context.Context, id string) e
 // ListPushSubscriptions returns all stored Web Push subscriptions.
 func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
 	rows, err := s.queryDB().QueryContext(ctx, `
-		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
-		       last_used_at, last_failure_code, last_failure, last_failure_at
+		SELECT `+s.pushSubscriptionColumns()+`
 		FROM push_subscriptions
 		ORDER BY created_at ASC`)
 	if err != nil {
@@ -264,6 +268,7 @@ func (s *SQLiteStore) Close() error {
 // read-write initialization/migration reaches the current schema.
 func (s *SQLiteStore) setCurrentColumns() {
 	s.hasGeneratedTitles = true
+	s.hasPushClientKind = true
 	s.hasCompactionSeq = true
 	s.hasCompactionCount = true
 	s.hasCacheWriteTokens = true

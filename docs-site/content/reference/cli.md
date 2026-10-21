@@ -1095,6 +1095,10 @@ Send a notification to all configured platforms
 | `--chat-id` | int64 | Telegram chat ID to send to |
 | `--parse-mode` | string | Telegram parse mode: Markdown or HTML |
 
+### `term-llm notify app`
+
+Send a Web Push notification to all subscribed apps
+
 ### `term-llm notify telegram`
 
 Send a Telegram message and log it to the session store

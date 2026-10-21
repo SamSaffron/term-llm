@@ -77,9 +77,30 @@ func NormalizeWebPushSubject(raw string) string {
 	return subject
 }
 
+// WebPushRecordSize keeps the encrypted body small enough for relays that wrap
+// its base64 encoding in a 4096-byte APNs payload.
+const WebPushRecordSize = 2048
+
+// NewWebPushOptions applies the shared transport settings for all Web Push sends.
+func NewWebPushOptions(publicKey, privateKey, subject string, ttl int) *webpush.Options {
+	return &webpush.Options{
+		VAPIDPublicKey:  publicKey,
+		VAPIDPrivateKey: privateKey,
+		Subscriber:      NormalizeWebPushSubject(subject),
+		TTL:             ttl,
+		RecordSize:      WebPushRecordSize,
+	}
+}
+
 // SendWebPushAll sends a push notification to all stored subscriptions.
 // Returns the number of successful sends and a list of error strings.
 func SendWebPushAll(ctx context.Context, deps Deps, cfg *config.Config, message string, errWriter io.Writer) (int, []string) {
+	return sendWebPush(ctx, deps, cfg, message, errWriter, "")
+}
+
+// sendWebPush filters by the stored client kind; an empty target broadcasts.
+// Legacy subscriptions without a kind belong to browsers, never inferred from endpoints.
+func sendWebPush(ctx context.Context, deps Deps, cfg *config.Config, message string, errWriter io.Writer, clientKind string) (int, []string) {
 	store, cleanup := deps.InitSessionStore(cfg, errWriter)
 	defer cleanup()
 	if store == nil {
@@ -90,7 +111,17 @@ func SendWebPushAll(ctx context.Context, deps Deps, cfg *config.Config, message 
 	if err != nil {
 		return 0, []string{fmt.Sprintf("list subscriptions: %v", err)}
 	}
-	if len(subs) == 0 {
+	matched := make([]session.PushSubscription, 0, len(subs))
+	for _, sub := range subs {
+		kind := sub.ClientKind
+		if kind == "" {
+			kind = session.PushClientBrowser
+		}
+		if sub.Status != "stale" && (clientKind == "" || kind == clientKind) {
+			matched = append(matched, sub)
+		}
+	}
+	if len(matched) == 0 {
 		return 0, nil
 	}
 
@@ -99,27 +130,17 @@ func SendWebPushAll(ctx context.Context, deps Deps, cfg *config.Config, message 
 		"body":  message,
 	})
 
-	subject := NormalizeWebPushSubject(cfg.Serve.WebPush.Subject)
-
 	publicKey, privateKey, keyErr := WebPushKeys(cfg)
 	if keyErr != nil {
 		return 0, []string{keyErr.Error()}
 	}
 
-	opts := &webpush.Options{
-		VAPIDPublicKey:  publicKey,
-		VAPIDPrivateKey: privateKey,
-		Subscriber:      subject,
-		TTL:             60,
-	}
+	opts := NewWebPushOptions(publicKey, privateKey, cfg.Serve.WebPush.Subject, 60)
 
 	lifecycle, _ := session.AsPushSubscriptionLifecycleStore(store)
 	var errs []string
 	sent := 0
-	for _, sub := range subs {
-		if sub.Status == "stale" {
-			continue
-		}
+	for _, sub := range matched {
 		status, err := SendWebPush(ctx, &sub, payload, opts)
 		if status == http.StatusGone || status == http.StatusNotFound {
 			if lifecycle != nil {
@@ -128,6 +149,9 @@ func SendWebPushAll(ctx context.Context, deps Deps, cfg *config.Config, message 
 				}
 			} else if delErr := store.DeletePushSubscription(ctx, sub.Endpoint); delErr != nil {
 				errs = append(errs, fmt.Sprintf("remove stale subscription %s: %v", sub.ID, delErr))
+			}
+			if clientKind != "" {
+				errs = append(errs, fmt.Sprintf("push to subscription %s: endpoint expired (HTTP %d); re-enroll notifications", sub.ID, status))
 			}
 			continue
 		}

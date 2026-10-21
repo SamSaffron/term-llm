@@ -14,12 +14,15 @@ var (
 var notifyCmd = &cobra.Command{
 	Use:   "notify <message>",
 	Short: "Send a notification to all configured platforms",
-	Long: `Send a notification message to all configured platforms (Telegram, Web Push).
+	Long: `Send a notification message to all configured platforms (Telegram and Web Push
+for apps and browsers). Use 'notify app' for app-only delivery or 'notify web'
+for browser-only delivery. Push targets subscriptions in the configured session store.
 
 Examples:
   term-llm notify "build finished"
   term-llm notify --chat-id 12345 "deploy complete"
   term-llm notify telegram --chat-id 12345 "test"
+  term-llm notify app "test"
   term-llm notify web "test"`,
 	Args: cobra.ExactArgs(1),
 	RunE: runNotifyBroadcast,

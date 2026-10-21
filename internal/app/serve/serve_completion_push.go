@@ -170,10 +170,7 @@ func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, ou
 		log.Printf("warning: completion push deferred: %v", keyErr)
 		return
 	}
-	opts := &webpush.Options{
-		VAPIDPublicKey: publicKey, VAPIDPrivateKey: privateKey,
-		Subscriber: appnotify.NormalizeWebPushSubject(s.cfgRef.Serve.WebPush.Subject), TTL: 300,
-	}
+	opts := appnotify.NewWebPushOptions(publicKey, privateKey, s.cfgRef.Serve.WebPush.Subject, 300)
 	for _, item := range items {
 		if ctx.Err() != nil {
 			break
@@ -188,7 +185,7 @@ func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, ou
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-		status, retryAfter, sendErr := send(attemptCtx, sub, item.Payload, opts)
+		status, retryAfter, sendErr := sendCompletionPush(attemptCtx, sub, item.Payload, opts, send)
 		cancel()
 		s.recordCompletionPushResult(outbox, pushStore, item, sub, status, retryAfter, sendErr)
 	}
@@ -208,6 +205,10 @@ func (s *serveServer) recordCompletionPushResult(outbox session.CompletionPushOu
 	if status == http.StatusGone || status == http.StatusNotFound {
 		_ = pushStore.MarkPushSubscriptionStale(ctx, sub.ID, fmt.Sprintf("http_%d", status), "push endpoint rejected the subscription")
 		_ = outbox.MarkCompletionPushDead(ctx, item.ID, "push endpoint rejected the subscription")
+		return
+	}
+	if errors.Is(sendErr, webpush.ErrMaxPadExceeded) || status == http.StatusRequestEntityTooLarge {
+		_ = outbox.MarkCompletionPushDead(ctx, item.ID, "push payload too large")
 		return
 	}
 	if item.AttemptCount >= 7 {

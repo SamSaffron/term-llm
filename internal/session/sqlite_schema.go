@@ -80,6 +80,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		store.probeMessageColumns()
 		store.probeBranchTable()
 		store.probeProjectColumns()
+		store.probePushClientKind()
 	} else {
 		store.setCurrentColumns()
 	}
@@ -141,24 +142,6 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 
 	return store, nil
 }
-
-// schemaVersion is the current schema version.
-// - Fresh databases get the full schema from `schema` const and start at this version
-// - Existing databases run migrations to reach this version
-// Increment when adding new migrations.
-const (
-	projectSchemaVersion = 47
-	schemaVersion        = 66
-)
-
-// migration represents a schema migration.
-type migration struct {
-	version     int
-	description string
-	up          func(db schemaExecutor) error
-}
-
-type schemaExecutor = sqliteutil.Executor
 
 // migrations defines schema migrations for upgrading existing databases.
 // The base `schema` const always contains the FULL current schema.
@@ -1382,6 +1365,11 @@ var migrations = []migration{
 			_, err := db.Exec(`UPDATE session_agent_runs SET notified_at=CURRENT_TIMESTAMP WHERE notify_when_done=0 AND run_status IN ('completed','turn_limit','cancelled','interrupted','failed') AND stop_reason!='host_restarted' AND notified_at IS NULL AND collected_at IS NULL`)
 			return err
 		},
+	},
+	{
+		version:     67,
+		description: "persist push subscription client kind",
+		up:          migratePushClientKindV67,
 	},
 }
 

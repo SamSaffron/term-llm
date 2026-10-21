@@ -2,6 +2,10 @@ import type { AppConfig } from '../app/config';
 import type { Endpoints } from '../api/endpoints';
 import { APIError } from '../api/client';
 import { registerServiceWorker } from './browser';
+import { base64URLToBytes, nativePushRegistration } from './push-platform';
+import type { TermLLMNativePush } from './push-platform';
+
+export { base64URLToBytes } from './push-platform';
 
 export type NotificationStatus =
   'unsupported' | 'blocked' | 'unsubscribed' | 'subscribed' | 'stale';
@@ -31,12 +35,6 @@ const initialState: NotificationState = {
 export const notificationTag = (eventId: string) => `term-llm-completion:${eventId}`;
 export const completionEventId = (responseId: string, subscriptionId: string) =>
   `completion:${responseId}:${subscriptionId}`;
-
-export function base64URLToBytes(value: string): Uint8Array<ArrayBuffer> {
-  const padding = '='.repeat((4 - (value.length % 4)) % 4);
-  const raw = atob((value + padding).replaceAll('-', '+').replaceAll('_', '/'));
-  return Uint8Array.from(raw, (character) => character.charCodeAt(0));
-}
 
 function keysEqual(actual: ArrayBuffer | null, expected: Uint8Array<ArrayBuffer>): boolean {
   if (!actual) return false;
@@ -68,13 +66,17 @@ export class NotificationController {
   private lastFocusCheck = 0;
   private disposed = false;
   private cleanup: Array<() => void> = [];
+  private readonly nativeBridge: TermLLMNativePush | undefined;
 
   constructor(
     private readonly config: AppConfig,
     private readonly endpoints: Endpoints,
     private readonly storage: Storage,
     private readonly cacheKey: string,
-  ) {}
+  ) {
+    const bridge = window.__termLLMNativePush;
+    this.nativeBridge = bridge?.version === 1 ? bridge : undefined;
+  }
 
   get state(): NotificationState {
     return this.current;
@@ -93,23 +95,30 @@ export class NotificationController {
   }
 
   private unsupportedReason(): string {
-    if (!globalThis.isSecureContext) return 'Notifications require a secure HTTPS connection.';
-    if (!('Notification' in window)) return 'This browser does not support notifications.';
-    if (!('serviceWorker' in navigator)) return 'This browser does not support service workers.';
-    if (!('PushManager' in window)) return 'This browser does not support Web Push.';
+    if (!this.nativeBridge) {
+      if (!globalThis.isSecureContext) return 'Notifications require a secure HTTPS connection.';
+      if (!('Notification' in window)) return 'This browser does not support notifications.';
+      if (!('serviceWorker' in navigator)) return 'This browser does not support service workers.';
+      if (!('PushManager' in window)) return 'This browser does not support Web Push.';
+    }
     if (!this.config.vapidKey) return 'This server has not configured Web Push.';
     if (this.config.pushSupported === false)
       return 'Persistent notification storage is unavailable on this server.';
-    if (isIOS() && !isStandalone())
+    if (!this.nativeBridge && isIOS() && !isStandalone())
       return 'On iPhone or iPad, add this site to the Home Screen before enabling notifications.';
     return '';
   }
 
   async reconcile(options: { repair?: boolean } = {}): Promise<NotificationState> {
     if (this.reconcilePromise) return this.reconcilePromise;
-    this.reconcilePromise = this.reconcileNow(options).finally(() => {
-      this.reconcilePromise = null;
-    });
+    this.reconcilePromise = this.reconcileNow(options)
+      .catch((error: unknown) => {
+        if (!this.nativeBridge) throw error;
+        return this.nativeFailure(error);
+      })
+      .finally(() => {
+        this.reconcilePromise = null;
+      });
     return this.reconcilePromise;
   }
 
@@ -124,8 +133,12 @@ export class NotificationController {
       });
 
     this.update({ ...this.current, busy: true, detail: 'Checking notification enrollment…' });
-    const permission = Notification.permission;
-    const registration = await registerServiceWorker(this.config);
+    const permission = this.nativeBridge
+      ? await this.nativeBridge.permission(this.config.prefix)
+      : Notification.permission;
+    const registration = this.nativeBridge
+      ? nativePushRegistration(this.nativeBridge, this.config.prefix, this.config.vapidKey)
+      : await registerServiceWorker(this.config);
     if (!registration)
       return this.update({
         status: 'unsupported',
@@ -141,20 +154,28 @@ export class NotificationController {
         status: 'blocked',
         busy: false,
         verified: false,
-        detail: 'Notifications are blocked. Re-enable them in browser or system settings.',
+        detail: this.nativeBridge
+          ? 'Notifications are blocked for term-llm in iOS Settings.'
+          : 'Notifications are blocked. Re-enable them in browser or system settings.',
       });
     }
     if (permission === 'default') {
       if (subscription) {
         await subscription.unsubscribe().catch(() => false);
-        await this.deleteServer(cachedId, subscription.endpoint);
+      } else if (this.nativeBridge) {
+        await this.nativeBridge.unsubscribe(this.config.prefix).catch(() => false);
+      }
+      if (subscription || this.nativeBridge) {
+        await this.deleteServer(cachedId, subscription?.endpoint || '');
       }
       this.storage.removeItem(this.cacheKey);
       return this.update({
         status: 'unsubscribed',
         busy: false,
         verified: false,
-        detail: 'Notifications are not enabled.',
+        detail: this.nativeBridge
+          ? 'Notifications are off for this site/agent.'
+          : 'Notifications are not enabled.',
       });
     }
 
@@ -203,12 +224,17 @@ export class NotificationController {
         status: 'unsubscribed',
         busy: false,
         verified: false,
-        detail: 'Notification permission is granted, but this browser is not subscribed.',
+        detail: this.nativeBridge
+          ? 'Notification permission is granted, but this site/agent is not subscribed.'
+          : 'Notification permission is granted, but this browser is not subscribed.',
       });
     }
 
     try {
-      const acknowledged = await this.endpoints.pushSubscribe(subscription.toJSON());
+      const acknowledged = await this.endpoints.pushSubscribe({
+        ...subscription.toJSON(),
+        client_kind: this.nativeBridge ? 'app' : 'browser',
+      });
       this.storage.setItem(this.cacheKey, acknowledged.id);
       this.repairAttempted = false;
       return this.update({
@@ -237,7 +263,9 @@ export class NotificationController {
           busy: false,
           verified: false,
           subscriptionId: cachedId,
-          detail: 'This browser is subscribed; server verification will retry when online.',
+          detail: this.nativeBridge
+            ? 'This site/agent is subscribed; server verification will retry when online.'
+            : 'This browser is subscribed; server verification will retry when online.',
         });
       }
       return this.update({
@@ -246,7 +274,9 @@ export class NotificationController {
         verified: false,
         subscriptionId: cachedId || undefined,
         detail: navigator.onLine
-          ? 'The browser subscription could not be synchronized with the server.'
+          ? this.nativeBridge
+            ? 'The native subscription could not be synchronized with the server.'
+            : 'The browser subscription could not be synchronized with the server.'
           : 'Notification enrollment is waiting for a network connection.',
       });
     }
@@ -261,30 +291,61 @@ export class NotificationController {
         detail: unsupported,
         verified: false,
       });
-    if (Notification.permission === 'denied') return this.reconcile({ repair: false });
+    if (!this.nativeBridge && Notification.permission === 'denied')
+      return this.reconcile({ repair: false });
     this.update({ ...this.current, busy: true, detail: 'Waiting for notification permission…' });
-    if (Notification.permission === 'default') await Notification.requestPermission();
+    if (this.nativeBridge) {
+      try {
+        await this.nativeBridge.requestPermission(this.config.prefix);
+      } catch (error) {
+        return this.nativeFailure(error);
+      }
+    } else if (Notification.permission === 'default') await Notification.requestPermission();
     this.repairAttempted = false;
     return this.reconcile({ repair: true });
   }
 
   async disable(): Promise<NotificationState> {
+    if (this.nativeBridge) return this.disableNow().catch((error) => this.nativeFailure(error));
+    return this.disableNow();
+  }
+
+  private async disableNow(): Promise<NotificationState> {
     this.update({ ...this.current, busy: true, detail: 'Disabling notifications…' });
-    const registration = await navigator.serviceWorker?.getRegistration(`${this.config.prefix}/`);
+    const registration = this.nativeBridge
+      ? nativePushRegistration(this.nativeBridge, this.config.prefix, this.config.vapidKey)
+      : await navigator.serviceWorker?.getRegistration(`${this.config.prefix}/`);
     const subscription = await registration?.pushManager.getSubscription();
     const cachedId = this.storage.getItem(this.cacheKey) || this.current.subscriptionId || '';
-    if (subscription) await subscription.unsubscribe().catch(() => false);
+    if (this.nativeBridge) await this.nativeBridge.disable(this.config.prefix);
+    else if (subscription) await subscription.unsubscribe().catch(() => false);
     await this.deleteServer(cachedId, subscription?.endpoint || '');
     this.storage.removeItem(this.cacheKey);
     this.repairAttempted = false;
+    const permission = this.nativeBridge
+      ? await this.nativeBridge.permission(this.config.prefix)
+      : Notification.permission;
     return this.update({
-      status: Notification.permission === 'denied' ? 'blocked' : 'unsubscribed',
+      status: permission === 'denied' ? 'blocked' : 'unsubscribed',
       busy: false,
       verified: false,
-      detail:
-        Notification.permission === 'denied'
+      detail: this.nativeBridge
+        ? permission === 'denied'
+          ? 'Notifications are blocked for term-llm in iOS Settings.'
+          : 'Notifications are off for this site/agent.'
+        : permission === 'denied'
           ? 'Notifications remain blocked in browser or system settings.'
           : 'Notifications are disabled.',
+    });
+  }
+
+  private nativeFailure(error: unknown): NotificationState {
+    return this.update({
+      ...this.current,
+      status: 'stale',
+      busy: false,
+      verified: false,
+      detail: error instanceof Error ? error.message : 'Native notification enrollment failed.',
     });
   }
 
@@ -304,23 +365,30 @@ export class NotificationController {
     addEventListener('pageshow', reconcile);
     addEventListener('online', reconcile);
     addEventListener('focus', focus);
-    navigator.serviceWorker?.addEventListener('controllerchange', reconcile);
-    const message = (event: MessageEvent) => this.handleWorkerMessage(event);
-    navigator.serviceWorker?.addEventListener('message', message);
     this.cleanup.push(
       () => removeEventListener('pageshow', reconcile),
       () => removeEventListener('online', reconcile),
       () => removeEventListener('focus', focus),
-      () => navigator.serviceWorker?.removeEventListener('controllerchange', reconcile),
-      () => navigator.serviceWorker?.removeEventListener('message', message),
     );
-    void navigator.permissions
-      ?.query({ name: 'notifications' as PermissionName })
-      .then((status) => {
-        status.addEventListener('change', reconcile);
-        this.cleanup.push(() => status.removeEventListener('change', reconcile));
-      })
-      .catch(() => undefined);
+    if (this.nativeBridge) {
+      addEventListener('termllm-native-push-change', reconcile);
+      this.cleanup.push(() => removeEventListener('termllm-native-push-change', reconcile));
+    } else {
+      navigator.serviceWorker?.addEventListener('controllerchange', reconcile);
+      const message = (event: MessageEvent) => this.handleWorkerMessage(event);
+      navigator.serviceWorker?.addEventListener('message', message);
+      this.cleanup.push(
+        () => navigator.serviceWorker?.removeEventListener('controllerchange', reconcile),
+        () => navigator.serviceWorker?.removeEventListener('message', message),
+      );
+      void navigator.permissions
+        ?.query({ name: 'notifications' as PermissionName })
+        .then((status) => {
+          status.addEventListener('change', reconcile);
+          this.cleanup.push(() => status.removeEventListener('change', reconcile));
+        })
+        .catch(() => undefined);
+    }
     void this.reconcile();
     return () => this.dispose();
   }
@@ -348,6 +416,7 @@ export class NotificationController {
     originatingSubscriptionId = this.current.subscriptionId || '',
   ): Promise<void> {
     if (
+      this.nativeBridge ||
       document.visibilityState !== 'hidden' ||
       this.current.status !== 'subscribed' ||
       !originatingSubscriptionId ||

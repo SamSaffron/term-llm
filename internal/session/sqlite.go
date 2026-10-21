@@ -21,6 +21,7 @@ type SQLiteStore struct {
 	hasCacheWriteTokens      bool // true if sessions table has cache_write_tokens column
 	hasOrigin                bool // true if sessions table has origin column
 	hasPinned                bool // true if sessions table has pinned column
+	hasPushClientKind        bool // true if push_subscriptions has client_kind
 	hasModelPolicy           bool
 	hasPinOrder              bool // true if sessions table has pin_order column
 	hasTitleSkippedAt        bool // true if sessions table has title_skipped_at column
@@ -219,6 +220,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     endpoint TEXT NOT NULL UNIQUE,
     key_p256dh TEXT NOT NULL,
     key_auth TEXT NOT NULL,
+    client_kind TEXT NOT NULL DEFAULT 'browser' CHECK (client_kind IN ('browser', 'app')),
     status TEXT NOT NULL DEFAULT 'active',
     vapid_key_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),

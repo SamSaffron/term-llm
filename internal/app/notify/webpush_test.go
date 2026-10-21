@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestNormalizeWebPushSubject(t *testing.T) {
 	}
 }
 
-func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
+func TestSendWebPushAllDelivery(t *testing.T) {
 	browserKey, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate browser key: %v", err)
@@ -64,7 +65,11 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 		wantErrors    bool
 		wantRequests  int32
 		wantStale     bool
+		message       string
+		wantSent      int
 	}{
+		{name: "success", status: http.StatusCreated, wantRemaining: 1, wantRequests: 2, wantSent: 1},
+		{name: "oversized message", message: strings.Repeat("x", WebPushRecordSize), wantRemaining: 1, wantErrors: true},
 		{name: "gone", status: http.StatusGone, wantRemaining: 1, wantRequests: 1, wantStale: true},
 		{name: "not found", status: http.StatusNotFound, wantRemaining: 1, wantRequests: 1, wantStale: true},
 		{name: "server error", status: http.StatusInternalServerError, wantRemaining: 1, wantErrors: true, wantRequests: 2},
@@ -73,8 +78,18 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var requests atomic.Int32
-			pushServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			pushServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read push body: %v", err)
+				}
+				if len(body) != 2048 {
+					t.Errorf("push body length = %d, want 2048", len(body))
+				}
+				if got := r.Header.Get("TTL"); got != "60" {
+					t.Errorf("TTL = %q, want 60", got)
+				}
 				w.WriteHeader(tt.status)
 			}))
 			defer pushServer.Close()
@@ -104,9 +119,13 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 			}
 
 			for attempt := 1; attempt <= 2; attempt++ {
-				sent, errs := SendWebPushAll(context.Background(), testDeps(), cfg, "test", io.Discard)
-				if sent != 0 {
-					t.Fatalf("attempt %d sent = %d, want 0", attempt, sent)
+				message := tt.message
+				if message == "" {
+					message = "test"
+				}
+				sent, errs := SendWebPushAll(context.Background(), testDeps(), cfg, message, io.Discard)
+				if sent != tt.wantSent {
+					t.Fatalf("attempt %d sent = %d, want %d", attempt, sent, tt.wantSent)
 				}
 				if gotErrors := len(errs) > 0; gotErrors != tt.wantErrors {
 					t.Fatalf("attempt %d errors = %v, want errors %t", attempt, errs, tt.wantErrors)

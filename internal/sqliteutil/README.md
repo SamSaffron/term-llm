@@ -50,6 +50,8 @@ Use version-named, immutable table SQL. Create the replacement table, copy an ex
 
 - Session v64 adds nullable `sessions.model_policy` for inherited agent-model restrictions. Legacy rows remain unrestricted by inheritance; new child sessions carry the rules that applied at creation. The previous binary rejects the newer marker for read-write use. Stop older writers before upgrading and restore a backup to downgrade.
 
+- Session v67 adds `push_subscriptions.client_kind`, constrained to `browser` or `app` and defaulting existing rows and omitted legacy enrollment inputs to `browser`. The immediately previous v66 binary rejects v67 for read-write use; its read-only push queries still work but cannot distinguish app enrollments. New binaries opened read-only against v66 treat all subscriptions as browser clients. Do not run old and new writers concurrently; stop older writers before upgrading and restore a backup to downgrade.
+
 A process running an older binary concurrently with a new migrator is not granted write coordination beyond SQLite locking. Deploy one write-capable version at a time during these first marker transitions.
 
 ## Errors and operations
