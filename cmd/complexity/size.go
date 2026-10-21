@@ -15,9 +15,9 @@ import (
 // number of newlines, so a final newline does not add a line.
 const sizeThreshold = 1000
 
-// fileGrowthSlack is how far a recorded oversize file may grow: enough for a
-// bug fix, not enough to keep piling features into it.
-const fileGrowthSlack = 25
+// fileGrowthSlack is how far a recorded oversize file may grow. It is zero:
+// oversize files only shrink, so new code goes into a separate file.
+const fileGrowthSlack = 0
 
 // packageThreshold is the non-test line total above which a package directory is
 // recorded. Packages grow with features, so only genuinely huge ones are tracked.
@@ -26,7 +26,7 @@ const packageThreshold = 15000
 // packageGrowthSlackPercent is how far a recorded package may grow.
 const packageGrowthSlackPercent = 2
 
-const sizeRules = "new non-test .go files may not exceed 1000 lines; recorded oversize files may grow by at most 25 lines; " +
+const sizeRules = "new non-test .go files may not exceed 1000 lines; recorded oversize files may not grow; " +
 	"new packages may not exceed 15000 lines; recorded packages may grow by at most 2%; shrinking never fails"
 
 type sizeBaseline struct {

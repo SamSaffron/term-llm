@@ -109,7 +109,7 @@ func importsModule(p Pkg, mod string) bool {
 type state struct {
 	goFiles                                                                []string
 	goChanged, sourceChanged, nestedChanged, frontend, plans, ledger, docs bool
-	unknownGo, apiTypes                                                    bool
+	unknownGo, apiTypes, pkgMap                                            bool
 	nested                                                                 map[string]bool
 	changedPkgs                                                            map[string]bool
 }
@@ -162,6 +162,10 @@ func (st *state) classify(f string, in Input, byDir map[string]Pkg) {
 	if affectsAPITypes(f) {
 		st.apiTypes = true
 	}
+	if path.Base(f) == "go.mod" {
+		// Adding or removing a nested module changes the root package set.
+		st.pkgMap = true
+	}
 	if m := nestedOwner(f, in.NestedMods); m != "" {
 		st.nested[m] = true
 		st.nestedChanged = true
@@ -189,7 +193,12 @@ func (st *state) classify(f string, in Input, byDir map[string]Pkg) {
 		st.goChanged, st.unknownGo = true, true
 		return
 	}
+	if f == "PACKAGES.md" {
+		st.pkgMap = true
+	}
 	if strings.HasSuffix(f, ".go") {
+		// Any root-module Go file may add, remove or reword a package doc.
+		st.pkgMap = true
 		st.addGoFile(f, in)
 	}
 	if p, ok := ownerPkg(f, byDir); ok {
@@ -325,6 +334,9 @@ func BuildPlan(in Input) Plan {
 			pl.Steps = append(pl.Steps, Step{Name: "make frontend", Args: []string{"make", "frontend"}})
 		}
 		pl.Steps = append(pl.Steps, Step{Name: "docs drift", Args: []string{"go", "test", "./cmd/gendocs", "-run", "^TestReferenceDocsUpToDate$"}})
+	}
+	if st.pkgMap && !hasTarget(targets, "genpkgmap") {
+		pl.Steps = append(pl.Steps, Step{Name: "package map drift", Args: []string{"go", "test", "./cmd/genpkgmap", "-run", "^TestPackageMapUpToDate$"}})
 	}
 	if st.sourceChanged || st.ledger || in.All {
 		pl.Steps = append(pl.Steps, Step{Name: "complexity", Args: []string{"make", "complexity"}})

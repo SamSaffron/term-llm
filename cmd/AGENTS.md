@@ -1,4 +1,6 @@
 # Command layer
 
-Keep extracted commands as Cobra binding, flag/input capture and application calls. Serve, ask and chat orchestration live in `internal/app/serve`, `internal/app/ask` and `internal/app/chat`. Other commands still have implementation here; this is not a claim that all cmd logic has moved.
-Keep help, flag names/defaults, completion, and `ReferenceCommand()` stable. Move focused tests with implementation; retain real Cobra contracts here. Application packages must not import `cmd`.
+- New command logic goes in `internal/app/<command>/`; `cmd` keeps Cobra binding, flag/input capture and the application call. Serve, ask and chat are fully extracted; other commands still carry implementation here.
+- Keep help, flag names/defaults, completion and `ReferenceCommand()` stable. Real Cobra contract tests stay here; move focused tests with the implementation.
+- Application packages must not import `cmd`.
+- Focused check: `make test PKG=./cmd`.

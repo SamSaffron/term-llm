@@ -1,0 +1,196 @@
+# Package map
+
+One line per root-module package, generated from package doc comments by `make docs` (`go run ./cmd/genpkgmap`). Edit the package's `doc.go`, not this file. Test-only directories and nested modules (`internal/reflow`, `internal/terminal/runtime`, `internal/terminal/renderer`) are not listed.
+
+<!-- BEGIN GENERATED: packages -->
+- `.` — builds the term-llm CLI binary; main only hands off to the cmd package.
+- `cmd` — binds the term-llm CLI's Cobra commands and flags, then calls internal/app implementations.
+- `cmd/builduisource` — writes the deterministic, private readable-source archive that backs UI authoring references.
+- `cmd/complexity` — runs the repository complexity and file-size ratchets used by make complexity.
+- `cmd/gendocs` — regenerates source-backed reference sections.
+- `cmd/genpkgmap` — regenerates PACKAGES.md, the one-line-per-package map of the root module built from package doc comments.
+- `cmd/gentsapi` — writes the registered Go serve JSON contracts for the frontend.
+- `cmd/imagetest` — Standalone test binary to debug image rendering with streaming markdown
+- `cmd/precompressui` — gzips the generated web UI bundle in place so the binary embeds compressed bytes and the server can send them unchanged.
+- `cmd/servicesmoke` — exercises installed service specifications and real runners without touching a supervisor.
+- `internal/acp` — implements the client side of Agent Client Protocol v1.
+- `internal/agents` — provides named configuration bundles for term-llm.
+- `internal/agents/gist` — provides GitHub Gist operations through the gh CLI.
+- `internal/agyproxy` — is the loopback HTTPS proxy between agy and Cloud Code.
+- `internal/app/agent` — holds the agent model-selection logic extracted from cmd.
+- `internal/app/ask` — implements the `term-llm ask` command: prompt input, model execution and persistence.
+- `internal/app/auth` — implements `term-llm auth` login, status and logout for OAuth providers.
+- `internal/app/chat` — runs the interactive `term-llm chat` TUI: orchestration, sessions, handover and reload.
+- `internal/app/memory` — implements the `term-llm memory` command family.
+- `internal/app/models` — implements `term-llm models`, listing and caching provider model catalogs.
+- `internal/app/notify` — implements the `term-llm notify` command family.
+- `internal/app/process` — owns the execution and progress rendering of the `term-llm process` commands; cmd keeps only the Cobra definitions.
+- `internal/app/providers` — implements the providers command.
+- `internal/app/reload` — owns private successor state and process replacement.
+- `internal/app/runtime` — holds run plumbing shared by the CLI and serve: model selection and child ownership.
+- `internal/app/runtime/approval` — resolves command and session approval policy without depending on cmd.
+- `internal/app/runtime/bootstrap` — loads config and registers provider model limits, theme, search and debug logging.
+- `internal/app/runtime/guardian` — wires Guardian policy review into runtime approval managers.
+- `internal/app/runtime/mcpstart` — initializes configured MCP servers with user feedback.
+- `internal/app/runtime/oncomplete` — runs configured completion hooks.
+- `internal/app/runtime/progressive` — runs the progress-tool loop with work and finalization budgets for ask and serve.
+- `internal/app/serve` — hosts `term-llm serve`: HTTP and Hub routes, the shared runner, children and live runtime.
+- `internal/app/serve/hub` — holds the Hub server implementation behind explicit options.
+- `internal/app/serve/jobs` — holds the serve job scheduler's persistence schema, migrations and cron math.
+- `internal/app/serve/liveprogress` — renders delegated-run events as templated voice progress notes.
+- `internal/app/serve/protocol` — encodes and parses the OSC 7770 markers that frame serve shell commands and output.
+- `internal/app/serve/server` — owns serve HTTP/platform behavior extracted from the command layer.
+- `internal/app/serve/shell` — manages per-session PTY shell generations for `term-llm serve`.
+- `internal/app/serve/wire` — owns the shared HTTP JSON, SSE, compression, and steering projection helpers.
+- `internal/app/service` — implements `term-llm service` install and management of the per-user web and hub services.
+- `internal/app/sessions` — implements the `term-llm sessions` command family.
+- `internal/app/transcribe` — implements the transcribe command's application logic.
+- `internal/app/upgrade` — implements `term-llm upgrade`, installing a release through internal/update.
+- `internal/app/uploads` — validates and reads first-party web attachments and resizes images for models.
+- `internal/app/usage` — implements `term-llm usage`: local token reports plus provider billing and limit checks.
+- `internal/app/version` — implements `term-llm version` over linker-injected build metadata.
+- `internal/appdata` — resolves term-llm's XDG data directory.
+- `internal/audio` — implements the text-to-speech providers behind `term-llm audio`.
+- `internal/awsauth` — implements the AWS authentication and event framing needed by the Bedrock transport, without linking an AWS SDK.
+- `internal/benchmark` — measures provider throughput, latency and cache behavior for `term-llm benchmark`.
+- `internal/buildinfo` — exposes application identity to packages below the CLI.
+- `internal/cache` — stores provider model catalogs in the XDG cache directory.
+- `internal/classify` — defines the backend-neutral classification interface used by `term-llm classify`, the classify-backed Guardian, and the live voice router.
+- `internal/classify/backends` — builds classify.Backend implementations from classify.providers configuration.
+- `internal/classify/cloudflare` — implements the classify.Backend for Clef decision models on Cloudflare Workers AI (POST {base}/@cf/cloudflare/{model}).
+- `internal/classify/openai` — implements the classify.Backend for the OpenAI Decisions API (POST /v1/decisions).
+- `internal/classify/transport` — is the HTTP client shared by classification backends: bearer authentication, a single overall timeout, bounded retries for transient statuses, bounded response bodies, no redirects, and error messages that never contain the API key or request state.
+- `internal/classify/typesafe` — implements the classify.Backend for TypeSafe System One.
+- `internal/clipboard` — reads and writes system clipboard text and images, with an OSC 52 fallback.
+- `internal/cliwire` — implements the opt-in wire audit proxy for authenticated CLI-backed providers.
+- `internal/commitworkflow` — owns the read-only agent phases for native commits.
+- `internal/complexity` — provides the repository's versioned complexity analysis.
+- `internal/config` — defines term-llm's persisted settings and resolves providers, models and credentials.
+- `internal/contain` — manages named Docker Compose workspaces for `term-llm contain`.
+- `internal/copilot` — reads GitHub Copilot AI-credit billing usage for the usage command.
+- `internal/credentials` — stores and refreshes provider OAuth credentials under the config directory.
+- `internal/debuglog` — reads, formats, exports and searches term-llm debug-log sessions.
+- `internal/diagnostics` — writes edit-retry diagnostic dumps for failed tool edits.
+- `internal/diff` — provides shared constants for diff handling across packages.
+- `internal/docsgen` — renders source-backed sections of the documentation.
+- `internal/doctor` — implements offline health checks for a term-llm install.
+- `internal/edit` — provides editing functionality for the term-llm.
+- `internal/embedding` — implements the text embedding providers behind `term-llm embed` and memory search.
+- `internal/exitcode` — defines term-llm's process exit codes and the error type carrying them.
+- `internal/extensions` — discovers trusted local CSS/JavaScript web extensions.
+- `internal/filelock` — takes cross-process advisory file locks on shared state files.
+- `internal/filetrack` — records file changes made by agent tools so sessions can expose a cumulative diff (baseline = file state at first touch in a session).
+- `internal/formatutil` — provides dependency-light shared display formatting.
+- `internal/gitcommit` — provides the host-owned Git transaction used by native commit workflows.
+- `internal/gitdiff` — exposes structured staged and working-tree changes for the web Changes panel.
+- `internal/grokprotocol` — defines wire metadata shared by Grok OAuth and subscription proxy clients.
+- `internal/guardian` — reviews tool and shell actions against the approval policy before they run.
+- `internal/hostfacts` — collects stable host identity facts and host notes for system prompts.
+- `internal/htmlesc` — provides the small set of contextual HTML escapers that term-llm's hand-written HTML renderers need.
+- `internal/hub` — models a fleet of term-llm web nodes for `term-llm serve hub`.
+- `internal/image` — owns image generation providers, clipboard access and terminal rendering.
+- `internal/input` — reads file specs, globs, line ranges, clipboard and stdin for prompts.
+- `internal/inspect` — projects stored session history into a read-only, presentation-neutral inspector.
+- `internal/jobs` — defines scheduled jobs, runs and runner contracts plus the program runner.
+- `internal/lifecycle` — defines the dependency-free lifecycle domain shared by chat and terminal-host integrations.
+- `internal/live` — implements bidirectional voice ("live") sessions: the protocol client for the voice model, and a controller that turns the voice model's delegation requests into ordinary agent turns.
+- `internal/live/classify` — classifies live voice delegations and gates the resulting intent.
+- `internal/llm` — owns model metadata, config-backed limits and policies, provider selection, retry and cross-family wiring.
+- `internal/llm/core` — holds provider-neutral LLM contracts, messages, streams and shared helpers.
+- `internal/llm/core/stream` — provides import-cycle-free event stream, SSE decoding, and typed stream error helpers shared by provider implementations.
+- `internal/llm/debug` — provides the scripted debug provider, structured logs and diagnostics sinks.
+- `internal/llm/engine` — runs the LLM turn loop: steering, compaction, tool execution and turn limits.
+- `internal/llm/factory` — concrete inference constructors.
+- `internal/llm/filemime` — canonicalizes upload media types and defines accepted file MIME types.
+- `internal/llm/mockprovider` — provides a scripted provider for engine tests with recorded requests.
+- `internal/llm/providers/anthropic` — implements the Anthropic Messages API provider and model catalog.
+- `internal/llm/providers/bedrock` — implements the AWS Bedrock transport for Anthropic Messages.
+- `internal/llm/providers/clibin` — implements the CLI-binary providers claude-bin, cursor-bin, grok-bin and agy-bin.
+- `internal/llm/providers/gemini` — implements the Google Gemini generateContent provider and its wire types.
+- `internal/llm/providers/ollama` — implements the local Ollama chat provider and model cache.
+- `internal/llm/providers/opencompat` — implements OpenAI-compatible chat transports and their model caches.
+- `internal/llm/providers/responses` — implements the shared OpenAI Responses API transport.
+- `internal/llm/providers/responsesproviders` — holds the provider transports built on the Responses API client (OpenAI, ChatGPT, Copilot, Grok) and the OpenCode Zen / OpenCode Go gateways that share its catalogs and helpers.
+- `internal/llm/providers/transcription` — implements the Whisper-compatible multipart HTTP transcription transport (OpenAI, Venice, ElevenLabs dialects).
+- `internal/llm/providerusage` — fetches and formats provider usage limits, credits and windows.
+- `internal/llm/schema` — models JSON schema and lowers it into provider-specific tool schemas.
+- `internal/mcp` — manages Model Context Protocol servers, config and tool registration.
+- `internal/mcp/oauth` — runs MCP OAuth login flows and persists per-server tokens.
+- `internal/mcphttp` — provides an HTTP-based MCP server for tool execution.
+- `internal/mediatype` — provides the conservative presentation-media allowlist and bounded structural inspection shared by tools, serving, and export.
+- `internal/mediautil` — sanitizes generated-media filenames and saves media to disk.
+- `internal/memory` — stores decayed memory fragments, insights and images in SQLite.
+- `internal/mentions` — indexes workspace files and parses @mentions from prompts and composers.
+- `internal/mitmca` — provides the ephemeral certificate authority shared by term-llm's loopback TLS proxies.
+- `internal/modelpolicy` — enforces the ordered intersection of agent model rules.
+- `internal/music` — generates music through the ElevenLabs and Venice providers and saves it.
+- `internal/oauth` — implements ChatGPT, Copilot and Grok OAuth login and refresh flows.
+- `internal/openaiapi` — resolves the public OpenAI API endpoint settings shared by every API-key OpenAI client (Responses, model listing, embeddings, images and transcription).
+- `internal/passkeyauth` — provides application-neutral WebAuthn authentication primitives for first-party term-llm servers.
+- `internal/pathutil` — provides shared path manipulation utilities.
+- `internal/plan` — owns the shared update_plan snapshot model, validation, history extraction, and bounded rendering helpers.
+- `internal/pprof` — runs the opt-in profiling HTTP server and tracks its port file.
+- `internal/process` — provides advisory process discovery, never restart authority.
+- `internal/procutil` — prepares child processes with process groups and bounded output capture.
+- `internal/project` — resolves canonical project identity and assigns sessions to projects.
+- `internal/prompt` — builds system and user prompts for ask, edit, suggest, help and goal flows.
+- `internal/providerhttp` — owns shared provider HTTP requests, status errors and Retry-After parsing.
+- `internal/providerspec` — owns declarative metadata for inference provider types.
+- `internal/reasoning` — applies display policy, parsing and streaming rules for model reasoning text.
+- `internal/render/chat` — renders chat history blocks, streaming output and viewport state for the TUI.
+- `internal/render/markdown` — renders markdown to ANSI terminal text with syntax highlighting.
+- `internal/restart` — coordinates safe-point process replacement.
+- `internal/run` — defines the shared engine run request, result and child-run contract.
+- `internal/runboundary` — tracks the provider-complete and durably branchable prefixes of one active model run.
+- `internal/runtimeoutput` — routes application diagnostics away from a terminal owned by an interactive UI.
+- `internal/search` — implements the pluggable web search providers behind the web_search tool.
+- `internal/serve` — owns serve platform adapters, the Telegram host and service wiring.
+- `internal/serve/http` — provides serve base-path normalization and streaming HTTP writes.
+- `internal/serveui` — embeds and serves the built web UI assets, manifests and index shell.
+- `internal/session` — owns durable sessions, messages, steering persistence and SQLite storage.
+- `internal/sessiontitle` — generates and validates short and long LLM session titles.
+- `internal/share` — defines provider-neutral transcript sharing.
+- `internal/sidequestion` — builds and runs private side questions over a conversation snapshot.
+- `internal/signal` — derives contexts cancelled by SIGINT and SIGTERM.
+- `internal/skills` — provides Agent Skills integration for term-llm.
+- `internal/sqlitedriver` — registers the platform's database/sql "sqlite" driver.
+- `internal/sqlitefts` — turns user search text into safe FTS5 MATCH expressions.
+- `internal/sqliteutil` — provides SQLite migration, introspection and schema-signature helpers.
+- `internal/subagentview` — reconstructs immutable completed subagent presentation from the durable parent spawn_agent result and child session transcript.
+- `internal/termhost` — publishes the visible chat lifecycle to terminal hosts.
+- `internal/termimage` — renders images for kitty, iTerm, sixel and ANSI terminals.
+- `internal/terminalpolicy` — centralizes decisions about whether term-llm may start an interactive terminal UI.
+- `internal/terminaltext` — sanitizes untrusted text so terminal control sequences cannot reach output.
+- `internal/testutil` — provides engine and TUI test harnesses, mock tools and output assertions.
+- `internal/testutil/mcptest` — provides the shared real MCP subprocess used by tests.
+- `internal/testutil/mediafixture` — synthesizes small structural identification fixtures.
+- `internal/testutil/procenv` — owns process-wide test environment isolation shared by command and application test binaries.
+- `internal/textmatch` — provides string similarity, slug and line-range helpers.
+- `internal/tooldiscovery` — implements deferred MCP tool search, tool_search and planning.
+- `internal/tooldiscovery/evalcmd` — runs tool-discovery evaluations against fixture MCP servers and catalogues.
+- `internal/tooldiscovery/evalfixture` — provides the deterministic ten-server, 200-tool MCP federation and its single-server aggregate used to evaluate deferred tool discovery with real transports.
+- `internal/tools` — provides a permission-aware local tool system for term-llm.
+- `internal/tsgen` — generates the explicitly registered serve JSON contracts for the web UI.
+- `internal/tui/chat` — implements the interactive terminal chat TUI and its run lifecycle.
+- `internal/tui/chat/agentbarrier` — owns persisted TUI lifecycle delivery settlement.
+- `internal/tui/inspector` — implements the read-only conversation inspector overlay.
+- `internal/tui/mcp` — implements the interactive MCP server browser TUI.
+- `internal/tui/sessions` — implements the interactive session browser TUI.
+- `internal/tui/skills` — implements the skill browser and GitHub skill-add TUI.
+- `internal/tui/worktrees` — implements the git worktree browser TUI.
+- `internal/tuiutil` — provides shared lipgloss prompt styles and numbered-option hints.
+- `internal/udiff` — provides parsing and application of unified diffs with elision support.
+- `internal/ui` — owns shared terminal styling, stream segments, layout and stats formatting.
+- `internal/ui/ansisafe` — applies selection highlighting and ANSI-safe suffix slicing.
+- `internal/ui/streaming` — provides a streaming markdown renderer for incremental terminal markdown output.
+- `internal/uisource` — provides private, on-demand authoring references.
+- `internal/update` — checks GitHub releases and performs the term-llm self-upgrade.
+- `internal/usage` — loads, aggregates and prices term-llm and Claude Code usage logs.
+- `internal/userservice` — manages native per-user service definitions, not processes.
+- `internal/venice` — shares Venice model discovery between completion and image requests.
+- `internal/video` — implements the Venice video generation client and its output handling.
+- `internal/widgets` — supervises serve widget processes and proxies their HTTP mounts.
+- `internal/worktree` — manages git worktrees for term-llm sessions.
+- `internal/worktree/recovery` — contains the user-facing worktree promotion recovery flow shared by interactive clients.
+- `scripts/checkchanged` — runs the checks relevant to the files changed since the merge-base with a base ref (default upstream/main, origin/main, then main).
+<!-- END GENERATED: packages -->

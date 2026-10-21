@@ -8,9 +8,10 @@
 - Before finishing, inspect `git diff`, run checks for every touched area, and report commands and omissions.
 
 ## Project Map
-- `main.go`, `cmd/` – CLI entry point, extracted-command Cobra glue, and remaining command implementations; serve/ask/chat orchestration lives in `internal/app/<command>/`
-- `internal/app/serve/` – serve host startup/HTTP/Hub, shared runner/session inputs, child lifecycle, jobs composition, live runtime, and owned leaves; Cobra binding stays in `cmd/`
-- `internal/app/process/`, `internal/app/usage/`, `internal/app/memory/`, `internal/app/ask/`, `internal/app/chat/`, `internal/app/sessions/`, `internal/app/service/`, `internal/app/notify/`, `internal/app/agent/` – extracted command implementations
+`PACKAGES.md` lists every root-module package with non-test code and a one-line purpose, generated from package doc comments; search it to find the owning package. Every such package needs a doc comment (usually `doc.go`); run `make pkgmap` after adding, removing or rewording one. The main areas:
+
+- `main.go`, `cmd/` – CLI entry point and Cobra binding; new command logic goes in `internal/app/<command>/` (see `cmd/AGENTS.md`)
+- `internal/app/serve/` – serve host: startup/HTTP/Hub, shared runner, session inputs, child lifecycle, jobs, live runtime
 - `internal/config/`, `internal/llm/` – config/provider resolution; provider implementations, engine, compaction, and mocks (`llm/factory.go` constructs providers)
 - `internal/tools/`, `internal/edit/` – tool registry/permissions and file editing
 - `internal/serve/`, `internal/serveui/` – server primitives and embedded web UI
@@ -23,14 +24,14 @@
 Use the Go version in `go.mod`. Run a focused test while developing, then use the changed-area checker (which includes reverse-dependent Go packages and an isolated temporary HOME):
 
 ```sh
-go test ./internal/llm -run '^TestName$'
+make test PKG=./internal/llm RUN='^TestName$'   # isolated HOME/XDG/TMPDIR, real Go caches
 make check-changed
 make check-changed ARGS=--all # full suite before finishing
 ```
 
-`make check-changed ARGS='--base <ref> --dry-run'` previews a custom diff; without `--base` it uses the first existing of `upstream/main`, `origin/main`, `main`. The checker includes staged, unstaged, and untracked files; `--all` runs the full root-module, nested-module, frontend, complexity/size, and plan checks. Format changed Go files with `gofmt -w <changed-go-files>` before running it. When running Go tests manually, preserve `GOMODCACHE="$(go env GOMODCACHE)"` and set `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` under a temporary directory: tests may otherwise read global config and skills. `make build` builds the frontend and CLI; JavaScript tests run through Go tests only when `node` is on `PATH`. Match extra checks in `.github/workflows/ci.yml` for browser lifecycle, release, or cross-platform code.
+`make check-changed ARGS='--base <ref> --dry-run'` previews a custom diff; without `--base` it uses the first existing of `upstream/main`, `origin/main`, `main`. The checker includes staged, unstaged, and untracked files; `--all` runs the full root-module, nested-module, frontend, complexity/size, and plan checks. Format changed Go files with `gofmt -w <changed-go-files>` before running it. Run Go tests through `make test` (or `scripts/gotest.sh <go test args>`) rather than bare `go test`, which may read the user's global config and skills; `PKG` accepts several packages and `ARGS` passes extra flags such as `-count=1` or `-race`. `make build` builds the frontend and CLI; JavaScript tests run through Go tests only when `node` is on `PATH`. Match extra checks in `.github/workflows/ci.yml` for browser lifecycle, release, or cross-platform code.
 
-Size and function ratchets live in `ledger/`. Run `make complexity` after Go edits. New non-test Go files must stay at or under 1,000 lines; recorded oversize files may grow by at most 25 lines and packages over 15,000 lines by at most 2%. Shrinks, moves and renames only print notes; run `make complexity-baseline` to lock them in and review the ledger diff. Plan statuses are checked by `make plans-lint`.
+Size and function ratchets live in `ledger/`. Run `make complexity` after Go edits. New non-test Go files must stay at or under 1,000 lines; recorded oversize files may not grow (put new code in a new file) and packages over 15,000 lines may grow by at most 2%. Shrinks, moves and renames only print notes; run `make complexity-baseline` to lock them in and review the ledger diff. Never regenerate baselines to hide growth. Plan statuses are checked by `make plans-lint`.
 
 ### Frontend formatting and linting
 
@@ -50,7 +51,7 @@ Follow `frontend/AGENTS.md` and `frontend/README.md` for ownership, formatting, 
 - Test observable behavior and failure paths, not implementation trivia. Avoid network access, real API keys, timing sleeps, and dependence on the user's home directory.
 
 ## Package Documentation
-User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Run `make docs` after changing reference sources to regenerate marked tables and CLI flags. Contributor rules live beside the code they govern:
+User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Run `make docs` after changing reference sources to regenerate marked tables, CLI flags and `PACKAGES.md`. Contributor rules live beside the code they govern:
 
 - `internal/tools/AGENTS.md`, `internal/tools/README.md` – tool registration and permission-denial coverage.
 - `internal/config/AGENTS.md`, `internal/providerspec/README.md` – configuration paths and provider/credential definitions.

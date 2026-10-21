@@ -1,21 +1,12 @@
 # Chat application
 
-`Run(ctx, args, Options, Dependencies)` owns orchestration, runtime construction,
-UI wiring, handover/session switches and terminal cleanup. Cmd binds/captures
-flags and supplies `ExecReload`; it remains responsible for process re-exec.
-No production or test Cobra/pflag/cmd imports. Chat may import the host, never
-host -> chat. Keep runtime/session fields private; do not export internals for
-fixtures or add replacement-run hooks.
+`Run(ctx, args, Options, Dependencies)` owns orchestration, runtime construction, UI wiring, handover/session switches and terminal cleanup. `cmd` binds/captures flags and supplies `ExecReload`; process re-exec stays in `cmd`.
 
-Pointer-receiver callbacks must observe current invocation/model/agent policy.
-Retain terminal/reload authority independently from renderer output authority,
-TTY cleanup, actual handover approval carry and late session-runtime lookup.
-Preserve terminal gate -> restore -> config -> session/settings -> approval;
-config reload on later relaunches is intentional. Pass session/memory overrides
-to all child runners and prompt/skills refreshes. Nil-command helpers migrated
-with explicit zero Changed state and discard writers; do not infer explicitness
-from bound flag values or fix the historical `system` lookup here.
-
-Move real runtime tests with code, keeping Cobra contracts in cmd. Source-output
-guards scan this directory, including forced-exit paths. Validate focused tests,
-race with host/child/main-run lifecycle, and full check-changed --all.
+- No Cobra/pflag/`cmd` imports in production or tests. Chat may import the serve host, never the reverse. Keep runtime/session fields private; do not export internals for fixtures or add replacement-run hooks.
+- Pointer-receiver callbacks must observe the current invocation/model/agent policy.
+- Keep terminal/reload authority separate from renderer output authority; preserve TTY cleanup, handover approval carry, and late session-runtime lookup.
+- Preserve: terminal gate → restore → config → session/settings → approval. Reloading config on later relaunches is intentional.
+- Pass session/memory overrides to all child runners and prompt/skills refreshes.
+- Nil-command helpers use an explicit zero Changed state and discard writers; never infer explicitness from bound flag values. Do not fix the historical `system` lookup here.
+- Source-output guards scan this directory, including forced-exit paths.
+- Focused checks: `make test PKG='./internal/app/chat ./cmd'`, then the same with `ARGS=-race`.

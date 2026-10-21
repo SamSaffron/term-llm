@@ -6,6 +6,10 @@ go 1.27.2
 // go-version-file: go.mod, so the pinned patch is the Go version that shipped
 // binaries are built with.
 
+// npm installs can ship Go packages (frontend/node_modules/flatted/golang);
+// keep them out of ./... so go build/vet/test never compile npm content.
+ignore node_modules
+
 replace github.com/muesli/reflow v0.3.0 => ./internal/reflow
 
 // term-llm owns this terminal subsystem; see internal/terminal/README.md.

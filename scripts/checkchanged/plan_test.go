@@ -48,8 +48,22 @@ func TestGoFileMapsToPackageAndReverseDeps(t *testing.T) {
 	if !reflect.DeepEqual(p.Affected, []string{"m", "m/cmd", "m/cmd/gendocs", "m/internal/a"}) {
 		t.Fatalf("affected %v", p.Affected)
 	}
-	if got := names(p); got != "gofmt,make build,go build,go vet,go test,complexity" {
+	if got := names(p); got != "gofmt,make build,go build,go vet,go test,package map drift,complexity" {
 		t.Fatalf("steps %s", got)
+	}
+}
+
+func TestPackageMapDriftSelection(t *testing.T) {
+	if got := names(plan(false, "PACKAGES.md")); got != "package map drift" {
+		t.Fatalf("PACKAGES.md: %s", got)
+	}
+	if got := names(plan(false, "internal/reflow/go.mod")); !strings.Contains(got, "package map drift") {
+		t.Errorf("nested go.mod: missing package map drift: %s", got)
+	}
+	for _, file := range []string{"internal/reflow/a.go", "docs-site/a.md", "frontend/src/a.ts", "go.mod"} {
+		if got := names(plan(false, file)); strings.Contains(got, "package map drift") {
+			t.Errorf("%s: unexpected package map drift: %s", file, got)
+		}
 	}
 }
 

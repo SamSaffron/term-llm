@@ -1,5 +1,5 @@
 {
-  "rules": "new non-test .go files may not exceed 1000 lines; recorded oversize files may grow by at most 25 lines; new packages may not exceed 15000 lines; recorded packages may grow by at most 2%; shrinking never fails",
+  "rules": "new non-test .go files may not exceed 1000 lines; recorded oversize files may not grow; new packages may not exceed 15000 lines; recorded packages may grow by at most 2%; shrinking never fails",
   "threshold": 1000,
   "files": [
     {
@@ -36,7 +36,7 @@
     },
     {
       "path": "internal/app/serve/serve_response_run_manager.go",
-      "lines": 1169
+      "lines": 1170
     },
     {
       "path": "internal/app/serve/serve_runtime.go",
@@ -52,7 +52,7 @@
     },
     {
       "path": "internal/filetrack/store.go",
-      "lines": 2089
+      "lines": 2095
     },
     {
       "path": "internal/live/controller.go",
@@ -60,7 +60,7 @@
     },
     {
       "path": "internal/llm/models.go",
-      "lines": 1157
+      "lines": 1170
     },
     {
       "path": "internal/llm/providers/clibin/claude_bin.go",
@@ -104,7 +104,7 @@
     },
     {
       "path": "internal/session/sqlite_schema.go",
-      "lines": 1905
+      "lines": 1913
     },
     {
       "path": "internal/session/sqlite_sessions.go",
@@ -112,7 +112,7 @@
     },
     {
       "path": "internal/session/store.go",
-      "lines": 1433
+      "lines": 1435
     },
     {
       "path": "internal/skills/registry.go",
@@ -160,7 +160,7 @@
     },
     {
       "path": "internal/tui/chat/chat.go",
-      "lines": 2639
+      "lines": 2643
     },
     {
       "path": "internal/tui/chat/dialog.go",
@@ -176,7 +176,7 @@
     },
     {
       "path": "internal/tui/chat/streaming.go",
-      "lines": 1836
+      "lines": 1840
     },
     {
       "path": "internal/tui/chat/worktree.go",
@@ -214,23 +214,23 @@
   "packages": [
     {
       "dir": "cmd",
-      "lines": 18504
+      "lines": 18524
     },
     {
       "dir": "internal/app/serve",
-      "lines": 59585
+      "lines": 59629
     },
     {
       "dir": "internal/session",
-      "lines": 17633
+      "lines": 17709
     },
     {
       "dir": "internal/tools",
-      "lines": 22713
+      "lines": 23077
     },
     {
       "dir": "internal/tui/chat",
-      "lines": 33218
+      "lines": 33883
     }
   ]
 }

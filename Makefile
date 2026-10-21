@@ -1,4 +1,4 @@
-.PHONY: build frontend frontend-deps complexity complexity-baseline complexity-report plans-lint check-changed docs api-types
+.PHONY: build test frontend frontend-deps complexity complexity-baseline complexity-report plans-lint check-changed docs pkgmap api-types
 
 FRONTEND_STAMP := frontend/node_modules/.term-llm-install-stamp
 VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
@@ -33,14 +33,26 @@ complexity-report:
 plans-lint:
 	scripts/lint-plans.sh
 
-docs: frontend
+docs: frontend pkgmap
 	go run ./cmd/gendocs
+
+pkgmap:
+	go run ./cmd/genpkgmap
 
 api-types:
 	go run ./cmd/gentsapi
 
 check-changed:
 	scripts/check-changed.sh $(ARGS)
+
+# Focused Go tests with an isolated HOME/XDG/TMPDIR:
+#   make test PKG=./internal/llm RUN='^TestName$' ARGS=-count=1
+# RUN reaches the script through the environment, unexpanded, so regex `$`
+# and quotes survive both make and the shell.
+PKG ?= ./...
+test: export GOTEST_RUN = $(value RUN)
+test:
+	scripts/gotest.sh $(ARGS) $(PKG)
 
 $(FRONTEND_STAMP): frontend/package.json frontend/package-lock.json
 	npm --prefix frontend ci
