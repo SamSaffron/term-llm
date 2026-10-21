@@ -5,6 +5,14 @@ description: "Personalize term-llm's web interface with local CSS and JavaScript
 
 Web extensions are trusted local CSS and JavaScript loaded by `term-llm serve web`. A theme can be CSS-only; a utility can use JavaScript. Multiple extensions can run together, in the order you choose. No frontend rebuild is needed.
 
+## Built-in themes
+
+Choose **Settings → Extensions → Theme** to change the chat's appearance immediately. **Default (system light/dark)** keeps the original light and dark colors and follows your device's appearance. Additional choices are Sage Light, Sage Dark, Catppuccin Mocha, Dracula, Nord, and Tokyo Night.
+
+The choice is saved in this browser for this interface's URL path, so separate Hub nodes can use different themes. It survives reloads and syncs between tabs on the same interface. No extension files, server configuration, or page reload are needed. Built-in themes remain available when server extensions are disabled or unavailable.
+
+Enabled CSS extensions still load afterward and can override the built-in palette through the usual CSS cascade. Choose **Default (system light/dark)** to remove the built-in palette override.
+
 ## Make UI Mine
 
 Open **Settings → Extensions → Make UI Mine**. This opens a conversation with the built-in `extension-builder`, or resumes an existing extension builder session.
