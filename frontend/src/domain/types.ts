@@ -287,6 +287,12 @@ export interface Session {
   activeRun?: boolean;
   activeModel?: string;
   activeEffort?: string;
+  /**
+   * Effort last confirmed by session state or a live response; `''` is the
+   * server default and `undefined` means unknown. Unlike `activeEffort`, catalog
+   * rows never carry it, so a sidebar merge cannot reset it.
+   */
+  confirmedEffort?: string;
   activeReasoningMode?: string;
   approvalDefaultMode?: ApprovalMode;
   approvalRequestedMode?: ApprovalMode;

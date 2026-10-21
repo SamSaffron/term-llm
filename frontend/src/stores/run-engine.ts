@@ -1257,6 +1257,8 @@ export class RunEngine {
     if (event.type === 'response.completed' && Object.hasOwn(response, 'context_usage')) {
       runtimePatch.contextUsage = sanitizeContextUsage(response.context_usage) ?? null;
     }
+    if (runtimePatch.activeEffort !== undefined)
+      runtimePatch.confirmedEffort = runtimePatch.activeEffort;
     this.runs.value = { ...this.runs.value, [sessionId]: next };
     if (Object.keys(runtimePatch).length)
       this.sessionStore.patch(

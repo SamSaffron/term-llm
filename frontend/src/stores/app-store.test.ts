@@ -705,6 +705,206 @@ describe('AppStore compatibility behavior', () => {
     store.dispose();
   });
 
+  it("shows each conversation's persisted effort after switching back and forth", async () => {
+    const store = new AppStore(config);
+    const first = session();
+    const second = { ...session(), id: 's2', title: 'Second' };
+    const third = { ...session(), id: 's3', title: 'Third' };
+    store.sessions.value = [first, second, third];
+    store.activeSessionId.value = first.id;
+    store.draftActive.value = false;
+    const efforts: Record<string, string | undefined> = { s1: 'medium', s2: 'max', s3: undefined };
+    store.endpoints.sessionState = vi.fn(async (id: string) => ({
+      model: 'opus',
+      ...(efforts[id] ? { reasoning_effort: efforts[id] } : {}),
+    }));
+    store.endpoints.selectedSession = vi.fn(async (id: string) => ({
+      selected_session: { id },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+
+    await store.selectSession(first);
+    expect(store.selectedEffort.value).toBe('medium');
+    await store.selectSession(second);
+    expect(store.selectedEffort.value).toBe('max');
+    await store.selectSession(first);
+    expect(store.selectedEffort.value).toBe('medium');
+    // A conversation on the server default must not inherit the last one's effort.
+    await store.selectSession(second);
+    await store.selectSession(third);
+    expect(store.selectedEffort.value).toBe('');
+    store.dispose();
+  });
+
+  it('keeps a draft-pinned effort over the persisted session effort', async () => {
+    const store = new AppStore(config);
+    const first = session();
+    const second = { ...session(), id: 's2', title: 'Second' };
+    store.sessions.value = [first, second];
+    store.activeSessionId.value = second.id;
+    store.draftActive.value = false;
+    saveDraft(localStorage, store.keys.draftMessages, {
+      sessionId: first.id,
+      content: 'Unsent reply',
+      updated: 1,
+      effort: 'high',
+    });
+    store.endpoints.sessionState = vi.fn(async () => ({
+      model: 'opus',
+      reasoning_effort: 'medium',
+    }));
+    store.endpoints.selectedSession = vi.fn(async (id: string) => ({
+      selected_session: { id },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+
+    await store.selectSession(first);
+    expect(store.selectedEffort.value).toBe('high');
+    // Revisiting reuses the hydrated session's effort; the draft still wins.
+    await store.selectSession(second);
+    expect(store.selectedEffort.value).toBe('medium');
+    await store.selectSession(first);
+    expect(store.selectedEffort.value).toBe('high');
+    store.dispose();
+  });
+
+  it('ignores the effort stamped on a project draft without an unsent message', async () => {
+    const store = new AppStore(config);
+    const first = session();
+    const second = { ...session(), id: 's2', title: 'Second' };
+    store.sessions.value = [first, second];
+    store.activeSessionId.value = second.id;
+    store.draftActive.value = false;
+    saveDraft(localStorage, store.keys.draftMessages, {
+      sessionId: first.id,
+      content: '',
+      projectId: 'project-1',
+      updated: 1,
+      effort: 'max',
+    });
+    store.endpoints.sessionState = vi.fn(async () => ({
+      model: 'opus',
+      reasoning_effort: 'medium',
+    }));
+    store.endpoints.selectedSession = vi.fn(async (id: string) => ({
+      selected_session: { id },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+
+    await store.selectSession(first);
+    expect(store.selectedEffort.value).toBe('medium');
+    store.dispose();
+  });
+
+  it('applies a confirmed effort before a revisited conversation finishes loading', async () => {
+    const store = new AppStore(config);
+    const first = session();
+    const second = { ...session(), id: 's2', title: 'Second' };
+    const third = { ...session(), id: 's3', title: 'Third' };
+    store.sessions.value = [first, second, third];
+    store.activeSessionId.value = first.id;
+    store.draftActive.value = false;
+    const efforts: Record<string, string | undefined> = { s1: 'medium', s2: 'max', s3: undefined };
+    store.endpoints.sessionState = vi.fn(async (id: string) => ({
+      model: 'opus',
+      ...(efforts[id] ? { reasoning_effort: efforts[id] } : {}),
+    }));
+    let pending: ReturnType<typeof deferred<Record<string, unknown>>> | null = null;
+    store.endpoints.selectedSession = vi.fn((id: string) => {
+      const body = { selected_session: { id }, selected_transcript: { bodies: { messages: [] } } };
+      if (!pending) return Promise.resolve(body);
+      const current = pending;
+      return current.promise.then(() => body);
+    });
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+
+    await store.selectSession(first);
+    await store.selectSession(third);
+    await store.selectSession(second);
+    // A sidebar refresh resets the catalog projection's activeEffort.
+    store.sessionStore.patch(first.id, { activeEffort: '' });
+    pending = deferred<Record<string, unknown>>();
+    const toThird = store.selectSession(third);
+    expect(store.selectedEffort.value).toBe('');
+    pending.resolve({});
+    await toThird;
+    pending = deferred<Record<string, unknown>>();
+    const toFirst = store.selectSession(first);
+    expect(store.selectedEffort.value).toBe('medium');
+    pending.resolve({});
+    await toFirst;
+    store.dispose();
+  });
+
+  it("adopts a delegated conversation's effort from session state", async () => {
+    const store = new AppStore(config);
+    const child: Session = {
+      ...session(),
+      id: 'child-1',
+      parentSessionId: 's1',
+      delegated: true,
+    };
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runtime.setPreference('effort', 'max', false);
+    store.endpoints.sessionState = vi.fn(async () => ({
+      model: 'opus',
+      reasoning_effort: 'medium',
+    }));
+    store.endpoints.selectedSession = vi.fn(async (id: string) => ({
+      selected_session: { id, parent_session_id: 's1', delegated: true },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+
+    await store.selectSession(child);
+    expect(store.sessions.value.some((entry) => entry.id === child.id)).toBe(false);
+    expect(store.selectedEffort.value).toBe('medium');
+    store.dispose();
+  });
+
+  it('keeps an effort a live response confirmed while the conversation was loading', async () => {
+    const store = new AppStore(config);
+    const first = session();
+    const second = { ...session(), id: 's2', title: 'Second' };
+    store.sessions.value = [first, second];
+    store.activeSessionId.value = second.id;
+    store.draftActive.value = false;
+    store.endpoints.sessionState = vi.fn(async () => ({
+      model: 'opus',
+      reasoning_effort: 'medium',
+    }));
+    const transcript = deferred<void>();
+    store.endpoints.selectedSession = vi.fn(async (id: string) => {
+      await transcript.promise;
+      return { selected_session: { id }, selected_transcript: { bodies: { messages: [] } } };
+    });
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+
+    const selecting = store.selectSession(first);
+    // A model switch streamed after session state sampled the older effort.
+    store.sessionStore.patch(first.id, { activeEffort: 'high', confirmedEffort: 'high' });
+    transcript.resolve();
+    await selecting;
+
+    expect(store.sessions.value.find((entry) => entry.id === first.id)).toMatchObject({
+      activeEffort: 'high',
+      confirmedEffort: 'high',
+    });
+    expect(store.selectedEffort.value).toBe('high');
+    store.dispose();
+  });
+
   it('moves the active session to root after worktree cleanup', async () => {
     const store = new AppStore(config);
     try {

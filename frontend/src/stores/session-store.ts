@@ -83,6 +83,7 @@ const TRANSCRIPT_ONLY_SESSION_FIELDS = [
   'activeModel',
   'activeProvider',
   'activeEffort',
+  'confirmedEffort',
   'activeReasoningMode',
   'workingDir',
   'worktreeDir',
