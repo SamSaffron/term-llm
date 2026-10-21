@@ -149,6 +149,11 @@ func (t *GrepTool) intentPipeline(ctx context.Context, a GrepArgs, root, intent 
 		}
 		return formatRankedGrepResults(matches, note), ctx.Err()
 	}, func(value intentSearchResult) string { return formatIntentPrefix(value, maxResults, a.ContextLines) })
+	if errors.Is(err, greprerank.ErrBusy) {
+		// Saturation never starts another detached search; use the untouched
+		// ordinary path synchronously, with its normal cap and enrichment.
+		text = t.executePlainGrep(ctx, a, root, grepContextLines(a.ContextLines), maxResults)
+	}
 	if ctx.Err() != nil {
 		return "grep timed out after 1 minute; try a more specific pattern or path"
 	}
@@ -200,6 +205,8 @@ func grepRerankSkipped(err error) string {
 		category = "classifier unavailable"
 	case errors.Is(err, greprerank.ErrBreakerOpen):
 		category = "temporarily disabled after repeated failures"
+	case errors.Is(err, greprerank.ErrBusy):
+		category = "busy"
 	}
 	return "[intent rerank skipped (" + category + "); showing unranked results]\n"
 }

@@ -4,6 +4,7 @@ package grepsearch
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,10 +12,63 @@ import (
 	"strings"
 )
 
+// ErrNotRegular reports that a cancellable scan refused a non-regular file
+// (FIFO, socket, device or directory) that could block or never end.
+var ErrNotRegular = errors.New("not a regular file")
+
+// openRegular is the cancellable-scan open path. It rejects non-regular files
+// before opening (following symlinks) and again on the opened descriptor.
+func openRegular(ctx context.Context, path string) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, ErrNotRegular
+	}
+	file, err := openRegularFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+// openRegularFile verifies the opened descriptor is regular, closing it
+// otherwise. Unix opens are non-blocking to cover the precheck/open FIFO race.
+func openRegularFile(path string) (*os.File, error) {
+	file, err := openNonblock(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, ErrNotRegular
+	}
+	return file, nil
+}
+
 // Scan reads a text file and visits matching lines with their source context.
 // A nil context retains ordinary grep's original, synchronous scan behavior.
 func Scan(ctx context.Context, path string, re *regexp.Regexp, maxMatches int, visit func([]string, int) error) error {
-	file, err := os.Open(path)
+	var file *os.File
+	var err error
+	if ctx == nil {
+		file, err = os.Open(path)
+	} else {
+		file, err = openRegular(ctx, path)
+	}
 	if err != nil {
 		return err
 	}

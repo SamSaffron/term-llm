@@ -108,7 +108,7 @@ func (a *Attempt) classify(err error, budget bool) error {
 		// parent cancel cannot hide it, nor can this mask an earlier one).
 		r.record(false)
 		return context.DeadlineExceeded
-	case errors.Is(err, ErrSkipped), errors.Is(err, ErrInput), errors.Is(err, ErrBreakerOpen):
+	case errors.Is(err, ErrSkipped), errors.Is(err, ErrInput), errors.Is(err, ErrBreakerOpen), errors.Is(err, ErrBusy):
 		return err
 	}
 	// Real parent cancellation or deadline is neutral, even when a result
