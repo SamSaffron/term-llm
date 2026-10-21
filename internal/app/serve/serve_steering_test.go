@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,44 @@ import (
 
 // No special Rush capability: wrappers and native adapters use ordinary Stream.
 type rushContinuationProvider struct{ core.Provider }
+
+// Track local stream settlement rather than when the remote HTTP handler is
+// scheduled to observe cancellation. Closing a response body cannot acknowledge
+// that remote observation.
+type rushHTTPSettlementProvider struct {
+	core.Provider
+	calls   atomic.Int32
+	stopped chan struct{}
+	t       *testing.T
+}
+
+func (p *rushHTTPSettlementProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	first := p.calls.Add(1) == 1
+	if !first {
+		select {
+		case <-p.stopped:
+		default:
+			p.t.Error("replacement started before source stream Close returned")
+		}
+	}
+	s, err := p.Provider.Stream(ctx, req)
+	if err != nil || !first {
+		return s, err
+	}
+	return &rushHTTPSettlementStream{Stream: s, stopped: p.stopped}, nil
+}
+
+type rushHTTPSettlementStream struct {
+	core.Stream
+	once    sync.Once
+	stopped chan struct{}
+}
+
+func (s *rushHTTPSettlementStream) Close() error {
+	err := s.Stream.Close()
+	s.once.Do(func() { close(s.stopped) })
+	return err
+}
 
 func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 	for _, wrapped := range []bool{false, true} {
@@ -48,11 +87,6 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 					close(sourceStopped)
 					return
 				}
-				select {
-				case <-sourceStopped:
-				default:
-					t.Error("replacement overlapped source HTTP transport")
-				}
 				replacementInput <- body.Messages
 				_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"steered\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 			}))
@@ -66,7 +100,11 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 			if err := store.Create(context.Background(), sess); err != nil {
 				t.Fatal(err)
 			}
-			var provider core.Provider = opencompat.NewOpenAICompatProvider(model.URL, "", "test", "compat")
+			var provider core.Provider = &rushHTTPSettlementProvider{
+				Provider: opencompat.NewOpenAICompatProvider(model.URL, "", "test", "compat"),
+				stopped:  make(chan struct{}),
+				t:        t,
+			}
 			if wrapped {
 				provider = rushContinuationProvider{provider}
 			}
@@ -124,6 +162,13 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("replacement not started")
+			}
+			// The server must eventually observe cancellation, but that observation
+			// need not precede the next request arriving on a different connection.
+			select {
+			case <-sourceStopped:
+			case <-time.After(3 * time.Second):
+				t.Fatal("source HTTP request was not cancelled")
 			}
 			retry := httptest.NewRecorder()
 			srv.handleSteeringRush(retry, httptest.NewRequest(http.MethodPost, req.URL.String(), strings.NewReader(string(body))), sess.ID, "")
