@@ -111,6 +111,8 @@ func SendWebPushAll(ctx context.Context, deps Deps, cfg *config.Config, message 
 		VAPIDPrivateKey: privateKey,
 		Subscriber:      subject,
 		TTL:             60,
+		// Leave room for base64 and envelope overhead in native push relays.
+		RecordSize: 2048,
 	}
 
 	lifecycle, _ := session.AsPushSubscriptionLifecycleStore(store)

@@ -2,11 +2,20 @@ package serve
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,6 +181,82 @@ func TestCompletionPushTitleIdentifiesNode(t *testing.T) {
 			// The body is intentionally left alone; only the title gains the label.
 			if payload.Body == "" {
 				t.Error("body should not be empty")
+			}
+		})
+	}
+}
+
+func TestCompletionPushRecordSize(t *testing.T) {
+	for _, oversized := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oversized=%t", oversized), func(t *testing.T) {
+			browserKey, err := ecdh.P256().GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			privateKey, publicKey, err := webpush.GenerateVAPIDKeys()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var requests atomic.Int32
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read encrypted push: %v", err)
+				}
+				if len(body) != 2048 {
+					t.Errorf("encrypted body length = %d, want 2048", len(body))
+				}
+				if len(body) < 20 || binary.BigEndian.Uint32(body[16:20]) != 2048 {
+					t.Error("encrypted record header does not specify size 2048")
+				}
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer endpoint.Close()
+			store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			cfg := &config.Config{}
+			cfg.Serve.WebPush.VAPIDPublicKey = publicKey
+			cfg.Serve.WebPush.VAPIDPrivateKey = privateKey
+			sub, err := store.UpsertPushSubscription(context.Background(), &session.PushSubscription{
+				Endpoint: endpoint.URL, KeyP256DH: base64.RawURLEncoding.EncodeToString(browserKey.PublicKey().Bytes()),
+				KeyAuth: base64.RawURLEncoding.EncodeToString(make([]byte, 16)), VAPIDKeyID: appnotify.WebPushKeyID(publicKey),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := []byte(`{"title":"Response complete","body":"Your response is ready."}`)
+			if oversized {
+				payload = []byte(strings.Repeat("x", 2048))
+			}
+			if _, err := store.EnqueueCompletionPush(context.Background(), session.CompletionPushOutboxItem{
+				EventID: "event", ResponseID: "response", SubscriptionID: sub.ID, Payload: payload,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s := &serveServer{store: store, cfgRef: cfg}
+			calls := 0
+			s.dispatchCompletionPushesWithSender(context.Background(), store, time.Second, func(ctx context.Context, sub *session.PushSubscription, payload []byte, opts *webpush.Options) (int, time.Duration, error) {
+				calls++
+				status, retry, err := appnotify.SendWebPushDetailed(ctx, sub, payload, opts)
+				if oversized {
+					if !errors.Is(err, webpush.ErrMaxPadExceeded) {
+						t.Errorf("oversized payload error = %v, want ErrMaxPadExceeded", err)
+					}
+				} else if err != nil {
+					t.Errorf("send completion push: %v", err)
+				}
+				return status, retry, err
+			})
+			wantRequests := int32(1)
+			if oversized {
+				wantRequests = 0
+			}
+			if calls != 1 || requests.Load() != wantRequests {
+				t.Fatalf("sender calls = %d, HTTP requests = %d; want 1, %d", calls, requests.Load(), wantRequests)
 			}
 		})
 	}

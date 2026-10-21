@@ -173,6 +173,8 @@ func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, ou
 	opts := &webpush.Options{
 		VAPIDPublicKey: publicKey, VAPIDPrivateKey: privateKey,
 		Subscriber: appnotify.NormalizeWebPushSubject(s.cfgRef.Serve.WebPush.Subject), TTL: 300,
+		// Leave room for base64 and envelope overhead in native push relays.
+		RecordSize: 2048,
 	}
 	for _, item := range items {
 		if ctx.Err() != nil {

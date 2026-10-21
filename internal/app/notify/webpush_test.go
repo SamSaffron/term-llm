@@ -5,10 +5,12 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -64,7 +66,9 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 		wantErrors    bool
 		wantRequests  int32
 		wantStale     bool
+		oversized     bool
 	}{
+		{name: "oversized fails without sending", oversized: true, wantRemaining: 1, wantErrors: true},
 		{name: "gone", status: http.StatusGone, wantRemaining: 1, wantRequests: 1, wantStale: true},
 		{name: "not found", status: http.StatusNotFound, wantRemaining: 1, wantRequests: 1, wantStale: true},
 		{name: "server error", status: http.StatusInternalServerError, wantRemaining: 1, wantErrors: true, wantRequests: 2},
@@ -73,8 +77,18 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var requests atomic.Int32
-			pushServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			pushServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read push body: %v", err)
+				}
+				if len(body) != 2048 {
+					t.Errorf("encrypted body length = %d, want 2048", len(body))
+				}
+				if len(body) < 20 || binary.BigEndian.Uint32(body[16:20]) != 2048 {
+					t.Errorf("encrypted record header does not specify size 2048")
+				}
 				w.WriteHeader(tt.status)
 			}))
 			defer pushServer.Close()
@@ -104,7 +118,14 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 			}
 
 			for attempt := 1; attempt <= 2; attempt++ {
-				sent, errs := SendWebPushAll(context.Background(), testDeps(), cfg, "test", io.Discard)
+				message := "test"
+				if tt.oversized {
+					message = strings.Repeat("x", 2048)
+				}
+				sent, errs := SendWebPushAll(context.Background(), testDeps(), cfg, message, io.Discard)
+				if tt.oversized && (len(errs) != 1 || !strings.Contains(errs[0], webpush.ErrMaxPadExceeded.Error())) {
+					t.Fatalf("oversized payload errors = %v, want maximum length error", errs)
+				}
 				if sent != 0 {
 					t.Fatalf("attempt %d sent = %d, want 0", attempt, sent)
 				}

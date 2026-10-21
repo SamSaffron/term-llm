@@ -2,6 +2,9 @@ import type { AppConfig } from '../app/config';
 import type { Endpoints } from '../api/endpoints';
 import { APIError } from '../api/client';
 import { registerServiceWorker } from './browser';
+import { nativePushBridge, type NativePushSubscription } from './native-push';
+
+type Enrollment = Pick<PushSubscription, 'endpoint' | 'options' | 'toJSON' | 'unsubscribe'>;
 
 export type NotificationStatus =
   'unsupported' | 'blocked' | 'unsubscribed' | 'subscribed' | 'stale';
@@ -68,6 +71,39 @@ export class NotificationController {
   private lastFocusCheck = 0;
   private disposed = false;
   private cleanup: Array<() => void> = [];
+  private readonly native = nativePushBridge();
+  private nativeEndpoint = '';
+
+  private wrapNative(subscription: NativePushSubscription): Enrollment {
+    this.nativeEndpoint = subscription.endpoint;
+    return {
+      endpoint: subscription.endpoint,
+      options: {
+        applicationServerKey: base64URLToBytes(subscription.applicationServerKey).buffer,
+        userVisibleOnly: true,
+      },
+      toJSON: () => ({ endpoint: subscription.endpoint, keys: subscription.keys }),
+      unsubscribe: async () => {
+        await this.native!.unsubscribe(this.config.prefix);
+        return true;
+      },
+    };
+  }
+
+  private async enrollmentManager() {
+    if (this.native) {
+      return {
+        getSubscription: async (): Promise<Enrollment | null> => {
+          const subscription = await this.native!.getSubscription(this.config.prefix);
+          return subscription ? this.wrapNative(subscription) : null;
+        },
+        subscribe: async (): Promise<Enrollment> =>
+          this.wrapNative(await this.native!.subscribe(this.config.prefix, this.config.vapidKey)),
+      };
+    }
+    const registration = await registerServiceWorker(this.config);
+    return registration?.pushManager;
+  }
 
   constructor(
     private readonly config: AppConfig,
@@ -93,6 +129,12 @@ export class NotificationController {
   }
 
   private unsupportedReason(): string {
+    if (this.native) {
+      if (!this.config.vapidKey) return 'This server has not configured Web Push.';
+      if (this.config.pushSupported === false)
+        return 'Persistent notification storage is unavailable on this server.';
+      return '';
+    }
     if (!globalThis.isSecureContext) return 'Notifications require a secure HTTPS connection.';
     if (!('Notification' in window)) return 'This browser does not support notifications.';
     if (!('serviceWorker' in navigator)) return 'This browser does not support service workers.';
@@ -106,10 +148,23 @@ export class NotificationController {
   }
 
   async reconcile(options: { repair?: boolean } = {}): Promise<NotificationState> {
+    if (this.disposed) return this.current;
     if (this.reconcilePromise) return this.reconcilePromise;
-    this.reconcilePromise = this.reconcileNow(options).finally(() => {
-      this.reconcilePromise = null;
-    });
+    this.reconcilePromise = this.reconcileNow(options)
+      .catch((error: unknown) =>
+        this.update({
+          status: 'stale',
+          busy: false,
+          verified: false,
+          detail:
+            error instanceof Error
+              ? error.message
+              : 'Notification enrollment could not be checked.',
+        }),
+      )
+      .finally(() => {
+        this.reconcilePromise = null;
+      });
     return this.reconcilePromise;
   }
 
@@ -124,9 +179,11 @@ export class NotificationController {
       });
 
     this.update({ ...this.current, busy: true, detail: 'Checking notification enrollment…' });
-    const permission = Notification.permission;
-    const registration = await registerServiceWorker(this.config);
-    if (!registration)
+    const permission = this.native
+      ? await this.native.permission(this.config.prefix)
+      : Notification.permission;
+    const manager = await this.enrollmentManager();
+    if (!manager)
       return this.update({
         status: 'unsupported',
         busy: false,
@@ -134,7 +191,7 @@ export class NotificationController {
         detail: 'The notification service worker could not be registered.',
       });
 
-    let subscription = await registration.pushManager.getSubscription();
+    let subscription = await manager.getSubscription();
     const cachedId = this.storage.getItem(this.cacheKey) || '';
     if (permission === 'denied') {
       return this.update({
@@ -145,6 +202,7 @@ export class NotificationController {
       });
     }
     if (permission === 'default') {
+      if (this.native && !subscription) await this.deleteServer(cachedId, this.nativeEndpoint);
       if (subscription) {
         await subscription.unsubscribe().catch(() => false);
         await this.deleteServer(cachedId, subscription.endpoint);
@@ -156,6 +214,13 @@ export class NotificationController {
         verified: false,
         detail: 'Notifications are not enabled.',
       });
+    }
+
+    // Token/relay changes can invalidate the host record before its old
+    // endpoint can be read. The canonical server ID still removes that route.
+    if (this.native && !subscription && repair) {
+      await this.deleteServer(cachedId, this.nativeEndpoint);
+      this.storage.removeItem(this.cacheKey);
     }
 
     const applicationServerKey = base64URLToBytes(this.config.vapidKey);
@@ -182,7 +247,7 @@ export class NotificationController {
 
     if (!subscription && repair) {
       try {
-        subscription = await registration.pushManager.subscribe({
+        subscription = await manager.subscribe({
           userVisibleOnly: true,
           applicationServerKey,
         });
@@ -261,15 +326,31 @@ export class NotificationController {
         detail: unsupported,
         verified: false,
       });
-    if (Notification.permission === 'denied') return this.reconcile({ repair: false });
+    if (!this.native && Notification.permission === 'denied')
+      return this.reconcile({ repair: false });
     this.update({ ...this.current, busy: true, detail: 'Waiting for notification permission…' });
-    if (Notification.permission === 'default') await Notification.requestPermission();
+    if (this.native) {
+      try {
+        await this.native.requestPermission(this.config.prefix);
+      } catch (error) {
+        return this.update({
+          status: 'stale',
+          busy: false,
+          verified: false,
+          detail:
+            error instanceof Error
+              ? error.message
+              : 'Notification permission could not be requested.',
+        });
+      }
+    } else if (Notification.permission === 'default') await Notification.requestPermission();
     this.repairAttempted = false;
     return this.reconcile({ repair: true });
   }
 
   async disable(): Promise<NotificationState> {
     this.update({ ...this.current, busy: true, detail: 'Disabling notifications…' });
+    if (this.native) return this.disableNative();
     const registration = await navigator.serviceWorker?.getRegistration(`${this.config.prefix}/`);
     const subscription = await registration?.pushManager.getSubscription();
     const cachedId = this.storage.getItem(this.cacheKey) || this.current.subscriptionId || '';
@@ -288,6 +369,34 @@ export class NotificationController {
     });
   }
 
+  private async disableNative(): Promise<NotificationState> {
+    try {
+      const subscription = await this.native!.getSubscription(this.config.prefix);
+      const endpoint = subscription?.endpoint || this.nativeEndpoint;
+      const id = this.storage.getItem(this.cacheKey) || this.current.subscriptionId || '';
+      // disable, unlike unsubscribe, persists the user's per-scope opt-out.
+      await this.native!.disable(this.config.prefix);
+      await this.deleteServer(id, endpoint);
+      this.nativeEndpoint = '';
+      this.storage.removeItem(this.cacheKey);
+      this.repairAttempted = false;
+      const permission = await this.native!.permission(this.config.prefix);
+      return this.update({
+        status: permission === 'denied' ? 'blocked' : 'unsubscribed',
+        busy: false,
+        verified: false,
+        detail: 'Notifications are disabled.',
+      });
+    } catch (error) {
+      return this.update({
+        ...this.current,
+        busy: false,
+        verified: false,
+        detail: error instanceof Error ? error.message : 'Notifications could not be disabled.',
+      });
+    }
+  }
+
   private async deleteServer(id: string, endpoint: string): Promise<void> {
     if (!id && !endpoint) return;
     await this.endpoints.pushUnsubscribe(id ? { id } : { endpoint }).catch(() => undefined);
@@ -304,23 +413,36 @@ export class NotificationController {
     addEventListener('pageshow', reconcile);
     addEventListener('online', reconcile);
     addEventListener('focus', focus);
-    navigator.serviceWorker?.addEventListener('controllerchange', reconcile);
+    const nativeChange = () => {
+      // A change arriving during enrollment must be checked after that pass.
+      void (this.reconcilePromise || Promise.resolve()).then(() => {
+        if (!this.disposed) void this.reconcile();
+      });
+    };
+    if (this.native) {
+      addEventListener('termllm-native-push-change', nativeChange);
+      this.cleanup.push(() => removeEventListener('termllm-native-push-change', nativeChange));
+    }
+    const worker = this.native ? undefined : navigator.serviceWorker;
+    worker?.addEventListener('controllerchange', reconcile);
     const message = (event: MessageEvent) => this.handleWorkerMessage(event);
-    navigator.serviceWorker?.addEventListener('message', message);
+    worker?.addEventListener('message', message);
     this.cleanup.push(
       () => removeEventListener('pageshow', reconcile),
       () => removeEventListener('online', reconcile),
       () => removeEventListener('focus', focus),
-      () => navigator.serviceWorker?.removeEventListener('controllerchange', reconcile),
-      () => navigator.serviceWorker?.removeEventListener('message', message),
+      () => worker?.removeEventListener('controllerchange', reconcile),
+      () => worker?.removeEventListener('message', message),
     );
-    void navigator.permissions
-      ?.query({ name: 'notifications' as PermissionName })
-      .then((status) => {
-        status.addEventListener('change', reconcile);
-        this.cleanup.push(() => status.removeEventListener('change', reconcile));
-      })
-      .catch(() => undefined);
+    if (!this.native)
+      void navigator.permissions
+        ?.query({ name: 'notifications' as PermissionName })
+        .then((status) => {
+          if (this.disposed) return;
+          status.addEventListener('change', reconcile);
+          this.cleanup.push(() => status.removeEventListener('change', reconcile));
+        })
+        .catch(() => undefined);
     void this.reconcile();
     return () => this.dispose();
   }
@@ -354,6 +476,9 @@ export class NotificationController {
       this.current.subscriptionId !== originatingSubscriptionId
     )
       return;
+    // Native completion delivery belongs to the server/host, never a local
+    // service-worker fallback (which is absent in embedded web views).
+    if (this.native) return;
     const eventId = completionEventId(event.responseId, originatingSubscriptionId);
     const registration = await navigator.serviceWorker.ready;
     registration.active?.postMessage({
