@@ -16,7 +16,12 @@ type WorkerListener = (event: {
 
 type MemoryCaches = Map<string, Map<string, Response>>;
 
-function workerHarness(assets: string[] = [], version = 'v7', storage: MemoryCaches = new Map()) {
+function workerHarness(
+  assets: string[] = [],
+  version = 'v7',
+  storage: MemoryCaches = new Map(),
+  scope = 'https://example.test/ui/',
+) {
   const key = (request: string | { url: string }) =>
     typeof request === 'string' ? request : request.url;
   const cacheStorage = {
@@ -37,28 +42,37 @@ function workerHarness(assets: string[] = [], version = 'v7', storage: MemoryCac
   };
   const network = vi.fn(async () => new Response('network'));
   const listeners = new Map<string, WorkerListener>();
-  const outstanding = new Map<string, { close(): void }>();
-  const showNotification = vi.fn(async (_title: string, options: { tag: string }) => {
-    outstanding.set(options.tag, { close: () => outstanding.delete(options.tag) });
-  });
+  const outstanding = new Map<string, { data: Record<string, unknown>; close(): void }>();
+  const showNotification = vi.fn(
+    async (_title: string, options: { tag?: string; data: Record<string, unknown> }) => {
+      const tag = options.tag || `legacy:${outstanding.size}`;
+      outstanding.set(tag, { data: options.data, close: () => outstanding.delete(tag) });
+    },
+  );
   const client = {
-    url: 'https://example.test/ui/chat/one',
+    id: 'client-owner',
+    url: new URL('chat/one', scope).href,
     visibilityState: 'visible',
     focus: vi.fn(async () => undefined),
     postMessage: vi.fn(),
   };
+  const windows = [client];
   const worker = {
     location: { origin: 'https://example.test' },
     registration: {
-      scope: 'https://example.test/ui/',
+      scope,
       showNotification,
-      getNotifications: vi.fn(async ({ tag }: { tag: string }) =>
-        outstanding.has(tag) ? [outstanding.get(tag)] : [],
+      getNotifications: vi.fn(async (options?: { tag: string }) =>
+        options
+          ? outstanding.has(options.tag)
+            ? [outstanding.get(options.tag)]
+            : []
+          : [...outstanding.values()],
       ),
     },
     clients: {
       claim: vi.fn(),
-      matchAll: vi.fn(async () => [client]),
+      matchAll: vi.fn(async () => windows),
       openWindow: vi.fn(),
     },
     skipWaiting: vi.fn(),
@@ -99,6 +113,8 @@ function workerHarness(assets: string[] = [], version = 'v7', storage: MemoryCac
     showNotification,
     outstanding,
     client,
+    windows,
+    clients: worker.clients,
     request,
     network,
     storage,
@@ -108,78 +124,281 @@ function workerHarness(assets: string[] = [], version = 'v7', storage: MemoryCac
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('service worker completion notifications', () => {
-  it('shows every push while replacing one stable outstanding tag', async () => {
+const completionPayload = (overrides: Record<string, unknown> = {}) => ({
+  version: 2,
+  kind: 'completion',
+  event_id: 'completion:turn:sub',
+  turn_id: 'turn',
+  response_id: 'resp',
+  window_id: 'window-owner',
+  store_instance_id: 'store',
+  session_id: 'session',
+  attention_seq: 3,
+  run_epoch: 1,
+  source: '/ui',
+  outcome: 'completed',
+  title: 'Response complete',
+  body: 'Ready',
+  url: '/ui/chat/session',
+  created_at: new Date(Date.now()).toISOString(),
+  expires_at: new Date(Date.now() + 60_000).toISOString(),
+  ...overrides,
+});
+const pushEvent = (payload: unknown) => ({ data: { json: () => payload } });
+const manualPayload = (overrides: Record<string, unknown> = {}) => ({
+  version: 2,
+  kind: 'manual',
+  event_id: 'manual:event',
+  source: '/ui',
+  title: 'A real manual title',
+  body: 'Actual manual body',
+  url: '/ui/',
+  created_at: new Date(Date.now()).toISOString(),
+  expires_at: new Date(Date.now() + 60_000).toISOString(),
+  ...overrides,
+});
+const bind = async (
+  harness: ReturnType<typeof workerHarness>,
+  client = harness.client,
+  windowId = 'window-owner',
+  documentId = 'document-owner',
+) => {
+  const reply = { postMessage: vi.fn() };
+  await harness.dispatch('message', {
+    source: client,
+    ports: [reply],
+    data: { type: 'notification-bind', version: 2, window_id: windowId, document_id: documentId },
+  });
+  return reply.postMessage.mock.calls[0]?.[0];
+};
+
+// The server is the only completion authority. Visibility is not attention.
+describe('service worker v2 notification receiver', () => {
+  it('durably deduplicates completion and manual events, even after worker restart', async () => {
+    const storage: MemoryCaches = new Map();
+    const harness = workerHarness([], 'v7', storage);
+    const payload = completionPayload();
+    await harness.dispatch('push', pushEvent(payload));
+    await harness.dispatch('push', pushEvent(payload));
+    expect(harness.showNotification).toHaveBeenCalledOnce();
+    expect(harness.client.postMessage).not.toHaveBeenCalled();
+    const restarted = workerHarness([], 'v8', storage);
+    await restarted.dispatch('push', pushEvent(payload));
+    expect(restarted.showNotification).not.toHaveBeenCalled();
+    await restarted.dispatch('push', pushEvent(manualPayload()));
+    await restarted.dispatch('push', pushEvent(manualPayload()));
+    expect(restarted.showNotification).toHaveBeenCalledOnce();
+    expect(restarted.showNotification).toHaveBeenCalledWith(
+      'A real manual title',
+      expect.objectContaining({ body: 'Actual manual body', tag: 'term-llm-manual:manual:event' }),
+    );
+  });
+
+  it('preserves only the strict legacy manual shape and ignores retired local completion messages', async () => {
     const harness = workerHarness();
-    const payload = {
-      version: 1,
-      event_id: 'completion:resp:sub',
-      response_id: 'resp',
-      title: 'Response complete',
-      body: 'Ready',
-      url: '/ui/chat/session',
-    };
-    const event = { data: { json: () => payload } };
-    await harness.dispatch('push', event);
-    await harness.dispatch('push', event);
-    expect(harness.showNotification).toHaveBeenCalledTimes(2);
-    expect(harness.showNotification).toHaveBeenLastCalledWith(
-      'Response complete',
+    await harness.dispatch('push', pushEvent({ title: 'Legacy title', body: 'Legacy body' }));
+    expect(harness.showNotification).toHaveBeenCalledWith(
+      'Legacy title',
+      expect.objectContaining({ body: 'Legacy body' }),
+    );
+    await harness.dispatch('message', {
+      source: harness.client,
+      data: { type: 'completion-notification', payload: completionPayload() },
+    });
+    expect(harness.showNotification).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    null,
+    { title: 'Bad', body: 'Bad', response_id: 'r' },
+    { version: 1, event_id: 'old', title: 'Old auto', body: 'No' },
+    { version: 9, kind: 'completion', title: 'Unknown', body: 'No' },
+    completionPayload({ window_id: '' }),
+    completionPayload({ attention_seq: 1.5 }),
+    completionPayload({ source: '/another-node' }),
+    completionPayload({ expires_at: 'bad' }),
+    manualPayload({ response_id: 'r' }),
+  ])(
+    'drops malformed/unsupported/cross-scope payloads rather than treating them as manual: %j',
+    async (payload) => {
+      const harness = workerHarness();
+      await harness.dispatch('push', pushEvent(payload));
+      expect(harness.showNotification).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves typed manual content with a local source under a different public Hub mount', async () => {
+    const harness = workerHarness([], 'v7', new Map(), 'https://example.test/node/Dev/');
+    await harness.dispatch(
+      'push',
+      pushEvent(manualPayload({ source: '/ui', url: '/ui/chat/session' })),
+    );
+    expect(harness.showNotification).toHaveBeenCalledWith(
+      'A real manual title',
       expect.objectContaining({
-        tag: 'term-llm-completion:completion:resp:sub',
-        renotify: false,
+        body: 'Actual manual body',
+        data: expect.objectContaining({ url: 'https://example.test/node/Dev/' }),
       }),
     );
-    expect(harness.outstanding.size).toBe(1);
+  });
+
+  it('binds actual WindowClient identity, rejects cloned live ownership and accepts reload', async () => {
+    const harness = workerHarness();
+    const sibling = { ...harness.client, id: 'sibling', postMessage: vi.fn(), focus: vi.fn() };
+    harness.windows.unshift(sibling);
+    expect(await bind(harness)).toEqual({ status: 'bound' });
+    expect(await bind(harness, sibling)).toEqual({ status: 'collision' });
+    expect(await bind(harness, sibling, 'window-sibling', 'doc-sibling')).toEqual({
+      status: 'bound',
+    });
+    const payload = completionPayload();
+    await harness.dispatch('notificationclick', {
+      notification: { data: payload, close: vi.fn() },
+    });
+    expect(harness.client.focus).toHaveBeenCalledOnce();
+    expect(sibling.focus).not.toHaveBeenCalled();
     expect(harness.client.postMessage).toHaveBeenCalledWith({
-      type: 'completion-push-shown',
-      tag: 'term-llm-completion:completion:resp:sub',
+      type: 'notification-route',
+      url: 'https://example.test/ui/chat/session',
     });
+    const reloaded = { ...harness.client, id: 'reloaded', focus: vi.fn(), postMessage: vi.fn() };
+    harness.windows.splice(harness.windows.indexOf(harness.client), 1, reloaded);
+    expect(await bind(harness, reloaded, 'window-owner', 'new-doc')).toEqual({
+      status: 'bound',
+      previous_document_id: 'document-owner',
+    });
+    await harness.dispatch('notificationclick', {
+      notification: { data: payload, close: vi.fn() },
+    });
+    expect(reloaded.focus).toHaveBeenCalledOnce();
+    harness.windows.splice(harness.windows.indexOf(reloaded), 1);
+    await harness.dispatch('notificationclick', {
+      notification: { data: payload, close: vi.fn() },
+    });
+    expect(harness.clients.openWindow).toHaveBeenCalledWith('https://example.test/ui/chat/session');
+    expect(sibling.focus).not.toHaveBeenCalled();
   });
 
-  it('acknowledges local completion handling after deduplicating the stable tag', async () => {
-    const harness = workerHarness();
-    const reply = { postMessage: vi.fn() };
-    const event = {
-      data: {
-        type: 'completion-notification',
-        payload: {
-          version: 1,
-          event_id: 'completion:resp:sub',
-          response_id: 'resp',
-          title: 'Response complete',
-          body: 'Ready',
-          url: '/ui/chat/session',
-        },
-      },
-      ports: [reply],
-    };
-    await harness.dispatch('message', event);
-    await harness.dispatch('message', event);
-    expect(harness.showNotification).toHaveBeenCalledOnce();
-    expect(reply.postMessage).toHaveBeenCalledTimes(2);
-    expect(reply.postMessage).toHaveBeenLastCalledWith({
-      type: 'completion-notification-handled',
-      tag: 'term-llm-completion:completion:resp:sub',
+  it('persists routing across worker restart and opens fresh for manual/unknown owner', async () => {
+    const storage: MemoryCaches = new Map();
+    const one = workerHarness([], 'v7', storage);
+    await bind(one);
+    const restarted = workerHarness([], 'v8', storage);
+    await restarted.dispatch('notificationclick', {
+      notification: { data: completionPayload(), close: vi.fn() },
     });
-    expect(harness.outstanding.size).toBe(1);
+    expect(restarted.client.focus).toHaveBeenCalledOnce();
+    await restarted.dispatch('notificationclick', {
+      notification: { data: manualPayload({ url: 'https://evil.test/' }), close: vi.fn() },
+    });
+    expect(restarted.clients.openWindow).toHaveBeenCalledWith('https://example.test/ui/');
   });
 
-  it('still displays a safe notification for malformed push data', async () => {
+  it('clears only exact successful attention through the ACK sequence, not newer/manual/other sources', async () => {
     const harness = workerHarness();
-    await harness.dispatch('push', {
+    for (const payload of [
+      completionPayload(),
+      completionPayload({ event_id: 'newer', attention_seq: 4 }),
+      completionPayload({ event_id: 'other-store', store_instance_id: 'other' }),
+      completionPayload({ event_id: 'other-session', session_id: 'other' }),
+      manualPayload(),
+    ])
+      await harness.dispatch('push', pushEvent(payload));
+    expect(harness.outstanding.size).toBe(5);
+    await harness.dispatch('message', {
+      source: harness.client,
       data: {
-        json: () => {
-          throw new Error('bad json');
-        },
-        text: () => 'not-json',
+        type: 'notification-read',
+        version: 2,
+        store_instance_id: 'store',
+        source: '/ui',
+        session_id: 'session',
+        attention_seq: 3,
       },
     });
-    expect(harness.showNotification).toHaveBeenCalledOnce();
-    expect(harness.showNotification).toHaveBeenCalledWith(
-      'term-llm notification',
-      expect.objectContaining({ tag: 'term-llm-completion:malformed-push' }),
-    );
+    expect(harness.outstanding.size).toBe(4);
+    expect(harness.outstanding.has('term-llm-completion:newer')).toBe(true);
+    expect(harness.outstanding.has('term-llm-manual:manual:event')).toBe(true);
+    await harness.dispatch('push', pushEvent(completionPayload({ event_id: 'late-retry' })));
+    expect(harness.outstanding.size).toBe(4);
+  });
+
+  it('fails closed before OS display when durable replay reservation cannot be written', async () => {
+    const harness = workerHarness();
+    const cache = await harness.cacheStorage.open('test');
+    vi.spyOn(cache, 'put').mockRejectedValue(new Error('quota denied'));
+    vi.spyOn(harness.cacheStorage, 'open').mockResolvedValue(cache);
+    await harness.dispatch('push', pushEvent(completionPayload()));
+    expect(harness.showNotification).not.toHaveBeenCalled();
+  });
+
+  it('durably gates incoming pushes after browser opt-out, and only explicit enable restores', async () => {
+    const storage: MemoryCaches = new Map();
+    const one = workerHarness([], 'v7', storage);
+    await one.dispatch('message', {
+      source: one.client,
+      data: { type: 'notification-preference', enabled: false },
+    });
+    const restarted = workerHarness([], 'v8', storage);
+    await restarted.dispatch('push', pushEvent(completionPayload()));
+    expect(restarted.showNotification).not.toHaveBeenCalled();
+    await restarted.dispatch('message', {
+      source: restarted.client,
+      data: { type: 'notification-preference', enabled: true },
+    });
+    await restarted.dispatch('push', pushEvent(completionPayload()));
+    expect(restarted.showNotification).toHaveBeenCalledOnce();
+  });
+
+  it('never evicts live exact reads when saturated, instead failing closed until the safe horizon', async () => {
+    const storage: MemoryCaches = new Map();
+    const harness = workerHarness([], 'v7', storage);
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    for (let i = 0; i < 513; i++)
+      await harness.dispatch('message', {
+        source: harness.client,
+        data: {
+          type: 'notification-read',
+          version: 2,
+          store_instance_id: 'store',
+          source: '/ui',
+          session_id: `session-${i}`,
+          attention_seq: 3,
+        },
+      });
+    const restarted = workerHarness([], 'v8', storage);
+    for (const session_id of ['session-0', 'session-512', 'another-session'])
+      await restarted.dispatch('push', pushEvent(completionPayload({ session_id })));
+    expect(restarted.showNotification).not.toHaveBeenCalled();
+    const cache = [...storage.entries()].find(([key]) =>
+      key.startsWith('term-llm-notifications-'),
+    )![1];
+    const state = await [...cache.values()][0].clone().json();
+    expect(state.reads).toHaveLength(512);
+    expect(state.reads[0].session_id).toBe('session-0');
+    expect(state.read_block_until).toBe(now + 24 * 60 * 60 * 1000);
+    vi.spyOn(Date, 'now').mockReturnValue(now + 24 * 60 * 60 * 1000 + 1);
+    await restarted.dispatch('push', pushEvent(completionPayload()));
+    expect(restarted.showNotification).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the durable replay ledger bounded and expires old records', async () => {
+    const harness = workerHarness();
+    for (let i = 0; i < 515; i++)
+      await harness.dispatch('push', pushEvent(manualPayload({ event_id: `event-${i}` })));
+    const cache = [...harness.storage.entries()].find(([key]) =>
+      key.startsWith('term-llm-notifications-'),
+    )![1];
+    let state = await [...cache.values()][0].clone().json();
+    expect(state.events).toHaveLength(512);
+    expect(harness.showNotification).toHaveBeenCalledTimes(512);
+    await harness.dispatch('push', pushEvent(manualPayload({ event_id: 'event-0' })));
+    expect(harness.showNotification).toHaveBeenCalledTimes(512);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 24 * 60 * 60 * 1000 + 1);
+    await harness.dispatch('push', pushEvent(manualPayload({ event_id: 'after-horizon' })));
+    state = await [...cache.values()][0].clone().json();
+    expect(state.events).toHaveLength(1);
   });
 });
 

@@ -352,6 +352,9 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 	}
 	run, ok := mgr.get(runID)
 	if !ok {
+		if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost && s.cancelNotificationTurn(w, r, runID) {
+			return
+		}
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "response not found")
 		return
 	}
@@ -409,6 +412,10 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 			}
 		}
 
+		if !s.retireNotificationTurn(r.Context(), runID) {
+			writeOpenAIError(w, 500, "server_error", "failed to cancel notification turn")
+			return
+		}
 		cancel, accepted := run.requestCancel()
 		if !accepted {
 			snapshot := run.snapshot()
@@ -680,6 +687,9 @@ func (s *serveServer) responseRunContinuationID(ctx context.Context, runtime *se
 // admitResponseRunError maps durable admission failures to the caller's error
 // contract: a turn owned by another process is a busy conflict, not a server error.
 func admitResponseRunError(err error) error {
+	if errors.Is(err, session.ErrNotificationLineage) {
+		return fmt.Errorf("%w: client tool results do not match the current handoff", errResponseRunKeyConflict)
+	}
 	if errors.Is(err, session.ErrSessionTurnOwned) {
 		return fmt.Errorf("%w: another process owns this session's turn", errServeSessionBusy)
 	}
@@ -778,6 +788,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 	}()
 	run.agentEvents = append([]session.AgentRun(nil), options.agentEvents...)
+	run.recoverableNotification = options.agentCompletion
 	run.settled = make(chan struct{})
 	run.rushStateful = stateful && !replaceHistory
 	run.rushRequest = llmReq
@@ -791,7 +802,6 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		run.idempotencyScope = strings.TrimSpace(options.idempotencyScope)
 		run.requestFingerprint = strings.TrimSpace(options.requestFingerprint)
 	}
-	s.configureResponseRunNotification(run, options.notificationSubscriptionID)
 	for i := len(inputMessages) - 1; i >= 0; i-- {
 		if inputMessages[i].Role == core.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
 			run.clientMessageID = strings.TrimSpace(inputMessages[i].ClientMessageID)
@@ -854,6 +864,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			lease, admitErr = lifecycle.RenewResponseRunLease(admitCtx, respID, ownerID, run.fencingToken)
 		} else {
 			lease, admitErr = lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
+				Turn:            options.notificationTurn,
 				AgentEvents:     options.agentEvents,
 				AgentBarrier:    options.agentBarrier,
 				ResponseID:      respID,
@@ -926,14 +937,6 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	return run, nil
 }
 
-func (s *serveServer) configureResponseRunNotification(run *responseRun, subscriptionID string) {
-	if subscriptionID = strings.TrimSpace(subscriptionID); subscriptionID != "" {
-		run.terminalNotify = func(outcome string) {
-			s.enqueueCompletionPush(run.id, run.sessionID, subscriptionID, outcome, time.Now().UTC())
-		}
-	}
-}
-
 // configureResponseRunLifecycle binds callbacks to an existing owner/fence. It
 // never admits a new run, so restore failures can terminalize only their own row.
 func (s *serveServer) configureResponseRunLifecycle(run *responseRun, lifecycle session.ServeResponseLifecycleStore, ownerID string, lease session.ResponseRunLease) {
@@ -958,9 +961,7 @@ func (s *serveServer) configureResponseRunLifecycle(run *responseRun, lifecycle 
 		})
 	}
 	run.finalizeLifecycle = func(outcome session.ResponseRunState, finalRev int64, outputCount int) (session.AttentionState, error) {
-		terminal := session.ResponseRunTerminal{ResponseID: respID, OwnerInstanceID: ownerID,
-			FencingToken: lease.FencingToken, Outcome: outcome, FinalRev: finalRev,
-			DurableOutputCount: outputCount, EndedAt: time.Now().UTC()}
+		terminal := notificationTerminal(run, outcome, finalRev, outputCount, ownerID, lease.FencingToken)
 		finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer finalizeCancel()
 		var attention session.AttentionState

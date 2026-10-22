@@ -164,6 +164,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 	inner.HandleFunc("/api/sessions/", s.auth(s.cors(s.handleSideQuestion)))
 	inner.HandleFunc("/v1/push/subscribe", s.auth(s.cors(s.handlePushSubscribe)))
+	inner.HandleFunc("/v1/push/presence", s.auth(s.cors(s.handleNotificationPresence)))
 
 	if s.store != nil {
 		inner.HandleFunc("/v1/sessions", s.auth(s.cors(s.handleSessions)))

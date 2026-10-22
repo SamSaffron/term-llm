@@ -140,7 +140,8 @@ func (s *serveServer) deliverAgentWake(parent string) bool {
 	llmRequest := s.buildResponsesLLMRequest(request, rt, parent, true)
 	run, err := s.startResponseRun(rt, true, false, []core.Message{msg}, llmRequest, parent, startResponseRunOptions{
 		previousResponseID: previous, uiSession: true, agentCompletion: true, agentEvents: pending, agentBarrier: barrier,
-		admissionCheck: func() bool { return s.agentWakeStillPending(ctx, parent, pending, barrier) },
+		notificationTurn: &session.NotificationTurnAdmission{PreviousResponseID: previous, AwaitedEvents: pending},
+		admissionCheck:   func() bool { return s.agentWakeStillPending(ctx, parent, pending, barrier) },
 	})
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {

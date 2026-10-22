@@ -181,8 +181,8 @@ type responseRun struct {
 	subscriberWarned        map[int]bool // tracks whether 75% buffer warning was logged
 	subscriberDropped       map[int]bool // tracks subscribers dropped after their live buffer overflowed
 	nextSubscriberID        int
-	terminalNotifyOnce      sync.Once
-	terminalNotify          func(string)
+	awaitedEvents           []session.AgentRun
+	recoverableNotification bool
 	coarseEvent             func(string, map[string]any)
 	interactionStateChanged func(session.ResponseRunInteractionState)
 	cancel                  context.CancelFunc
@@ -197,21 +197,21 @@ type startResponseRunOptions struct {
 	previousResponseID string
 	// Checked under the session admission boundary, after the active slot is
 	// available and before a continuation takes it.
-	admissionCheck             func() bool
-	uiSession                  bool
-	resetResponseIDsOnSuccess  bool
-	modelSwap                  *responseModelSwapExecution
-	idempotencyKey             string
-	idempotencyScope           string
-	requestFingerprint         string
-	notificationSubscriptionID string
-	agentEvents                []session.AgentRun
-	agentBarrier               bool // admission requires every direct child to be terminal
-	agentCompletion            bool // host-owned wake, never user-authored input
-	onDone                     func()
-	onRuntimeDone              func() // detach borrowed runtime before executor-owned close
-	onAdmissionDone            func() // release request preparation before streaming events
-	runtimeSetup               func(*core.Request) error
+	admissionCheck            func() bool
+	uiSession                 bool
+	resetResponseIDsOnSuccess bool
+	modelSwap                 *responseModelSwapExecution
+	idempotencyKey            string
+	idempotencyScope          string
+	requestFingerprint        string
+	notificationTurn          *session.NotificationTurnAdmission
+	agentEvents               []session.AgentRun
+	agentBarrier              bool // admission requires every direct child to be terminal
+	agentCompletion           bool // host-owned wake, never user-authored input
+	onDone                    func()
+	onRuntimeDone             func() // detach borrowed runtime before executor-owned close
+	onAdmissionDone           func() // release request preparation before streaming events
+	runtimeSetup              func(*core.Request) error
 	// clientToolRunner answers inline calls to declared client tools for the
 	// run with the given response id; see core.ClientToolRunner.
 	clientToolRunner func(responseID string) core.ClientToolRunner

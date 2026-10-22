@@ -72,6 +72,7 @@ func (m *Model) acquireAgentTurnLease(ctx context.Context, sessionID string, eve
 	responseID := "tui_turn_" + session.NewID()
 	lease, err := lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
 		AgentEvents:     events,
+		Turn:            &session.NotificationTurnAdmission{Human: len(events) == 0},
 		AgentBarrier:    len(events) > 0,
 		ResponseID:      responseID,
 		SessionID:       sessionID,

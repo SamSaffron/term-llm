@@ -16,6 +16,7 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 	defer closeTask()
 	defer func() { releaseReload() }()
 	defer close(run.settled)
+	runCtx = withNotificationWaitObserver(runCtx, run)
 	if options.agentCompletion {
 		runCtx = tools.ContextWithAgentRecoveryNotice(runCtx)
 		defer func() {

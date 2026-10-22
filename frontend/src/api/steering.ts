@@ -5,9 +5,15 @@ const encoded = encodeURIComponent;
 const root = (sessionId: string) => `/v1/sessions/${encoded(sessionId)}/steering`;
 
 export const rush = (api: APIClient, sessionId: string, body: Record<string, unknown>) =>
-  api.post<RushOperation>(`${root(sessionId)}/rush`, body, 'idempotent-mutation', {
-    'Idempotency-Key': String(body.request_id),
-  });
+  api.json<RushOperation>(
+    `${root(sessionId)}/rush`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': String(body.request_id) },
+      body: JSON.stringify(body),
+    },
+    { policy: 'idempotent-mutation', auth: 'session', notificationOrigin: true },
+  );
 export const rushState = (api: APIClient, sessionId: string, id: string) =>
   api.get<RushOperation>(`${root(sessionId)}/rush/${encoded(id)}`);
 export const cancelRush = (api: APIClient, sessionId: string, id: string) =>
@@ -60,5 +66,5 @@ export const steer = (
       headers: { 'Idempotency-Key': `interrupt_${steeringId}` },
       body: JSON.stringify(canonical ? body : legacySteeringBody(body)),
     },
-    { policy: 'idempotent-mutation', auth: 'session' },
+    { policy: 'idempotent-mutation', auth: 'session', notificationOrigin: true },
   );

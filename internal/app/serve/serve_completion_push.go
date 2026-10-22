@@ -13,27 +13,12 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
+	"github.com/samsaffron/term-llm/internal/notification"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-const completionPushSchemaVersion = 1
-
-type completionPushPayload struct {
-	Version    int    `json:"version"`
-	EventID    string `json:"event_id"`
-	ResponseID string `json:"response_id"`
-	SessionID  string `json:"session_id"`
-	Outcome    string `json:"outcome"`
-	Title      string `json:"title"`
-	Body       string `json:"body"`
-	URL        string `json:"url"`
-	CreatedAt  string `json:"created_at"`
-}
-
-func completionPushEventID(responseID, subscriptionID string) string {
-	return "completion:" + responseID + ":" + subscriptionID
-}
+type completionPushPayload = notification.Envelope
 
 func (s *serveServer) validateCompletionPushTarget(ctx context.Context, id string) (string, error) {
 	store, ok := session.AsPushSubscriptionLifecycleStore(s.store)
@@ -81,48 +66,26 @@ func (c serveServerConfig) completionPushLabel() string {
 	return ""
 }
 
-func (s *serveServer) enqueueCompletionPush(responseID, sessionID, subscriptionID, outcome string, createdAt time.Time) {
-	outbox, ok := session.AsCompletionPushOutboxStore(s.store)
-	if !ok || strings.TrimSpace(subscriptionID) == "" || (outcome != "completed" && outcome != "failed") {
-		return
-	}
-	eventID := completionPushEventID(responseID, subscriptionID)
-	title := "Response complete"
-	body := "Your term-llm response is ready."
-	if outcome == "failed" {
-		title = "Response failed"
-		body = "Your term-llm response stopped with an error."
+func (s *serveServer) completionNotificationPayload(item session.CompletionNotification) ([]byte, error) {
+	title, body := "Response complete", "Your term-llm response is ready."
+	if item.Outcome == session.ResponseRunFailed {
+		title, body = "Response failed", "Your term-llm response stopped with an error."
 	}
 	if label := s.cfg.completionPushLabel(); label != "" {
 		title = label + ": " + title
 	}
-	base := strings.TrimSuffix(s.cfg.basePath, "/")
-	if base == "" {
-		base = "/ui"
-	}
-	path := base + "/chat/" + url.PathEscape(sessionID)
-	payload, err := json.Marshal(completionPushPayload{
-		Version: completionPushSchemaVersion, EventID: eventID, ResponseID: responseID,
-		SessionID: sessionID, Outcome: outcome, Title: title, Body: body, URL: path,
-		CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
+	return json.Marshal(completionPushPayload{
+		Version: notification.Version, Kind: notification.KindCompletion, EventID: item.EventID,
+		TurnID: item.TurnID, ResponseID: item.ResponseID, WindowID: item.WindowID, Source: item.Source,
+		StoreInstanceID: item.StoreInstanceID, SessionID: item.SessionID, AttentionSeq: item.AttentionSeq,
+		RunEpoch: item.RunEpoch, Outcome: string(item.Outcome), Title: title, Body: body,
+		URL:       strings.TrimSuffix(item.Source, "/") + "/chat/" + url.PathEscape(item.SessionID),
+		CreatedAt: item.CreatedAt.UTC().Format(time.RFC3339Nano), ExpiresAt: item.ExpiresAt.UTC().Format(time.RFC3339Nano),
 	})
-	if err != nil {
-		return
-	}
-	inserted, err := outbox.EnqueueCompletionPush(context.Background(), session.CompletionPushOutboxItem{
-		EventID: eventID, ResponseID: responseID, SubscriptionID: subscriptionID, Payload: payload,
-	})
-	if err == nil && inserted && s.completionPushWake != nil {
-		select {
-		case s.completionPushWake <- struct{}{}:
-		default:
-		}
-	}
 }
 
 func (s *serveServer) startCompletionPushDispatcher() {
-	outbox, ok := session.AsCompletionPushOutboxStore(s.store)
-	if !ok || !appnotify.WebPushConfigured(s.cfgRef) {
+	if _, ok := session.AsNotificationDeliveryStore(s.store); !ok || !appnotify.WebPushConfigured(s.cfgRef) {
 		return
 	}
 	if s.completionPushWake == nil {
@@ -134,7 +97,7 @@ func (s *serveServer) startCompletionPushDispatcher() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
-			s.dispatchCompletionPushes(outbox)
+			s.dispatchCompletionPushes(nil)
 			select {
 			case <-s.shutdownCh:
 				return
@@ -145,7 +108,10 @@ func (s *serveServer) startCompletionPushDispatcher() {
 	}()
 }
 
-func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutboxStore) {
+// The legacy parameter is retained for internal test callers; only the fenced
+// durable logical-turn capability can authorize a send. Legacy outbox rows are
+// retired by the schema migration, never promoted by this dispatcher.
+func (s *serveServer) dispatchCompletionPushes(_ session.CompletionPushOutboxStore) {
 	base, release, err := restart.Default.Activity(context.Background())
 	if err != nil {
 		return
@@ -153,12 +119,12 @@ func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutb
 	defer release()
 	ctx, cancel := context.WithTimeout(base, 20*time.Second)
 	defer cancel()
-	s.dispatchCompletionPushesWithSender(ctx, outbox, 20*time.Second, appnotify.SendWebPushDetailed)
+	s.dispatchCompletionPushesWithSender(ctx, nil, 20*time.Second, appnotify.SendWebPushDetailed)
 }
 
-func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, outbox session.CompletionPushOutboxStore, attemptTimeout time.Duration, send func(context.Context, *session.PushSubscription, []byte, *webpush.Options) (int, time.Duration, error)) {
-	items, err := outbox.ListDueCompletionPushes(ctx, time.Now().UTC(), 25)
-	if err != nil || len(items) == 0 {
+func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, _ session.CompletionPushOutboxStore, attemptTimeout time.Duration, send func(context.Context, *session.PushSubscription, []byte, *webpush.Options) (int, time.Duration, error)) {
+	outbox, ok := session.AsNotificationDeliveryStore(s.store)
+	if !ok {
 		return
 	}
 	pushStore, ok := session.AsPushSubscriptionLifecycleStore(s.store)
@@ -170,68 +136,103 @@ func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, ou
 		log.Printf("warning: completion push deferred: %v", keyErr)
 		return
 	}
-	opts := appnotify.NewWebPushOptions(publicKey, privateKey, s.cfgRef.Serve.WebPush.Subject, 300)
-	for _, item := range items {
+	// Claim longer than the whole dispatch budget so the external send and its
+	// bounded result write cannot normally outlive their fence.
+	owner := s.responseOwnerID()
+	items, err := outbox.ClaimCompletionNotifications(ctx, owner, time.Now().UTC(), 30*time.Second, 25)
+	if err != nil {
+		log.Printf("warning: claim completion notifications: %v", err)
+		return
+	}
+	for index, item := range items {
 		if ctx.Err() != nil {
+			for _, pending := range items[index:] {
+				s.persistNotificationResult(outbox, pending, "defer", time.Time{}, "")
+			}
 			break
 		}
 		sub, getErr := pushStore.GetPushSubscription(ctx, item.SubscriptionID)
 		if getErr != nil {
-			s.retryCompletionPush(ctx, outbox, item, getErr)
+			s.recordNotificationResult(outbox, pushStore, item, nil, 0, 0, getErr)
 			continue
 		}
 		if sub == nil || sub.Status != "active" || sub.VAPIDKeyID != appnotify.WebPushKeyID(publicKey) {
-			_ = outbox.MarkCompletionPushDead(ctx, item.ID, "subscription is stale or missing")
+			s.persistNotificationResult(outbox, item, "dead", time.Time{}, "subscription is stale or missing")
 			continue
 		}
+		payload, err := s.completionNotificationPayload(item)
+		if err != nil {
+			s.persistNotificationResult(outbox, item, "dead", time.Time{}, "invalid notification metadata")
+			continue
+		}
+		ready, err := outbox.RecheckCompletionNotification(ctx, item.ID, item.ClaimOwner, item.ClaimToken, time.Now().UTC())
+		if err != nil {
+			log.Printf("warning: recheck completion notification %d: %v", item.ID, err)
+			continue
+		}
+		if !ready {
+			continue
+		}
+		ttl := min(300, int(time.Until(item.ExpiresAt).Seconds()))
+		if ttl <= 0 {
+			s.persistNotificationResult(outbox, item, "dead", time.Time{}, "notification expired")
+			continue
+		}
+		opts := appnotify.NewWebPushOptions(publicKey, privateKey, s.cfgRef.Serve.WebPush.Subject, ttl)
+		opts.Topic = notification.Topic(item.EventID)
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-		status, retryAfter, sendErr := sendCompletionPush(attemptCtx, sub, item.Payload, opts, send)
+		status, retryAfter, sendErr := sendCompletionPush(attemptCtx, sub, payload, opts, send)
 		cancel()
-		s.recordCompletionPushResult(outbox, pushStore, item, sub, status, retryAfter, sendErr)
+		s.recordNotificationResult(outbox, pushStore, item, sub, status, retryAfter, sendErr)
 	}
-	_ = outbox.PruneCompletionPushOutbox(ctx, time.Now().UTC().Add(-7*24*time.Hour))
+	if legacy, ok := session.AsCompletionPushOutboxStore(s.store); ok {
+		if err := legacy.PruneCompletionPushOutbox(ctx, time.Now().UTC().Add(-7*24*time.Hour)); err != nil && ctx.Err() == nil {
+			log.Printf("warning: prune completion notifications: %v", err)
+		}
+	}
 }
 
-func (s *serveServer) recordCompletionPushResult(outbox session.CompletionPushOutboxStore, pushStore session.PushSubscriptionLifecycleStore, item session.CompletionPushOutboxItem, sub *session.PushSubscription, status int, retryAfter time.Duration, sendErr error) {
-	// A send may exhaust the entire dispatch budget. Persist its outcome with
-	// a fresh, bounded context so it cannot remain at the head of every batch.
+func (s *serveServer) persistNotificationResult(outbox session.NotificationDeliveryStore, item session.CompletionNotification, status string, next time.Time, detail string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if err := outbox.CompleteCompletionNotification(ctx, item.ID, item.ClaimOwner, item.ClaimToken, status, next, detail); err != nil {
+		log.Printf("warning: persist completion notification %d result (%s): %v", item.ID, status, err)
+	}
+}
+
+func (s *serveServer) recordNotificationResult(outbox session.NotificationDeliveryStore, pushStore session.PushSubscriptionLifecycleStore, item session.CompletionNotification, sub *session.PushSubscription, status int, retryAfter time.Duration, sendErr error) {
 	if sendErr == nil {
-		_ = pushStore.MarkPushSubscriptionUsed(ctx, sub.ID)
-		_ = outbox.MarkCompletionPushDelivered(ctx, item.ID)
+		s.persistNotificationResult(outbox, item, "delivered", time.Time{}, "")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := pushStore.MarkPushSubscriptionUsed(ctx, sub.ID); err != nil {
+			log.Printf("warning: persist completion subscription use: %v", err)
+		}
 		return
 	}
 	if status == http.StatusGone || status == http.StatusNotFound {
-		_ = pushStore.MarkPushSubscriptionStale(ctx, sub.ID, fmt.Sprintf("http_%d", status), "push endpoint rejected the subscription")
-		_ = outbox.MarkCompletionPushDead(ctx, item.ID, "push endpoint rejected the subscription")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := pushStore.MarkPushSubscriptionStale(ctx, sub.ID, fmt.Sprintf("http_%d", status), "push endpoint rejected subscription"); err != nil {
+			log.Printf("warning: retire completion subscription: %v", err)
+		}
+		s.persistNotificationResult(outbox, item, "dead", time.Time{}, "push endpoint rejected the subscription")
 		return
 	}
 	if errors.Is(sendErr, webpush.ErrMaxPadExceeded) || status == http.StatusRequestEntityTooLarge {
-		_ = outbox.MarkCompletionPushDead(ctx, item.ID, "push payload too large")
+		s.persistNotificationResult(outbox, item, "dead", time.Time{}, "push payload too large")
 		return
 	}
 	if item.AttemptCount >= 7 {
-		_ = outbox.MarkCompletionPushDead(ctx, item.ID, "delivery retry limit reached")
+		s.persistNotificationResult(outbox, item, "dead", time.Time{}, "delivery retry limit reached")
 		return
 	}
-	s.retryCompletionPushAfter(ctx, outbox, item, sendErr, retryAfter)
-}
-
-func (s *serveServer) retryCompletionPush(ctx context.Context, outbox session.CompletionPushOutboxStore, item session.CompletionPushOutboxItem, err error) {
-	s.retryCompletionPushAfter(ctx, outbox, item, err, 0)
-}
-
-func (s *serveServer) retryCompletionPushAfter(ctx context.Context, outbox session.CompletionPushOutboxStore, item session.CompletionPushOutboxItem, err error, requestedDelay time.Duration) {
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
-		return
-	}
-	delay := requestedDelay
+	delay := retryAfter
 	if delay <= 0 {
 		delay = time.Second * time.Duration(1<<min(item.AttemptCount, 8))
 	}
 	if delay > time.Hour {
 		delay = time.Hour
 	}
-	_ = outbox.RetryCompletionPush(ctx, item.ID, time.Now().UTC().Add(delay), "temporary delivery failure")
+	s.persistNotificationResult(outbox, item, "retry", time.Now().UTC().Add(delay), "temporary delivery failure")
 }

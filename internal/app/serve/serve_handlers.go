@@ -404,6 +404,7 @@ func (s *serveServer) buildIndexHTMLCacheable(vapidKey string) ([]byte, bool) {
 		headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
 	}
 	_, pushPersistent := session.AsPushSubscriptionLifecycleStore(s.store)
+	headSnippet += `<script>window.TERM_LLM_NOTIFICATION_VERSION=2;</script>`
 	headSnippet += `<script>window.TERM_LLM_PUSH_SUPPORTED=` + strconv.FormatBool(pushPersistent) + `;</script>`
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet), scopeFinal
 }
@@ -2316,7 +2317,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	expectedResponseID := strings.TrimSpace(req.ExpectedResponseID)
 	if expectedResponseID != "" || req.ExpectedRunEpoch > 0 {
 		owned := s.responseRuns.withExpectedActiveRun(sessionID, expectedResponseID, req.ExpectedRunEpoch, func() {
-			action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+			action, replayed, interruptErr = rt.InterruptMessage(session.ContextWithNotificationOrigin(r.Context(), s.notificationOrigin(r)), msg, displayText, clientMessageID, fastProvider, delivery)
 		})
 		if !owned {
 			if childIntervention != nil {
@@ -2331,7 +2332,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	} else {
-		action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+		action, replayed, interruptErr = rt.InterruptMessage(session.ContextWithNotificationOrigin(r.Context(), s.notificationOrigin(r)), msg, displayText, clientMessageID, fastProvider, delivery)
 	}
 	if interruptErr != nil {
 		if childIntervention != nil {
@@ -2984,7 +2985,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Term-LLM-Steering-Protocol, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, X-Term-LLM-Attention-Source, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Term-LLM-Steering-Protocol, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, X-Term-LLM-Notification-Version, X-Term-LLM-Window-ID, X-Term-LLM-Document-ID, X-Term-LLM-Notification-Source, X-Term-LLM-Attention-Source, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version, x-term-llm-response-status")
 		}
 

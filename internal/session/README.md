@@ -32,3 +32,31 @@ eligible regardless of notification origin or `notify_when_done`; collection,
 notification, and human-stop suppression remain generation scoped. The v65
 binary rejects v66 for read-write use; the table shape is unchanged for read-only
 inspection. Stop older writers before upgrading and restore a backup to downgrade.
+
+## Automatic completion ownership (schema 68)
+
+Automatic alerts are owned by a durable logical human turn, not by each protocol
+response. Human admission always supersedes the old destination, including TUI
+and API inputs without a push target. Only an authenticated v2 window/document
+binding grants a destination. Client handoffs require an exact persisted pending
+call/result set; child synthesis requires explicitly awaited ID/generation facts
+and durable response parentage. Detached work and timestamps grant no authority.
+Committed user steering and rush input transfer ownership in the transcript
+transaction, never on queueing, withdrawal, or synthetic input.
+
+Finalization settles the turn, acknowledges incorporated child generations,
+allocates final attention, and writes an identity-only outbox candidate in one
+transaction. Intermediate handoffs/joins and recoverable host retries do not
+publish final attention. Dispatch uses fenced claims/results, a 24-hour expiry,
+and rechecks read, supersession, subscription status, and bounded owning-window
+presence. Presence defers delivery but never marks work read. Attention ACKs
+retire exact older candidates transactionally; marking unseen cannot resurrect
+an alert. Delivery cannot provide exactly-once external acceptance.
+
+Migration 68 retires historical pending automatic rows lacking proven ownership;
+delivered rows and payloads remain intact. The v67 binary rejects the v68 marker
+for read-write use. Read-only old queries retain their original columns but do
+not understand logical ownership or fenced claims. Stop older writers before
+upgrading; downgrade by restoring a backup, not reversing this migration.
+Window/document replay tombstones persist to reject stale incarnations. Turn
+and steering/rush ownership records follow session deletion via foreign keys.

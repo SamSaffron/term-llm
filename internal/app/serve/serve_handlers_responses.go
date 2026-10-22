@@ -34,20 +34,19 @@ func (l *followUpClaimLease) Release() {
 }
 
 type resolvedResponsesRequest struct {
-	firstParty                 bool
-	req                        responsesCreateRequest
-	inputMessages              []core.Message
-	replaceHistory             bool
-	sessionID                  string
-	previousResponseID         string
-	previousDurable            bool
-	freshConversation          bool
-	durableRuntime             bool
-	uiStream                   bool
-	idempotencyKey             string
-	idempotencyScope           string
-	requestFingerprint         string
-	notificationSubscriptionID string
+	firstParty         bool
+	req                responsesCreateRequest
+	inputMessages      []core.Message
+	replaceHistory     bool
+	sessionID          string
+	previousResponseID string
+	previousDurable    bool
+	freshConversation  bool
+	durableRuntime     bool
+	uiStream           bool
+	idempotencyKey     string
+	idempotencyScope   string
+	requestFingerprint string
 }
 
 func validateResponseReasoningMode(provider, model, mode string, explicit bool) (normalized string, clearStale bool, err error) {
@@ -190,26 +189,26 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if stop {
 		return
 	}
-	notificationSubscriptionID, stop := s.validateResolvedResponsesAdmission(w, r, ctx, req, admission.draftID, resolved.sessionID)
-	if stop {
+	if s.validateResolvedResponsesAdmission(w, r, ctx, admission.draftID, resolved.sessionID) {
 		return
 	}
 
+	ctx = session.ContextWithNotificationOrigin(ctx, s.notificationOrigin(r))
+	r = r.WithContext(ctx)
 	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
-		firstParty:                 firstParty,
-		req:                        req,
-		inputMessages:              inputMessages,
-		replaceHistory:             replaceHistory,
-		sessionID:                  resolved.sessionID,
-		previousResponseID:         resolved.previousResponseID,
-		previousDurable:            resolved.previousDurable,
-		freshConversation:          req.PreviousResponseID == "",
-		durableRuntime:             resolved.branched,
-		uiStream:                   branchUsesFirstPartyUIStream(r, resolved.branched),
-		idempotencyKey:             admission.runIdempotencyKey,
-		idempotencyScope:           admission.draftID,
-		requestFingerprint:         admission.requestFingerprint,
-		notificationSubscriptionID: notificationSubscriptionID,
+		firstParty:         firstParty,
+		req:                req,
+		inputMessages:      inputMessages,
+		replaceHistory:     replaceHistory,
+		sessionID:          resolved.sessionID,
+		previousResponseID: resolved.previousResponseID,
+		previousDurable:    resolved.previousDurable,
+		freshConversation:  req.PreviousResponseID == "",
+		durableRuntime:     resolved.branched,
+		uiStream:           branchUsesFirstPartyUIStream(r, resolved.branched),
+		idempotencyKey:     admission.runIdempotencyKey,
+		idempotencyScope:   admission.draftID,
+		requestFingerprint: admission.requestFingerprint,
 	})
 }
 
@@ -231,6 +230,10 @@ type resolvedResponsesSession struct {
 func (s *serveServer) validateResponsesAdmissionRequest(w http.ResponseWriter, r *http.Request, ctx context.Context, req *responsesCreateRequest, inputMessages []core.Message, replaceHistory *bool) (bool, bool, bool) {
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	firstParty := isFirstPartyUIResponseRequest(r)
+	if r.Header.Get(requestPushSubscriptionHeader) != "" && (!firstParty || !req.Stream) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "completion notification target is only valid for first-party streaming responses")
+		return false, false, true
+	}
 	if req.UIContext != nil {
 		c := req.UIContext
 		if !firstParty || len(c.AssetVersion) > 64 || len(c.Generation) > 64 || len(c.Loaded) > 64 || c.Width < 0 || c.Width > 20000 || c.Height < 0 || c.Height > 20000 {
@@ -349,6 +352,7 @@ func (s *serveServer) prepareResponsesSessionAdmission(w http.ResponseWriter, r 
 	if req.Stream && runIdempotencyKey != "" {
 		var fingerprintErr error
 		requestFingerprint, fingerprintErr = responseRequestFingerprint(req)
+		requestFingerprint = notificationRequestFingerprint(r, requestFingerprint)
 		if fingerprintErr != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to fingerprint response request")
 			return responsesSessionAdmission{}, true
@@ -465,46 +469,6 @@ func (s *serveServer) resolveResponsesSession(w http.ResponseWriter, r *http.Req
 		previousDurable:    previousDurable,
 		branched:           branched,
 	}, false
-}
-
-func (s *serveServer) validateResolvedResponsesAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, draftID, sessionID string) (string, bool) {
-	// Fence the resolved identity, not just the header. previous_response_id
-	// reaches a session by a different key, and L0 made child transcripts — and
-	// therefore their durable response IDs — ordinary things a client now holds.
-	if delegated, delegatedErr := s.sessionIsDelegatedRun(ctx, sessionID); delegatedErr != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to look up session")
-		return "", true
-	} else if delegated {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", delegatedSessionWriteMessage)
-		return "", true
-	}
-
-	if draftID != "" {
-		if err := s.promoteDraftMCPSelection(ctx, draftID, sessionID); err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-			return "", true
-		}
-	}
-
-	if _, branchContextActive := s.branchNotes.Load(sessionID); branchContextActive {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch context is still being prepared")
-		return "", true
-	}
-
-	notificationSubscriptionID := ""
-	if requestedSubscriptionID := strings.TrimSpace(r.Header.Get(requestPushSubscriptionHeader)); requestedSubscriptionID != "" {
-		if !isFirstPartyUIResponseRequest(r) || !req.Stream {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "completion notification target is only valid for first-party streaming responses")
-			return "", true
-		}
-		var targetErr error
-		notificationSubscriptionID, targetErr = s.validateCompletionPushTarget(ctx, requestedSubscriptionID)
-		if targetErr != nil {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", targetErr.Error())
-			return "", true
-		}
-	}
-	return notificationSubscriptionID, false
 }
 
 func (s *serveServer) handleResponseRuntimeError(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, sessionID, previousResponseID string, err error) bool {
@@ -868,9 +832,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			claimsTransferred = true
 		}
 		if rr.uiStream && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone, releaseAdmission)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, claimsDone, releaseAdmission)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, rr.firstParty, claimsDone, releaseAdmission)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.firstParty, claimsDone, releaseAdmission)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -1087,21 +1051,21 @@ func appendResponsePassthroughTools(serverTools []core.ToolSpec, passthroughTool
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, firstParty bool, onDone, onAdmissionDone func()) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint string, firstParty bool, onDone, onAdmissionDone func()) bool {
 	var runner func(string) core.ClientToolRunner
 	if firstParty {
 		runner = s.typedClientToolRunner(runtime, llmReq.Tools)
 	}
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
-		clientToolRunner:           runner,
-		previousResponseID:         previousResponseID,
-		resetResponseIDsOnSuccess:  resetResponseIDsOnSuccess,
-		modelSwap:                  modelSwap,
-		idempotencyKey:             idempotencyKey,
-		idempotencyScope:           idempotencyScope,
-		requestFingerprint:         requestFingerprint,
-		notificationSubscriptionID: notificationSubscriptionID,
-		onDone:                     onDone,
-		onAdmissionDone:            onAdmissionDone,
+		clientToolRunner:          runner,
+		previousResponseID:        previousResponseID,
+		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
+		modelSwap:                 modelSwap,
+		idempotencyKey:            idempotencyKey,
+		idempotencyScope:          idempotencyScope,
+		requestFingerprint:        requestFingerprint,
+		notificationTurn:          s.notificationTurnAdmission(ctx, inputMessages, previousResponseID),
+		onDone:                    onDone,
+		onAdmissionDone:           onAdmissionDone,
 	})
 }

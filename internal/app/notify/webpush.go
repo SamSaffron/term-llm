@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/notification"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -125,17 +125,18 @@ func sendWebPush(ctx context.Context, deps Deps, cfg *config.Config, message str
 		return 0, nil
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"title": "term-llm",
-		"body":  message,
-	})
-
 	publicKey, privateKey, keyErr := WebPushKeys(cfg)
 	if keyErr != nil {
 		return 0, []string{keyErr.Error()}
 	}
 
-	opts := NewWebPushOptions(publicKey, privateKey, cfg.Serve.WebPush.Subject, 60)
+	envelope, payload, err := newManualPush(message, cfg.Serve.BasePath, time.Now())
+	if err != nil {
+		return 0, []string{err.Error()}
+	}
+
+	opts := NewWebPushOptions(publicKey, privateKey, cfg.Serve.WebPush.Subject, int(manualPushTTL/time.Second))
+	opts.Topic = notification.Topic(envelope.EventID)
 
 	lifecycle, _ := session.AsPushSubscriptionLifecycleStore(store)
 	var errs []string

@@ -126,6 +126,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/mitmca` — provides the ephemeral certificate authority shared by term-llm's loopback TLS proxies.
 - `internal/modelpolicy` — enforces the ordered intersection of agent model rules.
 - `internal/music` — generates music through the ElevenLabs and Venice providers and saves it.
+- `internal/notification` — defines the shared Web Push wire envelope and event identity helpers.
 - `internal/oauth` — implements ChatGPT, Copilot and Grok OAuth login and refresh flows.
 - `internal/openaiapi` — resolves the public OpenAI API endpoint settings shared by every API-key OpenAI client (Responses, model listing, embeddings, images and transcription).
 - `internal/passkeyauth` — provides application-neutral WebAuthn authentication primitives for first-party term-llm servers.
@@ -150,6 +151,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/serve/http` — provides serve base-path normalization and streaming HTTP writes.
 - `internal/serveui` — embeds and serves the built web UI assets, manifests and index shell.
 - `internal/session` — owns durable sessions, messages, steering persistence and SQLite storage.
+- `internal/session/notificationdb` — implements durable logical-turn ownership and fenced notification delivery on the session SQLite transaction.
 - `internal/sessiontitle` — generates and validates short and long LLM session titles.
 - `internal/share` — defines provider-neutral transcript sharing.
 - `internal/sidequestion` — builds and runs private side questions over a conversation snapshot.
@@ -172,6 +174,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/tooldiscovery/evalcmd` — runs tool-discovery evaluations against fixture MCP servers and catalogues.
 - `internal/tooldiscovery/evalfixture` — provides the deterministic ten-server, 200-tool MCP federation and its single-server aggregate used to evaluate deferred tool discovery with real transports.
 - `internal/tools` — provides a permission-aware local tool system for term-llm.
+- `internal/tools/agentwait` — carries exact, generation-scoped child wait evidence for host turn finalization.
 - `internal/tsgen` — generates the explicitly registered serve JSON contracts for the web UI.
 - `internal/tui/chat` — implements the interactive terminal chat TUI and its run lifecycle.
 - `internal/tui/chat/agentbarrier` — owns persisted TUI lifecycle delivery settlement.

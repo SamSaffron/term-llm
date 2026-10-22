@@ -31,7 +31,7 @@ type webRunContinuation struct {
 	AgentCompletion bool
 	AgentBarrier    bool
 	AgentEvents     []session.AgentRun
-	Notification    string
+	AwaitedEvents   []session.AgentRun
 	View            webRunView
 	Boundary        runboundary.Snapshot
 	Stream          webStreamView
@@ -116,7 +116,7 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *co
 	if run.persistence.failed || run.persistence.inflight != 0 {
 		return nil, errors.New("response persistence is not settled for reload")
 	}
-	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil, Notification: options.notificationSubscriptionID, AgentCompletion: options.agentCompletion, AgentBarrier: options.agentBarrier, AgentEvents: options.agentEvents,
+	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil, AwaitedEvents: append([]session.AgentRun(nil), run.awaitedEvents...), AgentCompletion: options.agentCompletion, AgentBarrier: options.agentBarrier, AgentEvents: options.agentEvents,
 		Ledger: webLedgerView{run.persistence.maxRev, run.persistence.outputKeys, run.persistence.nextOutputID},
 		Stream: webStreamView{stream.outputIndex, stream.toolsSeen, stream.assistantBoundaryPending, stream.assistantSegmentOrdinal, stream.model, stream.reasoningEffort, stream.reasoningEffortSet, stream.toolStartedAt},
 		View: webRunView{
@@ -179,6 +179,8 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *co
 
 func restoreWebRun(saved *webRunContinuation, cancel context.CancelFunc) *responseRun {
 	run := newResponseRun(saved.View.Id, saved.View.SessionID, saved.View.PreviousResponseID, saved.View.Model, saved.View.Created, cancel)
+	run.awaitedEvents = append([]session.AgentRun(nil), saved.AwaitedEvents...)
+	run.recoverableNotification = saved.AgentCompletion
 	run.id = saved.View.Id
 	run.sessionID = saved.View.SessionID
 	run.previousResponseID = saved.View.PreviousResponseID
@@ -308,7 +310,7 @@ func (s *serveServer) resumeWebRun(saved *webRunContinuation, owner string) erro
 	rt.cumulativeUsage = saved.CumulativeUsage
 	request := saved.Engine.Request
 	request.Resume = saved.Engine
-	options := startResponseRunOptions{agentCompletion: saved.AgentCompletion, agentBarrier: saved.AgentBarrier, agentEvents: saved.AgentEvents, resume: saved, uiSession: saved.UI, notificationSubscriptionID: saved.Notification, previousResponseID: saved.View.PreviousResponseID}
+	options := startResponseRunOptions{agentCompletion: saved.AgentCompletion, agentBarrier: saved.AgentBarrier, agentEvents: saved.AgentEvents, resume: saved, uiSession: saved.UI, previousResponseID: saved.View.PreviousResponseID}
 	if saved.ClientTools {
 		options.clientToolRunner = s.typedClientToolRunner(rt, request.Tools)
 	}
@@ -328,7 +330,6 @@ func (s *serveServer) failWebRunRestore(saved *webRunContinuation) {
 		return
 	}
 	s.configureResponseRunCallbacks(run, run.sessionID)
-	s.configureResponseRunNotification(run, saved.Notification)
 	if lifecycle, ok := session.AsServeResponseLifecycleStore(s.store); ok && run.fencingToken != 0 && run.ownerInstanceID == s.responseOwnerID() {
 		s.configureResponseRunLifecycle(run, lifecycle, run.ownerInstanceID, session.ResponseRunLease{ResponseID: run.id, FencingToken: run.fencingToken, LeaseExpiresAt: run.leaseExpiresAt})
 	}

@@ -72,6 +72,7 @@ func TestSendWebPushAllDelivery(t *testing.T) {
 		{name: "oversized message", message: strings.Repeat("x", WebPushRecordSize), wantRemaining: 1, wantErrors: true},
 		{name: "gone", status: http.StatusGone, wantRemaining: 1, wantRequests: 1, wantStale: true},
 		{name: "not found", status: http.StatusNotFound, wantRemaining: 1, wantRequests: 1, wantStale: true},
+		{name: "permission denied", status: http.StatusForbidden, wantRemaining: 1, wantErrors: true, wantRequests: 2},
 		{name: "server error", status: http.StatusInternalServerError, wantRemaining: 1, wantErrors: true, wantRequests: 2},
 	}
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"sync"
 
+	"github.com/samsaffron/term-llm/internal/session/notificationdb"
 	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
 )
 
@@ -243,7 +244,7 @@ CREATE TABLE IF NOT EXISTS completion_push_outbox (
     last_error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(response_id, subscription_id)
+` + notificationdb.OutboxColumnsV68 + `    UNIQUE(response_id, subscription_id)
 );
 CREATE INDEX IF NOT EXISTS idx_completion_push_outbox_due
     ON completion_push_outbox(status, next_attempt_at, id);

@@ -1053,7 +1053,7 @@ export class AppStore {
   private installLifecycle(): void {
     if (this.lifecycleInstalled) return;
     this.lifecycleInstalled = true;
-    this.notificationController.installLifecycle();
+    this.notificationController.installLifecycle(this.presence);
     addEventListener('popstate', () => void this.navigateFromHistory(), {
       signal: this.lifecycleAbort.signal,
     });
@@ -1222,6 +1222,7 @@ export class AppStore {
         candidate.storeInstanceId,
         throughSeq,
       );
+      this.notificationController.acknowledgeRead(sessionId, state);
       this.applyAttentionState(sessionId, state, candidate.storeInstanceId, throughSeq);
       this.tabSyncCoordinator.publish('attention-changed', sessionId);
     } catch {
@@ -1244,6 +1245,7 @@ export class AppStore {
       throughSeq,
       'manual',
     );
+    this.notificationController.acknowledgeRead(current.id, state);
     this.applyAttentionState(current.id, state, storeInstanceId, throughSeq);
     this.tabSyncCoordinator.publish('attention-changed', current.id);
   }

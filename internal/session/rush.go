@@ -10,6 +10,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/session/notificationdb"
 )
 
 var ErrSteeringConflict = errors.New("steering identity, content or ownership conflict")
@@ -108,6 +109,10 @@ func (s *SQLiteStore) AdmitRush(ctx context.Context, op RushOperation, entries [
 	_, err = tx.ExecContext(ctx, `INSERT INTO session_rush_operations(session_id,request_id,source_response_id,source_epoch,status,replacement_response_id,owner_fence) VALUES (?,?,?,?,?,?,?)`, op.SessionID, op.RequestID, op.SourceResponseID, op.SourceEpoch, op.Status, replacement, op.Fence)
 	if err != nil {
 		return nil, fmt.Errorf("admit rush: %w", err)
+	}
+	origin, _ := NotificationOriginFromContext(ctx)
+	if err = notificationdb.SaveRushOriginTx(ctx, tx, op.SessionID, op.RequestID, origin); err != nil {
+		return nil, err
 	}
 	for _, entry := range entries {
 		result, err := tx.ExecContext(ctx, `UPDATE session_pending_steering SET owner_kind='rush',owner_id=?,owner_fence=? WHERE session_id=? AND id=? AND owner_kind='' AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id=? AND client_message_id=?)`, op.RequestID, op.Fence, op.SessionID, entry.ID, op.SessionID, entry.ID)

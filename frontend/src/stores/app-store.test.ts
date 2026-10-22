@@ -129,6 +129,7 @@ describe('AppStore compatibility behavior', () => {
       },
       selected_transcript: { bodies: { rev: 7, messages: [] } },
     }));
+    const notificationRead = vi.spyOn(store.notificationController, 'acknowledgeRead');
     store.endpoints.markAttentionSeen = vi.fn(async (_id, _store, throughSeq) => ({
       store_instance_id: 'store-a',
       latest_attention_seq: 42,
@@ -143,6 +144,10 @@ describe('AppStore compatibility behavior', () => {
     );
 
     expect(store.sessions.value[0]).toMatchObject({ seenThroughSeq: 42, attentionUnseen: false });
+    expect(notificationRead).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ store_instance_id: 'store-a', seen_through_seq: 42 }),
+    );
     store.dispose();
   });
 
@@ -443,6 +448,26 @@ describe('AppStore compatibility behavior', () => {
       seenRev: 5,
       attentionUnseen: false,
     });
+    store.dispose();
+  });
+
+  it('does not clear delivered notifications when an exact attention ACK fails', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 42,
+        seenThroughSeq: 40,
+        attentionUnseen: true,
+      },
+    ];
+    const notificationRead = vi.spyOn(store.notificationController, 'acknowledgeRead');
+    store.endpoints.markAttentionSeen = vi.fn(async () => {
+      throw new APIError('Offline', 503);
+    });
+    await expect(store.markSessionSeen(store.sessions.value[0])).rejects.toThrow('Offline');
+    expect(notificationRead).not.toHaveBeenCalled();
     store.dispose();
   });
 

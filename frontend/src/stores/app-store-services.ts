@@ -132,6 +132,7 @@ export class AppStoreServices {
     syncTokenCookie(config.prefix, this.token.value);
     this.api = new APIClient(config, {
       getToken: () => this.token.value,
+      notificationOriginHeaders: () => this.notificationController.originHeaders(),
       onAuthRequired: () => {
         this.authFailures += 1;
         this.authRequired.value = true;

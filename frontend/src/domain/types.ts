@@ -573,7 +573,8 @@ export interface ActiveRun {
   reconnects: number;
   error?: string;
   requestId?: string;
-  notificationSubscriptionId?: string;
+  /** Pending client-tool continuation predecessor, retained for explicit Stop. */
+  continuationOf?: string;
   finalRev?: number;
   durableHandoff?: boolean;
   /**

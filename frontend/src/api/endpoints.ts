@@ -368,36 +368,44 @@ export const endpoints = (api: APIClient) => ({
       store_instance_id: storeInstanceId,
       through_seq: throughSeq,
     }),
-  createResponse: (
+  createResponse: async (
     body: unknown,
     sessionId: string,
     requestId: string,
     signal?: AbortSignal,
-    notificationSubscriptionId = '',
+    capturedOrigin?: Promise<Record<string, string>>,
   ) => {
     const streaming = Boolean(
       body && typeof body === 'object' && (body as Record<string, unknown>).stream,
     );
     const draft = sessionId.startsWith('draft_');
+    const input = (body as { input?: Array<{ role?: string }> } | null)?.input;
+    const notificationOrigin =
+      !capturedOrigin && Array.isArray(input) && input.some((item) => item.role === 'user');
+    const originHeaders = await capturedOrigin;
     return api.request(
       '/v1/responses',
       {
         method: 'POST',
         signal,
         headers: {
+          ...originHeaders,
           ...(sessionId && !draft ? { 'X-Term-LLM-Session-ID': sessionId } : {}),
           ...(draft ? { 'X-Term-LLM-Draft-ID': sessionId } : {}),
-          ...(notificationSubscriptionId
-            ? { 'X-Term-LLM-Push-Subscription-ID': notificationSubscriptionId }
-            : {}),
           'Idempotency-Key': requestId,
           'X-Term-LLM-Request-ID': requestId,
         },
         body: JSON.stringify(body),
       },
       streaming
-        ? { policy: 'idempotent-mutation', retries: 2, timeoutMs: 0, auth: 'session' }
-        : { policy: 'mutation', retries: 0, timeoutMs: 0, auth: 'session' },
+        ? {
+            policy: 'idempotent-mutation',
+            retries: 2,
+            timeoutMs: 0,
+            auth: 'session',
+            notificationOrigin,
+          }
+        : { policy: 'mutation', retries: 0, timeoutMs: 0, auth: 'session', notificationOrigin },
     );
   },
   liveStart: liveRoute(api, (routes) => routes.liveStart),
@@ -738,6 +746,25 @@ export const endpoints = (api: APIClient) => ({
       body,
       'idempotent-mutation',
       { 'Idempotency-Key': 'push_subscription' },
+    ),
+  pushPresence: (body: {
+    version: 2;
+    window_id: string;
+    document_id: string;
+    sequence: number;
+    active: boolean;
+    expires_at: string;
+    subscription_id: string;
+    source: string;
+    previous_document_id?: string;
+  }) =>
+    api.json<Record<string, unknown>>(
+      '/v1/push/presence',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+      { policy: 'mutation', auth: 'session', timeoutMs: 5_000, retries: 0 },
     ),
   pushUnsubscribe: (body: { id?: string; endpoint?: string }) =>
     api.json(

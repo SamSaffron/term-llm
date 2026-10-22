@@ -59,6 +59,89 @@ describe('API transport', () => {
     expect((init as RequestInit & { __termLLMRetrySafe?: boolean }).__termLLMRetrySafe).toBe(true);
   });
 
+  it('captures v2 source/window/document headers for human sends and steering, never tool continuations', async () => {
+    const request = vi.fn(async (_url: unknown, _init: RequestInit) => new Response('{}'));
+    vi.stubGlobal('fetch', request);
+    const originHeaders = vi.fn(async () => ({
+      'X-Term-LLM-Notification-Version': '2',
+      'X-Term-LLM-Window-ID': 'owner',
+      'X-Term-LLM-Document-ID': 'document',
+      'X-Term-LLM-Push-Subscription-ID': 'sub',
+      'X-Term-LLM-Notification-Source': '/node/Dev',
+    }));
+    const api = new APIClient(
+      { ...config, prefix: '/node/Dev' },
+      {
+        getToken: () => 'secret',
+        onAuthRequired: vi.fn(),
+        notificationOriginHeaders: originHeaders,
+      },
+    );
+    const routes = endpoints(api);
+    await routes.createResponse(
+      { stream: true, input: [{ type: 'message', role: 'user', content: 'Hello' }] },
+      'session',
+      'request',
+    );
+    await routes.createResponse(
+      {
+        stream: true,
+        previous_response_id: 'handoff',
+        input: [{ type: 'function_call_output', call_id: 'call', output: 'Done' }],
+      },
+      'session',
+      'continuation',
+    );
+    await routes.interrupt('session', { text: 'Steer' }, 'steer', true);
+    await routes.rush('session', { request_id: 'rush', text: 'Rush' });
+    expect(originHeaders).toHaveBeenCalledTimes(3);
+    for (const index of [0, 2, 3]) {
+      const headers = request.mock.calls[index][1].headers as Headers;
+      expect(headers.get('X-Term-LLM-Notification-Version')).toBe('2');
+      expect(headers.get('X-Term-LLM-Window-ID')).toBe('owner');
+      expect(headers.get('X-Term-LLM-Document-ID')).toBe('document');
+      expect(headers.get('X-Term-LLM-Push-Subscription-ID')).toBe('sub');
+      expect(headers.get('X-Term-LLM-Notification-Source')).toBe('/node/Dev');
+      expect(headers.get('Authorization')).toBe('Bearer secret');
+    }
+    expect(
+      (request.mock.calls[1][1].headers as Headers).has('X-Term-LLM-Notification-Version'),
+    ).toBe(false);
+    expect(
+      (request.mock.calls[1][1].headers as Headers).has('X-Term-LLM-Push-Subscription-ID'),
+    ).toBe(false);
+    expect(JSON.parse(String(request.mock.calls[1][1].body)).previous_response_id).toBe('handoff');
+  });
+
+  it('preserves explicitly captured human origin across outer unknown-outcome retries', async () => {
+    const request = vi.fn(async (_url: unknown, _init: RequestInit) => new Response('{}'));
+    vi.stubGlobal('fetch', request);
+    const resample = vi.fn(async () => ({ 'X-Term-LLM-Push-Subscription-ID': 'new-subscription' }));
+    const api = new APIClient(config, {
+      getToken: () => '',
+      onAuthRequired: vi.fn(),
+      notificationOriginHeaders: resample,
+    });
+    const captured = Promise.resolve({
+      'X-Term-LLM-Notification-Version': '2',
+      'X-Term-LLM-Window-ID': 'original-window',
+      'X-Term-LLM-Push-Subscription-ID': 'original-subscription',
+    });
+    for (let i = 0; i < 2; i++)
+      await endpoints(api).createResponse(
+        { stream: true, input: [{ role: 'user', content: 'Hello' }] },
+        'session',
+        'same-request',
+        undefined,
+        captured,
+      );
+    expect(resample).not.toHaveBeenCalled();
+    for (const [, init] of request.mock.calls)
+      expect((init.headers as Headers).get('X-Term-LLM-Push-Subscription-ID')).toBe(
+        'original-subscription',
+      );
+  });
+
   it('can suppress shell-version refreshes for raw node-owned resources', async () => {
     const request = vi.fn(
       async () =>

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../app/config';
+import { APIError } from '../api/client';
 import { AppStore } from './app-store';
 
 /**
@@ -90,6 +91,8 @@ async function chatStore(): Promise<AppStore> {
   // Durable transcript refreshes are not under test.
   store.endpoints.selectedSession = vi.fn(async () => ({}));
   store.endpoints.sessionState = vi.fn(async () => ({}));
+  store.endpoints.cancelResponse = vi.fn(async () => ({ status: 'cancelled' }));
+  vi.spyOn(store, 'reconcile').mockResolvedValue(undefined);
   await vi.waitFor(() => expect(store.webMCP.available.value).toBe(true));
   // Page tools are off until turned on; these flows exercise them turned on.
   store.setWebMCPEnabled(true);
@@ -207,8 +210,7 @@ describe('client tool continuation', () => {
   it('runs the page tool the model called and continues with its result', async () => {
     const context = installDeviceTools(async (input) => `pong: ${input.message}`);
     const store = await chatStore();
-    // Like the server: the refresh loads the finished turn, whose durable
-    // response id differs from the stream's; the continuation must use it.
+    // The refreshed durable tail differs: continuation must prove the actual handoff.
     store.endpoints.selectedSession = vi.fn(async () => ({
       selected_session: { id: 's1', transcript_rev: 1 },
       selected_transcript: { bodies: { rev: 1, messages: [] } },
@@ -237,7 +239,7 @@ describe('client tool continuation', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(requestBody(store, 1)).toMatchObject({
-      previous_response_id: 'resp_msg_1',
+      previous_response_id: 'r1',
       input: [{ type: 'function_call_output', call_id: 'call_1', output: 'pong: hi' }],
       tools: [expect.objectContaining({ name: 'webmcp__ping' })],
     });
@@ -306,6 +308,7 @@ describe('client tool continuation', () => {
     expect(store.activeProjection.value?.phase).toBeUndefined();
 
     await store.cancel();
+    expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1');
     finish('too late');
     await vi.waitFor(() => expect(store.runActive.value).toBe(false));
     expect(store.activeProjection.value?.phase).toBeUndefined();
@@ -334,10 +337,44 @@ describe('client tool continuation', () => {
 
     // Stop does not wait out a stalled refresh.
     await store.cancel();
+    expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1');
     await vi.waitFor(() => expect(store.runActive.value).toBe(false));
     loaded();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(store.endpoints.createResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it('explicitly cancels the tool predecessor when a continuation is permanently rejected', async () => {
+    installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+      .mockRejectedValueOnce(new APIError('Invalid tool lineage', 400));
+    store.prompt.value = 'Ping it';
+    await store.send();
+    await vi.waitFor(() => expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1'));
+    expect(requestBody(store, 1).previous_response_id).toBe('r1');
+    expect(store.activeProjection.value?.run.status).toBe('failed');
+    store.dispose();
+  });
+
+  it('Stop during retryable client-output transport failure cancels the predecessor, not a pending fake response', async () => {
+    installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+      .mockRejectedValue(new TypeError('Network unavailable'));
+    store.prompt.value = 'Ping it';
+    await store.send();
+    await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2));
+    expect(store.activeProjection.value?.run.status).toBe('connecting');
+    expect(store.activeProjection.value?.run.continuationOf).toBe('r1');
+    await store.cancel();
+    expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1');
+    expect(store.activeProjection.value?.run.status).toBe('cancelled');
+    store.dispose();
   });
 
   it('runs page calls that follow a tool-only server turn in the same response', async () => {

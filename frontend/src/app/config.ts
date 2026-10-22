@@ -18,6 +18,7 @@ declare global {
     TERM_LLM_HUB?: HubContext;
     TERM_LLM_VAPID_PUBLIC_KEY?: string;
     TERM_LLM_PUSH_SUPPORTED?: boolean;
+    TERM_LLM_NOTIFICATION_VERSION?: number;
     __TERM_LLM_ENABLE_TEST_BRIDGE__?: boolean;
     __TERM_LLM_TEST__?: Record<string, unknown>;
   }
@@ -46,6 +47,7 @@ export interface AppConfig {
   hub: HubContext | null;
   vapidKey: string;
   pushSupported?: boolean;
+  notificationVersion?: number;
   initialProject?: Project;
   /**
    * Opaque server store/auth identity for persistent UI caches. Never derived
@@ -78,6 +80,7 @@ export function readInjectedConfig(target: Window = window): AppConfig {
       : 'prompt';
   return {
     prefix,
+    notificationVersion: target.TERM_LLM_NOTIFICATION_VERSION,
     passkeyAuth: target.TERM_LLM_AUTH_MODE === 'passkey',
     version: String(target.TERM_LLM_UI_VERSION || ''),
     cacheScope: /^[a-z0-9]{8,64}$/.test(String(target.TERM_LLM_CACHE_SCOPE || ''))
