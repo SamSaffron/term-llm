@@ -11,6 +11,7 @@ import type { HubAgent } from '../stores/store-types';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';
 import { Menu, useMenuKeyboard } from './Menu';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useChatShortcuts } from './useChatShortcuts';
 import { useMediaQuery } from './useMediaQuery';
 import { reorderKeyOffset, useReorderableList, type ReorderControls } from './useReorderableList';
@@ -1219,6 +1220,7 @@ export function Sidebar() {
           if (overlayToken.current) trapOverlayFocus(event);
         }}
       >
+        {!collapsed && !mobile && <SidebarResizeHandle />}
         <div class="sidebar-rail">
           <button
             class="icon-btn sidebar-rail-btn"

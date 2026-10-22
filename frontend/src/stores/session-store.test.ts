@@ -28,6 +28,24 @@ const agentIds = (store: AppStore) => store.hubAgents.value.map((agent) => agent
 
 const hubConfig = { ...testConfig, hub: { url: '/hub/', nodeId: 'current', nodeBasePath: '/ui' } };
 
+describe('sidebar width preference', () => {
+  it('retains a saved desktop width when starting in a narrow window', () => {
+    const seed = new AppStore(testConfig);
+    const key = seed.keys.sidebarWidth;
+    seed.dispose();
+    localStorage.setItem(key, '500');
+    vi.stubGlobal('innerWidth', 800);
+    const store = new AppStore(testConfig);
+    try {
+      expect(store.sidebarWidth.value).toBe(500);
+      expect(localStorage.getItem(key)).toBe('500');
+    } finally {
+      store.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('chat Hub agent ordering', () => {
   it('keeps the Hub GET order rather than sorting names and excludes unreachable nodes', async () => {
     const store = new AppStore(hubConfig);

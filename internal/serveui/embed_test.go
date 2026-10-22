@@ -195,8 +195,14 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// runs from startup, so it is eager: ~545.8/160.9 kB. Same ~1% rule.
 		// Queued-job completion notices render as an eager transcript card:
 		// ~551.8/162.4 kB. Same ~1% rule.
-		"dist/app.js":                {raw: 557_300, gzip: 164_000},
-		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_300},
+		// Sessions sidebar sizing and the shared accessible panel splitter are
+		// eager shell code: measured 558.6/164.4 kB raw/gzip. Same ~1% headroom.
+		// Deferring the changes/plan viewers until a panel opens reduces the entry
+		// to 528.7/155.0 kB raw/gzip. Tighten the budget with the same ~1% headroom.
+		"dist/app.js":           {raw: 534_000, gzip: 156_600},
+		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
+		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
+		"dist/chunks/Lightbox.js":    {raw: 8_150, gzip: 3_300},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
@@ -209,8 +215,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// voice switch swaps the session in place, and the subagent breadcrumb /
 		// index / live-tail styling bring the sheet to ~178.1 kB. Same reasoning as
 		// above: a cap that close to the measurement fails the next CSS change on
-		// arithmetic rather than on bloat.
-		"dist/app.css": {raw: 180_000, gzip: 34_000},
+		// arithmetic rather than on bloat. Shared splitter focus/drag styling
+		// and sidebar width limits measure 175.5/34.06 kB; retain ~1% gzip headroom.
+		"dist/app.css": {raw: 180_000, gzip: 34_400},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph. The
@@ -354,6 +361,25 @@ func TestUserOpenedModalsRemainLazy(t *testing.T) {
 		}
 		if !bytes.Contains(lazy, []byte(modal.marker)) {
 			t.Errorf("%s is missing its dialog code (%q)", modal.chunk, modal.marker)
+		}
+	}
+}
+
+func TestCompanionPanelViewersRemainLazy(t *testing.T) {
+	eager, err := testBuildAsset("dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy, err := testBuildAsset("dist/chunks/Panels.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"diff-scope-chevron", "current-plan-checklist"} {
+		if bytes.Contains(eager, []byte(marker)) {
+			t.Errorf("dist/app.js unexpectedly contains panel viewer code (%q)", marker)
+		}
+		if !bytes.Contains(lazy, []byte(marker)) {
+			t.Errorf("dist/chunks/Panels.js is missing panel viewer code (%q)", marker)
 		}
 	}
 }

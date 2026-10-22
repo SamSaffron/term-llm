@@ -1,6 +1,7 @@
 import { batch, computed, signal, type Signal } from '@preact/signals';
 import { APIError } from '../api/client';
 import { SessionActivityStore } from './session-activity-store';
+import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH } from '../domain/sidebar';
 import { errorMessage } from '../domain/text';
 import { rankFrom } from '../domain/transcript';
 import type { Project, Session } from '../domain/types';
@@ -158,6 +159,7 @@ export class SessionStore {
   readonly activeSessionId = signal('');
   readonly draftActive = signal(true);
   readonly sidebarCollapsed: Signal<boolean>;
+  readonly sidebarWidth: Signal<number>;
   readonly sidebarOpen = signal(false);
   readonly sidebarSearch = signal('');
   readonly searchResults = signal<Session[] | null>(null);
@@ -207,6 +209,14 @@ export class SessionStore {
     this.activity = new SessionActivityStore(services);
     this.sidebarCollapsed = signal(
       services.storage.getItem(services.keys.sidebarCollapsed) === '1',
+    );
+    this.sidebarWidth = signal(
+      clampSidebarWidth(
+        Number(services.storage.getItem(services.keys.sidebarWidth)) || DEFAULT_SIDEBAR_WIDTH,
+        // Keep the preference independent of the startup viewport; CSS and
+        // the handle clamp the displayed width against the current window.
+        Number.MAX_VALUE,
+      ),
     );
     this.sidebarView = signal(
       services.storage.getItem(services.keys.sidebarView) === 'projects' ? 'projects' : 'recent',
