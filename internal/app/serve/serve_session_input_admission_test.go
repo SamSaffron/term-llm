@@ -139,10 +139,15 @@ func TestSessionInputSynchronousCallsAllowMetadata(t *testing.T) {
 			case "compaction":
 				srv.handleSessionRuntimeCompact(out, req, sess.ID)
 			}
+			wantStatus := http.StatusOK
+			if surface == "compaction" {
+				wantStatus = http.StatusAccepted
+				waitForServeCompaction(t, srv, sess.ID)
+			}
 			if !inspected.Load() {
 				t.Fatalf("provider not reached: status=%d body=%s", out.Code, out.Body.String())
 			}
-			if out.Code != http.StatusOK || strings.Contains(out.Body.String(), `"error"`) {
+			if out.Code != wantStatus || strings.Contains(out.Body.String(), `"error"`) {
 				t.Fatalf("%s failed: status=%d body=%s", surface, out.Code, out.Body.String())
 			}
 			saved, err := store.Get(ctx, sess.ID)

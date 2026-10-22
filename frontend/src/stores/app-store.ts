@@ -598,6 +598,10 @@ export class AppStore {
       this.planStore,
       this.goalStore,
       this.widgetStore,
+      () => {
+        this.statusReconciler.wake();
+        return this.refreshStatus(true);
+      },
     );
     this.childSessionStore = new ChildSessionStore(this.services);
     this.tabSyncCoordinator = new TabSyncCoordinator(this.services, {

@@ -68,6 +68,7 @@ export class SelectionStore {
     private readonly plans: PlanStore,
     private readonly goals: GoalStore,
     private readonly widgets: WidgetStore,
+    private readonly reconcileActivity: () => Promise<void>,
   ) {}
 
   dispose(): void {
@@ -375,6 +376,7 @@ export class SelectionStore {
     const sampledApproval = this.interactions.approval.peek();
     const sampledSteeringRevision = this.runEngine.steeringStateRevision;
     const sampledConfirmedEffort = this.confirmedEffortOf(id);
+    const sampledActivity = this.sessionsStore.activity.capture();
     const stillCurrent = () =>
       epoch === this.epoch && this.sessionsStore.activeSessionId.peek() === id;
     try {
@@ -472,6 +474,14 @@ export class SelectionStore {
       else if (updated.delegated || updated.parentSessionId)
         this.sessionsStore.transientSession.value = updated;
       else this.sessionsStore.prepend(updated);
+      // A completed activity can rewrite the transcript. Do not let a state
+      // response racing an older bodies snapshot release the submission lock.
+      if (
+        Number(recordValue(state.activity)?.transcript_rev || state.transcript_rev || 0) <=
+          (updated.messageBodiesRev || 0) ||
+        recordValue(state.activity)?.status !== 'completed'
+      )
+        this.sessionsStore.activity.observe(updated.id, state.activity, sampledActivity);
       if (updated.id !== id) this.runEngine.rekeySession(id, updated.id, selectedSource);
       if (stateActiveResponseId)
         void this.runEngine.attachResponse(updated.id, stateActiveResponseId);
@@ -565,6 +575,40 @@ export class SelectionStore {
       }
       this.services.toast(error, 'error');
       return 'failed';
+    }
+  }
+
+  async compactSession(): Promise<void> {
+    const session = this.sessionsStore.activeSession.value;
+    if (!session || this.sessionsStore.draftActive.peek()) {
+      this.services.toast('Start the conversation before compacting.', 'error');
+      return;
+    }
+    const id = session.id;
+    if (this.sessionsStore.activity.busy(id)) return;
+    const activity = this.sessionsStore.activity;
+    const token = activity.begin(id);
+    try {
+      const accepted = await this.services.endpoints.compact(id);
+      activity.checking(id, token);
+      activity.observe(id, accepted.activity);
+    } catch (error) {
+      if (
+        error instanceof APIError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        ![408, 425, 429].includes(error.status)
+      ) {
+        activity.reject(id, token);
+        this.services.toast(error, 'error');
+      } else {
+        activity.checking(id, token);
+        this.services.toast('Could not confirm compaction. Checking session status…', 'info');
+      }
+    } finally {
+      // The shared reconciler owns recovery, including a lost acceptance reply.
+      // If this refresh fails, keep the bridge until a later authoritative poll.
+      await this.reconcileActivity().catch(() => undefined);
     }
   }
 

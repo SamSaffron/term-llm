@@ -522,7 +522,12 @@ function ConversationComposer() {
   };
   const sendOrCommand = () => {
     // Commands mutate server state too; keep the typed text until ready.
-    if (voiceBusy || (store.workspaceShown.peek() && !store.startupDone.peek())) return;
+    if (
+      voiceBusy ||
+      store.runEngine.compacting.peek() ||
+      (store.workspaceShown.peek() && !store.startupDone.peek())
+    )
+      return;
     const value = store.prompt.value.trim();
     const command = value.toLowerCase();
     if (command === '/stats' || command === '/inspect') {
@@ -622,10 +627,8 @@ function ConversationComposer() {
       return;
     }
     if (command === '/compact') {
-      const active = store.activeSession.value;
       store.prompt.value = '';
-      if (active) void store.endpoints.compact(active.id).then(() => store.loadSession(active.id));
-      else store.toast('Start the conversation before compacting.', 'error');
+      void store.selectionStore.compactSession();
       return;
     }
     const skill = liveSkill(value);
@@ -726,27 +729,31 @@ function ConversationComposer() {
   );
   const steering = !liveTextMode && canSteer && hasDraft;
   const loading = !liveButton && !liveTextMode && runActive && !hasDraft;
-  const sendLabel = connecting
-    ? 'Connecting to term-llm'
-    : liveButton
-      ? liveActive
-        ? 'Stop live voice'
-        : store.liveStore.phase.value === 'failed'
-          ? 'Retry live voice'
-          : 'Start live voice'
-      : liveTextMode
-        ? 'Send text to live voice'
-        : bindingBlocked
-          ? 'Project unavailable'
-          : sendPending
-            ? 'Sending message'
-            : loading
-              ? 'Response is running'
-              : sendBlocked
-                ? 'Checking whether sent'
-                : steering
-                  ? 'Steer'
-                  : 'Send message';
+  const compacting = store.runEngine.compacting.value;
+  const sendLabel =
+    compacting && !(liveButton && liveActive)
+      ? 'Compacting conversation context'
+      : connecting
+        ? 'Connecting to term-llm'
+        : liveButton
+          ? liveActive
+            ? 'Stop live voice'
+            : store.liveStore.phase.value === 'failed'
+              ? 'Retry live voice'
+              : 'Start live voice'
+          : liveTextMode
+            ? 'Send text to live voice'
+            : bindingBlocked
+              ? 'Project unavailable'
+              : sendPending
+                ? 'Sending message'
+                : loading
+                  ? 'Response is running'
+                  : sendBlocked
+                    ? 'Checking whether sent'
+                    : steering
+                      ? 'Steer'
+                      : 'Send message';
   const inspectDraggedFiles = (files: FileList | null): string => {
     let count = store.attachments.peek().length;
     for (const candidate of Array.from(files || [])) {
@@ -818,6 +825,16 @@ function ConversationComposer() {
         </div>
       )}
       <div class="composer-inner">
+        {compacting && (
+          <div
+            class="interaction-attention-banner compaction-status"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="compaction-status-spinner" aria-hidden="true" />
+            Compacting conversation context…
+          </div>
+        )}
         {waitingInteraction && (
           <button
             type="button"
@@ -1243,6 +1260,7 @@ function ConversationComposer() {
               aria-label={sendLabel}
               aria-pressed={liveButton ? liveActive : undefined}
               disabled={
+                (compacting && !(liveButton && liveActive)) ||
                 connecting ||
                 (liveButton
                   ? !liveActive && (voiceBusy || bindingBlocked)

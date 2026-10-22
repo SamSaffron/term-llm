@@ -1,5 +1,6 @@
 import { batch, computed, signal, type Signal } from '@preact/signals';
 import { APIError } from '../api/client';
+import { SessionActivityStore } from './session-activity-store';
 import { errorMessage } from '../domain/text';
 import { rankFrom } from '../domain/transcript';
 import type { Project, Session } from '../domain/types';
@@ -110,6 +111,7 @@ export interface SessionStoreHost {
 
 /** Owns session/project catalog state, sidebar loading, search, and catalog mutations. */
 export class SessionStore {
+  readonly activity: SessionActivityStore;
   readonly sessions = signal<Session[]>([]);
   /** The selected delegated transcript is intentionally outside the sidebar catalog. */
   readonly transientSession = signal<Session | null>(null);
@@ -202,6 +204,7 @@ export class SessionStore {
     private readonly services: AppStoreServices,
     private readonly host: SessionStoreHost,
   ) {
+    this.activity = new SessionActivityStore(services);
     this.sidebarCollapsed = signal(
       services.storage.getItem(services.keys.sidebarCollapsed) === '1',
     );

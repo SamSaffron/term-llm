@@ -980,6 +980,7 @@ export const RESPONSE_EVENT_TYPES = [
   'response.steering',
   'response.steering.queued',
   'response.compaction',
+  'response.activity',
   'response.phase',
   'response.model_swap.progress',
   'response.model_switch',

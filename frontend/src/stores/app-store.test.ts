@@ -3917,6 +3917,36 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it('shows a readable busy error instead of the raw HTTP error envelope', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.prompt.value = 'My next message';
+      const message = 'session is busy processing another request';
+      store.endpoints.createResponse = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: { message, type: 'conflict_error' } }), {
+            status: 409,
+          }),
+      );
+
+      await store.send();
+
+      expect(store.visibleMessages.value.filter((entry) => entry.role === 'error')).toEqual([
+        expect.objectContaining({ content: message }),
+      ]);
+      expect(store.toasts.value).toEqual(
+        expect.arrayContaining([expect.objectContaining({ message, kind: 'error' })]),
+      );
+      expect(store.endpoints.createResponse).toHaveBeenCalledOnce();
+      expect(store.sendPending.value).toBe(false);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('acquires the send lock before attachment materialization yields', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];

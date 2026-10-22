@@ -3,6 +3,7 @@ import type { ResponseProjection } from '../domain/response';
 import type { DiffState } from './store-types';
 import type { PendingIntentRegistry } from '../platform/storage';
 import type { Session } from '../domain/types';
+import type { SessionActivity } from './session-activity-store';
 import type { SessionStore } from './session-store';
 import type { AppStoreServices } from './app-store-services';
 import { compareSessionsByActivity, listFrom } from './store-utils';
@@ -10,6 +11,7 @@ import { mergeSeenState, parseSeenRev } from '../domain/attention-seen';
 
 export interface StatusRequestMetadata {
   generation: number;
+  activityVersion: number;
   requestedAt: number;
   selectedSessionId: string;
   selectionEpoch: number;
@@ -99,6 +101,7 @@ export class StatusReconciler {
         await this.host.reconcile('poll', false).catch(() => undefined);
       }
       const anyActive =
+        this.host.sessionStore.activity.anyActive.peek() ||
         this.host.stoppedResponseCount() > 0 ||
         Object.values(this.host.pendingIntents.peek()).some((intents) =>
           intents.some((intent) => intent.state === 'checking'),
@@ -121,6 +124,11 @@ export class StatusReconciler {
     };
     this.timer = window.setTimeout(poll, 0);
   }
+  /** Bring the existing polling loop forward after a newly admitted activity. */
+  wake(): void {
+    if (this.timer && !this.services.isDisposed) this.start();
+  }
+
   async refresh(authoritative = false): Promise<void> {
     if (!authoritative && this.coordinator.refreshPromise) return this.coordinator.refreshPromise;
 
@@ -128,6 +136,7 @@ export class StatusReconciler {
     const previous = this.coordinator.refreshPromise;
     const metadata: StatusRequestMetadata = {
       generation,
+      activityVersion: this.host.sessionStore.activity.capture(),
       requestedAt: Date.now(),
       selectedSessionId: this.host.activeSessionId.peek(),
       selectionEpoch: this.host.selectionEpoch(),
@@ -149,7 +158,9 @@ export class StatusReconciler {
         metadata.selectedSessionId,
         metadata.showArchived,
         metadata.categories,
-        authoritative ? '' : this.coordinator.etag,
+        authoritative || this.host.sessionStore.activity.unconfirmed.peek()
+          ? ''
+          : this.coordinator.etag,
       );
       const receivedAt = Date.now();
       if (!this.statusRequestIsCurrent(metadata)) {
@@ -160,7 +171,10 @@ export class StatusReconciler {
         this.coordinator.lastAppliedGeneration = generation;
         this.coordinator.lastAppliedRequestedAt = metadata.requestedAt;
         this.coordinator.lastAppliedReceivedAt = receivedAt;
-        this.coordinator.etag = String(data.__etag || this.coordinator.etag);
+        this.coordinator.etag =
+          this.host.sessionStore.activity.capture() === metadata.activityVersion
+            ? String(data.__etag || this.coordinator.etag)
+            : '';
         return;
       }
       await this.applyStatus(data, metadata, receivedAt);
@@ -522,12 +536,14 @@ export class StatusReconciler {
         metadata.requestedAt,
       );
     }
+    const activitiesApplied = await this.reconcileActivities(statuses, metadata);
+    if (!this.statusRequestIsCurrent(metadata)) return;
     this.host.acknowledgeAttention?.();
     this.unknownActiveSessionIds = unknownActive;
     this.coordinator.lastAppliedGeneration = metadata.generation;
     this.coordinator.lastAppliedRequestedAt = metadata.requestedAt;
     this.coordinator.lastAppliedReceivedAt = receivedAt;
-    this.coordinator.etag = String(data.__etag || '');
+    this.coordinator.etag = activitiesApplied ? String(data.__etag || '') : '';
 
     const activeRevision = this.host.sessionStore.activeSession.peek()?.transcriptRev || 0;
     if (
@@ -538,6 +554,52 @@ export class StatusReconciler {
       followUps.push(() => void this.host.refreshDiffComments(activeSessionId));
     // No follow-up from a stale generation may start after a newer reconcile.
     if (this.statusRequestIsCurrent(metadata)) followUps.forEach((followUp) => followUp());
+  }
+
+  private async reconcileActivities(
+    statuses: Record<string, unknown>[],
+    metadata: StatusRequestMetadata,
+  ): Promise<boolean> {
+    let applied = true;
+    const activities = this.host.sessionStore.activity;
+    const byID = new Map(
+      statuses.map((entry) => [String(entry.id || entry.session_id || ''), entry]),
+    );
+    const ids = new Set([
+      ...activities.sessionIds.peek(),
+      ...this.host.sessionStore.sessions.peek().map((session) => session.id),
+      ...byID.keys(),
+      metadata.selectedSessionId,
+    ]);
+    for (const id of ids) {
+      const status = byID.get(id);
+      const activity = status?.activity as SessionActivity | undefined;
+      const previous = activities.snapshots.peek()[id];
+      const newCompletion =
+        activity?.status === 'completed' &&
+        (activity.id !== previous?.id || activity.revision !== previous?.revision);
+      const revision =
+        activity?.status === 'completed'
+          ? Number(activity.transcript_rev) ||
+            (newCompletion ? Number(status?.transcript_rev) || 0 : 0)
+          : !activity && activities.busy(id)
+            ? Number(status?.transcript_rev) || 0
+            : 0;
+      if (id === metadata.selectedSessionId && revision > 0) {
+        if (revision > (this.host.sessionStore.activeSession.peek()?.messageBodiesRev || 0)) {
+          await this.host.refreshSessionMessages(id, revision).catch(() => undefined);
+          if (!this.statusRequestIsCurrent(metadata)) return false;
+          if (revision > (this.host.sessionStore.activeSession.peek()?.messageBodiesRev || 0)) {
+            // Keep this activity locked, but let other sessions reconcile and
+            // invalidate the ETag so the next poll retries the missing bodies.
+            applied = false;
+            continue;
+          }
+        }
+      }
+      applied = activities.observe(id, status?.activity, metadata.activityVersion) && applied;
+    }
+    return applied;
   }
 
   private async syncTranscriptThenResume(

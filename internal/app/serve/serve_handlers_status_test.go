@@ -319,6 +319,8 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 			},
 		},
 	}}
+	manager.sessions[ids[3]] = &serveRuntime{}
+	manager.sessions[ids[3]].beginCompactionActivity()
 	srv := &serveServer{store: store, responseRuns: runs, sessionMgr: manager}
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -332,11 +334,12 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 	}
 	var payload struct {
 		Sessions []struct {
-			ID                      string `json:"id"`
-			ActiveRun               bool   `json:"active_run"`
-			ActiveResponseID        string `json:"active_response_id"`
-			InteractionRequired     bool   `json:"interaction_required"`
-			PendingInteractionCount int    `json:"pending_interaction_count"`
+			Activity                *serveSessionActivity `json:"activity"`
+			ID                      string                `json:"id"`
+			ActiveRun               bool                  `json:"active_run"`
+			ActiveResponseID        string                `json:"active_response_id"`
+			InteractionRequired     bool                  `json:"interaction_required"`
+			PendingInteractionCount int                   `json:"pending_interaction_count"`
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
@@ -356,8 +359,8 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 			PendingInteractionCount int
 		}{entry.ActiveRun, entry.ActiveResponseID, entry.InteractionRequired, entry.PendingInteractionCount}
 	}
-	if len(payload.Sessions) != 203 {
-		t.Fatalf("sessions=%d, want bounded 200 plus three critical rows", len(payload.Sessions))
+	if len(payload.Sessions) != 204 {
+		t.Fatalf("sessions=%d, want bounded 200 plus four critical rows", len(payload.Sessions))
 	}
 	if got := byID[ids[0]]; !got.ActiveRun || got.ActiveResponseID != run.id {
 		t.Fatalf("active session missing or inactive: %#v", got)
@@ -370,13 +373,22 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 	if _, ok := byID[ids[2]]; !ok {
 		t.Fatal("selected session outside window is missing")
 	}
+	if entry, ok := byID[ids[3]]; !ok || entry.ActiveRun {
+		t.Fatalf("manual compaction missing or projected as response run: %+v", entry)
+	}
+	for _, entry := range payload.Sessions {
+		if entry.ID == ids[3] && (entry.Activity == nil || entry.Activity.Status != "running") {
+			t.Fatalf("manual compaction activity missing from status: %+v", entry.Activity)
+		}
+	}
+
 }
 
 // sessionsStatusEntryKeys is the documented wire shape of one status entry,
 // pinned so the runningSessionIDs extraction cannot silently add or rename a
 // projection field.
 var sessionsStatusEntryKeys = map[string]bool{
-	"id": true, "number": true, "project_id": true, "project_name": true,
+	"activity": true, "id": true, "number": true, "project_id": true, "project_name": true,
 	"short_title": true, "long_title": true, "pinned": true, "active_run": true,
 	"active_response_id": true, "run_epoch": true, "started_rev": true, "started_at": true,
 	"client_message_id": true, "anchor_row_id": true, "transcript_rev": true, "message_count": true,

@@ -25,6 +25,8 @@ type runCompactionController struct {
 	softRatio    float64
 	hardRatio    float64
 
+	lifecycle compactionLifecycle
+
 	reactiveDone      bool
 	softInjected      bool
 	softActive        bool
@@ -55,7 +57,7 @@ func newRunCompactionController(ctx context.Context, e *Engine, req *core.Reques
 		}
 	}
 	soft, hard := EffectiveCompactionThresholdRatios(config)
-	return &runCompactionController{engine: e, ctx: ctx, send: send, req: req, config: config, inputLimit: inputLimit, systemPrompt: systemPrompt, softRatio: soft, hardRatio: hard}
+	return &runCompactionController{engine: e, ctx: ctx, send: send, req: req, config: config, inputLimit: inputLimit, systemPrompt: systemPrompt, softRatio: soft, hardRatio: hard, lifecycle: newCompactionLifecycle(send)}
 }
 
 func (c *runCompactionController) thresholdState(messages []core.Message) (estimate, soft, hard int) {
@@ -86,6 +88,7 @@ func (c *runCompactionController) apply(result *CompactionResult) bool {
 	if cb := c.engine.getCompactionCallback(); cb != nil {
 		if err := cb(c.ctx, result); err != nil {
 			runtimeoutput.Debug("compaction callback failed", "error", err)
+			c.lifecycle.end(err)
 			return false
 		}
 	}
@@ -99,6 +102,9 @@ func (c *runCompactionController) apply(result *CompactionResult) bool {
 	if err := c.send.Send(core.Event{Type: core.EventCompaction}); err != nil {
 		runtimeoutput.Debug("send compaction boundary failed", "error", err)
 	}
+	// The compacted history and its boundary are visible before the lifecycle
+	// reports idle, so consumers can finish the activity with the new transcript.
+	c.lifecycle.end(nil)
 	return true
 }
 
@@ -118,13 +124,14 @@ func (c *runCompactionController) beginSoft() {
 	c.softPrepared = env.PrepareCompactionContext(nonSystem, *c.config, "")
 	c.softOriginalCount = len(nonSystem)
 }
-func (c *runCompactionController) restoreSoftFailure(originalTools []core.ToolSpec, originalChoice core.ToolChoice) {
+func (c *runCompactionController) restoreSoftFailure(originalTools []core.ToolSpec, originalChoice core.ToolChoice, cause error) {
 	if len(c.req.Messages) > 0 && strings.TrimSpace(core.MessageText(c.req.Messages[len(c.req.Messages)-1])) == strings.TrimSpace(ContextContinuationBriefPrompt) {
 		c.req.Messages = c.req.Messages[:len(c.req.Messages)-1]
 	}
 	c.req.Tools = append([]core.ToolSpec(nil), originalTools...)
 	c.req.ToolChoice = originalChoice
 	resetProviderConversation(c.engine.provider)
+	c.lifecycle.end(cause)
 	c.resetSoft()
 }
 func messagesWithoutTrailingBriefPrompt(messages []core.Message) []core.Message {
@@ -159,6 +166,39 @@ func (c *runCompactionController) applySoftHardFallback(originalTools []core.Too
 	c.req.ToolChoice = originalChoice
 	return true
 }
+
+// compactReactiveOverflow performs the one-shot reactive compaction after a
+// context-overflow failure. retry reports that compacted history is ready and
+// the caller should replay the turn. A non-nil error is a failed phase event;
+// a failed summarizer closes the lifecycle and lets normal failure handling
+// continue without a retry.
+func (c *runCompactionController) compactReactiveOverflow(originalTools []core.ToolSpec, originalChoice core.ToolChoice) (retry bool, err error) {
+	c.reactiveDone = true
+	// A hard fallback during a pending soft brief resolves that same span: the
+	// soft begin is still open and applySoftHardFallback's apply closes it.
+	// Beginning another span here would leave an unmatched depth after the
+	// fallback applies, keeping the lifecycle active through resumed generation
+	// and ending the run with a spurious unfinished failure.
+	if !c.lifecycle.active() {
+		c.lifecycle.begin()
+	}
+	if sendErr := c.send.Send(core.Event{Type: core.EventPhase, Text: PhaseCompactingSummarizeHistory}); sendErr != nil {
+		c.lifecycle.end(sendErr)
+		return false, sendErr
+	}
+	if c.softActive {
+		return c.applySoftHardFallback(originalTools, originalChoice), nil
+	}
+	result, compactErr := env.Compact(c.ctx, c.engine.provider, c.req.Model, c.systemPrompt, nonSystemMessages(c.req.Messages), *c.config)
+	if compactErr == nil && c.apply(result) {
+		return true, nil
+	}
+	if compactErr != nil {
+		c.lifecycle.end(compactErr)
+	}
+	return false, nil
+}
+
 func (c *runCompactionController) maybeAfterResponse(pending []core.Message) bool {
 	if c.config == nil || !c.eligible(c.req.Messages) {
 		return false
@@ -183,13 +223,16 @@ func (c *runCompactionController) maybeAfterResponse(pending []core.Message) boo
 	if !should {
 		return false
 	}
+	c.lifecycle.begin()
 	if err := c.send.Send(core.Event{Type: core.EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
 		runtimeoutput.Debug("send compaction phase failed", "error", err)
+		c.lifecycle.end(err)
 		return false
 	}
 	result, err := env.Compact(c.ctx, c.engine.provider, c.req.Model, c.systemPrompt, nonSystemMessages(c.req.Messages), *c.config)
 	if err != nil {
 		runtimeoutput.Debug("post-response compaction failed", "error", err)
+		c.lifecycle.end(err)
 		return false
 	}
 	return c.apply(result)
@@ -200,17 +243,25 @@ func (c *runCompactionController) beforeTurn() error {
 		return nil
 	}
 	if c.hardReached(c.req.Messages) {
+		c.lifecycle.begin()
 		if err := c.send.Send(core.Event{Type: core.EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
+			c.lifecycle.end(err)
 			return err
 		}
 		result, err := env.Compact(c.ctx, c.engine.provider, c.req.Model, c.systemPrompt, nonSystemMessages(c.req.Messages), *c.config)
 		if err == nil {
 			c.apply(result)
+		} else {
+			// The normal turn resumes without compacted history; close the
+			// lifecycle so the failure is reported instead of staying active.
+			c.lifecycle.end(err)
 		}
 		return nil
 	}
 	if !c.softInjected && len(c.req.Tools) > 0 && c.softReached(c.req.Messages) {
+		c.lifecycle.begin()
 		if err := c.send.Send(core.Event{Type: core.EventPhase, Text: PhaseCompactingWriteBrief}); err != nil {
+			c.lifecycle.end(err)
 			return err
 		}
 		c.beginSoft()

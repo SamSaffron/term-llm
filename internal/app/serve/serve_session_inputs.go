@@ -272,6 +272,10 @@ func (m *serveSessionManager) admitSynchronousActivity(id string, rt *serveRunti
 	if err != nil {
 		return nil, err
 	}
+	if rt.compacting.Load() {
+		releasePin()
+		return nil, errServeSessionBusy
+	}
 	owners := []*serveRuntime{rt}
 	for _, candidate := range retained {
 		if candidate == nil {
@@ -330,4 +334,17 @@ func (s *serveServer) lockSessionInputMetadata(id string) (func(), error) {
 		return nil, errServeSessionBusy
 	}
 	return operation.Unlock, nil
+}
+
+// applyRequestRuntimeState installs the request's prepared inputs on a freshly
+// created runtime and carries its swap candidacy across. A candidate runs ahead
+// of its durable row, so carry the flag to prevent premature retirement.
+func applyRequestRuntimeState(rt *serveRuntime, request serveRuntimeRequest) {
+	if rt == nil {
+		return
+	}
+	rt.inputs.Store(request.Inputs)
+	if request.swapCandidate {
+		rt.swapCandidate.Store(true)
+	}
 }

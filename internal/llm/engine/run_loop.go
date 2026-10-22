@@ -128,6 +128,18 @@ func (e *Engine) runLoop(ctx context.Context, req core.Request, send corestream.
 	}
 
 	compaction := newRunCompactionController(ctx, e, &req, send)
+	// Every compaction span is closed before the run returns. Explicit success
+	// and failure paths already emit their own end; this only catches an
+	// attempt that was still in flight (cancellation, suspension, or an
+	// unexpected exit) so no consumer can observe a permanently active
+	// compaction for a finished run.
+	defer func() {
+		cause := returnErr
+		if cause == nil {
+			cause = ctx.Err()
+		}
+		compaction.lifecycle.finish(cause)
+	}()
 	var recoveredToolWork bool
 	var recoveredToolCallIDs map[string]bool
 	var recoveredAtMessageCount = -1

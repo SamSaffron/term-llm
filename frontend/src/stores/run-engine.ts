@@ -1,7 +1,7 @@
 import { normalizeSteering, rushActive, type RushOperation } from '../domain/steering';
 import { extensionRuntime } from './extension-runtime';
 import { batch, computed, effect, signal, untracked, type ReadonlySignal } from '@preact/signals';
-import { APIError, decodeSSE } from '../api/client';
+import { APIError, decodeSSE, responseError } from '../api/client';
 import {
   initialProjection,
   reduceResponse,
@@ -134,6 +134,7 @@ export class RunEngine {
   readonly runLivenessUnknown: ReadonlySignal<boolean>;
   readonly canStop: ReadonlySignal<boolean>;
   readonly canSteer: ReadonlySignal<boolean>;
+  readonly compacting: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private readonly supervisors = new StreamSupervisors();
@@ -250,7 +251,11 @@ export class RunEngine {
         ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
       );
     });
+    this.compacting = computed(() =>
+      sessionStore.activity.busy(sessionStore.activeSessionId.value),
+    );
     this.canSteer = computed(() => {
+      if (this.compacting.value) return false;
       if (
         rushActive(this.activeRush.value) &&
         this.activeRush.value?.session_id === sessionStore.activeSession.value?.id
@@ -289,6 +294,7 @@ export class RunEngine {
         !this.canSteer.value,
       );
       return (
+        this.compacting.value ||
         composer.sendPending.value ||
         runningClientTools.value ||
         projectedRunPending ||
@@ -833,24 +839,18 @@ export class RunEngine {
     } = input;
     if (!response.ok || !response.body) {
       const body = await response.text();
-      if (response.status === 409) {
-        try {
-          const parsed = JSON.parse(body) as { error?: { type?: string } };
-          if (parsed.error?.type === 'client_message_already_committed') {
-            this.retireIntent(sessionId, clientMessageId);
-            this.supervisors.retire(streamOwner);
-            await this.host.loadSession(sessionId);
-            return sessionId;
-          }
-        } catch {
-          /* Normalized below. */
-        }
-      }
-      throw new APIError(
-        body || `Response request returned ${response.status}`,
-        response.status,
+      const error = responseError(
         body,
+        response.status,
+        `Response request returned ${response.status}`,
       );
+      if (response.status === 409 && error.type === 'client_message_already_committed') {
+        this.retireIntent(sessionId, clientMessageId);
+        this.supervisors.retire(streamOwner);
+        await this.host.loadSession(sessionId);
+        return sessionId;
+      }
+      throw error;
     }
     const durableSessionId = response.headers.get('x-session-id') || sessionId;
     const rawSessionNumber = Number(response.headers.get('x-session-number'));
@@ -1194,6 +1194,8 @@ export class RunEngine {
       }
       throw error;
     }
+    if (event.type === 'response.activity')
+      this.sessionStore.activity.observe(sessionId, event.activity);
     if (owner) this.supervisors.advance(owner, Number(event.sequence_number));
     if (event.type === 'response.client_tool.requested') {
       this.clientTools.inlineRequested(sessionId, current.run.responseId, {
@@ -1651,10 +1653,14 @@ export class RunEngine {
       return;
     }
     const { sessionId, responseId } = owner;
+    const sampledActivity = this.sessionStore.activity.capture();
     try {
       const snapshot = await this.services.endpoints.response(responseId, abort.signal);
       if (!this.supervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
         return;
+      const activity = recordValue(snapshot.activity);
+      if (activity && (snapshot.status === 'in_progress' || activity.status !== 'running'))
+        this.sessionStore.activity.observe(sessionId, activity, sampledActivity);
       const recovery = recordValue(snapshot.recovery) || {};
       const existing =
         this.runs.value[sessionId] ||
@@ -2061,6 +2067,7 @@ export class RunEngine {
   }
   async steer(content: string, options: SendOptions = {}): Promise<void> {
     const { steer } = await loadSteeringActions();
+    if (this.compacting.peek()) return;
     await steer(this.steeringActions(), content, options);
   }
   private rushLoading = false;

@@ -134,23 +134,14 @@ func (e *Engine) handleReceiveStreamFailure(f *engineStreamFailureContext, err e
 	recoverCommittedToolWork := func(cause error) (bool, error) {
 		return e.recoverCommittedTurn(&f.recovery, cause)
 	}
-	stream, ctx := f.stream, f.ctx
+	stream := f.stream
 	finishSyncToolsAfterStreamFailure(err)
 	stream.Close()
 	if compaction.config != nil && IsContextOverflowError(err) && !compaction.reactiveDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
-		compaction.reactiveDone = true
-		if sendErr := send.Send(core.Event{Type: core.EventPhase, Text: PhaseCompactingSummarizeHistory}); sendErr != nil {
-			return sendErr
-		}
-		if compaction.softActive {
-			if compaction.applySoftHardFallback(originalTools, originalToolChoice) {
-				return errEngineTurnRetry
-			}
-		} else {
-			result, compactErr := env.Compact(ctx, e.provider, req.Model, compaction.systemPrompt, nonSystemMessages(req.Messages), *compaction.config)
-			if compactErr == nil && compaction.apply(result) {
-				return errEngineTurnRetry
-			}
+		if retry, reactErr := compaction.compactReactiveOverflow(originalTools, originalToolChoice); reactErr != nil {
+			return reactErr
+		} else if retry {
+			return errEngineTurnRetry
 		}
 	}
 	if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
@@ -180,7 +171,7 @@ func (e *Engine) handleReceiveStreamFailure(f *engineStreamFailureContext, err e
 		return errEngineTurnAdvance
 	}
 	if compaction.softActive {
-		compaction.restoreSoftFailure(originalTools, originalToolChoice)
+		compaction.restoreSoftFailure(originalTools, originalToolChoice, err)
 	}
 	return err
 }
@@ -202,23 +193,14 @@ func (e *Engine) handleEventStreamFailure(f *engineStreamFailureContext, eventEr
 	recoverCommittedToolWork := func(cause error) (bool, error) {
 		return e.recoverCommittedTurn(&f.recovery, cause)
 	}
-	stream, ctx := f.stream, f.ctx
+	stream := f.stream
 	finishSyncToolsAfterStreamFailure(eventErr)
 	stream.Close()
 	if compaction.config != nil && IsContextOverflowError(eventErr) && !compaction.reactiveDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
-		compaction.reactiveDone = true
-		if sendErr := send.Send(core.Event{Type: core.EventPhase, Text: PhaseCompactingSummarizeHistory}); sendErr != nil {
-			return sendErr
-		}
-		if compaction.softActive {
-			if compaction.applySoftHardFallback(originalTools, originalToolChoice) {
-				return errEngineTurnRetry
-			}
-		} else {
-			result, compactErr := env.Compact(ctx, e.provider, req.Model, compaction.systemPrompt, nonSystemMessages(req.Messages), *compaction.config)
-			if compactErr == nil && compaction.apply(result) {
-				return errEngineTurnRetry
-			}
+		if retry, reactErr := compaction.compactReactiveOverflow(originalTools, originalToolChoice); reactErr != nil {
+			return reactErr
+		} else if retry {
+			return errEngineTurnRetry
 		}
 	}
 	if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
@@ -248,7 +230,7 @@ func (e *Engine) handleEventStreamFailure(f *engineStreamFailureContext, eventEr
 		return errEngineTurnAdvance
 	}
 	if compaction.softActive {
-		compaction.restoreSoftFailure(originalTools, originalToolChoice)
+		compaction.restoreSoftFailure(originalTools, originalToolChoice, eventErr)
 	}
 	return eventErr
 }

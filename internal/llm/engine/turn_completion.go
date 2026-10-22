@@ -130,7 +130,7 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 						return true, errEngineTurnRetry
 					}
 				}
-				compaction.restoreSoftFailure(originalTools, originalToolChoice)
+				compaction.restoreSoftFailure(originalTools, originalToolChoice, errCompactionBriefUnusable)
 				return true, errEngineTurnRetry
 			}
 			if textBuilder.Len() == 0 && len(providerReplayParts) > 0 && attempt < maxTurns-1 {
@@ -161,7 +161,7 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 					return true, errEngineTurnRetry
 				}
 			}
-			compaction.restoreSoftFailure(originalTools, originalToolChoice)
+			compaction.restoreSoftFailure(originalTools, originalToolChoice, errCompactionBriefUnusable)
 			return true, errEngineTurnRetry
 		}
 		continued, err := e.continueWithSteering(ctx, send, &req, turnCallback, attempt, finalMsg, attempt < maxTurns-1, attempt < maxTurns-2)

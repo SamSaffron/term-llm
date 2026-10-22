@@ -433,6 +433,7 @@ export class ServerEventCoordinator {
         if (event.sessionId === this.host.activeSessionId.peek()) this.activePending = true;
         break;
       case 'session.runtime_changed':
+        this.statusPending = true;
         if (event.sessionId === this.host.activeSessionId.peek()) this.activePending = true;
         break;
       case 'interaction.changed':

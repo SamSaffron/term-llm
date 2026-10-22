@@ -1267,3 +1267,81 @@ test('opens complete scrollable web stats without sending a model request', asyn
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
 });
+
+test('polls accepted compaction after reload and keeps the draft editable but unsendable', async ({
+  page,
+}) => {
+  const requests = await mockAPI(page);
+  let activity: {
+    id: string;
+    revision: number;
+    kind: string;
+    status: string;
+    started_at: number;
+  } | null = null;
+  let kickoffs = 0;
+  await page.route('**/v1/events**', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.route('**/v1/sessions/status*', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sessions: [
+          { id: 's1', activity },
+          { id: 's2', activity: null },
+        ],
+      }),
+    }),
+  );
+  await page.route('**/v1/sessions/s1/state', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ active_run: false, activity }),
+    }),
+  );
+  await page.route('**/v1/sessions/s1/runtime/compact', (route) => {
+    kickoffs++;
+    activity = {
+      id: 'compaction-browser',
+      revision: 1,
+      kind: 'compaction',
+      status: 'running',
+      started_at: 1000,
+    };
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ activity }),
+    });
+  });
+  await page.goto('./chat/s1');
+  await expect(page.locator('#startupSplash')).toBeHidden();
+  const input = page.getByRole('textbox', { name: 'Message', exact: true });
+  await input.fill('/compact');
+  await input.press('Enter');
+  const banner = page.locator('.compaction-status');
+  const button = page.getByRole('button', { name: 'Compacting conversation context', exact: true });
+  await expect(banner).toBeVisible();
+  await expect(button).toBeDisabled();
+  await expect(page.locator('.compaction-status-spinner')).toHaveCSS('animation-name', 'spin');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(page.locator('.compaction-status-spinner')).toHaveCSS('animation-name', 'none');
+  await input.fill('Keep this draft');
+  await input.press('Control+Enter');
+  await expect(input).toHaveValue('Keep this draft');
+  expect(kickoffs).toBe(1);
+
+  // A fresh document must recover busy state without an outstanding POST or SSE.
+  await page.reload();
+  await expect(page.locator('#startupSplash')).toBeHidden();
+  await expect(banner).toBeVisible();
+  await expect(button).toBeDisabled();
+  await expect(input).toBeEnabled();
+  await expect(input).toHaveValue('Keep this draft');
+  activity = { ...activity!, revision: 2, status: 'completed' };
+  // No focus event or manual refresh: the shared status poll must observe this.
+  await expect(banner).toBeHidden({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
+  expect(
+    requests.filter((request) => request.method === 'POST' && request.url.endsWith('/responses')),
+  ).toHaveLength(0);
+});

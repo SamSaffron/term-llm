@@ -18,28 +18,37 @@ var (
 	errServeCompactionTooSmall    = errors.New("not enough conversation history to compress")
 )
 
-func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*engine.CompactionResult, error) {
+type preparedSessionCompaction struct {
+	rt           *serveRuntime
+	sessionID    string
+	history      []core.Message
+	systemPrompt string
+	model        string
+	config       engine.CompactionConfig
+}
+
+// prepareCompaction reserves both admission and the runtime mutex. The owner
+// must call release, including if scheduling the prepared work fails.
+func (rt *serveRuntime) prepareCompaction(ctx context.Context, sessionID string) (*preparedSessionCompaction, error) {
 	if rt == nil {
 		return nil, errServeCompactionUnavailable
 	}
 	if !rt.compacting.CompareAndSwap(false, true) {
 		return nil, errServeSessionBusy
 	}
-	defer rt.compacting.Store(false)
-	defer rt.Touch()
-
-	if rt.hasActiveSideQuestion() || !rt.mu.TryLock() {
+	if rt.admittedActivity.Load() > 0 || rt.hasActiveSideQuestion() || !rt.mu.TryLock() {
+		rt.compacting.Store(false)
 		return nil, errServeSessionBusy
 	}
-	defer rt.mu.Unlock()
-
+	prepared := &preparedSessionCompaction{rt: rt, sessionID: sessionID}
 	if rt.provider == nil || rt.store == nil || strings.TrimSpace(sessionID) == "" {
+		prepared.release()
 		return nil, errServeCompactionUnavailable
 	}
 	if !rt.ensurePersistedSession(ctx, sessionID, nil) || rt.sessionMeta == nil {
+		prepared.release()
 		return nil, errServeCompactionUnavailable
 	}
-
 	systemPrompt := strings.TrimSpace(rt.systemPrompt)
 	history := make([]core.Message, 0, len(rt.history))
 	for _, message := range rt.history {
@@ -52,6 +61,7 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 		history = append(history, message)
 	}
 	if len(history) < 2 {
+		prepared.release()
 		return nil, errServeCompactionTooSmall
 	}
 
@@ -66,7 +76,31 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 		config.InputLimit = limit
 	}
 
-	result, err := llm.SoftCompact(ctx, rt.provider, model, systemPrompt, history, config)
+	prepared.history, prepared.systemPrompt = history, systemPrompt
+	prepared.model, prepared.config = model, config
+	return prepared, nil
+}
+
+func (p *preparedSessionCompaction) release() {
+	p.rt.mu.Unlock()
+	p.rt.compacting.Store(false)
+	p.rt.Touch()
+}
+
+func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*engine.CompactionResult, error) {
+	prepared, err := rt.prepareCompaction(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rt.beginCompactionActivity()
+	result, err := prepared.execute(ctx)
+	rt.finishCompactionActivityWithRelease(err, prepared.release)
+	return result, err
+}
+
+func (p *preparedSessionCompaction) execute(ctx context.Context) (*engine.CompactionResult, error) {
+	rt, sessionID := p.rt, p.sessionID
+	result, err := llm.SoftCompact(ctx, rt.provider, p.model, p.systemPrompt, p.history, p.config)
 	if err != nil {
 		return nil, fmt.Errorf("compress conversation: %w", err)
 	}

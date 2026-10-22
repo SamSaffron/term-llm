@@ -199,26 +199,31 @@ type ToolResult struct {
 type EventType string
 
 const (
-	EventTextDelta       EventType = "text_delta"
-	EventReasoningDelta  EventType = "reasoning_delta" // For thinking models (OpenRouter reasoning_content)
-	EventToolCall        EventType = "tool_call"
-	EventToolExecStart   EventType = "tool_exec_start" // Emitted when tool execution begins
-	EventToolExecEnd     EventType = "tool_exec_end"   // Emitted when tool execution completes
-	EventHeartbeat       EventType = "heartbeat"       // Emitted while a long-running tool is still active
-	EventUsage           EventType = "usage"
-	EventPhase           EventType = "phase"      // Emitted for high-level phase changes (Thinking, Searching, etc.)
-	EventCompaction      EventType = "compaction" // Emitted after context compaction has been applied by the owner.
-	EventDone            EventType = "done"
-	EventError           EventType = "error"
-	EventRetry           EventType = "retry"            // Emitted when retrying after rate limit or transport recovery
-	EventAttemptDiscard  EventType = "attempt_discard"  // Discard provisional assistant output from the current streamed attempt
-	EventSteering        EventType = "steering"         // User steered a message mid-stream
-	EventModelSwitch     EventType = "model_switch"     // Request model changed at a provider-turn boundary
-	EventImageGenerated  EventType = "image_generated"  // Emitted when a built-in image_generation tool returns an image
-	EventToolActivity    EventType = "tool_activity"    // Internal-only durable display state for provider-managed tools.
-	EventProviderReplay  EventType = "provider_replay"  // Internal-only opaque Responses output item.
-	EventDiscoveryCall   EventType = "discovery_call"   // Provider-neutral native client-executed discovery request.
-	EventDiscoveryOutput EventType = "discovery_output" // Planner-selected schemas returned to native discovery.
+	EventTextDelta      EventType = "text_delta"
+	EventReasoningDelta EventType = "reasoning_delta" // For thinking models (OpenRouter reasoning_content)
+	EventToolCall       EventType = "tool_call"
+	EventToolExecStart  EventType = "tool_exec_start" // Emitted when tool execution begins
+	EventToolExecEnd    EventType = "tool_exec_end"   // Emitted when tool execution completes
+	EventHeartbeat      EventType = "heartbeat"       // Emitted while a long-running tool is still active
+	EventUsage          EventType = "usage"
+	EventPhase          EventType = "phase"      // Emitted for high-level phase changes (Thinking, Searching, etc.)
+	EventCompaction     EventType = "compaction" // Emitted after context compaction has been applied by the owner.
+	// Emitted when engine-owned compaction begins (CompactionActive=true) and
+	// ends (CompactionActive=false; Err reports the failure when the attempt did
+	// not complete). Phase strings remain display-only; consumers should use
+	// this structured status for compaction lifecycle state.
+	EventCompactionStatus EventType = "compaction_status"
+	EventDone             EventType = "done"
+	EventError            EventType = "error"
+	EventRetry            EventType = "retry"            // Emitted when retrying after rate limit or transport recovery
+	EventAttemptDiscard   EventType = "attempt_discard"  // Discard provisional assistant output from the current streamed attempt
+	EventSteering         EventType = "steering"         // User steered a message mid-stream
+	EventModelSwitch      EventType = "model_switch"     // Request model changed at a provider-turn boundary
+	EventImageGenerated   EventType = "image_generated"  // Emitted when a built-in image_generation tool returns an image
+	EventToolActivity     EventType = "tool_activity"    // Internal-only durable display state for provider-managed tools.
+	EventProviderReplay   EventType = "provider_replay"  // Internal-only opaque Responses output item.
+	EventDiscoveryCall    EventType = "discovery_call"   // Provider-neutral native client-executed discovery request.
+	EventDiscoveryOutput  EventType = "discovery_output" // Planner-selected schemas returned to native discovery.
 )
 
 // WarningPhasePrefix is the prefix for warning-level phase events.
@@ -272,6 +277,10 @@ type Event struct {
 	ToolMedia                  []MediaArtifact // Ordered image/video/audio artifacts from presentation tools
 	Use                        *Usage
 	Err                        error
+	// CompactionActive carries the compaction lifecycle for
+	// EventCompactionStatus. True begins a span; false ends it. An ending event
+	// sets Err when the attempt failed, was cancelled, or ended unfinished.
+	CompactionActive bool
 	// Retry fields (for EventRetry). RetryMaxAttempts == 0 means the retry
 	// policy is governed by a time budget rather than a fixed attempt count.
 	RetryAttempt     int

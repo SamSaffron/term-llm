@@ -3,6 +3,81 @@ import { APIClient } from './client';
 import { readInjectedConfig } from '../app/config';
 import { endpoints } from './endpoints';
 
+describe('manual compaction endpoint', () => {
+  it('returns the accepted activity without treating it as completed', async () => {
+    const activity = {
+      id: 'a1',
+      revision: 1,
+      kind: 'compaction',
+      status: 'running',
+      started_at: 1,
+    };
+    const fetcher = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ activity }), { status: 202 }));
+    try {
+      const api = new APIClient(readInjectedConfig({ TERM_LLM_UI_PREFIX: '/ui' } as Window), {
+        getToken: () => '',
+        onAuthRequired: vi.fn(),
+      });
+      await expect(endpoints(api).compact('session/one')).resolves.toEqual({ activity });
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(fetcher.mock.calls[0][0]).toContain('/v1/sessions/session%2Fone/runtime/compact');
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+
+  it('does not replay a kickoff when its acceptance reply is lost', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    try {
+      const api = new APIClient(readInjectedConfig({} as Window), {
+        getToken: () => '',
+        onAuthRequired: vi.fn(),
+      });
+      const rejected = expect(endpoints(api).compact('s1')).rejects.toMatchObject({
+        name: 'TimeoutError',
+      });
+      await vi.advanceTimersByTimeAsync(30_001);
+      await rejected;
+      expect(fetcher).toHaveBeenCalledOnce();
+    } finally {
+      fetcher.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('parses API errors without retrying', async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'busy' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    try {
+      const api = new APIClient(readInjectedConfig({} as Window), {
+        getToken: () => '',
+        onAuthRequired: vi.fn(),
+      });
+      await expect(endpoints(api).compact('session/one')).rejects.toMatchObject({
+        status: 409,
+        message: 'busy',
+      });
+      expect(fetcher).toHaveBeenCalledOnce();
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+});
+
 describe('Hub node order transport', () => {
   it('PATCHes only listed IDs at the supplied Hub mount with cookie auth and no node bearer', async () => {
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(

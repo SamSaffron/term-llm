@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"log"
 	"path/filepath"
 	"strconv"
@@ -30,6 +29,7 @@ import (
 
 type serveRuntime struct {
 	statsCompactionCB    func(*engine.CompactionResult)
+	activity             runtimeSessionActivity
 	stats                serveStats
 	admittedActivity     atomic.Int32     // synchronous owners, including setup and between-turn gaps
 	retiredInputs        atomic.Bool      // obsolete after committed input replacement
@@ -1085,13 +1085,14 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 		return 0, false
 	}
 	// Fast path: runtime already hydrated under rt.mu by a prior run.
-	rt.mu.Lock()
-	if meta := rt.sessionMeta; meta != nil && meta.ID == sessionID {
-		number := meta.Number
+	if rt.mu.TryLock() {
+		if meta := rt.sessionMeta; meta != nil && meta.ID == sessionID {
+			number := meta.Number
+			rt.mu.Unlock()
+			return number, false
+		}
 		rt.mu.Unlock()
-		return number, false
 	}
-	rt.mu.Unlock()
 	// Check DB for existing session.
 	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
 		return existing.Number, false
@@ -1921,7 +1922,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	}
 	defer releaseRootLease()
 
-	if !rt.mu.TryLock() {
+	if !rt.tryLockRun() {
 		return serveRunResult{}, errServeSessionBusy
 	}
 	// When this turn is stopped (user stop, rush, interrupt cancel, timeout or
@@ -2196,52 +2197,6 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// tool boundary, queued steering were never submitted to the provider and
 	// must remain cancellable/pending for UI recovery or explicit follow-up.
 	return persistence.finalizeSuccess(ctx, runCtx, req, result), nil
-}
-
-func (rt *serveRuntime) consumeRunStream(runCtx, persistCtx context.Context, stateful, persisted bool, req core.Request, onEvent func(core.Event) error) (serveRunResult, error, bool) {
-	result := serveRunResult{}
-	rt.startStats(req.Model)
-	defer rt.finishStats()
-	stream, err := rt.engine.Stream(runCtx, req)
-	if err != nil {
-		rt.persistRunError(persistCtx, req.SessionID, persisted, err)
-		return serveRunResult{}, err, false
-	}
-	defer stream.Close()
-
-	sawDone := false
-	for {
-		event, recvErr := stream.Recv()
-		if recvErr == io.EOF {
-			return result, nil, false
-		}
-		// Once EventDone has been delivered the turn is complete. A request
-		// context cancelled afterwards (for example a client that disconnects on
-		// the final event) can still surface from Recv while the engine tears
-		// down; that is the end of the stream, not a failed turn.
-		if recvErr != nil && sawDone && runCtx.Err() != nil && (errors.Is(recvErr, context.Canceled) || errors.Is(recvErr, context.DeadlineExceeded)) {
-			return result, nil, false
-		}
-		if recvErr != nil {
-			rt.persistRunError(persistCtx, req.SessionID, persisted, recvErr)
-			return result, recvErr, false
-		}
-		if event.Type == core.EventDone {
-			sawDone = true
-		}
-		rt.recordStatsEvent(event)
-		if onEvent != nil {
-			if err := onEvent(event); err != nil {
-				rt.persistRunError(persistCtx, req.SessionID, persisted, err)
-				return result, err, false
-			}
-		}
-		rt.updateInterruptFromEvent(event)
-		suspensionHandled, err := rt.accumulateRunEvent(persistCtx, stateful, persisted, req.SessionID, event, &result)
-		if err != nil {
-			return result, err, suspensionHandled
-		}
-	}
 }
 
 func (rt *serveRuntime) accumulateRunEvent(ctx context.Context, stateful, persisted bool, sessionID string, event core.Event, result *serveRunResult) (bool, error) {

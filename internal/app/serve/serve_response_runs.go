@@ -168,6 +168,7 @@ type responseRun struct {
 	minReplayAfter          int64
 	maxRetainedEvents       int
 	recoveryMessages        []responseRunRecoveryMessage
+	recoveryActivity        any
 	recoveryEvents          []responseRunRecoveryEvent
 	resolvedInteractions    map[string]responseRunResolvedInteraction
 	pendingGuardianByCall   map[string][]map[string]any

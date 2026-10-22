@@ -67,13 +67,24 @@
   background: var(--danger);
 }
 
-.voice-status-spinner {
+.voice-status-spinner,
+.live-status-spinner,
+.compaction-status-spinner {
   width: 14px;
   height: 14px;
   border: 2px solid var(--border);
-  border-top-color: var(--text);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+}
+
+.live-status-spinner {
+  width: 15px;
+  height: 15px;
+}
+
+.voice-status-spinner {
+  border-top-color: var(--text);
 }
 
 .voice-status-mark {
@@ -132,7 +143,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .voice-status-spinner {
+  .voice-status-spinner,
+  .live-status-spinner,
+  .compaction-status-spinner {
     animation: none;
   }
 }
@@ -236,14 +249,6 @@
 .live-status-listening .live-status-dot,
 .live-status-speaking .live-status-dot {
   animation: voice-pulse 1.35s infinite;
-}
-
-.live-status-spinner {
-  width: 15px;
-  height: 15px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  animation: spin 0.8s linear infinite;
 }
 
 .live-status-stop {
@@ -467,6 +472,12 @@
   background: color-mix(in srgb, var(--accent) 16%, var(--surface));
   border: 1px solid var(--accent);
   border-radius: 0.5rem;
+}
+
+.compaction-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
 }
 
 .composer-icon-btn:disabled {

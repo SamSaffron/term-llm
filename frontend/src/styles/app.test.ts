@@ -42,6 +42,18 @@ describe('stylesheet manifest', () => {
   });
 });
 
+describe('compaction progress styles', () => {
+  it('shares the status spinner style and respects reduced motion', () => {
+    const composerCSS = readFileSync(resolve(stylesRoot, 'features/composer.css'), 'utf8');
+    expect(composerCSS).toMatch(
+      /\.voice-status-spinner,\s*\.live-status-spinner,\s*\.compaction-status-spinner\s*\{[^}]*animation: spin 0\.8s linear infinite;/,
+    );
+    expect(composerCSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.voice-status-spinner,\s*\.live-status-spinner,\s*\.compaction-status-spinner\s*\{\s*animation: none;/,
+    );
+  });
+});
+
 describe('shared switch styles', () => {
   it('loads for settings without opening MCP and stays visible in forced colors', () => {
     expect(appCSS).toContain('.toggle-switch-track');

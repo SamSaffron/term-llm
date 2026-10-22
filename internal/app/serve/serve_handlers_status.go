@@ -101,6 +101,10 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	for id := range activeIDs {
 		criticalIDs[id] = true
 	}
+	var compactionIDs []string
+	if s.sessionMgr != nil {
+		compactionIDs = s.sessionMgr.activeCompactionIDs()
+	}
 	for id := range runtimeInteractions {
 		criticalIDs[id] = true
 	}
@@ -115,8 +119,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if len(missing) > 0 {
-		// Critical sessions bypass the polling window, not the top-level-only
-		// filter: spawned agents can also be running or awaiting interaction.
+		// Ordinary active response/interaction rows retain the sidebar's
+		// top-level filter. Compaction has an independent exception below.
 		critical, listErr := s.store.List(r.Context(), session.ListOptions{
 			IDs:              missing,
 			Limit:            -1,
@@ -134,6 +138,16 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 				listed[sess.ID] = true
 			}
 		}
+	}
+
+	compactions, listErr := s.compactionStatusSessions(r.Context(), compactionIDs, listed)
+	if listErr != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load compacting sessions")
+		return
+	}
+	for _, sess := range compactions {
+		sessions = append(sessions, sess)
+		listed[sess.ID] = true
 	}
 
 	// An explicitly opened child transcript still needs status reconciliation
@@ -169,40 +183,41 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	// transcript_updated_at remains for older cached clients and hub dashboards.
 	// Revision-aware clients use transcript_rev as the correctness signal.
 	type statusEntry struct {
-		ID                       string   `json:"id"`
-		Number                   int64    `json:"number,omitempty"`
-		ProjectID                string   `json:"project_id,omitempty"`
-		ProjectName              string   `json:"project_name,omitempty"`
-		ShortTitle               string   `json:"short_title"`
-		LongTitle                string   `json:"long_title"`
-		Pinned                   bool     `json:"pinned,omitempty"`
-		ActiveRun                bool     `json:"active_run,omitempty"`
-		ActiveResponseID         string   `json:"active_response_id,omitempty"`
-		RunEpoch                 int64    `json:"run_epoch,omitempty"`
-		StartedRev               int64    `json:"started_rev,omitempty"`
-		StartedAt                int64    `json:"started_at,omitempty"`
-		ClientMessageID          string   `json:"client_message_id,omitempty"`
-		AnchorRowID              int64    `json:"anchor_row_id,omitempty"`
-		TranscriptRev            int64    `json:"transcript_rev"`
-		MsgCount                 int      `json:"message_count"`
-		LastMessageAt            int64    `json:"last_message_at"`
-		TranscriptUpdatedAt      int64    `json:"transcript_updated_at"`
-		AttentionStoreInstanceID string   `json:"attention_store_instance_id,omitempty"`
-		AttentionSeq             int64    `json:"attention_seq,omitempty"`
-		AttentionResponseID      string   `json:"attention_response_id,omitempty"`
-		AttentionFinalRev        int64    `json:"attention_final_rev,omitempty"`
-		SeenThroughSeq           int64    `json:"seen_through_seq,omitempty"`
-		SeenRev                  int64    `json:"seen_rev"`
-		SeenSource               string   `json:"seen_source,omitempty"`
-		AttentionUnseen          bool     `json:"attention_unseen,omitempty"`
-		AttentionOutcome         string   `json:"attention_outcome,omitempty"`
-		AttentionTerminalAt      int64    `json:"attention_terminal_at,omitempty"`
-		InteractionRequired      bool     `json:"interaction_required"`
-		InteractionResponseID    string   `json:"interaction_response_id,omitempty"`
-		InteractionStateRev      int64    `json:"interaction_state_rev,omitempty"`
-		PendingInteractionCount  int      `json:"pending_interaction_count,omitempty"`
-		PendingInteractionKinds  []string `json:"pending_interaction_kinds,omitempty"`
-		InteractionRequiredSince int64    `json:"interaction_required_since,omitempty"`
+		Activity                 *serveSessionActivity `json:"activity"`
+		ID                       string                `json:"id"`
+		Number                   int64                 `json:"number,omitempty"`
+		ProjectID                string                `json:"project_id,omitempty"`
+		ProjectName              string                `json:"project_name,omitempty"`
+		ShortTitle               string                `json:"short_title"`
+		LongTitle                string                `json:"long_title"`
+		Pinned                   bool                  `json:"pinned,omitempty"`
+		ActiveRun                bool                  `json:"active_run,omitempty"`
+		ActiveResponseID         string                `json:"active_response_id,omitempty"`
+		RunEpoch                 int64                 `json:"run_epoch,omitempty"`
+		StartedRev               int64                 `json:"started_rev,omitempty"`
+		StartedAt                int64                 `json:"started_at,omitempty"`
+		ClientMessageID          string                `json:"client_message_id,omitempty"`
+		AnchorRowID              int64                 `json:"anchor_row_id,omitempty"`
+		TranscriptRev            int64                 `json:"transcript_rev"`
+		MsgCount                 int                   `json:"message_count"`
+		LastMessageAt            int64                 `json:"last_message_at"`
+		TranscriptUpdatedAt      int64                 `json:"transcript_updated_at"`
+		AttentionStoreInstanceID string                `json:"attention_store_instance_id,omitempty"`
+		AttentionSeq             int64                 `json:"attention_seq,omitempty"`
+		AttentionResponseID      string                `json:"attention_response_id,omitempty"`
+		AttentionFinalRev        int64                 `json:"attention_final_rev,omitempty"`
+		SeenThroughSeq           int64                 `json:"seen_through_seq,omitempty"`
+		SeenRev                  int64                 `json:"seen_rev"`
+		SeenSource               string                `json:"seen_source,omitempty"`
+		AttentionUnseen          bool                  `json:"attention_unseen,omitempty"`
+		AttentionOutcome         string                `json:"attention_outcome,omitempty"`
+		AttentionTerminalAt      int64                 `json:"attention_terminal_at,omitempty"`
+		InteractionRequired      bool                  `json:"interaction_required"`
+		InteractionResponseID    string                `json:"interaction_response_id,omitempty"`
+		InteractionStateRev      int64                 `json:"interaction_state_rev,omitempty"`
+		PendingInteractionCount  int                   `json:"pending_interaction_count,omitempty"`
+		PendingInteractionKinds  []string              `json:"pending_interaction_kinds,omitempty"`
+		InteractionRequiredSince int64                 `json:"interaction_required_since,omitempty"`
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
@@ -212,6 +227,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		summaryRevisions = reporter.SessionSummariesIncludeTranscriptRev()
 	}
 	for _, sess := range sessions {
+		activity := s.sessionActivitySnapshot(sess.ID)
 		lastMessageAt := sess.LastMessageAt
 		if lastMessageAt.IsZero() {
 			lastMessageAt = sess.CreatedAt
@@ -225,6 +241,9 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			if rev, revErr := indexer.TranscriptRev(r.Context(), sess.ID); revErr == nil {
 				transcriptRev = rev
 			}
+		}
+		if activity != nil {
+			transcriptRev = max(transcriptRev, activity.TranscriptRev)
 		}
 		activeResponseID, startedRev, runEpoch, clientMessageID, anchorRowID := s.activeTranscriptRun(sess.ID)
 		startedAt := int64(0)
@@ -292,6 +311,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		result = append(result, statusEntry{
+			Activity:                 activity,
 			ID:                       sess.ID,
 			Number:                   sess.Number,
 			ProjectID:                sess.ProjectID,

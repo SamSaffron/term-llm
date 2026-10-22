@@ -17,7 +17,7 @@ export class APIError extends Error {
   }
 }
 
-function responseError(
+export function responseError(
   body: string,
   status: number,
   fallback: string,

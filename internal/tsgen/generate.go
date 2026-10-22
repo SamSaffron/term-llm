@@ -24,6 +24,7 @@ var Registry = []string{
 	"internal/app/serve.sessionShareRequest", "internal/app/serve.sessionShareResponse", "internal/app/serve.sharingCapabilitiesResponse",
 	"internal/app/serve.serveShellCreateRequest", "internal/app/serve.serveShellInputRequest", "internal/app/serve.sessionInterruptRequest", "internal/app/serve.sessionRuntimeGoalRequest",
 	"internal/app/serve.sessionMessagesResponse",
+	"internal/app/serve.serveSessionActivity",
 }
 
 const module = "github.com/samsaffron/term-llm/"

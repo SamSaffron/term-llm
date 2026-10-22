@@ -100,6 +100,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	state := webSessionStateData{
 		response: map[string]any{
 			"active_run": false,
+			"activity":   s.sessionActivitySnapshot(sessionID),
 		},
 	}
 	s.addSessionStatePlan(state.response, r, sessionID)

@@ -150,11 +150,14 @@ func TestServeSessionRuntimeCompactEndpoint(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	server.handleSessionByID(rr, req)
-	if rr.Code != http.StatusOK {
+	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status/body = %d %q", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), `"ok":true`) {
+	if !strings.Contains(rr.Body.String(), `"activity":`) {
 		t.Fatalf("response = %q", rr.Body.String())
+	}
+	if activity := waitForServeCompaction(t, server, sess.ID); activity.Status != "completed" {
+		t.Fatalf("compaction failed: %+v", activity)
 	}
 	stored, err := store.Get(ctx, sess.ID)
 	if err != nil {

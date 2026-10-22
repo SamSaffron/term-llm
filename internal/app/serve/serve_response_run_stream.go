@@ -117,6 +117,8 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		return s.appendResponseHeartbeat(runtime, run, state, ev)
 	case core.EventPhase:
 		return s.appendResponsePhase(runtime, run, state, ev)
+	case core.EventCompactionStatus:
+		return run.appendEvent("response.activity", map[string]any{"activity": runtime.activitySnapshot()})
 	case core.EventCompaction:
 		return s.appendResponseCompaction(runtime, run, state, ev)
 	case core.EventRetry:
@@ -697,6 +699,12 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			return nil, err
 		}
 		defer release()
+	}
+	if runtime.compacting.Load() {
+		if options.onDone != nil {
+			options.onDone()
+		}
+		return nil, errServeSessionBusy
 	}
 	mgr := s.ensureResponseRuns()
 

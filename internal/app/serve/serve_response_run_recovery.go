@@ -136,6 +136,8 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		r.applyRecoveryResponseOutputTextDelta(event, payload)
 	case "response.output_text.new_segment":
 		r.applyRecoveryResponseOutputTextNewSegment(event, payload)
+	case "response.activity":
+		r.recoveryActivity = payload["activity"]
 	case "response.compaction":
 		r.applyRecoveryResponseCompaction(event, payload)
 	case "response.model_switch":
@@ -336,6 +338,9 @@ func (r *responseRun) snapshot() map[string]any {
 			"type":    r.errorType,
 			"message": r.errorMessage,
 		}
+	}
+	if r.recoveryActivity != nil {
+		payload["activity"] = r.recoveryActivity
 	}
 	payload["recovery"] = r.recoveryPayloadLocked()
 	return payload

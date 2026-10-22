@@ -138,23 +138,14 @@ func (e *Engine) openProviderTurnStream(ctx context.Context, req *core.Request, 
 	if err != nil {
 		// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
 		if compaction.config != nil && IsContextOverflowError(err) && !compaction.reactiveDone {
-			compaction.reactiveDone = true
-			if err := send.Send(core.Event{Type: core.EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
-				return nil, err
-			}
-			if compaction.softActive {
-				if compaction.applySoftHardFallback((*originalTools), originalToolChoice) {
-					return nil, errEngineTurnRetry
-				}
-			} else {
-				result, compactErr := env.Compact(ctx, e.provider, req.Model, compaction.systemPrompt, nonSystemMessages(req.Messages), *compaction.config)
-				if compactErr == nil && compaction.apply(result) {
-					return nil, errEngineTurnRetry
-				}
+			if retry, reactErr := compaction.compactReactiveOverflow((*originalTools), originalToolChoice); reactErr != nil {
+				return nil, reactErr
+			} else if retry {
+				return nil, errEngineTurnRetry
 			}
 		}
 		if compaction.softActive {
-			compaction.restoreSoftFailure((*originalTools), originalToolChoice)
+			compaction.restoreSoftFailure((*originalTools), originalToolChoice, err)
 		}
 		// Warn when compaction is disabled and we hit context overflow
 		if compaction.config == nil && compaction.inputLimit > 0 && !e.contextNoticeEmitted.Load() && IsContextOverflowError(err) {

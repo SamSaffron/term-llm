@@ -1,6 +1,7 @@
 import type { SessionInspect, SessionInspectBodies } from '../domain/inspect';
 import type {
   CreateWebSessionRequest,
+  ServeSessionActivity,
   WebSessionMetrics,
   ChildRunProjection,
   SharingCapabilitiesResponse as GeneratedSharingCapabilitiesResponse,
@@ -548,7 +549,12 @@ export const endpoints = (api: APIClient) => ({
     api.post(`/v1/sessions/${encoded(id)}/runtime/${operation}`, body, 'idempotent-mutation', {
       'Idempotency-Key': `runtime_${id}_${operation}_${JSON.stringify(body)}`,
     }),
-  compact: (id: string) => api.post(`/v1/sessions/${encoded(id)}/runtime/compact`, {}),
+  compact: (id: string) =>
+    api.json<{ activity: ServeSessionActivity }>(
+      `/v1/sessions/${encoded(id)}/runtime/compact`,
+      { method: 'POST', headers: sessionHeaders(id), body: '{}' },
+      { retries: 0, auth: 'session', policy: 'mutation' },
+    ),
   approvalPolicy: (id: string) =>
     api.get<ApprovalPolicyResponse>(`/v1/sessions/${encoded(id)}/runtime/approvals`),
   setApprovalMode: (id: string, mode: ApprovalMode) =>

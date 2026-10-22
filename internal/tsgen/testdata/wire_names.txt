@@ -12,6 +12,7 @@ ServeMentionSearchRequest
 ServeMentionSearchResponse
 ServeMentionSegment
 ServeMentionToken
+ServeSessionActivity
 ServeShellCreateRequest
 ServeShellInputRequest
 ServeSkillRunEvent

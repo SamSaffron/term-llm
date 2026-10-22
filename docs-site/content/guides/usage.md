@@ -151,6 +151,8 @@ When web search is enabled, the chat status line shows `web`; when fast service 
 
 In the web UI, typing `/` opens an alphabetized command menu. `/compact` manually compresses the active conversation context without adding a user message; `/commit` opens the native Git workflow; `/goal`, `/mcp`, and `/model` open their existing controls; `/new` starts a fresh conversation; and `/side` opens a side question.
 
+Manual and automatic web compaction show the same animated progress indicator and block sending or steering into that conversation while compaction is active. You can keep editing your draft or use another conversation. An accepted manual compaction runs on the server independently of the initiating browser connection; session events and status polling reconcile progress after reconnecting or reloading. A lost acceptance reply is treated as an unknown outcome, not retried as another compaction. Activity snapshots are process-local; the rewritten conversation itself is persisted.
+
 ### Native Git commits
 
 > If changes are already staged, `/commit` immediately asks **Commit everything** or **Commit staged**. If nothing is staged, plain `/commit` stages everything; explicit natural-language scope intent may instead propose a reviewed subset.
