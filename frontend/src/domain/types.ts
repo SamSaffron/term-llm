@@ -9,7 +9,8 @@ export type MessageRole =
   | 'model-swap'
   | 'phase'
   | 'skill-run'
-  | 'path-note';
+  | 'path-note'
+  | 'job-notice';
 
 export interface Attachment {
   id?: string;

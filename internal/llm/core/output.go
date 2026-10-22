@@ -421,6 +421,38 @@ func HasGoalSteeringPart(parts []Part) bool {
 	return false
 }
 
+// JobNotificationProvenance identifies a finished queued job whose completion
+// notice is a machine-written, provider-visible user prompt.
+type JobNotificationProvenance struct {
+	JobID  string `json:"job_id"`
+	RunID  string `json:"run_id,omitempty"`
+	Agent  string `json:"agent,omitempty"`
+	Status string `json:"status"`
+}
+
+// JobNotificationText creates a provider-visible user-role prompt announcing a
+// finished queued job. The marker is persisted for display and provenance and
+// removed before the text is sent to providers.
+func JobNotificationText(text string, info JobNotificationProvenance) Message {
+	return Message{
+		Role: RoleUser,
+		Parts: []Part{
+			{Type: PartJobNotification, JobNotification: &info},
+			{Type: PartText, Text: text},
+		},
+	}
+}
+
+// JobNotificationOf returns the job-notification provenance carried by parts.
+func JobNotificationOf(parts []Part) (*JobNotificationProvenance, bool) {
+	for _, part := range parts {
+		if part.Type == PartJobNotification && part.JobNotification != nil {
+			return part.JobNotification, true
+		}
+	}
+	return nil, false
+}
+
 // IsGoalSteeringMessage reports whether a message is a marked synthetic active-goal prompt.
 func IsGoalSteeringMessage(msg Message) bool {
 	return msg.Role == RoleUser && HasGoalSteeringPart(msg.Parts)

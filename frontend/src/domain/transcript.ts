@@ -478,6 +478,26 @@ export function convertServerMessages(
       );
       continue;
     }
+    if (role === 'job-notice') {
+      flush();
+      const part = parts.find((candidate) => candidate.type === 'job_notification');
+      const notice = record(part?.job_notification);
+      output.push(
+        withSource(
+          {
+            id: messageID,
+            role: 'job-notice',
+            content: text(part?.text),
+            agent: text(notice?.agent),
+            status: text(notice?.status),
+            runId: text(notice?.run_id),
+            created: at,
+          },
+          message,
+        ),
+      );
+      continue;
+    }
     if (role === 'compaction' || role === 'compaction-boundary') {
       flush();
       const content = parts

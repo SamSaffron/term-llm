@@ -332,6 +332,7 @@ const (
 	PartPathNote          PartType = "path_note"          // Persisted branch-context provenance; adjacent text is sent as developer context.
 	PartDiffComment       PartType = "diff_comment"       // Persisted inline-diff anchor metadata; never sent to providers.
 	PartGoalSteering      PartType = "goal_steering"      // Persisted marker for synthetic active-goal user prompts; adjacent text is sent to providers but hidden from human transcripts.
+	PartJobNotification   PartType = "job_notification"   // Persisted marker for queued-job completion notices; adjacent text is sent to providers, the marker is not.
 	PartConversationStart PartType = "conversation_start" // Persisted immutable time anchor for the conversation; marker is never sent to providers.
 	PartDisplayText       PartType = "display_text"       // Persistence-only visible text; never sent to providers.
 	PartPlatformContext   PartType = "platform_context"   // Persisted active interaction-mode context; marker is never sent to providers.
@@ -455,6 +456,7 @@ type Part struct {
 	SkillActivation           *SkillActivationProvenance // Direct user activation metadata; persisted but not provider content.
 	PathNote                  *PathNoteProvenance        // Branch-context metadata; persisted but not sent to providers.
 	DiffComment               *DiffComment               // Inline-diff comment anchor; persisted but not sent to providers.
+	JobNotification           *JobNotificationProvenance // Queued-job completion metadata; persisted but not sent to providers.
 }
 
 // DiffCommentContextLine preserves one exact nearby line from the diff that the

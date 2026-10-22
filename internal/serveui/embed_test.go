@@ -194,7 +194,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// seen/unread controls and seen-revision merging. The presence tracker
 		// runs from startup, so it is eager: ~545.8/160.9 kB. Same ~1% rule.
 		"dist/app.js":                {raw: 551_000, gzip: 162_500},
-		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
+		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_300},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},

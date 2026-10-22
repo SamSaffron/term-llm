@@ -33,6 +33,7 @@ HubStatus
 CoreDiffComment
 CoreDiffCommentContextLine
 CoreGuardianReview
+CoreJobNotificationProvenance
 CoreModelSwapMarker
 CorePathNoteProvenance
 CoreSkillActivationProvenance

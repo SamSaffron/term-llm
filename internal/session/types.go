@@ -394,14 +394,14 @@ func (m *Message) DisplayText() string {
 
 func providerMessageParts(parts []core.Part) []core.Part {
 	for i, part := range parts {
-		if part.Type != core.PartDisplayText && part.Type != core.PartSkillActivation && part.Type != core.PartAgentMention && part.Type != core.PartPathNote && part.Type != core.PartDiffComment && part.Type != core.PartGoalSteering {
+		if part.Type != core.PartDisplayText && part.Type != core.PartSkillActivation && part.Type != core.PartAgentMention && part.Type != core.PartPathNote && part.Type != core.PartDiffComment && part.Type != core.PartGoalSteering && part.Type != core.PartJobNotification {
 			continue
 		}
 		converted := make([]core.Part, 0, len(parts))
 		converted = append(converted, parts[:i]...)
 		for _, candidate := range parts[i:] {
 			switch candidate.Type {
-			case core.PartDisplayText, core.PartSkillActivation, core.PartPathNote, core.PartDiffComment, core.PartGoalSteering:
+			case core.PartDisplayText, core.PartSkillActivation, core.PartPathNote, core.PartDiffComment, core.PartGoalSteering, core.PartJobNotification:
 				continue
 			case core.PartAgentMention:
 				candidate.Type = core.PartText
