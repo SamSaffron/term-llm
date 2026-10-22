@@ -289,7 +289,12 @@ func scoresIn(out string) []string {
 }
 
 func rankedNote(shown, kept, culled, total int) string {
-	return fmt.Sprintf("[intent rerank: showing %d of %d relevant matches (%d of %d candidates below 0.50 dropped); candidate search capped at 150 — broaden pattern/path or omit intent for unfiltered results]\n", shown, kept, culled, total)
+	return fmt.Sprintf("[intent rerank: showing %d of %d relevant matches (%d of %d candidates below 0.50 dropped)]\n", shown, kept, culled, total)
+}
+
+func cappedRankedNote(shown, kept, culled, total int) string {
+	return strings.TrimSuffix(rankedNote(shown, kept, culled, total), "]\n") +
+		"; search stopped at 150 raw matches, the rest were not ranked — narrow pattern/path to rank them all]\n"
 }
 
 func skipNote(category string) string {
@@ -724,6 +729,31 @@ func TestGrepRerankRanksWithRealRipgrep(t *testing.T) {
 	}
 }
 
+// The cap clause costs context tokens, so it appears only when ripgrep
+// actually found more matches than the candidate cap.
+func TestGrepRerankCapNoteOnlyWhenTruncated(t *testing.T) {
+	if !ripgrepAvailable() {
+		t.Skip("ripgrep not available")
+	}
+	for _, tc := range []struct {
+		n      int
+		capped bool
+	}{{150, false}, {151, true}} {
+		t.Run(strconv.Itoa(tc.n), func(t *testing.T) {
+			scores := make([]float64, tc.n)
+			for i := range scores {
+				scores[i] = 0.9
+			}
+			dir := scoredFiles(t, scores...)
+			tool, _ := newIntentTool(t, newScoringFake(), nil)
+			out := execGrep(t, tool, dir, map[string]any{"intent": "x", "max_results": 150})
+			if got := strings.Contains(out, "search stopped at 150 raw matches"); got != tc.capped {
+				t.Fatalf("cap clause present = %v, want %v\n%.300s", got, tc.capped, out)
+			}
+		})
+	}
+}
+
 func rgMatchJSON(path string, line int, text string) string {
 	p, _ := json.Marshal(path)
 	l, _ := json.Marshal(text + "\n")
@@ -899,8 +929,14 @@ func TestGrepRerankChunking(t *testing.T) {
 			if total != tc.n {
 				t.Fatalf("questions total %d, want %d", total, tc.n)
 			}
-			if !strings.HasPrefix(out, rankedNote(tc.n, tc.n, 0, tc.n)) {
-				t.Fatalf("note: %.200s", out)
+			want := rankedNote(tc.n, tc.n, 0, tc.n)
+			if tc.n >= 150 {
+				// The Go fallback cannot tell whether a 151st match exists,
+				// so reaching the candidate cap is reported as truncated.
+				want = cappedRankedNote(tc.n, tc.n, 0, tc.n)
+			}
+			if !strings.HasPrefix(out, want) {
+				t.Fatalf("note: %.300s", out)
 			}
 		})
 	}

@@ -145,7 +145,12 @@ func (t *GrepTool) intentPipeline(ctx context.Context, a GrepArgs, root, intent 
 			if result.BelowThresholdAll {
 				return fmt.Sprintf("[intent rerank: no match scored >= %.2f; showing top %d by relevance — consider a different pattern]\n", t.reranker.Threshold(), shown)
 			}
-			return fmt.Sprintf("[intent rerank: showing %d of %d relevant matches (%d of %d candidates below %.2f dropped); candidate search capped at %d — broaden pattern/path or omit intent for unfiltered results]\n", shown, len(result.Kept), result.Culled, len(value.matches), t.reranker.Threshold(), t.reranker.MaxCandidates())
+			note := fmt.Sprintf("[intent rerank: showing %d of %d relevant matches (%d of %d candidates below %.2f dropped)", shown, len(result.Kept), result.Culled, len(value.matches), t.reranker.Threshold())
+			if value.truncated {
+				// Only worth the tokens when matches were actually left unranked.
+				note += fmt.Sprintf("; search stopped at %d raw matches, the rest were not ranked — narrow pattern/path to rank them all", t.reranker.MaxCandidates())
+			}
+			return note + "]\n"
 		}
 		return formatRankedGrepResults(matches, note), ctx.Err()
 	}, func(value intentSearchResult) string { return formatIntentPrefix(value, maxResults, a.ContextLines) })
