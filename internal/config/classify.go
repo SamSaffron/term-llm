@@ -226,3 +226,22 @@ func isLLMGuardianBackend(backend string) bool {
 	backend = strings.TrimSpace(backend)
 	return backend == "" || backend == "llm"
 }
+
+// LiveClassifyMinConfidence configures Phase 1 gates. steer_now and side are
+// accepted now for stable configuration but are always mapped to steer until
+// Phase 2.
+type LiveClassifyMinConfidence struct {
+	Status        float64 `mapstructure:"status" yaml:"status"`
+	NewSession    float64 `mapstructure:"new_session" yaml:"new_session"`
+	SwitchSession float64 `mapstructure:"switch_session" yaml:"switch_session"`
+	SteerNow      float64 `mapstructure:"steer_now" yaml:"steer_now"`
+	Side          float64 `mapstructure:"side" yaml:"side"`
+}
+
+// LiveClassifyConfig configures the low-latency live intent router.
+type LiveClassifyConfig struct {
+	Provider      string                    `mapstructure:"provider" yaml:"provider,omitempty"`
+	LogDecisions  bool                      `mapstructure:"log_decisions" yaml:"log_decisions"`
+	LogState      bool                      `mapstructure:"log_state" yaml:"log_state"`
+	MinConfidence LiveClassifyMinConfidence `mapstructure:"min_confidence" yaml:"min_confidence"`
+}

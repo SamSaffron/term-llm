@@ -1,0 +1,43 @@
+[
+ {
+  "name": "plain",
+  "args": {
+   "pattern": "needle",
+   "path": "{{ROOT}}",
+   "context_lines": 1,
+   "max_results": 7
+  }
+ },
+ {
+  "name": "intent_string",
+  "args": {
+   "pattern": "needle",
+   "path": "{{ROOT}}",
+   "context_lines": 1,
+   "max_results": 7,
+   "intent": "find writes"
+  }
+ },
+ {
+  "name": "intent_number",
+  "args": {
+   "pattern": "needle",
+   "path": "{{ROOT}}",
+   "context_lines": 1,
+   "max_results": 7,
+   "intent": 42
+  }
+ },
+ {
+  "name": "intent_object",
+  "args": {
+   "pattern": "needle",
+   "path": "{{ROOT}}",
+   "context_lines": 1,
+   "max_results": 7,
+   "intent": {
+    "x": true
+   }
+  }
+ }
+]

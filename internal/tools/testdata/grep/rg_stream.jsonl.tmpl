@@ -1,0 +1,16 @@
+{"type":"begin","data":{"path":{"text":"{{ROOT}}/pkg/a.go"}}}
+{"type":"context","data":{"path":{"text":"{{ROOT}}/pkg/a.go"},"lines":{"text":"func before() {\n"},"line_number":9,"absolute_offset":0,"submatches":[]}}
+{"type":"match","data":{"path":{"text":"{{ROOT}}/pkg/a.go"},"lines":{"text":"\tneedle := 1\n"},"line_number":10,"absolute_offset":0,"submatches":[]}}
+{"type":"context","data":{"path":{"text":"{{ROOT}}/pkg/a.go"},"lines":{"text":"\treturn needle\n"},"line_number":11,"absolute_offset":0,"submatches":[]}}
+{"type":"context","data":{"path":{"text":"{{ROOT}}/pkg/a.go"},"lines":{"text":"}\n"},"line_number":12,"absolute_offset":0,"submatches":[]}}
+{"type":"match","data":{"path":{"text":"{{ROOT}}/pkg/a.go"},"lines":{"text":"// needle \u00fcn\u00efcode \"quoted\"\n"},"line_number":30,"absolute_offset":0,"submatches":[]}}
+{"type":"context","data":{"path":{"text":"{{ROOT}}/pkg/a.go"},"lines":{"text":"\n"},"line_number":31,"absolute_offset":0,"submatches":[]}}
+{"type":"end","data":{"path":{"text":"{{ROOT}}/pkg/a.go"}}}
+{"type":"begin","data":{"path":{"text":"{{ROOT}}/pkg/b.go"}}}
+{"type":"context","data":{"path":{"text":"{{ROOT}}/pkg/b.go"},"lines":{"text":"package b\n"},"line_number":1,"absolute_offset":0,"submatches":[]}}
+{"type":"match","data":{"path":{"text":"{{ROOT}}/pkg/b.go"},"lines":{"text":"var needle = 2\n"},"line_number":2,"absolute_offset":0,"submatches":[]}}
+{"type":"context","data":{"path":{"text":"{{ROOT}}/pkg/b.go"},"lines":{"text":"\n"},"line_number":3,"absolute_offset":0,"submatches":[]}}
+{"type":"end","data":{"path":{"text":"{{ROOT}}/pkg/b.go"}}}
+{"type":"begin","data":{"path":{"text":"{{ROOT}}/docs/c.md"}}}
+{"type":"match","data":{"path":{"text":"{{ROOT}}/docs/c.md"},"lines":{"text":"needle in docs\n"},"line_number":5,"absolute_offset":0,"submatches":[]}}
+{"type":"end","data":{"path":{"text":"{{ROOT}}/docs/c.md"}}}

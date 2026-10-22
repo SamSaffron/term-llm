@@ -8,17 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/samsaffron/term-llm/internal/greprerank"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
@@ -81,6 +80,8 @@ type GrepTool struct {
 	limits          OutputLimits
 	config          *ToolConfig
 	rgCaptureLimits ripgrepCaptureLimits
+	reranker        *greprerank.Reranker
+	intentScan      grepFileScanner
 }
 
 // NewGrepTool creates a new GrepTool.
@@ -313,7 +314,7 @@ func captureRipgrepStderr(stderr io.Reader) []byte {
 	return data
 }
 
-func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits, maxResults int, filesWithMatches bool) ([]byte, bool, error) {
+func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits, maxResults int, filesWithMatches bool, observers ...ripgrepLineConsumer) ([]byte, bool, error) {
 	limits = limits.normalize()
 	cmd := exec.CommandContext(ctx, "rg", args...)
 
@@ -340,6 +341,18 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits,
 			consumeLine = limiter.consumePathLine
 		} else {
 			consumeLine = limiter.consumeJSONLine
+		}
+	}
+
+	if len(observers) > 0 {
+		normal := consumeLine
+		consumeLine = func(line []byte) (bool, error) {
+			if normal != nil {
+				if stop, err := normal(line); stop || err != nil {
+					return stop, err
+				}
+			}
+			return observers[0](line)
 		}
 	}
 
@@ -896,92 +909,11 @@ type GrepMatch struct {
 	Context    string `json:"context,omitempty"` // 3 lines of context
 }
 
-func (t *GrepTool) Spec() core.ToolSpec {
-	return core.ToolSpec{
-		Name:        GrepToolName,
-		Description: "Search file contents using regex patterns (RE2 syntax). Returns matches with context.",
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"pattern": map[string]interface{}{
-					"type":        "string",
-					"description": "Regular expression pattern to search for (RE2 syntax)",
-				},
-				"path": map[string]interface{}{
-					"type":        "string",
-					"description": "File or directory to search in (defaults to current directory)",
-				},
-				"include": map[string]interface{}{
-					"type":        "string",
-					"description": "Glob filter for files, e.g., '*.go' or '*.{js,ts}'",
-				},
-				"exclude": map[string]interface{}{
-					"type":        "string",
-					"description": "Glob pattern for paths to exclude, e.g. 'vendor/**' or '**/*_test.go'",
-				},
-				"type": map[string]interface{}{
-					"type":        "string",
-					"description": "Ripgrep file type filter, e.g. 'go', 'ts', or 'rb'",
-				},
-				"context_lines": map[string]interface{}{
-					"type":        "integer",
-					"description": "Lines of context around each match (default: 2)",
-					"default":     2,
-				}, "files_with_matches": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Return only filenames containing matches, not the match lines (default: false)",
-				},
-				"multiline": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Allow regex matches to span line boundaries (default: false)",
-				},
-				"max_results": map[string]interface{}{
-					"type":        "integer",
-					"description": "Maximum number of results (default: 100)",
-					"default":     100,
-				}},
-			"required":             []string{"pattern"},
-			"additionalProperties": false,
-		},
-	}
-}
-
-func (t *GrepTool) Preview(args json.RawMessage) string {
-	var a GrepArgs
-	if err := json.Unmarshal(args, &a); err != nil || a.Pattern == "" {
-		return ""
-	}
-	pattern := a.Pattern
-	if len(pattern) > 30 {
-		pattern = pattern[:27] + "..."
-	}
-	result := fmt.Sprintf("/%s/", pattern)
-	if a.Path != "" {
-		result += " in " + a.Path
-	}
-	if a.Include != "" {
-		result += " (" + a.Include + ")"
-	}
-	if a.Type != "" {
-		result += " type:" + a.Type
-	}
-	if a.Exclude != "" {
-		result += " exclude:" + a.Exclude
-	}
-	if a.Multiline {
-		result += " multiline"
-	}
-	return result
-}
-
 func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
-	warning := WarnUnknownParams(args, []string{
-		"pattern", "path", "include", "exclude", "type",
-		"max_results", "context_lines", "files_with_matches", "multiline",
-	})
+	warning := WarnUnknownParams(args, t.knownGrepParams())
 	textOutput := func(message string) core.ToolOutput {
 		return core.TextOutput(warning + message)
 	}
@@ -1014,6 +946,11 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 		maxResults = t.limits.MaxResults
 	}
 
+	intent, err := t.grepIntent(args, a, maxResults)
+	if err != nil {
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	}
+
 	contextLines := a.ContextLines
 	if contextLines <= 0 {
 		contextLines = 2
@@ -1038,92 +975,10 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 		}
 	}
 
-	// Try ripgrep first (faster)
-	if ripgrepAvailable() {
-		result, err := t.executeRipgrep(ctx, a, resolvedSearchPath, contextLines, maxResults)
-		if err != nil {
-			if ctx.Err() != nil {
-				return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
-			}
-			// Fall through to Go implementation on ripgrep error
-		} else {
-			matches := result.matches
-			if len(matches) == 0 {
-				return textOutput("No matches found."), nil
-			}
-			if a.FilesWithMatches {
-				return textOutput(formatFilesWithMatches(matches, result.truncated)), nil
-			}
-			// Auto-enrich: when the result set is small and the caller didn't
-			// request explicit context, bump the context window so the model can
-			// understand the match without an extra read_file round-trip.  The
-			// initial ripgrep pass has already found the matched files and line
-			// numbers, so enrich directly from those files instead of spawning and
-			// scanning a second full-tree ripgrep process.
-			if a.ContextLines <= 0 {
-				if enriched := autoEnrichContextLines(len(matches)); enriched > contextLines {
-					if a.Multiline {
-						// Multiline matches can span several physical lines in a
-						// single rg event, so keep rg's own context expansion there.
-						if richer, err2 := t.executeRipgrep(ctx, a, resolvedSearchPath, enriched, maxResults); err2 == nil && len(richer.matches) > 0 {
-							matches = richer.matches
-							result.truncated = richer.truncated
-						}
-					} else if richer, err2 := enrichGrepMatchesFromFiles(ctx, matches, enriched); err2 == nil && len(richer) > 0 {
-						matches = richer
-					}
-				}
-			}
-			// Sort so the most recently modified files appear first.
-			matches = sortGrepMatchesByMtime(matches)
-			return textOutput(formatGrepResults(matches, result.truncated || len(matches) >= maxResults)), nil
-		}
+	if intent != "" {
+		return textOutput(t.executeIntentGrep(ctx, a, resolvedSearchPath, intent, contextLines, maxResults)), nil
 	}
-
-	// Fallback: Go implementation
-	// Compile regex
-	re, err := regexp.Compile(a.Pattern)
-	if err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid regex pattern: %v", err))), nil
-	}
-
-	// Collect files to search
-	files, err := collectFiles(resolvedSearchPath, a.Include, a.Exclude)
-	if err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))), nil
-	}
-
-	// Sort by modification time (newest first)
-	sortFilesByMtime(files)
-
-	// Search files
-	var matches []GrepMatch
-	for _, file := range files {
-		if ctx.Err() != nil {
-			return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
-		}
-
-		if len(matches) >= maxResults {
-			break
-		}
-
-		fileMatches, err := searchFile(file, re, maxResults-len(matches), contextLines)
-		if err != nil {
-			continue // Skip files that can't be read
-		}
-		matches = append(matches, fileMatches...)
-	}
-
-	if len(matches) == 0 {
-		return textOutput("No matches found."), nil
-	}
-
-	if a.FilesWithMatches {
-		return textOutput(formatFilesWithMatches(matches, len(matches) >= maxResults)), nil
-	}
-
-	// Format results
-	return textOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
+	return textOutput(t.executePlainGrep(ctx, a, resolvedSearchPath, contextLines, maxResults)), nil
 }
 
 // collectFiles collects files to search.
@@ -1238,65 +1093,6 @@ func sortFilesByMtime(files []string) {
 	for i, info := range infos {
 		files[i] = info.path
 	}
-}
-
-// searchFile searches a single file for matches.
-func searchFile(path string, re *regexp.Regexp, maxMatches, contextLines int) ([]GrepMatch, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	// Check for binary
-	buf := make([]byte, 512)
-	n, err := file.Read(buf)
-	if err != nil && n == 0 {
-		return nil, err
-	}
-
-	contentType := http.DetectContentType(buf[:n])
-	if !strings.HasPrefix(contentType, "text/") &&
-		!strings.Contains(contentType, "json") &&
-		!strings.Contains(contentType, "xml") {
-		return nil, fmt.Errorf("binary file")
-	}
-
-	// Reset to beginning
-	if _, err := file.Seek(0, 0); err != nil {
-		return nil, fmt.Errorf("seek: %w", err)
-	}
-
-	// Read all lines for context support
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	// Search for matches
-	var matches []GrepMatch
-	for lineNum, line := range lines {
-		if re.MatchString(line) {
-			match := GrepMatch{
-				FilePath:   path,
-				LineNumber: lineNum + 1, // 1-indexed
-				Match:      line,
-				Context:    buildContext(lines, lineNum, contextLines),
-			}
-			matches = append(matches, match)
-
-			if len(matches) >= maxMatches {
-				break
-			}
-		}
-	}
-
-	return matches, nil
 }
 
 // buildContext builds context lines around a match.

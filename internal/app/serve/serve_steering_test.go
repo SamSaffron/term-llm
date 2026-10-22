@@ -29,7 +29,12 @@ type rushHTTPSettlementProvider struct {
 	core.Provider
 	calls   atomic.Int32
 	stopped chan struct{}
-	t       *testing.T
+	// opened closes once the source Stream call has returned a live stream.
+	// The server flushing its first chunk does not mean the client has read the
+	// response headers; rushing before that cancels the open itself, leaving no
+	// source stream whose Close the replacement could be ordered after.
+	opened chan struct{}
+	t      *testing.T
 }
 
 func (p *rushHTTPSettlementProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
@@ -45,6 +50,7 @@ func (p *rushHTTPSettlementProvider) Stream(ctx context.Context, req core.Reques
 	if err != nil || !first {
 		return s, err
 	}
+	close(p.opened)
 	return &rushHTTPSettlementStream{Stream: s, stopped: p.stopped}, nil
 }
 
@@ -100,11 +106,13 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 			if err := store.Create(context.Background(), sess); err != nil {
 				t.Fatal(err)
 			}
-			var provider core.Provider = &rushHTTPSettlementProvider{
+			settlement := &rushHTTPSettlementProvider{
 				Provider: opencompat.NewOpenAICompatProvider(model.URL, "", "test", "compat"),
 				stopped:  make(chan struct{}),
+				opened:   make(chan struct{}),
 				t:        t,
 			}
+			var provider core.Provider = settlement
 			if wrapped {
 				provider = rushContinuationProvider{provider}
 			}
@@ -131,6 +139,11 @@ func TestRushHTTPSettlesThenStartsExactlyOneOrderedReplacement(t *testing.T) {
 			case <-entered:
 			case <-time.After(3 * time.Second):
 				t.Fatal("provider not started")
+			}
+			select {
+			case <-settlement.opened:
+			case <-time.After(3 * time.Second):
+				t.Fatal("source stream not opened")
 			}
 			for _, id := range []string{"z", "a"} {
 				_, _, err := rt.InterruptMessage(context.Background(), core.UserText("guidance "+id), "guidance "+id, id, nil, interruptDeliverySteer)

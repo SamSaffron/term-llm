@@ -48,7 +48,7 @@
     },
     {
       "path": "internal/config/config.go",
-      "lines": 2934
+      "lines": 2920
     },
     {
       "path": "internal/filetrack/store.go",
@@ -144,7 +144,7 @@
     },
     {
       "path": "internal/tools/grep.go",
-      "lines": 1447
+      "lines": 1243
     },
     {
       "path": "internal/tools/queue_agent.go",

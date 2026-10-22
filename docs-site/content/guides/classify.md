@@ -139,6 +139,12 @@ With `inline`, images are sent unchanged after term-llm's own `--image` checks, 
 
 The entire state, any images, and all questions, instructions, and criteria are sent to the selected provider (or the endpoint you configure); classification never runs locally. Do not include secrets or personal data unless you are authorized to send them. Output can include your criteria, so treat output files as sensitive. Error messages are bounded and redact the API key and the state in its raw, unquoted, compact, and JSON-escaped forms; model, type, instruction, and rubric diagnostics remain visible. Redaction is not a substitute for minimizing sensitive input.
 
+When the `grep` tool is called with `intent`, the intent text, the search pattern, the matched snippets with surrounding context, and their paths relative to the search root are sent to the classify provider. Calls without `intent` send nothing.
+
+## Grep intent reranking
+
+The built-in `grep` tool is a classification consumer. When a classify provider is usable, `grep` gains an optional `intent` parameter, and each intent search scores its candidate matches with a classify call and returns the relevant ones first. It is configured under `tools.grep_rerank` (see [Configuration](/reference/configuration/#classification)) and uses `tools.grep_rerank.provider`, falling back to `classify.default_provider`. Set `tools.grep_rerank.enabled: false` to turn it off. Details are in [Intent-based grep reranking](/reference/built-in-tools/#intent-based-grep-reranking).
+
 ## Images
 
 Every provider can evaluate images; for TypeSafe see [TypeSafe images](#typesafe-images). Repeat `--image` to attach PNG, JPEG, GIF, or WebP files, or `data:image/...;base64,` URLs (Clef does not accept GIF; TypeSafe accepts only PNG and JPEG). Hosted image URLs are not supported by either API. Text state is optional when an image is given:
