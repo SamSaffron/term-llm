@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"regexp"
+
+	"github.com/samsaffron/term-llm/internal/grepsearch"
 )
 
 // executePlainGrep is the unchanged ordinary search path, including enrichment.
@@ -21,7 +23,7 @@ func (t *GrepTool) executePlainGrep(ctx context.Context, a GrepArgs, searchPath 
 				return "No matches found."
 			}
 			if a.FilesWithMatches {
-				return formatFilesWithMatches(matches, result.truncated)
+				return formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, _ int) string { return formatFilesWithMatches(m, result.truncated) })
 			}
 			return t.finishGrep(ctx, a, searchPath, "", result, contextLines, maxResults, true)
 		}
@@ -35,13 +37,13 @@ func (t *GrepTool) executePlainGrep(ctx context.Context, a GrepArgs, searchPath 
 	}
 
 	// Collect files to search
-	files, err := collectFiles(searchPath, a.Include, a.Exclude)
+	files, err := grepsearch.CollectFiles(searchPath, a.Include, a.Exclude)
 	if err != nil {
 		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))
 	}
 
 	// Sort by modification time (newest first)
-	sortFilesByMtime(files)
+	grepsearch.SortFilesByMtime(files)
 
 	// Search files
 	var matches []GrepMatch
@@ -66,8 +68,10 @@ func (t *GrepTool) executePlainGrep(ctx context.Context, a GrepArgs, searchPath 
 	}
 
 	if a.FilesWithMatches {
-		return formatFilesWithMatches(matches, len(matches) >= maxResults)
+		truncated := len(matches) >= maxResults
+		return formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, _ int) string { return formatFilesWithMatches(m, truncated) })
 	}
 
-	return formatGrepResults(matches, len(matches) >= maxResults)
+	truncated := len(matches) >= maxResults
+	return formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, budget int) string { return formatGrepResultsWithBudget(m, truncated, budget) })
 }

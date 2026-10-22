@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/grepsearch"
 )
@@ -70,4 +72,27 @@ func searchMatchBlocks(path string, lines []string, matches []GrepMatch, context
 		blocks[i] = pendingToBlock(&pending[i])
 	}
 	return blocks
+}
+
+// buildContext builds context lines around a match.
+func buildContext(lines []string, matchIdx, contextLines int) string {
+	start := matchIdx - contextLines
+	if start < 0 {
+		start = 0
+	}
+	end := matchIdx + contextLines + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	var sb strings.Builder
+	for i := start; i < end; i++ {
+		prefix := "  "
+		if i == matchIdx {
+			prefix = "> "
+		}
+		sb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, i+1, truncateLine(lines[i])))
+	}
+
+	return strings.TrimSuffix(sb.String(), "\n")
 }

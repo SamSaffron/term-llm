@@ -10,13 +10,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/samsaffron/term-llm/internal/greprerank"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
@@ -975,67 +973,14 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 		}
 	}
 
+	// Resolve the display base once so every output path in this call uses
+	// the same base, even if the session working directory changes mid-call.
+	ctx = withGrepDisplayBase(ctx, t.grepDisplayBase())
+
 	if intent != "" {
 		return textOutput(t.executeIntentGrep(ctx, a, resolvedSearchPath, intent, contextLines, maxResults)), nil
 	}
 	return textOutput(t.executePlainGrep(ctx, a, resolvedSearchPath, contextLines, maxResults)), nil
-}
-
-// collectFiles collects files to search.
-func collectFiles(searchPath, include, exclude string) ([]string, error) {
-	info, err := os.Stat(searchPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Single file
-	if !info.IsDir() {
-		return []string{searchPath}, nil
-	}
-
-	// Directory - walk and collect files
-	var files []string
-	err = filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-
-		relPath, _ := filepath.Rel(searchPath, path)
-
-		// Skip hidden directories
-		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
-		}
-
-		if d.IsDir() {
-			// Skip excluded directories early
-			if exclude != "" {
-				if matched, _ := doublestar.Match(exclude, relPath); matched {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-
-		// Apply include filter against relative path
-		if include != "" {
-			if matched, _ := doublestar.Match(include, relPath); !matched {
-				return nil
-			}
-		}
-
-		// Apply exclude filter against relative path
-		if exclude != "" {
-			if matched, _ := doublestar.Match(exclude, relPath); matched {
-				return nil
-			}
-		}
-
-		files = append(files, path)
-		return nil
-	})
-
-	return files, err
 }
 
 // sortGrepMatchesByMtime reorders matches so that matches from the
@@ -1067,55 +1012,6 @@ func sortGrepMatchesByMtime(matches []GrepMatch) []GrepMatch {
 		out = append(out, m.fg.matches...)
 	}
 	return out
-}
-
-// sortFilesByMtime sorts files by modification time (newest first).
-func sortFilesByMtime(files []string) {
-	type fileInfo struct {
-		path  string
-		mtime int64
-	}
-
-	infos := make([]fileInfo, 0, len(files))
-	for _, f := range files {
-		info, err := os.Stat(f)
-		if err != nil {
-			infos = append(infos, fileInfo{path: f, mtime: 0})
-			continue
-		}
-		infos = append(infos, fileInfo{path: f, mtime: info.ModTime().Unix()})
-	}
-
-	sort.Slice(infos, func(i, j int) bool {
-		return infos[i].mtime > infos[j].mtime
-	})
-
-	for i, info := range infos {
-		files[i] = info.path
-	}
-}
-
-// buildContext builds context lines around a match.
-func buildContext(lines []string, matchIdx, contextLines int) string {
-	start := matchIdx - contextLines
-	if start < 0 {
-		start = 0
-	}
-	end := matchIdx + contextLines + 1
-	if end > len(lines) {
-		end = len(lines)
-	}
-
-	var sb strings.Builder
-	for i := start; i < end; i++ {
-		prefix := "  "
-		if i == matchIdx {
-			prefix = "> "
-		}
-		sb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, i+1, truncateLine(lines[i])))
-	}
-
-	return strings.TrimSuffix(sb.String(), "\n")
 }
 
 // formatFilesWithMatches formats a deduplicated list of filenames containing matches.
@@ -1169,6 +1065,12 @@ func groupMatchesByFile(matches []GrepMatch) []fileGroup {
 //	path/to/other.go (1 match):
 //	...
 func formatGrepResults(matches []GrepMatch, truncated bool) string {
+	return formatGrepResultsWithBudget(matches, truncated, maxOutputBytes)
+}
+
+// formatGrepResultsWithBudget is formatGrepResults with an explicit byte
+// budget, so callers that add a header can keep the total within the cap.
+func formatGrepResultsWithBudget(matches []GrepMatch, truncated bool, budget int) string {
 	if len(matches) == 0 {
 		return ""
 	}
@@ -1223,7 +1125,7 @@ func formatGrepResults(matches []GrepMatch, truncated bool) string {
 		// Enforce the total byte budget.  Stop before writing this block if it
 		// would push us over; always write at least the first group so the
 		// caller gets something useful.
-		if gi > 0 && bytesWritten+block.Len() > maxOutputBytes {
+		if gi > 0 && bytesWritten+block.Len() > budget {
 			remaining := len(groups) - gi
 			sb.WriteString(fmt.Sprintf("\n[output capped at 50KB — %s not shown; narrow your search]\n",
 				plural(remaining, "file")))

@@ -56,8 +56,20 @@ func TestToolsResolveRelativePathsAgainstBaseDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grep Execute: %v", err)
 	}
-	if !strings.Contains(grepOut.Content, "needle") || !strings.Contains(grepOut.Content, filepath.Join(base, "notes", "todo.txt")) {
-		t.Fatalf("grep output = %q, want BaseDir match", grepOut.Content)
+	// Grep shows paths relative to BaseDir; they must round-trip into read_file.
+	relPath := filepath.Join("notes", "todo.txt")
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(grepOut.Content, "[paths relative to: "+canonicalBase+"]\n") ||
+		!strings.Contains(grepOut.Content, "\n"+relPath+" (1 match):") ||
+		strings.Contains(grepOut.Content, filepath.Join(canonicalBase, relPath)) {
+		t.Fatalf("grep output = %q, want BaseDir-relative match", grepOut.Content)
+	}
+	roundTrip, err := NewReadFileTool(nil, DefaultOutputLimits(), cfg).Execute(ctx, mustToolArgs(t, ReadFileArgs{Path: relPath}))
+	if err != nil || !strings.Contains(roundTrip.Content, "2: needle") {
+		t.Fatalf("read_file(%q) from grep output = %q, %v", relPath, roundTrip.Content, err)
 	}
 
 	shellOut, err := NewShellTool(nil, cfg, DefaultOutputLimits()).Execute(ctx, mustToolArgs(t, ShellArgs{Command: "pwd"}))
