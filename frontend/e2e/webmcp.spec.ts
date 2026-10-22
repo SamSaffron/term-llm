@@ -67,7 +67,11 @@ test('runs a page tool the model calls and continues the response', async ({ pag
   await send(page, 'call webmcp__ping message=hi');
 
   const request = await continuation;
-  expect((await request.response())?.status()).toBe(200);
+  const response = await request.response();
+  expect(
+    response?.status(),
+    response && response.status() !== 200 ? await response.text() : 'client-tool continuation',
+  ).toBe(200);
   const body = JSON.parse(request.postData() || '{}') as Record<string, unknown>;
   expect(body.input).toEqual([
     { type: 'function_call_output', call_id: expect.any(String), output: 'pong from ping' },

@@ -1815,6 +1815,7 @@ export class RunEngine {
           endedAt: Number(snapshot.ended_at) || existing.run.endedAt,
           finalRev: terminal ? Number(snapshot.final_rev) || 0 : undefined,
           durableHandoff: terminal ? snapshot.durable_handoff === true : undefined,
+          continuationResponseId: String(snapshot.continuation_response_id || '') || undefined,
           pendingToolCalls:
             status === 'completed'
               ? parsePendingToolCalls(snapshot.pending_client_calls)
@@ -2114,18 +2115,16 @@ export class RunEngine {
     await this.services.endpoints.cancelResponse(responseId);
   }
 
-  /**
-   * Continues `responseId` with client tool results: a send without a user
-   * message. Installs the pending run before the first await, so the
-   * conversation stays busy from the tools' end to the new response.
-   */
+  /** Continues the handoff without user input; installs a pending run before awaiting. */
   private async continueWithToolOutputs(
     sessionId: string,
     responseId: string,
     outputs: ClientToolOutputItem[],
   ): Promise<void> {
-    if (this.disposed || this.runs.peek()[sessionId]?.run.responseId !== responseId) return;
-    // Continue the actual tool handoff, not a newly sampled human origin.
+    const previous = this.runs.peek()[sessionId]?.run;
+    if (this.disposed || previous?.responseId !== responseId) return;
+    // Capture the exact handoff cursor before replacing the run; never sample the session tail.
+    const continuationResponseId = previous.continuationResponseId || responseId;
     const session = this.sessionStore.sessions.peek().find((entry) => entry.id === sessionId);
     if (!session) return;
     const requestId = uuid();
@@ -2147,7 +2146,7 @@ export class RunEngine {
     const streamOwner = this.supervisors.begin(sessionId, run.responseId);
     const requestBody = {
       ...this.responseRequestBody(session),
-      previous_response_id: responseId,
+      previous_response_id: continuationResponseId,
       client_message_id: clientMessageId,
       input: outputs,
     };

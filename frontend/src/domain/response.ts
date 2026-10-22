@@ -905,6 +905,7 @@ export function reduceResponse(
         run: {
           ...run,
           status: 'completed',
+          continuationResponseId: text((event.response as { id?: unknown } | undefined)?.id),
           endedAt: number(event.ended_at, Date.now()),
           finalRev: number(event.final_rev),
           durableHandoff: event.durable_handoff === true,

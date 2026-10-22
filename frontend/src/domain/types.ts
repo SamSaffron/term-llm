@@ -575,6 +575,8 @@ export interface ActiveRun {
   requestId?: string;
   /** Pending client-tool continuation predecessor, retained for explicit Stop. */
   continuationOf?: string;
+  /** Exact handoff cursor from completion/recovery, distinct from the stable run responseId. */
+  continuationResponseId?: string;
   finalRev?: number;
   durableHandoff?: boolean;
   /**
