@@ -13,6 +13,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # GoReleaser builds the changelog from history since the previous tag.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
