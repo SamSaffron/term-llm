@@ -42,7 +42,7 @@
     "@types/trusted-types": "2.0.7",
     "@typescript/native": "npm:typescript@7.0.2",
     "esbuild": "0.28.2",
-    "eslint": "10.12.0",
+    "eslint": "10.13.0",
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-react-hooks": "7.1.1",
     "fake-indexeddb": "^6.2.6",
