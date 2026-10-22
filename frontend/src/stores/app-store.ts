@@ -192,6 +192,7 @@ export class AppStore {
   readonly startupFailed = signal(false);
   readonly startupDone = signal(false);
   readonly sidebarCollapsed: Signal<boolean>;
+  readonly sidebarWidth: Signal<number>;
   readonly sidebarOpen: Signal<boolean>;
   readonly sidebarSearch: Signal<string>;
   readonly searchResults: Signal<Session[] | null>;
@@ -346,6 +347,7 @@ export class AppStore {
     this.activeSessionId = this.sessionStore.activeSessionId;
     this.draftActive = this.sessionStore.draftActive;
     this.sidebarCollapsed = this.sessionStore.sidebarCollapsed;
+    this.sidebarWidth = this.sessionStore.sidebarWidth;
     this.sidebarOpen = this.sessionStore.sidebarOpen;
     this.sidebarSearch = this.sessionStore.sidebarSearch;
     this.searchResults = this.sessionStore.searchResults;

@@ -20,6 +20,24 @@
   outline: none;
 }
 
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: var(--z-local-control);
+  touch-action: none;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:focus-visible,
+.app.sidebar-resizing .sidebar-resize-handle {
+  background: var(--border-strong);
+  outline: none;
+}
+
 .sidebar-rail {
   background: transparent;
   display: flex;

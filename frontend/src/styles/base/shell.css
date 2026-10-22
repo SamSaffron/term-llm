@@ -125,6 +125,9 @@ select {
   z-index: var(--z-local-raised);
   overflow: hidden;
   transition: grid-template-columns var(--layout-transition-duration) ease;
+
+  /* The sidebar's width: its default, or the one the user dragged it to, never more than 45% of the window. */
+  --sidebar-width: clamp(220px, var(--sidebar-user-width, 280px), 45vw);
 }
 
 /* Diff and plan are mutually exclusive companion panels. They can both remain
@@ -164,6 +167,7 @@ select {
 
 /* Disable the column transition while dragging the resize handle so the
        panel tracks the pointer without lag. */
+.app.sidebar-resizing,
 .app.diff-resizing {
   transition: none;
   user-select: none;

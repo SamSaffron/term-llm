@@ -175,6 +175,7 @@ export function App({ store }: { store: AppStore }) {
     // diff drag's presentation-only width.
     const dispose = [
       bind('--diff-sidebar-user-width', () => diffWidth.value),
+      bind('--sidebar-user-width', () => store.sidebarWidth.value),
       bind('--shell-dock-bottom-size', () => store.shellStore.dockBottomSize.value),
       bind('--shell-dock-right-size', () => store.shellStore.dockRightSize.value),
     ];

@@ -1583,6 +1583,48 @@ describe('Preact-owned chat surfaces', () => {
     expect(shell).not.toHaveClass('diff-resizing');
   });
 
+  it('resizes the grid column with the sidebar handle and remembers the width', () => {
+    const store = createStore();
+    store.startupDone.value = true;
+    store.bootstrap = vi.fn(async () => undefined);
+    store.sidebarWidth.value = 300;
+    const { container } = render(<App store={store} />);
+    const shell = container.querySelector<HTMLElement>('#appShell')!;
+    const handle = screen.getByRole('separator', { name: 'Resize sidebar' });
+
+    expect(shell.style.getPropertyValue('--sidebar-user-width')).toBe('300px');
+    expect(handle).toHaveAttribute('aria-valuenow', '300');
+
+    fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1 });
+    expect(shell).toHaveClass('sidebar-resizing');
+    fireEvent.pointerMove(window, { clientX: 380, pointerId: 1 });
+    // Dragging updates layout only; state and storage are written on release.
+    expect(store.sidebarWidth.value).toBe(300);
+    expect(shell.style.getPropertyValue('--sidebar-user-width')).toBe('380px');
+    expect(store.storage.getItem(store.keys.sidebarWidth)).toBeNull();
+    fireEvent.pointerUp(window, { clientX: 380, pointerId: 1 });
+    expect(store.sidebarWidth.value).toBe(380);
+    expect(store.storage.getItem(store.keys.sidebarWidth)).toBe('380');
+    expect(shell).not.toHaveClass('sidebar-resizing');
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(store.sidebarWidth.value).toBe(364);
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(store.sidebarWidth.value).toBe(220);
+    fireEvent.dblClick(handle);
+    expect(store.sidebarWidth.value).toBe(280);
+    expect(store.storage.getItem(store.keys.sidebarWidth)).toBeNull();
+  });
+
+  it('offers no sidebar handle while the sidebar is collapsed', () => {
+    const store = createStore();
+    store.startupDone.value = true;
+    store.bootstrap = vi.fn(async () => undefined);
+    store.sidebarCollapsed.value = true;
+    render(<App store={store} />);
+    expect(screen.queryByRole('separator', { name: 'Resize sidebar' })).toBeNull();
+  });
+
   it('removes low-value changed-file navigation controls', () => {
     const store = createStore();
     store.diff.value = { ...store.diff.value, open: true };
