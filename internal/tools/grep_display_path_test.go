@@ -9,22 +9,79 @@ import (
 )
 
 func TestGrepDisplayPath(t *testing.T) {
-	base := filepath.FromSlash("/work/repo")
+	// filepath.Abs gives a volume on Windows, so these stay absolute there.
+	abs := func(p string) string {
+		a, err := filepath.Abs(filepath.FromSlash(p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	base := abs("/work/repo")
 	for _, tc := range []struct{ path, want string }{
-		{"/work/repo/internal/a.go", filepath.FromSlash("internal/a.go")},
-		{"/work/repo/a.go", "a.go"},
-		{"/work/repo-other/a.go", filepath.FromSlash("/work/repo-other/a.go")},
-		{"/work/a.go", filepath.FromSlash("/work/a.go")},
-		{"/elsewhere/a.go", filepath.FromSlash("/elsewhere/a.go")},
-		{"/work/repo", filepath.FromSlash("/work/repo")},
+		{abs("/work/repo/internal/a.go"), filepath.FromSlash("internal/a.go")},
+		{abs("/work/repo/a.go"), "a.go"},
+		{abs("/work/repo-other/a.go"), abs("/work/repo-other/a.go")},
+		{abs("/work/a.go"), abs("/work/a.go")},
+		{abs("/elsewhere/a.go"), abs("/elsewhere/a.go")},
+		{base, base},
 		{"relative/a.go", "relative/a.go"},
 	} {
-		if got := grepDisplayPath(base, filepath.FromSlash(tc.path)); got != tc.want {
+		if got := grepDisplayPath(base, tc.path); got != tc.want {
 			t.Errorf("grepDisplayPath(%q) = %q, want %q", tc.path, got, tc.want)
 		}
 	}
-	if got := grepDisplayPath("", filepath.FromSlash("/work/repo/a.go")); got != filepath.FromSlash("/work/repo/a.go") {
+	if got := grepDisplayPath("", abs("/work/repo/a.go")); got != abs("/work/repo/a.go") {
 		t.Errorf("empty base changed path: %q", got)
+	}
+}
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// A root base would only save one byte and is easy to misresolve.
+func TestGrepRootWorkingDirStaysAbsolute(t *testing.T) {
+	root, err := filepath.Abs(string(filepath.Separator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := NewGrepTool(nil, DefaultOutputLimits(), &ToolConfig{BaseDir: root})
+	if base := tool.grepDisplayBase(); base != "" {
+		t.Fatalf("root working dir display base = %q, want none", base)
+	}
+}
+
+// The marker's bytes come out of the budget handed to the formatter, so the
+// total stays within maxOutputBytes (FormatRanked's cap is hard).
+func TestFormatGrepDisplayChargesMarkerToBudget(t *testing.T) {
+	base := canonicalTempDir(t)
+	matches := []GrepMatch{{FilePath: filepath.Join(base, "a.go")}}
+	marker := "[paths relative to: " + base + "]\n"
+	var gotBudget int
+	var gotPath string
+	out := formatGrepDisplay(base, matches, func(m []GrepMatch, budget int) string {
+		gotBudget, gotPath = budget, m[0].FilePath
+		return "body"
+	})
+	if out != marker+"body" || gotBudget != maxOutputBytes-len(marker) || gotPath != "a.go" {
+		t.Fatalf("out=%q budget=%d path=%q", out, gotBudget, gotPath)
+	}
+	if matches[0].FilePath != filepath.Join(base, "a.go") {
+		t.Fatalf("caller's match mutated: %q", matches[0].FilePath)
+	}
+	// Nothing shortened: full budget, no marker.
+	out = formatGrepDisplay(base, []GrepMatch{{FilePath: filepath.Join(canonicalTempDir(t), "b.go")}}, func(_ []GrepMatch, budget int) string {
+		gotBudget = budget
+		return "body"
+	})
+	if out != "body" || gotBudget != maxOutputBytes {
+		t.Fatalf("outside: out=%q budget=%d", out, gotBudget)
 	}
 }
 
@@ -39,10 +96,7 @@ func grepOutput(t *testing.T, cfg *ToolConfig, args GrepArgs) string {
 
 func TestGrepPathsOutsideWorkingDirStayAbsolute(t *testing.T) {
 	base := t.TempDir()
-	outside, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	outside := canonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(outside, "x.txt"), []byte("needle\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +115,10 @@ func TestGrepFilesWithMatchesRelative(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := grepOutput(t, &ToolConfig{BaseDir: base}, GrepArgs{Pattern: "needle", FilesWithMatches: true})
-	canonicalBase, _ := filepath.EvalSymlinks(base)
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if out != "[paths relative to: "+canonicalBase+"]\n"+filepath.Join("sub", "x.txt") {
 		t.Fatalf("files_with_matches = %q", out)
 	}
@@ -70,10 +127,7 @@ func TestGrepFilesWithMatchesRelative(t *testing.T) {
 // Match paths are canonical, so a symlinked working directory must be
 // canonicalized before comparing or every path would stay absolute.
 func TestGrepRelativeThroughSymlinkedWorkingDir(t *testing.T) {
-	real, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	real := canonicalTempDir(t)
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(real, link); err != nil {
 		t.Skipf("symlink unsupported: %v", err)

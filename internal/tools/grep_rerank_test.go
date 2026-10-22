@@ -265,6 +265,8 @@ func requireGoFallback(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 }
 
+// order matches absolute-path headers (sep+name+":"); tests using it must not
+// set a BaseDir, which would make top-level headers relative.
 func order(t *testing.T, out string, names ...string) {
 	t.Helper()
 	prev := -1
@@ -294,7 +296,7 @@ func rankedNote(shown, kept, culled, total int) string {
 
 func cappedRankedNote(shown, kept, culled, total int) string {
 	return strings.TrimSuffix(rankedNote(shown, kept, culled, total), "]\n") +
-		"; search stopped at 150 raw matches, the rest were not ranked — narrow pattern/path to rank them all]\n"
+		"; candidate search stopped early (limit 150 matches), the rest were not ranked — narrow pattern/path to rank them all]\n"
 }
 
 func skipNote(category string) string {
@@ -747,7 +749,22 @@ func TestGrepRerankCapNoteOnlyWhenTruncated(t *testing.T) {
 			dir := scoredFiles(t, scores...)
 			tool, _ := newIntentTool(t, newScoringFake(), nil)
 			out := execGrep(t, tool, dir, map[string]any{"intent": "x", "max_results": 150})
-			if got := strings.Contains(out, "search stopped at 150 raw matches"); got != tc.capped {
+			if got := strings.Contains(out, "candidate search stopped early"); got != tc.capped {
+				t.Fatalf("cap clause present = %v, want %v\n%.300s", got, tc.capped, out)
+			}
+		})
+	}
+	// rg --max-count is per file, so overflow inside one file needs headroom
+	// to reach the global limiter.
+	for _, tc := range []struct {
+		n      int
+		capped bool
+	}{{150, false}, {151, true}, {200, true}} {
+		t.Run(fmt.Sprintf("single-file-%d", tc.n), func(t *testing.T) {
+			dir := writeRerankFiles(t, rerankFile{"big.txt", strings.Repeat("needle score=0.9\n"+strings.Repeat("filler\n", 5), tc.n)})
+			tool, _ := newIntentTool(t, newScoringFake(), nil)
+			out := execGrep(t, tool, dir, map[string]any{"intent": "x", "max_results": 150, "context_lines": 0})
+			if got := strings.Contains(out, "candidate search stopped early"); got != tc.capped {
 				t.Fatalf("cap clause present = %v, want %v\n%.300s", got, tc.capped, out)
 			}
 		})
@@ -781,8 +798,9 @@ func TestGrepRerankRanksWithFakeRipgrepAndCapsSearch(t *testing.T) {
 		t.Fatalf("unexpected files in output:\n%s", out)
 	}
 	argv := rg.argv(t)
-	if got := argAfter(t, argv, "--max-count"); got != "150" {
-		t.Fatalf("--max-count = %s, want candidate cap 150 (args %v)", got, argv)
+	// Candidate cap 150 plus one match of per-file headroom.
+	if got := argAfter(t, argv, "--max-count"); got != "151" {
+		t.Fatalf("--max-count = %s, want candidate cap 150 + 1 (args %v)", got, argv)
 	}
 	if rg.invocations() != 1 {
 		t.Fatalf("rg ran %d times, want exactly 1 (no enrich re-run after rerank)", rg.invocations())
@@ -805,8 +823,8 @@ func TestGrepRerankFakeRipgrepFallbackUsesNormalPathAndCap(t *testing.T) {
 	if strings.Contains(out, rerankTestSecret) || strings.Contains(out, rerankTestKey) {
 		t.Fatalf("secret leaked:\n%s", out)
 	}
-	if got := argAfter(t, rg.argv(t), "--max-count"); got != "150" {
-		t.Fatalf("--max-count = %s, want 150", got)
+	if got := argAfter(t, rg.argv(t), "--max-count"); got != "151" {
+		t.Fatalf("--max-count = %s, want 151", got)
 	}
 }
 
@@ -1453,7 +1471,7 @@ func TestGrepRerankMultilineSuccessDoesNotRerunRipgrep(t *testing.T) {
 		t.Fatalf("rg ran %d times, want 1", rg.invocations())
 	}
 	argv := rg.argv(t)
-	if argAfter(t, argv, "--max-count") != "150" {
+	if argAfter(t, argv, "--max-count") != "151" {
 		t.Fatalf("args %v", argv)
 	}
 }

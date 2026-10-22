@@ -94,7 +94,7 @@ func (t *GrepTool) finishGrep(ctx context.Context, a GrepArgs, root, intent stri
 		matches = sortGrepMatchesByMtime(matches)
 	}
 	truncated := result.truncated || len(matches) >= maxResults
-	return formatGrepDisplay(t.grepDisplayBase(), matches, func(m []GrepMatch) string { return formatGrepResults(m, truncated) })
+	return formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, budget int) string { return formatGrepResultsWithBudget(m, truncated, budget) })
 }
 
 func (t *GrepTool) autoEnrichGrep(ctx context.Context, a GrepArgs, root string, matches []GrepMatch, contextLines, maxResults int, truncated bool) ([]GrepMatch, bool) {
@@ -149,13 +149,13 @@ func (t *GrepTool) intentPipeline(ctx context.Context, a GrepArgs, root, intent 
 			note := fmt.Sprintf("[intent rerank: showing %d of %d relevant matches (%d of %d candidates below %.2f dropped)", shown, len(result.Kept), result.Culled, len(value.matches), t.reranker.Threshold())
 			if value.truncated {
 				// Only worth the tokens when matches were actually left unranked.
-				note += fmt.Sprintf("; search stopped at %d raw matches, the rest were not ranked — narrow pattern/path to rank them all", t.reranker.MaxCandidates())
+				note += fmt.Sprintf("; candidate search stopped early (limit %d matches), the rest were not ranked — narrow pattern/path to rank them all", t.reranker.MaxCandidates())
 			}
 			return note + "]\n"
 		}
-		return formatGrepDisplay(t.grepDisplayBase(), matches, func(m []GrepMatch) string { return formatRankedGrepResults(m, note) }), ctx.Err()
+		return formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, budget int) string { return formatRankedGrepResultsWithBudget(m, note, budget) }), ctx.Err()
 	}, func(value intentSearchResult) string {
-		return formatIntentPrefix(value, maxResults, a.ContextLines, t.grepDisplayBase())
+		return formatIntentPrefix(value, maxResults, a.ContextLines, grepDisplayBaseFrom(ctx))
 	})
 	if errors.Is(err, greprerank.ErrBusy) {
 		// Saturation never starts another detached search; use the untouched
@@ -187,7 +187,7 @@ func formatIntentPrefix(value intentSearchResult, maxResults, contextLines int, 
 		matches = matches[:maxResults]
 	}
 	truncated := value.truncated || len(matches) >= maxResults
-	return formatGrepDisplay(displayBase, matches, func(m []GrepMatch) string { return formatGrepResults(m, truncated) })
+	return formatGrepDisplay(displayBase, matches, func(m []GrepMatch, budget int) string { return formatGrepResultsWithBudget(m, truncated, budget) })
 }
 
 func grepRerankItems(root string, matches []GrepMatch) []greprerank.Item {

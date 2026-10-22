@@ -58,7 +58,10 @@ func TestToolsResolveRelativePathsAgainstBaseDir(t *testing.T) {
 	}
 	// Grep shows paths relative to BaseDir; they must round-trip into read_file.
 	relPath := filepath.Join("notes", "todo.txt")
-	canonicalBase, _ := filepath.EvalSymlinks(base)
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.HasPrefix(grepOut.Content, "[paths relative to: "+canonicalBase+"]\n") ||
 		!strings.Contains(grepOut.Content, "\n"+relPath+" (1 match):") ||
 		strings.Contains(grepOut.Content, filepath.Join(canonicalBase, relPath)) {

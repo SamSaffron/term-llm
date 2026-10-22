@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 )
@@ -24,7 +25,26 @@ func (t *GrepTool) grepDisplayBase() string {
 	if err != nil {
 		return ""
 	}
+	// Relative-to-root paths save one byte and are the easiest to misresolve
+	// from a tool with a different working directory.
+	if filepath.Dir(canonical) == canonical {
+		return ""
+	}
 	return canonical
+}
+
+type grepDisplayBaseKey struct{}
+
+// withGrepDisplayBase carries one call's display base to the formatters, so
+// a single grep result never mixes bases. GrepTool is shared across
+// concurrent calls, so this cannot live on the tool.
+func withGrepDisplayBase(ctx context.Context, base string) context.Context {
+	return context.WithValue(ctx, grepDisplayBaseKey{}, base)
+}
+
+func grepDisplayBaseFrom(ctx context.Context) string {
+	base, _ := ctx.Value(grepDisplayBaseKey{}).(string)
+	return base
 }
 
 // grepDisplayPath shows path relative to base when it lies inside base, and
@@ -45,13 +65,14 @@ func grepDisplayPath(base, path string) string {
 // When any path was shortened, the output records the base once: grep
 // results persist in session history, and the working directory can change
 // later (worktree switches, SetBaseDir), so a bare relative path must never
-// be the only record of which file matched.
+// be the only record of which file matched. The marker's bytes come out of
+// the output budget handed to format.
 //
 // The copy is for formatting only: enrichment, mtime sorting, file reads and
 // classifier items keep the absolute paths.
-func formatGrepDisplay(base string, matches []GrepMatch, format func([]GrepMatch) string) string {
+func formatGrepDisplay(base string, matches []GrepMatch, format func(matches []GrepMatch, budget int) string) string {
 	if base == "" || len(matches) == 0 {
-		return format(matches)
+		return format(matches, maxOutputBytes)
 	}
 	display := make([]GrepMatch, len(matches))
 	changed := false
@@ -63,7 +84,8 @@ func formatGrepDisplay(base string, matches []GrepMatch, format func([]GrepMatch
 		display[i] = m
 	}
 	if !changed {
-		return format(matches)
+		return format(matches, maxOutputBytes)
 	}
-	return "[paths relative to: " + base + "]\n" + format(display)
+	marker := "[paths relative to: " + base + "]\n"
+	return marker + format(display, maxOutputBytes-len(marker))
 }

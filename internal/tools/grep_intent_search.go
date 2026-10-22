@@ -53,7 +53,10 @@ func (t *GrepTool) searchIntent(ctx context.Context, a GrepArgs, root string, co
 			return false, nil
 		}
 		cap := t.reranker.MaxCandidates()
-		raw, truncated, err := runRipgrep(ctx, buildRipgrepArgs(a, root, contextLines, cap), t.rgCaptureLimits, cap, false, observer)
+		// --max-count is per file: allow one match of headroom so a single file
+		// with more than cap matches still reaches the global limiter, which
+		// stops at cap and reports truncation.
+		raw, truncated, err := runRipgrep(ctx, buildRipgrepArgs(a, root, contextLines, cap+1), t.rgCaptureLimits, cap, false, observer)
 		if err == nil {
 			attempt.Start() // parsing/candidate construction spends the remaining budget
 			if !sent {

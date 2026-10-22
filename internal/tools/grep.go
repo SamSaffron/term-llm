@@ -975,6 +975,10 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 		}
 	}
 
+	// Resolve the display base once so every output path in this call uses
+	// the same base, even if the session working directory changes mid-call.
+	ctx = withGrepDisplayBase(ctx, t.grepDisplayBase())
+
 	if intent != "" {
 		return textOutput(t.executeIntentGrep(ctx, a, resolvedSearchPath, intent, contextLines, maxResults)), nil
 	}
@@ -1169,6 +1173,12 @@ func groupMatchesByFile(matches []GrepMatch) []fileGroup {
 //	path/to/other.go (1 match):
 //	...
 func formatGrepResults(matches []GrepMatch, truncated bool) string {
+	return formatGrepResultsWithBudget(matches, truncated, maxOutputBytes)
+}
+
+// formatGrepResultsWithBudget is formatGrepResults with an explicit byte
+// budget, so callers that add a header can keep the total within the cap.
+func formatGrepResultsWithBudget(matches []GrepMatch, truncated bool, budget int) string {
 	if len(matches) == 0 {
 		return ""
 	}
@@ -1223,7 +1233,7 @@ func formatGrepResults(matches []GrepMatch, truncated bool) string {
 		// Enforce the total byte budget.  Stop before writing this block if it
 		// would push us over; always write at least the first group so the
 		// caller gets something useful.
-		if gi > 0 && bytesWritten+block.Len() > maxOutputBytes {
+		if gi > 0 && bytesWritten+block.Len() > budget {
 			remaining := len(groups) - gi
 			sb.WriteString(fmt.Sprintf("\n[output capped at 50KB — %s not shown; narrow your search]\n",
 				plural(remaining, "file")))
