@@ -107,7 +107,7 @@ func (s *serveServer) notifyJobsV2RunDone(ctx context.Context, run jobsV2Run, jo
 	case tools.QueueAgentOriginWeb:
 		// The excerpt above is truncated, so tell the model where the full
 		// result is. The card shows this exact text.
-		message += "\nFull result: call wait_for_jobs with run_id " + run.ID + "."
+		message += "\nFull result: call wait_for_jobs with run_ids [\"" + run.ID + "\"]."
 		return s.notifyQueuedAgentWebNotice(ctx, run.ID, origin.SessionID, message, core.JobNotificationProvenance{
 			JobID: job.ID, RunID: run.ID, Agent: strings.TrimSpace(cfg.AgentName), Status: strings.TrimSpace(string(status)),
 		})

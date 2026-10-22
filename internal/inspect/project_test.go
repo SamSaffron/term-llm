@@ -28,6 +28,7 @@ func TestInspectProjectionKinds(t *testing.T) {
 		{"system", core.RoleSystem, []core.Part{{Type: core.PartText, Text: "system instructions"}}, "system", "system instructions", "system", "text"},
 		{"developer", core.RoleDeveloper, []core.Part{{Type: core.PartText, Text: "developer instructions"}}, "developer", "developer instructions", "developer", "text"},
 		{"goal", core.RoleUser, []core.Part{{Type: core.PartGoalSteering}, {Type: core.PartText, Text: "hidden goal"}}, "goal_steering", "hidden goal", "goal_steering", "text"},
+		{"job notification", core.RoleUser, []core.Part{{Type: core.PartJobNotification}, {Type: core.PartText, Text: "queued job done"}}, "job_notification", "queued job done", "job_notification", "text"},
 		{"path note", core.RoleDeveloper, []core.Part{{Type: core.PartPathNote}, {Type: core.PartText, Text: "path context"}}, "path_note", "path context", "path_note", "text"},
 		{"user", core.RoleUser, []core.Part{{Type: core.PartText, Text: "question"}}, "user", "question", "user", "text"},
 		{"assistant", core.RoleAssistant, []core.Part{{Type: core.PartText, Text: "answer"}}, "assistant_text", "answer", "assistant_text", "text"},
@@ -112,7 +113,7 @@ func TestInspectReasoning(t *testing.T) {
 }
 
 func TestInspectExclusions(t *testing.T) {
-	excluded := []core.PartType{core.PartProviderReplay, core.PartDiscoveryCall, core.PartDiscoveryOutput, core.PartToolActivity, core.PartConversationStart, core.PartPlatformContext, core.PartDisplayText, core.PartAgentMention, core.PartDiffComment, core.PartGoalSteering, core.PartPathNote}
+	excluded := []core.PartType{core.PartProviderReplay, core.PartDiscoveryCall, core.PartDiscoveryOutput, core.PartToolActivity, core.PartConversationStart, core.PartPlatformContext, core.PartDisplayText, core.PartAgentMention, core.PartDiffComment, core.PartGoalSteering, core.PartJobNotification, core.PartPathNote}
 	for _, typ := range excluded {
 		t.Run(string(typ), func(t *testing.T) {
 			msg := inspectMessage(3, core.RoleAssistant, core.Part{Type: typ, Text: "SECRET", ReasoningContent: "SECRET", ReasoningEncryptedContent: "SECRET"})

@@ -116,6 +116,9 @@ func textKind(msg session.Message) string {
 			if part.Type == core.PartGoalSteering {
 				return "goal_steering"
 			}
+			if part.Type == core.PartJobNotification {
+				return "job_notification"
+			}
 		}
 		return "user"
 	case core.RoleAssistant:

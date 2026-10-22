@@ -460,7 +460,7 @@ func TestJobsV2NotifyContinuationMarksJobNotice(t *testing.T) {
 	srv := &serveServer{store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
 	defer srv.responseRuns.Close()
 
-	message := "Queued job job_1 (core-researcher) succeeded: hi\nFull result: call wait_for_jobs with run_id run_1."
+	message := "Queued job job_1 (core-researcher) succeeded: hi\nFull result: call wait_for_jobs with run_ids [\"run_1\"]."
 	info := core.JobNotificationProvenance{JobID: "job_1", RunID: "run_1", Agent: "core-researcher", Status: "succeeded"}
 	if err := srv.notifyQueuedAgentWebNotice(context.Background(), "run_1", "sess-origin", message, info); err != nil {
 		t.Fatalf("notifyQueuedAgentWebNotice: %v", err)

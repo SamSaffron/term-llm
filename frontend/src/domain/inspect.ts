@@ -3,6 +3,7 @@ export type InspectKind =
   | 'developer'
   | 'user'
   | 'goal_steering'
+  | 'job_notification'
   | 'assistant_text'
   | 'reasoning'
   | 'tool_call'
@@ -106,7 +107,14 @@ export type InspectCategory = (typeof INSPECT_CATEGORIES)[number]['id'];
 export function inspectCategory(block: InspectBlock): InspectCategory | undefined {
   if (block.kind.startsWith('compaction_')) return 'compaction';
   if (
-    ['system', 'developer', 'path_note', 'goal_steering', 'handover_document'].includes(block.kind)
+    [
+      'system',
+      'developer',
+      'path_note',
+      'goal_steering',
+      'job_notification',
+      'handover_document',
+    ].includes(block.kind)
   )
     return 'system';
   if (block.kind === 'reasoning') return 'reasoning';
