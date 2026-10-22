@@ -25,7 +25,7 @@ func TestCompletionProducerToActualWorkerContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	s := &serveServer{store: store}
+	s := &serveServer{store: store, cfg: serveServerConfig{uiTitle: "Synthetic fixture node"}}
 	sub, err := store.UpsertPushSubscription(context.Background(), &session.PushSubscription{Endpoint: "https://example.invalid/never-sent", KeyP256DH: "key", KeyAuth: "auth"})
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +75,23 @@ func TestCompletionProducerToActualWorkerContract(t *testing.T) {
 			defer cancel()
 			if output, err := exec.CommandContext(ctx, node, "-e", completionWorkerContract, fixture, filepath.Join("..", "..", "serveui", "static", "sw.js")).CombinedOutput(); err != nil {
 				t.Fatalf("actual durable completion producer → worker: %v\n%s", err, output)
+			}
+			// Opt-in interop artifacts contain only this synthetic test's actual
+			// producer bytes. No repository-specific destination is embedded here.
+			if dir := os.Getenv("TERM_LLM_NOTIFICATION_FIXTURE_DIR"); dir != "" {
+				if !filepath.IsAbs(dir) {
+					t.Fatal("fixture export directory must be absolute")
+				}
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				name := "completion.json"
+				if tc.name == "compact" {
+					name = "completion-compact.json"
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), tc.payload, 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}

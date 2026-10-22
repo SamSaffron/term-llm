@@ -204,6 +204,19 @@ vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), context);
 	if output, err := exec.Command(node, "-e", script, fixture, worker).CombinedOutput(); err != nil {
 		t.Fatalf("actual manual producer → service worker contract: %v\n%s", err, output)
 	}
+	// Export only by explicit test invocation. The exact decrypted CLI producer
+	// bytes carry synthetic test content/IDs, never subscriptions or key material.
+	if dir := os.Getenv("TERM_LLM_NOTIFICATION_FIXTURE_DIR"); dir != "" {
+		if !filepath.IsAbs(dir) {
+			t.Fatal("fixture export directory must be absolute")
+		}
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "manual.json"), payload, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // decryptManualPush implements the receiver side of RFC8291 independently from
