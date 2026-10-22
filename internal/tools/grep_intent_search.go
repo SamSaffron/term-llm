@@ -78,11 +78,11 @@ func (t *GrepTool) searchIntentGo(ctx context.Context, a GrepArgs, root string, 
 	if err != nil {
 		return intentSearchResult{message: formatToolError(NewToolErrorf(ErrInvalidParams, "invalid regex pattern: %v", err))}, nil
 	}
-	files, err := collectFiles(root, a.Include, a.Exclude)
+	files, err := grepsearch.CollectFiles(root, a.Include, a.Exclude)
 	if err != nil {
 		return intentSearchResult{message: formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))}, nil
 	}
-	sortFilesByMtime(files)
+	grepsearch.SortFilesByMtime(files)
 	scan := t.intentScan
 	if scan == nil {
 		scan = grepsearch.Scan

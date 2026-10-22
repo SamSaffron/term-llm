@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"regexp"
+
+	"github.com/samsaffron/term-llm/internal/grepsearch"
 )
 
 // executePlainGrep is the unchanged ordinary search path, including enrichment.
@@ -35,13 +37,13 @@ func (t *GrepTool) executePlainGrep(ctx context.Context, a GrepArgs, searchPath 
 	}
 
 	// Collect files to search
-	files, err := collectFiles(searchPath, a.Include, a.Exclude)
+	files, err := grepsearch.CollectFiles(searchPath, a.Include, a.Exclude)
 	if err != nil {
 		return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))
 	}
 
 	// Sort by modification time (newest first)
-	sortFilesByMtime(files)
+	grepsearch.SortFilesByMtime(files)
 
 	// Search files
 	var matches []GrepMatch
