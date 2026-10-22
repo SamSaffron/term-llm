@@ -125,6 +125,9 @@ select {
   z-index: var(--z-local-raised);
   overflow: hidden;
   transition: grid-template-columns var(--layout-transition-duration) ease;
+
+  /* The sidebar's width: its default, or the one the user dragged it to, capped at 45% of the window unless its minimum is larger. */
+  --sidebar-width: clamp(220px, var(--sidebar-user-width, 280px), min(560px, 45vw));
 }
 
 /* Diff and plan are mutually exclusive companion panels. They can both remain
@@ -164,7 +167,45 @@ select {
 
 /* Disable the column transition while dragging the resize handle so the
        panel tracks the pointer without lag. */
+.app.sidebar-resizing,
 .app.diff-resizing {
   transition: none;
   user-select: none;
+}
+
+/* Shared horizontal panel splitter; individual panels only position the edge. */
+.panel-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: var(--z-local-control);
+  touch-action: none;
+}
+
+.panel-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  pointer-events: none;
+}
+
+.panel-resize-handle[data-edge='right']::after {
+  right: 0;
+  left: auto;
+}
+
+.panel-resize-handle:hover::after,
+.panel-resize-handle:focus-visible::after,
+.panel-resize-handle[data-resizing]::after {
+  background: var(--border-strong);
+}
+
+.panel-resize-handle:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
 }

@@ -20,6 +20,7 @@ import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
 import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';
+import { PanelResizeHandle } from './PanelResizeHandle';
 import { ChipPicker } from './ChipPicker';
 import { Drawer } from './Drawer';
 import type { MarkdownFilePreviewProps } from './MarkdownFilePreview';
@@ -950,8 +951,6 @@ export function DiffSidebar() {
   const store = useStore();
   const state = store.diff.value;
   const aside = useRef<HTMLElement>(null);
-  const resizeCleanup = useRef<(() => void) | null>(null);
-  useEffect(() => () => resizeCleanup.current?.(), []);
   const fileList = useRef<HTMLDivElement>(null);
   const fullscreenFollow = useRef<boolean | null>(null);
   const [fullscreenPath, setFullscreenPath] = useState('');
@@ -1074,54 +1073,22 @@ export function DiffSidebar() {
     state.sessionId === store.activeSessionId.value &&
     store.runActive.value,
   );
-  const startResize = (event: PointerEvent) => {
-    event.preventDefault();
-    const handle = event.currentTarget as HTMLElement;
-    resizeCleanup.current?.();
-    const shell = handle.closest<HTMLElement>('.app');
-    const startX = event.clientX;
-    const startWidth = state.width;
-    let width = startWidth;
-    const move = (next: PointerEvent) => {
-      if (next.pointerId !== event.pointerId) return;
-      width = clampDiffWidth(startWidth + startX - next.clientX, innerWidth);
-      // Width is presentation-only during a drag. Do not republish the entire
-      // diff or write storage for every pointer movement.
-      shell?.style.setProperty('--diff-sidebar-user-width', `${width}px`);
-    };
-    const cleanup = () => {
-      removeEventListener('pointermove', move);
-      removeEventListener('pointerup', finish);
-      removeEventListener('pointercancel', finish);
-      shell?.classList.remove('diff-resizing');
-      shell?.style.setProperty('--diff-sidebar-user-width', `${store.diff.peek().width}px`);
-      if (handle.hasPointerCapture?.(event.pointerId))
-        handle.releasePointerCapture?.(event.pointerId);
-      resizeCleanup.current = null;
-    };
-    const finish = (next: PointerEvent) => {
-      if (next.pointerId !== event.pointerId) return;
-      if (next.type !== 'pointercancel') store.resizeDiff(width);
-      cleanup();
-    };
-    resizeCleanup.current = cleanup;
-    handle.setPointerCapture?.(event.pointerId);
-    shell?.classList.add('diff-resizing');
-    addEventListener('pointermove', move);
-    addEventListener('pointerup', finish);
-    addEventListener('pointercancel', finish);
-  };
   const content = (
     <>
-      <div
-        class="diff-resize-handle"
-        role="separator"
-        aria-label="Resize changes panel"
-        aria-orientation="vertical"
-        tabIndex={0}
-        onPointerDown={startResize}
-        onDblClick={() => store.resizeDiff(420)}
-      />
+      {!mobile && !state.maximized && (
+        <PanelResizeHandle
+          class="diff-resize-handle"
+          label="Resize changes panel"
+          edge="left"
+          width={state.width}
+          getWidth={() => store.diff.peek().width}
+          clamp={clampDiffWidth}
+          cssProperty="--diff-sidebar-user-width"
+          resizingClass="diff-resizing"
+          onCommit={(width) => store.resizeDiff(width)}
+          onReset={() => store.resizeDiff(420)}
+        />
+      )}
       <div class="diff-sidebar-header">
         {state.worktreeDir ? (
           <strong class="diff-source-title">{state.worktreeTitle || 'Worktree'} changes</strong>

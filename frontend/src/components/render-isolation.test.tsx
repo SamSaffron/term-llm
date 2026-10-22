@@ -339,7 +339,7 @@ describe('render isolation', () => {
     );
   });
 
-  it('changes drag layout without rendering content, commits on release, and cancels cleanly', () => {
+  it('changes drag layout without rendering content, commits on release, and cancels cleanly', async () => {
     const store = createStore();
     openDiff(store);
     store.startupDone.value = true;
@@ -347,7 +347,7 @@ describe('render isolation', () => {
     const counts = observe();
     const { container, unmount } = render(<App store={store} />);
     const shell = container.querySelector<HTMLElement>('#appShell')!;
-    const handle = screen.getByRole('separator', { name: 'Resize changes panel' });
+    const handle = await screen.findByRole('separator', { name: 'Resize changes panel' });
     const state = store.diff.peek();
     counts.clear();
     fireEvent.pointerDown(handle, { clientX: 600, pointerId: 1 });

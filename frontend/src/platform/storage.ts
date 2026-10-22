@@ -12,6 +12,7 @@ export const STORAGE_BASE_KEYS = {
   selectedReasoningMode: 'term_llm_selected_reasoning_mode',
   selectedAgent: 'term_llm_selected_agent',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
+  sidebarWidth: 'term_llm_sidebar_width',
   diffSidebarWidth: 'term_llm_diff_sidebar_width',
   shellLayout: 'term_llm_shell_layout',
   showArchivedSessions: 'term_llm_show_archived_sessions',

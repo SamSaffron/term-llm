@@ -9,7 +9,7 @@ import { Header } from '../components/Header';
 import { Transcript } from '../components/Transcript';
 import { Composer } from '../components/Composer';
 import { DelegationContext } from '../components/DelegationContext';
-import { DiffSidebar, PlanSurface } from '../components/Panels';
+import { CompanionPanels } from '../components/CompanionPanels';
 import { Modals } from '../components/Modals';
 import { LightboxLoader } from '../components/LightboxLoader';
 import { Icon } from '../components/Icon';
@@ -175,6 +175,7 @@ export function App({ store }: { store: AppStore }) {
     // diff drag's presentation-only width.
     const dispose = [
       bind('--diff-sidebar-user-width', () => diffWidth.value),
+      bind('--sidebar-user-width', () => store.sidebarWidth.value),
       bind('--shell-dock-bottom-size', () => store.shellStore.dockBottomSize.value),
       bind('--shell-dock-right-size', () => store.shellStore.dockRightSize.value),
     ];
@@ -321,8 +322,7 @@ export function App({ store }: { store: AppStore }) {
                 <Transcript />
                 <Composer />
               </main>
-              <DiffSidebar />
-              <PlanSurface />
+              <CompanionPanels />
             </div>
             {!store.authRequired.value && (
               <>

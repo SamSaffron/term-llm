@@ -20,6 +20,10 @@
   outline: none;
 }
 
+.sidebar-resize-handle {
+  right: 0;
+}
+
 .sidebar-rail {
   background: transparent;
   display: flex;

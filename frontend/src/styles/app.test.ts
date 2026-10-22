@@ -42,6 +42,19 @@ describe('stylesheet manifest', () => {
   });
 });
 
+describe('panel splitter styles', () => {
+  it('keeps a 6px grab area but paints only a 1px edge indicator', () => {
+    expect(appCSS).toMatch(/\.panel-resize-handle\s*\{[^}]*width: 6px;/);
+    expect(appCSS).toMatch(/\.panel-resize-handle::after\s*\{[^}]*width: 1px;/);
+    expect(appCSS).toMatch(
+      /\.panel-resize-handle\[data-edge='right'\]::after\s*\{[^}]*right: 0;[^}]*left: auto;/,
+    );
+    expect(appCSS).toContain('.panel-resize-handle:hover::after');
+    expect(appCSS).toContain('.panel-resize-handle[data-resizing]::after');
+    expect(appCSS).toMatch(/\.panel-resize-handle:focus-visible\s*\{[^}]*outline: 2px solid/);
+  });
+});
+
 describe('compaction progress styles', () => {
   it('shares the status spinner style and respects reduced motion', () => {
     const composerCSS = readFileSync(resolve(stylesRoot, 'features/composer.css'), 'utf8');

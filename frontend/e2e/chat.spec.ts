@@ -234,6 +234,73 @@ async function open(
   return requests;
 }
 
+test.describe('companion viewer loading', () => {
+  test.use({ serviceWorkers: 'block' });
+  test('loads companion viewers on demand and keeps a pending mobile drawer dismissible', async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name === 'iphone', 'Covered by desktop and mobile');
+    let downloads = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route('**/chunks/Panels-*.js*', async (route) => {
+      downloads++;
+      await held;
+      await route.continue();
+    });
+    await open(page);
+    expect(downloads).toBe(0);
+    await page.getByRole('button', { name: 'Toggle file changes' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Loading panel…' })).toBeVisible();
+    await expect.poll(() => downloads).toBe(1);
+    if (testInfo.project.name === 'mobile')
+      await expect(page.getByRole('dialog', { name: 'Session file changes' })).toBeVisible();
+    await page.getByRole('button', { name: 'Close Session file changes' }).click();
+    await expect(page.locator('#diffSidebar')).toHaveCount(0);
+    release();
+    await page.getByRole('button', { name: 'Toggle file changes' }).click();
+    await expect(page.getByRole('button', { name: 'Change scope' })).toBeVisible();
+    expect(downloads).toBe(1);
+  });
+});
+
+test('sidebar splitter resizes the grid, persists and resets with real pointer capture', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'Desktop sidebar splitter');
+  await mockAPI(page);
+  await page.goto('./');
+  const handle = page.getByRole('separator', { name: 'Resize sidebar', exact: true });
+  await expect(handle).toBeVisible();
+  await handle.hover();
+  await expect(handle).toHaveCSS('width', '6px');
+  await expect(handle).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  expect(await handle.evaluate((element) => getComputedStyle(element, '::after').width)).toBe(
+    '1px',
+  );
+  const sidebar = page.locator('#sidebar');
+  await expect.poll(async () => Math.round((await sidebar.boundingBox())!.width)).toBe(280);
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2, { steps: 4 });
+  await expect(page.locator('#appShell')).toHaveClass(/sidebar-resizing/);
+  await expect.poll(async () => Math.round((await sidebar.boundingBox())!.width)).toBe(360);
+  await page.mouse.up();
+  await expect(page.locator('#appShell')).not.toHaveClass(/sidebar-resizing/);
+  await page.reload();
+  await expect.poll(async () => Math.round((await sidebar.boundingBox())!.width)).toBe(360);
+  await handle.dblclick();
+  await expect.poll(async () => Math.round((await sidebar.boundingBox())!.width)).toBe(280);
+  await handle.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(async () => Math.round((await sidebar.boundingBox())!.width)).toBe(296);
+  await page.emulateMedia({ forcedColors: 'active' });
+  await expect(handle).toHaveCSS('outline-style', 'solid');
+});
+
 test('normal browser tabs retain Cmd-number and do not show chat shortcut hints', async ({
   page,
 }, testInfo) => {
