@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID, previousResponseID string, modelSwapExec *responseModelSwapExecution, resetResponseIDsOnSuccess bool) {
@@ -21,6 +23,25 @@ func (s *serveServer) executeSynchronousResponse(ctx context.Context, w http.Res
 			return
 		}
 		defer releaseAdmission()
+	}
+	// Synchronous API invocations do not acquire an OS destination, but an
+	// admitted human must still retire prior held candidates. Runtime setup runs
+	// only after tryLockRun succeeds, never on busy/rejected handler paths.
+	if turn := s.notificationTurnAdmission(ctx, inputMessages, previousResponseID); turn != nil && turn.Human {
+		if turns, ok := session.AsNotificationTurnStore(s.store); ok {
+			previousSetup := serveRuntimeSetupFromContext(ctx)
+			var once sync.Once
+			var supersedeErr error
+			ctx = withServeRuntimeSetup(ctx, func(req *core.Request) error {
+				if previousSetup != nil {
+					if err := previousSetup(req); err != nil {
+						return err
+					}
+				}
+				once.Do(func() { supersedeErr = turns.SupersedeSessionNotificationTurn(ctx, sessionID) })
+				return supersedeErr
+			})
+		}
 	}
 	result, _, err := s.runResponseWithModelSwapFallback(ctx, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, modelSwapExec)
 	if err != nil {

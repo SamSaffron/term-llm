@@ -111,6 +111,7 @@ function workerHarness(
   return {
     dispatch,
     showNotification,
+    getNotifications: worker.registration.getNotifications,
     outstanding,
     client,
     windows,
@@ -227,6 +228,18 @@ describe('service worker v2 notification receiver', () => {
     },
   );
 
+  it.each([0, undefined])(
+    'rejects completion with zero or missing run_epoch: %s',
+    async (epoch) => {
+      const harness = workerHarness();
+      // Match the wire shape: an undefined epoch is absent from the JSON envelope.
+      const payload = JSON.parse(JSON.stringify(completionPayload({ run_epoch: epoch })));
+      await harness.dispatch('push', pushEvent(payload));
+      expect(harness.showNotification).not.toHaveBeenCalled();
+      expect(harness.outstanding.size).toBe(0);
+    },
+  );
+
   it('preserves typed manual content with a local source under a different public Hub mount', async () => {
     const harness = workerHarness([], 'v7', new Map(), 'https://example.test/node/Dev/');
     await harness.dispatch(
@@ -321,6 +334,78 @@ describe('service worker v2 notification receiver', () => {
     expect(harness.outstanding.has('term-llm-manual:manual:event')).toBe(true);
     await harness.dispatch('push', pushEvent(completionPayload({ event_id: 'late-retry' })));
     expect(harness.outstanding.size).toBe(4);
+  });
+
+  it.each([
+    { read: {}, closes: true },
+    { read: { attention_seq: 8 }, closes: true },
+    { read: { attention_seq: 2 }, closes: false },
+    { read: { store_instance_id: 'other' }, closes: false },
+    { read: { session_id: 'other' }, closes: false },
+    { read: { source: '/another-node' }, closes: false },
+  ])('rechecks exact reads after a deferred OS display: %j', async ({ read, closes }) => {
+    const harness = workerHarness();
+    const display = harness.showNotification.getMockImplementation()!;
+    let releaseDisplay!: () => void;
+    const displayGate = new Promise<void>((resolve) => {
+      releaseDisplay = resolve;
+    });
+    let signalStarted!: () => void;
+    const displayStarted = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    harness.showNotification.mockImplementationOnce(async (title, options) => {
+      signalStarted();
+      await displayGate;
+      await display(title, options);
+    });
+
+    const payload = completionPayload();
+    const push = harness.dispatch('push', pushEvent(payload));
+    await displayStarted;
+    // Reservation must already be durable while the OS display is still pending.
+    const cache = [...harness.storage.entries()].find(([key]) =>
+      key.startsWith('term-llm-notifications-'),
+    )![1];
+    const state = await [...cache.values()][0].clone().json();
+    expect(state.events).toContainEqual(expect.objectContaining({ id: payload.event_id }));
+    await harness.dispatch('message', {
+      source: harness.client,
+      data: {
+        type: 'notification-read',
+        version: 2,
+        store_instance_id: 'store',
+        source: '/ui',
+        session_id: 'session',
+        attention_seq: 3,
+        ...read,
+      },
+    });
+    // The concurrent read finishes and snapshots no cards before display resolves.
+    if (read.source !== '/another-node') {
+      expect(harness.getNotifications).toHaveBeenCalledOnce();
+      expect(await harness.getNotifications.mock.results[0].value).toEqual([]);
+    }
+    expect(harness.outstanding.size).toBe(0);
+    for (const other of [
+      completionPayload({ event_id: 'newer', attention_seq: 20 }),
+      completionPayload({ event_id: 'other-store', store_instance_id: 'unrelated' }),
+      completionPayload({ event_id: 'other-session', session_id: 'unrelated' }),
+      manualPayload(),
+    ])
+      await harness.dispatch('push', pushEvent(other));
+
+    releaseDisplay();
+    await push;
+    expect(harness.outstanding.has(`term-llm-completion:${payload.event_id}`)).toBe(!closes);
+    expect(harness.outstanding.size).toBe(closes ? 4 : 5);
+    expect(harness.outstanding.has('term-llm-completion:newer')).toBe(true);
+    expect(harness.outstanding.has('term-llm-completion:other-store')).toBe(true);
+    expect(harness.outstanding.has('term-llm-completion:other-session')).toBe(true);
+    expect(harness.outstanding.has('term-llm-manual:manual:event')).toBe(true);
+    // Cleanup does not release the replay reservation or permit another sound.
+    await harness.dispatch('push', pushEvent(payload));
+    expect(harness.showNotification).toHaveBeenCalledTimes(5);
   });
 
   it('fails closed before OS display when durable replay reservation cannot be written', async () => {

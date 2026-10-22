@@ -237,7 +237,20 @@ self.addEventListener('push', (event) => {
     if (payload.event_id) state.events.push({ id: payload.event_id, at: now });
     return notification;
   }).then(async (notification) => {
-    if (notification) await self.registration.showNotification(notification.title, notification.options);
+    if (!notification) return;
+    await self.registration.showNotification(notification.title, notification.options);
+    const payload = notification.options.data;
+    if (payload.kind !== 'completion') return;
+    // A read can persist and snapshot no cards while OS display is still pending.
+    // Recheck after display, serialized with read writes, and close only this event.
+    // This removes a stale card; it cannot undo a sound the OS has already begun.
+    await notificationState(async (state, now) => {
+      if (!isRead(state, payload) && !(state.read_block_until > now)) return;
+      const displayed = await self.registration.getNotifications({ tag: notification.options.tag });
+      for (const card of displayed) {
+        if (card.data?.kind === 'completion' && card.data.event_id === payload.event_id) card.close();
+      }
+    });
   }).catch(() => {
     // Without durable replay/opt-out state automatic delivery fails closed.
   }));

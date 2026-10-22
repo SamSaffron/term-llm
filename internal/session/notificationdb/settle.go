@@ -20,8 +20,10 @@ func PrepareTerminalTx(ctx context.Context, tx *sql.Tx, t ResponseRunTerminal) (
 		return false, err
 	}
 	if t.Outcome == ResponseRunFailed && t.Recoverable {
-		_, err = tx.ExecContext(ctx, `UPDATE notification_turns SET state='waiting_join' WHERE turn_id=?`, turnID)
-		return true, err
+		deferred, err := deferRecoverableHostTurnTx(ctx, tx, turnID)
+		if err != nil || deferred {
+			return deferred, err
+		}
 	}
 	if t.Outcome != ResponseRunCompleted {
 		state := "settled"
@@ -73,6 +75,27 @@ func PrepareTerminalTx(ctx context.Context, tx *sql.Tx, t ResponseRunTerminal) (
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE notification_turns SET state=? WHERE turn_id=?`, state, turnID)
 	return state != "settled", err
+}
+
+// deferRecoverableHostTurnTx requires the exact awaited-generation lineage used
+// by awaitedNotificationTurnTx, evaluated on the currently running logical turn.
+// Unlike admission, recovery need not have a terminal child ready now: an
+// unfinished awaited sibling can resume later, even if a ready child is collected.
+// Human steering remaps the response to a fresh turn without that lineage, so
+// its failure must settle normally rather than strand it in waiting_join.
+func deferRecoverableHostTurnTx(ctx context.Context, tx *sql.Tx, turnID string) (bool, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE notification_turns SET state='waiting_join' WHERE turn_id=? AND EXISTS (
+  SELECT 1 FROM notification_awaited_agents w
+  JOIN session_agent_runs a ON a.child_session_id=w.child_session_id AND a.run_generation=w.run_generation
+  JOIN notification_response_turns r ON r.response_id=a.parent_response_id AND r.turn_id=w.turn_id
+  WHERE w.turn_id=notification_turns.turn_id AND w.response_id=notification_turns.current_response_id
+  AND a.parent_session_id=notification_turns.session_id
+  AND a.notified_at IS NULL AND a.collected_at IS NULL AND a.wake_suppressed=0 AND a.stop_reason!='parent_stopped')`, turnID)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }
 
 func InsertCandidateTx(ctx context.Context, tx *sql.Tx, t ResponseRunTerminal, a AttentionState, now time.Time) error {

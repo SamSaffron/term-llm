@@ -77,7 +77,7 @@ func AsNotificationDeliveryStore(store Store) (NotificationDeliveryStore, bool) 
 
 type NotificationTurnStore interface {
 	CancelNotificationTurn(context.Context, string) error
-	SupersedeNotificationTurn(context.Context, ResponseRunFence, NotificationOrigin) error
+	SupersedeSessionNotificationTurn(context.Context, string) error
 }
 
 func AsNotificationTurnStore(store Store) (NotificationTurnStore, bool) {

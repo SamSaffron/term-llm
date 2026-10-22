@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -214,23 +213,16 @@ func CancelTurn(ctx context.Context, db *sql.DB, responseID string) error {
 	return tx.Commit()
 }
 
-func TransferTurn(ctx context.Context, db *sql.DB, responseID, owner string, token int64, origin NotificationOrigin) error {
+// SupersedeSessionTurn atomically retires old candidates and ownership after an
+// admitted synchronous human invocation. It grants no replacement destination.
+func SupersedeSessionTurn(ctx context.Context, db *sql.DB, sessionID string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var sessionID string
-	// UPDATE acquires the writer lock before inspecting/retiring ownership.
-	err = tx.QueryRowContext(ctx, `UPDATE serve_response_lifecycle SET updated_at=updated_at WHERE response_id=? AND owner_instance_id=? AND fencing_token=? AND state='running' AND lease_expires_at>? RETURNING session_id`, responseID, owner, token, time.Now().UnixMilli()).Scan(&sessionID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return sql.ErrNoRows
-	}
-	if err != nil {
+	if err := SupersedeTx(ctx, tx, sessionID); err != nil {
 		return err
-	}
-	if err = NewTurnTx(ctx, tx, sessionID, responseID, origin); err != nil {
-		return fmt.Errorf("transfer human notification origin: %w", err)
 	}
 	return tx.Commit()
 }

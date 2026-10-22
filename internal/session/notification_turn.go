@@ -8,13 +8,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/session/notificationdb"
 )
 
-// SupersedeNotificationTurn is for incorporated humans, never queued inputs.
-func (s *SQLiteStore) SupersedeNotificationTurn(ctx context.Context, fence ResponseRunFence, origin NotificationOrigin) error {
-	err := notificationdb.TransferTurn(ctx, s.db, fence.ResponseID, fence.OwnerInstanceID, fence.FencingToken, origin)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrResponseRunLeaseLost
-	}
-	return err
+// SupersedeSessionNotificationTurn silences prior destinations only after a
+// synchronous human invocation owns runtime admission, never while queued.
+func (s *SQLiteStore) SupersedeSessionNotificationTurn(ctx context.Context, sessionID string) error {
+	return notificationdb.SupersedeSessionTurn(ctx, s.db, sessionID)
 }
 
 func notificationAgentFacts(events []AgentRun) []notificationdb.AgentRun {

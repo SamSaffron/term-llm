@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "algorithm": "native_ + unpadded base64url(SHA256(UTF8(persistent_identifier)))",
+  "accepted_pattern": "^[A-Za-z0-9_-]{8,100}$",
+  "vectors": [
+    {
+      "persistent_identifier": "01234567-89AB-CDEF-0123-456789ABCDEF",
+      "window_id": "native_fgfH80ms_cD7KCrz8oj_BeFAv-Ydh6epT441bs3FEqE"
+    },
+    {
+      "persistent_identifier": "scene restoration token / unsafe:+ Unicode 节点",
+      "window_id": "native_Q1Abu3OCN5uNE1UgyTpQEifeg7HCxrWRs2xeDSHeRO0"
+    },
+    {
+      "persistent_identifier": "",
+      "window_id": "native_47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+    }
+  ]
+}

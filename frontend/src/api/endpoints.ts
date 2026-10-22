@@ -637,12 +637,17 @@ export const endpoints = (api: APIClient) => ({
       { headers: sessionHeaders(id) },
       { policy: 'safe-read', auth: 'session' },
     ),
-  invokeSkill: (id: string, body: unknown, key: string) =>
-    api.post<Record<string, unknown>>(
+  invokeSkill: (id: string, body: unknown, key: string, notificationOrigin = true) =>
+    api.json<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/skills/invoke`,
-      body,
-      'idempotent-mutation',
-      { ...sessionHeaders(id), 'Idempotency-Key': `skill_${key}` },
+      {
+        method: 'POST',
+        headers: { ...sessionHeaders(id), 'Idempotency-Key': `skill_${key}` },
+        body: JSON.stringify(body),
+      },
+      // APIClient captures once before its retry loop, preserving this human
+      // intent's destination even if enrollment changes while the POST retries.
+      { policy: 'idempotent-mutation', auth: 'session', notificationOrigin },
     ),
   skillRun: (id: string, runId: string) =>
     api.json<Record<string, unknown>>(
