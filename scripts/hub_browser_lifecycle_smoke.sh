@@ -18,7 +18,14 @@ hub_token="production-hub-bearer"
 registration_token="production-registration-secret"
 hub_root="http://127.0.0.1:${hub_port}/hub/"
 node_root="http://127.0.0.1:${node_port}/chat/"
-binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-hub-browser.XXXXXX")"
+# TERM_LLM_SMOKE_BINARY reuses a prebuilt `go build -tags browserfixture` binary.
+owned_binary=""
+if [[ -n "${TERM_LLM_SMOKE_BINARY:-}" ]]; then
+  binary="$TERM_LLM_SMOKE_BINARY"
+else
+  binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-hub-browser.XXXXXX")"
+  owned_binary="$binary"
+fi
 state="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-hub-browser-state.XXXXXX")"
 results="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-hub-browser-results.XXXXXX")"
 succeeded=false
@@ -34,14 +41,16 @@ cleanup() {
       if [[ -s "$log" ]]; then echo "== $log ==" >&2; cat "$log" >&2; fi
     done
   fi
-  rm -f "$binary"
+  rm -f "$owned_binary"
   rm -rf "$state" "$results"
 }
 trap cleanup EXIT
 
 cd "$root"
-npm --prefix frontend run build
-go build -tags browserfixture -o "$binary" .
+if [[ -n "$owned_binary" ]]; then
+  npm --prefix frontend run build
+  go build -tags browserfixture -o "$binary" .
+fi
 
 home="$state/home"
 workspace="$state/workspace"
@@ -108,6 +117,8 @@ cd "$root/frontend"
 if [[ -z "${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-}" ]] && command -v chromium >/dev/null 2>&1; then
   export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$(command -v chromium)"
 fi
+# The results directory is deleted on exit, so traces and videos are overhead.
+export TERM_LLM_E2E_ARTIFACTS="${TERM_LLM_E2E_ARTIFACTS:-off}"
 TERM_LLM_SMOKE_URL="${hub_root}node/production-node/" \
 TERM_LLM_HUB_SMOKE_ROOT="$hub_root" TERM_LLM_HUB_SMOKE_TOKEN="$hub_token" \
 TERM_LLM_HUB_NODE_ROOT="$node_root" TERM_LLM_HUB_REGISTRATION_TOKEN="$registration_token" \

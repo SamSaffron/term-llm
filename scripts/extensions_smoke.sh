@@ -3,7 +3,12 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-make build
+# TERM_LLM_SMOKE_BINARY reuses a prebuilt binary (CI shares one across smokes).
+binary="${TERM_LLM_SMOKE_BINARY:-}"
+if [[ -z "$binary" ]]; then
+  make build
+  binary="$root/term-llm"
+fi
 home="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-extensions.XXXXXX")"
 results="${TERM_LLM_EXTENSION_RESULTS:-$root/.cache/extensions-smoke}"
 mkdir -p "$results" "$home/config/term-llm/extensions" "$home/workspace"
@@ -28,7 +33,7 @@ port="$(node "$root/scripts/free_port.mjs")"
  cd "$home/workspace"
  exec env -u TERM_LLM_PPROF -u TERM_LLM_SERVE_HUB_URL -u TERM_LLM_SERVE_HUB_REGISTER \
  HOME="$home" XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_CACHE_HOME="$home/cache" TERM_LLM_SKIP_UPDATE_CHECK=1 \
- "$root/term-llm" serve web --no-auth --port "$port" --base-path /studio
+ "$binary" serve web --no-auth --port "$port" --base-path /studio
 ) > "$results/server.log" 2>&1 &
 pid=$!
 for _ in $(seq 1 80); do

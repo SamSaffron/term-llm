@@ -16,7 +16,15 @@ else
   port="$(node "$root/scripts/free_port.mjs")"
 fi
 url="http://127.0.0.1:${port}/ui/"
-binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-browser-smoke.XXXXXX")"
+# TERM_LLM_SMOKE_BINARY reuses a prebuilt `go build -tags browserfixture`
+# binary (CI builds one per job); otherwise this script builds its own.
+owned_binary=""
+if [[ -n "${TERM_LLM_SMOKE_BINARY:-}" ]]; then
+  binary="$TERM_LLM_SMOKE_BINARY"
+else
+  binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-browser-smoke.XXXXXX")"
+  owned_binary="$binary"
+fi
 log="$(mktemp "${TMPDIR:-/tmp}/term-llm-browser-smoke.XXXXXX.log")"
 results="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-browser-results.XXXXXX")"
 home="$(mktemp -d "${TMPDIR:-/tmp}/term-llm-browser-home.XXXXXX")"
@@ -39,16 +47,19 @@ cleanup() {
     echo "Browser smoke server log:" >&2
     cat "$log" >&2
   fi
-  rm -f "$binary" "$log" "$session_db" "$session_db-wal" "$session_db-shm"
+  rm -f "$owned_binary" "$log" "$session_db" "$session_db-wal" "$session_db-shm"
   rm -rf "$results" "$home"
 }
 trap cleanup EXIT
 
 cd "$root"
-# The gate implementation and its tests do not exist in production builds. Keep
-# this smoke preflight fast; CI's race job exercises the tagged gate separately.
-go test -tags browserfixture ./internal/llm/debug -run '^TestDebugBrowserGate$'
-npm --prefix frontend run build
+if [[ -n "$owned_binary" ]]; then
+  # The gate implementation and its tests do not exist in production builds. Keep
+  # this smoke preflight fast; CI's race job exercises the tagged gate separately.
+  go test -tags browserfixture ./internal/llm/debug -run '^TestDebugBrowserGate$'
+  npm --prefix frontend run build
+  go build -tags browserfixture -o "$binary" .
+fi
 mkdir -p "$home/config/term-llm"
 cat >"$home/config/term-llm/config.yaml" <<'YAML'
 default_provider: debug
@@ -56,7 +67,6 @@ providers:
   debug:
     model: fast
 YAML
-go build -tags browserfixture -o "$binary" .
 workspace="$home/workspace"
 mkdir -p "$workspace"
 printf 'original line\n' >"$workspace/review.txt"
@@ -82,5 +92,14 @@ cd "$root/frontend"
 if [[ -z "${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-}" ]] && command -v chromium >/dev/null 2>&1; then
   export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$(command -v chromium)"
 fi
-TERM_LLM_SMOKE_URL="$url" npm run test:e2e -- --workers=1 --reporter=line --output="$results" "$@"
+# The results directory is deleted on exit, so recorded traces and videos are
+# pure overhead here; set TERM_LLM_E2E_ARTIFACTS=on when running specs directly.
+export TERM_LLM_E2E_ARTIFACTS="${TERM_LLM_E2E_ARTIFACTS:-off}"
+workers="${TERM_LLM_SMOKE_WORKERS:-4}"
+# Mocked specs only fetch assets from the server and run in parallel; specs that
+# drive real provider runs share its session store and run in one worker.
+TERM_LLM_E2E_PHASE=parallel TERM_LLM_SMOKE_URL="$url" npm run test:e2e -- \
+  --workers="$workers" --reporter=line --output="$results/parallel" --pass-with-no-tests "$@"
+TERM_LLM_E2E_PHASE=serial TERM_LLM_SMOKE_URL="$url" npm run test:e2e -- \
+  --workers=1 --reporter=line --output="$results/serial" --pass-with-no-tests "$@"
 smoke_succeeded=true

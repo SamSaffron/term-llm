@@ -234,14 +234,36 @@ jobs:
           npm run typecheck
           npm test
 
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install --yes ripgrep
-
       - name: Check frontend network policy
         run: scripts/check_frontend_network_policy.sh
 
-      - name: Build frontend assets
-        run: make frontend
+  frontend-browser:
+    runs-on: ubuntu-latest
+    env:
+      TERM_LLM_SMOKE_BINARY: ${{ github.workspace }}/tmp/browserfixture-term-llm
+      # Results are not uploaded, so per-test traces and videos would be discarded.
+      TERM_LLM_E2E_ARTIFACTS: 'off'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets and browser fixture binary
+        # The smokes reuse this one binary instead of each rebuilding assets and Go.
+        run: |
+          make frontend
+          go build -tags browserfixture -o tmp/browserfixture-term-llm .
 
       - name: Install Playwright Chromium
         timeout-minutes: 10
@@ -249,9 +271,41 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser chat smoke
-        # Includes fixture builds and serial tests across three browser projects.
+        # Mocked specs run in parallel workers; real-server specs run serially after.
         timeout-minutes: 10
         run: scripts/browser_lifecycle_smoke.sh
+
+  frontend-smokes:
+    runs-on: ubuntu-latest
+    env:
+      TERM_LLM_SMOKE_BINARY: ${{ github.workspace }}/tmp/browserfixture-term-llm
+      TERM_LLM_E2E_ARTIFACTS: 'off'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets and browser fixture binary
+        # The smokes reuse this one binary instead of each rebuilding assets and Go.
+        run: |
+          make frontend
+          go build -tags browserfixture -o tmp/browserfixture-term-llm .
+
+      - name: Install Playwright Chromium
+        timeout-minutes: 10
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
 
       - name: Clean-room extension browser smoke
         timeout-minutes: 5
