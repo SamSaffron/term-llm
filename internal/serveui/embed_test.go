@@ -195,7 +195,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// runs from startup, so it is eager: ~545.8/160.9 kB. Same ~1% rule.
 		// Queued-job completion notices render as an eager transcript card:
 		// ~551.8/162.4 kB. Same ~1% rule.
-		"dist/app.js":                {raw: 557_300, gzip: 164_000},
+		// The resizable sessions sidebar (drag and keyboard handle, width limits,
+		// per-browser persistence) is eager shell code: ~558.8/164.4 kB. Same ~1% rule.
+		"dist/app.js":                {raw: 564_400, gzip: 166_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_300},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
@@ -209,8 +211,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// voice switch swaps the session in place, and the subagent breadcrumb /
 		// index / live-tail styling bring the sheet to ~178.1 kB. Same reasoning as
 		// above: a cap that close to the measurement fails the next CSS change on
-		// arithmetic rather than on bloat.
-		"dist/app.css": {raw: 180_000, gzip: 34_000},
+		// arithmetic rather than on bloat. The sidebar resize handle adds ~0.3 kB
+		// (~175.7/34.05 kB), so the gzip cap moves up with it.
+		"dist/app.css": {raw: 180_000, gzip: 34_400},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph. The
