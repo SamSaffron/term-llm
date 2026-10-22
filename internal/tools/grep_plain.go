@@ -21,7 +21,7 @@ func (t *GrepTool) executePlainGrep(ctx context.Context, a GrepArgs, searchPath 
 				return "No matches found."
 			}
 			if a.FilesWithMatches {
-				return formatFilesWithMatches(matches, result.truncated)
+				return formatGrepDisplay(t.grepDisplayBase(), matches, func(m []GrepMatch) string { return formatFilesWithMatches(m, result.truncated) })
 			}
 			return t.finishGrep(ctx, a, searchPath, "", result, contextLines, maxResults, true)
 		}
@@ -66,8 +66,10 @@ func (t *GrepTool) executePlainGrep(ctx context.Context, a GrepArgs, searchPath 
 	}
 
 	if a.FilesWithMatches {
-		return formatFilesWithMatches(matches, len(matches) >= maxResults)
+		truncated := len(matches) >= maxResults
+		return formatGrepDisplay(t.grepDisplayBase(), matches, func(m []GrepMatch) string { return formatFilesWithMatches(m, truncated) })
 	}
 
-	return formatGrepResults(matches, len(matches) >= maxResults)
+	truncated := len(matches) >= maxResults
+	return formatGrepDisplay(t.grepDisplayBase(), matches, func(m []GrepMatch) string { return formatGrepResults(m, truncated) })
 }
