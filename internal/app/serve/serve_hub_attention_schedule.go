@@ -21,6 +21,7 @@ const hubAttentionPersistenceBudget = 500 * time.Millisecond
 type hubAttentionRetry struct {
 	failures int
 	next     time.Time
+	deferred bool
 }
 type hubAttentionSchedule struct {
 	mu      sync.Mutex
@@ -58,10 +59,22 @@ func (s *hubAttentionSchedule) eligible(nodes []hub.Node) []hub.Node {
 		due = append(append(make([]hub.Node, 0, len(due)), due[start:]...), due[:start]...)
 		s.offset = (start + 8) % len(due)
 	}
-	// Fresh/healthy nodes get first use of slots over previously failed peers.
-	sort.SliceStable(due, func(i, j int) bool { return s.retries[due[i].ID].failures < s.retries[due[j].ID].failures })
+	// A truncated attempt needs an initial slot next time. Do not sort by
+	// failure count: that would undo rotation and starve recovered peers.
+	sort.SliceStable(due, func(i, j int) bool { return s.retries[due[i].ID].deferred && !s.retries[due[j].ID].deferred })
 	return due
 }
+func (s *hubAttentionSchedule) deferNode(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retries == nil {
+		s.retries = make(map[string]hubAttentionRetry)
+	}
+	state := s.retries[id]
+	state.deferred = true
+	s.retries[id] = state
+}
+
 func (s *hubAttentionSchedule) record(id string, err error, active bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,6 +89,7 @@ func (s *hubAttentionSchedule) record(id string, err error, active bool) {
 		s.retries = make(map[string]hubAttentionRetry)
 	}
 	state := s.retries[id]
+	state.deferred = false
 	state.failures = min(state.failures+1, 3)
 	state.next = s.timeNow().Add(hubAttentionCollectionDelay(active, state.failures))
 	s.retries[id] = state
@@ -97,7 +111,11 @@ func (s *hubServer) collectAttention(ctx context.Context) int {
 	nodes, _ := s.registry.Nodes()
 	due := s.attentionSchedule.eligible(nodes)
 	active, _ := s.attentionStore.HasActivity(roundCtx)
-	jobs := make(chan hub.Node)
+	type collectionJob struct {
+		node       hub.Node
+		fullBudget bool
+	}
+	jobs := make(chan collectionJob)
 	var wg sync.WaitGroup
 	var failures atomic.Int64
 	workers := min(8, len(due))
@@ -105,15 +123,23 @@ func (s *hubServer) collectAttention(ctx context.Context) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for node := range jobs {
+			for job := range jobs {
+				node := job.node
 				if roundCtx.Err() != nil {
 					return
 				}
 				started := time.Now()
 				err := s.collectNodeAttention(roundCtx, node)
-				s.attentionSchedule.record(node.ID, err, active)
 				s.attentionDiagnostics.CollectorSamples.Add(1)
 				s.attentionDiagnostics.CollectorLatencyMS.Add(uint64(max(time.Since(started).Milliseconds(), 0)))
+				if !job.fullBudget && roundCtx.Err() != nil && errors.Is(err, context.DeadlineExceeded) {
+					// Only the initial admission batch gets the full round window.
+					// A later sync can use spare time, but exhausting that partial
+					// window is scheduler deferral, not evidence of node failure.
+					s.attentionSchedule.deferNode(node.ID)
+					continue
+				}
+				s.attentionSchedule.record(node.ID, err, active)
 				if err == nil {
 					s.attentionDiagnostics.CollectorSuccesses.Add(1)
 					continue
@@ -134,11 +160,11 @@ func (s *hubServer) collectAttention(ctx context.Context) int {
 		}()
 	}
 outer:
-	for _, node := range due {
+	for index, node := range due {
 		select {
 		case <-roundCtx.Done():
 			break outer
-		case jobs <- node:
+		case jobs <- collectionJob{node: node, fullBudget: index < workers}:
 		}
 	}
 	close(jobs)

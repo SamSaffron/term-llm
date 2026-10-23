@@ -135,10 +135,11 @@ func (c *hubReverseConnection) writeFrame(ctx context.Context, frame hubReverseR
 	_ = c.conn.SetWriteDeadline(time.Time{})
 	if err != nil {
 		c.closeWithError(err)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
+	// Successfully sent frames stay owned by response/cancellation handling.
 	return err
 }
 

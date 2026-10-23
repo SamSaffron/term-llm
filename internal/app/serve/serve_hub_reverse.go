@@ -454,9 +454,19 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 		return nil, err
 	}
 
+	if err := ctx.Err(); err != nil {
+		c.abortPending(id, pending, err, true)
+		return nil, err
+	}
 	select {
 	case resp := <-pending.ch:
 		pending.release(resp)
+		// Cancellation must not lose to a ready response_start: unlike a
+		// terminal frame, it still owns a remote operation.
+		if err := ctx.Err(); err != nil {
+			c.abortPending(id, pending, err, true)
+			return nil, err
+		}
 		response, err := c.buildHTTPResponseFromReverseFrame(ctx, req, id, pending, resp)
 		success = err == nil
 		return response, err
@@ -466,7 +476,7 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 		}
 		return nil, context.Canceled
 	case <-ctx.Done():
-		c.cancelPending(id, ctx.Err())
+		c.abortPending(id, pending, ctx.Err(), true)
 		return nil, ctx.Err()
 	}
 }
