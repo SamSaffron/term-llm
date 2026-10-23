@@ -379,7 +379,11 @@ export class SessionStore {
     this.worktreesEnabled.value = worktreesEnabled;
   }
 
+  private applyingCachedSnapshot = false;
+
   sessionFrom(value: Record<string, unknown>): Session {
+    if (!this.applyingCachedSnapshot && typeof value.id === 'string')
+      this.services.notificationController.acknowledgeRead(value.id, value);
     const session = this.services.api.registerSession(
       sanitizeSessionFrom(this.services.config, value),
     );
@@ -497,7 +501,12 @@ export class SessionStore {
    */
   applyCachedSidebar(data: Record<string, unknown>): void {
     batch(() => {
-      this.applySidebarSnapshot(data);
+      this.applyingCachedSnapshot = true;
+      try {
+        this.applySidebarSnapshot(data);
+      } finally {
+        this.applyingCachedSnapshot = false;
+      }
       // Last-known rows never claim a live run or an actionable interaction;
       // only the server's status/state reads may establish either.
       this.updateEveryCatalogSession((session) => ({

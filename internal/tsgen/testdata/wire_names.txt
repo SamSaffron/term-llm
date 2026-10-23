@@ -43,6 +43,7 @@ SessionSessionMode
 SessionSessionOrigin
 SessionSessionStatus
 SessionShareScope
+NotificationdbResponseRunState
 ShareOperation
 ShareProvider
 ShareProviderID

@@ -80,7 +80,7 @@ export type CorePathNoteProvenance = { "source_session_id": string; "anchor_mess
 
 export type CoreSkillActivationProvenance = { "name": string; "source": string; "source_path": string; "origin": string; "execution": string; "raw_arguments"?: string; "agent"?: string; "model"?: string; "allowed_tools"?: (string)[]; "allowed_tools_present"?: boolean; "run_id"?: string; "child_session_id"?: string; "status"?: string; "started_at"?: string; "completed_at"?: string; "activated_at": string; };
 
-export type SessionResponseRunState = string;
+export type SessionResponseRunState = NotificationdbResponseRunState;
 
 export type SessionSessionMode = string;
 
@@ -89,6 +89,8 @@ export type SessionSessionOrigin = string;
 export type SessionSessionStatus = string;
 
 export type SessionShareScope = string;
+
+export type NotificationdbResponseRunState = string;
 
 export type ShareOperation = string;
 

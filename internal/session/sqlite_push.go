@@ -128,40 +128,6 @@ func (s *SQLiteStore) GetPushSubscription(ctx context.Context, id string) (*Push
 	return sub, nil
 }
 
-// DeletePushSubscription removes a Web Push subscription by endpoint.
-func (s *SQLiteStore) DeletePushSubscription(ctx context.Context, endpoint string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE endpoint = ?", endpoint)
-	if err != nil {
-		return fmt.Errorf("delete push subscription: %w", err)
-	}
-	return nil
-}
-
-func (s *SQLiteStore) DeletePushSubscriptionByID(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE id = ?", strings.TrimSpace(id))
-	if err != nil {
-		return fmt.Errorf("delete push subscription by id: %w", err)
-	}
-	return nil
-}
-
-func (s *SQLiteStore) MarkPushSubscriptionStale(ctx context.Context, id, code, detail string) error {
-	if len(detail) > 240 {
-		detail = detail[:240]
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE push_subscriptions
-		SET status = 'stale', updated_at = datetime('now'), last_failure_code = ?,
-		    last_failure = ?, last_failure_at = datetime('now') WHERE id = ?`, code, detail, id)
-	return err
-}
-
-func (s *SQLiteStore) MarkPushSubscriptionUsed(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE push_subscriptions
-		SET status = 'active', updated_at = datetime('now'), last_used_at = datetime('now'),
-		    last_failure_code = '', last_failure = '', last_failure_at = NULL WHERE id = ?`, id)
-	return err
-}
-
 // ListPushSubscriptions returns all stored Web Push subscriptions.
 func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
 	rows, err := s.queryDB().QueryContext(ctx, `
@@ -182,69 +148,6 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 		subs = append(subs, *sub)
 	}
 	return subs, rows.Err()
-}
-
-func (s *SQLiteStore) EnqueueCompletionPush(ctx context.Context, item CompletionPushOutboxItem) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO completion_push_outbox
-		(event_id, response_id, subscription_id, payload) VALUES (?, ?, ?, ?)
-		ON CONFLICT(response_id, subscription_id) DO NOTHING`, item.EventID, item.ResponseID, item.SubscriptionID, item.Payload)
-	if err != nil {
-		return false, fmt.Errorf("enqueue completion push: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	return rows > 0, nil
-}
-
-func (s *SQLiteStore) ListDueCompletionPushes(ctx context.Context, now time.Time, limit int) ([]CompletionPushOutboxItem, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 25
-	}
-	rows, err := s.queryDB().QueryContext(ctx, `SELECT id, event_id, response_id, subscription_id, payload, attempt_count
-		FROM completion_push_outbox WHERE status = 'pending' AND next_attempt_at <= ?
-		ORDER BY next_attempt_at, id LIMIT ?`, now.UTC().Format("2006-01-02 15:04:05"), limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []CompletionPushOutboxItem
-	for rows.Next() {
-		var item CompletionPushOutboxItem
-		if err := rows.Scan(&item.ID, &item.EventID, &item.ResponseID, &item.SubscriptionID, &item.Payload, &item.AttemptCount); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func (s *SQLiteStore) MarkCompletionPushDelivered(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'delivered',
-		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = '' WHERE id = ?`, id)
-	return err
-}
-
-func (s *SQLiteStore) RetryCompletionPush(ctx context.Context, id int64, next time.Time, lastError string) error {
-	if len(lastError) > 240 {
-		lastError = lastError[:240]
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET attempt_count = attempt_count + 1,
-		next_attempt_at = ?, updated_at = datetime('now'), last_error = ? WHERE id = ?`, next.UTC().Format("2006-01-02 15:04:05"), lastError, id)
-	return err
-}
-
-func (s *SQLiteStore) MarkCompletionPushDead(ctx context.Context, id int64, lastError string) error {
-	if len(lastError) > 240 {
-		lastError = lastError[:240]
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'dead',
-		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = ? WHERE id = ?`, lastError, id)
-	return err
-}
-
-func (s *SQLiteStore) PruneCompletionPushOutbox(ctx context.Context, before time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM completion_push_outbox
-		WHERE status IN ('delivered', 'dead') AND updated_at < ?`, before.UTC().Format("2006-01-02 15:04:05"))
-	return err
 }
 
 func (s *SQLiteStore) ReadOnly() bool {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools/agentwait"
 )
 
 const (
@@ -173,6 +174,7 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			m.detach(e, attached)
 			record, _, _ = m.get(ctx, id, parent)
 		}
+		agentwait.Observe(ctx, record, a.MaxWait > 0)
 		out := m.deliver(ctx, record, e)
 		results = append(results, json.RawMessage(out.Content))
 		media = append(media, out.Media...)
@@ -266,6 +268,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	m.wait(ctx, entry, time.Duration(budget)*time.Second)
 	m.detachInitial(entry)
 	current, _, _ := m.get(ctx, a.AgentID, parent)
+	agentwait.Observe(ctx, current, budget > 0)
 	out := m.deliver(ctx, current, entry)
 	if record.Status == "running_elsewhere" {
 		out.Content = strings.TrimSuffix(out.Content, "}") + `,"warning":"possible duplicate side effects: another process may still be running"}`

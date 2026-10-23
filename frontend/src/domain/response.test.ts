@@ -53,6 +53,31 @@ describe('response projection', () => {
     expect(new Set(RESPONSE_EVENT_TYPES).size).toBe(RESPONSE_EVENT_TYPES.length);
   });
 
+  it('captures the completed cursor without changing ownership or accepting stale cursors', () => {
+    const completed = reduceResponse(
+      initialProjection(run),
+      event('response.completed', 1, { response: { id: 'resp_msg_42' } }),
+    );
+    expect(completed.run).toMatchObject({
+      responseId: 'r1',
+      continuationResponseId: 'resp_msg_42',
+    });
+    expect(
+      reduceResponse(
+        completed,
+        event('response.completed', 1, { response: { id: 'resp_msg_99' } }),
+      ),
+    ).toBe(completed);
+    for (const invalid of [{ response_id: 'other' }, { run_epoch: 2 }])
+      expect(() =>
+        reduceResponse(
+          completed,
+          event('response.completed', 2, { ...invalid, response: { id: 'resp_msg_99' } }),
+        ),
+      ).toThrow(ResponseProtocolError);
+    expect(completed.run).toMatchObject({ continuationResponseId: 'resp_msg_42' });
+  });
+
   it('prefers the top-level failure reason over the response body', () => {
     const projection = reduceResponse(
       initialProjection(run),

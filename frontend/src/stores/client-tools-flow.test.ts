@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../app/config';
+import { APIError } from '../api/client';
 import { AppStore } from './app-store';
 
 /**
@@ -90,6 +91,8 @@ async function chatStore(): Promise<AppStore> {
   // Durable transcript refreshes are not under test.
   store.endpoints.selectedSession = vi.fn(async () => ({}));
   store.endpoints.sessionState = vi.fn(async () => ({}));
+  store.endpoints.cancelResponse = vi.fn(async () => ({ status: 'cancelled' }));
+  vi.spyOn(store, 'reconcile').mockResolvedValue(undefined);
   await vi.waitFor(() => expect(store.webMCP.available.value).toBe(true));
   // Page tools are off until turned on; these flows exercise them turned on.
   store.setWebMCPEnabled(true);
@@ -204,11 +207,117 @@ describe('client tool continuation', () => {
     store.dispose();
   });
 
+  it.each([
+    ['live', 'resp_msg_42'],
+    ['snapshot', 'resp_msg_42'],
+    ['live', undefined],
+    ['snapshot', undefined],
+  ] as const)(
+    'uses the %s handoff cursor (%s) instead of a newer session tail',
+    async (source, cursor) => {
+      let finish!: (value: string) => void;
+      const context = installDeviceTools(() => new Promise((resolve) => (finish = resolve)));
+      const store = await chatStore();
+      const liveId = 'resp_live_handoff';
+      const call = { call_id: 'call_1', name: 'webmcp__ping', arguments: '{}' };
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: { id: 's1', transcript_rev: 2 },
+        selected_transcript: { bodies: { rev: 2, messages: [] } },
+      }));
+      store.endpoints.sessionState = vi.fn(async () => ({ last_response_id: 'resp_msg_99' }));
+      const frames = callFrames(liveId, call.name, call.arguments);
+      frames[3] = [
+        'response.completed',
+        { response: { id: cursor, status: 'completed' }, final_rev: 1 },
+      ];
+      store.endpoints.response = vi.fn(async () => ({
+        id: liveId,
+        status: 'completed',
+        continuation_response_id: cursor,
+        run_epoch: 1,
+        last_sequence_number: 4,
+        final_rev: 1,
+        pending_client_calls: [call],
+        recovery: {
+          sequence_number: 4,
+          messages: [
+            {
+              role: 'tool-group',
+              response_id: liveId,
+              tools: [{ id: call.call_id, name: call.name, arguments: '{}', status: 'pending' }],
+            },
+          ],
+        },
+      }));
+      store.endpoints.createResponse = vi
+        .fn()
+        .mockResolvedValueOnce(sse(liveId, source === 'live' ? frames : frames.slice(0, 1)))
+        .mockResolvedValueOnce(sse('r2', textFrames('r2', 'Done.')));
+
+      try {
+        store.prompt.value = 'Ping it';
+        void store.send();
+        await vi.waitFor(() => expect(context.executeTool).toHaveBeenCalledTimes(1));
+        // Tool matching and supervisors must still identify the live response.
+        expect(store.runs.value.s1.run).toMatchObject({ responseId: liveId, status: 'completed' });
+        expect(
+          store.runs.value.s1.messages.find((message) => message.role === 'tool-group'),
+        ).toMatchObject({
+          responseId: liveId,
+          tools: [expect.objectContaining({ status: 'running' })],
+        });
+        if (source === 'snapshot')
+          expect(store.endpoints.response).toHaveBeenCalledWith(liveId, expect.anything());
+        store.applyResponseEvent('s1', {
+          type: 'response.completed',
+          response_id: 'resp_unrelated',
+          response: { id: 'resp_msg_100' },
+          run_epoch: 1,
+          sequence_number: 5,
+        });
+        finish('pong');
+        await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2));
+        expect(store.endpoints.sessionState).toHaveBeenCalled();
+        expect(requestBody(store, 1)).toMatchObject({
+          previous_response_id: cursor || liveId,
+          input: [{ type: 'function_call_output', call_id: 'call_1', output: 'pong' }],
+        });
+        await vi.waitFor(() => expect(store.runActive.value).toBe(false));
+      } finally {
+        store.dispose();
+      }
+    },
+  );
+
+  it('does not submit a captured handoff after another run replaces its owner', async () => {
+    let finish!: (value: string) => void;
+    const context = installDeviceTools(() => new Promise((resolve) => (finish = resolve)));
+    const store = await chatStore();
+    const frames = callFrames('r1', 'webmcp__ping', '{}');
+    frames[3] = ['response.completed', { response: { id: 'resp_msg_42' }, final_rev: 1 }];
+    store.endpoints.createResponse = vi.fn(async () => sse('r1', frames));
+    try {
+      store.prompt.value = 'Ping it';
+      await store.send();
+      await vi.waitFor(() => expect(context.executeTool).toHaveBeenCalledTimes(1));
+      const previous = store.runs.value.s1;
+      store.runs.value = {
+        ...store.runs.value,
+        s1: { ...previous, run: { ...previous.run, responseId: 'r2' } },
+      };
+      finish('too late');
+      await vi.waitFor(() => expect(store.runActive.value).toBe(false));
+      expect(store.endpoints.createResponse).toHaveBeenCalledTimes(1);
+      expect(store.runs.value.s1.run.responseId).toBe('r2');
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('runs the page tool the model called and continues with its result', async () => {
     const context = installDeviceTools(async (input) => `pong: ${input.message}`);
     const store = await chatStore();
-    // Like the server: the refresh loads the finished turn, whose durable
-    // response id differs from the stream's; the continuation must use it.
+    // The refreshed durable tail differs: continuation must prove the actual handoff.
     store.endpoints.selectedSession = vi.fn(async () => ({
       selected_session: { id: 's1', transcript_rev: 1 },
       selected_transcript: { bodies: { rev: 1, messages: [] } },
@@ -237,7 +346,7 @@ describe('client tool continuation', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(requestBody(store, 1)).toMatchObject({
-      previous_response_id: 'resp_msg_1',
+      previous_response_id: 'r1',
       input: [{ type: 'function_call_output', call_id: 'call_1', output: 'pong: hi' }],
       tools: [expect.objectContaining({ name: 'webmcp__ping' })],
     });
@@ -306,6 +415,7 @@ describe('client tool continuation', () => {
     expect(store.activeProjection.value?.phase).toBeUndefined();
 
     await store.cancel();
+    expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1');
     finish('too late');
     await vi.waitFor(() => expect(store.runActive.value).toBe(false));
     expect(store.activeProjection.value?.phase).toBeUndefined();
@@ -334,10 +444,44 @@ describe('client tool continuation', () => {
 
     // Stop does not wait out a stalled refresh.
     await store.cancel();
+    expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1');
     await vi.waitFor(() => expect(store.runActive.value).toBe(false));
     loaded();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(store.endpoints.createResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it('explicitly cancels the tool predecessor when a continuation is permanently rejected', async () => {
+    installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+      .mockRejectedValueOnce(new APIError('Invalid tool lineage', 400));
+    store.prompt.value = 'Ping it';
+    await store.send();
+    await vi.waitFor(() => expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1'));
+    expect(requestBody(store, 1).previous_response_id).toBe('r1');
+    expect(store.activeProjection.value?.run.status).toBe('failed');
+    store.dispose();
+  });
+
+  it('Stop during retryable client-output transport failure cancels the predecessor, not a pending fake response', async () => {
+    installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+      .mockRejectedValue(new TypeError('Network unavailable'));
+    store.prompt.value = 'Ping it';
+    await store.send();
+    await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2));
+    expect(store.activeProjection.value?.run.status).toBe('connecting');
+    expect(store.activeProjection.value?.run.continuationOf).toBe('r1');
+    await store.cancel();
+    expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1');
+    expect(store.activeProjection.value?.run.status).toBe('cancelled');
+    store.dispose();
   });
 
   it('runs page calls that follow a tool-only server turn in the same response', async () => {

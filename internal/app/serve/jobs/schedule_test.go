@@ -156,11 +156,9 @@ func TestJobsV2CronCreateUsesScheduleTimezoneField(t *testing.T) {
 }
 
 func TestJobsV2RetentionPrunesOldData(t *testing.T) {
-	mgr, err := newJobsV2Manager(":memory:", 1, nil)
-	if err != nil {
-		t.Fatalf("newJobsV2Manager failed: %v", err)
-	}
-	defer func() { _ = mgr.Close() }()
+	// This exercises pruning directly; live scheduler/worker loops would race
+	// with the test's retention settings and fixture insertion.
+	mgr := newJobsV2ManagerWithoutLoops(t)
 
 	// Tight retention for test.
 	mgr.retentionRunDays = 1
@@ -171,7 +169,7 @@ func TestJobsV2RetentionPrunesOldData(t *testing.T) {
 	old := now.Add(-48 * time.Hour)
 	recent := now.Add(-1 * time.Hour)
 
-	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
+	_, err := mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
 		"job_retention_1", "retention-job", RunnerProgram, `{"command":"echo","args":["x"]}`, TriggerManual, `{}`, now, now)
 	if err != nil {
 		t.Fatalf("insert job: %v", err)

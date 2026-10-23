@@ -28,6 +28,29 @@ const agentIds = (store: AppStore) => store.hubAgents.value.map((agent) => agent
 
 const hubConfig = { ...testConfig, hub: { url: '/hub/', nodeId: 'current', nodeBasePath: '/ui' } };
 
+describe('authoritative notification read reconciliation', () => {
+  it('forwards authenticated shared/Hub seen state, but never restored cached state', () => {
+    const store = new AppStore(testConfig);
+    const read = vi.spyOn(store.notificationController, 'acknowledgeRead');
+    const data = {
+      sessions: [
+        { id: 's1', attention_store_instance_id: 'store', attention_seq: 5, seen_through_seq: 3 },
+      ],
+    };
+    store.sessionStore.applyCachedSidebar(data);
+    expect(read).not.toHaveBeenCalled();
+    store.sessionStore.applySidebar(data);
+    expect(read).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        attention_store_instance_id: 'store',
+        seen_through_seq: 3,
+      }),
+    );
+    store.dispose();
+  });
+});
+
 describe('sidebar width preference', () => {
   it('retains a saved desktop width when starting in a narrow window', () => {
     const seed = new AppStore(testConfig);

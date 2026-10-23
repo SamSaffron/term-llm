@@ -183,7 +183,9 @@ jobs:
         run: make frontend
 
       - name: Install Playwright Chromium
-        timeout-minutes: 10
+        # Ubuntu mirror downloads can exceed ten minutes before browser tests start.
+        # Keep setup bounded without relaxing the separate smoke-test timeouts.
+        timeout-minutes: 20
         run: npx --yes --package @playwright/test@1.64.0 playwright install --with-deps chromium
 
       - name: Hub passkey browser smoke

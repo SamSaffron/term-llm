@@ -92,20 +92,6 @@ export function syncTokenCookie(
   write(token ? encodeURIComponent(token) : '', path, token ? 31_536_000 : 0);
 }
 
-export async function registerServiceWorker(
-  config: AppConfig,
-): Promise<ServiceWorkerRegistration | null> {
-  if (!('serviceWorker' in navigator)) return null;
-  try {
-    return await navigator.serviceWorker.register(
-      `${config.prefix}/sw.js?v=${encodeURIComponent(config.version)}`,
-      { scope: `${config.prefix}/` },
-    );
-  } catch {
-    return null;
-  }
-}
-
 export async function hardRefreshAssets(
   config: AppConfig,
   registration?: ServiceWorkerRegistration | null,

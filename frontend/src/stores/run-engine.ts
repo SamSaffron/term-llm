@@ -36,7 +36,6 @@ import {
   type PendingIntentRegistry,
 } from '../platform/storage';
 import { updateSessionRoute } from '../platform/routing';
-import { completionEventId } from '../platform/notifications';
 import { rebaseHubAssetURL } from '../app/config';
 import type { AppStoreServices } from './app-store-services';
 import type { ComposerStore } from './composer-store';
@@ -147,7 +146,6 @@ export class RunEngine {
   >({});
   readonly locallyStoppedResponses = new Set<string>();
   private readonly retiredResponses = new Set<string>();
-  private readonly handledCompletionEvents = new Set<string>();
   private readonly titleRefreshTimers = new Map<string, number[]>();
   private steeringRevision = 0;
   private readonly clientTools: ClientToolRunner;
@@ -212,6 +210,7 @@ export class RunEngine {
         this.prepareToolContinuation(sessionId, responseId),
       continueWith: (sessionId, responseId, outputs) =>
         this.continueWithToolOutputs(sessionId, responseId, outputs),
+      abortContinuation: (responseId) => this.abortToolContinuation(responseId),
       sendInline: (responseId, callId, output) =>
         services.endpoints.inlineClientToolResult(responseId, callId, output),
       toast: (message) => services.toast(message, 'error'),
@@ -548,7 +547,6 @@ export class RunEngine {
     this.composer.sendPending.value = true;
     const clientMessageId = uuid();
     const requestId = uuid();
-    const notificationSubscriptionId = this.notificationSubscriptionId();
 
     let session = this.sessionStore.activeSession.value;
     const optimistic: Message = {
@@ -622,7 +620,6 @@ export class RunEngine {
       startedAt: Date.now(),
       reconnects: 0,
       requestId,
-      notificationSubscriptionId: notificationSubscriptionId || undefined,
     };
     // Keep the initiating row in the live projection as well as the session.
     // A selected-session hydration can briefly return pre-commit transcript
@@ -641,6 +638,12 @@ export class RunEngine {
       : attachmentParts.length > 0
         ? [...attachmentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])]
         : inputText;
+    // Capture once for this human intent; unknown-outcome retries must not
+    // acquire a newly enrolled device/window as their destination.
+    const notificationOrigin =
+      this.services.config.notificationVersion === 2
+        ? this.services.notificationController.originHeaders()
+        : undefined;
     const requestBody: Record<string, unknown> = {
       ...this.responseRequestBody(session),
       client_message_id: clientMessageId,
@@ -674,7 +677,7 @@ export class RunEngine {
           sessionId,
           requestId,
           signal,
-          notificationSubscriptionId,
+          notificationOrigin,
         );
         ownerID = await this.acceptCreatedResponse({
           response,
@@ -785,25 +788,20 @@ export class RunEngine {
     return requestBody;
   }
 
-  private notificationSubscriptionId(): string {
-    const state = this.services.notifications.peek();
-    return state.status === 'subscribed' ? state.subscriptionId || '' : '';
-  }
-
   private createResponse(
     requestBody: Record<string, unknown>,
     sessionId: string,
     requestId: string,
     signal: AbortSignal,
-    notificationSubscriptionId: string,
+    capturedOrigin?: Promise<Record<string, string>>,
   ): Promise<Response> {
-    return notificationSubscriptionId
+    return capturedOrigin
       ? this.services.endpoints.createResponse(
           requestBody,
           sessionId,
           requestId,
           signal,
-          notificationSubscriptionId,
+          capturedOrigin,
         )
       : this.services.endpoints.createResponse(requestBody, sessionId, requestId, signal);
   }
@@ -1362,25 +1360,6 @@ export class RunEngine {
       ['completed', 'cancelled', 'failed'].includes(next.run.status) &&
       next.run.status !== current.run.status
     ) {
-      const originatingSubscriptionId = next.run.notificationSubscriptionId || '';
-      if (
-        (next.run.status === 'completed' || next.run.status === 'failed') &&
-        originatingSubscriptionId
-      ) {
-        const eventId = completionEventId(next.run.responseId, originatingSubscriptionId);
-        if (!this.handledCompletionEvents.has(eventId)) {
-          this.handledCompletionEvents.add(eventId);
-          void this.services.notificationController.signalCompletion(
-            {
-              responseId: next.run.responseId,
-              sessionId,
-              outcome: next.run.status,
-              createdAt: new Date(next.run.endedAt || Date.now()).toISOString(),
-            },
-            originatingSubscriptionId,
-          );
-        }
-      }
       this.locallyStoppedResponses.delete(next.run.responseId);
       this.clearResponseTransport(sessionId, next.run.responseId);
       this.retireIntent(sessionId);
@@ -1836,6 +1815,7 @@ export class RunEngine {
           endedAt: Number(snapshot.ended_at) || existing.run.endedAt,
           finalRev: terminal ? Number(snapshot.final_rev) || 0 : undefined,
           durableHandoff: terminal ? snapshot.durable_handoff === true : undefined,
+          continuationResponseId: String(snapshot.continuation_response_id || '') || undefined,
           pendingToolCalls:
             status === 'completed'
               ? parsePendingToolCalls(snapshot.pending_client_calls)
@@ -1990,11 +1970,18 @@ export class RunEngine {
       }
       return;
     }
-    if (this.clientTools.stop(this.sessionStore.activeSessionId.peek())) return;
+    const stoppedTools = this.clientTools.stop(this.sessionStore.activeSessionId.peek());
     const projection = this.activeProjection.value;
-    if (!projection || !['connecting', 'streaming', 'cancelling'].includes(projection.run.status))
+    if (
+      !projection ||
+      (!stoppedTools &&
+        !['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status))
+    )
       return;
     const { sessionId, responseId } = projection.run;
+    const serverResponseId = responseId.startsWith('pending_')
+      ? projection.run.continuationOf || responseId
+      : responseId;
     this.locallyStoppedResponses.add(responseId);
     this.runs.value = {
       ...this.runs.value,
@@ -2019,7 +2006,7 @@ export class RunEngine {
     };
     this.supervisors.cancel(sessionId, responseId);
     try {
-      const result = await this.services.endpoints.cancelResponse(responseId);
+      const result = await this.services.endpoints.cancelResponse(serverResponseId);
       const authoritativeStatus = String(result.status || '');
       const current = this.runs.peek()[sessionId];
       if (
@@ -2124,24 +2111,25 @@ export class RunEngine {
     return !this.disposed && this.runs.peek()[sessionId]?.run.responseId === responseId;
   }
 
-  /**
-   * Continues `responseId` with client tool results: a send without a user
-   * message. Installs the pending run before the first await, so the
-   * conversation stays busy from the tools' end to the new response.
-   */
+  private async abortToolContinuation(responseId: string): Promise<void> {
+    await this.services.endpoints.cancelResponse(responseId);
+  }
+
+  /** Continues the handoff without user input; installs a pending run before awaiting. */
   private async continueWithToolOutputs(
     sessionId: string,
     responseId: string,
     outputs: ClientToolOutputItem[],
   ): Promise<void> {
-    if (this.disposed || this.runs.peek()[sessionId]?.run.responseId !== responseId) return;
-    // Like a user send, continue from the durable tail the refresh loaded.
+    const previous = this.runs.peek()[sessionId]?.run;
+    if (this.disposed || previous?.responseId !== responseId) return;
+    // Capture the exact handoff cursor before replacing the run; never sample the session tail.
+    const continuationResponseId = previous.continuationResponseId || responseId;
     const session = this.sessionStore.sessions.peek().find((entry) => entry.id === sessionId);
     if (!session) return;
     const requestId = uuid();
     // First-party requests need an idempotency key even without a user message.
     const clientMessageId = uuid();
-    const notificationSubscriptionId = this.notificationSubscriptionId();
     const run: ActiveRun = {
       responseId: `pending_${uuid()}`,
       sessionId,
@@ -2152,14 +2140,13 @@ export class RunEngine {
       startedAt: Date.now(),
       reconnects: 0,
       requestId,
-      notificationSubscriptionId: notificationSubscriptionId || undefined,
+      continuationOf: responseId,
     };
     this.runs.value = { ...this.runs.peek(), [sessionId]: initialProjection(run) };
     const streamOwner = this.supervisors.begin(sessionId, run.responseId);
     const requestBody = {
-      // previous_response_id is the durable id the refresh loaded, which is
-      // not the stream's response id.
       ...this.responseRequestBody(session),
+      previous_response_id: continuationResponseId,
       client_message_id: clientMessageId,
       input: outputs,
     };
@@ -2170,7 +2157,6 @@ export class RunEngine {
           sessionId,
           requestId,
           streamOwner.abort.signal,
-          notificationSubscriptionId,
         );
         await this.acceptCreatedResponse({
           response,
@@ -2188,12 +2174,27 @@ export class RunEngine {
           this.scheduleSupervisorRetry(streamOwner, error);
           return;
         }
-        const delay = sessionBusy(error) ? CONTINUATION_BUSY_RETRY_MS[attempt] : undefined;
-        if (delay === undefined) {
+        const busy = sessionBusy(error);
+        if (
+          (busy && CONTINUATION_BUSY_RETRY_MS[attempt] === undefined) ||
+          (!busy && this.definitiveSendRejection(error))
+        ) {
+          // Explicit abandonment cancels the durable logical turn, even though
+          // its tool-offering protocol response already completed.
+          try {
+            await this.abortToolContinuation(responseId);
+          } catch (cancelError) {
+            this.services.toast(`Could not confirm stop: ${errorMessage(cancelError)}`, 'error');
+          }
           this.failRun(sessionId, error);
           this.supervisors.retire(streamOwner);
           return;
         }
+        // Unknown outcomes replay the same idempotency key and handoff lineage,
+        // never a new origin or a manufactured successful terminal response.
+        const delay = busy
+          ? CONTINUATION_BUSY_RETRY_MS[attempt]
+          : Math.min(30_000, 1_000 * 1.5 ** Math.min(attempt, 8));
         await this.waitUnlessStopped(streamOwner.abort.signal, delay);
         if (!this.supervisors.owns(streamOwner)) return;
       }

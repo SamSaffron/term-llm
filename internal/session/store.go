@@ -13,8 +13,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	"github.com/samsaffron/term-llm/internal/session/notificationdb"
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
@@ -196,7 +196,7 @@ func AsStoreChangeStore(store Store) (StoreChangeStore, bool) {
 }
 
 // ResponseRunState is the durable lifecycle state of a serve-origin web run.
-type ResponseRunState string
+type ResponseRunState = notificationdb.ResponseRunState
 
 const (
 	ResponseRunRunning   ResponseRunState = "running"
@@ -216,6 +216,7 @@ var (
 
 // ResponseRunAdmission durably accounts for a run before provider work starts.
 type ResponseRunAdmission struct {
+	Turn *NotificationTurnAdmission
 	// AgentEvents fences a host wake against collection/stop/new generations
 	// in the same transaction as durable parent admission; only ID/generation matter.
 	AgentEvents []AgentRun
@@ -272,13 +273,19 @@ func ResponseRunFenceFromContext(ctx context.Context) (ResponseRunFence, bool) {
 }
 
 type ResponseRunTerminal struct {
-	ResponseID         string
-	OwnerInstanceID    string
-	FencingToken       int64
-	Outcome            ResponseRunState
-	FinalRev           int64
-	DurableOutputCount int
-	EndedAt            time.Time
+	PendingClientCallIDs []string
+	Recoverable          bool
+	AgentEvents          []AgentRun
+	PendingClientCalls   bool
+	AwaitingAgentJoin    bool
+	AwaitedEvents        []AgentRun
+	ResponseID           string
+	OwnerInstanceID      string
+	FencingToken         int64
+	Outcome              ResponseRunState
+	FinalRev             int64
+	DurableOutputCount   int
+	EndedAt              time.Time
 }
 
 // AttentionState is the authoritative per-session terminal-attention watermark.
@@ -682,23 +689,6 @@ func (s *loggingWorkspaceGrantStore) DeleteWorkspaceGrant(ctx context.Context, s
 		s.logger.logOnce("DeleteWorkspaceGrant", err)
 	}
 	return err
-}
-
-// PendingSteering is a durable, not-yet-committed steering intent. It lives
-// outside the transcript until the engine consumes it, so restoring a session
-// cannot accidentally send the same user message to a provider early.
-type PendingSteering struct {
-	SessionID          string                `json:"session_id"`
-	ID                 string                `json:"id"`
-	Message            core.Message          `json:"message"`
-	DisplayText        string                `json:"display_text"`
-	AttachmentSummary  string                `json:"attachment_summary"`
-	CreatedAt          time.Time             `json:"created_at"`
-	AcceptanceSequence int64                 `json:"acceptance_sequence"`
-	Origin             engine.SteeringOrigin `json:"origin"`
-	OwnerKind          string                `json:"owner_kind"`
-	OwnerID            string                `json:"owner_id"`
-	OwnerFence         int64                 `json:"owner_fence"`
 }
 
 // PendingSteeringStore persists queued steering intents across tabs and
@@ -1172,38 +1162,6 @@ type PromptHistoryStore interface {
 type PromptHistoryOutsideSessionStore interface {
 	PreviousUserPromptOutsideSession(ctx context.Context, excludeSessionID string, beforeID int64, beforeCreatedAt time.Time) (*PromptHistoryEntry, error)
 	NextUserPromptOutsideSession(ctx context.Context, excludeSessionID string, afterID int64, afterCreatedAt time.Time) (*PromptHistoryEntry, error)
-}
-
-type CompletionPushOutboxItem struct {
-	ID             int64
-	EventID        string
-	ResponseID     string
-	SubscriptionID string
-	Payload        []byte
-	AttemptCount   int
-}
-
-type CompletionPushOutboxStore interface {
-	EnqueueCompletionPush(ctx context.Context, item CompletionPushOutboxItem) (bool, error)
-	ListDueCompletionPushes(ctx context.Context, now time.Time, limit int) ([]CompletionPushOutboxItem, error)
-	MarkCompletionPushDelivered(ctx context.Context, id int64) error
-	RetryCompletionPush(ctx context.Context, id int64, next time.Time, lastError string) error
-	MarkCompletionPushDead(ctx context.Context, id int64, lastError string) error
-	PruneCompletionPushOutbox(ctx context.Context, before time.Time) error
-}
-
-func AsCompletionPushOutboxStore(store Store) (CompletionPushOutboxStore, bool) {
-	if store == nil {
-		return nil, false
-	}
-	if outbox, ok := store.(CompletionPushOutboxStore); ok {
-		return outbox, true
-	}
-	if logging, ok := store.(*LoggingStore); ok {
-		outbox, ok := logging.Store.(CompletionPushOutboxStore)
-		return outbox, ok
-	}
-	return nil, false
 }
 
 // Config holds session storage configuration.

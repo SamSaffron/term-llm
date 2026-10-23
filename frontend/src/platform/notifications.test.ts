@@ -2,12 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../app/config';
 import { APIError } from '../api/client';
 import type { NativePushSubscription, TermLLMNativePush } from './push-platform';
-import {
-  NotificationController,
-  base64URLToBytes,
-  completionEventId,
-  notificationTag,
-} from './notifications';
+import { NotificationController, base64URLToBytes } from './notifications';
 
 const config: AppConfig = {
   prefix: '/ui',
@@ -43,11 +38,7 @@ afterEach(() => {
 });
 
 describe('notification enrollment controller', () => {
-  it('derives deterministic completion identity and tags', () => {
-    expect(completionEventId('resp_1', 'sub_1')).toBe('completion:resp_1:sub_1');
-    expect(notificationTag('completion:resp_1:sub_1')).toBe(
-      'term-llm-completion:completion:resp_1:sub_1',
-    );
+  it('decodes browser enrollment keys', () => {
     expect([...base64URLToBytes('AQID')]).toEqual([1, 2, 3]);
   });
 
@@ -109,23 +100,6 @@ describe('notification enrollment controller', () => {
       client_kind: 'browser',
     });
     expect(notification.requestPermission).not.toHaveBeenCalled();
-
-    const postMessage = vi.fn();
-    setProperty(document, 'visibilityState', 'hidden');
-    setProperty(navigator, 'serviceWorker', {
-      ready: Promise.resolve({ active: { postMessage } }),
-    });
-    await controller.signalCompletion({
-      responseId: 'resp_1',
-      sessionId: 'sess_1',
-      outcome: 'completed',
-    });
-    expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'completion-notification',
-        payload: expect.objectContaining({ event_id: 'completion:resp_1:canonical-sub' }),
-      }),
-    );
   });
 });
 
@@ -289,6 +263,7 @@ describe('native notification enrollment', () => {
     expect(await controller.reconcile()).toMatchObject({ status: 'subscribed', verified: true });
     expect(endpoints.pushUnsubscribe).toHaveBeenNthCalledWith(1, { id: 'old-sub' });
     expect(endpoints.pushUnsubscribe).toHaveBeenNthCalledWith(2, { id: 'old-sub' });
+    expect(endpoints.pushUnsubscribe).toHaveBeenCalledTimes(2);
     expect(localStorage.getItem('native-push-id')).toBe('native-sub');
   });
 
@@ -378,16 +353,11 @@ describe('native notification enrollment', () => {
     },
   );
 
-  it('does not emit local completion alerts in native mode', async () => {
-    const { controller } = nativeFixture();
+  it('old native bridges preserve enrollment but fail closed for automatic ownership', async () => {
+    const { controller } = nativeFixture('granted', nativeSubscription, { notificationVersion: 2 });
     await controller.reconcile();
-    const postMessage = vi.fn();
-    setProperty(navigator, 'serviceWorker', {
-      ready: Promise.resolve({ active: { postMessage } }),
-    });
-    setProperty(document, 'visibilityState', 'hidden');
-    await controller.signalCompletion({ responseId: 'r', sessionId: 's', outcome: 'completed' });
-    expect(postMessage).not.toHaveBeenCalled();
+    expect(await controller.originHeaders()).toEqual({});
+    expect('signalCompletion' in controller).toBe(false);
   });
 
   it('reconciles native changes and common lifecycle events, never browser push listeners', async () => {
@@ -471,5 +441,213 @@ describe('native notification enrollment', () => {
     expect(await browser.reconcile()).toMatchObject({ status: 'unsupported' });
     expect(browser.state.detail).toContain('HTTPS');
     expect(controller.state.status).toBe('unsupported');
+  });
+});
+
+function nativeV2Fixture() {
+  const base = nativeFixture('granted', nativeSubscription, { notificationVersion: 2 });
+  const bridge = {
+    ...base.bridge,
+    notificationCapabilities: vi.fn(async () => ({
+      version: 2 as const,
+      window_id: 'scene',
+      document_id: 'native-document',
+    })),
+    notificationPresence: vi.fn(async (_body: unknown) => {}),
+    notificationRead: vi.fn(async (_body: unknown) => {}),
+    notificationEnrollment: vi.fn(async (_body: unknown) => {}),
+    notificationPendingCleanup: vi.fn(
+      async (_body: unknown): Promise<Array<{ subscription_id: string }>> => [],
+    ),
+    notificationCleanupAcknowledged: vi.fn(async (_body: unknown) => {}),
+  } satisfies TermLLMNativePush;
+  setProperty(window, '__termLLMNativePush', bridge);
+  const endpoints = {
+    ...base.endpoints,
+    pushPresence: vi.fn(async () => ({ ok: true, version: 2 })),
+  };
+  const controller = new NotificationController(
+    { ...config, notificationVersion: 2 },
+    endpoints as never,
+    localStorage,
+    'v2-push-id',
+  );
+  return { ...base, controller, bridge, endpoints };
+}
+
+function browserFixture() {
+  setProperty(window, '__termLLMNativePush', undefined);
+  setProperty(globalThis, 'isSecureContext', true);
+  setProperty(window, 'PushManager', class {});
+  const notification = { permission: 'granted', requestPermission: vi.fn() };
+  setProperty(window, 'Notification', notification);
+  setProperty(globalThis, 'Notification', notification);
+  const subscription = {
+    endpoint: 'https://push.example/sub',
+    options: { applicationServerKey: base64URLToBytes(config.vapidKey).buffer },
+    toJSON: () => ({ endpoint: 'https://push.example/sub', keys: { p256dh: 'p', auth: 'a' } }),
+    unsubscribe: vi.fn(async () => true),
+  };
+  const registration = {
+    active: { postMessage: vi.fn() },
+    pushManager: {
+      getSubscription: vi.fn(async () => subscription),
+      subscribe: vi.fn(async () => subscription),
+    },
+  };
+  setProperty(navigator, 'serviceWorker', {
+    register: vi.fn(async () => registration),
+    getRegistration: vi.fn(async () => registration),
+  });
+  const endpoints = {
+    pushSubscribe: vi.fn(async () => ({ id: 'browser-sub', state: 'active', vapid_key_id: 'key' })),
+    pushUnsubscribe: vi.fn(async (_body: unknown) => ({})),
+  };
+  const create = () =>
+    new NotificationController(config, endpoints as never, localStorage, 'browser-id');
+  return { controller: create(), create, subscription, registration, endpoints };
+}
+
+describe('durable opt-out and exact native coordination', () => {
+  it('preserves browser off through reload/reconcile and retires failed unsubscribe IDs on reconnect', async () => {
+    const { controller, create, endpoints, registration } = browserFixture();
+    await controller.reconcile();
+    endpoints.pushUnsubscribe.mockRejectedValueOnce(new APIError('offline', 503));
+    expect(await controller.disable()).toMatchObject({ status: 'unsubscribed' });
+    expect(localStorage.getItem('browser-id')).toBeNull();
+    expect(
+      Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).some((key) =>
+        key?.includes(':retire:'),
+      ),
+    ).toBe(true);
+    const reloaded = create();
+    await reloaded.reconcile();
+    expect(endpoints.pushUnsubscribe).toHaveBeenCalledWith({ id: 'browser-sub' });
+    expect(endpoints.pushSubscribe).toHaveBeenCalledOnce();
+    expect(reloaded.state.status).toBe('unsubscribed');
+    expect(registration.active.postMessage).toHaveBeenCalledWith({
+      type: 'notification-preference',
+      enabled: false,
+    });
+    expect(await reloaded.enable()).toMatchObject({ status: 'subscribed' });
+    expect(endpoints.pushSubscribe).toHaveBeenCalledTimes(2);
+  });
+
+  it('fences a late subscribe ACK racing browser disable and persists the late ID until DELETE succeeds', async () => {
+    const { controller, create, endpoints, subscription } = browserFixture();
+    let accept!: (ack: { id: string; state: string; vapid_key_id: string }) => void;
+    endpoints.pushSubscribe.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          accept = resolve;
+        }),
+    );
+    const reconciling = controller.reconcile();
+    await vi.waitFor(() => expect(endpoints.pushSubscribe).toHaveBeenCalledOnce());
+    await controller.disable();
+    endpoints.pushUnsubscribe.mockRejectedValueOnce(new APIError('offline', 503));
+    accept({ id: 'late-id', state: 'active', vapid_key_id: 'key' });
+    expect(await reconciling).toMatchObject({ status: 'unsubscribed', verified: false });
+    expect(localStorage.getItem('browser-id')).toBeNull();
+    expect(subscription.unsubscribe).toHaveBeenCalled();
+    const reloaded = create();
+    await reloaded.reconcile();
+    expect(endpoints.pushUnsubscribe).toHaveBeenLastCalledWith({ id: 'late-id' });
+    expect(endpoints.pushSubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('never repairs while an authenticated cleanup tombstone still fails', async () => {
+    const { controller, endpoints } = browserFixture();
+    await controller.reconcile();
+    endpoints.pushUnsubscribe.mockRejectedValue(new APIError('sign in', 401));
+    await controller.disable();
+    expect(await controller.enable()).toMatchObject({ status: 'stale', verified: false });
+    expect(endpoints.pushSubscribe).toHaveBeenCalledOnce();
+    endpoints.pushUnsubscribe.mockResolvedValue({});
+    expect(await controller.reconcile()).toMatchObject({ status: 'subscribed' });
+  });
+
+  it('uses native document, authenticated presence and source headers only after successful binding', async () => {
+    const { controller, endpoints, bridge } = nativeV2Fixture();
+    await controller.reconcile();
+    expect(await controller.originHeaders()).toEqual({
+      'X-Term-LLM-Notification-Version': '2',
+      'X-Term-LLM-Window-ID': 'scene',
+      'X-Term-LLM-Document-ID': 'native-document',
+      'X-Term-LLM-Push-Subscription-ID': 'native-sub',
+      'X-Term-LLM-Notification-Source': '/ui',
+    });
+    expect(bridge.notificationEnrollment).toHaveBeenCalledWith({
+      source: '/ui',
+      subscription_id: 'native-sub',
+    });
+    expect(endpoints.pushPresence).toHaveBeenCalledWith(
+      expect.objectContaining({ source: '/ui', document_id: 'native-document' }),
+    );
+    endpoints.pushPresence.mockRejectedValueOnce(new APIError('binding expired', 409));
+    expect(await controller.originHeaders()).toEqual({});
+    controller.dispose();
+  });
+
+  it('retries a failed native local disable on reconcile instead of treating server cleanup alone as opt-out', async () => {
+    const { controller, bridge } = nativeV2Fixture();
+    await controller.reconcile();
+    bridge.disable.mockRejectedValueOnce(new Error('Native storage busy'));
+    expect(await controller.disable()).toMatchObject({ status: 'stale', verified: false });
+    expect(await controller.reconcile()).toMatchObject({ status: 'unsubscribed', verified: false });
+    expect(bridge.disable).toHaveBeenCalledTimes(2);
+    expect(await controller.originHeaders()).toEqual({});
+    controller.dispose();
+  });
+
+  it('merges native pending cleanup and ACKs native only after authenticated DELETE success', async () => {
+    const { controller, bridge, endpoints } = nativeV2Fixture();
+    bridge.notificationPendingCleanup.mockResolvedValue([
+      { subscription_id: 'other-loaded-node-id' },
+    ]);
+    endpoints.pushUnsubscribe.mockRejectedValueOnce(new APIError('unauthorized', 401));
+    expect(await controller.reconcile()).toMatchObject({ status: 'stale' });
+    expect(bridge.notificationCleanupAcknowledged).not.toHaveBeenCalled();
+    expect(endpoints.pushSubscribe).not.toHaveBeenCalled();
+    await controller.reconcile();
+    expect(bridge.notificationPendingCleanup).toHaveBeenCalledWith({ source: '/ui' });
+    expect(bridge.notificationCleanupAcknowledged).toHaveBeenCalledWith({
+      source: '/ui',
+      subscription_id: 'other-loaded-node-id',
+    });
+    expect(endpoints.pushUnsubscribe.mock.invocationCallOrder[1]).toBeLessThan(
+      bridge.notificationCleanupAcknowledged.mock.invocationCallOrder[0],
+    );
+    controller.dispose();
+  });
+
+  it('forwards exact authoritative ACK fields, never missing or guessed read sequences', async () => {
+    const { controller, bridge } = nativeV2Fixture();
+    controller.acknowledgeRead('session', { store_instance_id: 'store', latest_attention_seq: 99 });
+    controller.acknowledgeRead('session', { store_instance_id: 'store', seen_through_seq: -1 });
+    expect(bridge.notificationRead).not.toHaveBeenCalled();
+    controller.acknowledgeRead('session', {
+      store_instance_id: 'store',
+      seen_through_seq: 3,
+      latest_attention_seq: 99,
+    });
+    await vi.waitFor(() =>
+      expect(bridge.notificationRead).toHaveBeenCalledWith({
+        version: 2,
+        source: '/ui',
+        store_instance_id: 'store',
+        session_id: 'session',
+        attention_seq: 3,
+      }),
+    );
+    controller.acknowledgeRead('session', {
+      attention_store_instance_id: 'store',
+      seen_through_seq: 4,
+    });
+    await vi.waitFor(() =>
+      expect(bridge.notificationRead).toHaveBeenLastCalledWith(
+        expect.objectContaining({ attention_seq: 4 }),
+      ),
+    );
   });
 });

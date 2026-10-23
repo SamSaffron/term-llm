@@ -145,95 +145,226 @@ const scopedNotificationURL = (value) => {
   }
 };
 
-const completionNotification = (raw) => {
-  const valid = raw && raw.version === 1 && typeof raw.event_id === 'string' && raw.event_id;
-  const eventID = valid ? raw.event_id : 'malformed-push';
+// Routing/read/replay state is scoped independently of deploy caches. Operations are
+// serialized so concurrent pushes/messages cannot overwrite a replay or binding.
+const NOTIFICATION_CACHE = `term-llm-notifications-${new URL(self.registration.scope).pathname}`;
+const NOTIFICATION_STATE = new URL('./__notification-state-v2__', self.registration.scope).href;
+const REPLAY_MS = 24 * 60 * 60 * 1000;
+const NOTIFICATION_LIMIT = 512;
+let notificationWork = Promise.resolve();
+const notificationState = (operation) => {
+  const work = notificationWork.catch(() => {}).then(async () => {
+    const cache = await caches.open(NOTIFICATION_CACHE);
+    const stored = await cache.match(NOTIFICATION_STATE);
+    const state = stored ? await stored.json() : { bindings: [], events: [], reads: [], enabled: true };
+    const now = Date.now();
+    for (const field of ['bindings', 'events', 'reads']) {
+      state[field] = (Array.isArray(state[field]) ? state[field] : [])
+        .filter((entry) => entry.at > now - REPLAY_MS);
+    }
+    const result = await operation(state, now);
+    await cache.put(NOTIFICATION_STATE, new Response(JSON.stringify(state), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    return result;
+  });
+  notificationWork = work;
+  return work;
+};
+
+const opaqueID = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256;
+const inScope = (value) => {
+  try {
+    const url = new URL(value);
+    const scope = new URL(self.registration.scope);
+    return url.origin === scope.origin && url.pathname.startsWith(scope.pathname);
+  } catch { return false; }
+};
+const isRead = (state, payload) => state.reads.some((read) =>
+  read.store_instance_id === payload.store_instance_id && read.source === payload.source &&
+  read.session_id === payload.session_id && read.attention_seq >= payload.attention_seq);
+
+const parsePushPayload = (event) => {
+  try { return event.data?.json() || null; } catch { return null; }
+};
+
+const decodeNotification = (raw, now) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  // Only the actual old manual shape is compatible. Never reinterpret a broken
+  // completion/unknown version as arbitrary manual text.
+  const legacy = Object.keys(raw).every((key) => key === 'title' || key === 'body') &&
+    typeof raw.title === 'string' && typeof raw.body === 'string';
+  if (!legacy) {
+    if (raw.version !== 2 || !['manual', 'completion'].includes(raw.kind) ||
+      (raw.kind === 'completion' && raw.source !== new URL(self.registration.scope).pathname.replace(/\/$/, '')) ||
+      !opaqueID(raw.event_id) || typeof raw.title !== 'string' || typeof raw.body !== 'string') return null;
+    if (typeof raw.created_at !== 'string' || typeof raw.expires_at !== 'string') return null;
+    const created = Date.parse(raw.created_at);
+    const expires = Date.parse(raw.expires_at);
+    if (!Number.isFinite(created) || !Number.isFinite(expires) || created > now + 300000 ||
+      expires <= now || expires <= created || expires - created > REPLAY_MS) return null;
+    if (raw.kind === 'completion') {
+      if (!['turn_id', 'response_id', 'window_id', 'store_instance_id', 'session_id'].every((key) => opaqueID(raw[key])) ||
+        !Number.isSafeInteger(raw.attention_seq) || raw.attention_seq <= 0 ||
+        !Number.isSafeInteger(raw.run_epoch) || raw.run_epoch <= 0 || typeof raw.source !== 'string' ||
+        !['completed', 'failed'].includes(raw.outcome)) return null;
+    } else if (['turn_id', 'response_id', 'window_id', 'store_instance_id', 'session_id', 'attention_seq', 'outcome']
+      .some((key) => key in raw)) return null;
+  }
+  const kind = legacy ? 'manual' : raw.kind;
   return {
-    title: valid ? String(raw.title || 'term-llm') : 'term-llm notification',
+    title: raw.title,
     options: {
-      body: valid ? String(raw.body || '') : 'Open term-llm to view this update.',
+      body: raw.body,
       icon: new URL('./icon-512.png', self.registration.scope).href,
       badge: new URL('./icon-512.png', self.registration.scope).href,
-      tag: `term-llm-completion:${eventID}`,
+      tag: legacy ? `term-llm-legacy:${crypto.randomUUID()}` : `term-llm-${kind}:${raw.event_id}`,
       renotify: false,
-      data: {
-        event_id: eventID,
-        response_id: valid ? String(raw.response_id || '') : '',
-        url: scopedNotificationURL(valid ? raw.url : self.registration.scope),
-      },
+      data: { ...raw, kind, url: scopedNotificationURL(raw.url) },
     },
   };
 };
 
-const parsePushPayload = (event) => {
-  if (!event.data) return null;
-  try {
-    return event.data.json();
-  } catch {
-    try {
-      return JSON.parse(event.data.text());
-    } catch {
-      return null;
-    }
+// userVisibleOnly applies to every delivered push, including retries and invalid
+// envelopes. Never silently drop one: show/replace, then close suppressed cards.
+const fallbackNotification = () => ({
+  title: 'term-llm',
+  options: { body: 'Notification received.', tag: 'term-llm-fallback',
+    silent: true, renotify: false, data: { kind: 'fallback', url: self.registration.scope } },
+});
+const closeNotification = async (notification) => {
+  const cards = await self.registration.getNotifications({ tag: notification.options.tag });
+  for (const card of cards) {
+    if (card.data?.kind === notification.options.data.kind &&
+      card.data?.event_id === notification.options.data.event_id) card.close();
   }
 };
 
-const notifyVisibleClients = async (tag) => {
-  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  const scopePath = new URL(self.registration.scope).pathname;
-  for (const client of windows) {
-    if (new URL(client.url).pathname.startsWith(scopePath) && client.visibilityState === 'visible') {
-      client.postMessage({ type: 'completion-push-shown', tag });
-    }
-  }
-};
-
+// Serialize push display lifecycles, but not read/preference messages: a pending
+// display is not a dismissed card when a concurrent retry arrives.
+let pushWork = Promise.resolve();
 self.addEventListener('push', (event) => {
-  event.waitUntil((async () => {
-    const notification = completionNotification(parsePushPayload(event));
-    // userVisibleOnly requires every actual push delivery to show (or replace)
-    // a visible notification. Foreground pages close the exact tag afterward.
+  pushWork = pushWork.catch(() => {}).then(async () => {
+    let notification = fallbackNotification();
+    let close = true;
+    try {
+      const decoded = decodeNotification(parsePushPayload(event), Date.now());
+      notification = decoded || notification;
+      close = !decoded;
+      await notificationState(async (state, now) => {
+        if (!decoded) return;
+        const payload = notification.options.data;
+        const duplicate = payload.event_id && state.events.some((entry) => entry.id === payload.event_id);
+        close = state.enabled === false ||
+          (payload.kind === 'completion' && (isRead(state, payload) || state.read_block_until > now));
+        if (duplicate) {
+          // Replace a live card without re-alerting; do not resurrect a dismissed one.
+          const cards = await self.registration.getNotifications({ tag: notification.options.tag });
+          close ||= cards.length === 0;
+          notification.options.silent = true;
+        } else if (payload.event_id) {
+          if (state.events.length >= NOTIFICATION_LIMIT) close = true;
+          else if (!close) state.events.push({ id: payload.event_id, at: now });
+        }
+      });
+    } catch {
+      // Storage failure must not turn a delivered push into a silent delivery, nor
+      // bypass unknown read/opt-out state with unverified completion content.
+      notification = fallbackNotification();
+      close = true;
+    }
+    if (close) notification.options.silent = true;
     await self.registration.showNotification(notification.title, notification.options);
-    await notifyVisibleClients(notification.options.tag);
-  })());
+    try {
+      // A read or opt-out may commit while OS display is pending. Recheck after
+      // display, then close only this event, never newer/unrelated notifications.
+      await notificationState((state, now) => {
+        const payload = notification.options.data;
+        close ||= state.enabled === false || (payload.kind === 'completion' &&
+          (isRead(state, payload) || state.read_block_until > now));
+      });
+    } catch { close = true; }
+    if (close) await closeNotification(notification);
+  });
+  event.waitUntil(pushWork);
 });
 
 self.addEventListener('message', (event) => {
   const message = event.data || {};
-  if (message.type !== 'completion-notification') return;
-  event.waitUntil((async () => {
-    const notification = completionNotification(message.payload);
-    const existing = await self.registration.getNotifications({ tag: notification.options.tag });
-    if (!existing.length) {
-      await self.registration.showNotification(notification.title, notification.options);
+  if (!event.source?.id || !inScope(event.source.url)) return;
+  if (!['notification-bind', 'notification-read', 'notification-preference'].includes(message.type)) return;
+  event.waitUntil(notificationState(async (state, now) => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (!windows.some((client) => client.id === event.source.id && inScope(client.url))) return;
+    if (message.type === 'notification-bind') {
+      if (message.version !== 2 || !opaqueID(message.window_id) || !opaqueID(message.document_id)) return;
+      const previous = state.bindings.find((entry) => entry.window_id === message.window_id);
+      if (previous && previous.client_id !== event.source.id &&
+        windows.some((client) => client.id === previous.client_id && inScope(client.url))) {
+        event.ports?.[0]?.postMessage({ status: 'collision' });
+        return;
+      }
+      state.bindings = state.bindings.filter((entry) =>
+        entry.window_id !== message.window_id && entry.client_id !== event.source.id);
+      state.bindings.push({ window_id: message.window_id, document_id: message.document_id,
+        client_id: event.source.id, at: now });
+      state.bindings = state.bindings.slice(-NOTIFICATION_LIMIT);
+      // Reply only after durable binding succeeds (below).
+      return { status: 'bound',
+        ...(previous && previous.document_id !== message.document_id
+          ? { previous_document_id: previous.document_id } : {}),
+      };
     }
-    event.ports?.[0]?.postMessage({
-      type: 'completion-notification-handled',
-      tag: notification.options.tag,
-    });
-  })());
+    if (message.type === 'notification-preference') {
+      if (typeof message.enabled === 'boolean') state.enabled = message.enabled;
+      return;
+    }
+    if (message.version !== 2 || message.source !== new URL(self.registration.scope).pathname.replace(/\/$/, '') || !opaqueID(message.store_instance_id) ||
+      !opaqueID(message.session_id) || typeof message.source !== 'string' ||
+      !Number.isSafeInteger(message.attention_seq) || message.attention_seq <= 0) return;
+    const read = { store_instance_id: message.store_instance_id, source: message.source,
+      session_id: message.session_id, attention_seq: message.attention_seq, at: now };
+    const previous = state.reads.find((entry) => entry.store_instance_id === read.store_instance_id &&
+      entry.source === read.source && entry.session_id === read.session_id);
+    if (previous) { previous.attention_seq = Math.max(previous.attention_seq, read.attention_seq); previous.at = now; }
+    else if (state.reads.length < NOTIFICATION_LIMIT) state.reads.push(read);
+    else {
+      // Never evict live read protection. Without room for an exact watermark,
+      // fail closed for automatic alerts through this read's replay horizon.
+      state.read_block_until = Math.max(state.read_block_until || 0, now + REPLAY_MS);
+    }
+    return { read };
+  }).then(async (result) => {
+    if (result?.read) {
+      const notifications = await self.registration.getNotifications();
+      for (const notification of notifications) {
+        const payload = notification.data;
+        if (payload?.kind === 'completion' && isRead({ reads: [result.read] }, payload)) notification.close();
+      }
+    } else if (result) event.ports?.[0]?.postMessage(result);
+  }).catch(() => event.ports?.[0]?.postMessage({ status: 'unavailable' })));
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetURL = scopedNotificationURL(event.notification?.data?.url);
-
+  const payload = event.notification?.data || {};
+  const targetURL = scopedNotificationURL(payload.url);
   event.waitUntil((async () => {
-    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const scopePath = new URL(self.registration.scope).pathname;
-    for (const client of windows) {
-      if (!new URL(client.url).pathname.startsWith(scopePath)) continue;
-      await client.focus();
-      if (typeof client.navigate === 'function') {
+    let binding;
+    if (payload.kind === 'completion' && opaqueID(payload.window_id)) {
+      try { binding = await notificationState((state) => state.bindings.find((entry) => entry.window_id === payload.window_id)); }
+      catch { /* No proven owner: open fresh, never a sibling. */ }
+    }
+    if (binding) {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const client = windows.find((entry) => entry.id === binding.client_id && inScope(entry.url));
+      if (client) {
         try {
-          await client.navigate(targetURL);
+          await client.focus();
+          client.postMessage({ type: 'notification-route', url: targetURL });
           return;
-        } catch {
-          // Safari may expose navigate without implementing it for this client.
-        }
+        } catch { /* An owner can disappear between lookup and focus. */ }
       }
-      client.postMessage({ type: 'notification-route', url: targetURL });
-      return;
     }
     await self.clients.openWindow(targetURL);
   })());

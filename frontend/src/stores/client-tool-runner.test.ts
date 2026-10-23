@@ -44,6 +44,7 @@ function setup(run: ClientToolBridge['run'] = async () => ({ ok: true, output: '
     prepareContinuation: vi.fn(async (_sessionId: string, _responseId: string) => true),
     continueWith: vi.fn(async () => undefined),
     sendInline: vi.fn(async () => undefined),
+    abortContinuation: vi.fn(async (_responseId: string) => undefined),
     toast: vi.fn(),
   };
   const runner = new ClientToolRunner(host);
@@ -268,6 +269,7 @@ describe('ClientToolRunner', () => {
     );
     expect(running.value).toBe(false);
     expect(host.continueWith).not.toHaveBeenCalled();
+    expect(host.abortContinuation).toHaveBeenCalledWith('r1');
   });
 
   it('skips results that another response made stale', async () => {
@@ -301,6 +303,7 @@ describe('ClientToolRunner', () => {
     await Promise.resolve();
     expect(host.bridge.run).toHaveBeenCalledTimes(1);
     expect(host.continueWith).not.toHaveBeenCalled();
+    expect(host.abortContinuation).not.toHaveBeenCalled();
   });
 
   it('does not touch a projection that moved on to another response', async () => {
@@ -325,6 +328,7 @@ describe('ClientToolRunner', () => {
     }
     expect(host.continueWith).toHaveBeenCalledTimes(MAX_CLIENT_TOOL_ROUNDS);
     expect(host.toast).toHaveBeenCalledWith('Stopped after 8 rounds of iPhone tool calls.');
+    expect(host.abortContinuation).toHaveBeenCalledWith('r9');
 
     runner.userTurn('s1');
     runner.recordOffer('next');

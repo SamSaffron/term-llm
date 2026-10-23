@@ -227,6 +227,7 @@ export class SkillStore {
         session.id,
         { name, arguments: args, client_message_id: id },
         id,
+        skill?.execution !== 'isolated',
       );
       if (String(data.execution) === 'isolated' && data.run_id) {
         const runId = String(data.run_id);

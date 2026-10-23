@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -246,15 +244,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 	if r.coarseEvent != nil {
 		r.coarseEvent(event, payload)
 	}
-	if terminal && r.terminalNotify != nil && (event == "response.completed" || event == "response.failed") {
-		outcome := "completed"
-		if event == "response.failed" {
-			outcome = "failed"
-		}
-		r.terminalNotifyOnce.Do(func() {
-			_ = restart.Default.Go(context.Background(), func(context.Context) { r.terminalNotify(outcome) })
-		})
-	}
+
 	return nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools/agentwait"
 )
 
 // SpawnAgentArgs are the arguments for the spawn_agent tool.
@@ -603,6 +604,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 	}
 	t.manager.detachInitial(entry)
 	record, _, _ := t.manager.get(context.Background(), entry.record.ID, entry.record.ParentSessionID)
+	agentwait.Observe(ctx, record, budget > 0)
 	out := t.manager.deliver(ctx, record, entry)
 	if sessionless {
 		out = withoutLifecycleHints(out)

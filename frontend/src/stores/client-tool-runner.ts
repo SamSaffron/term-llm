@@ -40,6 +40,8 @@ export interface ClientToolRunnerHost {
     responseId: string,
     outputs: ClientToolOutputItem[],
   ) => Promise<void>;
+  /** Explicitly abandon a pending handoff (never called merely on reload/dispose). */
+  abortContinuation?: (responseId: string) => Promise<void>;
   sendInline: (responseId: string, callId: string, output: string) => Promise<void>;
   toast: (message: string) => void;
 }
@@ -201,6 +203,7 @@ export class ClientToolRunner {
     const provider = this.host.bridge.provider();
     const rounds = (this.rounds.get(sessionId) || 0) + 1;
     if (rounds > MAX_CLIENT_TOOL_ROUNDS) {
+      this.abandon(responseId);
       this.host.toast(`Stopped after ${MAX_CLIENT_TOOL_ROUNDS} rounds of ${provider} tool calls.`);
       return;
     }
@@ -219,6 +222,7 @@ export class ClientToolRunner {
     try {
       await this.host.continueWith(sessionId, responseId, outputs);
     } catch (error) {
+      if (!this.disposed) this.abandon(responseId);
       this.host.toast(`Could not send the ${provider} tool results: ${errorMessage(error)}`);
     }
   }
@@ -244,10 +248,20 @@ export class ClientToolRunner {
       ]);
       return current && !signal.aborted ? outputs : null;
     } catch (error) {
-      if (!signal.aborted)
+      if (!signal.aborted && !this.disposed) {
+        this.abandon(responseId);
         this.host.toast(`Could not send the ${provider} tool results: ${errorMessage(error)}`);
+      }
       return null;
     }
+  }
+
+  private abandon(responseId: string): void {
+    void this.host
+      .abortContinuation?.(responseId)
+      .catch((error) =>
+        this.host.toast(`Could not confirm tool continuation stop: ${errorMessage(error)}`),
+      );
   }
 
   /** Runs `calls` in order. Resolves null when stopped part-way. */

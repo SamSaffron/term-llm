@@ -165,7 +165,7 @@ func (s *serveServer) handleSteeringRush(w http.ResponseWriter, r *http.Request,
 	for _, entry := range entries {
 		pending = append(pending, session.PendingSteering{SessionID: sessionID, ID: entry.ID, Message: entry.Message, DisplayText: entry.DisplayText, Origin: entry.Origin})
 	}
-	admissionCtx, admissionCancel := context.WithTimeout(context.WithoutCancel(r.Context()), 4*time.Second)
+	admissionCtx, admissionCancel := context.WithTimeout(session.ContextWithNotificationOrigin(context.WithoutCancel(r.Context()), s.notificationOrigin(r)), 4*time.Second)
 	defer admissionCancel()
 	op, err := store.AdmitRush(admissionCtx, session.RushOperation{SessionID: sessionID, RequestID: req.RequestID, SourceResponseID: source.id, SourceEpoch: source.runEpoch, Fence: owner.Fence, ReplacementResponseID: transition.replacementID}, pending)
 	if err != nil {

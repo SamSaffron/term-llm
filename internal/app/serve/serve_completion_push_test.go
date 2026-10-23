@@ -49,17 +49,13 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := store.EnqueueCompletionPush(context.Background(), session.CompletionPushOutboxItem{
-					EventID: name, ResponseID: name, SubscriptionID: sub.ID, Payload: []byte(name),
-				}); err != nil {
-					t.Fatal(err)
-				}
+				seedCompletionCandidate(t, s, store, name, "session_"+name, sub.ID)
 			}
 			assertRow := func(name, wantStatus string, wantAttempts int) string {
 				t.Helper()
 				var status, next string
 				var attempts int
-				if err := db.QueryRow(`SELECT status, attempt_count, next_attempt_at FROM completion_push_outbox WHERE event_id = ?`, name).Scan(&status, &attempts, &next); err != nil {
+				if err := db.QueryRow(`SELECT status, attempt_count, next_attempt_at FROM completion_push_outbox WHERE response_id = ?`, name).Scan(&status, &attempts, &next); err != nil {
 					t.Fatal(err)
 				}
 				if status != wantStatus || attempts != wantAttempts {
@@ -69,8 +65,12 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 			}
 			var calls []string
 			send := func(ctx context.Context, _ *session.PushSubscription, payload []byte, _ *webpush.Options) (int, time.Duration, error) {
-				calls = append(calls, string(payload))
-				if string(payload) == "slow" {
+				var envelope completionPushPayload
+				if err := json.Unmarshal(payload, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				calls = append(calls, envelope.ResponseID)
+				if envelope.ResponseID == "slow" {
 					<-ctx.Done()
 					return 0, 0, fmt.Errorf("send: %w", ctx.Err())
 				}
@@ -87,8 +87,11 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				defer cancel()
 				attemptTimeout = time.Second
 			}
+			if _, err := db.Exec(`UPDATE completion_push_outbox SET next_attempt_at = '2000-01-01 00:00:00'`); err != nil {
+				t.Fatal(err)
+			}
 			before := assertRow("slow", "pending", 0)
-			s.dispatchCompletionPushesWithSender(ctx, store, attemptTimeout, send)
+			s.dispatchCompletionPushesWithSender(ctx, attemptTimeout, send)
 			next := assertRow("slow", "pending", 1)
 			if next <= before {
 				t.Fatalf("retry did not advance next_attempt_at: %q -> %q", before, next)
@@ -101,17 +104,17 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				if len(calls) != 1 {
 					t.Fatalf("continued exhausted batch: %v", calls)
 				}
-				s.dispatchCompletionPushesWithSender(context.Background(), store, time.Millisecond, send)
+				s.dispatchCompletionPushesWithSender(context.Background(), time.Millisecond, send)
 			}
 			assertRow("healthy", "delivered", 1)
 
 			// Advance eligibility directly instead of waiting through exponential backoff.
 			// Preserve the existing cutoff: seven retries, then the eighth failure is dead.
 			for attempt := 2; attempt <= 8; attempt++ {
-				if _, err := db.Exec(`UPDATE completion_push_outbox SET next_attempt_at = '2000-01-01 00:00:00' WHERE event_id = 'slow'`); err != nil {
+				if _, err := db.Exec(`UPDATE completion_push_outbox SET next_attempt_at = '2000-01-01 00:00:00' WHERE response_id = 'slow'`); err != nil {
 					t.Fatal(err)
 				}
-				s.dispatchCompletionPushesWithSender(context.Background(), store, time.Millisecond, send)
+				s.dispatchCompletionPushesWithSender(context.Background(), time.Millisecond, send)
 				status := "pending"
 				if attempt == 8 {
 					status = "dead"
@@ -157,18 +160,11 @@ func TestCompletionPushTitleIdentifiesNode(t *testing.T) {
 			}
 
 			s := &serveServer{store: store, cfg: tc.cfg}
-			s.enqueueCompletionPush("resp-1", "sess-1", sub.ID, tc.outcome, time.Now())
-
-			db, err := sql.Open("sqlite", path)
+			raw, err := s.completionNotificationPayload(session.CompletionNotification{ResponseID: "resp-1", SessionID: "sess-1", SubscriptionID: sub.ID, Source: "/ui", Outcome: session.ResponseRunState(tc.outcome)})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
 
-			var raw []byte
-			if err := db.QueryRow(`SELECT payload FROM completion_push_outbox WHERE response_id = ?`, "resp-1").Scan(&raw); err != nil {
-				t.Fatalf("no push enqueued: %v", err)
-			}
 			var payload completionPushPayload
 			if err := json.Unmarshal(raw, &payload); err != nil {
 				t.Fatal(err)
@@ -251,8 +247,16 @@ func TestCompletionPushRecordSize(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			s.enqueueCompletionPush("resp-1", "sess-1", sub.ID, "completed", time.Now())
-			s.dispatchCompletionPushes(store)
+			seedCompletionCandidate(t, s, store, "resp-1", "sess-1", sub.ID)
+			dbFixture, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer dbFixture.Close()
+			if _, err := dbFixture.Exec(`UPDATE completion_push_outbox SET next_attempt_at='2000-01-01 00:00:00'`); err != nil {
+				t.Fatal(err)
+			}
+			s.dispatchCompletionPushes()
 			db, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
@@ -276,7 +280,7 @@ func TestCompletionPushRecordSize(t *testing.T) {
 			if status != wantStatus || attempts != 1 || requests.Load() != wantRequests {
 				t.Fatalf("status=%s attempts=%d requests=%d; want %s/1/%d", status, attempts, requests.Load(), wantStatus, wantRequests)
 			}
-			due, err := store.ListDueCompletionPushes(context.Background(), time.Now().Add(time.Hour), 25)
+			due, err := store.ClaimCompletionNotifications(context.Background(), "retry-probe", time.Now().Add(time.Hour), time.Minute, 25)
 			if err != nil {
 				t.Fatal(err)
 			}

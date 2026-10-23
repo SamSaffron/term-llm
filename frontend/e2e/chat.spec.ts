@@ -583,13 +583,14 @@ test('keeps running controls while a response transport reconnects', async ({ pa
 test('opens diff UI, expands a file and queues an inline comment', async ({ page }) => {
   await open(page);
   await page.getByRole('button', { name: 'Toggle file changes' }).click();
+  const fileToggle = page.locator('.diff-file-row[data-path="frontend/src/main.tsx"]');
+  // The loading placeholder shares the panel ID, but not its lazy viewer CSS.
+  await expect(fileToggle).toBeVisible();
   expect(
     await page
       .locator('#diffSidebar')
       .evaluate((element) => getComputedStyle(element, '::before').content),
   ).toBe('none');
-  const fileToggle = page.locator('.diff-file-row[data-path="frontend/src/main.tsx"]');
-  await expect(fileToggle).toBeVisible();
   await fileToggle.click();
   await expect(page.locator('.diff-row.add .diff-code').first()).toHaveText('new');
   await page

@@ -48,6 +48,7 @@ export function responseError(
 
 export interface TransportHooks {
   getToken(): string;
+  notificationOriginHeaders?(): Promise<Record<string, string>>;
   onAuthRequired(): void;
   onNetworkState?(state: 'online' | 'offline' | 'retrying', detail?: string): void;
   onVersionMismatch?(): void;
@@ -59,6 +60,7 @@ export interface RequestControls {
   retries?: number;
   timeoutMs?: number;
   versionCheck?: boolean;
+  notificationOrigin?: boolean;
 }
 
 export interface RequestClassification {
@@ -243,6 +245,10 @@ export class APIClient {
     const headers = new Headers(init.headers);
     headers.set('Accept', headers.get('Accept') || 'application/json');
     headers.set('X-Term-LLM-Steering-Protocol', '1');
+    if (sameOrigin && controls.notificationOrigin) {
+      const origin = await this.hooks.notificationOriginHeaders?.();
+      for (const [key, value] of Object.entries(origin || {})) headers.set(key, value);
+    }
     const token = this.hooks.getToken();
     if (!sameOrigin && controls.auth !== 'caller') headers.delete('Authorization');
     if (controls.auth !== 'ignore' && sameOrigin && token && !headers.has('Authorization'))
