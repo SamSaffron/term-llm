@@ -357,8 +357,7 @@ func (m *Model) applyAgentBarrierPrepared(prepared *agentBarrierPrepared) error 
 	m.providerKey, m.modelName = prepared.providerKey, prepared.model
 	m.sess = prepared.session
 	m.applyLoadedScrollback(prepared.messages, prepared.compactionIdx)
-	m.knownTranscriptRev.Store(prepared.rev)
-	m.transcriptRevObserved.Store(true)
+	m.setTranscriptRevision(m.sess.ID, prepared.rev)
 	m.searchEnabled = m.sess.Search
 	m.toolsStr, m.mcpStr = m.sess.Tools, m.sess.MCP
 	m.localTools = tools.ParseToolsFlag(m.toolsStr)

@@ -202,7 +202,7 @@ func TestSendMessageAcceptsThisProcessesOwnWritesBetweenTurns(t *testing.T) {
 
 func TestNewSessionResetsTranscriptSyncPoint(t *testing.T) {
 	m, store := newTurnLeaseTestModel(t)
-	if m.knownTranscriptRev.Load() == 0 {
+	if rev, observed := m.transcriptRevision(m.SessionID()); !observed || rev == 0 {
 		t.Fatal("loaded session should have a non-zero revision")
 	}
 	updated, _ := m.cmdNew()
@@ -297,8 +297,9 @@ func TestTurnLeaseRunsAndReleasesForCompletedTurn(t *testing.T) {
 	if !assistant {
 		t.Fatalf("fenced run did not persist its assistant turn: %+v", messages)
 	}
-	if rev, err := store.TranscriptRev(ctx, m.SessionID()); err != nil || m.knownTranscriptRev.Load() != rev {
-		t.Fatalf("known revision = %d, store revision = %d (%v)", m.knownTranscriptRev.Load(), rev, err)
+	knownRev, observed := m.transcriptRevision(m.SessionID())
+	if rev, err := store.TranscriptRev(ctx, m.SessionID()); err != nil || !observed || knownRev != rev {
+		t.Fatalf("known revision = %d (observed=%v), store revision = %d (%v)", knownRev, observed, rev, err)
 	}
 }
 

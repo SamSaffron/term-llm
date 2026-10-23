@@ -160,7 +160,7 @@ func (env *cmdRunEnvironment) runChildLifecycleTurns(ctx context.Context, sink r
 	runErr := first.err
 
 	if !env.childLifecycleEnabled() || !childLifecycleContinues(ctx, first.err) {
-		return env.childRunResult(latest), runErr
+		return env.childRunResult(latest), joinRunErrors(runErr, ctx.Err())
 	}
 
 	limit := env.childTurnLimit()

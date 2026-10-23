@@ -101,8 +101,8 @@ func (m *Model) inspectReload(msg ReloadInspectMsg) {
 			result.State.Meta = m.sess
 			result.State.Messages = append([]session.Message(nil), m.messages...)
 		}
-		if m.transcriptRevObserved.Load() {
-			result.State.TranscriptRev = m.knownTranscriptRev.Load()
+		if rev, observed := m.transcriptRevision(result.State.SessionID); observed {
+			result.State.TranscriptRev = rev
 		}
 	}
 	select {
@@ -118,9 +118,9 @@ func (m *Model) RestoreReloadState(state ReloadState) {
 		m.messages = state.Messages
 		m.invalidateHistoryCache()
 	}
+	m.clearOtherTranscriptRevision(m.SessionID())
 	if state.TranscriptRev > 0 && m.SessionID() == state.SessionID {
-		m.knownTranscriptRev.Store(state.TranscriptRev)
-		m.transcriptRevObserved.Store(true)
+		m.setTranscriptRevision(state.SessionID, state.TranscriptRev)
 	}
 	m.branchPrefill = state.Draft
 	m.files, m.images = state.Files, state.Images

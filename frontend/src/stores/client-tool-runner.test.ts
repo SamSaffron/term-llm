@@ -234,6 +234,8 @@ describe('ClientToolRunner', () => {
     expect(running.value).toBe(true);
     loaded(true);
     await vi.waitFor(() => expect(host.continueWith).toHaveBeenCalled());
+    // Clearing local offer state must not abort the handoff we are continuing.
+    expect(host.abortContinuation).not.toHaveBeenCalled();
     // Cleared in the same task that hands over, never earlier.
     expect(busyAtHandoff).toEqual([false]);
   });

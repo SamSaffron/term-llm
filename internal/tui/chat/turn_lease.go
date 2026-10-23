@@ -68,6 +68,7 @@ func (m *Model) acquireAgentTurnLease(ctx context.Context, sessionID string, eve
 	}
 	admitCtx, cancel := context.WithTimeout(ctx, turnLeaseAdmitTimeout)
 	defer cancel()
+	knownRev, observed := m.transcriptRevision(sessionID)
 	owner := tuiTurnOwnerID()
 	responseID := "tui_turn_" + session.NewID()
 	lease, err := lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
@@ -78,7 +79,7 @@ func (m *Model) acquireAgentTurnLease(ctx context.Context, sessionID string, eve
 		SessionID:       sessionID,
 		RunEpoch:        time.Now().UnixNano(),
 		OwnerInstanceID: owner,
-		StartedRev:      m.knownTranscriptRev.Load(),
+		StartedRev:      knownRev,
 		StartedAt:       time.Now(),
 		LeaseDuration:   turnLeaseDuration,
 	})
@@ -108,10 +109,9 @@ func (m *Model) acquireAgentTurnLease(ctx context.Context, sessionID string, eve
 	// a stale conversation. A revision this process produced itself (skill
 	// activation rows, undo, shell turns, ...) is not another process's change.
 	if rev, ok := turn.transcriptRev(admitCtx); ok {
-		if !m.transcriptRevObserved.Load() {
-			m.knownTranscriptRev.Store(rev)
-			m.transcriptRevObserved.Store(true)
-		} else if rev != m.knownTranscriptRev.Load() && !m.ownTranscriptRev(rev, sessionID) {
+		if !observed {
+			m.setTranscriptRevision(sessionID, rev)
+		} else if rev != knownRev && !m.ownTranscriptRev(rev, sessionID) {
 			turn.release(session.ResponseRunCancelled)
 			return nil, errTranscriptStale
 		}
@@ -276,15 +276,42 @@ func turnLeaseRefusal(err error) string {
 	}
 }
 
-// noteOwnRunRev records a finished run's revision, but only while the model
-// still shows that session: a run finishing in the background after a session
-// switch must not poison the current session's synchronization point.
+// transcriptRevisionSnapshot binds the synchronization point to its session.
+// Snapshots are immutable: workers must not read the UI-owned m.sess, and a
+// session switch must replace the identity and revision together.
+type transcriptRevisionSnapshot struct {
+	sessionID string
+	rev       int64
+}
+
+func (m *Model) transcriptRevision(sessionID string) (int64, bool) {
+	if snapshot := m.knownTranscriptRev.Load(); snapshot != nil && snapshot.sessionID == sessionID {
+		return snapshot.rev, true
+	}
+	return 0, false
+}
+
+func (m *Model) setTranscriptRevision(sessionID string, rev int64) {
+	m.knownTranscriptRev.Store(&transcriptRevisionSnapshot{sessionID: sessionID, rev: rev})
+}
+
+// noteOwnRunRev records a finished run's revision without reading UI-owned
+// session state. CAS keeps a late worker from overwriting another session's
+// synchronization point, even if it switches between the check and the write.
 func (m *Model) noteOwnRunRev(sessionID string, rev int64) {
-	if m == nil || sessionID == "" || m.SessionID() != sessionID {
+	if m == nil || sessionID == "" {
 		return
 	}
-	m.knownTranscriptRev.Store(rev)
-	m.transcriptRevObserved.Store(true)
+	next := &transcriptRevisionSnapshot{sessionID: sessionID, rev: rev}
+	for {
+		current := m.knownTranscriptRev.Load()
+		if current == nil || current.sessionID != sessionID {
+			return
+		}
+		if m.knownTranscriptRev.CompareAndSwap(current, next) {
+			return
+		}
+	}
 }
 
 // handleFencedWriteError cancels the run when a transcript write was rejected
@@ -296,15 +323,34 @@ func (m *Model) handleFencedWriteError(err error) {
 	m.activeTurnLease.Load().lost()
 }
 
+// clearOtherTranscriptRevision drops a previous session's synchronization point
+// even when the replacement has no store/indexer or its revision read fails.
+// A failed refresh of the same session must retain its known revision.
+func (m *Model) clearOtherTranscriptRevision(sessionID string) {
+	for {
+		current := m.knownTranscriptRev.Load()
+		if current == nil || current.sessionID == sessionID {
+			return
+		}
+		if m.knownTranscriptRev.CompareAndSwap(current, nil) {
+			return
+		}
+	}
+}
+
 // noteTranscriptRev records the revision this process is synchronized with,
 // so only another process's writes are treated as staleness.
 func (m *Model) noteTranscriptRev(ctx context.Context) {
-	if m == nil || m.store == nil || m.sess == nil {
+	if m == nil {
+		return
+	}
+	sessionID := m.SessionID()
+	m.clearOtherTranscriptRevision(sessionID)
+	if m.store == nil || sessionID == "" {
 		return
 	}
 	indexer, _ := m.store.(session.TranscriptIndexer)
-	if rev, ok := transcriptRevOf(ctx, indexer, m.sess.ID); ok {
-		m.knownTranscriptRev.Store(rev)
-		m.transcriptRevObserved.Store(true)
+	if rev, ok := transcriptRevOf(ctx, indexer, sessionID); ok {
+		m.setTranscriptRevision(sessionID, rev)
 	}
 }

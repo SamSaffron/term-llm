@@ -164,8 +164,9 @@ export class ClientToolRunner {
     }
   }
 
-  /** Abandons one response without running pending calls or stopping its session.
-   * Returns whether this tab offered tools on that response. */
+  /** Drops this tab's local state for one response without running pending calls
+   * or stopping its session. Returns whether this tab offered tools on it.
+   * Telling the server to give up the handoff is `abortContinuation`. */
   abandon(responseId: string): boolean {
     for (const [key, entry] of this.inline) {
       if (key.startsWith(`${responseId}:`)) {
@@ -210,7 +211,7 @@ export class ClientToolRunner {
     const provider = this.host.bridge.provider();
     const rounds = (this.rounds.get(sessionId) || 0) + 1;
     if (rounds > MAX_CLIENT_TOOL_ROUNDS) {
-      this.abandon(responseId);
+      this.abortContinuation(responseId);
       this.host.toast(`Stopped after ${MAX_CLIENT_TOOL_ROUNDS} rounds of ${provider} tool calls.`);
       return;
     }
@@ -229,7 +230,7 @@ export class ClientToolRunner {
     try {
       await this.host.continueWith(sessionId, responseId, outputs);
     } catch (error) {
-      if (!this.disposed) this.abandon(responseId);
+      if (!this.disposed) this.abortContinuation(responseId);
       this.host.toast(`Could not send the ${provider} tool results: ${errorMessage(error)}`);
     }
   }
@@ -256,14 +257,15 @@ export class ClientToolRunner {
       return current && !signal.aborted ? outputs : null;
     } catch (error) {
       if (!signal.aborted && !this.disposed) {
-        this.abandon(responseId);
+        this.abortContinuation(responseId);
         this.host.toast(`Could not send the ${provider} tool results: ${errorMessage(error)}`);
       }
       return null;
     }
   }
 
-  private abandon(responseId: string): void {
+  /** Explicitly gives up a pending server handoff we will never continue. */
+  private abortContinuation(responseId: string): void {
     void this.host
       .abortContinuation?.(responseId)
       .catch((error) =>

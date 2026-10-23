@@ -178,8 +178,7 @@ type Model struct {
 	// knownTranscriptRev is the durable revision this process is synchronized
 	// with; a different revision at turn start that this process's store did
 	// not produce means another process wrote.
-	knownTranscriptRev    atomic.Int64
-	transcriptRevObserved atomic.Bool
+	knownTranscriptRev atomic.Pointer[transcriptRevisionSnapshot]
 	// pendingTerminalDirectory is emitted as OSC 7 after a successful runtime
 	// directory change, keeping terminal workspace metadata in sync without a
 	// process-wide chdir.
