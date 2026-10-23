@@ -200,7 +200,7 @@ func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Optio
 	} else {
 		fmt.Fprintf(out, "  auth: %s\n", authSummary(requireAuth))
 	}
-	if requireAuth && authMode != "passkey" {
+	if requireAuth && authMode != "passkey" && opts.PeerBroker == "" {
 		switch tokenSource {
 		case tokenSourceGenerated:
 			fmt.Fprintf(out, "  generated Hub bearer token: %s\n", token)
@@ -217,6 +217,18 @@ func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Optio
 	}
 	ctx, stop := signal.NotifyContextWithParent(parentCtx)
 	defer stop()
+	var peerFinished <-chan error
+	if opts.PeerBroker != "" {
+		peerHost, err := s.newPeerHost(ctx, opts, deps, nodesFile)
+		if err != nil {
+			return err
+		}
+		defer peerHost.Close()
+		result := make(chan error, 1)
+		peerFinished = result
+		go func() { result <- peerHost.Run(ctx) }()
+	}
+
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -231,6 +243,11 @@ func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Optio
 	}
 	defer stopReload()
 	select {
+	case err := <-peerFinished:
+		stop()
+		_ = srv.Close()
+		<-finished
+		return err
 	case err := <-finished:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
