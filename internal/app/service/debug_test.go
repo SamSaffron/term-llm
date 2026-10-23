@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
@@ -64,4 +66,38 @@ func TestServiceDebugOptIn(t *testing.T) {
 		t.Fatal(out.String())
 	}
 
+}
+
+func TestServiceReadinessTimeoutReportsCrashLoop(t *testing.T) {
+	prev := serviceReadyTimeout
+	serviceReadyTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { serviceReadyTimeout = prev })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	spec := userservice.Spec{Kind: "web", Host: "127.0.0.1", Port: port, BasePath: "/ui"}
+	native := userservice.Native{OS: "darwin", UID: 501, Run: func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("\tstate = spawn scheduled\n\truns = 42\n\tlast exit code = 1\n\tenvironment = {\n\t\tTOKEN => DO_NOT_PRINT\n\t}\n\t\tstate = active\n"), nil
+	}}
+	err = waitUserService(context.Background(), spec, native)
+	if err == nil {
+		t.Fatal("unreachable backend reported ready")
+	}
+	got := err.Error()
+	for _, want := range []string{"did not answer health checks", "not running (state = spawn scheduled, runs = 42, last exit code = 1)", "exiting during startup", "--debug"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "DO_NOT_PRINT") || strings.Count(got, "state =") != 1 {
+		t.Fatalf("summary must contain only first-occurrence lifecycle fields: %s", got)
+	}
+
+	native.Run = func(context.Context, string, ...string) ([]byte, error) { return []byte("\tpid = 77\n"), nil }
+	if err = waitUserService(context.Background(), spec, native); err == nil || strings.Contains(err.Error(), "not running") {
+		t.Fatalf("running but unhealthy service must not be reported as exiting: %v", err)
+	}
 }

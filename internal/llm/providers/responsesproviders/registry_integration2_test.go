@@ -138,7 +138,7 @@ func TestGrokProviderExactEndpointHeadersAndResponsesFeatures(t *testing.T) {
 			"X-XAI-Token-Auth":         "xai-grok-cli",
 			"x-authenticateresponse":   "authenticate-response",
 			"x-grok-client-mode":       "headless",
-			"x-grok-client-version":    "1.0.6",
+			"x-grok-client-version":    "1.0.13",
 			"x-grok-client-identifier": "term-llm",
 			"x-grok-model-override":    "grok-4.6",
 			"x-grok-user-id":           "acct_1",

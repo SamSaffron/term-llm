@@ -406,7 +406,15 @@ func (p *XAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, newHTTPStatusError("xAI", resp, body)
 	}
 
-	var modelsResp oaiModelsResponse
+	// Decode only the metadata used here. xAI pricing is not part of the
+	// shared OpenAI-compatible schema and may be an array rather than an object.
+	var modelsResp struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
 	if err := json.Unmarshal(body, &modelsResp); err != nil {
 		return nil, fmt.Errorf("failed to parse models response: %w", err)
 	}

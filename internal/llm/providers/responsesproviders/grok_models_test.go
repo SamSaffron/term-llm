@@ -115,7 +115,7 @@ func TestGrokModelCacheSecurityAndAccountIsolation(t *testing.T) {
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted["origin"] != grokModelsURL || persisted["client_version"] != "1.0.6" {
+	if persisted["origin"] != grokModelsURL || persisted["client_version"] != "1.0.13" {
 		t.Fatalf("cache protocol metadata = origin %v version %v", persisted["origin"], persisted["client_version"])
 	}
 	for field, mismatch := range map[string]string{

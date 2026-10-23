@@ -1,21 +1,18 @@
 package serve
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/samsaffron/term-llm/internal/app/reload"
 	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	"github.com/samsaffron/term-llm/internal/hub"
 )
 
@@ -46,13 +43,7 @@ func captureHubRegistrationEnv() {
 	_ = os.Unsetenv(hubRegistrationTokenEnv)
 }
 
-type hubRegisterNodeRequest struct {
-	ID         string `json:"id"`
-	Name       string `json:"name,omitempty"`
-	Connection string `json:"connection,omitempty"`
-	BasePath   string `json:"base_path"`
-	Token      string `json:"token"`
-}
+type hubRegisterNodeRequest = hubnode.RegisterRequest
 
 type hubRegistrationInfo struct {
 	Enabled           bool   `json:"enabled"`
@@ -250,69 +241,9 @@ func resetHubRegistrationForTest() func() {
 	}
 }
 
-func registerServeHubNode(ctx context.Context, client *http.Client, hubURL, registrationToken string, req hubRegisterNodeRequest) error {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(hubURL), "/") + "/api/register-node")
-	if err != nil {
-		return fmt.Errorf("parse hub url: %w", err)
-	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("encode registration request: %w", err)
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, u.String(), bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(registrationToken))
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		msg := strings.TrimSpace(string(data))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return fmt.Errorf("hub registration failed: HTTP %d: %s", resp.StatusCode, msg)
-	}
-	return nil
-}
-
-func unregisterServeHubNode(ctx context.Context, client *http.Client, hubURL, registrationToken, id string) error {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(hubURL), "/") + "/api/register-node/" + url.PathEscape(strings.TrimSpace(id)))
-	if err != nil {
-		return fmt.Errorf("parse hub url: %w", err)
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodDelete, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(registrationToken))
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		msg := strings.TrimSpace(string(data))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return fmt.Errorf("hub deregistration failed: HTTP %d: %s", resp.StatusCode, msg)
-	}
-	return nil
-}
+// Node-side registration clients live in hubnode; these names keep the Hub
+// server and its tests on one request shape.
+var (
+	registerServeHubNode   = hubnode.Register
+	unregisterServeHubNode = hubnode.Unregister
+)

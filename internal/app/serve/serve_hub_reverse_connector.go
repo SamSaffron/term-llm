@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
@@ -61,6 +62,7 @@ func runHubReverseConnector(ctx context.Context, hubURL, nodeID, token, localBas
 	for ctx.Err() == nil {
 		if err := hubReverseConnectOnce(ctx, hubURL, nodeID, token, localBase, allowedBasePath, client); err != nil && ctx.Err() == nil {
 			log.Printf("hub reverse connect: %v", err)
+			hubnode.LogLocalNetworkHint(log.Printf, err)
 		}
 		select {
 		case <-ctx.Done():

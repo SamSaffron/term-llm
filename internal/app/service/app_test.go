@@ -215,3 +215,46 @@ func testApp() App {
 		RegistrationTokenEnv:        "TERM_LLM_HUB_REGISTRATION_TOKEN",
 	}}
 }
+
+func TestServiceReinstallKeepsRecordedBinary(t *testing.T) {
+	home := isolatedServiceHome(t)
+	recorded := filepath.Join(home, "stable", "term-llm")
+	if err := os.MkdirAll(filepath.Dir(recorded), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recorded, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := serviceEnvironment{root: filepath.Join(home, "config", "term-llm", "services"), home: home}
+	old := &userservice.Spec{Kind: "web", Binary: recorded, Directory: home}
+	a := testApp()
+
+	spec, err := a.buildServiceInstallSpec(e, "web", nil, InstallOptions{}, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Binary != recorded {
+		t.Fatalf("bare reinstall replaced recorded binary %s with %s", recorded, spec.Binary)
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err = a.buildServiceInstallSpec(e, "web", nil, InstallOptions{Binary: self}, old)
+	if err != nil || spec.Binary != self {
+		t.Fatalf("explicit --binary = (%q, %v), want %q", spec.Binary, err, self)
+	}
+
+	spec, err = a.buildServiceInstallSpec(e, "web", nil, InstallOptions{}, nil)
+	if err != nil || spec.Binary != self {
+		t.Fatalf("first install binary = (%q, %v), want running executable %q", spec.Binary, err, self)
+	}
+
+	if err := os.Remove(recorded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.buildServiceInstallSpec(e, "web", nil, InstallOptions{}, old); err == nil || !strings.Contains(err.Error(), "--binary") {
+		t.Fatalf("missing recorded binary must ask for --binary: %v", err)
+	}
+}

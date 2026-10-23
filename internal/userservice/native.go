@@ -144,6 +144,8 @@ WantedBy=default.target
 	if n.OS != "darwin" {
 		return nil, fmt.Errorf("unsupported service platform %s", n.OS)
 	}
+	// Associate the agent with the CLI app's existing Local Network permission,
+	// even when the supervised executable is a standalone checkout build (TN3179).
 	// Without ProcessType launchd spawns agents as throttled "daemon" jobs:
 	// timer wakeups are coalesced (~15-20ms late) and I/O is deprioritized, which
 	// makes an interactive web server stall on every poll, flush and SQLite retry.
@@ -157,6 +159,7 @@ WantedBy=default.target
 <!-- %s -->
 <plist version="1.0"><dict>
 <key>Label</key><string>%s</string>
+<key>AssociatedBundleIdentifiers</key><array><string>com.term-llm.cli</string></array>
 <key>ProgramArguments</key><array>%s</array>
 <key>WorkingDirectory</key><string>%s</string>
 <key>EnvironmentVariables</key><dict>%s</dict>

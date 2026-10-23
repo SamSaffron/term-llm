@@ -33,7 +33,7 @@ func isolateGrokOAuthTestEnv(t *testing.T) {
 
 func TestGrokDeviceAuthorizationRequestAndPolling(t *testing.T) {
 	isolateGrokOAuthTestEnv(t)
-	if grokprotocol.ClientVersion != "1.0.6" || grokprotocol.ClientSurfaceCLI != "cli" {
+	if grokprotocol.ClientVersion != "1.0.13" || grokprotocol.ClientSurfaceCLI != "cli" {
 		t.Fatalf("Grok protocol metadata = version %q surface %q", grokprotocol.ClientVersion, grokprotocol.ClientSurfaceCLI)
 	}
 	var calls int
@@ -42,7 +42,7 @@ func TestGrokDeviceAuthorizationRequestAndPolling(t *testing.T) {
 		body, _ := io.ReadAll(req.Body)
 		form, _ := url.ParseQuery(string(body))
 		for name, want := range map[string]string{
-			"x-grok-client-version": "1.0.6",
+			"x-grok-client-version": "1.0.13",
 			"x-grok-client-surface": "cli",
 		} {
 			if got := req.Header.Get(name); got != want {

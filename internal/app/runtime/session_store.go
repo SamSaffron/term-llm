@@ -45,6 +45,10 @@ func InitSessionStoreWith(cfg *config.Config, errWriter io.Writer, overrides Ses
 
 	store, err := session.NewStore(storeCfg)
 	if err != nil {
+		if isNewerSessionSchemaError(err) {
+			fmt.Fprintf(errWriter, "warning: session store unavailable: %v\nUpgrade this term-llm binary to a version that supports this database schema. Session persistence is disabled for this run; the database has been left intact.\n", err)
+			return nil, func() {}
+		}
 		// Check if this is a schema error that can be recovered by reset
 		if isSchemaError(err) {
 			dbPath, _ := session.ResolveDBPath(storeCfg.Path)
@@ -88,10 +92,21 @@ func InitSessionStoreWith(cfg *config.Config, errWriter io.Writer, overrides Ses
 	return store, cleanup
 }
 
+// isNewerSessionSchemaError recognizes session's untyped future-version rejection,
+// including when it is wrapped by schema initialization. This is not corruption.
+func isNewerSessionSchemaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "session database schema version ") &&
+		strings.Contains(message, " is newer than supported version ")
+}
+
 // isSchemaError checks if an error indicates a database schema problem
 // that could be fixed by resetting the database.
 func isSchemaError(err error) bool {
-	if err == nil {
+	if err == nil || isNewerSessionSchemaError(err) {
 		return false
 	}
 	errStr := err.Error()

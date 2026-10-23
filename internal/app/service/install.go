@@ -276,16 +276,19 @@ func (a App) buildServiceInstallSpec(e serviceEnvironment, kind string, args []s
 			return userservice.Spec{}, err
 		}
 	}
+	// A bare reinstall keeps the recorded executable. Silently adopting the
+	// invoking binary (often a checkout build) would change the service's code
+	// identity and, on macOS, its Local Network permission.
 	if opts.Binary != "" {
 		spec.Binary, err = filepath.Abs(opts.Binary)
-	} else {
+	} else if spec.Binary == "" {
 		spec.Binary, err = os.Executable()
 	}
 	if err != nil {
 		return userservice.Spec{}, err
 	}
 	if info, err := os.Stat(spec.Binary); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-		return userservice.Spec{}, fmt.Errorf("service binary must be an executable file: %s", spec.Binary)
+		return userservice.Spec{}, fmt.Errorf("service binary must be an executable file: %s (select one with --binary)", spec.Binary)
 	}
 	if info, err := os.Stat(spec.Directory); err != nil || !info.IsDir() {
 		return userservice.Spec{}, fmt.Errorf("working directory does not exist: %s", spec.Directory)
@@ -481,7 +484,7 @@ func waitUserService(ctx context.Context, s userservice.Spec, native userservice
 	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	target := "http://" + net.JoinHostPort(s.Host, strconv.Itoa(s.Port)) + s.BasePath + "/healthz"
-	timer := time.NewTimer(15 * time.Second)
+	timer := time.NewTimer(serviceReadyTimeout)
 	defer timer.Stop()
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
@@ -505,7 +508,7 @@ func waitUserService(ctx context.Context, s userservice.Spec, native userservice
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			return fmt.Errorf("backend did not answer health checks at %s (last observation: %s)", target, last)
+			return fmt.Errorf("backend did not answer health checks at %s (last observation: %s)%s", target, last, serviceNotRunningSummary(ctx, s.Kind, native))
 		case <-tick.C:
 		}
 	}

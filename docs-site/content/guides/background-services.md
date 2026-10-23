@@ -210,11 +210,22 @@ saved service configuration or enable server debug logging. Credentials and the
 native environment are not dumped, but service logs may contain sensitive data;
 review the output before sharing it.
 
+If the health check times out while the server process is not running, the error
+includes the supervisor's lifecycle state (for example `state = spawn scheduled`
+and `last exit code = 1`). That means the server is exiting during startup and
+being restarted; the reason is in `term-llm service logs`.
+
+A Hub-registered Web node keeps serving locally when the Hub is unreachable at
+startup. It retries registration in the background (backing off to once a
+minute) and deregisters on shutdown only if registration succeeded. A Hub that
+rejects the registration, for example because of a wrong registration token,
+still stops startup.
+
 If exactly one native service is installed, commands can infer its kind. When
 both exist, specify `web` or `hub` for individual operations.
 
 A bare reinstall preserves the existing custom arguments, account environment,
-and credentials:
+credentials, and recorded executable, even when run from a different binary:
 
 ```bash
 term-llm service install web
@@ -222,8 +233,8 @@ term-llm service install web
 
 Supplying arguments after `--` explicitly replaces the launch arguments. An
 unchanged reinstall does not force a restart; changed settings, credential input,
-or enrollment provisioning take effect through a restart. `--binary` selects the
-executable, and `--working-directory` changes the working directory. Saved PATH
+or enrollment provisioning take effect through a restart. `--binary` selects a
+different executable (the first install uses the running one), and `--working-directory` changes the working directory. Saved PATH
 and XDG settings can be inspected in the private specification; reinstall does
 not silently replace a custom account environment.
 
@@ -249,6 +260,30 @@ Existing manually managed definitions—including the older systemd example—ar
 **not overwritten or adopted automatically**. Migrate them explicitly after
 backing up their configuration and stopping them yourself. A port conflict also
 fails rather than killing another process or silently selecting a different port.
+
+### macOS Local Network permission
+
+A LaunchAgent, unlike a command run from Terminal, needs macOS Local Network
+permission to connect to a Hub on a local-network address. When access is blocked,
+the Hub connection fails with `connect: no route to host` even though the same URL
+works from a terminal; the service log then includes recovery steps.
+
+macOS authorizes each new executable build separately, so the first connection
+after an upgrade or rebuild is blocked. macOS only completes that authorization
+while the blocked process is still running. Because the node keeps serving and
+retrying, the connection normally succeeds a few seconds later without any
+action.
+
+If it stays blocked, enable **Term LLM** under System Settings > Privacy &
+Security > Local Network. Alternatively, exempt the Hub's address from Local
+Network privacy for every program, then restart the Mac. This is Apple's
+documented administrator setting; use `AllowedEthernetLocalNetworkAddresses` for
+wired networks:
+
+```bash
+sudo defaults write com.apple.network.local-network \
+  AllowedWiFiLocalNetworkAddresses -array 10.0.0.51/32
+```
 
 ## Platform behavior and files
 

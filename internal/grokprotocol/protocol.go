@@ -5,7 +5,7 @@ package grokprotocol
 const (
 	// ClientVersion is the Grok subscription proxy compatibility version. It is
 	// sent as x-grok-client-version and is not term-llm's release version.
-	ClientVersion = "1.0.6"
+	ClientVersion = "1.0.13"
 
 	ClientIdentifier   = "term-llm"
 	ClientSurfaceCLI   = "cli"

@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	bootstrap "github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
 	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
+	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/restart"
 	platform "github.com/samsaffron/term-llm/internal/serve"
@@ -288,8 +289,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 
 	hasHTTP := hasWeb || hasAPI || hasJobs
 
-	registeredHubURL := ""
-	registeredHubNodeID := ""
+	var hubRegistration *hubnode.Registration
 	if hasHTTP {
 		var jobsV2 *jobsV2Manager
 		serveUI := hasWeb
@@ -414,18 +414,20 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 		serverStarted = true
 
 		if opts.HubRegister {
-			if err := registerServeHubNode(ctx, nil, reverseHubURL, hubRegistrationToken, hubRegisterNodeRequest{
+			var err error
+			hubRegistration, err = hubnode.Start(ctx, nil, reverseHubURL, hubRegistrationToken, hubnode.RegisterRequest{
 				ID:         reverseHubNodeID,
 				Name:       strings.TrimSpace(opts.HubNodeName),
 				Connection: "reverse",
 				BasePath:   opts.BasePath,
 				Token:      token,
-			}); err != nil {
+			}, nil)
+			if err != nil {
 				return err
 			}
-			registeredHubURL = reverseHubURL
-			registeredHubNodeID = reverseHubNodeID
-			fmt.Fprintf(deps.Stderr, "hub registration: registered %s with %s\n", reverseHubNodeID, reverseHubURL)
+			if hubRegistration.Registered() {
+				fmt.Fprintf(deps.Stderr, "hub registration: registered %s with %s\n", reverseHubNodeID, reverseHubURL)
+			}
 		}
 
 		if opts.HubConnect == "reverse" {
@@ -490,7 +492,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 		return reloadErr
 	}
 	defer stopReload()
-	shutdownServe(ctx, s, &wg, registeredHubURL, registeredHubNodeID, hubRegistrationToken)
+	shutdownServe(ctx, s, &wg, hubRegistration)
 	serverStarted = false
 
 	return nil

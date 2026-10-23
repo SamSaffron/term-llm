@@ -36,6 +36,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/runtime/progressive` — runs the progress-tool loop with work and finalization budgets for ask and serve.
 - `internal/app/serve` — hosts `term-llm serve`: HTTP and Hub routes, the shared runner, children and live runtime.
 - `internal/app/serve/hub` — holds the Hub server implementation behind explicit options.
+- `internal/app/serve/hubnode` — registers a reverse Web node with its Hub and diagnoses node-to-Hub connectivity failures.
 - `internal/app/serve/jobs` — holds the serve job scheduler's persistence schema, migrations and cron math.
 - `internal/app/serve/liveprogress` — renders delegated-run events as templated voice progress notes.
 - `internal/app/serve/protocol` — encodes and parses the OSC 7770 markers that frame serve shell commands and output.

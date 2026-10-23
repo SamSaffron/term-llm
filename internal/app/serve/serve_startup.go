@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -25,16 +26,12 @@ type serveStartupResolution struct {
 	hubRegistrationToken string
 }
 
-func shutdownServe(ctx context.Context, server *serveServer, wg *sync.WaitGroup, hubURL, hubNodeID, registrationToken string) {
+func shutdownServe(ctx context.Context, server *serveServer, wg *sync.WaitGroup, registration *hubnode.Registration) {
 	<-ctx.Done()
-	if hubURL != "" && hubNodeID != "" && registrationToken != "" {
-		deregisterCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if err := unregisterServeHubNode(deregisterCtx, nil, hubURL, registrationToken, hubNodeID); err != nil {
-			log.Printf("hub registration: deregister %s from %s: %v", hubNodeID, hubURL, err)
-		} else {
-			log.Printf("hub registration: deregistered %s from %s", hubNodeID, hubURL)
-		}
-		cancel()
+	if attempted, err := registration.DeregisterAfterStop(3 * time.Second); err != nil {
+		log.Printf("hub registration: deregister %s from %s: %v", registration.NodeID(), registration.HubURL(), err)
+	} else if attempted {
+		log.Printf("hub registration: deregistered %s from %s", registration.NodeID(), registration.HubURL())
 	}
 	if server != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

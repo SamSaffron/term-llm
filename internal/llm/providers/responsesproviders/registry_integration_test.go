@@ -265,7 +265,7 @@ func TestGrokCatalogAuthenticatedFilteringBoundsAndCache(t *testing.T) {
 			"Authorization":         "Bearer access",
 			"X-XAI-Token-Auth":      "xai-grok-cli",
 			"x-userid":              "acct_1",
-			"x-grok-client-version": "1.0.6",
+			"x-grok-client-version": "1.0.13",
 			"x-grok-client-mode":    "headless",
 			"User-Agent":            "term-llm",
 			"Accept":                "application/json",

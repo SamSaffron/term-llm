@@ -9,10 +9,23 @@ TERM_LLM_LDFLAGS := -s -w \
 	-X github.com/samsaffron/term-llm/cmd.Commit=$(COMMIT) \
 	-X github.com/samsaffron/term-llm/cmd.Date=$(BUILD_DATE)
 
+# Override to select a certificate explicitly; otherwise retain an existing
+# signing authority instead of silently replacing it with an ad-hoc signature.
+export CODESIGN_IDENTITY ?=
+
 build: frontend
-	go build -ldflags "$(TERM_LLM_LDFLAGS)" -o term-llm .
-	@if [ "$$(go env GOHOSTOS)" = "darwin" ] && [ "$$(go env GOOS)" = "darwin" ]; then \
-		codesign --force --sign - --identifier com.term-llm.cli ./term-llm; \
+	@set -e; \
+	identity="$$CODESIGN_IDENTITY"; \
+	macos=false; \
+	if [ "$$(go env GOHOSTOS)" = "darwin" ] && [ "$$(go env GOOS)" = "darwin" ]; then \
+		macos=true; \
+		if [ -z "$$identity" ]; then \
+			identity=$$(codesign -dvv ./term-llm 2>&1 | sed -n 's/^Authority=//p' | head -n 1); \
+		fi; \
+	fi; \
+	go build -ldflags "$(TERM_LLM_LDFLAGS)" -o term-llm .; \
+	if [ "$$macos" = true ]; then \
+		codesign --force --sign "$${identity:--}" --identifier com.term-llm.cli ./term-llm; \
 	fi
 
 frontend: frontend-deps

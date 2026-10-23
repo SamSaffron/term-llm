@@ -1462,6 +1462,10 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "session_unavailable", "Session persistence is unavailable. Enable sessions and check the server startup logs for database errors.")
+		return
+	}
 	if r.Method == http.MethodPost {
 		s.handleCreateWebSession(w, r)
 		return
@@ -1534,10 +1538,8 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		limit := 100
 		if paged {
 			limit = 13
-			if rawLimit != "" {
-				if parsed, parseErr := strconv.Atoi(rawLimit); parseErr == nil && parsed > 0 {
-					limit = min(parsed, 100) + 1
-				}
+			if parsed, parseErr := strconv.Atoi(rawLimit); parseErr == nil && parsed > 0 {
+				limit = min(parsed, 100) + 1
 			}
 		}
 		sessions, err = s.store.List(r.Context(), session.ListOptions{

@@ -33,6 +33,9 @@ func TestNativeDefinitions(t *testing.T) {
 				t.Fatalf("invalid definition %s", data)
 			}
 			if platform == "darwin" {
+				if !strings.Contains(string(data), "<key>AssociatedBundleIdentifiers</key><array><string>com.term-llm.cli</string></array>") {
+					t.Fatalf("launchd agent must associate CLI app privacy permissions: %s", data)
+				}
 				// Unset ProcessType makes launchd throttle timers and I/O like a daemon.
 				if !strings.Contains(string(data), "<key>ProcessType</key><string>Interactive</string>") {
 					t.Fatalf("launchd agent must be Interactive: %s", data)
