@@ -485,6 +485,145 @@ test('loads, navigates sessions, opens settings and preserves normal namespace h
   ).toEqual({ legacy: false, test: false });
 });
 
+test.describe('built-in chat themes', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/admin/extensions/status', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          directory: '/extensions',
+          config_path: '/extensions/extensions.yaml',
+          enabled: [],
+          entries: [],
+          errors: [],
+          generation: 'test',
+          source: 'extension-file',
+          disabled: false,
+          config_revision: 'test',
+        }),
+      }),
+    );
+  });
+
+  async function openThemeSettings(page: Page) {
+    const mobileMenu = page.getByRole('button', { name: 'Open sidebar' });
+    if (await mobileMenu.isVisible()) await mobileMenu.click();
+    await page.locator('#settingsBtn').click();
+    const settings = page.getByRole('dialog', { name: 'Settings' });
+    await settings.getByRole('tab', { name: 'Extensions' }).click();
+    return settings.getByRole('combobox', { name: 'Theme', exact: true });
+  }
+
+  async function closeThemeSettings(page: Page) {
+    await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+    const closeSidebar = page.getByRole('button', { name: 'Close sidebar', exact: true });
+    if (await closeSidebar.isVisible()) await closeSidebar.click();
+  }
+
+  test('keeps the original light and dark palettes as the system default', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await open(page);
+    const theme = await openThemeSettings(page);
+    await expect(theme).toHaveValue('system');
+    await expect(page.locator('html')).not.toHaveAttribute('data-chat-theme');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(theme).toHaveValue('system');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(33, 33, 33)');
+  });
+
+  test('persists an explicit palette without losing a draft and restores the system default', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await open(page);
+    const composer = page.getByRole('textbox', { name: 'Message' });
+    await composer.fill('Keep this unsent draft while changing themes');
+    let theme = await openThemeSettings(page);
+    await theme.selectOption('catppuccin');
+    await expect(page.locator('html')).toHaveAttribute('data-chat-theme', 'catppuccin');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(30, 30, 46)');
+    await closeThemeSettings(page);
+    await expect(composer).toHaveValue('Keep this unsent draft while changing themes');
+
+    await page.reload();
+    await expect(composer).toHaveValue('Keep this unsent draft while changing themes');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(30, 30, 46)');
+    theme = await openThemeSettings(page);
+    await expect(theme).toHaveValue('catppuccin');
+
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await theme.selectOption('sage-light');
+    await expect(page.locator('html')).toHaveAttribute('data-chat-theme', 'sage-light');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(251, 250, 247)');
+    await theme.selectOption('system');
+    await expect(page.locator('html')).not.toHaveAttribute('data-chat-theme');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(33, 33, 33)');
+    await page.emulateMedia({ colorScheme: 'light' });
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+    await closeThemeSettings(page);
+    await expect(composer).toHaveValue('Keep this unsent draft while changing themes');
+  });
+
+  test('allows choosing a built-in theme when extension discovery fails', async ({ page }) => {
+    await open(page);
+    await page.route('**/admin/extensions/status', (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { message: 'Extension discovery unavailable' } }),
+      }),
+    );
+    const theme = await openThemeSettings(page);
+    await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('alert')).toBeVisible();
+    await theme.selectOption('dracula');
+    await expect(page.locator('html')).toHaveAttribute('data-chat-theme', 'dracula');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(40, 42, 54)');
+  });
+
+  test('keeps an already-loaded extension override when a palette loads later', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await open(page);
+    await expect(page.locator('link[data-chat-themes]')).toHaveCount(0);
+    await page.route('**/__theme-test__/override.css', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/css',
+        body: ':root { --bg: #152433; }',
+      }),
+    );
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = '/__theme-test__/override.css';
+          link.dataset.extension = 'fixture';
+          link.onload = () => resolve();
+          link.onerror = () => reject(new Error('Fixture extension could not load'));
+          document.head.append(link);
+        }),
+    );
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(21, 36, 51)');
+
+    const theme = await openThemeSettings(page);
+    await theme.selectOption('catppuccin');
+    await expect(page.locator('link[data-chat-themes]')).toHaveCount(1);
+    // The palette's text proves its stylesheet loaded; the later extension still owns --bg.
+    await expect(page.locator('body')).toHaveCSS('color', 'rgb(205, 214, 244)');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(21, 36, 51)');
+
+    await theme.selectOption('system');
+    await expect(page.locator('html')).not.toHaveAttribute('data-chat-theme');
+    await expect(page.locator('body')).toHaveCSS('color', 'rgb(13, 13, 13)');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(21, 36, 51)');
+  });
+});
+
 test('turns a durable completion indicator off only after a visible revision-gated visit', async ({
   page,
 }, testInfo) => {
