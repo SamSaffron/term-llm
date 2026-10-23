@@ -509,7 +509,7 @@ term-llm ask --approval auto "fix this"
 term-llm loop --approval yolo --done "go test ./..." "fix tests"
 ```
 
-`--auto` and `--yolo` remain compatibility aliases for `--approval auto` and `--approval yolo`. The three flags are mutually exclusive. Yolo is CLI-only: it cannot be configured and is never restored on a cold resume.
+`--auto` and `--yolo` remain compatibility aliases for `--approval auto` and `--approval yolo`. The three flags are mutually exclusive. Yolo cannot be set in persistent configuration and is never restored on a cold resume.
 
 Set one persistent global default for all surfaces:
 
@@ -557,7 +557,7 @@ Auto mode is intentionally narrower than yolo:
 
 - `prompt`: ask before unapproved tool actions; existing pattern rules retain their prior behavior.
 - `auto`: Guardian reviews supported unmatched local operations and fails closed on denials/review failures.
-- `yolo`: auto-approve tool actions without prompting (explicit CLI use only).
+- `yolo`: auto-approve tool actions without prompting (explicit runtime selection only).
 
 Interactive Guardian initialization failure produces one warning and temporarily uses prompt mode; the requested auto policy remains saved so a later resume can retry. Headless auto runtimes fail startup if Guardian cannot initialize. Because ordinary `serve` now uses the auto built-in default, an unconfigured serve launch follows this fail-fast path; use `--approval prompt` or `serve.approval_mode: prompt` to opt into human approval mode instead. Once auto is running, a Guardian denial, contradictory allow, timeout, malformed response, unavailability, or transport failure returns an error to the agent in terminal, web/serve, and headless runtimes. It does not immediately fall through to a human prompt for that action.
 
@@ -579,7 +579,7 @@ In auto mode, arbitrary-execution shell patterns are suspended before matching. 
 
 Configured, session, ancestor, and project pattern sets remain independent; term-llm does not union them to cover different segments of a compound command. Safe pipe targets can satisfy only a later pipe segment after the head has a usable deterministic approval, so they cannot restore a suspended head. A suspended pattern is not a deny: the unresolved exact action goes to Guardian.
 
-Three consecutive Guardian policy denials or 20 total policy denials in the current auto epoch suspend auto across the root manager and all child agents. Successful Guardian approval resets only the consecutive count; reviewer failures do not count. The threshold-triggering action remains denied and the next approval-bearing action uses effective prompt mode. The requested auto policy remains responsible for shell-pattern filtering while suspended, so arbitrary-execution rules—or all rules under `classify_all_shell`—cannot become implicit post-breaker approvals. In the TUI, the first Shift+Tab after suspension calls the explicit auto-resume path, clears the latch/counters, and starts a fresh epoch; it does not jump directly to yolo. An explicit switch out of and back into auto also starts a fresh epoch. Suspension affects runtime behavior only, not the requested/persisted policy, so a cold resume may enter auto with a fresh epoch. Web/serve has no direct mode-cycle control from this feature; its existing approval transport handles later prompt-mode requests.
+Three consecutive Guardian policy denials or 20 total policy denials in the current auto epoch suspend auto across the root manager and all child agents. Successful Guardian approval resets only the consecutive count; reviewer failures do not count. The threshold-triggering action remains denied and the next approval-bearing action uses effective prompt mode. The requested auto policy remains responsible for shell-pattern filtering while suspended, so arbitrary-execution rules—or all rules under `classify_all_shell`—cannot become implicit post-breaker approvals. In the TUI, the first Shift+Tab after suspension calls the explicit auto-resume path, clears the latch/counters, and starts a fresh epoch; it does not jump directly to yolo. An explicit switch out of and back into auto also starts a fresh epoch. Suspension affects runtime behavior only, not the requested/persisted policy, so a cold resume may enter auto with a fresh epoch. In Web, `/approvals` offers Prompt, Auto, and Yolo for the current conversation and **Resume Auto** after suspension. These overrides are runtime-only. Controls require approval-managed tools and are unavailable on yolo-launched servers; child conversations inherit their parent’s policy and cannot override it independently. Auto requires an available Guardian.
 
 To override a denial deliberately, explicitly authorize the exact action in a subsequent message so Guardian can reassess it using the new trusted transcript evidence, or switch the session to prompt/yolo using existing controls. Guardian never directly offers a wildcard command pattern, directory, or repository grant after a denial.
 
