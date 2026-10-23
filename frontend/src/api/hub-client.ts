@@ -38,6 +38,7 @@ interface RequestOptions {
   body?: unknown;
   signal?: AbortSignal;
   redirectOnUnauthorized?: boolean;
+  boundedRead?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -56,6 +57,41 @@ function errorMessage(value: unknown, fallback: string): string {
     return error.message;
   if (typeof value.message === 'string' && value.message.trim()) return value.message;
   return fallback;
+}
+
+// Dashboard snapshots only: mutations, authentication and future long polls do
+// not inherit this budget. The deadline includes headers and body consumption.
+const dashboardReadMilliseconds = 10_000;
+const dashboardBodyBytes = 8 << 20;
+
+async function readDashboardBody(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const abort = () => {
+    void reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
+  try {
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    let text = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal.aborted) throw signal.reason;
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > dashboardBodyBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw new Error('Hub response is too large.');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    signal.removeEventListener('abort', abort);
+    reader.releaseLock();
+  }
 }
 
 export class HubClient {
@@ -103,28 +139,37 @@ export class HubClient {
     if (response.status === 401 || response.status === 403) {
       await Promise.allSettled([...this.unauthorizedListeners].map((listener) => listener()));
     }
+    // Authentication is a header-level decision; a stalled or canceled body
+    // must not prevent sign-in navigation after cached data has been revoked.
+    if (
+      response.status === 401 &&
+      this.config.authMode === 'passkey' &&
+      options.redirectOnUnauthorized !== false
+    ) {
+      const supplied = response.headers.get('X-Term-LLM-Login-URL');
+      const safeSupplied =
+        supplied?.startsWith('/') && !supplied.startsWith('//') && !supplied.includes('\\')
+          ? supplied
+          : '';
+      const login = safeSupplied || this.mounted('/auth/login');
+      this.navigate(login);
+    }
     const contentType = response.headers.get('Content-Type')?.toLowerCase() ?? '';
+    const text =
+      options.boundedRead && options.signal
+        ? await readDashboardBody(response, options.signal)
+        : await response.text().catch(() => '');
     let value: unknown;
     if (contentType.includes('json')) {
-      value = await response.json().catch(() => undefined);
+      try {
+        value = JSON.parse(text);
+      } catch {
+        value = undefined;
+      }
     } else {
-      const text = await response.text().catch(() => '');
       value = text || undefined;
     }
     if (!response.ok) {
-      if (
-        response.status === 401 &&
-        this.config.authMode === 'passkey' &&
-        options.redirectOnUnauthorized !== false
-      ) {
-        const supplied = response.headers.get('X-Term-LLM-Login-URL');
-        const safeSupplied =
-          supplied?.startsWith('/') && !supplied.startsWith('//') && !supplied.includes('\\')
-            ? supplied
-            : '';
-        const login = safeSupplied || this.mounted('/auth/login');
-        this.navigate(login);
-      }
       const fallback =
         typeof value === 'string' && value.trim()
           ? value.trim()
@@ -136,12 +181,41 @@ export class HubClient {
     return value as T;
   }
 
+  private async dashboardRead<T>(path: string, signal?: AbortSignal): Promise<T> {
+    const controller = new AbortController();
+    let rejectAbort!: (reason: unknown) => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const abort = (reason?: unknown) => {
+      controller.abort(reason);
+      rejectAbort(controller.signal.reason);
+    };
+    const cancel = () => abort(signal?.reason);
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted) cancel();
+    const timer = setTimeout(
+      () => abort(new Error('Hub read timed out.')),
+      dashboardReadMilliseconds,
+    );
+    try {
+      // The race also bounds a fetch implementation that ignores cancellation.
+      return await Promise.race([
+        this.request<T>(path, { signal: controller.signal, boundedRead: true }),
+        aborted,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+    }
+  }
+
   listNodes(signal?: AbortSignal): Promise<NodesResponse> {
-    return this.request('/api/nodes', { signal });
+    return this.dashboardRead('/api/nodes', signal);
   }
 
   listAttention(signal?: AbortSignal): Promise<AttentionResponse> {
-    return this.request('/api/attention', { signal });
+    return this.dashboardRead('/api/attention', signal);
   }
 
   clearAttention(): Promise<{ cleared: number; failed: number }> {
@@ -165,7 +239,7 @@ export class HubClient {
   }
 
   listDelegations(signal?: AbortSignal): Promise<DelegationsResponse> {
-    return this.request('/api/delegations', { signal });
+    return this.dashboardRead('/api/delegations', signal);
   }
 
   testNode(value: NodeFormData): Promise<TestNodeResponse> {

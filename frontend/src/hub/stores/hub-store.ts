@@ -135,7 +135,15 @@ export class HubStore {
   private reads: AbortController | undefined;
   private generation = 0;
   private disposed = false;
-  private currentRefresh: Promise<void> | null = null;
+  // Each section owns its in-flight read. An unresolved section is coalesced
+  // without stopping subsequent polls of the other two sections.
+  private readonly sectionReads = new Map<
+    HubCacheSection,
+    {
+      controller: AbortController;
+      run: Promise<void>;
+    }
+  >();
   private registrationRead: AbortController | undefined;
   private registrationGeneration = 0;
   private securityRead: AbortController | undefined;
@@ -173,23 +181,25 @@ export class HubStore {
 
   refresh(kind: 'initial' | 'manual' | 'poll' = 'manual'): Promise<void> {
     if (this.disposed || this.cacheRevoked) return Promise.resolve();
-    if (kind === 'poll' && this.currentRefresh) return this.currentRefresh;
-    this.reads?.abort();
-    const controller = new AbortController();
-    this.reads = controller;
-    const generation = ++this.generation;
+    if (kind !== 'poll') {
+      this.abortReads();
+      this.generation++;
+    }
+    const generation = this.generation;
     if (kind === 'manual') this.refreshing.value = true;
-
-    const run = this.runRefresh(controller.signal, generation).finally(() => {
-      if (this.currentRefresh === run) this.currentRefresh = null;
-      if (this.reads === controller) this.reads = undefined;
+    return this.runRefresh(generation).finally(() => {
       if (generation === this.generation) {
         this.refreshing.value = false;
         this.initialLoading.value = false;
       }
     });
-    this.currentRefresh = run;
-    return run;
+  }
+
+  private abortReads(): void {
+    this.reads?.abort();
+    this.reads = undefined;
+    for (const { controller } of this.sectionReads.values()) controller.abort();
+    this.sectionReads.clear();
   }
 
   async clearAttention(): Promise<void> {
@@ -281,68 +291,92 @@ export class HubStore {
     );
   }
 
-  private async runRefresh(signal: AbortSignal, generation: number): Promise<void> {
+  private async runRefresh(generation: number): Promise<void> {
     const orderVersion = this.orderVersion;
-    const settle = async <T>(
+    const settle = <T>(
       section: HubCacheSection,
-      request: Promise<T>,
+      request: (signal: AbortSignal) => Promise<T>,
       apply: (data: T) => void,
-    ) => {
-      try {
-        const data = await request;
-        if (!this.isCurrent(signal, generation)) return;
-        apply(data);
-        this.verified(section).value = true;
-        // A shell without the explicit authorization guarantee must wait for
-        // an authenticated response before showing any private cached section.
-        void this.hydrateCache();
-        this.scheduleWrite(section, generation);
-      } catch (error) {
-        if (!this.isCurrent(signal, generation)) return;
-        if (error instanceof HubAPIError && [401, 403].includes(error.status)) {
-          await this.invalidateCache();
-          return;
+    ): Promise<void> => {
+      const current = this.sectionReads.get(section);
+      if (current) return current.run;
+      // A mutation follow-up owns its own authoritative node read.
+      if (section === 'nodes' && this.reads) return Promise.resolve();
+      const controller = new AbortController();
+      const signal = controller.signal;
+      const run = (async () => {
+        try {
+          const data = await request(signal);
+          if (!this.isCurrent(signal, generation)) return;
+          apply(data);
+          this.verified(section).value = true;
+          // A shell without the explicit authorization guarantee must wait for
+          // an authenticated response before showing any private cached section.
+          void this.hydrateCache();
+          this.scheduleWrite(section, generation);
+        } catch (error) {
+          if (!this.isCurrent(signal, generation)) return;
+          if (error instanceof HubAPIError && [401, 403].includes(error.status)) {
+            await this.invalidateCache();
+            return;
+          }
+          if (error instanceof Error && error.name === 'AbortError') return;
+          const target =
+            section === 'nodes'
+              ? this.nodeError
+              : section === 'attention'
+                ? this.attentionError
+                : this.delegationError;
+          target.value =
+            section === 'nodes' ? `Failed to load nodes: ${message(error)}` : message(error);
         }
-        if (error instanceof Error && error.name === 'AbortError') return;
-        const target =
-          section === 'nodes'
-            ? this.nodeError
-            : section === 'attention'
-              ? this.attentionError
-              : this.delegationError;
-        target.value =
-          section === 'nodes' ? `Failed to load nodes: ${message(error)}` : message(error);
-      }
+      })().finally(() => {
+        if (this.sectionReads.get(section)?.controller === controller)
+          this.sectionReads.delete(section);
+      });
+      this.sectionReads.set(section, { controller, run });
+      return run;
     };
     await Promise.allSettled([
-      settle('nodes', this.client.listNodes(signal), (data) =>
-        this.acceptNodes(data.nodes ?? [], data.resolver_error ?? '', orderVersion, generation),
+      settle(
+        'nodes',
+        (signal) => this.client.listNodes(signal),
+        (data) =>
+          this.acceptNodes(data.nodes ?? [], data.resolver_error ?? '', orderVersion, generation),
       ),
-      settle('attention', this.client.listAttention(signal), (data) => {
-        this.inputRequired.value = reconcileHubItems(
-          this.inputRequired.peek(),
-          data.input_required ?? [],
-          (item) => JSON.stringify([item.node_id, item.session_id]),
-        );
-        this.inbox.value = reconcileHubItems(this.inbox.peek(), data.inbox ?? [], (item) =>
-          JSON.stringify([item.node_id, item.session_id]),
-        );
-        this.totalInputRequired.value =
-          data.total_input_required ?? this.inputRequired.value.length;
-        this.totalUnseen.value = data.total_unseen ?? this.inbox.value.length;
-        this.attentionHasMore.value = Boolean(data.has_more);
-        this.attentionError.value = '';
-        this.lastAttentionRefresh.value = Date.now();
-      }),
-      settle('delegations', this.client.listDelegations(signal), (data) => {
-        this.delegations.value = reconcileHubItems(
-          this.delegations.peek(),
-          data.delegations ?? [],
-          (item) => item.id,
-        );
-        this.delegationError.value = '';
-        this.lastDelegationsRefresh.value = Date.now();
-      }),
+      settle(
+        'attention',
+        (signal) => this.client.listAttention(signal),
+        (data) => {
+          this.inputRequired.value = reconcileHubItems(
+            this.inputRequired.peek(),
+            data.input_required ?? [],
+            (item) => JSON.stringify([item.node_id, item.session_id]),
+          );
+          this.inbox.value = reconcileHubItems(this.inbox.peek(), data.inbox ?? [], (item) =>
+            JSON.stringify([item.node_id, item.session_id]),
+          );
+          this.totalInputRequired.value =
+            data.total_input_required ?? this.inputRequired.value.length;
+          this.totalUnseen.value = data.total_unseen ?? this.inbox.value.length;
+          this.attentionHasMore.value = Boolean(data.has_more);
+          this.attentionError.value = '';
+          this.lastAttentionRefresh.value = Date.now();
+        },
+      ),
+      settle(
+        'delegations',
+        (signal) => this.client.listDelegations(signal),
+        (data) => {
+          this.delegations.value = reconcileHubItems(
+            this.delegations.peek(),
+            data.delegations ?? [],
+            (item) => item.id,
+          );
+          this.delegationError.value = '';
+          this.lastDelegationsRefresh.value = Date.now();
+        },
+      ),
     ]);
   }
 
@@ -463,7 +497,7 @@ export class HubStore {
   private async invalidateCache(): Promise<void> {
     this.cacheRevoked = true;
     this.generation++;
-    this.reads?.abort();
+    this.abortReads();
     this.writeTimers.forEach(clearTimeout);
     this.writeTimers.clear();
     this.nodes.value = [];
@@ -569,7 +603,7 @@ export class HubStore {
 
   private async refreshNodes(): Promise<void> {
     if (this.disposed || this.cacheRevoked) return;
-    this.reads?.abort();
+    this.abortReads();
     const controller = new AbortController();
     const generation = ++this.generation;
     const orderVersion = this.orderVersion;
@@ -835,8 +869,7 @@ export class HubStore {
     this.writeTimers.forEach(clearTimeout);
     this.writeTimers.clear();
     this.generation++;
-    this.reads?.abort();
-    this.reads = undefined;
+    this.abortReads();
     this.closeSecurity();
     if (this.interval !== undefined) this.stopInterval(this.interval);
     this.interval = undefined;

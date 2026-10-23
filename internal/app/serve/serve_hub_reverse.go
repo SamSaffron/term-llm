@@ -59,14 +59,16 @@ type hubReverseRequest = appserver.ReverseRequest
 type hubReverseResponse = appserver.ReverseResponse
 
 type hubReversePending struct {
-	ch          chan hubReverseResponse
-	terminal    chan hubReverseResponse
-	queuedBytes atomic.Int64
-	done        chan struct{}
-	doneOnce    sync.Once
-	mu          sync.RWMutex
-	err         error
-	pipe        *io.PipeWriter
+	ch            chan hubReverseResponse
+	terminal      chan hubReverseResponse
+	queuedBytes   atomic.Int64
+	done          chan struct{}
+	doneOnce      sync.Once
+	mu            sync.RWMutex
+	err           error
+	pipe          *io.PipeWriter
+	finishOnce    sync.Once
+	releaseActive func()
 }
 
 type hubReverseConnection struct {
@@ -75,7 +77,13 @@ type hubReverseConnection struct {
 	lastSeenMu  sync.RWMutex
 	lastSeen    time.Time
 	conn        *websocket.Conn
-	writeMu     sync.Mutex
+	ioOnce      sync.Once
+	closeOnce   sync.Once
+	writeGate   chan struct{}
+	active      chan struct{}
+	cancels     chan hubReverseRequest
+	closed      chan struct{}
+	detach      func()
 	requestSeq  atomic.Uint64
 	pendingMu   sync.Mutex
 	pending     map[string]*hubReversePending
@@ -87,6 +95,14 @@ func newHubReversePending() *hubReversePending {
 		terminal: make(chan hubReverseResponse, 1),
 		done:     make(chan struct{}),
 	}
+}
+
+func (p *hubReversePending) finish() {
+	p.finishOnce.Do(func() {
+		if p.releaseActive != nil {
+			p.releaseActive()
+		}
+	})
 }
 
 func (p *hubReversePending) doneClosed() bool {
@@ -237,21 +253,23 @@ func (m *hubReverseManager) attach(node hub.Node, conn *websocket.Conn) {
 		conn:        conn,
 		pending:     map[string]*hubReversePending{},
 	}
-	m.mu.Lock()
-	old := m.conns[node.ID]
-	m.conns[node.ID] = c
-	m.mu.Unlock()
-	if old != nil {
-		_ = old.conn.Close()
-		old.failPending("reverse connection replaced")
-	}
-	go c.readLoop(func() {
+	c.initIO()
+	c.detach = func() {
 		m.mu.Lock()
 		if m.conns[node.ID] == c {
 			delete(m.conns, node.ID)
 		}
 		m.mu.Unlock()
-	})
+	}
+	m.mu.Lock()
+	old := m.conns[node.ID]
+	m.conns[node.ID] = c
+	m.mu.Unlock()
+	if old != nil {
+		old.closeWithError(errors.New("reverse connection replaced"))
+	}
+	go c.cancelLoop()
+	go c.readLoop()
 }
 
 func (c *hubReverseConnection) touch() {
@@ -307,20 +325,17 @@ func hubReversePingLoop(conn *websocket.Conn, writeMu *sync.Mutex, done <-chan s
 	}
 }
 
-func (c *hubReverseConnection) readLoop(done func()) {
-	donePing := make(chan struct{})
-	defer close(donePing)
-	defer done()
-	defer c.conn.Close()
+func (c *hubReverseConnection) readLoop() {
+	defer c.closeWithError(errors.New("reverse reader stopped"))
 	if err := hubReverseSetHeartbeat(c.conn, c.touch); err != nil {
-		c.failPending(fmt.Sprintf("reverse connection heartbeat setup failed: %v", err))
+		c.closeWithError(fmt.Errorf("reverse connection heartbeat setup failed: %w", err))
 		return
 	}
-	go hubReversePingLoop(c.conn, &c.writeMu, donePing)
+	go c.pingLoop()
 	for {
 		var resp hubReverseResponse
 		if err := c.conn.ReadJSON(&resp); err != nil {
-			c.failPending(fmt.Sprintf("reverse connection closed: %v", err))
+			c.closeWithError(err)
 			return
 		}
 		c.touch()
@@ -380,31 +395,8 @@ func (c *hubReverseConnection) abortPending(id string, pending *hubReversePendin
 	removed := c.removePending(id, pending)
 	pending.abort(err)
 	if sendCancel && removed {
-		go func() { _ = c.writeRequest(hubReverseRequest{Type: hubReverseFrameCancel, ID: id}) }()
+		c.queueCancel(id)
 	}
-}
-
-func (c *hubReverseConnection) failPending(msg string) {
-	c.pendingMu.Lock()
-	pending := c.pending
-	c.pending = map[string]*hubReversePending{}
-	c.pendingMu.Unlock()
-	err := errors.New(msg)
-	for _, pending := range pending {
-		pending.abort(err)
-	}
-}
-
-func (c *hubReverseConnection) writeRequest(frame hubReverseRequest) error {
-	if c == nil || c.conn == nil {
-		return errors.New("reverse connection is unavailable")
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(hubReverseWriteWait))
-	err := c.conn.WriteJSON(frame)
-	_ = c.conn.SetWriteDeadline(time.Time{})
-	return err
 }
 
 func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Request) (*http.Response, error) {
@@ -417,10 +409,26 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 	if c == nil {
 		return nil, fmt.Errorf("node %q is not connected", node.ID)
 	}
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
+	pending := newHubReversePending()
+	pending.releaseActive = func() { <-c.active }
+	success := false
+	defer func() {
+		if !success {
+			pending.finish()
+		}
+	}()
 	var body []byte
 	if req.Body != nil {
 		var readErr error
+		stop := context.AfterFunc(ctx, func() { _ = req.Body.Close() })
 		body, readErr = io.ReadAll(io.LimitReader(req.Body, hubReverseMaxRequestBodyBytes+1))
+		stop()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -429,29 +437,46 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 		}
 	}
 	id := c.nextRequestID()
-	pending := newHubReversePending()
 	c.pendingMu.Lock()
+	select {
+	case <-c.closed:
+		c.pendingMu.Unlock()
+		return nil, errors.New("reverse connection is closed")
+	default:
+	}
 	c.pending[id] = pending
 	c.pendingMu.Unlock()
 
 	frame := hubReverseRequest{Type: hubReverseFrameRequest, ID: id, Method: req.Method, Path: req.URL.RequestURI(), Header: req.Header.Clone(), Body: body}
-	if err := c.writeRequest(frame); err != nil {
+	if err := c.writeFrame(ctx, frame); err != nil {
 		c.removePending(id, pending)
 		pending.abort(err)
 		return nil, err
 	}
 
+	if err := ctx.Err(); err != nil {
+		c.abortPending(id, pending, err, true)
+		return nil, err
+	}
 	select {
 	case resp := <-pending.ch:
 		pending.release(resp)
-		return c.buildHTTPResponseFromReverseFrame(ctx, req, id, pending, resp)
+		// Cancellation must not lose to a ready response_start: unlike a
+		// terminal frame, it still owns a remote operation.
+		if err := ctx.Err(); err != nil {
+			c.abortPending(id, pending, err, true)
+			return nil, err
+		}
+		response, err := c.buildHTTPResponseFromReverseFrame(ctx, req, id, pending, resp)
+		success = err == nil
+		return response, err
 	case <-pending.done:
 		if err := pending.errValue(); err != nil {
 			return nil, err
 		}
 		return nil, context.Canceled
 	case <-ctx.Done():
-		c.cancelPending(id, ctx.Err())
+		c.abortPending(id, pending, ctx.Err(), true)
 		return nil, ctx.Err()
 	}
 }
@@ -461,6 +486,7 @@ func (c *hubReverseConnection) buildHTTPResponseFromReverseFrame(ctx context.Con
 		return nil, errors.New(resp.Error)
 	}
 	if resp.Type == "" {
+		pending.finish()
 		return &http.Response{
 			StatusCode:    resp.Status,
 			Status:        fmt.Sprintf("%d %s", resp.Status, http.StatusText(resp.Status)),
@@ -476,18 +502,24 @@ func (c *hubReverseConnection) buildHTTPResponseFromReverseFrame(ctx context.Con
 	}
 	pr, pw := io.Pipe()
 	pending.setPipeWriter(pw)
-	go c.copyReverseResponseBody(ctx, id, pending, pw)
+	// Cancellation must close the pipe independently of the copying goroutine:
+	// that goroutine may be blocked inside pw.Write on an undrained client.
+	stop := context.AfterFunc(ctx, func() { c.abortPending(id, pending, ctx.Err(), true) })
+	go func() { defer stop(); c.copyReverseResponseBody(ctx, id, pending, pw) }()
 	return &http.Response{
 		StatusCode: resp.Status,
 		Status:     fmt.Sprintf("%d %s", resp.Status, http.StatusText(resp.Status)),
 		Header:     resp.Header,
-		Body:       pr,
-		Request:    req,
+		Body: &hubReverseBody{ReadCloser: pr, closeBody: func() {
+			c.abortPending(id, pending, context.Canceled, true)
+		}},
+		Request: req,
 	}, nil
 }
 
 func (c *hubReverseConnection) copyReverseResponseBody(ctx context.Context, id string, pending *hubReversePending, pw *io.PipeWriter) {
 	defer pw.Close()
+	defer pending.finish()
 	for {
 		var resp hubReverseResponse
 		// Drain ordinary frames before a deferred terminal frame. This preserves
@@ -543,7 +575,7 @@ func (c *hubReverseConnection) cancelPending(id string, err error) {
 	c.pendingMu.Unlock()
 	if pending != nil {
 		pending.abort(err)
-		go func() { _ = c.writeRequest(hubReverseRequest{Type: hubReverseFrameCancel, ID: id}) }()
+		c.queueCancel(id)
 	}
 }
 

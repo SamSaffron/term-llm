@@ -51,7 +51,7 @@ export const NodeCard = memo(function NodeCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const reorderable = Boolean(reorder && count > 1);
-  const stale = !store.nodesVerified.value;
+  const stale = !store.nodesVerified.value || Boolean(store.nodeError.value);
   const status = node.status ?? { reachable: false, state: 'unknown', latency_ms: 0 };
   const summary = [
     status.agent || node.id,
