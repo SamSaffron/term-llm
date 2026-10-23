@@ -164,16 +164,23 @@ export class ClientToolRunner {
     }
   }
 
-  /** A response ended. If it stopped on calls this page offered, run them. */
-  finished(sessionId: string, projection: ResponseProjection): void {
-    const { responseId, status } = projection.run;
+  /** Abandons one response without running pending calls or stopping its session.
+   * Returns whether this tab offered tools on that response. */
+  abandon(responseId: string): boolean {
     for (const [key, entry] of this.inline) {
       if (key.startsWith(`${responseId}:`)) {
         entry.controller.abort();
         this.inline.delete(key);
       }
     }
-    if (!this.offered.delete(responseId) || status !== 'completed' || this.disposed) return;
+    return this.offered.delete(responseId);
+  }
+
+  /** A response ended. If it stopped on calls this page offered, run them. */
+  finished(sessionId: string, projection: ResponseProjection): void {
+    const { responseId, status } = projection.run;
+    const offered = this.abandon(responseId);
+    if (!offered || status !== 'completed' || this.disposed) return;
     // One continuation per conversation at a time.
     if (this.running.peek()[sessionId]) return;
     const calls = pendingClientCalls(

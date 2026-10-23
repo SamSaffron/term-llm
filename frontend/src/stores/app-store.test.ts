@@ -2543,6 +2543,135 @@ describe('AppStore compatibility behavior', () => {
     );
   });
 
+  it('can switch models directly from a loaded failed turn without undo', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.endpoints.sessionState = vi.fn(async () => ({
+        lastResponseId: 'resp_msg_42',
+        model: 'old-model',
+        provider: 'old',
+      }));
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: {
+          id: 's1',
+          status: 'error',
+          provider_key: 'old',
+          model: 'old-model',
+        },
+        selected_transcript: {
+          bodies: {
+            rev: 7,
+            messages: [
+              {
+                id: 42,
+                sequence: 0,
+                role: 'user',
+                parts: [{ type: 'text', text: 'failed question' }],
+              },
+              {
+                id: 43,
+                sequence: 1,
+                role: 'event',
+                parts: [{ type: 'error', text: 'provider rejected request' }],
+              },
+            ],
+          },
+        },
+      }));
+      await store.loadSession('s1');
+      expect(store.runActive.value).toBe(false);
+      expect(store.visibleMessages.value.at(-1)?.role).toBe('error');
+      store.selectedProvider.value = 'new';
+      store.selectedModel.value = 'new-model';
+      store.prompt.value = 'continue on another model';
+      store.endpoints.createResponse = vi.fn(
+        async () => new Response('stop after request capture', { status: 400 }),
+      );
+      await store.send();
+      expect(store.endpoints.createResponse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          previous_response_id: 'resp_msg_42',
+          provider: 'new',
+          model: 'new-model',
+          model_swap: { mode: 'auto', fallback: 'handover' },
+        }),
+        's1',
+        expect.any(String),
+        expect.any(AbortSignal),
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it.each(['failed', 'cancelled', 'completed'])(
+    'uses the terminal continuation anchor to switch models immediately after %s',
+    async (status) => {
+      vi.useFakeTimers();
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [
+          {
+            ...session(),
+            activeProvider: 'old',
+            activeModel: 'old-model',
+            activeRun: true,
+            activeResponseId: 'r1',
+          },
+        ];
+        store.activeSessionId.value = 's1';
+        store.draftActive.value = false;
+        store.runs.value = {
+          s1: initialProjection({
+            responseId: 'r1',
+            sessionId: 's1',
+            epoch: 1,
+            status: 'streaming',
+            lastSequence: 0,
+            startedRev: 0,
+            reconnects: 0,
+          }),
+        };
+        store.applyResponseEvent('s1', {
+          type: `response.${status}`,
+          response_id: 'r1',
+          run_epoch: 1,
+          sequence_number: 1,
+          response: { id: 'resp_msg_42', status },
+          ...(status === 'failed' ? { error: { message: 'provider rejected request' } } : {}),
+        });
+        expect(store.runActive.value).toBe(false);
+        // Do not run the scheduled transcript refresh: recovery must be
+        // possible as soon as the terminal event makes controls available.
+        expect(store.activeSession.value?.lastResponseId).toBe('resp_msg_42');
+        store.selectedProvider.value = 'new';
+        store.selectedModel.value = 'new-model';
+        store.prompt.value = 'continue on another model';
+        store.endpoints.createResponse = vi.fn(
+          async () => new Response('stop after request capture', { status: 400 }),
+        );
+        await store.send();
+        expect(store.endpoints.createResponse).toHaveBeenCalledWith(
+          expect.objectContaining({
+            previous_response_id: 'resp_msg_42',
+            provider: 'new',
+            model: 'new-model',
+            model_swap: { mode: 'auto', fallback: 'handover' },
+          }),
+          's1',
+          expect.any(String),
+          expect.any(AbortSignal),
+        );
+      } finally {
+        store.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('keeps a known transcript revision when a sidebar summary omits it', async () => {
     const store = new AppStore(config);
     store.sessions.value = [{ ...session(), transcriptRev: 11 }];
@@ -2558,40 +2687,53 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeSession.value?.transcriptRev).toBe(11);
   });
 
-  it('uses selected transcript bodies.rev for undo concurrency', async () => {
-    const store = new AppStore(config);
-    store.sessions.value = [session()];
-    store.activeSessionId.value = 's1';
-    store.draftActive.value = false;
-    const selected = {
-      selected_session: { id: 's1', title: 'Test' },
-      selected_transcript: {
-        bodies: {
-          rev: 7,
-          messages: [
-            { id: 41, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'question' }] },
-            {
-              id: 42,
-              sequence: 1,
-              role: 'assistant',
-              parts: [{ type: 'text', text: 'answer' }],
-            },
-          ],
+  it.each([undefined, 'error', 'model_swap', 'skill_activation'])(
+    'uses selected transcript bodies.rev and trailing %s row for undo concurrency',
+    async (eventType) => {
+      const store = new AppStore(config);
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      const selected = {
+        selected_session: { id: 's1', title: 'Test' },
+        selected_transcript: {
+          bodies: {
+            rev: 7,
+            messages: [
+              { id: 41, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+              {
+                id: 42,
+                sequence: 1,
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'answer' }],
+              },
+              ...(eventType
+                ? [
+                    {
+                      id: 43,
+                      sequence: 2,
+                      role: 'event',
+                      parts: [{ type: eventType, text: 'terminal event' }],
+                    },
+                  ]
+                : []),
+            ],
+          },
         },
-      },
-    };
-    store.endpoints.sessionState = vi.fn(async () => ({}));
-    store.endpoints.selectedSession = vi.fn(async () => selected);
-    store.endpoints.mutateTranscript = vi.fn(async () => ({ rev: 8, user_text: 'question' }));
+      };
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+      store.endpoints.selectedSession = vi.fn(async () => selected);
+      store.endpoints.mutateTranscript = vi.fn(async () => ({ rev: 8, user_text: 'question' }));
 
-    await store.loadSession('s1');
-    await store.mutateTranscript('undo');
+      await store.loadSession('s1');
+      await store.mutateTranscript('undo');
 
-    expect(store.endpoints.mutateTranscript).toHaveBeenCalledWith('s1', 'undo', {
-      expected_rev: 7,
-      expected_head_id: 42,
-    });
-  });
+      expect(store.endpoints.mutateTranscript).toHaveBeenCalledWith('s1', 'undo', {
+        expected_rev: 7,
+        expected_head_id: eventType ? 43 : 42,
+      });
+    },
+  );
 
   it('forks a settled loaded session from its latest durable message row', async () => {
     const store = new AppStore(config);

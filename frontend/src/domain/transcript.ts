@@ -149,7 +149,44 @@ function sourceRowID(message: ServerMessage): string | number | null {
   const value = message.id ?? message.ID;
   return value == null || value === '' ? null : value;
 }
+function sourceHead(message: ServerMessage): Message['durableSourceHead'] {
+  const id = Number(sourceRowID(message));
+  if (!Number.isSafeInteger(id) || id <= 0) return undefined;
+  const sequence = message.sequence;
+  return {
+    id,
+    ...(Number.isSafeInteger(sequence) && Number(sequence) >= 0 ? { sequence } : {}),
+  };
+}
+function laterSourceHead(
+  previous: Message['durableSourceHead'],
+  next: Message['durableSourceHead'],
+  sourceOrderKnown = false,
+): Message['durableSourceHead'] {
+  if (!previous) return next;
+  if (!next) return previous;
+  if (previous.sequence == null || next.sequence == null) {
+    // Only raw iteration supplies source order. A coalesced skill or inline
+    // result can put the raw head before older rows in visual order.
+    if (sourceOrderKnown) return next;
+    if (previous.transcriptHead && !next.transcriptHead) return previous;
+    if (next.transcriptHead && !previous.transcriptHead) return next;
+    if (previous.sequence == null && next.sequence == null) return next;
+  }
+  const order = (next.sequence ?? -1) - (previous.sequence ?? -1);
+  return order > 0 || (order === 0 && next.id > previous.id) ? next : previous;
+}
+function messageSourceHead(message: Message): Message['durableSourceHead'] {
+  if (message.durableSourceHead) return message.durableSourceHead;
+  const sources = (message.durableSourceRowIds as Array<string | number> | undefined) || [];
+  const id = [...sources].reverse().find((source) => {
+    const value = Number(source);
+    return Number.isSafeInteger(value) && value > 0;
+  });
+  return sourceHead({ id: id ?? message.durableRowId, sequence: message.serverSeq });
+}
 function withSource(entry: Message, message: ServerMessage): Message {
+  entry.durableSourceHead = laterSourceHead(entry.durableSourceHead, sourceHead(message), true);
   const responseID = message.response_id ?? message.responseId;
   const clientMessageID = message.client_message_id ?? message.clientMessageId;
   const segmentOrdinal = message.assistant_segment_ordinal ?? message.assistantSegmentOrdinal;
@@ -178,6 +215,18 @@ function withSource(entry: Message, message: ServerMessage): Message {
   }
   if (Number.isFinite(Number(message.sequence))) entry.serverSeq = Number(message.sequence);
   return entry;
+}
+
+// Undo/redo guards the complete transcript, including event rows. Branching
+// uses durableRowId instead because events are not valid continuation anchors.
+export function transcriptMutationHeadID(messages: Message[]): number {
+  let head: Message['durableSourceHead'];
+  for (const message of messages) {
+    // Converted rows carry DB-source metadata independent of visual order and
+    // of serverSeq, which live projections may replace or deliberately remove.
+    head = laterSourceHead(head, messageSourceHead(message));
+  }
+  return head?.id || 0;
 }
 
 export function compactionSummaryDisplayText(value: string): string {
@@ -365,8 +414,11 @@ export function convertServerMessages(
   const findTool = (current: Message, callID: string, name: string): ToolCall | undefined =>
     current.tools?.find((tool) => (callID ? tool.id === callID : tool.name === name));
 
+  let transcriptHead: Message['durableSourceHead'];
   for (const message of input || []) {
     const role = text(message.role);
+    if (role !== 'system' && role !== 'developer')
+      transcriptHead = laterSourceHead(transcriptHead, sourceHead(message), true);
     if (role === 'user') {
       legacyTurn++;
       unscopedToolLocations.clear();
@@ -687,6 +739,13 @@ export function convertServerMessages(
             : '';
         if (!tool && !images.length && !media.length && !reviews?.length && !askAnswer) continue;
         const target = current || ensureGroup(message, index);
+        // Result rows can attach to a group before the final answer. Preserve
+        // their DB head without changing that group's continuation anchor.
+        target.durableSourceHead = laterSourceHead(
+          target.durableSourceHead,
+          sourceHead(message),
+          true,
+        );
         tool ||= {
           id: callID || `${messageID}_tool_${index}`,
           name: name || 'tool',
@@ -745,7 +804,12 @@ export function convertServerMessages(
     }
   }
   flush();
-  return suppressCompactionTail(output);
+  const visible = suppressCompactionTail(output);
+  // Empty bodies, unmatched results, and compaction replay rows may render
+  // nothing but still participate in the DB's non-internal mutation guard.
+  if (visible[0] && transcriptHead)
+    visible[0].durableSourceHead = { ...transcriptHead, transcriptHead: true };
+  return visible;
 }
 
 /** Startup bodies contain only a tail; retain the index's earlier turn anchors. */
@@ -1082,7 +1146,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     const beforeTools = (combined.tools || []).filter((tool) => beforeIDs.has(tool.id));
     const afterTools = (combined.tools || []).filter((tool) => !beforeIDs.has(tool.id));
     if (!beforeTools.length || !afterTools.some((tool) => afterIDs.has(tool.id))) continue;
-    const combinedView = { ...combined };
+    const combinedView = { ...combined, durableSourceHead: messageSourceHead(combined) };
     delete combinedView.durableRowId;
     delete combinedView.serverSeq;
     durableRows.splice(
@@ -1354,6 +1418,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
           id: durableSegment.id,
           created: assistantTimes.get(durableSegment) || durableSegment.created,
           durableRowId: durableSegment.durableRowId,
+          durableSourceHead: durableSegment.durableSourceHead,
           durableSourceRowIds: durableSegment.durableSourceRowIds,
         };
         continue;
@@ -1394,6 +1459,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
         id: previous.id,
         created: previous.created,
         durableRowId: previous.durableRowId,
+        durableSourceHead: laterSourceHead(previous.durableSourceHead, message.durableSourceHead),
         durableSourceRowIds: [
           ...new Set([
             ...((previous.durableSourceRowIds as Array<string | number> | undefined) || []),

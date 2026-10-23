@@ -8,7 +8,7 @@ import type {
   Goal,
   Session,
 } from '../domain/types';
-import { olderTranscriptAnchors } from '../domain/transcript';
+import { olderTranscriptAnchors, transcriptMutationHeadID } from '../domain/transcript';
 import { planSummary } from '../domain/plan';
 import { updateSessionRoute } from '../platform/routing';
 import type { AppStoreServices } from './app-store-services';
@@ -616,12 +616,12 @@ export class SelectionStore {
     const session = this.sessionsStore.activeSession.value;
     if (!session || this.runEngine.streaming.value)
       return this.services.toast(`Cannot ${operation} while work is active.`, 'error');
-    const durable = [...session.messages].reverse().find((message) => message.durableRowId);
+    const headID = transcriptMutationHeadID(session.messages);
     const owner = session.id;
     try {
       const result = await this.services.endpoints.mutateTranscript(owner, operation, {
         expected_rev: session.transcriptRev || 0,
-        expected_head_id: durable?.durableRowId || 0,
+        expected_head_id: headID,
       });
       await this.runEngine.refreshSessionMessages(owner, Number(result.rev) || 0);
       if (this.sessionsStore.activeSessionId.peek() === owner)

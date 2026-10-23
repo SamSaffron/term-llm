@@ -265,7 +265,10 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 			previousHistory = core.FilterConversationMessages(copyLLMMessageSlice(hist))
 		}
 	}
-	seedRuntimeHistory(candidate, previousHistory)
+	// Keep transcript-only events in the candidate's durable history. The
+	// engine filters them at the provider boundary; filtering here would erase
+	// earlier model-swap markers when the candidate persists its snapshot.
+	seedRuntimeHistory(candidate, restoreHistory)
 	return &responseModelSwapExecution{
 		plan:            plan,
 		candidate:       candidate,
@@ -606,12 +609,26 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	appendProgress := func(stage, message string) {
 		_ = run.appendEvent("response.model_swap.progress", modelSwapProgressPayload(stage, message, exec.plan, runtime))
 	}
+	continuationID := func() string {
+		owner := runtime
+		if exec.rolledBack && exec.previous != nil {
+			owner = exec.previous
+		}
+		return s.responseRunContinuationID(runCtx, owner, sessionID, respID)
+	}
 	failRun := func(errType string, err error) {
 		message := "model swap failed"
 		if err != nil {
 			message = err.Error()
 		}
 		hadSubscribers, failErr := run.fail(map[string]any{
+			"response": map[string]any{
+				"id":      continuationID(),
+				"object":  "response",
+				"created": created,
+				"model":   model,
+				"status":  "failed",
+			},
 			"error": map[string]any{
 				"message": message,
 				"type":    errType,
@@ -660,10 +677,9 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		exec.markCommitted()
 		s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "", false)
 		s.persistModelSwapMarker(runCtx, sessionID, exec.plan, runtime, "succeeded", "naive")
-		s.registerResponseID(runtime, respID, sessionID)
 		appendProgress("complete", fmt.Sprintf("Continuing on %s.", exec.plan.targetLabel(runtime)))
 		completeResponse := map[string]any{
-			"id":            respID,
+			"id":            continuationID(),
 			"object":        "response",
 			"created":       created,
 			"model":         model,
@@ -689,14 +705,23 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 
 	if responseRunTimedOut(runCtx) {
 		exec.markRolledBack()
+		// The candidate may have committed input or partial output. Reload it
+		// from storage when the retained runtime resumes instead of trusting
+		// its pre-swap snapshot.
+		if exec.previous != nil && exec.previous.store != nil {
+			setRuntimeHistoryPreserveEngine(exec.previous, nil)
+		}
 		failRun("timeout_error", errors.New(responseRunTimeoutMessage(s.responseTimeout())))
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		exec.markRolledBack()
+		if exec.previous != nil && exec.previous.store != nil {
+			setRuntimeHistoryPreserveEngine(exec.previous, nil)
+		}
 		cancelled, _ := run.finishCancelled(map[string]any{
 			"response": map[string]any{
-				"id":      respID,
+				"id":      continuationID(),
 				"object":  "response",
 				"created": created,
 				"model":   model,
@@ -761,10 +786,9 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	exec.markCommitted()
 	s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "", false)
 	s.persistModelSwapMarker(runCtx, sessionID, exec.plan, runtime, "succeeded", "handover")
-	s.registerResponseID(runtime, respID, sessionID)
 	appendProgress("complete", fmt.Sprintf("Continuing on %s.", exec.plan.targetLabel(runtime)))
 	completeResponse := map[string]any{
-		"id":            respID,
+		"id":            continuationID(),
 		"object":        "response",
 		"created":       created,
 		"model":         model,

@@ -155,7 +155,9 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		} else if errors.Is(err, errServeSessionPersistence) {
 			errType = "server_error"
 		}
-		if !errors.Is(err, context.Canceled) || runTimedOut {
+		// A busy rejection never owned this turn's runtime. Do not persist it,
+		// even when a concurrent timeout changes its client-facing error type.
+		if !errors.Is(err, errServeSessionBusy) && (!errors.Is(err, context.Canceled) || runTimedOut) {
 			s.persistResponseRunErrorEvent(runCtx, runtime, sessionID, respID, errType, errMessage)
 		}
 		continuationID := s.responseRunContinuationID(runCtx, runtime, sessionID, respID)

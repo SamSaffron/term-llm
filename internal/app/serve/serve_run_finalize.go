@@ -7,6 +7,17 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
+// reconcilePersistedRunError runs under rt.mu, after the fenced error write.
+func (rt *serveRuntime) reconcilePersistedRunError(msg core.Message) {
+	if rt.historyPersisted {
+		rt.history = append(rt.history, msg)
+		return
+	}
+	// An unhydrated or divergent snapshot cannot become authoritative just by
+	// appending the marker. Force the next turn to reload the durable transcript.
+	rt.history = nil
+}
+
 func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runErr error, resultText string, restoreReplaceHistory func()) {
 	if runErr == nil {
 		return
@@ -26,6 +37,12 @@ func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runE
 	if !hasProduced {
 		if p.replaceHistory && !p.initialPersisted {
 			restoreReplaceHistory()
+		} else if p.stateful && p.initialPersisted {
+			// The user input was committed even though the provider produced no
+			// reply. Keep warm runtimes aligned with cold hydration so a retry or
+			// model swap cannot lose that failed turn from its context.
+			p.rt.history = p.snapshot()
+			p.rt.historyPersisted = true
 		}
 		return
 	}

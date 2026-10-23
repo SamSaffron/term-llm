@@ -568,9 +568,10 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 		t.Fatal("expected Run to return an error")
 	}
 
-	// rt.history must be empty — no callbacks ran, no state committed.
-	if len(rt.history) != 0 {
-		t.Fatalf("history len after immediate error = %d, want 0", len(rt.history))
+	// The submitted user row was committed before contacting the provider.
+	// A warm runtime must retain it just like a newly hydrated runtime does.
+	if len(rt.history) != 1 || core.MessageText(rt.history[0]) != "hello" || !rt.historyPersisted {
+		t.Fatalf("history after immediate error = %#v, want the durable user prompt", rt.history)
 	}
 
 	// DB should have the submitted user message immediately. This keeps the web

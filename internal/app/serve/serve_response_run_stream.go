@@ -79,9 +79,12 @@ func (s *serveServer) suppressResponseRunServerToolEvent(runtime *serveRuntime, 
 }
 
 func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime *serveRuntime, sessionID, respID, errType, errMessage string) {
-	if runtime == nil || runtime.store == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(errMessage) == "" {
+	// Skip busy rejections, but wait out transient contention for genuine failures.
+	if runtime == nil || runtime.store == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(errMessage) == "" || errType == "conflict_error" {
 		return
 	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -98,7 +101,9 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 	})
 	if err != nil {
 		log.Printf("[serve] persist response run error event failed for %s: %v", sessionID, err)
+		return
 	}
+	runtime.reconcilePersistedRunError(msg)
 }
 
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {

@@ -131,6 +131,13 @@ export interface Message {
   content: string;
   created: number;
   durableRowId?: number;
+  /** Latest DB source represented by this projection, including suppressed non-internal rows. */
+  durableSourceHead?: {
+    id: number;
+    sequence?: number;
+    /** Raw transcript order resolves missing sequences, never visual position. */
+    transcriptHead?: true;
+  };
   clientMessageId?: string;
   responseId?: string;
   assistantSegmentOrdinal?: number;

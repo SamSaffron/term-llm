@@ -1363,10 +1363,14 @@ export class RunEngine {
       this.locallyStoppedResponses.delete(next.run.responseId);
       this.clearResponseTransport(sessionId, next.run.responseId);
       this.retireIntent(sessionId);
+      // The transport run ID owns events; the terminal response ID is the
+      // continuation cursor. Adopt it before controls unlock, rather than
+      // waiting for the scheduled transcript refresh to repair a stale ID.
+      const continuationId = String(eventResponse?.id || '').trim() || next.run.responseId;
       this.sessionStore.patch(sessionId, {
         activeResponseId: null,
         activeRun: false,
-        lastResponseId: next.run.responseId,
+        lastResponseId: continuationId,
       });
       this.host.publishSessionChange(
         'run-changed',
@@ -1389,7 +1393,7 @@ export class RunEngine {
         0,
       );
       if (next.run.status === 'completed')
-        this.scheduleTitleReconciliation(sessionId, next.run.responseId, owner?.generation || 0);
+        this.scheduleTitleReconciliation(sessionId, continuationId, owner?.generation || 0);
       this.clientTools.finished(sessionId, next);
     }
   }
@@ -1513,8 +1517,14 @@ export class RunEngine {
         return;
       if (state) {
         this.reconcilePendingSteering(sessionId, state, steeringRevision);
-        const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
-        this.sessionStore.patch(sessionId, { lastResponseId: lastResponseId || null });
+        // Omitted legacy fields are not an instruction to erase a known cursor;
+        // an explicit empty/null cursor still clears it authoritatively.
+        if (state.lastResponseId !== undefined || state.last_response_id !== undefined) {
+          const lastResponseId = String(
+            state.lastResponseId || state.last_response_id || '',
+          ).trim();
+          this.sessionStore.patch(sessionId, { lastResponseId: lastResponseId || null });
+        }
       }
     } catch (error) {
       if (propagateError) throw error;
@@ -1576,7 +1586,7 @@ export class RunEngine {
   ): Promise<void> {
     if (transcriptRev <= 0 || this.retiredResponses.has(responseId)) return;
     try {
-      await this.host.refreshSessionMessages(sessionId, transcriptRev);
+      await this.host.refreshSessionMessages(sessionId, transcriptRev, responseId);
     } catch {
       return;
     }
@@ -1603,7 +1613,9 @@ export class RunEngine {
       this.sessionStore.patch(sessionId, {
         activeRun: false,
         activeResponseId: null,
-        lastResponseId: responseId,
+        // Only legacy omission permits a transport fallback; null/empty means
+        // the authoritative state deliberately cleared the continuation.
+        lastResponseId: session.lastResponseId === undefined ? responseId : session.lastResponseId,
       });
     });
     this.retireIntent(sessionId);
@@ -1848,13 +1860,25 @@ export class RunEngine {
             .peek()
             .filter((entry) => entry.sessionId !== sessionId || !recoveredClientIDs.has(entry.id)),
         );
+      // Recovery must publish the continuation before terminal controls unlock.
+      // Older snapshots may omit it; preserve the known cursor (including an
+      // explicit clear) until authoritative session state arrives.
+      const knownContinuationId = this.sessionStore.sessions
+        .peek()
+        .find((session) => session.id === sessionId)?.lastResponseId;
+      const continuationId =
+        snapshot.continuation_response_id === undefined
+          ? knownContinuationId === undefined
+            ? responseId
+            : knownContinuationId
+          : String(snapshot.continuation_response_id || '').trim() || null;
       batch(() => {
         this.runs.value = { ...this.runs.peek(), [sessionId]: next };
         if (terminal)
           this.sessionStore.patch(sessionId, {
             activeResponseId: null,
             activeRun: false,
-            lastResponseId: responseId,
+            lastResponseId: continuationId,
           });
       });
       if (sessionId === this.sessionStore.activeSessionId.peek()) {
@@ -1941,8 +1965,17 @@ export class RunEngine {
           Number(snapshot.final_rev) || 0,
           responseId,
         );
+        if (this.runs.peek()[sessionId]?.run.responseId !== responseId) {
+          this.clientTools.abandon(responseId);
+          return;
+        }
         if (next.run.status === 'completed')
-          this.scheduleTitleReconciliation(sessionId, responseId, owner.generation);
+          this.scheduleTitleReconciliation(
+            sessionId,
+            this.sessionStore.sessions.peek().find((session) => session.id === sessionId)
+              ?.lastResponseId || '',
+            owner.generation,
+          );
         this.clientTools.finished(sessionId, next);
       }
     } catch (error) {
