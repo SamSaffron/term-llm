@@ -100,16 +100,17 @@ func TestCompletionProducerToActualWorkerContract(t *testing.T) {
 const completionWorkerContract = `
 const fs=require('node:fs'),vm=require('node:vm');
 const payload=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
-const listeners=new Map(),stored=new Map(),shown=[];
+const listeners=new Map(),stored=new Map(),shown=[],cards=new Map();
 const scope='https://example.test/ui/';
 const cache={async match(k){return stored.get(String(k))?.clone()},async put(k,v){stored.set(String(k),v.clone())}};
 vm.runInNewContext(fs.readFileSync(process.argv[2],'utf8'),{URL,Request,Response,console,caches:{async open(){return cache}},self:{
- location:new URL(scope),registration:{scope,async showNotification(title,options){shown.push({title,options})},async getNotifications(){return []}},
+ location:new URL(scope),registration:{scope,async showNotification(title,options){shown.push({title,options});cards.set(options.tag,{data:options.data,close(){cards.delete(options.tag)}})},async getNotifications({tag}){return cards.has(tag)?[cards.get(tag)]:[]}},
  clients:{async matchAll(){return []}},addEventListener(type,callback){listeners.set(type,callback)}
 }});
 (async()=>{
  for(let i=0;i<2;i++){let pending;listeners.get('push')({data:{json:()=>payload},waitUntil(p){pending=p}});await pending}
- if(shown.length!==1)throw Error('valid completion rejected/replayed: '+JSON.stringify({shown,payload}));
+ if(shown.length!==2||cards.size!==1)throw Error('each delivery must show/replace one card: '+JSON.stringify({shown,payload}));
+ if(shown[0].options.tag!==shown[1].options.tag||shown[1].options.renotify!==false||shown[1].options.silent!==true)throw Error('retry must replace silently');
  const data=shown[0].options.data;
  for(const key of ['event_id','turn_id','response_id','window_id','store_instance_id','session_id','attention_seq','run_epoch','source','outcome']){
   if(data[key]!==payload[key])throw Error('lost exact identity '+key)

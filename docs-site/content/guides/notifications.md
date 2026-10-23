@@ -93,7 +93,10 @@ permission. Reload, sign-out, focus and network repair do not undo it; only Enab
 clears the preference. Failed server unsubscribe requests remain queued for
 retry after authentication/network recovery. Other windows observe the same
 preference. There is necessarily a race with an alert already accepted by an
-external push service; local opt-out also guards receiver presentation.
+external push service. Because browser subscriptions use `userVisibleOnly`, every
+already-delivered push must show or replace a notification. Read, opted-out,
+invalid and over-capacity deliveries are displayed silently and then closed;
+local suppression cannot guarantee that the OS never briefly presents a card.
 
 Automatic alerts require the current server, frontend/service worker, and a
 window-aware native bridge where applicable. Older clients can still chat and
@@ -107,10 +110,14 @@ in OS Settings. Offline or unauthenticated server cleanup remains pending.
 
 Final logical-turn state and its outbox candidate are committed together. Delivery
 uses fenced claims, stable event-scoped topics, exact read/supersession checks and
-an absolute 24-hour expiry. Receiver event ledgers reduce replay after dismissal
-or restart. Browser replay/read protection retains up to 512 unexpired event IDs
-and 512 exact read watermarks per scope over 24 hours; saturation fails closed
-rather than evicting unexpired protection. These defenses do not make external push acceptance exactly-once:
+an absolute 24-hour expiry. Browser retries replace the same event-tagged card
+without requesting another alert; a durably recorded replay of a dismissed card
+is shown silently and then closed, including after worker restart. Browser
+replay/read protection retains up to 512 unexpired event IDs and 512 exact read
+watermarks per scope over 24 hours. Saturation suppresses retained cards rather
+than evicting unexpired protection; invalid envelopes or unavailable receiver
+storage use a safe generic show-and-close fallback. These defenses do not make
+external push acceptance exactly-once:
 an accepted send with a lost acknowledgement is still ambiguous. Native physical
 device presentation and notification-service-extension behavior require device
 verification, not just server or simulated receiver tests.

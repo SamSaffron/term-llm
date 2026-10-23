@@ -198,6 +198,7 @@ const decodeNotification = (raw, now) => {
     if (raw.version !== 2 || !['manual', 'completion'].includes(raw.kind) ||
       (raw.kind === 'completion' && raw.source !== new URL(self.registration.scope).pathname.replace(/\/$/, '')) ||
       !opaqueID(raw.event_id) || typeof raw.title !== 'string' || typeof raw.body !== 'string') return null;
+    if (typeof raw.created_at !== 'string' || typeof raw.expires_at !== 'string') return null;
     const created = Date.parse(raw.created_at);
     const expires = Date.parse(raw.expires_at);
     if (!Number.isFinite(created) || !Number.isFinite(expires) || created > now + 300000 ||
@@ -217,43 +218,75 @@ const decodeNotification = (raw, now) => {
       body: raw.body,
       icon: new URL('./icon-512.png', self.registration.scope).href,
       badge: new URL('./icon-512.png', self.registration.scope).href,
-      ...(legacy ? {} : { tag: `term-llm-${kind}:${raw.event_id}` }),
+      tag: legacy ? `term-llm-legacy:${crypto.randomUUID()}` : `term-llm-${kind}:${raw.event_id}`,
       renotify: false,
       data: { ...raw, kind, url: scopedNotificationURL(raw.url) },
     },
   };
 };
 
+// userVisibleOnly applies to every delivered push, including retries and invalid
+// envelopes. Never silently drop one: show/replace, then close suppressed cards.
+const fallbackNotification = () => ({
+  title: 'term-llm',
+  options: { body: 'Notification received.', tag: 'term-llm-fallback',
+    silent: true, renotify: false, data: { kind: 'fallback', url: self.registration.scope } },
+});
+const closeNotification = async (notification) => {
+  const cards = await self.registration.getNotifications({ tag: notification.options.tag });
+  for (const card of cards) {
+    if (card.data?.kind === notification.options.data.kind &&
+      card.data?.event_id === notification.options.data.event_id) card.close();
+  }
+};
+
+// Serialize push display lifecycles, but not read/preference messages: a pending
+// display is not a dismissed card when a concurrent retry arrives.
+let pushWork = Promise.resolve();
 self.addEventListener('push', (event) => {
-  event.waitUntil(notificationState((state, now) => {
-    const notification = decodeNotification(parsePushPayload(event), now);
-    if (!notification || state.enabled === false) return null;
-    const payload = notification.options.data;
-    if (payload.event_id && state.events.some((entry) => entry.id === payload.event_id)) return null;
-    if (payload.event_id && state.events.length >= NOTIFICATION_LIMIT) return null;
-    if (payload.kind === 'completion' && (isRead(state, payload) || state.read_block_until > now)) return null;
-    // Reserve replay identity durably before crossing the OS side-effect boundary.
-    // A failed/ambiguous display stays reserved: safety is fail-closed, not exactly-once.
-    if (payload.event_id) state.events.push({ id: payload.event_id, at: now });
-    return notification;
-  }).then(async (notification) => {
-    if (!notification) return;
+  pushWork = pushWork.catch(() => {}).then(async () => {
+    let notification = fallbackNotification();
+    let close = true;
+    try {
+      const decoded = decodeNotification(parsePushPayload(event), Date.now());
+      notification = decoded || notification;
+      close = !decoded;
+      await notificationState(async (state, now) => {
+        if (!decoded) return;
+        const payload = notification.options.data;
+        const duplicate = payload.event_id && state.events.some((entry) => entry.id === payload.event_id);
+        close = state.enabled === false ||
+          (payload.kind === 'completion' && (isRead(state, payload) || state.read_block_until > now));
+        if (duplicate) {
+          // Replace a live card without re-alerting; do not resurrect a dismissed one.
+          const cards = await self.registration.getNotifications({ tag: notification.options.tag });
+          close ||= cards.length === 0;
+          notification.options.silent = true;
+        } else if (payload.event_id) {
+          if (state.events.length >= NOTIFICATION_LIMIT) close = true;
+          else if (!close) state.events.push({ id: payload.event_id, at: now });
+        }
+      });
+    } catch {
+      // Storage failure must not turn a delivered push into a silent delivery, nor
+      // bypass unknown read/opt-out state with unverified completion content.
+      notification = fallbackNotification();
+      close = true;
+    }
+    if (close) notification.options.silent = true;
     await self.registration.showNotification(notification.title, notification.options);
-    const payload = notification.options.data;
-    if (payload.kind !== 'completion') return;
-    // A read can persist and snapshot no cards while OS display is still pending.
-    // Recheck after display, serialized with read writes, and close only this event.
-    // This removes a stale card; it cannot undo a sound the OS has already begun.
-    await notificationState(async (state, now) => {
-      if (!isRead(state, payload) && !(state.read_block_until > now)) return;
-      const displayed = await self.registration.getNotifications({ tag: notification.options.tag });
-      for (const card of displayed) {
-        if (card.data?.kind === 'completion' && card.data.event_id === payload.event_id) card.close();
-      }
-    });
-  }).catch(() => {
-    // Without durable replay/opt-out state automatic delivery fails closed.
-  }));
+    try {
+      // A read or opt-out may commit while OS display is pending. Recheck after
+      // display, then close only this event, never newer/unrelated notifications.
+      await notificationState((state, now) => {
+        const payload = notification.options.data;
+        close ||= state.enabled === false || (payload.kind === 'completion' &&
+          (isRead(state, payload) || state.read_block_until > now));
+      });
+    } catch { close = true; }
+    if (close) await closeNotification(notification);
+  });
+  event.waitUntil(pushWork);
 });
 
 self.addEventListener('message', (event) => {

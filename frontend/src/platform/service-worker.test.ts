@@ -175,20 +175,27 @@ const bind = async (
 
 // The server is the only completion authority. Visibility is not attention.
 describe('service worker v2 notification receiver', () => {
-  it('durably deduplicates completion and manual events, even after worker restart', async () => {
+  it('replaces duplicate cards silently and closes dismissed replays, even after worker restart', async () => {
     const storage: MemoryCaches = new Map();
     const harness = workerHarness([], 'v7', storage);
     const payload = completionPayload();
     await harness.dispatch('push', pushEvent(payload));
     await harness.dispatch('push', pushEvent(payload));
-    expect(harness.showNotification).toHaveBeenCalledOnce();
+    expect(harness.showNotification).toHaveBeenCalledTimes(2);
+    expect(harness.outstanding.size).toBe(1);
+    expect(harness.showNotification.mock.calls[1][1]).toEqual(
+      expect.objectContaining({ silent: true, renotify: false }),
+    );
+    harness.outstanding.clear(); // User dismissed the original before the worker restarted.
     expect(harness.client.postMessage).not.toHaveBeenCalled();
     const restarted = workerHarness([], 'v8', storage);
     await restarted.dispatch('push', pushEvent(payload));
-    expect(restarted.showNotification).not.toHaveBeenCalled();
-    await restarted.dispatch('push', pushEvent(manualPayload()));
-    await restarted.dispatch('push', pushEvent(manualPayload()));
     expect(restarted.showNotification).toHaveBeenCalledOnce();
+    expect(restarted.outstanding.size).toBe(0);
+    await restarted.dispatch('push', pushEvent(manualPayload()));
+    await restarted.dispatch('push', pushEvent(manualPayload()));
+    expect(restarted.showNotification).toHaveBeenCalledTimes(3);
+    expect(restarted.outstanding.size).toBe(1);
     expect(restarted.showNotification).toHaveBeenCalledWith(
       'A real manual title',
       expect.objectContaining({ body: 'Actual manual body', tag: 'term-llm-manual:manual:event' }),
@@ -218,13 +225,25 @@ describe('service worker v2 notification receiver', () => {
     completionPayload({ attention_seq: 1.5 }),
     completionPayload({ source: '/another-node' }),
     completionPayload({ expires_at: 'bad' }),
+    completionPayload({ created_at: { toString: null } }),
+    completionPayload({ expires_at: { toString: null } }),
+    completionPayload({ expires_at: new Date(Date.now() - 1).toISOString() }),
     manualPayload({ response_id: 'r' }),
   ])(
-    'drops malformed/unsupported/cross-scope payloads rather than treating them as manual: %j',
+    'shows and closes a safe fallback for malformed/unsupported/cross-scope payloads: %j',
     async (payload) => {
       const harness = workerHarness();
       await harness.dispatch('push', pushEvent(payload));
-      expect(harness.showNotification).not.toHaveBeenCalled();
+      expect(harness.showNotification).toHaveBeenCalledWith(
+        'term-llm',
+        expect.objectContaining({
+          body: 'Notification received.',
+          silent: true,
+          tag: 'term-llm-fallback',
+          data: { kind: 'fallback', url: 'https://example.test/ui/' },
+        }),
+      );
+      expect(harness.outstanding.size).toBe(0);
     },
   );
 
@@ -235,7 +254,16 @@ describe('service worker v2 notification receiver', () => {
       // Match the wire shape: an undefined epoch is absent from the JSON envelope.
       const payload = JSON.parse(JSON.stringify(completionPayload({ run_epoch: epoch })));
       await harness.dispatch('push', pushEvent(payload));
-      expect(harness.showNotification).not.toHaveBeenCalled();
+      expect(harness.showNotification).toHaveBeenCalledWith(
+        'term-llm',
+        expect.objectContaining({
+          body: 'Notification received.',
+          silent: true,
+          tag: 'term-llm-fallback',
+          data: { kind: 'fallback', url: 'https://example.test/ui/' },
+        }),
+      );
+      expect(harness.outstanding.size).toBe(0);
       expect(harness.outstanding.size).toBe(0);
     },
   );
@@ -334,6 +362,7 @@ describe('service worker v2 notification receiver', () => {
     expect(harness.outstanding.has('term-llm-manual:manual:event')).toBe(true);
     await harness.dispatch('push', pushEvent(completionPayload({ event_id: 'late-retry' })));
     expect(harness.outstanding.size).toBe(4);
+    expect(harness.showNotification).toHaveBeenCalledTimes(6);
   });
 
   it.each([
@@ -387,34 +416,157 @@ describe('service worker v2 notification receiver', () => {
       expect(await harness.getNotifications.mock.results[0].value).toEqual([]);
     }
     expect(harness.outstanding.size).toBe(0);
-    for (const other of [
+    const otherPushes = [
       completionPayload({ event_id: 'newer', attention_seq: 20 }),
       completionPayload({ event_id: 'other-store', store_instance_id: 'unrelated' }),
       completionPayload({ event_id: 'other-session', session_id: 'unrelated' }),
       manualPayload(),
-    ])
-      await harness.dispatch('push', pushEvent(other));
+    ].map((other) => harness.dispatch('push', pushEvent(other)));
 
     releaseDisplay();
-    await push;
+    await Promise.all([push, ...otherPushes]);
     expect(harness.outstanding.has(`term-llm-completion:${payload.event_id}`)).toBe(!closes);
     expect(harness.outstanding.size).toBe(closes ? 4 : 5);
     expect(harness.outstanding.has('term-llm-completion:newer')).toBe(true);
     expect(harness.outstanding.has('term-llm-completion:other-store')).toBe(true);
     expect(harness.outstanding.has('term-llm-completion:other-session')).toBe(true);
     expect(harness.outstanding.has('term-llm-manual:manual:event')).toBe(true);
-    // Cleanup does not release the replay reservation or permit another sound.
+    // Every replay replaces silently, retaining read protection and unrelated cards.
     await harness.dispatch('push', pushEvent(payload));
-    expect(harness.showNotification).toHaveBeenCalledTimes(5);
+    expect(harness.showNotification).toHaveBeenCalledTimes(6);
+    expect(harness.outstanding.size).toBe(closes ? 4 : 5);
   });
 
-  it('fails closed before OS display when durable replay reservation cannot be written', async () => {
+  it.each(['open', 'match', 'json', 'put'] as const)(
+    'shows and closes a safe fallback when notification storage fails at %s',
+    async (failure) => {
+      const harness = workerHarness();
+      const cache = await harness.cacheStorage.open('test');
+      if (failure === 'open')
+        vi.spyOn(harness.cacheStorage, 'open').mockRejectedValue(new Error('storage denied'));
+      else {
+        if (failure === 'json')
+          await cache.put('https://example.test/ui/__notification-state-v2__', new Response('{'));
+        else vi.spyOn(cache, failure).mockRejectedValue(new Error('storage denied'));
+        vi.spyOn(harness.cacheStorage, 'open').mockResolvedValue(cache);
+      }
+      await harness.dispatch('push', pushEvent(completionPayload()));
+      expect(harness.showNotification).toHaveBeenCalledOnce();
+      expect(harness.showNotification.mock.calls[0][0]).toBe('term-llm');
+      expect(harness.outstanding.size).toBe(0);
+    },
+  );
+
+  it.each([
+    {},
+    {
+      data: {
+        json: () => {
+          throw new Error('invalid JSON');
+        },
+      },
+    },
+  ])('displays before completing even when push data cannot be parsed: %j', async (event) => {
     const harness = workerHarness();
-    const cache = await harness.cacheStorage.open('test');
-    vi.spyOn(cache, 'put').mockRejectedValue(new Error('quota denied'));
-    vi.spyOn(harness.cacheStorage, 'open').mockResolvedValue(cache);
-    await harness.dispatch('push', pushEvent(completionPayload()));
-    expect(harness.showNotification).not.toHaveBeenCalled();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const displayStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const display = harness.showNotification.getMockImplementation()!;
+    harness.showNotification.mockImplementationOnce(async (title, options) => {
+      started();
+      await gate;
+      await display(title, options);
+    });
+    let settled = false;
+    const push = harness.dispatch('push', event).then(() => {
+      settled = true;
+    });
+    await displayStarted;
+    expect(settled).toBe(false);
+    release();
+    await push;
+    expect(harness.showNotification).toHaveBeenCalledOnce();
+    expect(harness.outstanding.size).toBe(0);
+  });
+
+  it('serializes concurrent retries behind pending display without losing an unread card', async () => {
+    const harness = workerHarness();
+    const display = harness.showNotification.getMockImplementation()!;
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const displayStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    harness.showNotification.mockImplementationOnce(async (title, options) => {
+      started();
+      await gate;
+      await display(title, options);
+    });
+    const first = harness.dispatch('push', pushEvent(completionPayload()));
+    await displayStarted;
+    const retry = harness.dispatch('push', pushEvent(completionPayload()));
+    expect(harness.showNotification).toHaveBeenCalledOnce();
+    release();
+    await Promise.all([first, retry]);
+    expect(harness.showNotification).toHaveBeenCalledTimes(2);
+    expect(harness.showNotification.mock.calls[1][1]).toEqual(
+      expect.objectContaining({ silent: true }),
+    );
+    expect(harness.outstanding.size).toBe(1);
+  });
+
+  it.each(['opt-out', 'storage failure'])(
+    'isolates legacy cards when %s happens during OS display',
+    async (failure) => {
+      const harness = workerHarness();
+      await harness.dispatch('push', pushEvent({ title: 'Older manual', body: 'Keep' }));
+      const oldTag = [...harness.outstanding.keys()][0];
+      const display = harness.showNotification.getMockImplementation()!;
+      let release!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const displayStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      harness.showNotification.mockImplementationOnce(async (title, options) => {
+        started();
+        await gate;
+        await display(title, options);
+      });
+      const push = harness.dispatch('push', pushEvent({ title: 'Pending manual', body: 'Close' }));
+      await displayStarted;
+      if (failure === 'opt-out') {
+        await harness.dispatch('message', {
+          source: harness.client,
+          data: { type: 'notification-preference', enabled: false },
+        });
+      } else {
+        vi.spyOn(harness.cacheStorage, 'open').mockRejectedValue(new Error('storage denied'));
+      }
+      release();
+      await push;
+      expect(harness.showNotification).toHaveBeenCalledTimes(2);
+      expect(harness.outstanding.size).toBe(1);
+      expect(harness.outstanding.has(oldTag)).toBe(true);
+    },
+  );
+
+  it('does not swallow OS display failures', async () => {
+    const harness = workerHarness();
+    harness.showNotification.mockRejectedValueOnce(new Error('OS denied display'));
+    await expect(harness.dispatch('push', pushEvent(completionPayload()))).rejects.toThrow(
+      'OS denied display',
+    );
   });
 
   it('durably gates incoming pushes after browser opt-out, and only explicit enable restores', async () => {
@@ -426,13 +578,15 @@ describe('service worker v2 notification receiver', () => {
     });
     const restarted = workerHarness([], 'v8', storage);
     await restarted.dispatch('push', pushEvent(completionPayload()));
-    expect(restarted.showNotification).not.toHaveBeenCalled();
+    expect(restarted.showNotification).toHaveBeenCalledOnce();
+    expect(restarted.outstanding.size).toBe(0);
     await restarted.dispatch('message', {
       source: restarted.client,
       data: { type: 'notification-preference', enabled: true },
     });
     await restarted.dispatch('push', pushEvent(completionPayload()));
-    expect(restarted.showNotification).toHaveBeenCalledOnce();
+    expect(restarted.showNotification).toHaveBeenCalledTimes(2);
+    expect(restarted.outstanding.size).toBe(1);
   });
 
   it('never evicts live exact reads when saturated, instead failing closed until the safe horizon', async () => {
@@ -455,7 +609,8 @@ describe('service worker v2 notification receiver', () => {
     const restarted = workerHarness([], 'v8', storage);
     for (const session_id of ['session-0', 'session-512', 'another-session'])
       await restarted.dispatch('push', pushEvent(completionPayload({ session_id })));
-    expect(restarted.showNotification).not.toHaveBeenCalled();
+    expect(restarted.showNotification).toHaveBeenCalledTimes(3);
+    expect(restarted.outstanding.size).toBe(0);
     const cache = [...storage.entries()].find(([key]) =>
       key.startsWith('term-llm-notifications-'),
     )![1];
@@ -465,7 +620,8 @@ describe('service worker v2 notification receiver', () => {
     expect(state.read_block_until).toBe(now + 24 * 60 * 60 * 1000);
     vi.spyOn(Date, 'now').mockReturnValue(now + 24 * 60 * 60 * 1000 + 1);
     await restarted.dispatch('push', pushEvent(completionPayload()));
-    expect(restarted.showNotification).toHaveBeenCalledOnce();
+    expect(restarted.showNotification).toHaveBeenCalledTimes(4);
+    expect(restarted.outstanding.size).toBe(1);
   });
 
   it('keeps the durable replay ledger bounded and expires old records', async () => {
@@ -477,9 +633,11 @@ describe('service worker v2 notification receiver', () => {
     )![1];
     let state = await [...cache.values()][0].clone().json();
     expect(state.events).toHaveLength(512);
-    expect(harness.showNotification).toHaveBeenCalledTimes(512);
+    expect(harness.showNotification).toHaveBeenCalledTimes(515);
+    expect(harness.outstanding.size).toBe(512);
     await harness.dispatch('push', pushEvent(manualPayload({ event_id: 'event-0' })));
-    expect(harness.showNotification).toHaveBeenCalledTimes(512);
+    expect(harness.showNotification).toHaveBeenCalledTimes(516);
+    expect(harness.outstanding.size).toBe(512);
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 24 * 60 * 60 * 1000 + 1);
     await harness.dispatch('push', pushEvent(manualPayload({ event_id: 'after-horizon' })));
     state = await [...cache.values()][0].clone().json();
