@@ -91,7 +91,7 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := assertRow("slow", "pending", 0)
-			s.dispatchCompletionPushesWithSender(ctx, store, attemptTimeout, send)
+			s.dispatchCompletionPushesWithSender(ctx, attemptTimeout, send)
 			next := assertRow("slow", "pending", 1)
 			if next <= before {
 				t.Fatalf("retry did not advance next_attempt_at: %q -> %q", before, next)
@@ -104,7 +104,7 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				if len(calls) != 1 {
 					t.Fatalf("continued exhausted batch: %v", calls)
 				}
-				s.dispatchCompletionPushesWithSender(context.Background(), store, time.Millisecond, send)
+				s.dispatchCompletionPushesWithSender(context.Background(), time.Millisecond, send)
 			}
 			assertRow("healthy", "delivered", 1)
 
@@ -114,7 +114,7 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				if _, err := db.Exec(`UPDATE completion_push_outbox SET next_attempt_at = '2000-01-01 00:00:00' WHERE response_id = 'slow'`); err != nil {
 					t.Fatal(err)
 				}
-				s.dispatchCompletionPushesWithSender(context.Background(), store, time.Millisecond, send)
+				s.dispatchCompletionPushesWithSender(context.Background(), time.Millisecond, send)
 				status := "pending"
 				if attempt == 8 {
 					status = "dead"
@@ -256,7 +256,7 @@ func TestCompletionPushRecordSize(t *testing.T) {
 			if _, err := dbFixture.Exec(`UPDATE completion_push_outbox SET next_attempt_at='2000-01-01 00:00:00'`); err != nil {
 				t.Fatal(err)
 			}
-			s.dispatchCompletionPushes(store)
+			s.dispatchCompletionPushes()
 			db, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
@@ -280,7 +280,7 @@ func TestCompletionPushRecordSize(t *testing.T) {
 			if status != wantStatus || attempts != 1 || requests.Load() != wantRequests {
 				t.Fatalf("status=%s attempts=%d requests=%d; want %s/1/%d", status, attempts, requests.Load(), wantStatus, wantRequests)
 			}
-			due, err := store.ListDueCompletionPushes(context.Background(), time.Now().Add(time.Hour), 25)
+			due, err := store.ClaimCompletionNotifications(context.Background(), "retry-probe", time.Now().Add(time.Hour), time.Minute, 25)
 			if err != nil {
 				t.Fatal(err)
 			}

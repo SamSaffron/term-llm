@@ -72,7 +72,7 @@ func TestCompletionDispatchRechecksReadAndPresence(t *testing.T) {
 				}
 			}
 			sends := 0
-			s.dispatchCompletionPushesWithSender(context.Background(), nil, time.Second, func(_ context.Context, got *session.PushSubscription, payload []byte, opts *webpush.Options) (int, time.Duration, error) {
+			s.dispatchCompletionPushesWithSender(context.Background(), time.Second, func(_ context.Context, got *session.PushSubscription, payload []byte, opts *webpush.Options) (int, time.Duration, error) {
 				sends++
 				var envelope completionPushPayload
 				if err := json.Unmarshal(payload, &envelope); err != nil {

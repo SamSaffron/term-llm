@@ -1164,38 +1164,6 @@ type PromptHistoryOutsideSessionStore interface {
 	NextUserPromptOutsideSession(ctx context.Context, excludeSessionID string, afterID int64, afterCreatedAt time.Time) (*PromptHistoryEntry, error)
 }
 
-type CompletionPushOutboxItem struct {
-	ID             int64
-	EventID        string
-	ResponseID     string
-	SubscriptionID string
-	Payload        []byte
-	AttemptCount   int
-}
-
-type CompletionPushOutboxStore interface {
-	EnqueueCompletionPush(ctx context.Context, item CompletionPushOutboxItem) (bool, error)
-	ListDueCompletionPushes(ctx context.Context, now time.Time, limit int) ([]CompletionPushOutboxItem, error)
-	MarkCompletionPushDelivered(ctx context.Context, id int64) error
-	RetryCompletionPush(ctx context.Context, id int64, next time.Time, lastError string) error
-	MarkCompletionPushDead(ctx context.Context, id int64, lastError string) error
-	PruneCompletionPushOutbox(ctx context.Context, before time.Time) error
-}
-
-func AsCompletionPushOutboxStore(store Store) (CompletionPushOutboxStore, bool) {
-	if store == nil {
-		return nil, false
-	}
-	if outbox, ok := store.(CompletionPushOutboxStore); ok {
-		return outbox, true
-	}
-	if logging, ok := store.(*LoggingStore); ok {
-		outbox, ok := logging.Store.(CompletionPushOutboxStore)
-		return outbox, ok
-	}
-	return nil, false
-}
-
 // Config holds session storage configuration.
 type Config struct {
 	Enabled          bool   `mapstructure:"enabled"`            // Master switch

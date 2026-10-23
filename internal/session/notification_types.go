@@ -65,6 +65,7 @@ type NotificationDeliveryStore interface {
 	ClaimCompletionNotifications(context.Context, string, time.Time, time.Duration, int) ([]CompletionNotification, error)
 	RecheckCompletionNotification(context.Context, int64, string, string, time.Time) (bool, error)
 	CompleteCompletionNotification(context.Context, int64, string, string, string, time.Time, string) error
+	PruneCompletionNotifications(context.Context, time.Time) error
 }
 
 func AsNotificationDeliveryStore(store Store) (NotificationDeliveryStore, bool) {

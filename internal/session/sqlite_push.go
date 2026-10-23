@@ -150,69 +150,6 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 	return subs, rows.Err()
 }
 
-func (s *SQLiteStore) EnqueueCompletionPush(ctx context.Context, item CompletionPushOutboxItem) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO completion_push_outbox
-		(event_id, response_id, subscription_id, payload) VALUES (?, ?, ?, ?)
-		ON CONFLICT(response_id, subscription_id) DO NOTHING`, item.EventID, item.ResponseID, item.SubscriptionID, item.Payload)
-	if err != nil {
-		return false, fmt.Errorf("enqueue completion push: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	return rows > 0, nil
-}
-
-func (s *SQLiteStore) ListDueCompletionPushes(ctx context.Context, now time.Time, limit int) ([]CompletionPushOutboxItem, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 25
-	}
-	rows, err := s.queryDB().QueryContext(ctx, `SELECT id, event_id, response_id, subscription_id, payload, attempt_count
-		FROM completion_push_outbox WHERE status = 'pending' AND turn_id = '' AND next_attempt_at <= ?
-		ORDER BY next_attempt_at, id LIMIT ?`, now.UTC().Format("2006-01-02 15:04:05"), limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []CompletionPushOutboxItem
-	for rows.Next() {
-		var item CompletionPushOutboxItem
-		if err := rows.Scan(&item.ID, &item.EventID, &item.ResponseID, &item.SubscriptionID, &item.Payload, &item.AttemptCount); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func (s *SQLiteStore) MarkCompletionPushDelivered(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'delivered',
-		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = '' WHERE id = ? AND turn_id = ''`, id)
-	return err
-}
-
-func (s *SQLiteStore) RetryCompletionPush(ctx context.Context, id int64, next time.Time, lastError string) error {
-	if len(lastError) > 240 {
-		lastError = lastError[:240]
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET attempt_count = attempt_count + 1,
-		next_attempt_at = ?, updated_at = datetime('now'), last_error = ? WHERE id = ? AND turn_id = ''`, next.UTC().Format("2006-01-02 15:04:05"), lastError, id)
-	return err
-}
-
-func (s *SQLiteStore) MarkCompletionPushDead(ctx context.Context, id int64, lastError string) error {
-	if len(lastError) > 240 {
-		lastError = lastError[:240]
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'dead',
-		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = ? WHERE id = ? AND turn_id = ''`, lastError, id)
-	return err
-}
-
-func (s *SQLiteStore) PruneCompletionPushOutbox(ctx context.Context, before time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM completion_push_outbox
-		WHERE status IN ('delivered', 'dead') AND updated_at < ?`, before.UTC().Format("2006-01-02 15:04:05"))
-	return err
-}
-
 func (s *SQLiteStore) ReadOnly() bool {
 	return s != nil && s.cfg.ReadOnly
 }

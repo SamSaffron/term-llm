@@ -4,7 +4,6 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestPushSubscriptionLifecyclePreservesCanonicalID(t *testing.T) {
@@ -38,36 +37,5 @@ func TestPushSubscriptionLifecyclePreservesCanonicalID(t *testing.T) {
 	stale, err := store.GetPushSubscription(ctx, first.ID)
 	if err != nil || stale == nil || stale.Status != "stale" || stale.LastFailureCode != "http_410" {
 		t.Fatalf("stale subscription = %#v err=%v", stale, err)
-	}
-}
-
-func TestCompletionPushOutboxDeduplicatesAndRetainsTerminalState(t *testing.T) {
-	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	ctx := context.Background()
-	item := CompletionPushOutboxItem{
-		EventID: "completion:resp-one:sub-one", ResponseID: "resp-one", SubscriptionID: "sub-one", Payload: []byte(`{"version":1}`),
-	}
-	inserted, err := store.EnqueueCompletionPush(ctx, item)
-	if err != nil || !inserted {
-		t.Fatalf("first enqueue inserted=%t err=%v", inserted, err)
-	}
-	inserted, err = store.EnqueueCompletionPush(ctx, item)
-	if err != nil || inserted {
-		t.Fatalf("duplicate enqueue inserted=%t err=%v", inserted, err)
-	}
-	due, err := store.ListDueCompletionPushes(ctx, time.Now().Add(time.Second), 10)
-	if err != nil || len(due) != 1 {
-		t.Fatalf("due items=%#v err=%v", due, err)
-	}
-	if err := store.MarkCompletionPushDelivered(ctx, due[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	due, err = store.ListDueCompletionPushes(ctx, time.Now().Add(time.Hour), 10)
-	if err != nil || len(due) != 0 {
-		t.Fatalf("delivered row remained due: %#v err=%v", due, err)
 	}
 }

@@ -25,3 +25,9 @@ func (s *SQLiteStore) RecheckCompletionNotification(ctx context.Context, id int6
 func (s *SQLiteStore) CompleteCompletionNotification(ctx context.Context, id int64, owner, token, status string, next time.Time, detail string) error {
 	return notificationdb.CompleteCompletionNotification(ctx, s.db, id, owner, token, status, next, detail)
 }
+
+func (s *SQLiteStore) PruneCompletionNotifications(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM completion_push_outbox
+		WHERE status IN ('delivered', 'dead') AND updated_at < ?`, before.UTC().Format("2006-01-02 15:04:05"))
+	return err
+}

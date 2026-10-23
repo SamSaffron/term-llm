@@ -96,11 +96,6 @@ func TestCompletionPushEmptyKeysLeaveOutboxPending(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.EnqueueCompletionPush(ctx, session.CompletionPushOutboxItem{
-				EventID: "completion", ResponseID: "response", SubscriptionID: sub.ID, Payload: []byte(`{}`),
-			}); err != nil {
-				t.Fatal(err)
-			}
 			path := filepath.Join(t.TempDir(), "empty")
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
 				t.Fatal(err)
@@ -114,8 +109,9 @@ func TestCompletionPushEmptyKeysLeaveOutboxPending(t *testing.T) {
 				cfg.Serve.WebPush.VAPIDPrivateKey = "file://" + path
 			}
 			srv := &serveServer{store: store, cfgRef: cfg}
-			srv.dispatchCompletionPushes(store)
-			pending, err := store.ListDueCompletionPushes(ctx, time.Now().Add(time.Hour), 10)
+			seedCompletionCandidate(t, srv, store, "response", "session", sub.ID)
+			srv.dispatchCompletionPushes()
+			pending, err := store.ClaimCompletionNotifications(ctx, "credential-probe", time.Now().Add(10*time.Second), time.Minute, 10)
 			if err != nil || len(pending) != 1 || pending[0].AttemptCount != 0 {
 				t.Fatalf("empty %s key consumed outbox work: %#v, %v", emptyKey, pending, err)
 			}

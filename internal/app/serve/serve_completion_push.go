@@ -97,7 +97,7 @@ func (s *serveServer) startCompletionPushDispatcher() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
-			s.dispatchCompletionPushes(nil)
+			s.dispatchCompletionPushes()
 			select {
 			case <-s.shutdownCh:
 				return
@@ -108,10 +108,7 @@ func (s *serveServer) startCompletionPushDispatcher() {
 	}()
 }
 
-// The legacy parameter is retained for internal test callers; only the fenced
-// durable logical-turn capability can authorize a send. Legacy outbox rows are
-// retired by the schema migration, never promoted by this dispatcher.
-func (s *serveServer) dispatchCompletionPushes(_ session.CompletionPushOutboxStore) {
+func (s *serveServer) dispatchCompletionPushes() {
 	base, release, err := restart.Default.Activity(context.Background())
 	if err != nil {
 		return
@@ -119,10 +116,10 @@ func (s *serveServer) dispatchCompletionPushes(_ session.CompletionPushOutboxSto
 	defer release()
 	ctx, cancel := context.WithTimeout(base, 20*time.Second)
 	defer cancel()
-	s.dispatchCompletionPushesWithSender(ctx, nil, 20*time.Second, appnotify.SendWebPushDetailed)
+	s.dispatchCompletionPushesWithSender(ctx, 20*time.Second, appnotify.SendWebPushDetailed)
 }
 
-func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, _ session.CompletionPushOutboxStore, attemptTimeout time.Duration, send func(context.Context, *session.PushSubscription, []byte, *webpush.Options) (int, time.Duration, error)) {
+func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, attemptTimeout time.Duration, send func(context.Context, *session.PushSubscription, []byte, *webpush.Options) (int, time.Duration, error)) {
 	outbox, ok := session.AsNotificationDeliveryStore(s.store)
 	if !ok {
 		return
@@ -185,10 +182,8 @@ func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, _ 
 		cancel()
 		s.recordNotificationResult(outbox, pushStore, item, sub, status, retryAfter, sendErr)
 	}
-	if legacy, ok := session.AsCompletionPushOutboxStore(s.store); ok {
-		if err := legacy.PruneCompletionPushOutbox(ctx, time.Now().UTC().Add(-7*24*time.Hour)); err != nil && ctx.Err() == nil {
-			log.Printf("warning: prune completion notifications: %v", err)
-		}
+	if err := outbox.PruneCompletionNotifications(ctx, time.Now().UTC().Add(-7*24*time.Hour)); err != nil && ctx.Err() == nil {
+		log.Printf("warning: prune completion notifications: %v", err)
 	}
 }
 

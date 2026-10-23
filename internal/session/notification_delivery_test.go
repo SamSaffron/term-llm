@@ -165,6 +165,10 @@ func TestNotificationClaimAtomicAcrossStoreConnectionsAndResultsFenced(t *testin
 	if notificationCount(t, s, "delivered") != 1 {
 		t.Fatal("delivery not committed")
 	}
+	items, err = s.ClaimCompletionNotifications(ctx, "after-delivery", time.Now().Add(time.Minute), time.Minute, 1)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("delivered candidate became eligible again: %+v %v", items, err)
+	}
 }
 
 func TestNotificationRechecksReadSupersessionOptoutAndExpiry(t *testing.T) {
@@ -317,22 +321,8 @@ func TestNotificationExplicitReenrollmentCanRebindSameDocument(t *testing.T) {
 	}
 }
 
-func TestNotificationLegacyOutboxCannotConsumeFencedCandidates(t *testing.T) {
-	s, _, n := completedNotificationTestRun(t)
-	ctx := t.Context()
-	due, err := s.ListDueCompletionPushes(ctx, time.Now().Add(time.Minute), 100)
-	if err != nil || len(due) != 0 {
-		t.Fatalf("legacy listed fenced candidate: %+v %v", due, err)
-	}
-	for _, mark := range []func() error{func() error { return s.MarkCompletionPushDelivered(ctx, n.ID) }, func() error { return s.MarkCompletionPushDead(ctx, n.ID, "legacy") }, func() error { return s.RetryCompletionPush(ctx, n.ID, time.Now(), "legacy") }} {
-		if err := mark(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ready, err := s.RecheckCompletionNotification(ctx, n.ID, n.ClaimOwner, n.ClaimToken, time.Now().Add(3*time.Second))
-	if err != nil || !ready {
-		t.Fatalf("unfenced API mutated claim: %v %v", ready, err)
-	}
+func TestNotificationCapabilitiesUnwrapLoggingStore(t *testing.T) {
+	s, ctx, _ := newAttentionTestStore(t)
 	if _, ok := AsNotificationDeliveryStore(&LoggingStore{Store: s}); !ok {
 		t.Fatal("logging wrapper hid delivery capability")
 	}
@@ -342,5 +332,47 @@ func TestNotificationLegacyOutboxCannotConsumeFencedCandidates(t *testing.T) {
 	}
 	if err := turns.CancelNotificationTurn(ctx, "not-a-response"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown cancel=%v", err)
+	}
+}
+
+func TestNotificationPruningRetainsPendingAndRecentTerminalRows(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		age          time.Duration
+		keep         bool
+	}{
+		{"pending-old", "pending", -time.Second, true},
+		{"delivered-old", "delivered", -time.Second, false},
+		{"dead-old", "dead", -time.Second, false},
+		{"delivered-recent", "delivered", time.Second, true},
+		{"dead-at-cutoff", "dead", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, n := completedNotificationTestRun(t)
+			ctx := t.Context()
+			delivery, ok := AsNotificationDeliveryStore(&LoggingStore{Store: s})
+			if !ok {
+				t.Fatal("logging wrapper hid delivery capability")
+			}
+			if tc.status != "pending" {
+				if err := delivery.CompleteCompletionNotification(ctx, n.ID, n.ClaimOwner, n.ClaimToken, tc.status, time.Time{}, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cutoff := time.Now().UTC().Truncate(time.Second).Add(-7 * 24 * time.Hour)
+			if _, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET updated_at=? WHERE id=?`, cutoff.Add(tc.age).Format("2006-01-02 15:04:05"), n.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := delivery.PruneCompletionNotifications(ctx, cutoff); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM completion_push_outbox WHERE id=?`, n.ID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != tc.keep {
+				t.Fatalf("rows=%d want retained=%v", count, tc.keep)
+			}
+		})
 	}
 }
