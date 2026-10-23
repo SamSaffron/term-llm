@@ -7,6 +7,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
@@ -48,7 +49,8 @@ type hubServer struct {
 	basePath string
 	// delegations is the cross-node delegation ledger; nil disables the
 	// /api/delegations endpoints.
-	delegations *hub.DelegationStore
+	delegations          *hub.DelegationStore
+	delegationRefreshSeq atomic.Uint64
 	// nodeAPIClient performs hub -> node jobs API calls for delegations. It
 	// shares the proxy's direct-dial transport (no env proxy: requests carry
 	// node tokens) but, unlike streaming proxy traffic, gets a whole-request
@@ -63,6 +65,7 @@ type hubServer struct {
 	attentionMu          sync.Mutex // guards projection replacement against completed acknowledgements
 	attentionGeneration  uint64
 	attentionDiagnostics hubAttentionDiagnostics
+	attentionSchedule    hubAttentionSchedule
 
 	requireAuth       bool
 	authMode          string

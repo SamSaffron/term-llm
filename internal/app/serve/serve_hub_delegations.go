@@ -138,14 +138,12 @@ func (s *hubServer) handleDelegations(w http.ResponseWriter, r *http.Request) {
 			records = scoped
 		}
 		if !viaNode {
-			refreshed := make([]hub.Delegation, 0, len(records))
-			for _, d := range records {
-				if !hub.DelegationStatusTerminal(d.Status) {
-					_ = s.refreshDelegation(r.Context(), &d)
-				}
-				refreshed = append(refreshed, d)
+			// Best-effort dashboard reads share cap recovery's small total budget,
+			// rather than serially joining an unbounded request to every active node.
+			s.refreshDelegations(r.Context(), "", "", false)
+			if refreshed, listErr := s.delegations.List(); listErr == nil {
+				records = refreshed
 			}
-			records = refreshed
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"delegations": records})
 	case http.MethodPost:

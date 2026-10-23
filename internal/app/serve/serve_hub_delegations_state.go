@@ -56,6 +56,12 @@ func (s *hubServer) checkDelegationCaps(ctx context.Context, origin, target hub.
 // entries can stop pinning in-flight caps, but keeps the cap-recovery path
 // bounded with a small worker pool and short child deadlines.
 func (s *hubServer) refreshActiveDelegations(ctx context.Context, originID, targetID string) {
+	s.refreshDelegations(ctx, originID, targetID, true)
+}
+
+// Dashboard reads refresh status best-effort, without adopting cap recovery's
+// policy of terminalizing old refresh errors or missing target registrations.
+func (s *hubServer) refreshDelegations(ctx context.Context, originID, targetID string, terminalizeErrors bool) {
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
 		return
@@ -66,6 +72,9 @@ func (s *hubServer) refreshActiveDelegations(ctx context.Context, originID, targ
 		return
 	}
 	active := prioritizedActiveDelegations(records, originID, targetID)
+	if originID == "" && targetID == "" {
+		active = fairDashboardDelegations(active, s.delegationRefreshSeq.Add(1)-1)
+	}
 	if len(active) == 0 {
 		return
 	}
@@ -101,7 +110,7 @@ func (s *hubServer) refreshActiveDelegations(ctx context.Context, originID, targ
 				}
 				err := s.refreshDelegation(reqCtx, &d)
 				reqCancel()
-				if err != nil {
+				if err != nil && terminalizeErrors {
 					s.maybeTerminalizeDelegationRefreshError(d, err)
 				}
 			}
@@ -224,4 +233,34 @@ func delegationStatusFromRun(runStatus string) string {
 
 func resolveDelegationCwd(workdir, requested string) (string, error) {
 	return apphub.ResolveDelegationCwd(workdir, requested)
+}
+
+// Interleave targets so one silent node cannot occupy the whole refresh pool.
+// Rotate the first target across polls to give fleets larger than the worker
+// pool a fair turn even when an entire round uses its budget.
+func fairDashboardDelegations(active []hub.Delegation, offset uint64) []hub.Delegation {
+	groups := make(map[string][]hub.Delegation)
+	var targets []string
+	for _, d := range active {
+		if _, ok := groups[d.TargetNode]; !ok {
+			targets = append(targets, d.TargetNode)
+		}
+		groups[d.TargetNode] = append(groups[d.TargetNode], d)
+	}
+	if len(targets) == 0 {
+		return active
+	}
+	result := make([]hub.Delegation, 0, len(active))
+	start := int(offset % uint64(len(targets)))
+	for len(result) < len(active) {
+		for i := range targets {
+			target := targets[(start+i)%len(targets)]
+			if len(groups[target]) == 0 {
+				continue
+			}
+			result = append(result, groups[target][0])
+			groups[target] = groups[target][1:]
+		}
+	}
+	return result
 }

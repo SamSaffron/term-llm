@@ -80,7 +80,7 @@ function DelegationRow({
 }
 
 export function DelegationsPanel({ config, store }: { config: HubConfig; store: HubStore }) {
-  const stale = !store.delegationsVerified.value;
+  const stale = !store.delegationsVerified.value || Boolean(store.delegationError.value);
   const delegations = store.delegations.value;
   return (
     <section class="delegations-panel" aria-label="Delegations">

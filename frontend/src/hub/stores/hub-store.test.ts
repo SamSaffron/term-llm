@@ -267,6 +267,31 @@ describe('HubStore', () => {
 
   afterEach(() => vi.useRealTimers());
 
+  it('keeps healthy sections polling while a delegation read stays outstanding', async () => {
+    vi.useFakeTimers();
+    let finish!: (value: { delegations: [] }) => void;
+    const pending = new Promise<{ delegations: [] }>((resolve) => (finish = resolve));
+    const client = fakeClient({ listDelegations: vi.fn(() => pending) });
+    const store = new HubStore(client);
+    try {
+      store.start();
+      await vi.advanceTimersByTimeAsync(0);
+      for (let tick = 1; tick <= 3; tick++) {
+        vi.mocked(client.listNodes).mockResolvedValueOnce(nodes(`node-${tick}`));
+        vi.mocked(client.listAttention).mockResolvedValueOnce(attention(`tick-${tick}`));
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(store.nodes.value[0].id).toBe(`node-${tick}`);
+        expect(store.inbox.value[0].title).toBe(`tick-${tick}`);
+        expect(client.listDelegations).toHaveBeenCalledOnce();
+      }
+      expect(client.listNodes).toHaveBeenCalledTimes(4);
+      expect(client.listAttention).toHaveBeenCalledTimes(4);
+    } finally {
+      finish({ delegations: [] });
+      store.dispose();
+    }
+  });
+
   it('starts one refresh and polls each endpoint exactly once per interval', async () => {
     vi.useFakeTimers();
     const client = fakeClient();
@@ -288,7 +313,7 @@ describe('HubStore', () => {
     expect(client.listNodes).toHaveBeenCalledTimes(2);
   });
 
-  it('coalesces a poll behind a pending refresh and aborts the read on disposal', async () => {
+  it('coalesces only the pending section and aborts its read on disposal', async () => {
     vi.useFakeTimers();
     let readSignal: AbortSignal | undefined;
     const listNodes = vi.fn(
@@ -306,8 +331,8 @@ describe('HubStore', () => {
     await vi.runAllTicks();
     await vi.advanceTimersByTimeAsync(15_000);
     expect(client.listNodes).toHaveBeenCalledOnce();
-    expect(client.listAttention).toHaveBeenCalledOnce();
-    expect(client.listDelegations).toHaveBeenCalledOnce();
+    expect(client.listAttention).toHaveBeenCalledTimes(2);
+    expect(client.listDelegations).toHaveBeenCalledTimes(2);
     store.dispose();
     expect(readSignal?.aborted).toBe(true);
     await vi.runAllTicks();

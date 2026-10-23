@@ -10,6 +10,54 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
 }
 
 describe('HubClient', () => {
+  it('bounds dashboard body reads after headers without timing out mutations', async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn();
+      const stalled = new Response(new ReadableStream({ cancel }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      let finishMutation!: (response: Response) => void;
+      const mutation = new Promise<Response>((resolve) => (finishMutation = resolve));
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(stalled)
+        .mockReturnValueOnce(mutation);
+      const client = new HubClient({ basePath: '', authMode: 'none' }, { fetch: fetcher });
+      let outcome = 'pending';
+      const read = client.listDelegations().then(
+        () => {
+          outcome = 'resolved';
+        },
+        () => {
+          outcome = 'rejected';
+        },
+      );
+      const write = client.addNode({ name: 'Alpha', url: 'http://node.test', token: '' });
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(outcome).toBe('rejected');
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(100_000);
+      finishMutation(jsonResponse({ id: 'alpha' }));
+      await expect(write).resolves.toEqual({ id: 'alpha' });
+      await read;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a dashboard fetch even before response headers arrive', async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn<typeof fetch>(() => new Promise(() => undefined));
+    const client = new HubClient({ basePath: '', authMode: 'none' }, { fetch: fetcher });
+    const read = client.listNodes(controller.signal);
+    controller.abort();
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it('owns mounted same-origin JSON transport for reads and mutations', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => jsonResponse({ nodes: [] }));
     const client = new HubClient(
@@ -107,7 +155,9 @@ describe('HubClient', () => {
     );
 
     await client.listNodes(controller.signal);
-    expect(fetcher.mock.calls[0][1]?.signal).toBe(controller.signal);
+    const forwarded = fetcher.mock.calls[0][1]?.signal;
+    expect(forwarded).toBeInstanceOf(AbortSignal);
+    expect(forwarded?.aborted).toBe(false);
     await expect(
       client.addNode({ name: 'Alpha', url: 'http://node.test', token: '' }),
     ).rejects.toThrow('network failed');

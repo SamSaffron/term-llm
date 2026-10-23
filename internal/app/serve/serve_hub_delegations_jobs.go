@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
 )
@@ -177,11 +178,19 @@ func (s *hubServer) findLatestDelegationRun(ctx context.Context, target hub.Node
 	return runs.Data[0], true, nil
 }
 
+var hubNodeJSONTimeout = 30 * time.Second
+
 // doNodeJSON performs one JSON request against a node's API (mounted under
 // the node's base path) with the node's token injected server-side. It uses
 // the hub's direct-dial client: routing token-carrying requests through an
 // environment HTTP proxy would leak node tokens.
 func (s *hubServer) doNodeJSON(ctx context.Context, node hub.Node, method, path string, payload, out any, headers ...http.Header) error {
+	// Unlike proxy streams, JSON operations have a finite whole-response budget
+	// on both transports, including body decoding. WithTimeout preserves an
+	// earlier caller deadline.
+	ctx, cancel := context.WithTimeout(ctx, hubNodeJSONTimeout)
+	defer cancel()
+
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)

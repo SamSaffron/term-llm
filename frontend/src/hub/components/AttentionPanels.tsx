@@ -61,7 +61,7 @@ function InboxRow({ item, stale }: { item: HubAttentionInboxItem; stale: boolean
 }
 
 export function AttentionPanels({ store }: { store: HubStore }) {
-  const stale = !store.attentionVerified.value;
+  const stale = !store.attentionVerified.value || Boolean(store.attentionError.value);
   const waiting = store.inputRequired.value;
   const inbox = store.inbox.value;
   return (

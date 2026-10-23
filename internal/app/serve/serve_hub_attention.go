@@ -6,19 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 const (
@@ -132,16 +129,14 @@ func (s *hubServer) startAttentionCollector() {
 	s.attentionWG.Add(1)
 	go func() {
 		defer s.attentionWG.Done()
-		failureStreak := 0
 		for {
-			failures := s.collectAttention(ctx)
-			if failures > 0 {
-				failureStreak++
-			} else {
-				failureStreak = 0
-			}
+			started := time.Now()
+			s.collectAttention(ctx)
 			active, _ := s.attentionStore.HasActivity(ctx)
-			timer := time.NewTimer(hubAttentionCollectionDelay(active, failureStreak))
+			// Network time does not get added to the healthy base cadence. Individual
+			// failed nodes have their own retry eligibility in attentionSchedule.
+			delay := max(time.Duration(0), hubAttentionCollectionDelay(active, 0)-time.Since(started))
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
 				if !timer.Stop() {
@@ -203,61 +198,6 @@ func hubAttentionErrorSummary(err error) string {
 	default:
 		return "attention collection failed"
 	}
-}
-
-func (s *hubServer) collectAttention(ctx context.Context) int {
-	ctx, release, err := restart.Default.Activity(ctx)
-	if err != nil {
-		return 0
-	}
-	defer release()
-	nodes, _ := s.registry.Nodes()
-	current := make(map[string]struct{}, len(nodes))
-	semaphore := make(chan struct{}, 8)
-	var wg sync.WaitGroup
-	var failureMu sync.Mutex
-	failures := 0
-	for _, node := range nodes {
-		current[node.ID] = struct{}{}
-		node := node
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case semaphore <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			defer func() { <-semaphore }()
-			nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			defer cancel()
-			started := time.Now()
-			err := s.collectNodeAttention(nodeCtx, node)
-			s.attentionDiagnostics.CollectorSamples.Add(1)
-			s.attentionDiagnostics.CollectorLatencyMS.Add(uint64(max(time.Since(started).Milliseconds(), 0)))
-			if err == nil {
-				s.attentionDiagnostics.CollectorSuccesses.Add(1)
-			} else if !errors.Is(err, context.Canceled) && !errors.Is(err, errHubAttentionAcknowledged) {
-				s.attentionDiagnostics.CollectorFailures.Add(1)
-				failureMu.Lock()
-				failures++
-				failureMu.Unlock()
-				summary := hubAttentionErrorSummary(err)
-				_ = s.attentionStore.MarkError(context.Background(), node.ID, summary)
-				log.Printf("[hub] attention sync failed for %.12s: %s", node.ID, summary)
-			}
-		}()
-	}
-	wg.Wait()
-	_, syncs, err := s.attentionStore.List(ctx)
-	if err == nil {
-		for _, state := range syncs {
-			if _, ok := current[state.NodeID]; !ok {
-				_ = s.attentionStore.RemoveNode(ctx, state.NodeID)
-			}
-		}
-	}
-	return failures
 }
 
 func (s *hubServer) collectNodeAttention(ctx context.Context, node hub.Node) error {
