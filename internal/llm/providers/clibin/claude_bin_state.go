@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 func (p *ClaudeBinProvider) recordTurnBoundary(req core.Request, resumedSessionID string, err error) {
@@ -15,6 +16,20 @@ func (p *ClaudeBinProvider) recordTurnBoundary(req core.Request, resumedSessionI
 	// MCP tools. Save that boundary for explicit continuation, never replay the
 	// stream automatically. Startup/transport errors do not acknowledge input.
 	accepted := err == nil || (p.sessionID != "" && strings.HasPrefix(err.Error(), "claude API error:"))
+	if !req.Ephemeral && err != nil && isPromptTooLong(err) {
+		// The native session now holds a context the API rejects outright.
+		// Resuming it can never succeed: every later turn, however short, re-sends
+		// the same oversized context and fails again, and Claude Code cannot
+		// natively compact a single oversized exchange. Drop it so the next turn
+		// or a manual compaction starts from term-llm's durable transcript.
+		// This runs only after Stream's truncated-tool-result retries also failed.
+		// Trade-off: a healthy session that overflowed only because of one huge
+		// new input is dropped too; the durable transcript loses nothing.
+		runtimeoutput.Warn("claude-bin prompt too long; discarding native session so it is not resumed",
+			"session_id", p.sessionID)
+		p.ResetConversation()
+		return
+	}
 	if !req.Ephemeral && !accepted {
 		// A process/transport failure leaves it unknown how much input the native
 		// session consumed. Neither a zero nor a prior turn's cursor is safe:
