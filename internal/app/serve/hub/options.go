@@ -5,6 +5,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/appdata"
@@ -15,6 +16,18 @@ const RegistrationTokenEnv = "TERM_LLM_HUB_REGISTRATION_TOKEN"
 
 // Options captures the Hub invocation's flag values.
 type Options struct {
+	// PeerBroker enables the explicit foreground contain-pair pilot. No peer ingress is mounted on HTTP.
+	PeerPairingTTL        time.Duration
+	PeerAuditFile         string
+	PeerPairLinkFile      string
+	PeerICEFile           string
+	PeerBroker            string
+	PeerRegistrationFile  string
+	PeerStateDir          string
+	PeerTURN              bool
+	PeerRelayOnly         bool
+	PeerSTUN              []string
+	PeerName              string
 	Host                  string
 	Port                  int
 	Config                string

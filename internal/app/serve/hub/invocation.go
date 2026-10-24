@@ -11,6 +11,7 @@ type FlagState struct{ BasePath bool }
 
 // Dependencies contains captured invocation writers and explicit flag state.
 type Dependencies struct {
+	Stdin          io.Reader
 	Flags          FlagState
 	Stdout, Stderr io.Writer
 }

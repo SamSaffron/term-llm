@@ -11,6 +11,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `cmd/genpkgmap` — regenerates PACKAGES.md, the one-line-per-package map of the root module built from package doc comments.
 - `cmd/gentsapi` — writes the registered Go serve JSON contracts for the frontend.
 - `cmd/imagetest` — Standalone test binary to debug image rendering with streaming markdown
+- `cmd/peer-broker` — peer-broker is the small standalone signalling-only pilot executable.
 - `cmd/precompressui` — gzips the generated web UI bundle in place so the binary embeds compressed bytes and the server can send them unchanged.
 - `cmd/servicesmoke` — exercises installed service specifications and real runners without touching a supervisor.
 - `internal/acp` — implements the client side of Agent Client Protocol v1.
@@ -130,8 +131,12 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/notification` — defines the shared Web Push wire envelope and event identity helpers.
 - `internal/oauth` — implements ChatGPT, Copilot and Grok OAuth login and refresh flows.
 - `internal/openaiapi` — resolves the public OpenAI API endpoint settings shared by every API-key OpenAI client (Responses, model listing, embeddings, images and transcription).
+- `internal/pairing` — implements secure device pairing primitives: QR links, persistent identities, transcript MACs/signatures, approval and grants.
 - `internal/passkeyauth` — provides application-neutral WebAuthn authentication primitives for first-party term-llm servers.
 - `internal/pathutil` — provides shared path manipulation utilities.
+- `internal/peer` — bridges HTTP requests to a fixed http.Handler over a reliable, ordered WebRTC DataChannel.
+- `internal/peerbroker` — implements a minimal peer signalling broker: short-lived opaque mailbox rendezvous with independent host/device bearer capabilities, bounded long-poll delivery, and optional TURN credential minting (including a Cloudflare Realtime adapter).
+- `internal/peerconnect` — joins authenticated signalling, device pairing and the WebRTC HTTP bridge.
 - `internal/plan` — owns the shared update_plan snapshot model, validation, history extraction, and bounded rendering helpers.
 - `internal/pprof` — runs the opt-in profiling HTTP server and tracks its port file.
 - `internal/process` — provides advisory process discovery, never restart authority.

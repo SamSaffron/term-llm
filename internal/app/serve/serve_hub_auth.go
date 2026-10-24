@@ -9,6 +9,12 @@ import (
 const hubAuthCookieName = apphub.AuthCookieName
 
 func (s *hubServer) handler() http.Handler {
+	return s.mountBasePath(s.auth(s.routes()))
+}
+
+// routes is shared by the HTTP listener and the separately authenticated peer
+// ingress. The latter applies its own device grant and route restrictions.
+func (s *hubServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	if s.passkey != nil {
 		s.browserAuth().registerPasskeyRoutes(mux)
@@ -31,7 +37,7 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/api/connect", s.handleReverseConnect)
 	mux.HandleFunc("/node/", s.handleNodeProxy)
 	mux.HandleFunc("/", s.handleIndex)
-	return s.mountBasePath(s.auth(mux))
+	return mux
 }
 
 func (s *hubServer) auth(next http.Handler) http.Handler {
