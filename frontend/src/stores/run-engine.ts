@@ -263,22 +263,15 @@ export class RunEngine {
     this.compacting = computed(() =>
       sessionStore.activity.busy(sessionStore.activeSessionId.value),
     );
+    // Steering is queued input, not an operation on the current provider phase.
+    // Capability snapshots (including those captured during a handoff) must not
+    // leave the composer disabled after the response has moved on. The server
+    // still checks response ownership when admitting the queued message.
     this.canSteer = computed(() => {
-      if (this.compacting.value) return false;
-      if (
-        rushActive(this.activeRush.value) &&
-        this.activeRush.value?.session_id === sessionStore.activeSession.value?.id
-      )
-        return false;
       const projection = this.activeProjection.value;
-      return Boolean(
-        this.runActive.value &&
-        this.steeringCapabilities.value[sessionStore.activeSession.value?.id || '']?.can_steer !==
-          false &&
-        projection &&
-        !projection.run.responseId.startsWith('pending_') &&
-        ['connecting', 'streaming'].includes(projection.run.status),
-      );
+      const responseId =
+        projection?.run.responseId || sessionStore.activeSession.value?.activeResponseId;
+      return Boolean(this.runActive.value && responseId && !responseId.startsWith('pending_'));
     });
     this.runLivenessUnknown = computed(() => {
       const projection = this.activeProjection.value;
@@ -305,7 +298,7 @@ export class RunEngine {
         !this.canSteer.value,
       );
       return (
-        this.compacting.value ||
+        (this.compacting.value && !this.canSteer.value) ||
         composer.sendPending.value ||
         runningClientTools.value ||
         projectedRunPending ||
@@ -2190,7 +2183,7 @@ export class RunEngine {
   }
   async steer(content: string, options: SendOptions = {}): Promise<void> {
     const { steer } = await loadSteeringActions();
-    if (this.compacting.peek()) return;
+    if (this.compacting.peek() && !this.canSteer.peek()) return;
     await steer(this.steeringActions(), content, options);
   }
   private rushLoading = false;

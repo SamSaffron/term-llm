@@ -583,14 +583,14 @@ function ConversationComposer() {
     return skill ? { skill, name: match[1], args: match[2] || '' } : null;
   };
   const sendOrCommand = () => {
-    // Commands mutate server state too; keep the typed text until ready.
+    const value = store.prompt.value.trim();
+    // Compaction can accept queued guidance, not commands that mutate the session.
     if (
       voiceBusy ||
-      store.runEngine.compacting.peek() ||
+      (store.runEngine.compacting.peek() && (!store.canSteer.peek() || value.startsWith('/'))) ||
       (store.workspaceShown.peek() && !store.startupDone.peek())
     )
       return;
-    const value = store.prompt.value.trim();
     const command = value.toLowerCase();
     if (command === '/stats' || command === '/inspect') {
       store.prompt.value = '';
@@ -797,7 +797,7 @@ function ConversationComposer() {
   const loading = !liveButton && !liveTextMode && runActive && !hasDraft;
   const compacting = store.runEngine.compacting.value;
   const sendLabel =
-    compacting && !(liveButton && liveActive)
+    compacting && !canSteer && !(liveButton && liveActive)
       ? 'Compacting conversation context'
       : connecting
         ? 'Connecting to term-llm'
@@ -1329,7 +1329,7 @@ function ConversationComposer() {
               aria-label={sendLabel}
               aria-pressed={liveButton ? liveActive : undefined}
               disabled={
-                (compacting && !(liveButton && liveActive)) ||
+                (compacting && !canSteer && !(liveButton && liveActive)) ||
                 connecting ||
                 (liveButton
                   ? !liveActive && (voiceBusy || bindingBlocked)

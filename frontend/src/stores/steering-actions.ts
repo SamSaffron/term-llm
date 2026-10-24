@@ -56,6 +56,8 @@ export async function steer(
     const contentParts = options.contentParts?.length
       ? [...options.contentParts, ...(value ? [{ type: 'input_text', text: value }] : [])]
       : [...attachmentParts, ...(value ? [{ type: 'input_text', text: value }] : [])];
+    const run = actions.runs.peek()[session.id]?.run;
+    const responseId = run?.responseId || session.activeResponseId;
     await actions.services.endpoints.interrupt(
       session.id,
       {
@@ -65,16 +67,12 @@ export async function steer(
           : {}),
         steering_id: id,
         client_message_id: id,
-        ...(actions.runs.peek()[session.id]?.run.responseId
-          ? {
-              expected_response_id: actions.runs.peek()[session.id].run.responseId,
-              expected_run_epoch: actions.runs.peek()[session.id].run.epoch,
-            }
-          : {}),
+        ...(responseId ? { expected_response_id: responseId } : {}),
+        ...(run?.epoch ? { expected_run_epoch: run.epoch } : {}),
         delivery: 'steer',
       },
       id,
-      actions.steeringCapabilities.peek()[session.id]?.protocol === 1,
+      actions.steeringCapabilities.peek()[session.id]?.protocol === 1 && Boolean(run?.epoch),
     );
     // Admission invalidates an earlier empty-queue capability snapshot. Do not
     // wait for a state poll to make the newly accepted guidance actionable.

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/preact';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import type { AppConfig } from '../app/config';
@@ -9,9 +9,8 @@ import type { Session } from '../domain/types';
 import { AppStore } from '../stores/app-store';
 import { Composer } from './Composer';
 
-// Compaction lifecycle as the user sees it: one banner, one disabled send
-// button, and no path to send or steer while the server reports the session
-// busy. Manual kickoff and automatic engine compaction share every guard.
+// Manual compaction blocks new response admission. Automatic compaction keeps
+// the active response and accepts queued steering behind the progress banner.
 
 const config: AppConfig = {
   prefix: '/ui',
@@ -513,67 +512,114 @@ describe('automatic compaction', () => {
     ...fields,
   });
 
+  it('queues a message during automatic compaction from the composer', async () => {
+    const { store } = streamingStore();
+    const input = renderComposer(store);
+    await act(() =>
+      store.runEngine.applyResponseEvent(
+        's1',
+        event(1, 'response.activity', { activity: activity('running') }),
+      ),
+    );
+    await act(async () => typeAndEnter(input, 'Keep the important details'));
+    await waitFor(() => expect(store.endpoints.interrupt).toHaveBeenCalledOnce());
+    expect(store.endpoints.interrupt).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ message: 'Keep the important details', delivery: 'steer' }),
+      expect.any(String),
+      false,
+    );
+    expect(store.endpoints.createResponse).not.toHaveBeenCalled();
+    expect(store.prompt.value).toBe('');
+    expectBanner();
+  });
+
+  it('still holds mutating slash commands during automatic compaction', async () => {
+    const { store } = streamingStore();
+    const input = renderComposer(store);
+    const mutate = vi.spyOn(store, 'mutateTranscript');
+    await act(() =>
+      store.runEngine.applyResponseEvent(
+        's1',
+        event(1, 'response.activity', { activity: activity('running') }),
+      ),
+    );
+    await act(async () => typeAndEnter(input, '/undo'));
+    expect(mutate).not.toHaveBeenCalled();
+    expect(store.endpoints.interrupt).not.toHaveBeenCalled();
+    expect(store.prompt.value).toBe('/undo');
+  });
+
   it.each([
     ['completed', activity('completed'), 'Steer'],
     ['cancelled', activity('cancelled'), 'Steer'],
     ['failed', activity('failed', { error: 'compaction failed: context too large' }), 'Steer'],
-  ])('uses the shared banner and guards and unlocks on %s', async (_outcome, terminal, label) => {
-    const { store } = streamingStore();
-    const input = renderComposer(store);
-    await act(async () => {
-      fireEvent.input(input, { target: { value: 'My next message' } });
-    });
-    expect(store.canSteer.value).toBe(true);
+  ])(
+    'keeps steering available through compaction ending in %s',
+    async (_outcome, terminal, label) => {
+      const { store } = streamingStore();
+      const input = renderComposer(store);
+      await act(async () => {
+        fireEvent.input(input, { target: { value: 'My next message' } });
+      });
+      expect(store.canSteer.value).toBe(true);
 
-    // Human-readable phase text is not lifecycle truth.
-    await act(() =>
-      store.runEngine.applyResponseEvent(
-        's1',
-        event(1, 'response.phase', { text: 'Compacting: summarize history' }),
-      ),
-    );
-    expect(banner()).not.toBeInTheDocument();
-    expect(store.canSteer.value).toBe(true);
+      // Human-readable phase text is not lifecycle truth.
+      await act(() =>
+        store.runEngine.applyResponseEvent(
+          's1',
+          event(1, 'response.phase', { text: 'Compacting: summarize history' }),
+        ),
+      );
+      expect(banner()).not.toBeInTheDocument();
+      expect(store.canSteer.value).toBe(true);
 
-    await act(() =>
-      store.runEngine.applyResponseEvent(
-        's1',
-        event(2, 'response.activity', { activity: activity('running') }),
-      ),
-    );
-    await expectLocked(store, input, 'My next message');
+      await act(() =>
+        store.runEngine.applyResponseEvent(
+          's1',
+          event(2, 'response.activity', { activity: activity('running') }),
+        ),
+      );
+      expectBanner();
+      expect(store.canSteer.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(false);
+      expect(screen.getByRole('button', { name: 'Steer' })).toBeEnabled();
 
-    // Ordinary stream traffic during compaction does not clear the lock.
-    await act(() =>
-      store.runEngine.applyResponseEvent(
-        's1',
-        event(3, 'response.output_text.delta', { delta: 'Still working' }),
-      ),
-    );
-    await expectLocked(store, input, 'My next message');
+      // Ordinary stream traffic during compaction does not clear the banner.
+      await act(() =>
+        store.runEngine.applyResponseEvent(
+          's1',
+          event(3, 'response.output_text.delta', { delta: 'Still working' }),
+        ),
+      );
+      expectBanner();
+      expect(store.canSteer.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(false);
+      expect(screen.getByRole('button', { name: 'Steer' })).toBeEnabled();
 
-    await act(() =>
-      store.runEngine.applyResponseEvent(
-        's1',
-        event(4, 'response.activity', { activity: terminal }),
-      ),
-    );
-    expectUnlocked(store, label);
-    expect(store.canSteer.value).toBe(true);
-    expect(store.prompt.value).toBe('My next message');
-    expect(toastMessages(store, 'error')).toEqual(terminal.error ? [terminal.error] : []);
+      await act(() =>
+        store.runEngine.applyResponseEvent(
+          's1',
+          event(4, 'response.activity', { activity: terminal }),
+        ),
+      );
+      expectUnlocked(store, label);
+      expect(store.canSteer.value).toBe(true);
+      expect(store.prompt.value).toBe('My next message');
+      expect(toastMessages(store, 'error')).toEqual(terminal.error ? [terminal.error] : []);
 
-    // The same terminal snapshot observed again is not re-toasted.
-    await act(() =>
-      store.runEngine.applyResponseEvent(
-        's1',
-        event(5, 'response.activity', { activity: terminal }),
-      ),
-    );
-    expect(toastMessages(store, 'error')).toEqual(terminal.error ? [terminal.error] : []);
-  });
+      // The same terminal snapshot observed again is not re-toasted.
+      await act(() =>
+        store.runEngine.applyResponseEvent(
+          's1',
+          event(5, 'response.activity', { activity: terminal }),
+        ),
+      );
+      expect(toastMessages(store, 'error')).toEqual(terminal.error ? [terminal.error] : []);
+    },
+  );
 
-  it('shows the same lock when status polling reports engine compaction for the selected run', async () => {
+  it('keeps steering available when status polling reports engine compaction', async () => {
     const { store, status } = streamingStore();
     const input = renderComposer(store);
     await act(async () => {
@@ -586,7 +632,10 @@ describe('automatic compaction', () => {
       activity: activity('running'),
     });
     await act(() => store.statusReconciler.refresh(true));
-    await expectLocked(store, input, 'My next message');
+    expectBanner();
+    expect(store.canSteer.value).toBe(true);
+    expect(store.sendBlocked.value).toBe(false);
+    expect(screen.getByRole('button', { name: 'Steer' })).toBeEnabled();
     expect(store.endpoints.compact).not.toHaveBeenCalled();
 
     status.set('s1', {

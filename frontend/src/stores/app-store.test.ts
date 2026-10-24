@@ -4615,7 +4615,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
   });
 
-  it('blocks a duplicate send when status reports a remote run before this tab attaches', () => {
+  it('allows steering instead of a duplicate send before attaching to a remote run', async () => {
     const store = new AppStore(config);
     try {
       store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'remote-r1' }];
@@ -4624,7 +4624,77 @@ describe('AppStore compatibility behavior', () => {
       expect(store.runs.value).toEqual({});
       expect(store.streaming.value).toBe(true);
       expect(store.canStop.value).toBe(false);
-      expect(store.sendBlocked.value).toBe(true);
+      expect(store.canSteer.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(false);
+      store.steeringCapabilities.value = { s1: { protocol: 1, can_steer: false } };
+      store.endpoints.interrupt = vi.fn(async () => ({ action: 'steer' }));
+      await store.steer('Remote guidance');
+      expect(store.endpoints.interrupt).toHaveBeenCalledWith(
+        's1',
+        expect.objectContaining({ expected_response_id: 'remote-r1', delivery: 'steer' }),
+        expect.any(String),
+        false,
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it.each(['connecting', 'checking', 'streaming', 'cancelling'] as const)(
+    'allows queued steering during %s despite an unavailable capability snapshot',
+    async (status) => {
+      const store = new AppStore(config);
+      try {
+        store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+        store.activeSessionId.value = 's1';
+        store.runs.value = {
+          s1: initialProjection({
+            responseId: 'r1',
+            sessionId: 's1',
+            epoch: 1,
+            status,
+            lastSequence: 1,
+            startedRev: 0,
+            reconnects: 0,
+          }),
+        };
+        store.steeringCapabilities.value = {
+          s1: { protocol: 1, can_steer: false, unavailable_reason: 'run_not_consuming' },
+        };
+        store.endpoints.interrupt = vi.fn(async () => ({ action: 'steer' }));
+        expect(store.canSteer.value).toBe(true);
+        expect(store.sendBlocked.value).toBe(false);
+        await store.steer('Follow this guidance');
+        expect(store.endpoints.interrupt).toHaveBeenCalledWith(
+          's1',
+          expect.objectContaining({ delivery: 'steer', expected_response_id: 'r1' }),
+          expect.any(String),
+          true,
+        );
+        expect(store.runEngine.steering.value).toEqual([
+          expect.objectContaining({ content: 'Follow this guidance', state: 'pending' }),
+        ]);
+      } finally {
+        store.dispose();
+      }
+    },
+  );
+
+  it('does not lock the composer for a rush handoff snapshot', () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+      store.activeSessionId.value = 's1';
+      store.runEngine.activeRush.value = {
+        rush_id: 'rush1',
+        session_id: 's1',
+        source_response_id: 'r1',
+        source_run_epoch: 1,
+        revision: 1,
+        status: 'settling',
+      };
+      expect(store.canSteer.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(false);
     } finally {
       store.dispose();
     }
