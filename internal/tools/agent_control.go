@@ -124,7 +124,10 @@ func (t *agentControlTool) list(ctx context.Context, parent string, a agentContr
 		if a.Status != "" && a.Status != "all" && r.Status != a.Status {
 			continue
 		}
-		resumable := r.Status == "completed" || r.Status == "turn_limit" || r.Status == "cancelled" || r.Status == "interrupted"
+		resumable := session.AgentRunResumable(ctx, t.spawn.manager.store, r) && !agentLifecycleRestricted(ctx)
+		if notice, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool); notice && r.Status == "failed" {
+			resumable = false
+		}
 		filtered = append(filtered, map[string]any{
 			"agent_id": r.ID, "agent_name": r.AgentName, "prompt_summary": session.TruncateSummary(r.Prompt),
 			"status": r.Status, "stop_reason": r.StopReason, "resumable": resumable, "turns_used": r.TurnsUsed,
@@ -204,14 +207,14 @@ func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentCon
 		m.wait(ctx, e, 5*time.Second)
 		record, _, _ = m.get(ctx, a.AgentID, parent)
 	}
-	return agentOutput(record)
+	return m.output(ctx, record, e)
 }
 
 func (t *agentControlTool) continueRun(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
 	if notice, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool); notice {
 		record, _, err := t.spawn.manager.get(ctx, a.AgentID, parent)
 		if err != nil || (record.Status != "completed" && record.Status != "turn_limit") {
-			return agentControlError("A host lifecycle notice may continue only completed or turn_limit children; obtain explicit user confirmation in a subsequent turn to restart interrupted or cancelled work.")
+			return agentControlError("A host lifecycle notice may continue only completed or turn_limit children; obtain explicit user confirmation in a subsequent turn to restart interrupted, cancelled, or failed work.")
 		}
 	}
 	m := t.spawn.manager
@@ -235,8 +238,8 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if record.Status == "running_elsewhere" && !a.Force {
 		return agentControlError("agent may still be running on another process; pass force:true to risk duplicate side effects")
 	}
-	if record.Status == "failed" {
-		return agentControlError("failed agent cannot be resumed")
+	if record.Status == "failed" && !session.AgentRunResumable(ctx, m.store, record) {
+		return agentControlError("failed agent has no saved assistant/tool history; call spawn_agent again")
 	}
 	budget := t.spawn.config.DefaultTimeout
 	if a.Wait != nil {

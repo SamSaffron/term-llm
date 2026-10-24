@@ -114,6 +114,7 @@ func (e *Engine) handleChaosStreamFailure(f *engineStreamFailureContext, chaosEr
 	} else if recovered {
 		return errEngineTurnAdvance
 	}
+	e.journalFailedSyncTurn(&f.recovery)
 	return chaosErr
 }
 
@@ -173,6 +174,7 @@ func (e *Engine) handleReceiveStreamFailure(f *engineStreamFailureContext, err e
 	if compaction.softActive {
 		compaction.restoreSoftFailure(originalTools, originalToolChoice, err)
 	}
+	e.journalFailedSyncTurn(&f.recovery)
 	return err
 }
 
@@ -232,5 +234,6 @@ func (e *Engine) handleEventStreamFailure(f *engineStreamFailureContext, eventEr
 	if compaction.softActive {
 		compaction.restoreSoftFailure(originalTools, originalToolChoice, eventErr)
 	}
+	e.journalFailedSyncTurn(&f.recovery)
 	return eventErr
 }

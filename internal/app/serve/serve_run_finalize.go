@@ -28,6 +28,9 @@ func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runE
 		}
 		return
 	}
+	// Native CLI sessions may have committed tools before returning an error.
+	// Persist their resume cursor even for the initial, non-stateful child run.
+	defer p.rt.persistProviderState(ctx, p.sessionID)
 	p.mu.Lock()
 	if len(p.produced) == 0 && resultText != "" {
 		p.produced = append(p.produced, tagResponseRunMessage(runCtx, core.AssistantText(resultText), 0))
@@ -111,7 +114,7 @@ func (p *serveRunPersistence) finalizeSuccess(ctx, runCtx context.Context, req c
 	if p.injectedPlatform != "" && p.stateful {
 		p.rt.persistPlatformOrigin(ctx, p.sessionID, p.injectedPlatform)
 	}
-	if p.persisted && p.stateful {
+	if p.persisted {
 		p.rt.persistProviderState(ctx, p.sessionID)
 	}
 	cached := result.SessionUsage.CachedInputTokens
