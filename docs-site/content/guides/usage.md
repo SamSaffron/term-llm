@@ -55,16 +55,16 @@ See [Agents](/guides/agents/) for more details on creating and managing agents.
 
 ### Using Skills
 
-Skills inject task-specific context into any command without changing the model or provider:
+Skills provide task-specific context in `ask` and `chat` without changing the model or provider:
 
 ```bash
-term-llm ask --skills git "how to squash commits"   # use git skill
-term-llm chat --skills git,docker                   # combine multiple skills
-term-llm edit --skills refactoring -f main.go "refactor this"
-term-llm exec --skills devops "set up a cron job"
+term-llm ask --skills git,+ "how to squash commits" # prioritize git metadata
+term-llm chat --skills git,docker,+                # prioritize multiple skills
 ```
 
-Use `--skills all` to load every available skill, or `--skills none` to suppress defaults.
+The `,+` suffix enables model-driven discovery and activation while prioritizing the named eligible skills in discovery metadata. It does not load their full instructions; the model loads those by calling `activate_skill`. Without `,+`, a named list disables model-driven discovery and activation.
+
+Use `--skills all` to enable model-driven discovery and activation of eligible skills, or `--skills none` to disable skills.
 
 Manage skills with the `skills` subcommand:
 
