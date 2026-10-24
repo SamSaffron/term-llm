@@ -1309,7 +1309,7 @@ func (m *telegramSessionMgr) reconcileTelegramTranscript(ctx context.Context, se
 		snapshot = append(snapshot, *session.NewMessage(sess.meta.ID, msg, i))
 	}
 	if !m.runStoreOpWithoutCancel(ctx, sess.meta.ID, op, func(storeCtx context.Context) error {
-		return m.store.ReplaceMessages(storeCtx, sess.meta.ID, snapshot)
+		return m.store.ResetMessages(storeCtx, sess.meta.ID, snapshot) // history is the complete transcript
 	}) {
 		return false
 	}

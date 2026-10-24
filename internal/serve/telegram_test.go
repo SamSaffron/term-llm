@@ -91,15 +91,15 @@ func (s *failingTelegramTurnStore) AddMessage(ctx context.Context, sessionID str
 	return s.Store.AddMessage(ctx, sessionID, msg)
 }
 
-func (s *failingTelegramTurnStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+func (s *failingTelegramTurnStore) ResetMessages(ctx context.Context, sessionID string, messages []session.Message) error {
 	s.mu.Lock()
 	s.replaceCalls++
 	fail := s.failReplace
 	s.mu.Unlock()
 	if fail {
-		return errors.New("injected ReplaceMessages failure")
+		return errors.New("injected ResetMessages failure")
 	}
-	return s.Store.ReplaceMessages(ctx, sessionID, messages)
+	return s.Store.ResetMessages(ctx, sessionID, messages)
 }
 
 func (s *failingTelegramTurnStore) stats() (failed bool, replaceCalls int) {
@@ -1012,7 +1012,7 @@ func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
 				t.Fatalf("expected injected %s AddMessage failure", tc.failRole)
 			}
 			if replaceCalls != 1 {
-				t.Fatalf("ReplaceMessages calls = %d, want 1", replaceCalls)
+				t.Fatalf("ResetMessages calls = %d, want 1", replaceCalls)
 			}
 
 			msgs, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)

@@ -530,107 +530,38 @@ func (s *SQLiteStore) ClearCompactionBoundary(ctx context.Context, id string) er
 	})
 }
 
-// ReplaceMessages reconciles the complete persisted history for a session.
-// It preserves any unchanged prefix and rewrites only the changed suffix, avoiding
-// a DELETE+INSERT of long histories when serve/web persists an appended snapshot.
-// Because the replacement snapshot becomes the complete persisted history, any
-// previous compaction boundary is cleared.
+// ReplaceMessages replaces a session's active context: the rows
+// LoadActiveMessages returns. Without a compaction boundary that is the whole
+// transcript. With one, only rows at and after the boundary are rewritten and
+// the archived rows and boundary are kept. The boundary is read inside the
+// write transaction, so callers cannot choose the wrong mode from stale
+// session metadata. Unchanged prefix rows keep their rowids, FTS entries and
+// created_at values; only the changed suffix is rewritten.
+//
+// Use ResetMessages to replace the complete transcript.
 func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
 	_, err := s.ReplaceMessagesWithTranscriptRev(ctx, sessionID, messages)
 	return err
 }
 
 func (s *SQLiteStore) ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error) {
-	partsJSON, err := prepareReplacementMessageParts(messages, s.cfg.StripImageBase64)
-	if err != nil {
-		return 0, err
-	}
-
-	var committedRev int64
-	err = retryOnBusy(ctx, 5, func() error {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin transaction: %w", err)
-		}
-		defer tx.Rollback()
-
-		commonPrefix, fullDelete, err := replacementCommonPrefix(ctx, tx, sessionID, messages, partsJSON)
-		if err != nil {
-			return err
-		}
-
-		// Drop the first changed row and any stale suffix. Unchanged prefix rows keep
-		// their rowids, FTS entries, and created_at values; triggers update FTS and
-		// message_count only for rows that actually changed. If legacy/corrupt rows
-		// have duplicate or negative sequence numbers, fall back to the old full
-		// rewrite so replacement remains a complete-history operation.
-		if fullDelete {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
-				return fmt.Errorf("delete existing messages: %w", err)
-			}
-		} else if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ? AND sequence >= ?", sessionID, commonPrefix); err != nil {
-			return fmt.Errorf("delete changed messages: %w", err)
-		}
-
-		if commonPrefix < len(messages) {
-			insertStmt, err := tx.PrepareContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			if err != nil {
-				return fmt.Errorf("prepare message insert: %w", err)
-			}
-			defer insertStmt.Close()
-
-			for i := commonPrefix; i < len(messages); i++ {
-				msg := messages[i]
-				createdAt := msg.CreatedAt
-				if createdAt.IsZero() {
-					createdAt = time.Now()
-				}
-				_, err = insertStmt.ExecContext(ctx,
-					sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, i, false,
-					msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
-				if err != nil {
-					return fmt.Errorf("insert message %d: %w", i, err)
-				}
-			}
-		}
-
-		// Update session activity metadata and clear any stale compaction boundary. A
-		// replace is a full-history rewrite; keeping an old compaction_seq could make
-		// future active-context loads start past the end of the rewritten rows. Compute
-		// activity from the persisted rows after the rewrite so unchanged prefixes keep
-		// their original created_at values instead of freshly rebuilt snapshot times.
-		now := time.Now()
-		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now, true); err != nil {
-			return err
-		}
-		rev, err := s.bumpTranscriptRev(ctx, tx, sessionID)
-		if err != nil {
-			return err
-		}
-		if err := checkpointResponseRunFenceTx(ctx, tx, sessionID, rev); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		s.noteOwnTranscriptRev(sessionID, rev)
-		committedRev = rev
-		return nil
-	})
-	return committedRev, err
+	return s.replaceTranscript(ctx, sessionID, messages, false)
 }
 
-// ReplaceCompactedMessages reconciles the active post-compaction history for a
-// session while preserving pre-compaction scrollback and the compaction boundary.
-// It must only be used with snapshots that start at the current compaction_seq.
-func (s *SQLiteStore) ReplaceCompactedMessages(ctx context.Context, sessionID string, messages []Message) error {
-	_, err := s.ReplaceCompactedMessagesWithTranscriptRev(ctx, sessionID, messages)
+// ResetMessages replaces the complete persisted transcript and clears any
+// compaction boundary, deleting archived pre-compaction rows. It is only for
+// callers that own the whole conversation: an explicit fresh-history
+// replacement, or a transcript held complete in memory.
+func (s *SQLiteStore) ResetMessages(ctx context.Context, sessionID string, messages []Message) error {
+	_, err := s.ResetMessagesWithTranscriptRev(ctx, sessionID, messages)
 	return err
 }
 
-func (s *SQLiteStore) ReplaceCompactedMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error) {
+func (s *SQLiteStore) ResetMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error) {
+	return s.replaceTranscript(ctx, sessionID, messages, true)
+}
+
+func (s *SQLiteStore) replaceTranscript(ctx context.Context, sessionID string, messages []Message, reset bool) (int64, error) {
 	partsJSON, err := prepareReplacementMessageParts(messages, s.cfg.StripImageBase64)
 	if err != nil {
 		return 0, err
@@ -644,51 +575,29 @@ func (s *SQLiteStore) ReplaceCompactedMessagesWithTranscriptRev(ctx context.Cont
 		}
 		defer tx.Rollback()
 
-		startSeq, err := s.compactionStartSeq(ctx, tx, sessionID)
+		startSeq := -1
+		if !reset {
+			if startSeq, err = s.activeContextStartSeq(ctx, tx, sessionID); err != nil {
+				return err
+			}
+		}
+		switch {
+		case startSeq < 0:
+			err = replaceWholeTranscriptTx(ctx, tx, sessionID, messages, partsJSON)
+		case len(messages) == 0:
+			err = ErrEmptyActiveContext
+		default:
+			err = replaceActiveTailTx(ctx, tx, sessionID, startSeq, messages, partsJSON)
+		}
 		if err != nil {
 			return err
 		}
 
-		commonPrefix, fullActiveDelete, err := compactedReplacementCommonPrefix(ctx, tx, sessionID, startSeq, messages, partsJSON)
-		if err != nil {
-			return err
-		}
-
-		deleteFrom := startSeq + commonPrefix
-		if fullActiveDelete {
-			commonPrefix = 0
-			deleteFrom = startSeq
-		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ? AND sequence >= ?", sessionID, deleteFrom); err != nil {
-			return fmt.Errorf("delete compacted messages: %w", err)
-		}
-
-		if commonPrefix < len(messages) {
-			insertStmt, err := tx.PrepareContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			if err != nil {
-				return fmt.Errorf("prepare compacted message insert: %w", err)
-			}
-			defer insertStmt.Close()
-
-			for i := commonPrefix; i < len(messages); i++ {
-				msg := messages[i]
-				createdAt := msg.CreatedAt
-				if createdAt.IsZero() {
-					createdAt = time.Now()
-				}
-				_, err = insertStmt.ExecContext(ctx,
-					sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, startSeq+i, msg.CompactionTail,
-					msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
-				if err != nil {
-					return fmt.Errorf("insert compacted message %d: %w", i, err)
-				}
-			}
-		}
-
-		now := time.Now()
-		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now, false); err != nil {
+		// A whole-transcript rewrite clears any boundary: keeping a stale
+		// compaction_seq could make later active-context loads start past the end
+		// of the rewritten rows. Activity is computed from the persisted rows so
+		// unchanged prefixes keep their original created_at values.
+		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, time.Now(), startSeq < 0); err != nil {
 			return err
 		}
 		rev, err := s.bumpTranscriptRev(ctx, tx, sessionID)
@@ -708,36 +617,118 @@ func (s *SQLiteStore) ReplaceCompactedMessagesWithTranscriptRev(ctx context.Cont
 	return committedRev, err
 }
 
-func (s *SQLiteStore) compactionStartSeq(ctx context.Context, tx *sql.Tx, sessionID string) (int, error) {
+func replaceWholeTranscriptTx(ctx context.Context, tx *sql.Tx, sessionID string, messages []Message, partsJSON []string) error {
+	commonPrefix, fullDelete, err := replacementCommonPrefix(ctx, tx, sessionID, messages, partsJSON)
+	if err != nil {
+		return err
+	}
+	// Drop the first changed row and any stale suffix. If legacy/corrupt rows
+	// have duplicate or negative sequence numbers, fall back to a full rewrite so
+	// replacement remains a complete-history operation.
+	if fullDelete {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
+			return fmt.Errorf("delete existing messages: %w", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ? AND sequence >= ?", sessionID, commonPrefix); err != nil {
+		return fmt.Errorf("delete changed messages: %w", err)
+	}
+	return insertReplacementMessagesTx(ctx, tx, sessionID, messages, partsJSON, commonPrefix, 0, false)
+}
+
+func replaceActiveTailTx(ctx context.Context, tx *sql.Tx, sessionID string, startSeq int, messages []Message, partsJSON []string) error {
+	commonPrefix, fullActiveDelete, err := compactedReplacementCommonPrefix(ctx, tx, sessionID, startSeq, messages, partsJSON)
+	if err != nil {
+		return err
+	}
+	if fullActiveDelete {
+		commonPrefix = 0
+	}
+	deleteFrom := startSeq + commonPrefix
+	// user_turns is increment-only (as for appends and undo/redo); the archive's
+	// turns stay counted. Count only user turns this rewrite adds beyond those it
+	// replaces, excluding retained compaction-tail copies.
+	var replacedTurns int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM messages WHERE session_id = ? AND sequence >= ? AND role = 'user' AND COALESCE(compaction_tail, FALSE) = FALSE", sessionID, deleteFrom).Scan(&replacedTurns); err != nil {
+		return fmt.Errorf("count replaced user turns: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ? AND sequence >= ?", sessionID, deleteFrom); err != nil {
+		return fmt.Errorf("delete active messages: %w", err)
+	}
+	if err := insertReplacementMessagesTx(ctx, tx, sessionID, messages, partsJSON, commonPrefix, startSeq, true); err != nil {
+		return err
+	}
+	addedTurns := -replacedTurns
+	for _, msg := range messages[commonPrefix:] {
+		if msg.Role == core.RoleUser && !msg.CompactionTail {
+			addedTurns++
+		}
+	}
+	if addedTurns > 0 {
+		if _, err := tx.ExecContext(ctx, "UPDATE sessions SET user_turns = user_turns + ? WHERE id = ?", addedTurns, sessionID); err != nil {
+			return fmt.Errorf("update user turns: %w", err)
+		}
+	}
+	return nil
+}
+
+// insertReplacementMessagesTx inserts messages[from:] at sequence base+i.
+// Active-tail rows keep their compaction_tail marker; whole-transcript rows
+// have no boundary to be a tail of.
+func insertReplacementMessagesTx(ctx context.Context, tx *sql.Tx, sessionID string, messages []Message, partsJSON []string, from, base int, keepTailMarker bool) error {
+	if from >= len(messages) {
+		return nil
+	}
+	insertStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare message insert: %w", err)
+	}
+	defer insertStmt.Close()
+	for i := from; i < len(messages); i++ {
+		msg := messages[i]
+		createdAt := msg.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		if _, err := insertStmt.ExecContext(ctx,
+			sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, base+i, keepTailMarker && msg.CompactionTail,
+			msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence); err != nil {
+			return fmt.Errorf("insert message %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// activeContextStartSeq returns the first sequence of the active context, or
+// -1 when the whole transcript is active. It mirrors LoadActiveMessages: no
+// boundary (HasCompactionBoundary's rule) or a stale one with no rows at or
+// after it both mean the whole transcript, and the rewrite then clears it.
+func (s *SQLiteStore) activeContextStartSeq(ctx context.Context, tx *sql.Tx, sessionID string) (int, error) {
 	if !s.hasCompactionSeq {
-		return 0, fmt.Errorf("replace compacted messages: compaction boundary unsupported")
+		return -1, nil
 	}
-
-	var startSeq int
+	query := "SELECT compaction_seq, 0 FROM sessions WHERE id = ?"
 	if s.hasCompactionCount {
-		var compactionCount int
-		err := tx.QueryRowContext(ctx, "SELECT compaction_seq, COALESCE(compaction_count, 0) FROM sessions WHERE id = ?", sessionID).Scan(&startSeq, &compactionCount)
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrNotFound
-		}
-		if err != nil {
-			return 0, fmt.Errorf("load compaction boundary: %w", err)
-		}
-		if startSeq < 0 || (startSeq == 0 && compactionCount <= 0) {
-			return 0, fmt.Errorf("replace compacted messages: session %s has no compaction boundary", sessionID)
-		}
-		return startSeq, nil
+		query = "SELECT compaction_seq, COALESCE(compaction_count, 0) FROM sessions WHERE id = ?"
 	}
-
-	err := tx.QueryRowContext(ctx, "SELECT compaction_seq FROM sessions WHERE id = ?", sessionID).Scan(&startSeq)
+	var startSeq, compactionCount int
+	err := tx.QueryRowContext(ctx, query, sessionID).Scan(&startSeq, &compactionCount)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNotFound
+		return -1, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("load compaction boundary: %w", err)
 	}
-	if startSeq < 0 {
-		return 0, fmt.Errorf("replace compacted messages: session %s has no compaction boundary", sessionID)
+	if startSeq < 0 || (startSeq == 0 && compactionCount <= 0) {
+		return -1, nil
+	}
+	var active bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ? AND sequence >= ?)", sessionID, startSeq).Scan(&active); err != nil {
+		return 0, fmt.Errorf("load active context: %w", err)
+	}
+	if !active {
+		return -1, nil
 	}
 	return startSeq, nil
 }

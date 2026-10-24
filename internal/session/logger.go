@@ -196,13 +196,13 @@ func (s *LoggingStore) ReplaceMessagesWithTranscriptRev(ctx context.Context, ses
 	return rev, err
 }
 
-func (s *LoggingStore) ReplaceCompactedMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error) {
-	writer, ok := s.Store.(CompactedTranscriptRevisionWriter)
+func (s *LoggingStore) ResetMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error) {
+	writer, ok := s.Store.(TranscriptRevisionWriter)
 	if !ok {
 		return 0, ErrTranscriptRevisionUnsupported
 	}
-	rev, err := writer.ReplaceCompactedMessagesWithTranscriptRev(ctx, sessionID, messages)
-	s.logOnce("ReplaceCompactedMessagesWithTranscriptRev", err)
+	rev, err := writer.ResetMessagesWithTranscriptRev(ctx, sessionID, messages)
+	s.logOnce("ResetMessagesWithTranscriptRev", err)
 	return rev, err
 }
 
@@ -606,19 +606,6 @@ func (s *LoggingStore) DeleteProviderState(ctx context.Context, sessionID, provi
 	}
 	err := store.DeleteProviderState(ctx, sessionID, providerKey)
 	s.logOnce("DeleteProviderState", err)
-	return err
-}
-
-// ReplaceCompactedMessages wraps optional Store.ReplaceCompactedMessages with error logging.
-func (s *LoggingStore) ReplaceCompactedMessages(ctx context.Context, sessionID string, messages []Message) error {
-	replacer, ok := s.Store.(interface {
-		ReplaceCompactedMessages(context.Context, string, []Message) error
-	})
-	if !ok {
-		return nil
-	}
-	err := replacer.ReplaceCompactedMessages(ctx, sessionID, messages)
-	s.logOnce("ReplaceCompactedMessages", err)
 	return err
 }
 

@@ -87,7 +87,7 @@ func (p *serveRunPersistence) finalizeSuccess(ctx, runCtx context.Context, req c
 		p.rt.refreshSideQuestionSnapshot(p.rt.sideQuestionBoundary(history, 0, false))
 		p.rt.updateSideQuestionConfig(req)
 	}
-	needSnapshot, compacted := false, false
+	needSnapshot, reset := false, false
 	if p.persisted {
 		if p.appendOnlyPersisted {
 			if (p.assistantSnapshotDirty || p.assistantSnapshotNeedsReconcile) && p.pendingAssistantIdx >= 0 && p.pendingAssistantIdx < len(p.produced) {
@@ -98,16 +98,12 @@ func (p *serveRunPersistence) finalizeSuccess(ctx, runCtx context.Context, req c
 		} else {
 			needSnapshot = !p.initialPersisted || p.lastAppendedIdx < len(p.produced) || p.assistantSnapshotDirty || p.assistantSnapshotNeedsReconcile || synthesized
 		}
-		compacted = p.compactedActiveHistory
+		reset = p.resetTranscript
 	}
 	p.persistPlatformInjectionLocked()
 	p.mu.Unlock()
 	if needSnapshot {
-		if compacted {
-			p.rt.historyPersisted = p.rt.persistCompactedSnapshot(ctx, p.sessionID, history)
-		} else {
-			p.rt.historyPersisted = p.rt.persistSnapshot(ctx, p.sessionID, history)
-		}
+		p.rt.historyPersisted = p.rt.persistSnapshotWithInitialBoundary(ctx, p.sessionID, history, reset, false)
 	} else if p.persisted {
 		p.rt.historyPersisted = true
 	}

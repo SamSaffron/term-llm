@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -117,6 +118,7 @@ type nativeCompactProvider struct {
 	*mockprovider.MockProvider
 	calls    int
 	imported string
+	err      error
 }
 
 func (p *nativeCompactProvider) ImportProviderState(state []byte) error {
@@ -126,6 +128,9 @@ func (p *nativeCompactProvider) ImportProviderState(state []byte) error {
 
 func (p *nativeCompactProvider) NativeCompact(context.Context, core.NativeCompactRequest) (*core.NativeCompactResult, error) {
 	p.calls++
+	if p.err != nil {
+		return nil, p.err
+	}
 	return &core.NativeCompactResult{PreTokens: 900, PostTokens: 300}, nil
 }
 
@@ -147,6 +152,67 @@ func TestServeRuntimeCompactSessionPrefersNativeCompaction(t *testing.T) {
 	}
 	if got := rt.activitySnapshot(); got.Status != "completed" || got.Message != "Context compacted natively (900 → 300 tokens)." {
 		t.Fatalf("activity = %+v", got)
+	}
+}
+
+// Native compaction runs against the provider's own session, which may be the
+// thing that is broken: Claude Code cannot compact a single oversized exchange.
+// The transcript compaction does not depend on that session and must still run.
+func TestServeRuntimeCompactSessionFallsBackWhenNativeCompactionFails(t *testing.T) {
+	provider := &nativeCompactProvider{
+		MockProvider: mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{Text: "Continue from the second answer."}),
+		err:          errors.New("claude-bin native compact: Prompt is too long; a single-exchange conversation cannot be compacted"),
+	}
+	rt, history := newServeCompactionTestRuntime(t, provider)
+	rt.beginCompactionActivity()
+	prepared, err := rt.prepareCompaction(context.Background(), rt.sessionMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepared.execute(context.Background())
+	rt.finishCompactionActivityWithRelease(err, prepared.release)
+	if err != nil || provider.calls != 1 {
+		t.Fatalf("execute err = %v; native calls = %d", err, provider.calls)
+	}
+	if result == nil || result.OriginalCount != len(history) {
+		t.Fatalf("transcript compaction did not run: %+v", result)
+	}
+	if rt.sessionMeta.CompactionCount != 1 {
+		t.Fatalf("compaction count = %d, want 1", rt.sessionMeta.CompactionCount)
+	}
+}
+
+func TestServeRuntimeCompactSessionReturnsNativeCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		err          error
+		cancelParent bool
+	}{
+		{"parent cancelled", context.Canceled, true},
+		// A provider's own child context can expire while the caller's is live.
+		{"provider deadline", fmt.Errorf("claude-bin native compact: %w", context.DeadlineExceeded), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &nativeCompactProvider{MockProvider: mockprovider.NewMockProvider("mock"), err: tc.err}
+			rt, history := newServeCompactionTestRuntime(t, provider)
+			prepared, err := rt.prepareCompaction(context.Background(), rt.sessionMeta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancelParent {
+				cancel()
+			}
+			result, err := prepared.execute(ctx)
+			prepared.release()
+			if !errors.Is(err, tc.err) && !errors.Is(err, context.Canceled) || result != nil {
+				t.Fatalf("execute = %+v, %v; want %v", result, err, tc.err)
+			}
+			if len(rt.history) != len(history) || rt.sessionMeta.CompactionCount != 0 {
+				t.Fatal("cancelled compaction fell back and rewrote the transcript")
+			}
+		})
 	}
 }
 
@@ -227,5 +293,120 @@ func TestServeSessionRuntimeCompactEndpoint(t *testing.T) {
 	}
 	if stored.CompactionCount != 1 {
 		t.Fatalf("compaction count = %d, want 1", stored.CompactionCount)
+	}
+}
+
+// A compacted session's runtime history holds only the active tail. A later
+// turn that falls back to snapshot persistence must replace only that tail:
+// a plain replacement deleted every archived row and the compaction boundary.
+// Unanswered user turns in the compacted tail carry no client_message_id (the
+// archived originals keep theirs), so the next turn trims them as retries and
+// always takes the snapshot path. That is how a stuck, compacted web session
+// lost its whole history on the first post after the rescue.
+func TestServeRunAfterCompactionPreservesArchivedTranscript(t *testing.T) {
+	ctx := context.Background()
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{Text: "Continue from the second answer."}).
+		AddTextResponse("fresh answer")
+	rt, _ := newServeCompactionTestRuntime(t, provider)
+	store, sess := rt.store, rt.sessionMeta
+	for _, text := range []string{"hi", "oh hello"} {
+		unanswered := core.UserText(text)
+		unanswered.ClientMessageID = "client-" + strings.ReplaceAll(text, " ", "-")
+		rt.history = append(rt.history, unanswered)
+	}
+	seeded := make([]session.Message, 0, len(rt.history))
+	for i, message := range rt.history {
+		seeded = append(seeded, *session.NewMessage(sess.ID, message, i/2))
+	}
+	if err := store.ReplaceMessages(ctx, sess.ID, seeded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.compactSession(ctx, sess.ID); err != nil {
+		t.Fatalf("compactSession: %v", err)
+	}
+	compacted, err := store.Get(ctx, sess.ID)
+	if err != nil || !session.HasCompactionBoundary(compacted) {
+		t.Fatalf("no compaction boundary after compaction: %+v, %v", compacted, err)
+	}
+	before, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rehydrate as a fresh runtime would after the idle TTL.
+	rt.history, rt.historyPersisted, rt.sessionMeta = nil, false, compacted
+	if !rt.restorePersistedHistory(ctx, compacted) {
+		t.Fatal("restore failed")
+	}
+	input := core.UserText("next question")
+	input.ClientMessageID = "client-next"
+	if _, err := rt.Run(ctx, true, false, []core.Message{input}, core.Request{SessionID: sess.ID}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	after, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CompactionSeq != compacted.CompactionSeq || after.CompactionCount != compacted.CompactionCount {
+		t.Fatalf("compaction boundary changed from %d/%d to %d/%d", compacted.CompactionSeq, compacted.CompactionCount, after.CompactionSeq, after.CompactionCount)
+	}
+	stored, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < compacted.CompactionSeq; i++ {
+		if i >= len(stored) || stored[i].ID != before[i].ID || stored[i].TextContent != before[i].TextContent {
+			t.Fatalf("archived row %d was rewritten or deleted: %d rows before, %d after", i, len(before), len(stored))
+		}
+	}
+	var sawNext, sawAnswer bool
+	for _, msg := range stored[compacted.CompactionSeq:] {
+		sawNext = sawNext || msg.TextContent == "next question"
+		sawAnswer = sawAnswer || strings.Contains(msg.TextContent, "fresh answer")
+	}
+	if !sawNext || !sawAnswer {
+		t.Fatalf("new turn missing from active tail: %+v", stored[compacted.CompactionSeq:])
+	}
+}
+
+// An explicit fresh-history run (Responses API without previous_response_id)
+// owns the whole conversation: it resets the transcript, boundary included.
+func TestServeReplaceHistoryRunResetsCompactedTranscript(t *testing.T) {
+	ctx := context.Background()
+	provider := mockprovider.NewMockProvider("mock").
+		AddTurn(mockprovider.MockTurn{Text: "Continue from the second answer."}).
+		AddTextResponse("fresh answer")
+	rt, _ := newServeCompactionTestRuntime(t, provider)
+	store, sess := rt.store, rt.sessionMeta
+	if _, err := rt.compactSession(ctx, sess.ID); err != nil {
+		t.Fatalf("compactSession: %v", err)
+	}
+	if compacted, err := store.Get(ctx, sess.ID); err != nil || !session.HasCompactionBoundary(compacted) {
+		t.Fatalf("no compaction boundary: %+v, %v", compacted, err)
+	}
+
+	if _, err := rt.Run(ctx, true, true, []core.Message{core.UserText("brand new conversation")}, core.Request{SessionID: sess.ID}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	after, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.HasCompactionBoundary(after) {
+		t.Fatalf("boundary survived a whole-history replacement: %d/%d", after.CompactionSeq, after.CompactionCount)
+	}
+	stored, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range stored {
+		if strings.Contains(msg.TextContent, "first question") || strings.Contains(msg.TextContent, "Continue from the second answer") {
+			t.Fatalf("old transcript survived reset: %+v", stored)
+		}
+	}
+	if len(stored) == 0 || !strings.Contains(stored[len(stored)-1].TextContent, "fresh answer") {
+		t.Fatalf("new conversation not persisted: %+v", stored)
 	}
 }

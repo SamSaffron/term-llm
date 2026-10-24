@@ -88,6 +88,10 @@ func (s *NoopStore) ReplaceMessages(ctx context.Context, sessionID string, messa
 	return nil
 }
 
+func (s *NoopStore) ResetMessages(ctx context.Context, sessionID string, messages []Message) error {
+	return nil
+}
+
 func (s *NoopStore) CompactMessages(ctx context.Context, sessionID string, messages []Message) error {
 	return nil
 }

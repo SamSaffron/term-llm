@@ -160,52 +160,29 @@ func addResponseRunMessage(ctx context.Context, store session.Store, sessionID s
 	return rev, err
 }
 
+// replaceResponseRunMessages replaces the session's active context; the store
+// keeps a compacted session's archive.
 func replaceResponseRunMessages(ctx context.Context, store session.Store, sessionID string, messages []session.Message) (int64, error) {
-	writer, ok := store.(session.TranscriptRevisionWriter)
-	if !ok {
-		if err := store.ReplaceMessages(ctx, sessionID, messages); err != nil {
-			return 0, err
-		}
-		return 0, nil
-	}
-	rev, err := writer.ReplaceMessagesWithTranscriptRev(ctx, sessionID, messages)
-	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
-		if err := store.ReplaceMessages(ctx, sessionID, messages); err != nil {
-			return 0, err
-		}
-		return 0, nil
-	}
-	return rev, err
+	return writeResponseRunTranscript(ctx, store, sessionID, messages, false)
 }
 
-func replaceCompactedResponseRunMessages(ctx context.Context, store session.Store, sessionID string, messages []session.Message) (int64, error) {
-	writer, ok := store.(session.CompactedTranscriptRevisionWriter)
-	if !ok {
-		replacer, supported := store.(interface {
-			ReplaceCompactedMessages(context.Context, string, []session.Message) error
-		})
-		if !supported {
-			return 0, errors.New("session store cannot replace compacted transcript")
-		}
-		if err := replacer.ReplaceCompactedMessages(ctx, sessionID, messages); err != nil {
-			return 0, err
-		}
-		return 0, nil
+// writeResponseRunTranscript writes through ReplaceMessages, or ResetMessages
+// when reset, reporting the committed transcript revision when supported.
+func writeResponseRunTranscript(ctx context.Context, store session.Store, sessionID string, messages []session.Message, reset bool) (int64, error) {
+	plain := store.ReplaceMessages
+	if reset {
+		plain = store.ResetMessages
 	}
-	rev, err := writer.ReplaceCompactedMessagesWithTranscriptRev(ctx, sessionID, messages)
-	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
-		replacer, supported := store.(interface {
-			ReplaceCompactedMessages(context.Context, string, []session.Message) error
-		})
-		if !supported {
-			return 0, errors.New("session store cannot replace compacted transcript")
+	if writer, ok := store.(session.TranscriptRevisionWriter); ok {
+		withRev := writer.ReplaceMessagesWithTranscriptRev
+		if reset {
+			withRev = writer.ResetMessagesWithTranscriptRev
 		}
-		if err := replacer.ReplaceCompactedMessages(ctx, sessionID, messages); err != nil {
-			return 0, err
+		if rev, err := withRev(ctx, sessionID, messages); !errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
+			return rev, err
 		}
-		return 0, nil
 	}
-	return rev, err
+	return 0, plain(ctx, sessionID, messages)
 }
 
 func updateResponseRunStreamingMessage(ctx context.Context, store session.Store, sessionID string, message *session.Message, finalizeText bool) (int64, error) {
