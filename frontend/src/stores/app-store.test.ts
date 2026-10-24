@@ -3906,8 +3906,8 @@ describe('AppStore compatibility behavior', () => {
         }),
       );
 
-      await vi.waitFor(() => expect(store.streaming.value).toBe(true));
-      expect(store.runs.value.s1.run.responseId).toBe('r1');
+      await vi.waitFor(() => expect(store.runs.value.s1.run.responseId).toBe('r1'));
+      expect(store.streaming.value).toBe(true);
       expect(store.runLivenessUnknown.value).toBe(false);
       streamController.close();
       await sending;
@@ -4145,7 +4145,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sendPending.value).toBe(false);
   });
 
-  it('keeps an ambiguous send durable and retries the same idempotency key', async () => {
+  it('keeps a guarded ambiguous send durable after a later rejection', async () => {
     vi.useFakeTimers();
     const store = new AppStore(config);
     try {
@@ -4153,6 +4153,7 @@ describe('AppStore compatibility behavior', () => {
       store.activeSessionId.value = 's1';
       store.draftActive.value = false;
       store.prompt.value = 'do not duplicate this';
+      store.runEngine.admissionInstance.value = 'instance-1';
       store.endpoints.createResponse = vi
         .fn()
         .mockRejectedValueOnce(new TypeError('browser transport disconnected'))
@@ -4176,7 +4177,7 @@ describe('AppStore compatibility behavior', () => {
       restored.activeSessionId.value = 's1';
       expect(restored.sendBlocked.value).toBe(true);
       expect(restored.visibleMessages.value).toEqual([
-        expect.objectContaining({ interruptState: 'checking_send' }),
+        expect.objectContaining({ interruptState: 'unconfirmed_send' }),
       ]);
       restored.dispose();
 
@@ -4188,8 +4189,8 @@ describe('AppStore compatibility behavior', () => {
       const second = vi.mocked(store.endpoints.createResponse).mock.calls[1];
       expect(second[0]).toEqual(first[0]);
       expect(second[2]).toBe(first[2]);
-      expect(store.pendingIntents.value).toEqual({});
-      expect(store.prompt.value).toBe('do not duplicate this');
+      expect(store.pendingIntents.value.s1[0].state).toBe('unconfirmed');
+      expect(store.prompt.value).toBe('');
     } finally {
       store.dispose();
       vi.useRealTimers();
@@ -4205,6 +4206,7 @@ describe('AppStore compatibility behavior', () => {
       store.activeSessionId.value = 's1';
       store.draftActive.value = false;
       store.prompt.value = 'retry this message';
+      store.runEngine.admissionInstance.value = 'instance-1';
       store.endpoints.createResponse = vi
         .fn()
         .mockRejectedValueOnce(new TypeError('browser transport disconnected'))

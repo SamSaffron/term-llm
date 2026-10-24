@@ -280,7 +280,69 @@ export function Composer() {
   const store = useStore();
   const session = store.activeSession.value;
   const delegated = Boolean(session?.delegated || session?.parentSessionId);
-  return delegated && !store.runActive.value ? null : <ConversationComposer />;
+  return (
+    <>
+      <LocalUnconfirmedSends />
+      {delegated && !store.runActive.value ? null : <ConversationComposer />}
+    </>
+  );
+}
+
+/** New-chat runtime IDs have no server/sidebar owner after a reload. */
+function LocalUnconfirmedSends() {
+  const store = useStore();
+  const active = store.activeSessionId.value;
+  const pending = Object.entries(store.pendingIntents.value).flatMap(([ownerId, intents]) =>
+    ownerId.startsWith('draft_') && ownerId !== active
+      ? intents
+          .filter((intent) => intent.state === 'unconfirmed')
+          .map((intent) => ({ ownerId, intent }))
+      : [],
+  );
+  if (!pending.length) return null;
+  return (
+    <section aria-label="Unconfirmed new conversations">
+      {pending.map(({ ownerId, intent }) => (
+        <div key={intent.clientMessageId} data-pending-owner={ownerId}>
+          <strong>Unconfirmed new conversation</strong>
+          {intent.content && <p>{intent.content}</p>}
+          {Boolean(intent.attachments?.length) && (
+            <ul aria-label="Unconfirmed attachments">
+              {intent.attachments!.map((attachment, index) => (
+                <li key={attachment.id || index}>{attachment.name}</li>
+              ))}
+            </ul>
+          )}
+          <UnconfirmedSendNotice ownerId={ownerId} />
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function UnconfirmedSendNotice({ ownerId }: { ownerId: string }) {
+  const store = useStore();
+  return (
+    <div role="status">
+      Could not confirm whether this was sent. It may still be running.{' '}
+      <button type="button" onClick={() => void store.checkSendStatus()}>
+        Check status
+      </button>{' '}
+      <button
+        type="button"
+        onClick={() => {
+          if (
+            confirm(
+              'This message may still be running; dismissing does not cancel it. Sending it again could duplicate the work. Dismiss this warning and unlock the composer?',
+            )
+          )
+            store.runEngine.dismissUnconfirmed(ownerId);
+        }}
+      >
+        Dismiss warning
+      </button>
+    </div>
+  );
 }
 
 function ConversationComposer() {
@@ -721,6 +783,10 @@ function ConversationComposer() {
     store.attachments.value.length === 0;
   const sendPending = store.sendPending.value;
   const sendBlocked = store.sendBlocked.value;
+  const unconfirmedSend =
+    store.pendingIntents.value[store.activeSessionId.value]?.some(
+      (intent) => intent.state === 'unconfirmed',
+    ) || store.runEngine.activeProjection.value?.run.status === 'unconfirmed';
   // A restored or hydrating workspace is editable, but nothing is sent (or
   // started) until startup is authoritative.
   const connecting = store.workspaceShown.value && !store.startupDone.value;
@@ -750,7 +816,9 @@ function ConversationComposer() {
                 : loading
                   ? 'Response is running'
                   : sendBlocked
-                    ? 'Checking whether sent'
+                    ? unconfirmedSend
+                      ? 'Send unconfirmed'
+                      : 'Checking whether sent'
                     : steering
                       ? 'Steer'
                       : 'Send message';
@@ -850,6 +918,7 @@ function ConversationComposer() {
           ) : (
             <div role="status">Pending steering…</div>
           ))}
+        {unconfirmedSend && <UnconfirmedSendNotice ownerId={store.activeSessionId.value} />}
         <VoiceStatus snapshot={voiceSnapshot} voice={voice} />
         <LiveStatus live={store.liveStore} />
         {!voiceState.capability.supported && (
@@ -887,7 +956,7 @@ function ConversationComposer() {
                   {attachment.status === 'error' && (
                     <span class="att-error" role="alert">
                       {attachment.error || 'Preparation failed'}
-                      {attachment.file && (
+                      {(attachment.file || attachment.blobRef) && (
                         <button
                           type="button"
                           aria-label={`Retry preparing ${attachment.name}`}

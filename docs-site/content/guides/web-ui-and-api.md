@@ -224,7 +224,39 @@ File tracking is enabled by default. It can be disabled with `file_tracking.enab
 
 The browser UI accepts attachments from the paperclip button, drag/drop, and paste. The picker hints at the formats term-llm handles best: images (`png`, `jpeg`, `gif`, `webp`), PDFs, common text/data files (`txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`), and common Office document formats.
 
-Server-side limits are authoritative: at most 10 attachments, 20 MB decoded per attachment, and 50 MB for the whole JSON request body. Base64 adds overhead, so multiple near-20 MB files may hit the request-body limit first.
+Server-side limits are authoritative: at most 10 attachments and **20 MiB per attachment**. When the server advertises `attachments.upload_refs.version: 1` in `GET /ui/v1/capabilities`, the browser uploads originals individually, at most two at a time, and sends small references with the message. Progress reaches completion only after the node acknowledges the stored file. Removing a preparing attachment cancels its upload; a failed file can be retried without uploading the successful files again.
+
+Older servers still accept inline base64 image/file parts. That legacy route has a 50 MiB JSON request-body limit at the node, or a 32 MiB limit through a reverse-connected Hub. Base64 adds roughly one third, so batches can exceed the transport limit even when every file meets its individual limit. Separate uploads avoid the combined-body bottleneck; the Hub still buffers each bounded individual upload rather than streaming it end-to-end.
+
+### Upload references for API clients
+
+All paths below are relative to the configured base path (for example `/ui`, `/chat`, or the Hub's `/node/<id>` prefix).
+
+1. Upload one file with `POST /uploads`. Send its bytes as the raw request body, its MIME type in `Content-Type` (or `application/octet-stream`), and its UTF-8 filename, encoded with `encodeURIComponent`, in `X-Term-LLM-Upload-Filename`. Use the same authentication as other node API calls.
+2. After a successful `201` response, use its opaque `upload_id` in an `input_upload` content part. Do not send a filesystem path or repeat the file bytes.
+
+```json
+{
+  "input": [{
+    "type": "message",
+    "role": "user",
+    "content": [
+      {"type": "input_upload", "upload_id": "<upload_id from POST /uploads>"},
+      {"type": "input_text", "text": "Describe this attachment."}
+    ]
+  }]
+}
+```
+
+The upload response includes `upload_id`, `filename`, `media_type`, and `size_bytes`. References can be reused by the authenticated principal on the same node/store, including after restart; they are not cross-node URLs or a substitute for authentication. Stored metadata determines how the file is handled. Existing inline `input_image` and `input_file` formats remain supported.
+
+Completed originals are retained under the existing upload-storage policy, including files removed from an unsent draft. Failed uploads remove only their own partial file. This release does not introduce an expiry or garbage collector for completed uploads. Uploading a file alone never starts inference. The reference store uses regular directories on one filesystem with hard-link support for atomic, no-overwrite publication; unsupported storage layouts fail with a server storage error rather than publishing a partial reference.
+
+### Unconfirmed message delivery
+
+A readable rejection, including HTTP `413`, reports the error and restores the draft. A network disconnect is different: the server may already have accepted the message. The browser makes at most three automatic admission attempts when the node advertises `response_admission.version: 1`, keeping the same request identity and frozen `X-Term-LLM-Server-Instance` header. A restarted node rejects that old incarnation before admission. Older nodes without the guard pause after the first ambiguous outcome instead of automatically replaying the mutation.
+
+If delivery remains uncertain, the browser stops automatic submission and displays **Could not confirm whether this was sent. It may still be running.** Checking status is read-only; it does not cancel accepted work or silently resend the message as a new operation. **Dismiss warning** unlocks the composer only after an explicit duplicate-work warning; dismissal is not evidence that the message was rejected. A later rejection also cannot disprove earlier acceptance after an ambiguous attempt. Do not assume an unconfirmed send was rejected, especially after a server restart.
 
 File handling is provider-aware:
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
@@ -40,7 +41,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	messages, replaceHistory, err := parseChatMessages(req.Messages)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeOpenAIError(w, http.StatusBadRequest, uploads.ParseErrorType(err), err.Error())
 		return
 	}
 

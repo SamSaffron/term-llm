@@ -288,6 +288,8 @@ export function clearSessionDiffComments(storage: Storage, base: string, session
 }
 
 export interface PendingIntent {
+  kind?: 'tool-output';
+  toolOutputs?: import('../domain/client-tools').ClientToolOutputItem[];
   id: string;
   clientMessageId: string;
   content: string;

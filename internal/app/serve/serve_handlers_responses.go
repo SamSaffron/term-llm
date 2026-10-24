@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -145,9 +146,7 @@ func responseClientMessageIDs(messages []core.Message) []string {
 }
 
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+	if !s.allowResponseAdmission(w, r) {
 		return
 	}
 	if err := requireJSONContentType(r); err != nil {
@@ -169,7 +168,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	inputMessages, replaceHistory, err := parseResponsesInput(req.Input)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeOpenAIError(w, http.StatusBadRequest, uploads.ParseErrorType(err), err.Error())
 		return
 	}
 	if len(inputMessages) == 0 {

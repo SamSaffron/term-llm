@@ -5,6 +5,7 @@ export type AuthOwner = 'session' | 'caller' | 'ignore';
 
 export class APIError extends Error {
   readonly type: string;
+  retryAfterMs = 0;
   constructor(
     message: string,
     readonly status: number,
@@ -192,6 +193,9 @@ function rawJSON<T>(value: string): T {
 }
 
 export interface UploadControls {
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  expectedStatus?: number;
   signal?: AbortSignal;
   onProgress?: (loaded: number, total?: number) => void;
 }
@@ -363,7 +367,7 @@ export class APIClient {
       'idempotent-mutation',
     );
   }
-  upload<T>(path: string, body: FormData, controls: UploadControls = {}): Promise<T> {
+  upload<T>(path: string, body: FormData | Blob, controls: UploadControls = {}): Promise<T> {
     const targetURL = this.url(path);
     const sameOrigin = new URL(targetURL, location.href).origin === location.origin;
     return new Promise<T>((resolve, reject) => {
@@ -387,6 +391,9 @@ export class APIClient {
       }
       xhr.open('POST', targetURL, true);
       xhr.withCredentials = sameOrigin;
+      xhr.timeout = controls.timeoutMs ?? 0;
+      for (const [name, value] of Object.entries(controls.headers || {}))
+        xhr.setRequestHeader(name, value);
       xhr.setRequestHeader('Accept', 'application/json');
       const token = this.hooks.getToken();
       if (sameOrigin && token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
@@ -395,8 +402,10 @@ export class APIClient {
         controls.onProgress?.(event.loaded, event.lengthComputable ? event.total : undefined);
       xhr.onerror = () => {
         this.hooks.onNetworkState?.(navigator.onLine === false ? 'offline' : 'retrying');
-        finish(() => reject(new TypeError('Transcription upload failed')));
+        finish(() => reject(new TypeError('Upload failed')));
       };
+      xhr.ontimeout = () =>
+        finish(() => reject(new DOMException('Upload timed out', 'TimeoutError')));
       xhr.onabort = () => finish(() => reject(new DOMException('Upload cancelled', 'AbortError')));
       xhr.onload = () => {
         const responseHeaders = new Headers();
@@ -426,11 +435,15 @@ export class APIClient {
             this.hooks.onAuthRequired();
           }
         }
-        if (xhr.status < 200 || xhr.status >= 300) {
+        if (
+          xhr.status < 200 ||
+          xhr.status >= 300 ||
+          (controls.expectedStatus !== undefined && xhr.status !== controls.expectedStatus)
+        ) {
           const raw = xhr.responseText || '';
-          finish(() =>
-            reject(responseError(raw, xhr.status, `Upload returned ${xhr.status}`, false)),
-          );
+          const error = responseError(raw, xhr.status, `Upload returned ${xhr.status}`, false);
+          error.retryAfterMs = retryAfterDelay({ headers: responseHeaders });
+          finish(() => reject(error));
           return;
         }
         this.hooks.onNetworkState?.('online');

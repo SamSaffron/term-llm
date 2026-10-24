@@ -43,6 +43,9 @@ export class ComposerStore {
 
   private readonly draftBlobs = new DraftBlobStore();
   private readonly attachmentGenerations = new Map<string, number>();
+  private readonly uploadAborts = new Map<string, AbortController>();
+  private readonly uploadQueue: Array<() => void> = [];
+  private activeUploads = 0;
   private currentDraftRev = 0;
   private newDraftID: string;
   private runtimeDraftID = `draft_${uuid()}`;
@@ -53,16 +56,8 @@ export class ComposerStore {
   ) {
     const storedDraftID = services.storage.getItem(services.keys.draftSessionActive) || '';
     this.newDraftID = storedDraftID.startsWith('draft:') ? storedDraftID : `draft:${uuid()}`;
-    const referencedBlobIDs = new Set(
-      readDrafts(services.storage, services.keys.draftMessages).flatMap((draft) =>
-        (draft.attachments || []).flatMap((attachment) =>
-          attachment.blobRef ? [attachment.blobRef] : [],
-        ),
-      ),
-    );
-    void this.draftBlobs.deleteOrphans(referencedBlobIDs).catch(() => {
-      if (!services.isDisposed) services.bumpDiagnostic('storageFailures');
-    });
+    // The blob DB is shared by all node namespaces and unresolved intents.
+    // A draft-only mark/sweep cannot prove ownership; retain blobs conservatively.
   }
 
   ownerKey(): string {
@@ -149,6 +144,7 @@ export class ComposerStore {
   }
 
   restore(id: string, owner: ComposerOwner): void {
+    this.releaseAttachmentResources(this.attachments.peek(), false);
     const draft = readDrafts(this.services.storage, this.services.keys.draftMessages).find(
       (entry) => entry.sessionId === id,
     );
@@ -262,12 +258,33 @@ export class ComposerStore {
 
   applyAttachmentPolicy(policy: AttachmentPolicy): void {
     this.attachmentPolicy.value = policy;
+    if (policy.uploadRefs)
+      this.attachments.value = this.attachments.peek().map((attachment) =>
+        attachment.status === 'ready' &&
+        (!attachment.uploadId || attachment.uploadScope !== this.uploadScope())
+          ? {
+              ...attachment,
+              status: 'error',
+              error: 'Retry to upload this saved attachment to this node.',
+            }
+          : attachment,
+      );
   }
 
   async attachmentInput(attachment: Attachment): Promise<Record<string, unknown>> {
     if (attachment.status && attachment.status !== 'ready')
       throw new Error(attachment.error || `${attachment.name} is not ready to send.`);
-    const data = attachment.dataURL || attachment.url || '';
+    if (this.attachmentPolicy.peek().uploadRefs) {
+      if (!attachment.uploadId || attachment.uploadScope !== this.uploadScope())
+        throw new Error(`${attachment.name} must finish uploading to this node before sending.`);
+      return { type: 'input_upload', upload_id: attachment.uploadId };
+    }
+    const blob =
+      !attachment.dataURL && attachment.blobRef
+        ? await this.draftBlobs.get(attachment.blobRef)
+        : null;
+    const data =
+      attachment.dataURL || (blob ? await blobToDataURL(blob.blob) : '') || attachment.url || '';
     if (!data) throw new Error(`Could not materialize ${attachment.name}`);
     if (isNativeImageType(attachment.type))
       return {
@@ -299,14 +316,71 @@ export class ComposerStore {
         status: 'preparing',
         progress: 0,
         draftId: this.storageId(),
+        ...(this.attachmentPolicy.peek().uploadRefs ? { uploadScope: this.uploadScope() } : {}),
       };
       this.attachments.value = [...this.attachments.peek(), attachment];
       void this.prepareAttachment(attachment);
     }
   }
 
-  private async prepareAttachment(attachment: Attachment): Promise<void> {
-    if (!attachment.id || !attachment.file) return;
+  private uploadScope(): string {
+    return `${location.origin}|${this.services.config.prefix}|${this.services.config.hub?.nodeId || ''}`;
+  }
+
+  /** Only actual upload requests hold a slot; 100% bytes is not completion until 201. */
+  private uploadBlob(
+    blob: Blob,
+    attachment: Attachment,
+    controller: AbortController,
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const start = () => {
+        if (controller.signal.aborted) {
+          reject(controller.signal.reason);
+          return;
+        }
+        this.activeUploads += 1;
+        void this.services.endpoints
+          .uploadAttachment(blob, attachment.name, {
+            signal: controller.signal,
+            onProgress: (loaded, total) => {
+              if (!controller.signal.aborted)
+                this.updateAttachment(attachment.id!, {
+                  progress: Math.min(0.99, loaded / (total || blob.size || 1)),
+                });
+            },
+          })
+          .then((result) => {
+            if (!/^upl_[A-Za-z0-9_-]{43}$/.test(result.upload_id))
+              throw new Error('Server returned an invalid upload ID.');
+            resolve(result.upload_id);
+          })
+          .catch(reject)
+          .finally(() => {
+            this.activeUploads -= 1;
+            this.drainUploads();
+          });
+      };
+      controller.signal.addEventListener(
+        'abort',
+        () => {
+          const index = this.uploadQueue.indexOf(start);
+          if (index >= 0) this.uploadQueue.splice(index, 1);
+          reject(controller.signal.reason || new DOMException('Upload cancelled', 'AbortError'));
+        },
+        { once: true },
+      );
+      this.uploadQueue.push(start);
+      this.drainUploads();
+    });
+  }
+
+  private drainUploads(): void {
+    while (this.activeUploads < 2 && this.uploadQueue.length) this.uploadQueue.shift()!();
+  }
+
+  private async prepareAttachment(attachment: Attachment, restoredBlob?: Blob): Promise<void> {
+    if (!attachment.id || (!attachment.file && !restoredBlob)) return;
     const attachmentId = attachment.id;
     const draftId = attachment.draftId || this.storageId();
     const generation = (this.attachmentGenerations.get(attachmentId) || 0) + 1;
@@ -316,10 +390,21 @@ export class ComposerStore {
       this.storageId() === draftId &&
       this.attachmentGenerations.get(attachmentId) === generation &&
       this.attachments.peek().some((entry) => entry.id === attachmentId);
-    const source = attachment.file;
+    this.uploadAborts.get(attachmentId)?.abort();
+    const controller = new AbortController();
+    this.uploadAborts.set(attachmentId, controller);
+    const source = restoredBlob || attachment.file!;
+    if (attachment.previewURL?.startsWith('blob:')) URL.revokeObjectURL(attachment.previewURL);
+    this.updateAttachment(attachmentId, { previewURL: undefined });
     let previewURL = '';
+    const revokePreview = () => {
+      if (previewURL) URL.revokeObjectURL(previewURL);
+      previewURL = '';
+    };
+    controller.signal.addEventListener('abort', revokePreview, { once: true });
     try {
-      const dataURL = await blobToDataURL(source);
+      const refs = this.attachmentPolicy.peek().uploadRefs;
+      const dataURL = refs ? undefined : await blobToDataURL(source);
       if (!owns()) return;
       this.updateAttachment(attachmentId, { progress: 0.5 });
       let width: number | undefined;
@@ -329,9 +414,23 @@ export class ComposerStore {
         const dimensions = await new Promise<{ width: number; height: number }>(
           (resolve, reject) => {
             const image = new Image();
-            image.onload = () =>
+            const cancelled = () => {
+              image.onload = null;
+              image.onerror = null;
+              image.src = '';
+              reject(
+                controller.signal.reason || new DOMException('Attachment cancelled', 'AbortError'),
+              );
+            };
+            controller.signal.addEventListener('abort', cancelled, { once: true });
+            image.onload = () => {
+              controller.signal.removeEventListener('abort', cancelled);
               resolve({ width: image.naturalWidth, height: image.naturalHeight });
-            image.onerror = () => reject(new Error(`Could not decode ${source.name} as an image.`));
+            };
+            image.onerror = () => {
+              controller.signal.removeEventListener('abort', cancelled);
+              reject(new Error(`Could not decode ${attachment.name} as an image.`));
+            };
             image.src = previewURL;
           },
         );
@@ -353,11 +452,28 @@ export class ComposerStore {
         updated: Date.now(),
       });
       if (!owns()) {
-        await this.draftBlobs.delete(attachmentId);
+        if (previewURL) URL.revokeObjectURL(previewURL);
+        return;
+      }
+      // Persist the local original before starting the remote transfer, so a
+      // reload or failed upload can retry from IndexedDB without the File object.
+      this.updateAttachment(attachmentId, {
+        blobRef: attachmentId,
+        checksum,
+        ...(refs ? { uploadScope: this.uploadScope() } : {}),
+      });
+      this.persist();
+      const uploadId = refs
+        ? attachment.uploadId && attachment.uploadScope === this.uploadScope()
+          ? attachment.uploadId
+          : await this.uploadBlob(source, attachment, controller)
+        : undefined;
+      if (!owns()) {
         if (previewURL) URL.revokeObjectURL(previewURL);
         return;
       }
       this.updateAttachment(attachmentId, {
+        ...(uploadId ? { uploadId, uploadScope: this.uploadScope() } : {}),
         dataURL,
         previewURL: previewURL || undefined,
         width,
@@ -379,6 +495,10 @@ export class ComposerStore {
       });
       this.services.toast(error, 'error');
       this.persist();
+    } finally {
+      controller.signal.removeEventListener('abort', revokePreview);
+      if (this.uploadAborts.get(attachmentId) === controller)
+        this.uploadAborts.delete(attachmentId);
     }
   }
 
@@ -400,15 +520,26 @@ export class ComposerStore {
       const record = await this.draftBlobs.get(blobRef);
       if (!owns()) return;
       if (!record || record.draftId !== draftId) {
-        // The draft metadata can outlive IndexedDB data after browser storage
-        // eviction or a partial clear. Drop that stale attachment instead of
-        // leaving an unusable error chip in the composer on every reload.
+        const attachment = this.attachments.peek().find((entry) => entry.id === id);
+        if (attachment?.uploadId && attachment.uploadScope === this.uploadScope()) {
+          this.updateAttachment(id, { status: 'ready', progress: 1, error: '' });
+          return;
+        }
+        if (this.attachmentPolicy.peek().uploadRefs || attachment?.uploadScope) {
+          this.updateAttachment(id, {
+            status: 'error',
+            progress: 0,
+            error: 'Local attachment unavailable; reselect the file before sending.',
+          });
+          this.persist();
+          return;
+        }
+        // Preserve the legacy behavior for old inline drafts only.
         this.attachmentGenerations.set(id, generation + 1);
         this.attachments.value = this.attachments.peek().filter((entry) => entry.id !== id);
         this.persist();
         return;
       }
-      const dataURL = await blobToDataURL(record.blob);
       const previewURL = isNativeImageType(record.mime)
         ? URL.createObjectURL(record.blob)
         : undefined;
@@ -416,7 +547,16 @@ export class ComposerStore {
         if (previewURL) URL.revokeObjectURL(previewURL);
         return;
       }
-      this.updateAttachment(id, { dataURL, previewURL, status: 'ready', progress: 1, error: '' });
+      const attachment = this.attachments.peek().find((entry) => entry.id === id)!;
+      const needsUpload =
+        this.attachmentPolicy.peek().uploadRefs &&
+        (!attachment.uploadId || attachment.uploadScope !== this.uploadScope());
+      this.updateAttachment(id, {
+        previewURL,
+        status: needsUpload ? 'error' : 'ready',
+        progress: needsUpload ? 0 : 1,
+        error: needsUpload ? 'Upload not completed. Retry to upload this saved attachment.' : '',
+      });
     } catch (error) {
       if (!owns()) return;
       this.updateAttachment(id, { status: 'error', error: errorMessage(error), progress: 0 });
@@ -426,9 +566,13 @@ export class ComposerStore {
 
   retryAttachment(id: string | undefined): void {
     const attachment = this.attachments.peek().find((entry) => entry.id === id);
-    if (!attachment?.file || !attachment.id) return;
+    if (!attachment?.id || (!attachment.file && !attachment.blobRef)) return;
     const validation = validateAttachmentFile(
-      attachment.file,
+      {
+        name: attachment.name,
+        type: attachment.type,
+        size: attachment.size || attachment.file?.size || 0,
+      },
       this.attachments.peek().filter((entry) => entry.id !== attachment.id).length,
       this.attachmentPolicy.peek(),
     );
@@ -442,33 +586,58 @@ export class ComposerStore {
       return;
     }
     this.updateAttachment(attachment.id, { status: 'preparing', error: '', progress: 0 });
-    void this.prepareAttachment(attachment);
+    if (attachment.file) void this.prepareAttachment(attachment);
+    else {
+      const draftId = this.storageId();
+      const generation = this.attachmentGenerations.get(attachment.id);
+      void this.draftBlobs
+        .get(attachment.blobRef!)
+        .then((record) => {
+          if (
+            this.services.isDisposed ||
+            this.storageId() !== draftId ||
+            this.attachmentGenerations.get(attachment.id!) !== generation
+          )
+            return;
+          if (!record)
+            throw new Error(
+              `The saved original for ${attachment.name} is unavailable. Remove and select it again.`,
+            );
+          if (this.attachments.peek().some((entry) => entry.id === attachment.id))
+            return this.prepareAttachment(attachment, record.blob);
+        })
+        .catch((error) => {
+          if (
+            this.storageId() === draftId &&
+            this.attachmentGenerations.get(attachment.id!) === generation
+          )
+            this.updateAttachment(attachment.id!, {
+              status: 'error',
+              error: errorMessage(error),
+              progress: 0,
+            });
+        });
+    }
   }
 
-  private releaseAttachmentResources(attachments: Attachment[], deleteBlobs: boolean): void {
+  private releaseAttachmentResources(attachments: Attachment[], _deleteBlobs: boolean): void {
     for (const attachment of attachments) {
+      if (attachment.id) this.uploadAborts.get(attachment.id)?.abort();
       if (attachment.id)
         this.attachmentGenerations.set(
           attachment.id,
           (this.attachmentGenerations.get(attachment.id) || 0) + 1,
         );
       if (attachment.previewURL?.startsWith('blob:')) URL.revokeObjectURL(attachment.previewURL);
-      if (deleteBlobs && attachment.blobRef)
-        void this.draftBlobs
-          .delete(attachment.blobRef)
-          .catch((error) => this.services.toast(error, 'error'));
     }
   }
 
   removeAttachment(id: string | undefined): void {
     const attachment = this.attachments.value.find((entry) => entry.id === id);
+    if (id) this.uploadAborts.get(id)?.abort();
     if (id) this.attachmentGenerations.set(id, (this.attachmentGenerations.get(id) || 0) + 1);
     if (attachment?.previewURL?.startsWith('blob:')) URL.revokeObjectURL(attachment.previewURL);
     this.attachments.value = this.attachments.value.filter((entry) => entry.id !== id);
-    if (attachment?.blobRef)
-      void this.draftBlobs
-        .delete(attachment.blobRef)
-        .catch((error) => this.services.toast(error, 'error'));
     this.persist();
   }
 

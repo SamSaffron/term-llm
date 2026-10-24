@@ -1,3 +1,4 @@
+import { admitResponse, assertResponseBudget } from '../api/response-admission';
 import { normalizeSteering, rushActive, type RushOperation } from '../domain/steering';
 import { extensionRuntime } from './extension-runtime';
 import { batch, computed, effect, signal, untracked, type ReadonlySignal } from '@preact/signals';
@@ -113,6 +114,7 @@ export interface RunEngineHost {
 
 /** Owns response creation, transport, recovery, intents, steering, and run projections. */
 export class RunEngine {
+  readonly admissionInstance = signal('');
   readonly activeRush = signal<RushOperation | null>(null);
   readonly steeringCapabilities = signal<
     Record<
@@ -161,6 +163,11 @@ export class RunEngine {
     private readonly host: RunEngineHost,
   ) {
     this.pendingIntents.value = readPendingIntents(services.storage, services.keys.pendingIntents);
+    // A previous process cannot safely replay an ephemeral server claim. Pause
+    // durable unknown outcomes on reload; status reads can still confirm them.
+    for (const [id, intents] of Object.entries(this.pendingIntents.peek()))
+      for (const intent of intents)
+        if (intent.state === 'checking') this.trackIntent(id, { ...intent, state: 'unconfirmed' });
     this.activeProjection = computed(() => {
       const session = sessionStore.activeSession.value;
       return session ? this.runs.value[session.id] || null : null;
@@ -182,7 +189,7 @@ export class RunEngine {
       const messages = mergeDurableProjection(durableMessages.value, projectedMessages.value);
       const clientIDs = new Set(messages.map((message) => message.clientMessageId).filter(Boolean));
       const pending = activeIntents.value
-        .filter((intent) => !clientIDs.has(intent.clientMessageId))
+        .filter((intent) => intent.kind !== 'tool-output' && !clientIDs.has(intent.clientMessageId))
         .map((intent) => ({
           id: intent.id,
           role: 'user' as const,
@@ -192,6 +199,9 @@ export class RunEngine {
           attachments: intent.attachments,
           pending: true,
           ...(intent.state === 'checking' ? { interruptState: 'checking_send' } : {}),
+          ...(['unconfirmed', 'dismissed-unconfirmed'].includes(intent.state || '')
+            ? { interruptState: 'unconfirmed_send' }
+            : {}),
         }));
       return [...messages, ...pending];
     });
@@ -289,7 +299,9 @@ export class RunEngine {
       const projection = this.activeProjection.value;
       const projectedRunPending = Boolean(
         projection &&
-        ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
+        ['connecting', 'checking', 'unconfirmed', 'streaming', 'cancelling'].includes(
+          projection.run.status,
+        ) &&
         !this.canSteer.value,
       );
       return (
@@ -300,7 +312,7 @@ export class RunEngine {
         Boolean(sessionStore.activeSession.value?.activeRun && !this.canSteer.value) ||
         Boolean(
           this.pendingIntents.value[sessionStore.activeSessionId.value]?.some(
-            (intent) => intent.state === 'checking',
+            (intent) => intent.state === 'checking' || intent.state === 'unconfirmed',
           ),
         )
       );
@@ -547,8 +559,10 @@ export class RunEngine {
     this.composer.sendPending.value = true;
     const clientMessageId = uuid();
     const requestId = uuid();
+    const admissionInstance = this.admissionInstance.peek();
 
     let session = this.sessionStore.activeSession.value;
+    const newSession = !session;
     const optimistic: Message = {
       id: `pending_${clientMessageId}`,
       role: 'user',
@@ -580,10 +594,6 @@ export class RunEngine {
         mcpEnabled: this.host.draftMCPEnabled(this.composer.runtimeDraftId()),
         messages: [],
       };
-      this.sessionStore.prepend(session);
-      this.sessionStore.activate(session);
-      // Ownership transferred to Session.worktreeDir before draft mode ended.
-      this.composer.selectedDraftWorktree.value = '';
     }
     const sessionId = session.id;
     let attachmentParts: Record<string, unknown>[];
@@ -596,18 +606,36 @@ export class RunEngine {
       this.services.toast(error, 'error');
       return;
     }
+    if (
+      !this.trackIntent(
+        sessionId,
+        {
+          id: optimistic.id,
+          clientMessageId,
+          content,
+          created: optimistic.created,
+          state: 'checking',
+          attachments: optimistic.attachments,
+        },
+        true,
+      )
+    ) {
+      // No mutation has been dispatched. Keep the exact composer and its
+      // original draft owner intact when durable recovery cannot be recorded.
+      this.composer.sendPending.value = false;
+      return;
+    }
+    if (newSession) {
+      this.sessionStore.prepend(session);
+      this.sessionStore.activate(session);
+      // Ownership transferred only after the pending intent is durable.
+      this.composer.selectedDraftWorktree.value = '';
+    }
     this.sessionStore.update(sessionId, (entry) => ({
       ...entry,
       messages: [...entry.messages, optimistic],
       lastMessageAt: Date.now(),
     }));
-    this.trackIntent(sessionId, {
-      id: optimistic.id,
-      clientMessageId,
-      content,
-      created: optimistic.created,
-      attachments: optimistic.attachments,
-    });
     if (!options.preserveComposer)
       this.composer.clearSubmitted(sessionId, promptContent, attachments, composerDraftId);
     const run: ActiveRun = {
@@ -659,6 +687,7 @@ export class RunEngine {
     this.clientTools.userTurn(sessionId);
 
     let unknownAttempts = 0;
+    const admissionDeadline = Date.now() + 100_000;
     const restoreRejectedComposer = (): void => {
       if (
         !options.preserveComposer &&
@@ -671,6 +700,10 @@ export class RunEngine {
       }
     };
     const submit = async (signal: AbortSignal): Promise<void> => {
+      if (Date.now() >= admissionDeadline) {
+        this.pauseUnconfirmed(streamOwner, clientMessageId);
+        return;
+      }
       try {
         const response = await this.createResponse(
           requestBody,
@@ -678,6 +711,8 @@ export class RunEngine {
           requestId,
           signal,
           notificationOrigin,
+          Math.min(30_000, admissionDeadline - Date.now()),
+          admissionInstance,
         );
         ownerID = await this.acceptCreatedResponse({
           response,
@@ -697,6 +732,10 @@ export class RunEngine {
           this.scheduleSupervisorRetry(streamOwner, error);
           return;
         }
+        if (this.definitiveSendRejection(error) && unknownAttempts > 0) {
+          this.pauseUnconfirmed(streamOwner, clientMessageId);
+          return;
+        }
         if (this.definitiveSendRejection(error)) {
           options.onTransportFailed?.(error);
           this.rollbackOptimisticIntent(ownerID, clientMessageId);
@@ -710,6 +749,10 @@ export class RunEngine {
         // rejected. Keep the idempotency key and intent, expose a durable
         // checking state, and replay exactly the same logical operation.
         unknownAttempts += 1;
+        if (!admissionInstance || unknownAttempts >= 3 || Date.now() >= admissionDeadline) {
+          this.pauseUnconfirmed(streamOwner, clientMessageId);
+          return;
+        }
         this.markIntentChecking(ownerID, clientMessageId);
         const projection = this.runs.peek()[ownerID];
         if (projection)
@@ -727,7 +770,7 @@ export class RunEngine {
             const retryAbort = this.supervisors.replaceAbort(streamOwner);
             if (retryAbort) void submit(retryAbort.signal);
           },
-          Math.min(30_000, 1_000 * 1.5 ** Math.min(unknownAttempts - 1, 8)),
+          unknownAttempts === 1 ? 1_000 : 3_000,
         );
       }
     };
@@ -794,16 +837,38 @@ export class RunEngine {
     requestId: string,
     signal: AbortSignal,
     capturedOrigin?: Promise<Record<string, string>>,
+    timeoutMs = 30_000,
+    admissionInstance = '',
   ): Promise<Response> {
-    return capturedOrigin
-      ? this.services.endpoints.createResponse(
-          requestBody,
-          sessionId,
-          requestId,
-          signal,
-          capturedOrigin,
-        )
-      : this.services.endpoints.createResponse(requestBody, sessionId, requestId, signal);
+    assertResponseBudget(requestBody, this.services.config.hub);
+    return admitResponse(
+      (admissionSignal) =>
+        admissionInstance
+          ? this.services.endpoints.createResponse(
+              requestBody,
+              sessionId,
+              requestId,
+              admissionSignal,
+              capturedOrigin,
+              { serverInstance: admissionInstance },
+            )
+          : capturedOrigin
+            ? this.services.endpoints.createResponse(
+                requestBody,
+                sessionId,
+                requestId,
+                admissionSignal,
+                capturedOrigin,
+              )
+            : this.services.endpoints.createResponse(
+                requestBody,
+                sessionId,
+                requestId,
+                admissionSignal,
+              ),
+      signal,
+      timeoutMs,
+    );
   }
 
   private definitiveSendRejection(error: unknown): boolean {
@@ -912,10 +977,18 @@ export class RunEngine {
     return ownerID;
   }
 
-  private markIntentChecking(sessionId: string, clientMessageId: string): void {
+  private markIntentChecking(
+    sessionId: string,
+    clientMessageId: string,
+    state: 'checking' | 'unconfirmed' = 'checking',
+  ): void {
     const markChecking = (message: Message): Message =>
       message.clientMessageId === clientMessageId
-        ? { ...message, interruptState: 'checking_send', pending: true }
+        ? {
+            ...message,
+            interruptState: state === 'checking' ? 'checking_send' : 'unconfirmed_send',
+            pending: true,
+          }
         : message;
     batch(() => {
       this.sessionStore.update(sessionId, (session) => ({
@@ -932,7 +1005,37 @@ export class RunEngine {
     const intent = this.pendingIntents
       .peek()
       [sessionId]?.find((entry) => entry.clientMessageId === clientMessageId);
-    if (intent) this.trackIntent(sessionId, { ...intent, state: 'checking' });
+    if (intent) this.trackIntent(sessionId, { ...intent, state });
+  }
+
+  private pauseUnconfirmed(owner: StreamSupervisor, clientMessageId: string): void {
+    if (!this.supervisors.owns(owner) || !owner.responseId.startsWith('pending_')) return;
+    this.markIntentChecking(owner.sessionId, clientMessageId, 'unconfirmed');
+    const projection = this.runs.peek()[owner.sessionId];
+    if (projection)
+      this.runs.value = {
+        ...this.runs.peek(),
+        [owner.sessionId]: {
+          ...projection,
+          phase: 'Could not confirm whether this was sent. It may still be running.',
+          run: { ...projection.run, status: 'unconfirmed' },
+        },
+      };
+    // No response cancellation: there may be accepted work whose ID was lost.
+    this.supervisors.retire(owner);
+  }
+
+  /** User-acknowledged uncertainty, not rejection or server cancellation. */
+  dismissUnconfirmed(sessionId: string): void {
+    for (const intent of this.pendingIntents.peek()[sessionId] || [])
+      if (intent.state === 'unconfirmed')
+        this.trackIntent(sessionId, { ...intent, state: 'dismissed-unconfirmed' });
+    const projection = this.runs.peek()[sessionId];
+    if (projection?.run.status === 'unconfirmed') {
+      const runs = { ...this.runs.peek() };
+      delete runs[sessionId];
+      this.runs.value = runs;
+    }
   }
 
   rekeySession(
@@ -2161,6 +2264,7 @@ export class RunEngine {
     const session = this.sessionStore.sessions.peek().find((entry) => entry.id === sessionId);
     if (!session) return;
     const requestId = uuid();
+    const admissionInstance = this.admissionInstance.peek();
     // First-party requests need an idempotency key even without a user message.
     const clientMessageId = uuid();
     const run: ActiveRun = {
@@ -2183,13 +2287,38 @@ export class RunEngine {
       client_message_id: clientMessageId,
       input: outputs,
     };
+    if (
+      !this.trackIntent(sessionId, {
+        id: `pending_${clientMessageId}`,
+        clientMessageId,
+        content: '',
+        created: Date.now(),
+        state: 'checking',
+        kind: 'tool-output',
+        toolOutputs: outputs,
+      })
+    ) {
+      // The accepted predecessor must not be cancelled just because this tab
+      // cannot durably retain its outputs. Keep them visible in memory, paused.
+      this.pauseUnconfirmed(streamOwner, clientMessageId);
+      return;
+    }
+    const admissionDeadline = Date.now() + 100_000;
+    let unknownAttempts = 0;
     for (let attempt = 0; ; attempt += 1) {
+      if (Date.now() >= admissionDeadline) {
+        this.pauseUnconfirmed(streamOwner, clientMessageId);
+        return;
+      }
       try {
         const response = await this.createResponse(
           requestBody,
           sessionId,
           requestId,
           streamOwner.abort.signal,
+          undefined,
+          Math.min(30_000, admissionDeadline - Date.now()),
+          admissionInstance,
         );
         await this.acceptCreatedResponse({
           response,
@@ -2208,26 +2337,37 @@ export class RunEngine {
           return;
         }
         const busy = sessionBusy(error);
+        if (unknownAttempts > 0 && this.definitiveSendRejection(error)) {
+          this.pauseUnconfirmed(streamOwner, clientMessageId);
+          return;
+        }
         if (
           (busy && CONTINUATION_BUSY_RETRY_MS[attempt] === undefined) ||
           (!busy && this.definitiveSendRejection(error))
         ) {
-          // Explicit abandonment cancels the durable logical turn, even though
-          // its tool-offering protocol response already completed.
+          // Preserve the existing explicit rejection/abandonment behavior.
+          // This branch never runs after an ambiguous admission.
           try {
             await this.abortToolContinuation(responseId);
           } catch (cancelError) {
             this.services.toast(`Could not confirm stop: ${errorMessage(cancelError)}`, 'error');
           }
+          this.retireIntent(sessionId, clientMessageId);
           this.failRun(sessionId, error);
           this.supervisors.retire(streamOwner);
           return;
         }
         // Unknown outcomes replay the same idempotency key and handoff lineage,
         // never a new origin or a manufactured successful terminal response.
+        if (!busy && (++unknownAttempts >= 3 || !admissionInstance)) {
+          this.pauseUnconfirmed(streamOwner, clientMessageId);
+          return;
+        }
         const delay = busy
           ? CONTINUATION_BUSY_RETRY_MS[attempt]
-          : Math.min(30_000, 1_000 * 1.5 ** Math.min(attempt, 8));
+          : unknownAttempts === 1
+            ? 1_000
+            : 3_000;
         await this.waitUnlessStopped(streamOwner.abort.signal, delay);
         if (!this.supervisors.owns(streamOwner)) return;
       }
@@ -2284,13 +2424,19 @@ export class RunEngine {
     if (active) return;
     // Legacy optimistic intents can be retired by an authoritative idle
     // transcript. Unknown-outcome sends are different: absence is not proof of
-    // rejection, so preserve their durable checking state until the same-key
-    // replay is rejected or their client_message_id appears in the transcript.
+    // rejection. Preserve checking/paused intents until the active in-process
+    // attempt is rejected or their client_message_id appears in the transcript.
     for (const intent of this.pendingIntents.peek()[sessionId] || [])
-      if (intent.state !== 'checking') this.retireIntent(sessionId, intent.clientMessageId);
+      if (!['checking', 'unconfirmed', 'dismissed-unconfirmed'].includes(intent.state || ''))
+        this.retireIntent(sessionId, intent.clientMessageId);
   }
 
-  trackIntent(sessionId: string, intent: PendingIntentRegistry[string][number]): void {
+  /** A required initial user intent is installed only after its durable write. */
+  trackIntent(
+    sessionId: string,
+    intent: PendingIntentRegistry[string][number],
+    required = false,
+  ): boolean {
     const persistedIntent = {
       ...intent,
       attachments: intent.attachments?.map(
@@ -2306,7 +2452,6 @@ export class RunEngine {
         persistedIntent,
       ],
     };
-    this.pendingIntents.value = registry;
     try {
       persistPendingIntent(
         this.services.storage,
@@ -2315,31 +2460,52 @@ export class RunEngine {
         persistedIntent,
       );
     } catch (error) {
+      if (!required) this.pendingIntents.value = registry;
       this.services.toast(
-        `Your message is queued in this tab but could not be saved: ${errorMessage(error)}`,
+        `${required ? 'Message not sent. ' : ''}Could not save the pending message or tool results; keep this tab open: ${errorMessage(error)}`,
         'error',
       );
+      return false;
     }
+    this.pendingIntents.value = registry;
+    return true;
   }
   retireIntent(sessionId: string, clientMessageId = ''): void {
+    if (!clientMessageId) {
+      // An unrelated response's terminal event is not proof about an uncertain send.
+      for (const intent of this.pendingIntents.peek()[sessionId] || [])
+        if (!['checking', 'unconfirmed', 'dismissed-unconfirmed'].includes(intent.state || ''))
+          this.retireIntent(sessionId, intent.clientMessageId);
+      return;
+    }
+    const retiring = this.pendingIntents
+      .peek()
+      [sessionId]?.find((intent) => intent.clientMessageId === clientMessageId);
+    if (retiring && ['unconfirmed', 'dismissed-unconfirmed'].includes(retiring.state || '')) {
+      const projection = this.runs.peek()[sessionId];
+      if (projection?.run.status === 'unconfirmed') {
+        const runs = { ...this.runs.peek() };
+        delete runs[sessionId];
+        this.runs.value = runs;
+      }
+      this.sessionStore.update(sessionId, (session) => ({
+        ...session,
+        messages: session.messages.map((message) =>
+          message.clientMessageId === clientMessageId
+            ? { ...message, pending: false, interruptState: undefined }
+            : message,
+        ),
+      }));
+    }
     const registry = { ...this.pendingIntents.value };
-    if (clientMessageId)
-      registry[sessionId] = (registry[sessionId] || []).filter(
-        (entry) => entry.clientMessageId !== clientMessageId,
-      );
-    else delete registry[sessionId];
+    registry[sessionId] = (registry[sessionId] || []).filter(
+      (entry) => entry.clientMessageId !== clientMessageId,
+    );
     if (!registry[sessionId]?.length) delete registry[sessionId];
     this.pendingIntents.value = registry;
-    if (clientMessageId)
-      this.services.storage.removeItem(
-        `${this.services.keys.pendingIntents}:${encodeURIComponent(sessionId)}:${encodeURIComponent(clientMessageId)}`,
-      );
-    else
-      removeSessionPendingIntents(
-        this.services.storage,
-        this.services.keys.pendingIntents,
-        sessionId,
-      );
+    this.services.storage.removeItem(
+      `${this.services.keys.pendingIntents}:${encodeURIComponent(sessionId)}:${encodeURIComponent(clientMessageId)}`,
+    );
   }
 
   dispose(): void {

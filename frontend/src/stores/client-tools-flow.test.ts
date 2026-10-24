@@ -469,6 +469,7 @@ describe('client tool continuation', () => {
   it('Stop during retryable client-output transport failure cancels the predecessor, not a pending fake response', async () => {
     installDeviceTools(async () => 'pong');
     const store = await chatStore();
+    store.runEngine.admissionInstance.value = 'instance-1';
     store.endpoints.createResponse = vi
       .fn()
       .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
@@ -482,6 +483,108 @@ describe('client tool continuation', () => {
     expect(store.endpoints.cancelResponse).toHaveBeenCalledWith('r1');
     expect(store.activeProjection.value?.run.status).toBe('cancelled');
     store.dispose();
+  });
+
+  it.each([false, true])(
+    'pauses ambiguous tool outputs without canceling accepted work (guarded=%s)',
+    async (guarded) => {
+      installDeviceTools(async () => 'pong');
+      const store = await chatStore();
+      store.runEngine.admissionInstance.value = guarded ? 'process-one' : '';
+      vi.useFakeTimers();
+      store.endpoints.createResponse = vi
+        .fn()
+        .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+        .mockRejectedValue(new TypeError('lost tool-output admission'));
+      try {
+        store.prompt.value = 'Ping it';
+        await store.send();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2);
+        store.runEngine.admissionInstance.value = 'different-process';
+        await vi.advanceTimersByTimeAsync(4_000);
+        expect(store.endpoints.createResponse).toHaveBeenCalledTimes(guarded ? 4 : 2);
+        expect(store.activeProjection.value?.run.status).toBe('unconfirmed');
+        const intent = store.pendingIntents.value.s1[0];
+        expect(intent).toMatchObject({
+          state: 'unconfirmed',
+          kind: 'tool-output',
+          toolOutputs: [{ type: 'function_call_output', call_id: 'call_1', output: 'pong' }],
+        });
+        const calls = vi.mocked(store.endpoints.createResponse).mock.calls.slice(1);
+        expect(calls.every((call) => call[2] === calls[0][2])).toBe(true);
+        if (guarded)
+          expect(calls.every((call) => call[5]?.serverInstance === 'process-one')).toBe(true);
+        expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(200_000);
+        expect(store.endpoints.createResponse).toHaveBeenCalledTimes(guarded ? 4 : 2);
+      } finally {
+        store.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('keeps tool outputs unconfirmed after a later incarnation rejection rather than canceling the predecessor', async () => {
+    installDeviceTools(async () => 'pong');
+    const store = await chatStore();
+    store.runEngine.admissionInstance.value = 'process-one';
+    vi.useFakeTimers();
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')))
+      .mockRejectedValueOnce(new TypeError('lost continuation reply'))
+      .mockRejectedValueOnce(new APIError('server instance changed', 409));
+    try {
+      store.prompt.value = 'Ping it';
+      await store.send();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(store.endpoints.createResponse).toHaveBeenCalledTimes(3);
+      expect(store.pendingIntents.value.s1[0]).toMatchObject({
+        state: 'unconfirmed',
+        kind: 'tool-output',
+      });
+      expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not dispatch or cancel accepted work when pending tool-output persistence fails', async () => {
+    let rejectPendingWrites = false;
+    installDeviceTools(async () => {
+      rejectPendingWrites = true;
+      return 'saved only in this tab';
+    });
+    const store = await chatStore();
+    const write = localStorage.setItem.bind(localStorage);
+    vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => {
+      if (rejectPendingWrites && key.startsWith(`${store.keys.pendingIntents}:`))
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      write(key, value);
+    });
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(sse('r1', callFrames('r1', 'webmcp__ping', '{}')));
+    try {
+      store.prompt.value = 'Ping it';
+      await store.send();
+      await vi.waitFor(() => expect(store.activeProjection.value?.run.status).toBe('unconfirmed'));
+      expect(store.endpoints.createResponse).toHaveBeenCalledOnce(); // Accepted human turn only.
+      expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
+      expect(store.pendingIntents.value.s1[0]).toMatchObject({
+        state: 'unconfirmed',
+        kind: 'tool-output',
+        toolOutputs: [{ output: 'saved only in this tab' }],
+      });
+      expect(store.toasts.value.some((toast) => toast.message.includes('Could not save'))).toBe(
+        true,
+      );
+      expect(store.sendBlocked.value).toBe(true);
+    } finally {
+      store.dispose();
+    }
   });
 
   it('runs page calls that follow a tool-only server turn in the same response', async () => {
