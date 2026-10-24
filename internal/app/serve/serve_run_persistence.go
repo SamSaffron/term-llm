@@ -53,6 +53,12 @@ type serveRunPersistence struct {
 func newServeRunPersistence(rt *serveRuntime, sessionID string, turnIndex int, spec serveRunSpec, baseHistory, inputMessages []core.Message, systemPromptInjected bool, injectedPlatform string) *serveRunPersistence {
 	p := &serveRunPersistence{rt: rt, sessionID: sessionID, turnIndex: turnIndex, stateful: spec.stateful, persisted: spec.persisted, replaceHistory: spec.replaceHistory, batchInitial: spec.batchInitial, baseHistory: baseHistory, inputMessages: inputMessages, systemPromptInjected: systemPromptInjected, injectedPlatform: injectedPlatform, pendingAssistantIdx: -1}
 	p.appendOnlyPersisted = spec.persisted && !spec.replaceHistory && rt.historyPersisted && (!isIdentifiedUserBatch(inputMessages) || spec.batchInitial)
+	// A compacted session's runtime history is only its active tail; archived
+	// rows before the boundary are not in it. Any snapshot write must replace
+	// just that tail. A plain replacement deletes the archived transcript and
+	// the boundary with it. Explicit whole-history replacement keeps its
+	// replacement semantics.
+	p.compactedActiveHistory = !spec.replaceHistory && session.HasCompactionBoundary(rt.sessionMeta)
 	if systemPromptInjected {
 		p.initialMessages = append(p.initialMessages, core.SystemText(rt.systemPrompt))
 	}
@@ -96,6 +102,15 @@ func (p *serveRunPersistence) persistProducedSnapshot(ctx context.Context) {
 	}
 	p.persistPlatformInjectionLocked()
 }
+
+// persistInitialSnapshotLocked writes the provider-complete initial context,
+// preserving a compacted session's archived prefix.
+func (p *serveRunPersistence) persistInitialSnapshotLocked(ctx context.Context, initial []core.Message) bool {
+	if p.compactedActiveHistory {
+		return p.rt.persistCompactedInitialSnapshot(ctx, p.sessionID, initial)
+	}
+	return p.rt.persistInitialSnapshot(ctx, p.sessionID, initial)
+}
 func (p *serveRunPersistence) appendOnlyCaughtUpLocked() bool {
 	return p.appendOnlyPersisted && p.initialPersisted && p.initialAppendedIdx >= len(p.initialMessages) && p.lastAppendedIdx >= len(p.produced) && !p.assistantSnapshotDirty && !p.assistantSnapshotNeedsReconcile
 }
@@ -136,7 +151,7 @@ func (p *serveRunPersistence) persistInitial(ctx context.Context, replacingExist
 	}
 	initial = append(initial, p.baseHistory...)
 	initial = append(initial, p.inputMessages...)
-	p.initialPersisted = p.rt.persistInitialSnapshot(ctx, p.sessionID, initial)
+	p.initialPersisted = p.persistInitialSnapshotLocked(ctx, initial)
 }
 func (p *serveRunPersistence) updateStateAndAppendLocked(ctx context.Context) {
 	if p.stateful {
@@ -170,7 +185,7 @@ func (p *serveRunPersistence) updateStateAndAppendLocked(ctx context.Context) {
 			}
 			initial = append(initial, p.baseHistory...)
 			initial = append(initial, p.inputMessages...)
-			p.initialPersisted = p.rt.persistInitialSnapshot(ctx, p.sessionID, initial)
+			p.initialPersisted = p.persistInitialSnapshotLocked(ctx, initial)
 		}
 		if p.initialPersisted && p.lastAppendedIdx < len(p.produced) {
 			result := p.rt.appendMessagesDetailed(ctx, p.sessionID, p.produced[p.lastAppendedIdx:], p.turnIndex)
@@ -211,7 +226,7 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 		}
 		initial = append(initial, p.baseHistory...)
 		initial = append(initial, p.inputMessages...)
-		p.initialPersisted = p.rt.persistInitialSnapshot(ctx, p.sessionID, initial)
+		p.initialPersisted = p.persistInitialSnapshotLocked(ctx, initial)
 		if !p.initialPersisted {
 			p.persistPlatformInjectionLocked()
 			return

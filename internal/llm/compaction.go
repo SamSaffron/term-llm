@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // compactionEnv adapts root-owned model limits, provider isolation, and
@@ -44,6 +45,12 @@ func SoftCompact(ctx context.Context, provider core.Provider, model, systemPromp
 // NativeCompact asks a provider that owns its conversation state to compact it
 // in place. ok is false when the provider has no native compaction or cannot
 // compact right now; callers should then fall back to SoftCompact/Compact.
+//
+// A native failure also reports ok=false. Native compaction runs against the
+// provider's own session, which can be exactly what needs rescuing: Claude
+// Code refuses to compact a single oversized exchange ("Prompt is too long ...
+// cannot be compacted"). term-llm's transcript compaction does not depend on
+// that session, so it remains a valid way out. Only cancellation is returned.
 func NativeCompact(ctx context.Context, provider core.Provider, req core.NativeCompactRequest) (result *core.NativeCompactResult, ok bool, err error) {
 	compactor, isCompactor := provider.(core.NativeCompactor)
 	if !isCompactor {
@@ -53,7 +60,14 @@ func NativeCompact(ctx context.Context, provider core.Provider, req core.NativeC
 	if errors.Is(err, core.ErrNativeCompactUnavailable) {
 		return nil, false, nil
 	}
-	return result, true, err
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, true, ctxErr
+		}
+		runtimeoutput.Warn("native compaction failed; falling back to transcript compaction", "error", err)
+		return nil, false, nil
+	}
+	return result, true, nil
 }
 
 // Compact generates a structured continuation brief for the older prefix.
