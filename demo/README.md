@@ -53,11 +53,11 @@ undo a native action that has already reached the device.
 
 ```sh
 make frontend
-node --test demo/mock-api.test.mjs
+node --test demo/mock-api.test.mjs demo/hub.test.mjs
 node demo/build.mjs
 ```
 
-Serve `demo/dist/` with any static HTTP server, for example:
+For root-only chat, serve `demo/dist/` with any static HTTP server, for example:
 
 ```sh
 python3 -m http.server 8765 --directory demo/dist
@@ -75,3 +75,17 @@ its existing asset manifest and HTML shell. To refresh the deployed UI, rebuild
 from the current frontend rather than maintaining a second UI. Publish the
 rebuilt `demo/dist/` through the normal static-site deployment; local edits/builds
 do not update the production URL automatically.
+
+## Static native Hub connection
+
+The same origin also publishes a read-only Hub inventory: one clearly labelled
+DEMO node and two fixed scripted conversations. The root remains the ordinary
+interactive demo (including the native device-tool walkthrough), not a second
+Hub dashboard. Native clients can discover the Hub and render their own UI.
+
+**Hosting must explicitly route the extensionless JSON endpoints and nested chat
+paths.** See [ROUTING.md](ROUTING.md) for the endpoint manifest, exact proposed
+nginx snippet, local static-server/browser tests, read-only protocol behavior,
+and iOS acceptance limitations. Merely copying build assets does not change an
+existing server's routing. No production configuration or deployment is performed
+by this change.
