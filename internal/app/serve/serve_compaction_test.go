@@ -115,7 +115,13 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 
 type nativeCompactProvider struct {
 	*mockprovider.MockProvider
-	calls int
+	calls    int
+	imported string
+}
+
+func (p *nativeCompactProvider) ImportProviderState(state []byte) error {
+	p.imported = string(state)
+	return nil
 }
 
 func (p *nativeCompactProvider) NativeCompact(context.Context, core.NativeCompactRequest) (*core.NativeCompactResult, error) {
@@ -141,6 +147,25 @@ func TestServeRuntimeCompactSessionPrefersNativeCompaction(t *testing.T) {
 	}
 	if got := rt.activitySnapshot(); got.Status != "completed" || got.Message != "Context compacted natively (900 → 300 tokens)." {
 		t.Fatalf("activity = %+v", got)
+	}
+}
+
+func TestServeRuntimeCompactSessionRestoresProviderStateBeforeAnyTurn(t *testing.T) {
+	// A runtime rehydrated after a restart has run no turn yet, so the provider
+	// has not imported its persisted resume state; native compaction needs it.
+	ctx := context.Background()
+	provider := &nativeCompactProvider{MockProvider: mockprovider.NewMockProvider("mock")}
+	rt, _ := newServeCompactionTestRuntime(t, provider)
+	if err := rt.store.(session.ProviderStateStore).SaveProviderState(ctx, rt.sessionMeta.ID, "mock", []byte(`{"session_id":"claude-1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := rt.prepareCompaction(ctx, rt.sessionMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.release()
+	if provider.imported != `{"session_id":"claude-1"}` {
+		t.Fatalf("provider state not restored before compaction: %q", provider.imported)
 	}
 }
 

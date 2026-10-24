@@ -49,6 +49,9 @@ func (rt *serveRuntime) prepareCompaction(ctx context.Context, sessionID string)
 		prepared.release()
 		return nil, errServeCompactionUnavailable
 	}
+	// A runtime rehydrated after restart restores provider resume state only
+	// when a turn starts; native compaction needs it before any turn.
+	rt.restoreProviderState(ctx, sessionID)
 	systemPrompt := strings.TrimSpace(rt.systemPrompt)
 	history := make([]core.Message, 0, len(rt.history))
 	for _, message := range rt.history {
@@ -72,7 +75,7 @@ func (rt *serveRuntime) prepareCompaction(ctx context.Context, sessionID string)
 	config := engine.DefaultCompactionConfig()
 	if rt.engine != nil && rt.engine.InputLimit() > 0 {
 		config.InputLimit = rt.engine.InputLimit()
-	} else if limit := llm.InputLimitForProviderModel(rt.providerKey, model); limit > 0 {
+	} else if limit := llm.HelperInputLimitForProviderModel(rt.providerKey, model); limit > 0 {
 		config.InputLimit = limit
 	}
 
