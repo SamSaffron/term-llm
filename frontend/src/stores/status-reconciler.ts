@@ -269,7 +269,8 @@ export class StatusReconciler {
         const locallyAdmittingResponse = Boolean(
           serverActiveResponseId &&
           matchesPendingIntent &&
-          projectedRun?.responseId.startsWith('pending_'),
+          projectedRun?.responseId.startsWith('pending_') &&
+          ['connecting', 'checking'].includes(projectedRun.status),
         );
         if (serverActiveResponseId && matchesPendingIntent) {
           followUps.push(() => this.host.retireIntent(session.id, committedClientMessageId));

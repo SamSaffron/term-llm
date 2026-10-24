@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -163,7 +162,7 @@ func parseDiffCommentPart(raw json.RawMessage) (*core.DiffComment, error) {
 }
 
 // parseUserMessageContent builds a user core.Message from a content field
-// that may be a plain string or an array of content parts (input_text, input_image, input_file).
+// that may be a plain string or an array of content parts (input_text, input_image, input_file, input_upload).
 // Chat Completions-style text/image_url parts are also accepted.
 // Supported image types are sent inline to the LLM and also saved to disk
 // so tools can reopen the original upload later. Text-like files also get a
@@ -174,10 +173,12 @@ func parseDiffCommentPart(raw json.RawMessage) (*core.DiffComment, error) {
 // to avoid provider errors; the saved ImagePath always points at the original
 // uploaded bytes.
 func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
+	if err := uploads.ValidateAttachmentCount(content); err != nil {
+		return core.Message{}, err
+	}
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
 		var llmParts []core.Part
-		fileCount := 0
 		diffCommentCount := 0
 		diffCommentAggregateBytes := 0
 		for _, part := range parts {
@@ -202,7 +203,16 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 				if text != "" {
 					llmParts = append(llmParts, core.Part{Type: core.PartText, Text: text})
 				}
+			case "input_upload":
+				refPart, err := uploads.ParseReferencePart(part)
+				if err != nil {
+					return core.Message{}, err
+				}
+				llmParts = append(llmParts, refPart)
 			case "input_image", "image_url":
+				if len(part["upload_id"]) != 0 {
+					return core.Message{}, fmt.Errorf("%w: use input_upload for references", uploads.ErrInvalidUpload)
+				}
 				imageURL := jsonImageURL(part["image_url"])
 				filename := jsonString(part["filename"])
 				if !strings.HasPrefix(imageURL, "data:") {
@@ -214,10 +224,6 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 					return core.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", filename)
 				}
 				if uploads.IsLLMImageType(mt) {
-					fileCount++
-					if fileCount > uploads.MaxAttachments {
-						return core.Message{}, fmt.Errorf("too many attachments (max %d)", uploads.MaxAttachments)
-					}
 					if filename == "" {
 						filename = "image"
 					}
@@ -232,36 +238,8 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 						return core.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
 
-					sendB64 := b64
-					sendMT := mt
-					if len(raw) > uploads.MaxLLMImageBytes {
-						// Resize only the inline payload sent to the model. Keep ImagePath
-						// pointing at the original upload so tools can inspect high-res data.
-						resized, resMT := uploads.ResizeImageForLLM(raw, mt)
-						if len(resized) != len(raw) || resMT != mt {
-							sendB64 = base64.StdEncoding.EncodeToString(resized)
-							sendMT = resMT
-						}
-					}
-
-					clientWidth := uploads.JSONImageDimension(part["width"])
-					clientHeight := uploads.JSONImageDimension(part["height"])
-					width, height := uploads.UploadedImageDimensions(raw, clientWidth, clientHeight)
-					llmParts = append(llmParts, core.Part{
-						Type: core.PartImage,
-						ImageData: &core.ToolImageData{
-							MediaType: sendMT,
-							Base64:    sendB64,
-							Width:     width,
-							Height:    height,
-						},
-						ImagePath: path,
-					})
+					llmParts = append(llmParts, uploads.ImagePart(raw, mt, path))
 				} else {
-					fileCount++
-					if fileCount > uploads.MaxAttachments {
-						return core.Message{}, fmt.Errorf("too many attachments (max %d)", uploads.MaxAttachments)
-					}
 					filePart, err := parseUploadedFilePart(filename, mt, b64)
 					if err != nil {
 						return core.Message{}, err
@@ -269,6 +247,9 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 					llmParts = append(llmParts, filePart)
 				}
 			case "input_file":
+				if len(part["upload_id"]) != 0 {
+					return core.Message{}, fmt.Errorf("%w: use input_upload for references", uploads.ErrInvalidUpload)
+				}
 				fileData := jsonString(part["file_data"])
 				filename := jsonString(part["filename"])
 				if filename == "" {
@@ -282,10 +263,6 @@ func parseUserMessageContent(content json.RawMessage) (core.Message, error) {
 				mt = uploads.NormalizeMediaType(displayFilename, mt, nil)
 				if mt == "" || b64 == "" {
 					return core.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", displayFilename)
-				}
-				fileCount++
-				if fileCount > uploads.MaxAttachments {
-					return core.Message{}, fmt.Errorf("too many attachments (max %d)", uploads.MaxAttachments)
 				}
 				filePart, err := parseUploadedFilePart(displayFilename, mt, b64)
 				if err != nil {
@@ -422,10 +399,5 @@ func parseUploadedFilePart(filename, mediaType, b64 string) (core.Part, error) {
 	if err != nil {
 		return core.Part{}, fmt.Errorf("save attachment %q: %w", filename, err)
 	}
-	return core.Part{
-		Type:     core.PartFile,
-		Text:     uploads.FallbackText(filename, mediaType, path, raw),
-		FileData: &core.ToolFileData{MediaType: mediaType, Base64: b64, Filename: filename, SizeBytes: int64(len(raw))},
-		FilePath: path,
-	}, nil
+	return uploads.FilePart(filename, mediaType, path, raw, b64), nil
 }

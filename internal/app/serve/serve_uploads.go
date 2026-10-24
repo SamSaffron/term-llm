@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 )
 
 // handleUpload serves files written by saveUploadedBytes from the first-party
@@ -57,7 +59,17 @@ func (s *serveServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Disposition", uploadDownloadDisposition(name))
+	downloadName := name
+	if uploads.IsReferenceID(name) {
+		ref, err := uploads.LookupReference(name)
+		if err != nil || ref.SizeBytes != info.Size() {
+			http.NotFound(w, r)
+			return
+		}
+		downloadName = ref.Filename
+		w.Header().Set("Content-Type", ref.MediaType)
+	}
+	w.Header().Set("Content-Disposition", uploadDownloadDisposition(downloadName))
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Add("Vary", "Authorization, Cookie")
 	serveResolvedFile(w, r, absFile)
@@ -153,4 +165,8 @@ func encodeRFC5987Value(value string) string {
 		b.WriteString(fmt.Sprintf("%%%02X", c))
 	}
 	return b.String()
+}
+
+func (s *serveServer) handleUploadCreate(w http.ResponseWriter, r *http.Request) {
+	s.uploadHandler.HandleCreate(w, r, s.cfg.hubURL)
 }

@@ -1158,6 +1158,11 @@ export class AppStore {
     this.tabSyncCoordinator.ensureChannel();
   }
 
+  /** Read-only reconciliation; never replays an uncertain mutation. */
+  async checkSendStatus(): Promise<void> {
+    await this.authoritativeRecovery('focus');
+  }
+
   private authoritativeRecovery(reason: string): Promise<void> {
     if (this.recoveryPromise) return this.recoveryPromise;
     const request = this.reconcile(reason, { authoritative: true });
@@ -1355,11 +1360,17 @@ export class AppStore {
     this.sessionStore.applyCapabilities(projectsEnabled, worktreesEnabled);
     this.shellStore.enabled.value = recordValue(data.shell)?.enabled === true;
     this.liveStore.applyCapability(data.live);
+    const admission = recordValue(data.response_admission);
+    this.runEngine.admissionInstance.value =
+      admission?.version === 1 && typeof admission.instance_id === 'string'
+        ? admission.instance_id
+        : '';
     const attachments = recordValue(data.attachments);
     if (attachments) {
       const maxCount = Number(attachments.max_count);
       const maxBytes = Number(attachments.max_bytes);
-      this.attachmentPolicy.value = {
+      this.composer.applyAttachmentPolicy({
+        uploadRefs: recordValue(attachments.upload_refs)?.version === 1,
         maxCount: maxCount > 0 ? maxCount : DEFAULT_ATTACHMENT_POLICY.maxCount,
         maxBytes: maxBytes > 0 ? maxBytes : DEFAULT_ATTACHMENT_POLICY.maxBytes,
         mimeTypes: Array.isArray(attachments.mime_types)
@@ -1368,7 +1379,7 @@ export class AppStore {
         extensions: Array.isArray(attachments.extensions)
           ? attachments.extensions.map((entry) => String(entry).toLowerCase())
           : DEFAULT_ATTACHMENT_POLICY.extensions,
-      };
+      });
     }
     this.applyWidgetStatus(data.widget_status || data.widgets);
   }

@@ -974,6 +974,7 @@ function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySign
     {
       evaluating: ['pending', '', 'evaluating…'],
       checking_send: ['pending', '⏳', 'checking whether this was sent'],
+      unconfirmed_send: ['error', '⚠', 'send unconfirmed — it may still be running'],
       pending_steer: ['pending', '⏳', 'will incorporate'],
       steer: ['steer', '✓', 'injected'],
       cancel: ['cancel', '⏹', 'cancelled + queued'],

@@ -126,6 +126,7 @@ func (s *serveServer) httpHandler() http.Handler {
 
 	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
 	inner.HandleFunc("/media/", s.auth(s.cors(s.handleMedia)))
+	inner.HandleFunc("/uploads", s.auth(s.cors(s.handleUploadCreate)))
 	inner.HandleFunc("/uploads/", s.auth(s.cors(s.handleUpload)))
 	if s.cfg.filesDir != "" {
 		inner.HandleFunc("/files/", s.auth(s.cors(s.handleFile)))

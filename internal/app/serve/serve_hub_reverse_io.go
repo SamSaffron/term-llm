@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 )
 
 // A connection admits a finite number of operations, including streams whose
@@ -122,18 +123,12 @@ func (c *hubReverseConnection) writeFrame(ctx context.Context, frame hubReverseR
 		return errors.New("reverse connection is closed")
 	default:
 	}
-	deadline := time.Now().Add(hubReverseWriteWait)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	// Gorilla makes write errors sticky. Interrupting an actual frame therefore
-	// closes the entire node tunnel, never reuses a possibly partial JSON frame.
-	stop := context.AfterFunc(ctx, func() { c.closeWithError(ctx.Err()) })
-	_ = c.conn.SetWriteDeadline(deadline)
-	err := c.conn.WriteJSON(frame)
-	stop()
-	_ = c.conn.SetWriteDeadline(time.Time{})
-	if err != nil {
+	// Once a JSON message begins, finish it under a byte-scaled hard deadline.
+	// A caller cancellation must not corrupt the shared tunnel; do() sends its
+	// remote cancel after this bounded write completes. Actual IO failures still
+	// poison Gorilla's writer and must fail closed for every pending operation.
+	started, err := wire.WriteFragmentedJSON(ctx, c.conn, frame)
+	if err != nil && started {
 		c.closeWithError(err)
 		if ctx.Err() != nil {
 			err = ctx.Err()

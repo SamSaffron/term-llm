@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/restart"
 )
@@ -31,7 +32,7 @@ import (
 const (
 	hubReversePingInterval = 20 * time.Second
 	hubReversePongWait     = 60 * time.Second
-	hubReverseWriteWait    = 10 * time.Second
+	hubReverseWriteWait    = wire.JSONChunkWriteWait
 	hubReverseChunkSize    = appserver.ReverseChunkSize
 	// Bound each request by both frames and decoded body bytes. This absorbs an
 	// ~8 MiB burst at the connector's maximum chunk size without allowing one

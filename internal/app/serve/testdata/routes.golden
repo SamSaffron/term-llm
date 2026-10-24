@@ -54,6 +54,7 @@ web * /files/ serve-auth wrappers=auth(cors(h))
 web * /healthz public wrappers=h
 web * /images/ serve-auth wrappers=auth(cors(h))
 web * /media/ serve-auth wrappers=auth(cors(h))
+web * /uploads serve-auth wrappers=auth(cors(h))
 web * /uploads/ serve-auth wrappers=auth(cors(h))
 web * /v1/attention serve-auth wrappers=auth(cors(h))
 web * /v1/capabilities serve-auth wrappers=auth(cors(h))

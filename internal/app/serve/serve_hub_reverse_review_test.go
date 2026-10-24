@@ -6,34 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 )
-
-// Use Context's AfterFunc hook to cancel exactly after the frame-write callback
-// is unregistered, not at an Err-call count that changes with implementation.
-// The underlying context is genuinely canceled; the socket is a real peer.
-type hubCancelAfterStopContext struct {
-	context.Context
-	cancel  context.CancelFunc
-	stopped chan struct{}
-	resume  chan struct{}
-}
-
-func (c *hubCancelAfterStopContext) Value(any) any { return nil }
-func (c *hubCancelAfterStopContext) AfterFunc(f func()) func() bool {
-	stop := context.AfterFunc(c.Context, f)
-	return func() bool {
-		ok := stop()
-		if ok {
-			close(c.stopped)
-			<-c.resume
-			c.cancel()
-		}
-		return ok
-	}
-}
 
 func TestHubReverseCancelAfterSuccessfulWrite(t *testing.T) {
 	for _, responseReady := range []bool{false, true} {
@@ -56,13 +31,22 @@ func TestHubReverseCancelAfterSuccessfulWrite(t *testing.T) {
 					}
 				}
 			}()
-			base, cancel := context.WithCancel(t.Context())
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			ctx := &hubCancelAfterStopContext{Context: base, cancel: cancel, stopped: make(chan struct{}), resume: make(chan struct{})}
-			var resumeOnce sync.Once
-			resume := func() { resumeOnce.Do(func() { close(ctx.resume) }) }
-			defer resume()
-			// A nil body prevents unrelated body-read cleanup from invoking AfterFunc.
+			// A real socket hook holds the writer immediately after all bytes of this
+			// small message reached the peer, before writeFrame returns to do(). This
+			// replaces the removed caller-AfterFunc callback with an IO ordering barrier.
+			wrote, release := make(chan struct{}), make(chan struct{})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			hook := func() { close(wrote); <-release }
+			c.conn.UnderlyingConn().(*containmentConn).afterWrite.Store(&hook)
+			// Keep body-read cleanup independent of the frame-write boundary.
 			req := httptest.NewRequest(http.MethodPost, "http://reverse.local/late", nil).WithContext(ctx)
 			req.Body = nil
 			done := make(chan error, 1)
@@ -80,15 +64,15 @@ func TestHubReverseCancelAfterSuccessfulWrite(t *testing.T) {
 				t.Fatal("request did not reach peer")
 			}
 			select {
-			case <-ctx.stopped:
+			case <-wrote:
 			case <-time.After(2 * time.Second):
-				t.Fatal("write callback was not stopped")
+				t.Fatal("socket completion hook was not reached")
 			}
 			if responseReady {
 				if err := peer.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: sent.ID, Status: 200}); err != nil {
 					t.Fatal(err)
 				}
-				// Hold writeFrame at the stopped-callback boundary until the response lane
+				// Hold writeFrame at the socket completion boundary until the response lane
 				// is ready too, then cancel. The response branch must not lose cancellation.
 				watchdog := time.After(2 * time.Second)
 				for {
@@ -107,7 +91,8 @@ func TestHubReverseCancelAfterSuccessfulWrite(t *testing.T) {
 					}
 				}
 			}
-			resume()
+			cancel()
+			close(release)
 			if err := containmentAwait(t, done); !errors.Is(err, context.Canceled) {
 				t.Fatalf("request error=%v", err)
 			}

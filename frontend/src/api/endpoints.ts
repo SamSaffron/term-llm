@@ -1,3 +1,4 @@
+import { uploadAttachment } from './upload-attachment';
 import type { SessionInspect, SessionInspectBodies } from '../domain/inspect';
 import type {
   CreateWebSessionRequest,
@@ -182,6 +183,8 @@ export const endpoints = (api: APIClient) => ({
       method: 'POST',
       body: JSON.stringify({ enabled, revision }),
     }),
+  uploadAttachment: (blob: Blob, filename: string, controls?: import('./client').UploadControls) =>
+    uploadAttachment(api, blob, filename, controls),
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   sharingCapabilities: () => api.get<SharingCapabilitiesResponse>('/v1/sharing/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),
@@ -374,6 +377,7 @@ export const endpoints = (api: APIClient) => ({
     requestId: string,
     signal?: AbortSignal,
     capturedOrigin?: Promise<Record<string, string>>,
+    admission?: { serverInstance: string },
   ) => {
     const streaming = Boolean(
       body && typeof body === 'object' && (body as Record<string, unknown>).stream,
@@ -390,6 +394,9 @@ export const endpoints = (api: APIClient) => ({
         signal,
         headers: {
           ...originHeaders,
+          ...(admission?.serverInstance
+            ? { 'X-Term-LLM-Server-Instance': admission.serverInstance }
+            : {}),
           ...(sessionId && !draft ? { 'X-Term-LLM-Session-ID': sessionId } : {}),
           ...(draft ? { 'X-Term-LLM-Draft-ID': sessionId } : {}),
           'Idempotency-Key': requestId,
@@ -400,7 +407,7 @@ export const endpoints = (api: APIClient) => ({
       streaming
         ? {
             policy: 'idempotent-mutation',
-            retries: 2,
+            retries: 0,
             timeoutMs: 0,
             auth: 'session',
             notificationOrigin,

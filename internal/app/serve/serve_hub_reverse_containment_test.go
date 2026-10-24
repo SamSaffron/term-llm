@@ -22,8 +22,10 @@ import (
 // mocked writer. The peer completes its handshake, then stops reading entirely.
 type containmentConn struct {
 	net.Conn
-	armed   atomic.Bool
-	writing chan struct{}
+	armed         atomic.Bool
+	writing       chan struct{}
+	deadlineLimit atomic.Int64
+	afterWrite    atomic.Pointer[func()]
 }
 
 func (c *containmentConn) Write(p []byte) (int, error) {
@@ -33,7 +35,25 @@ func (c *containmentConn) Write(p []byte) (int, error) {
 		default:
 		}
 	}
-	return c.Conn.Write(p)
+	n, err := c.Conn.Write(p)
+	if hook := c.afterWrite.Swap(nil); hook != nil {
+		(*hook)()
+	}
+	return n, err
+}
+
+func (c *containmentConn) SetWriteDeadline(d time.Time) error {
+	if limit := c.deadlineLimit.Load(); limit > 0 && !d.IsZero() {
+		d = minDeadline(d, time.Now().Add(time.Duration(limit)))
+	}
+	return c.Conn.SetWriteDeadline(d)
+}
+
+func minDeadline(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }
 
 type containmentListener struct{ net.Listener }
@@ -168,7 +188,7 @@ func TestHubReverseContainmentQueuedCancellation(t *testing.T) {
 		t.Fatalf("queued cancellation = %v", err)
 	}
 	// The canceled caller must finish while the original socket writer remains
-	// blocked, not merely when that writer's ten-second deadline fires.
+	// blocked, not merely when that writer's finite size-scaled deadline fires.
 	select {
 	case err := <-first:
 		t.Fatalf("writer released before cancellation returned: %v", err)
@@ -209,13 +229,14 @@ func TestHubReverseContainmentQueuedCancellation(t *testing.T) {
 	}
 }
 
-func TestHubReverseContainmentInterruptedWriteDetaches(t *testing.T) {
+func TestHubReverseContainmentWriteDeadlineDetaches(t *testing.T) {
 	s, _, node, _, c := containmentHub(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	first := containmentStall(t, s, node, c, ctx)
-	cancel()
+	// A real socket deadline failure still poisons Gorilla and must detach the
+	// entire tunnel. Caller cancellation alone no longer interrupts a message.
+	c.conn.UnderlyingConn().(*containmentConn).deadlineLimit.Store(int64(50 * time.Millisecond))
+	first := containmentStall(t, s, node, c, context.Background())
 	if err := containmentAwait(t, first); err == nil {
-		t.Fatal("interrupted write succeeded")
+		t.Fatal("expired socket write succeeded")
 	}
 	if s.reverse.isConnected(node.ID) {
 		t.Fatal("failed reverse connection remains attached")

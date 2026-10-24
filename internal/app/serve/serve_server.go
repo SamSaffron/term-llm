@@ -10,6 +10,7 @@ import (
 
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/live"
@@ -27,6 +28,9 @@ import (
 )
 
 type serveServer struct {
+	admissionInstanceOnce    sync.Once
+	admissionInstanceID      string
+	uploadHandler            uploads.ReferenceHandler
 	mcpRegistry              mcpRegistrySearcher
 	reloadRunsUnregister     func()
 	browserAuth              *browserPasskeyHandler

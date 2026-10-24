@@ -34,6 +34,9 @@ export interface Attachment {
   error?: string;
   checksum?: string;
   blobRef?: string;
+  uploadId?: string;
+  /** Origin + UI prefix + Hub node; IDs never cross node namespaces. */
+  uploadScope?: string;
   draftId?: string;
 }
 
@@ -562,6 +565,7 @@ export type RunStatus =
   | 'idle'
   | 'connecting'
   | 'checking'
+  | 'unconfirmed'
   | 'streaming'
   | 'cancelling'
   | 'completed'

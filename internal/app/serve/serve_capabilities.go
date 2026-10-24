@@ -35,11 +35,12 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	}
 	shellEnabled := s.cfg.ui && platformServeShellSupported() && s.store != nil
 	liveCapability := s.liveCapability(r.Context())
-	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t-shell-%t-live-%t-%s-%v-%v"`,
-		s.projectsEnabled, worktreesEnabled, shellEnabled, liveCapability["enabled"], liveCapability["provider"], liveCapability["transport"], liveCapability["version"]))
+	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t-shell-%t-live-%t-%s-%v-%v-upload-refs-1-2-admission-1-%s"`,
+		s.projectsEnabled, worktreesEnabled, shellEnabled, liveCapability["enabled"], liveCapability["provider"], liveCapability["transport"], liveCapability["version"], s.responseAdmissionInstance()))
 	payload := map[string]any{
-		"projects":  map[string]bool{"enabled": s.projectsEnabled},
-		"worktrees": map[string]bool{"enabled": worktreesEnabled},
+		"response_admission": map[string]any{"version": 1, "instance_id": s.responseAdmissionInstance()},
+		"projects":           map[string]bool{"enabled": s.projectsEnabled},
+		"worktrees":          map[string]bool{"enabled": worktreesEnabled},
 		"shell": map[string]any{
 			"enabled": shellEnabled, "version": 1,
 			"transport": "http_sse", "replay_bytes": serveShellReplayBytes,
@@ -50,10 +51,11 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 			"heartbeat_ms": serveEventHeartbeat.Milliseconds(), "replay_limit": serveEventReplayLimit,
 		},
 		"attachments": map[string]any{
-			"max_count":  uploads.MaxAttachments,
-			"max_bytes":  uploads.MaxAttachmentBytes,
-			"mime_types": []string{"*/*"},
-			"extensions": []string{},
+			"max_count":   uploads.MaxAttachments,
+			"upload_refs": map[string]any{"version": 1, "max_concurrent": uploads.MaxConcurrent},
+			"max_bytes":   uploads.MaxAttachmentBytes,
+			"mime_types":  []string{"*/*"},
+			"extensions":  []string{},
 		},
 	}
 	if attention, ok := session.AsAttentionStore(s.store); ok {
