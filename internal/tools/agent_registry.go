@@ -550,8 +550,15 @@ func agentOutput(a session.AgentRun) core.ToolOutput {
 	return core.ToolOutput{Content: string(data), IsError: status == "failed"}
 }
 
-func (m *agentManager) output(record session.AgentRun, e *agentEntry) core.ToolOutput {
+func (m *agentManager) output(ctx context.Context, record session.AgentRun, e *agentEntry) core.ToolOutput {
 	out := agentOutput(record)
+	if record.Status == "failed" && session.AgentRunResumable(ctx, m.store, record) {
+		var payload SpawnAgentResult
+		_ = json.Unmarshal([]byte(out.Content), &payload)
+		payload.Resumable = true
+		payload.Next = fmt.Sprintf("continue_agent({\"agent_id\":%q,\"instructions\":\"continue\"})", record.ID)
+		out.Content = marshalAgentResult(payload)
+	}
 	if e == nil {
 		if record.CollectedAt.IsZero() {
 			out.Media = core.NormalizeMedia(record.Media, nil)
@@ -579,7 +586,7 @@ func (m *agentManager) output(record session.AgentRun, e *agentEntry) core.ToolO
 			payload.Next = fmt.Sprintf("retry continue_agent({\"agent_id\":%q,\"instructions\":%q}); the agent did not run", record.ID, instructions)
 		} else {
 			// A fresh spawn that never started is recorded failed, which
-			// continue_agent refuses; spawning again is the only retry.
+			// has no saved history; spawning again is the only retry.
 			payload.Resumable = false
 			payload.Next = "the agent did not start; call spawn_agent again"
 		}
@@ -856,9 +863,9 @@ func interruptAgentsForParent(parent string, suppressWake bool) func(context.Con
 // may release the entry concurrently. If collection fails the result is still
 // returned; it may then be delivered again, which beats losing it.
 func (m *agentManager) deliver(ctx context.Context, record session.AgentRun, e *agentEntry) core.ToolOutput {
-	out := m.output(record, e)
+	out := m.output(ctx, record, e)
 	recovery, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool)
-	if agentLifecycleRestricted(ctx) || (recovery && (record.Status == "interrupted" || record.Status == "cancelled")) {
+	if agentLifecycleRestricted(ctx) || (recovery && (record.Status == "interrupted" || record.Status == "cancelled" || record.Status == "failed")) {
 		var result SpawnAgentResult
 		if json.Unmarshal([]byte(out.Content), &result) == nil && result.Resumable {
 			result.Resumable = false

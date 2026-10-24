@@ -522,27 +522,11 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req core.Request) (core.
 				}
 			}
 		}
+		p.recordTurnBoundary(req, resumedSessionID, err)
+
 		if err != nil {
 			return err
 		}
-
-		// Track messages sent so we don't re-send them on resume, and fingerprint
-		// that prefix so a later history rewrite cannot be mistaken for a clean
-		// continuation. Ephemeral requests are isolated and must not alter resume
-		// accounting.
-		if !req.Ephemeral {
-			p.messagesSent = len(req.Messages)
-			p.transcriptDigest = claudeTranscriptDigest(req.Messages, p.messagesSent)
-			// A branch owns the session Claude Code reported back to it. Continuing
-			// to pass --fork-session would branch again on every later turn, leaving
-			// an orphan session per exchange and no accumulating session for a
-			// promoted conversation to continue. Only stop forking once the CLI has
-			// actually moved us onto a different session.
-			if p.forkSession && p.sessionID != "" && p.sessionID != resumedSessionID {
-				p.forkSession = false
-			}
-		}
-
 		return send.Send(core.Event{Type: core.EventDone})
 	}), nil
 }
