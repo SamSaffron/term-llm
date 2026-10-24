@@ -1,4 +1,6 @@
 // In-browser API double for the stock frontend. Replies are scripted, not AI.
+import { scriptedSessions, SEED_TIME } from './hub.mjs';
+
 const MODEL = 'scripted-demo';
 const encoder = new TextEncoder();
 const json = (body, status = 200) => Response.json(body, { status });
@@ -170,6 +172,16 @@ export function createDemoAPI({ delay = 15, toolTimeout = 20_000 } = {}) {
   const welcome = createSession();
   welcome.title = welcome.name = 'Welcome · UI demo';
   welcome.messages.push(message('assistant', 'Welcome to the **term-llm UI demo**. Replies here are scripted; no AI model, API key, or backend is running.\n\nNative device actions you trigger with the demo commands are real and can persist after you reload this chat. Sharing device tools grants this page the device-tools access the app exposes; the demo only issues the fixed commands below. Sample entries the demo creates are fictional and not playable.\n\nTry `create playlist`, `list playlists`, `ping`, or `device info`. For setup, pull down near the top for app controls → **Settings → Device tools** and enable **Share device tools with this server**; then use **+ → MCP servers** to enable **iPhone/iPad (WebMCP from this page)**. Open term-llm’s native Music screen from the **♪** control in that pull-down.\n\nSend a message to try streaming and the chat controls. Reloading clears the demo chat history (not native actions).'));
+
+  // Keep the public static inventory and browser-local seed conversations aligned.
+  for (const seed of scriptedSessions) {
+    const session = seed.number === 1 ? welcome : createSession();
+    session.title = session.name = seed.title;
+    if (seed.content) session.messages.push(message('assistant', seed.content));
+    session.created_at = session.updated_at = session.last_message_at = SEED_TIME;
+    for (const message of session.messages) message.created_at = SEED_TIME;
+    if (session.id !== seed.id || session.number !== seed.number) throw Error('Demo seed identity mismatch');
+  }
 
   function streamReply(request, body) {
     const session = sessions.get(request.headers.get('X-Term-LLM-Session-ID')) ?? createSession();

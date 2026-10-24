@@ -76,7 +76,7 @@ jobs:
 
       - name: UI demo smoke
         run: |
-          node --test demo/mock-api.test.mjs
+          node --test demo/mock-api.test.mjs demo/hub.test.mjs
           node demo/build.mjs
 
       - name: js/wasm platform smoke
