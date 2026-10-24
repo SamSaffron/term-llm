@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -429,28 +430,28 @@ func equivalentMessage(a, b core.Message) bool {
 	return a.Role == b.Role && core.MessageText(a) == core.MessageText(b)
 }
 
-func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQuestionEventMsg, error) {
+func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQuestionEventMsg, uint64, error) {
 	workCtx, release, reloadErr := restart.Default.Root(context.Background())
 	if reloadErr != nil {
-		return nil, reloadErr
+		return nil, 0, reloadErr
 	}
 	defer release()
 	question := strings.TrimSpace(input.Question)
 	if question == "" {
-		return nil, errors.New("question is required")
+		return nil, 0, errors.New("question is required")
 	}
 	if rt.sideProviderFactory == nil {
-		return nil, errors.New("side questions are unavailable")
+		return nil, 0, errors.New("side questions are unavailable")
 	}
 	sq := &rt.sideQuestion
 	sq.mu.Lock()
 	if rt.compacting.Load() {
 		sq.mu.Unlock()
-		return nil, errors.New("Cannot ask a side question while conversation context is being compressed")
+		return nil, 0, errors.New("Cannot ask a side question while conversation context is being compressed")
 	}
 	if sq.running {
 		sq.mu.Unlock()
-		return nil, errors.New("A side question is already running")
+		return nil, 0, errors.New("A side question is already running")
 	}
 	if sq.done != nil {
 		select {
@@ -458,7 +459,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 			sq.done = nil
 		default:
 			sq.mu.Unlock()
-			return nil, errors.New("The previous side question is still stopping")
+			return nil, 0, errors.New("The previous side question is still stopping")
 		}
 	}
 	providerKey := sq.providerKey
@@ -498,14 +499,14 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 		NewProvider:      rt.sideProviderFactory,
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	sq.mu.Lock()
 	if sq.running || sq.generation != stateGeneration || sq.lane != lane {
 		sq.mu.Unlock()
 		turn.Abandon()
-		return nil, errors.New("Side question state changed while preparing the request")
+		return nil, 0, errors.New("Side question state changed while preparing the request")
 	}
 	sq.generation++
 	generation := sq.generation
@@ -584,7 +585,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 			}
 		}
 	})
-	return events, nil
+	return events, generation, nil
 }
 
 type sideQuestionEventMsg struct {
@@ -756,7 +757,7 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", admissionErr.Error())
 		return
 	}
-	events, err := rt.startSideQuestion(input)
+	events, generation, err := rt.startSideQuestion(input)
 	releaseAdmission()
 	if err != nil {
 		status, errorType := http.StatusInternalServerError, "server_error"
@@ -770,23 +771,34 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, status, errorType, err.Error())
 		return
 	}
-	nextMessage := func() (sideQuestionEventMsg, bool) {
+	// Headers go out before the model's first token: a hub proxy gives up on a
+	// node that has not answered within its response-header timeout.
+	w.Header().Set("x-side-generation", strconv.FormatUint(generation, 10))
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	heartbeat := time.NewTicker(serveEventHeartbeat)
+	defer heartbeat.Stop()
+	for {
+		var msg sideQuestionEventMsg
 		select {
 		case <-r.Context().Done():
 			rt.sideQuestion.cancelActive()
-			return sideQuestionEventMsg{}, false
-		case msg, open := <-events:
-			return msg, open
+			return
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
+				rt.sideQuestion.cancelActive()
+				return
+			}
+			flusher.Flush()
+			continue
+		case event, open := <-events:
+			if !open {
+				return
+			}
+			msg = event
 		}
-	}
-	msg, open := nextMessage()
-	if !open {
-		return
-	}
-	w.Header().Set("x-side-generation", strconv.FormatUint(msg.Generation, 10))
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	for {
 		payload := map[string]any{"generation": msg.Generation}
 		switch {
 		case msg.Result != nil || msg.Err != nil:
@@ -808,9 +820,5 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		flusher.Flush()
-		msg, open = nextMessage()
-		if !open {
-			return
-		}
 	}
 }

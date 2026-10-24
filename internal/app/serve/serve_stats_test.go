@@ -340,7 +340,7 @@ func TestServeStatsHelperWiringAndRollback(t *testing.T) {
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "gpt-5.6-luna"}
 	rt.configureSideQuestionContext()
 	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
-	events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
+	events, _, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
 	if err != nil {
 		t.Fatal(err)
 	}
