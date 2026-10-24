@@ -1322,6 +1322,17 @@ func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, 
 }
 
 func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID string, snapshot []core.Message) bool {
+	return rt.persistCompactedSnapshotWithInitialBoundary(ctx, sessionID, snapshot, false)
+}
+
+// persistCompactedInitialSnapshot is persistInitialSnapshot for a compacted
+// session: it replaces only the active tail and republishes the final
+// branchable row under its new identity.
+func (rt *serveRuntime) persistCompactedInitialSnapshot(ctx context.Context, sessionID string, snapshot []core.Message) bool {
+	return rt.persistCompactedSnapshotWithInitialBoundary(ctx, sessionID, snapshot, true)
+}
+
+func (rt *serveRuntime) persistCompactedSnapshotWithInitialBoundary(ctx context.Context, sessionID string, snapshot []core.Message, publishInitialBoundary bool) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
 	}
@@ -1343,8 +1354,19 @@ func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID 
 		log.Printf("[serve] session ReplaceCompactedMessages failed for %s: %v", sessionID, err)
 		return false
 	}
+	boundaryPublished := true
 	if run := responseRunFromContext(ctx); run != nil {
 		run.invalidateDurableBoundary()
+		if publishInitialBoundary {
+			stored, loadErr := rt.store.GetMessages(dbCtx, sessionID, 0, 0)
+			if loadErr != nil || !run.setInitialDurableBoundary(lastBranchableRowID(stored)) {
+				// See persistSnapshotWithInitialBoundary: persistence committed, so
+				// keep the exact boundary in memory for retry reconciliation.
+				rt.history = append([]core.Message(nil), snapshot...)
+				rt.historyPersisted = true
+				boundaryPublished = false
+			}
+		}
 	}
 	if rt.sessionMeta != nil {
 		if refreshed, err := rt.store.Get(dbCtx, sessionID); err == nil && refreshed != nil {
@@ -1357,7 +1379,7 @@ func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID 
 	if statusErr := rt.store.UpdateStatus(dbCtx, sessionID, session.StatusActive); statusErr != nil {
 		log.Printf("[serve] session UpdateStatus(active) failed for %s: %v", sessionID, statusErr)
 	}
-	return true
+	return boundaryPublished
 }
 
 type appendMessagesResult struct {
@@ -2192,7 +2214,11 @@ func (rt *serveRuntime) handleRunErrorEvent(ctx context.Context, stateful, persi
 	}
 	if suspended.Continuation.DiscardPartial {
 		history := suspended.Continuation.Request.Messages
-		if persisted && !rt.persistSnapshot(ctx, sessionID, history) {
+		persist := rt.persistSnapshot
+		if session.HasCompactionBoundary(rt.sessionMeta) {
+			persist = rt.persistCompactedSnapshot
+		}
+		if persisted && !persist(ctx, sessionID, history) {
 			return false, fmt.Errorf("persist interrupted model boundary")
 		}
 		if stateful {
