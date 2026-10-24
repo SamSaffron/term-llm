@@ -34,7 +34,8 @@ func (*serveCompactionContextTool) PrepareCompactionContext(_ context.Context, _
 	return nil
 }
 
-func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T) {
+func newServeCompactionTestRuntime(t *testing.T, provider core.Provider) (*serveRuntime, []core.Message) {
+	t.Helper()
 	ctx := context.Background()
 	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
@@ -61,18 +62,23 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 	if err := store.ReplaceMessages(ctx, sess.ID, stored); err != nil {
 		t.Fatal(err)
 	}
+	engine := engine.NewEngine(provider, nil)
+	engine.RegisterTool(&serveCompactionContextTool{})
+	return &serveRuntime{
+		provider: provider, providerKey: "mock", defaultModel: "mock-model",
+		engine: engine, store: store, sessionMeta: sess,
+		history: history, historyPersisted: true,
+	}, history
+}
 
+func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T) {
+	ctx := context.Background()
 	provider := mockprovider.NewMockProvider("mock").AddTurn(mockprovider.MockTurn{
 		Text:  "Continue from the second answer.",
 		Usage: core.Usage{InputTokens: 20, OutputTokens: 5},
 	})
-	engine := engine.NewEngine(provider, nil)
-	engine.RegisterTool(&serveCompactionContextTool{})
-	rt := &serveRuntime{
-		provider: provider, providerKey: "mock", defaultModel: "mock-model",
-		engine: engine, store: store, sessionMeta: sess,
-		history: history, historyPersisted: true,
-	}
+	rt, history := newServeCompactionTestRuntime(t, provider)
+	store, sess := rt.store, rt.sessionMeta
 
 	result, err := rt.compactSession(ctx, sess.ID)
 	if err != nil {
@@ -104,6 +110,37 @@ func TestServeRuntimeCompactSessionPersistsAndReplacesActiveHistory(t *testing.T
 	}
 	if rt.cumulativeUsage.InputTokens != 20 || rt.cumulativeUsage.OutputTokens != 5 {
 		t.Fatalf("cumulative usage = %+v", rt.cumulativeUsage)
+	}
+}
+
+type nativeCompactProvider struct {
+	*mockprovider.MockProvider
+	calls int
+}
+
+func (p *nativeCompactProvider) NativeCompact(context.Context, core.NativeCompactRequest) (*core.NativeCompactResult, error) {
+	p.calls++
+	return &core.NativeCompactResult{PreTokens: 900, PostTokens: 300}, nil
+}
+
+func TestServeRuntimeCompactSessionPrefersNativeCompaction(t *testing.T) {
+	provider := &nativeCompactProvider{MockProvider: mockprovider.NewMockProvider("mock")}
+	rt, history := newServeCompactionTestRuntime(t, provider)
+	rt.beginCompactionActivity()
+	prepared, err := rt.prepareCompaction(context.Background(), rt.sessionMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepared.execute(context.Background())
+	rt.finishCompactionActivityWithRelease(err, prepared.release)
+	if err != nil || result != nil || provider.calls != 1 {
+		t.Fatalf("execute = %+v, %v; native calls = %d", result, err, provider.calls)
+	}
+	if len(rt.history) != len(history) || rt.sessionMeta.CompactionCount != 0 {
+		t.Fatalf("native compaction rewrote the transcript: history=%d count=%d", len(rt.history), rt.sessionMeta.CompactionCount)
+	}
+	if got := rt.activitySnapshot(); got.Status != "completed" || got.Message != "Context compacted natively (900 → 300 tokens)." {
+		t.Fatalf("activity = %+v", got)
 	}
 }
 

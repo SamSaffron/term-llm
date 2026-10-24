@@ -122,6 +122,15 @@ func (r *RetryProvider) ResetConversation() {
 	}
 }
 
+// NativeCompact forwards provider-native compaction when the wrapped provider
+// supports it.
+func (r *RetryProvider) NativeCompact(ctx context.Context, req core.NativeCompactRequest) (*core.NativeCompactResult, error) {
+	if compactor, ok := r.inner.(core.NativeCompactor); ok {
+		return compactor.NativeCompact(ctx, req)
+	}
+	return nil, core.ErrNativeCompactUnavailable
+}
+
 // ExportProviderState forwards opaque conversation transport state when the
 // wrapped provider supports persistence.
 func (r *RetryProvider) ExportProviderState() ([]byte, bool) {

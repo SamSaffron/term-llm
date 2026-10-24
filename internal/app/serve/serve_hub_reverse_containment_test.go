@@ -82,10 +82,14 @@ func containmentDo(s *hubServer, ctx context.Context, node hub.Node, path string
 }
 func containmentAwait(t *testing.T, done <-chan error) error {
 	t.Helper()
+	return containmentAwaitWithin(t, done, 2*time.Second)
+}
+func containmentAwaitWithin(t *testing.T, done <-chan error, d time.Duration) error {
+	t.Helper()
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(2 * time.Second):
+	case <-time.After(d):
 		t.Fatal("operation did not finish within watchdog")
 		return nil
 	}
@@ -189,7 +193,9 @@ func TestHubReverseContainmentQueuedCancellation(t *testing.T) {
 			_ = peer.WriteJSON(hubReverseResponse{ID: frame.ID, Status: 200, Body: []byte(`{}`)})
 		}
 	}()
-	if err := containmentAwait(t, first); err != nil {
+	// Draining the 16 MiB stall payload is cleanup, not the property under test;
+	// it takes ~0.9s under -race on a fast host, so allow slow CI runners.
+	if err := containmentAwaitWithin(t, first, 15*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := containmentAwait(t, containmentDo(s, context.Background(), node, "/barrier", nil)); err != nil {

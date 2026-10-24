@@ -87,6 +87,10 @@ type ClaudeBinProvider struct {
 	extraEnv         map[string]string   // Extra subprocess env vars from provider config
 	enableHooks      bool                // Opt in to Claude Code hooks (disabled by default)
 	commandRunner    claudeCommandRunner // Optional command transport override used by focused harnesses.
+	// NativeCompact state: test seam, plus the last turn's --system-prompt and
+	// cwd (--resume only finds a session from its own project directory).
+	nativeCompactRunner                 claudeNativeCompactRunner
+	lastSystemPrompt, sessionWorkingDir string
 
 	// Persistent MCP server for multi-turn conversations.
 	// The server is kept alive across turns so Claude CLI can maintain
@@ -190,6 +194,7 @@ func (p *ClaudeBinProvider) ResetConversation() {
 	p.sessionID = ""
 	p.messagesSent = 0
 	p.transcriptDigest = ""
+	p.lastSystemPrompt, p.sessionWorkingDir = "", ""
 	// There is no session left to branch from, so a pending branch request would
 	// only make the next turn ask Claude Code to fork nothing.
 	p.forkSession = false
@@ -284,6 +289,7 @@ type claudeBinProviderState struct {
 	SessionID        string `json:"session_id"`
 	MessagesSent     int    `json:"messages_sent"`
 	TranscriptDigest string `json:"transcript_digest,omitempty"`
+	WorkingDir       string `json:"working_dir,omitempty"`
 }
 
 // ExportProviderState persists Claude Code's session id plus the term-llm
@@ -298,6 +304,7 @@ func (p *ClaudeBinProvider) ExportProviderState() ([]byte, bool) {
 		SessionID:        p.sessionID,
 		MessagesSent:     p.messagesSent,
 		TranscriptDigest: p.transcriptDigest,
+		WorkingDir:       p.sessionWorkingDir,
 	})
 	if err != nil {
 		return nil, false
@@ -325,6 +332,9 @@ func (p *ClaudeBinProvider) ImportProviderState(data []byte) error {
 	// as unverifiable rather than diverged so in-flight sessions keep resuming;
 	// the next completed turn records a digest and verification resumes.
 	p.transcriptDigest = state.TranscriptDigest
+	// The cached prompt may belong to another session; use the caller's until
+	// this session's next turn.
+	p.sessionWorkingDir, p.lastSystemPrompt = state.WorkingDir, ""
 	return nil
 }
 
@@ -465,6 +475,9 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req core.Request) (core.
 		systemPrompt := p.systemPromptForTurn(req.Messages, req.Ephemeral)
 		if systemPrompt != "" {
 			args = append(args, "--system-prompt", systemPrompt)
+		}
+		if !req.Ephemeral {
+			p.lastSystemPrompt, p.sessionWorkingDir = systemPrompt, req.WorkingDir
 		}
 
 		// When resuming a session, only send new messages (claude CLI has the rest).

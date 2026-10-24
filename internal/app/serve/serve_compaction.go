@@ -100,6 +100,15 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 
 func (p *preparedSessionCompaction) execute(ctx context.Context) (*engine.CompactionResult, error) {
 	rt, sessionID := p.rt, p.sessionID
+	// Providers that own their context (claude-bin) compact natively in place;
+	// term-llm's transcript is left untouched.
+	if native, ok, err := llm.NativeCompact(ctx, rt.provider, core.NativeCompactRequest{SystemPrompt: p.systemPrompt, Model: p.model}); ok {
+		if err != nil {
+			return nil, fmt.Errorf("compress conversation: %w", err)
+		}
+		rt.noteCompactionActivity(fmt.Sprintf("Context compacted natively (%d → %d tokens).", native.PreTokens, native.PostTokens))
+		return nil, nil
+	}
 	result, err := llm.SoftCompact(ctx, rt.provider, p.model, p.systemPrompt, p.history, p.config)
 	if err != nil {
 		return nil, fmt.Errorf("compress conversation: %w", err)

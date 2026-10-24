@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -38,6 +39,21 @@ func CompactionResultFromBrief(systemPrompt, brief string, messages []core.Messa
 // It binds the root compaction environment.
 func SoftCompact(ctx context.Context, provider core.Provider, model, systemPrompt string, messages []core.Message, config engine.CompactionConfig) (*engine.CompactionResult, error) {
 	return compactionEnv.SoftCompact(ctx, provider, model, systemPrompt, messages, config)
+}
+
+// NativeCompact asks a provider that owns its conversation state to compact it
+// in place. ok is false when the provider has no native compaction or cannot
+// compact right now; callers should then fall back to SoftCompact/Compact.
+func NativeCompact(ctx context.Context, provider core.Provider, req core.NativeCompactRequest) (result *core.NativeCompactResult, ok bool, err error) {
+	compactor, isCompactor := provider.(core.NativeCompactor)
+	if !isCompactor {
+		return nil, false, nil
+	}
+	result, err = compactor.NativeCompact(ctx, req)
+	if errors.Is(err, core.ErrNativeCompactUnavailable) {
+		return nil, false, nil
+	}
+	return result, true, err
 }
 
 // Compact generates a structured continuation brief for the older prefix.
