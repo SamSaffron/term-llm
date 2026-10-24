@@ -278,7 +278,7 @@ func (p *ClaudeBinProvider) ForkConversationAtBoundary(state []byte, requestMess
 	if strings.TrimSpace(clone.transcriptDigest) == "" {
 		return nil, false
 	}
-	if claudeTranscriptDigest(requestMessages, clone.messagesSent) != clone.transcriptDigest {
+	if !claudeDigestMatches(requestMessages, clone.messagesSent, clone.transcriptDigest) {
 		return nil, false
 	}
 	clone.forkSession = true
@@ -1314,33 +1314,6 @@ func claudeMaxTurns(req core.Request) int {
 	return defaultClaudeBinMaxTurns
 }
 
-// claudeTranscriptDigest fingerprints the first n messages of a transcript so a
-// resumed Claude Code session can be checked against the conversation term-llm
-// believes it already delivered. Undo, branching and other history rewrites can
-// replace earlier turns without shortening the transcript, and resuming on a
-// stale boundary silently drops or duplicates conversation.
-func claudeTranscriptDigest(messages []core.Message, n int) string {
-	if n <= 0 || n > len(messages) {
-		return ""
-	}
-	h := sha256.New()
-	for _, msg := range messages[:n] {
-		fmt.Fprintf(h, "\x00%s", msg.Role)
-		for _, part := range msg.Parts {
-			encoded, err := json.Marshal(part)
-			if err != nil {
-				// Message parts are expected to contain JSON-compatible transcript
-				// data. Preserve a stable minimum fingerprint if that changes.
-				fmt.Fprintf(h, "\x01%s\x02%s", part.Type, part.Text)
-				continue
-			}
-			h.Write([]byte{1})
-			h.Write(encoded)
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 // resumeBoundaryValid reports whether Claude Code's resumed session still lines
 // up with the transcript prefix term-llm recorded as delivered. State persisted
 // before transcript fingerprinting has no digest; treat it as unverifiable
@@ -1355,7 +1328,7 @@ func (p *ClaudeBinProvider) resumeBoundaryValid(messages []core.Message) bool {
 	if p.transcriptDigest == "" {
 		return true
 	}
-	return claudeTranscriptDigest(messages, p.messagesSent) == p.transcriptDigest
+	return claudeDigestMatches(messages, p.messagesSent, p.transcriptDigest)
 }
 
 // claudeResumeDelivery drops the messages a resumed Claude Code session already
