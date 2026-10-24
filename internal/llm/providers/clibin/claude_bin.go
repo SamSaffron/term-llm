@@ -1929,7 +1929,14 @@ func buildSDKUserContentBlocks(parts []core.Part) []sdkContentBlock {
 		switch part.Type {
 		case core.PartText, core.PartFile:
 			if part.Text != "" {
-				blocks = append(blocks, sdkContentBlock{Type: "text", Text: part.Text})
+				// Claude Code runs a leading "/name" as its own command even with
+				// --disable-slash-commands ("/x isn't available in this
+				// environment"); a leading space delivers the text to the model.
+				text := part.Text
+				if strings.HasPrefix(text, "/") {
+					text = " " + text
+				}
+				blocks = append(blocks, sdkContentBlock{Type: "text", Text: text})
 			}
 		case core.PartImage:
 			imageBlock, imagePath, ok := buildSDKImageBlock(part.ImagePath, part.ImageData)

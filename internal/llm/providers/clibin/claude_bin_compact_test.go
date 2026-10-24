@@ -118,3 +118,15 @@ func TestClaudeNativeCompactWorkingDirSurvivesStateRoundTrip(t *testing.T) {
 		t.Fatalf("restored dir=%q prompt=%q", restored.sessionWorkingDir, restored.lastSystemPrompt)
 	}
 }
+
+func TestClaudeStreamJSONInputEscapesLeadingSlash(t *testing.T) {
+	// Claude Code would otherwise intercept "/remote-control ..." as a command.
+	p := NewClaudeBinProvider("haiku", nil)
+	var msg sdkUserMessage
+	if err := json.Unmarshal([]byte(p.buildStreamJsonInput([]core.Message{core.UserText("/remote-control explain")}, "")), &msg); err != nil {
+		t.Fatal(err)
+	}
+	if got := msg.Message.Content[0].Text; got != " /remote-control explain" {
+		t.Fatalf("text = %q, want leading-space escape", got)
+	}
+}
