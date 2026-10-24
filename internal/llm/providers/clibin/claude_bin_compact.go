@@ -55,7 +55,12 @@ func (p *ClaudeBinProvider) NativeCompact(ctx context.Context, req core.NativeCo
 		filtered = append(filtered, "--system-prompt", systemPrompt)
 	}
 	filtered = append(filtered, "--input-format", "stream-json")
-	input := p.buildStreamJsonInput([]core.Message{core.UserText("/compact")}, p.sessionID)
+	// Built directly: user text is escaped so a leading "/" never runs a command.
+	line, err := json.Marshal(sdkUserMessage{Type: "user", SessionID: p.sessionID, Message: sdkMessageContent{Role: "user", Content: []sdkContentBlock{{Type: "text", Text: "/compact"}}}})
+	if err != nil {
+		return nil, fmt.Errorf("claude-bin native compact: %w", err)
+	}
+	input := string(line)
 
 	runner := p.nativeCompactRunner
 	if runner == nil {

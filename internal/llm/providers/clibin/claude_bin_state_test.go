@@ -72,3 +72,25 @@ func TestClaudeUnacknowledgedFailureDiscardsNativeCursor(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeResumeBoundarySurvivesSystemPromptChange(t *testing.T) {
+	transcript := []core.Message{core.SystemText("prompt v1"), core.UserText("hi"), core.AssistantText("hello")}
+	changedPrompt := append([]core.Message{core.SystemText("prompt v2")}, transcript[1:]...)
+	rewritten := []core.Message{core.SystemText("prompt v1"), core.UserText("bye"), core.AssistantText("hello")}
+
+	for name, digest := range map[string]string{
+		"current": claudeTranscriptDigest(transcript, 3),
+		"legacy":  claudeDigest(transcript, 3, true),
+	} {
+		p := &ClaudeBinProvider{sessionID: "s", messagesSent: 3, transcriptDigest: digest}
+		if !p.resumeBoundaryValid(transcript) {
+			t.Fatalf("%s digest rejected its own transcript", name)
+		}
+		if name == "current" && !p.resumeBoundaryValid(changedPrompt) {
+			t.Fatal("system prompt change must not invalidate the resume boundary")
+		}
+		if p.resumeBoundaryValid(rewritten) {
+			t.Fatalf("%s digest accepted a rewritten user turn", name)
+		}
+	}
+}

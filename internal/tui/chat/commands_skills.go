@@ -116,7 +116,7 @@ func (m *Model) helperCompactionConfig() engine.CompactionConfig {
 	cfg := engine.DefaultCompactionConfig()
 	if m.engine != nil && m.engine.InputLimit() > 0 {
 		cfg.InputLimit = m.engine.InputLimit()
-	} else if limit := llm.InputLimitForProviderModel(m.providerKey, m.modelName); limit > 0 {
+	} else if limit := llm.HelperInputLimitForProviderModel(m.providerKey, m.modelName); limit > 0 {
 		cfg.InputLimit = limit
 	}
 	return cfg
