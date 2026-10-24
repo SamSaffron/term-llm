@@ -22,6 +22,11 @@ func (m *Model) handleCompactDone(msg compactDoneMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.showFooterError(fmt.Sprintf("Compaction failed: %v", msg.err))
 	}
+	if msg.native != nil {
+		// The provider compacted its own session; the transcript and resume
+		// state stay as they are.
+		return m.showFooterSuccess(fmt.Sprintf("Context compacted natively (%d → %d tokens).", msg.native.PreTokens, msg.native.PostTokens))
+	}
 	if msg.result == nil {
 		return m.showFooterError("Compaction failed: no result returned.")
 	}

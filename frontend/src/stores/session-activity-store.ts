@@ -10,7 +10,7 @@ export class SessionActivityStore {
   private readonly requests = signal<Record<string, { token: number; checking: boolean }>>({});
   private version = 0;
   private readonly observedVersions = new Map<string, number>();
-  private readonly reportedErrors = new Map<string, string>();
+  private readonly reportedOutcomes = new Map<string, string>();
   readonly unconfirmed = computed(() => Object.keys(this.requests.value).length > 0);
   readonly sessionIds = computed(() => [
     ...new Set([...Object.keys(this.snapshots.value), ...Object.keys(this.requests.value)]),
@@ -82,14 +82,15 @@ export class SessionActivityStore {
       if (this.requests.peek()[sessionId]?.checking) this.clearRequest(sessionId);
     });
 
-    if (
-      activity?.status === 'failed' &&
-      activity.error &&
-      sawAttempt &&
-      this.reportedErrors.get(sessionId) !== activity.id
-    ) {
-      this.reportedErrors.set(sessionId, activity.id);
-      this.services.toast(activity.error, 'error');
+    const failed = activity?.status === 'failed';
+    const outcome = failed
+      ? activity?.error
+      : activity?.status === 'completed'
+        ? activity.message
+        : '';
+    if (activity && outcome && sawAttempt && this.reportedOutcomes.get(sessionId) !== activity.id) {
+      this.reportedOutcomes.set(sessionId, activity.id);
+      this.services.toast(outcome, failed ? 'error' : 'success');
     }
     return true;
   }

@@ -68,8 +68,9 @@ func (s *serveServer) handleSessionRuntimeCompact(w http.ResponseWriter, r *http
 			}
 			finish(workErr)
 		}()
-		_, workErr = prepared.execute(ctx)
-		if workErr == nil {
+		result, err := prepared.execute(ctx)
+		workErr = err
+		if err == nil && result != nil { // native compaction leaves the transcript unchanged
 			s.publishEvent(serveEventInput{Type: serveEventSessionTranscriptChanged, SessionID: sessionID, Reason: "compaction"})
 		}
 	}); err != nil {

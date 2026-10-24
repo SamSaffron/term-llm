@@ -28,7 +28,7 @@ export type ServeMentionSegment = { "text": string; "matched": boolean; };
 
 export type ServeMentionToken = { "start_utf16": number; "end_utf16": number; "query": string; "quoted": boolean; };
 
-export type ServeSessionActivity = { "id": string; "revision": number; "kind": string; "status": string; "started_at": number; "error"?: string; "transcript_rev"?: number; };
+export type ServeSessionActivity = { "id": string; "revision": number; "kind": string; "status": string; "started_at": number; "error"?: string; "message"?: string; "transcript_rev"?: number; };
 
 export type ServeShellCreateRequest = { "cols": number; "rows": number; };
 

@@ -105,6 +105,18 @@ describe('server-authored session activities', () => {
     expect(other.store.snapshots.value.s1).toEqual(failed);
   });
 
+  it('reports an observed completion note once', () => {
+    const { store, toast } = create();
+    const done = {
+      ...snapshot('completed', 2),
+      message: 'Context compacted natively (900 → 300 tokens).',
+    };
+    store.observe('s1', snapshot());
+    store.observe('s1', done);
+    store.observe('s1', done);
+    expect(toast).toHaveBeenCalledExactlyOnceWith(done.message, 'success');
+  });
+
   it('does not turn cancellation into an error notification', () => {
     const { store, toast } = create();
     store.observe('s1', snapshot());

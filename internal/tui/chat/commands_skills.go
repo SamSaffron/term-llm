@@ -185,6 +185,9 @@ func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 				result *engine.CompactionResult
 				err    error
 			)
+			if native, ok, nativeErr := llm.NativeCompact(ctx, provider, core.NativeCompactRequest{SystemPrompt: systemPrompt, Model: model}); ok {
+				return compactDoneMsg{native: native, err: nativeErr}
+			}
 			if mode == "hard" {
 				result, err = llm.Compact(ctx, provider, model, systemPrompt, llmMessages, compactConfig)
 			} else {

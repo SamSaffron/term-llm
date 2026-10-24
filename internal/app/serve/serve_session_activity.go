@@ -22,6 +22,7 @@ type serveSessionActivity struct {
 	Status        string `json:"status"`
 	StartedAt     int64  `json:"started_at"`
 	Error         string `json:"error,omitempty"`
+	Message       string `json:"message,omitempty"` // user-facing completion note
 	TranscriptRev int64  `json:"transcript_rev,omitempty"`
 }
 
@@ -73,6 +74,16 @@ func (rt *serveRuntime) beginCompactionActivity() {
 	rt.activity.mu.Unlock()
 	if publish != nil {
 		publish()
+	}
+}
+
+// noteCompactionActivity attaches a completion note to the running attempt;
+// it is published with the terminal snapshot.
+func (rt *serveRuntime) noteCompactionActivity(message string) {
+	rt.activity.mu.Lock()
+	defer rt.activity.mu.Unlock()
+	if current := rt.activity.snapshot; current != nil && current.Status == "running" {
+		current.Message = message
 	}
 }
 

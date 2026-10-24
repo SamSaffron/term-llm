@@ -720,6 +720,7 @@ type (
 	compactStartedMsg struct{}
 	compactDoneMsg    struct {
 		result *engine.CompactionResult
+		native *core.NativeCompactResult // provider compacted its own context
 		err    error
 	}
 	handoverDoneMsg struct {
