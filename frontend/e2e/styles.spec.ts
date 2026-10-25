@@ -95,7 +95,10 @@ test('composer input has its own row, with the controls in a row inside the box 
           left: box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
           right: box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight),
         };
-        const input = element.querySelector('textarea')!.getBoundingClientRect();
+        const textarea = element.querySelector('textarea')!;
+        const input = textarea.getBoundingClientRect();
+        const textLeft = input.left + parseFloat(getComputedStyle(textarea).paddingLeft);
+        const edge = box.left + parseFloat(style.borderLeftWidth);
         const controls = [...element.querySelectorAll('button')].map((button) => {
           const rect = button.getBoundingClientRect();
           return {
@@ -110,6 +113,8 @@ test('composer input has its own row, with the controls in a row inside the box 
         });
         return {
           inner,
+          edge,
+          textLeft,
           input: { left: input.left, right: input.right, bottom: input.bottom },
           touch: matchMedia('(hover: none), (pointer: coarse)').matches,
           overflow: document.documentElement.scrollWidth - innerWidth,
@@ -121,19 +126,23 @@ test('composer input has its own row, with the controls in a row inside the box 
       // The input spans the box's inner width.
       expect(Math.abs(layout.input.left - layout.inner.left), context).toBeLessThanOrEqual(1);
       expect(Math.abs(layout.input.right - layout.inner.right), context).toBeLessThanOrEqual(1);
-      const size = width <= 700 || layout.touch ? 36 : 32;
+      // The message box's buttons are 32px on every screen.
+      const size = 32;
       for (const control of layout.controls) {
         const label = `${context}, ${control.label}`;
         expect(control.height, label).toBe(size);
         expect(control.width, label).toBe(size);
         expect(control.top, label).toBeGreaterThanOrEqual(layout.input.bottom - 1);
         expect(Math.abs(control.middle - layout.controls[0].middle), label).toBeLessThanOrEqual(1);
-        expect(control.left, label).toBeGreaterThanOrEqual(layout.inner.left - 1);
+        expect(control.left, label).toBeGreaterThanOrEqual(layout.edge - 1);
         expect(control.right, label).toBeLessThanOrEqual(layout.inner.right + 1);
       }
-      // Add sits at the start and the last action at the end, the same distance from each edge.
+      // Add's icon (1.1rem, its stroke a sixth of the way in) starts where the text does,
+      // its square reaching into the box's margin; the last action ends at the inner edge.
       const [add, , last] = layout.controls;
-      expect(Math.abs(add.left - layout.inner.left), context).toBeLessThanOrEqual(1);
+      const icon = 17.6;
+      const stroke = add.left + (size - icon) / 2 + icon / 6;
+      expect(Math.abs(stroke - layout.textLeft), context).toBeLessThanOrEqual(1);
       expect(Math.abs(layout.inner.right - last.right), context).toBeLessThanOrEqual(1);
     }
   }
