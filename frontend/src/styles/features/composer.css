@@ -394,7 +394,7 @@
 .composer-box {
   display: flex;
   flex-direction: column;
-  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-2);
   padding: 8px;
@@ -407,7 +407,7 @@
 }
 
 .composer-box:focus-within {
-  border-color: color-mix(in srgb, var(--text) 16%, transparent);
+  border-color: var(--border-strong);
 }
 
 .slash-command-menu,

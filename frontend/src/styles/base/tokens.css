@@ -1,31 +1,48 @@
-/* Design tokens: color scheme, spacing, layout and syntax palettes. The colours
-   are term-llm.com's: slightly green neutrals and a green accent. */
+/* Design tokens: color scheme, spacing, layout and syntax palettes.
+
+   Colours are a few seeds and what is mixed from them. A theme normally sets the
+   seeds and nothing else:
+
+     --bg      the page          --text    the text
+     --accent  the brand colour  --tint    the hue the neutrals lean toward
+                                           (the accent unless set)
+
+   Panels, borders, muted text, the accent's hover and the text on it are mixed
+   from those in OKLab, so they follow any seeds; a theme can still set any of
+   them outright. The default seeds are term-llm.com's, and the mixes are fitted
+   to its palette. Meaning colours (--accent-green, --accent-amber, --danger) are
+   seeds of their own. */
 
 :root {
   --bg: #171c1a;
+  --text: #e9eee9;
+  --accent: #98d5b2;
+  --tint: var(--accent);
   --bg-accent: rgb(255 255 255 / 3%);
   --bg-accent-2: rgb(255 255 255 / 2%);
-  --surface: #1d2320;
-  --surface-strong: #1d2320;
-  --surface-2: #242d27;
-  --surface-3: #293c30;
-  --border: #2c3630;
-  --border-strong: #38463d;
-  --text: #e9eee9;
-  --text-muted: #a9b6ad;
+  --surface: color-mix(in oklab, color-mix(in oklab, var(--bg), var(--text) 1.5%), var(--tint) 3%);
+  --surface-strong: var(--surface);
+  --surface-2: color-mix(in oklab, var(--bg), var(--tint) 11%);
+  --surface-3: color-mix(in oklab, var(--bg), var(--tint) 19.5%);
+  --border: color-mix(in oklab, color-mix(in oklab, var(--bg), var(--text) 4.5%), var(--tint) 12%);
+  --border-strong: color-mix(
+    in oklab,
+    color-mix(in oklab, var(--bg), var(--text) 6.5%),
+    var(--tint) 20%
+  );
+  --text-muted: color-mix(in oklab, var(--text), var(--bg) 25%);
 
   /* The accent: primary buttons, links, focus rings and other active states
      follow it, so a theme sets one colour (links can still be set apart).
-     term-llm's green, as on term-llm.com. */
-  --accent: #98d5b2;
-  --accent-strong: #c1ead0;
+     Its hover leans toward the text: lighter on dark, darker on light. */
+  --accent-strong: color-mix(in oklab, var(--accent), var(--text) 35%);
   --accent-green: #34d399;
   --accent-amber: #e5a210;
   --danger: #f87171;
   --backdrop: rgb(0 0 0 / 50%);
   --overlay: rgb(0 0 0 / 60%);
   --error-text: #fecaca;
-  --btn-accent-text: #15271d;
+  --btn-accent-text: var(--bg);
   --spinner-ring: rgb(33 33 33 / 35%);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 10%);
   --shadow-strong: 0 2px 8px rgb(0 0 0 / 15%);
@@ -140,23 +157,37 @@
     --bg: #fcfcfa;
     --bg-accent: rgb(0 0 0 / 2%);
     --bg-accent-2: rgb(0 0 0 / 1%);
-    --surface: #fff;
-    --surface-strong: #fff;
-    --surface-2: #f3f4f1;
-    --surface-3: #e9ece6;
-    --border: #e6e9e3;
-    --border-strong: #dce1da;
     --text: #222b28;
-    --text-muted: #5b6660;
+    --surface: var(--bg);
+    --surface-strong: var(--surface);
+    --surface-2: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 2%),
+      var(--tint) 2%
+    );
+    --surface-3: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 2.5%),
+      var(--tint) 6.5%
+    );
+    --border: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 4.5%),
+      var(--tint) 5.5%
+    );
+    --border-strong: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 5.5%),
+      var(--tint) 9.5%
+    );
+    --text-muted: color-mix(in oklab, var(--text), var(--bg) 31%);
     --accent: #16634e;
-    --accent-strong: #104c3b;
     --accent-green: #059669;
     --accent-amber: #b45309;
     --danger: #dc2626;
     --backdrop: rgb(0 0 0 / 30%);
     --overlay: rgb(0 0 0 / 40%);
     --error-text: #991b1b;
-    --btn-accent-text: #fff;
     --spinner-ring: rgb(255 255 255 / 45%);
     --shadow-soft: 0 1px 2px rgb(0 0 0 / 5%);
     --shadow-strong: 0 2px 8px rgb(0 0 0 / 8%);

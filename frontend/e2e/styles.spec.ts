@@ -231,3 +231,45 @@ test('mobile composer keeps its bottom inset clear of the input', async ({ page 
     }
   }
 });
+
+test('the default palette keeps readable contrast in both colour schemes', async ({ page }) => {
+  for (const colorScheme of ['dark', 'light'] as const) {
+    await page.emulateMedia({ colorScheme });
+    await page.setContent('<main></main>');
+    await page.addStyleTag({ content: css });
+    // Mixed colours are resolved by painting them, then measured as sRGB.
+    const ratio = await page.evaluate(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext('2d', { willReadFrequently: true })!;
+      const rgb = (token: string) => {
+        const probe = document.createElement('i');
+        probe.style.color = `var(${token})`;
+        document.body.append(probe);
+        context.fillStyle = getComputedStyle(probe).color;
+        probe.remove();
+        context.fillRect(0, 0, 1, 1);
+        return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+      };
+      const luminance = (c: number[]) =>
+        c
+          .map((v) => v / 255)
+          .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+          .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+      const contrast = (a: string, b: string) => {
+        const [x, y] = [luminance(rgb(a)), luminance(rgb(b))].sort((m, n) => n - m);
+        return (x + 0.05) / (y + 0.05);
+      };
+      return {
+        text: Math.min(contrast('--text', '--bg'), contrast('--text', '--surface-2')),
+        muted: Math.min(contrast('--text-muted', '--bg'), contrast('--text-muted', '--surface-2')),
+        link: contrast('--link', '--bg'),
+        button: contrast('--btn-accent-text', '--accent'),
+      };
+    });
+    expect(ratio.text, `${colorScheme}: text`).toBeGreaterThanOrEqual(7);
+    expect(ratio.muted, `${colorScheme}: muted text`).toBeGreaterThanOrEqual(4.5);
+    expect(ratio.link, `${colorScheme}: links`).toBeGreaterThanOrEqual(4.5);
+    expect(ratio.button, `${colorScheme}: text on the accent`).toBeGreaterThanOrEqual(4.5);
+  }
+});
