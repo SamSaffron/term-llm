@@ -564,7 +564,12 @@ a.message-file:focus-visible {
   font-weight: 700;
 }
 
-.composer-icon-btn svg,
+/* The + and mic icons fill their buttons, as the reply buttons' icons do. */
+.composer-icon-btn svg {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
 .send-btn svg {
   width: 1.1rem;
   height: 1.1rem;
