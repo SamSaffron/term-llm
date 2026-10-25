@@ -397,7 +397,7 @@
   border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
   border-radius: var(--radius-lg);
   background: var(--surface-2);
-  padding: 6px;
+  padding: 10px;
   position: relative;
 
   --prompt-inline: 8px;
@@ -664,7 +664,7 @@
   border: none;
   background: transparent;
   color: var(--text);
-  padding: 10px var(--prompt-inline) 12px;
+  padding: 6px var(--prompt-inline) 12px;
   line-height: 1.5;
   font-size: 1rem;
   overflow-y: auto;
@@ -686,10 +686,10 @@
 }
 
 /* The first button's icon (the +) starts where the text does, by its stroke: the
-   icon is 1.3rem and its stroke starts a sixth of the way in. Its tappable square
+   icon is 1.1rem and its stroke starts a sixth of the way in. Its tappable square
    reaches into the box's margin instead, as in ChatGPT. */
 .composer-toolbar > :first-child {
-  margin-inline-start: calc(var(--prompt-inline) - (var(--control-size) - 1.3rem) / 2 - 1.3rem / 6);
+  margin-inline-start: calc(var(--prompt-inline) - (var(--control-size) - 1.1rem) / 2 - 1.1rem / 6);
 }
 
 .composer-actions {
@@ -827,7 +827,6 @@
 
   .composer-box {
     border-radius: var(--radius-lg);
-    padding: 5px;
 
     --prompt-inline: 6px;
   }
