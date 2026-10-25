@@ -18,6 +18,18 @@ if [ -f "$SEED_BOOTSTRAP_DIR/bootstrap.yaml" ]; then
   BOOTSTRAP_DIR="$SEED_BOOTSTRAP_DIR"
 fi
 
+# Own only directories created by bootstrap; existing volume contents are not
+# an implicit ownership-repair target (even on first boot).
+mkdir_agent_dir() {
+  local dir="$1"
+  if [ -d "$dir" ]; then
+    return 0
+  fi
+  mkdir_agent_dir "$(dirname "$dir")"
+  mkdir "$dir"
+  chown -h "$AGENT_USER:$AGENT_USER" "$dir"
+}
+
 render_file_once() {
   local src="$1"
   local dst="$2"
@@ -26,13 +38,14 @@ render_file_once() {
   if [ ! -f "$src" ]; then
     return 0
   fi
-  if [ -e "$dst" ]; then
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
     echo "bootstrap: keeping existing $label at $dst"
     return 0
   fi
 
-  mkdir -p "$(dirname "$dst")"
+  mkdir_agent_dir "$(dirname "$dst")"
   sed     -e "s/{{AGENT_NAME}}/$AGENT_NAME/g"     -e "s/{{name}}/$AGENT_NAME/g"     "$src" > "$dst"
+  chown -h "$AGENT_USER:$AGENT_USER" "$dst"
   echo "bootstrap: wrote $label from $src to $dst"
 }
 
@@ -44,12 +57,12 @@ copy_tree_once() {
   if [ ! -d "$src" ]; then
     return 0
   fi
-  if [ -e "$dst" ]; then
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
     echo "bootstrap: keeping existing $label at $dst"
     return 0
   fi
 
-  mkdir -p "$(dirname "$dst")"
+  mkdir_agent_dir "$(dirname "$dst")"
   cp -a "$src" "$dst"
   find "$dst" -type f \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.sh' -o -name run \) -print0 |     while IFS= read -r -d '' file; do
       tmp="$file.tmp.$$"
@@ -57,22 +70,26 @@ copy_tree_once() {
       cat "$tmp" > "$file"
       rm -f "$tmp"
     done
+  # cp -a preserves seed ownership. Repair only this newly copied tree, and
+  # never dereference its symlinks (including links outside the volume).
+  chown -hR -P "$AGENT_USER:$AGENT_USER" "$dst"
   echo "bootstrap: copied $label from $src to $dst"
 }
 
 hydrate_chatgpt_oauth_from_env_once() {
   local target="$CONFIG_DIR/chatgpt_oauth.json"
 
-  if [ -f "$target" ]; then
+  if [ -e "$target" ] || [ -L "$target" ]; then
     return 0
   fi
   if [ -z "${TERM_LLM_CHATGPT_OAUTH_JSON_B64:-}" ]; then
     return 0
   fi
 
-  mkdir -p "$CONFIG_DIR"
+  mkdir_agent_dir "$CONFIG_DIR"
   umask 077
   if printf '%s' "$TERM_LLM_CHATGPT_OAUTH_JSON_B64" | base64 -d > "$target"; then
+    chown -h "$AGENT_USER:$AGENT_USER" "$target"
     chmod 600 "$target"
     echo "bootstrap: hydrated ChatGPT OAuth credentials from environment"
   else
@@ -86,12 +103,12 @@ write_default_config_once() {
   local provider="${TERM_LLM_PROVIDER:-}"
   local config_file="$CONFIG_DIR/config.yaml"
 
-  if [ -e "$config_file" ]; then
+  if [ -e "$config_file" ] || [ -L "$config_file" ]; then
     echo "bootstrap: keeping existing term-llm config at $config_file"
     return 0
   fi
 
-  mkdir -p "$CONFIG_DIR"
+  mkdir_agent_dir "$CONFIG_DIR"
   {
     if [ -n "$provider" ] && [ "$provider" != "skip" ]; then
       echo "default_provider: \"$provider\""
@@ -118,6 +135,7 @@ skills:
   auto_invoke: true
 CONFIG_YAML
   } > "$config_file"
+  chown -h "$AGENT_USER:$AGENT_USER" "$config_file"
   chmod 600 "$config_file"
   if [ -n "$provider" ] && [ "$provider" != "skip" ]; then
     echo "bootstrap: wrote term-llm config with default_provider=$provider and skills enabled"
@@ -128,12 +146,12 @@ CONFIG_YAML
 
 write_default_volume_init() {
   local init_file="$CONFIG_DIR/init.sh"
-  if [ -e "$init_file" ]; then
+  if [ -e "$init_file" ] || [ -L "$init_file" ]; then
     echo "bootstrap: keeping existing volume init at $init_file"
     return 0
   fi
 
-  mkdir -p "$CONFIG_DIR"
+  mkdir_agent_dir "$CONFIG_DIR"
   cat > "$init_file" <<'VOLUME_INIT'
 #!/bin/bash
 set -euo pipefail
@@ -158,6 +176,7 @@ if [ -d "$SERVICES_DIR" ]; then
   done
 fi
 VOLUME_INIT
+  chown -h "$AGENT_USER:$AGENT_USER" "$init_file"
   chmod 755 "$init_file"
   echo "bootstrap: wrote default volume init at $init_file"
 }
@@ -206,9 +225,9 @@ migrate_managed_webui_single_workspace() {
   echo "bootstrap: migrated managed webui service to single-workspace mode"
 }
 
-ensure_agent_ownership() {
-  mkdir -p "$AGENT_HOME" "$CONFIG_DIR"
-  if [ ! -e "$AGENT_HOME/.zshrc" ]; then
+ensure_agent_shell() {
+  mkdir_agent_dir "$AGENT_HOME"
+  if [ ! -e "$AGENT_HOME/.zshrc" ] && [ ! -L "$AGENT_HOME/.zshrc" ]; then
     cat > "$AGENT_HOME/.zshrc" <<'ZSHRC'
 # term-llm shell niceties
 alias tl=term-llm
@@ -222,7 +241,8 @@ bindkey '^?' backward-delete-char
 bindkey '^H' backward-delete-char
 PROMPT='%F{cyan}${AGENT_NAME:-agent}%f:%F{yellow}%~%f %# '
 ZSHRC
-  else
+    chown -h "$AGENT_USER:$AGENT_USER" "$AGENT_HOME/.zshrc"
+  elif [ ! -L "$AGENT_HOME/.zshrc" ]; then
     if ! grep -Eq '^[[:space:]]*alias[[:space:]]+tl=' "$AGENT_HOME/.zshrc"; then
       printf '\n# term-llm convenience alias\nalias tl=term-llm\n' >> "$AGENT_HOME/.zshrc"
     fi
@@ -240,16 +260,15 @@ PROMPT='%F{cyan}${AGENT_NAME:-agent}%f:%F{yellow}%~%f %# '
 ZSHRC
     fi
   fi
-  chown -R "$AGENT_USER:$AGENT_USER" "$AGENT_HOME"
 }
 
 bootstrap_seed_once() {
-  if [ -f "$BOOTSTRAP_SENTINEL" ]; then
+  if [ -e "$BOOTSTRAP_SENTINEL" ] || [ -L "$BOOTSTRAP_SENTINEL" ]; then
     return 0
   fi
 
   echo "bootstrap: first boot for agent=$AGENT_NAME; source=$BOOTSTRAP_DIR"
-  mkdir -p "$CONFIG_DIR" "$AGENT_DIR"
+  mkdir_agent_dir "$AGENT_DIR"
 
   render_file_once "$BOOTSTRAP_DIR/bootstrap.yaml" "$AGENT_DIR/agent.yaml" "agent config"
   render_file_once "$BOOTSTRAP_DIR/system.md" "$AGENT_DIR/system.md" "system prompt"
@@ -269,17 +288,18 @@ bootstrap_seed_once() {
   write_default_config_once
   write_default_volume_init
   touch "$BOOTSTRAP_SENTINEL"
+  chown -h "$AGENT_USER:$AGENT_USER" "$BOOTSTRAP_SENTINEL"
   echo "bootstrap: complete; future boots ignore /seed and image bootstrap files, then run $CONFIG_DIR/init.sh"
 }
 
 bootstrap_seed_once
 migrate_managed_webui_single_workspace
-ensure_agent_ownership
+ensure_agent_shell
 
-# Volume init hook (runs every container start after first-boot bootstrap).
+# Volume init runs as root for system services. Custom hooks must explicitly
+# assign ownership of any agent files they create; no blanket repair follows.
 if [ -f "$CONFIG_DIR/init.sh" ]; then
   bash "$CONFIG_DIR/init.sh"
-  ensure_agent_ownership
 fi
 
 # No command → boot runit as PID 1

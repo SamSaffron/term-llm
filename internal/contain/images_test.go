@@ -64,9 +64,6 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if rel == "entrypoint.sh" && (!strings.Contains(string(data), "PROMPT='%F{cyan}${AGENT_NAME:-agent}%f:%F{yellow}%~%f %# '") || !strings.Contains(string(data), "bindkey '^?' backward-delete-char") || !strings.Contains(string(data), "infocmp \"$TERM\"") || !strings.Contains(string(data), "compdef tl=term-llm")) {
 			t.Fatalf("entrypoint should seed a friendly zsh prompt and backspace bindings")
 		}
-		if rel == "entrypoint.sh" && !strings.Contains(string(data), "chown -R \"$AGENT_USER:$AGENT_USER\" \"$AGENT_HOME\"") {
-			t.Fatalf("entrypoint should ensure agent owns persistent home")
-		}
 		if rel == "entrypoint.sh" && !strings.Contains(string(data), "TERM_LLM_CHATGPT_OAUTH_JSON_B64") {
 			t.Fatalf("entrypoint missing ChatGPT OAuth hydration")
 		}
