@@ -399,6 +399,7 @@
   background: var(--surface-2);
   padding: 6px;
   position: relative;
+  --prompt-inline: 8px;
 }
 
 .composer-box:focus-within {
@@ -479,7 +480,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  border-radius: var(--radius-md);
+  border-radius: 50%;
   flex-shrink: 0;
   transition:
     background 0.15s ease,
@@ -662,7 +663,7 @@
   border: none;
   background: transparent;
   color: var(--text);
-  padding: 10px 8px 12px;
+  padding: 10px var(--prompt-inline) 12px;
   line-height: 1.5;
   font-size: 1rem;
   overflow-y: auto;
@@ -681,6 +682,12 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* The first button's icon starts where the text does; its tappable square reaches
+   into the box's margin instead (as in ChatGPT). 1.3rem is the icon's size. */
+.composer-toolbar > :first-child {
+  margin-inline-start: calc(var(--prompt-inline) - (var(--control-size) - 1.3rem) / 2);
 }
 
 .composer-actions {
@@ -819,10 +826,7 @@
   .composer-box {
     border-radius: var(--radius-lg);
     padding: 5px;
-  }
-
-  .prompt {
-    padding-inline: 6px;
+    --prompt-inline: 6px;
   }
 }
 
