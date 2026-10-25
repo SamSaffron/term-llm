@@ -1254,6 +1254,35 @@
   content: ' · ';
 }
 
+/* Opening a subagent is a link-like button in the accent, with an arrow. */
+.tool-progress .subagent-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15em;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tool-progress .subagent-open:hover,
+.tool-progress .subagent-open:focus-visible {
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.tool-progress .subagent-open svg {
+  width: 0.95em;
+  height: 0.95em;
+}
+
+/* In an opened group the line starts under the tool name (the row is already
+   inset). */
+.tool-group-entry-body .tool-progress {
+  padding-inline: 0;
+}
+
 .tool-details {
   border-top: 1px solid color-mix(in srgb, var(--tool) 45%, transparent);
   padding: 0.58rem 0.75rem 0.72rem;

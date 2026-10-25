@@ -254,6 +254,10 @@ function toolIcon(name: string): IconName {
         read_url: 'globe',
         image_generate: 'image',
         spawn_agent: 'bot',
+        continue_agent: 'bot',
+        wait_agent: 'bot',
+        queue_agent: 'bot',
+        cancel_agent: 'bot',
         ask_user: 'message-circle-question',
       } as Record<string, IconName>
     )[key] || 'wrench'
@@ -553,13 +557,14 @@ function SubagentProgressLine({
         <span key={childSessionId}>
           {(parts.length > 0 || index > 0) && ' · '}
           <button
-            class="text-action"
+            class="text-action subagent-open"
             type="button"
             onClick={() =>
               void store.resolveAndSelectSession(childSessionId, false, { prepend: false })
             }
           >
             {childSessionIds.length > 1 ? `Open subagent ${index + 1}` : 'Open subagent'}
+            <Icon name="chevron-right" />
           </button>
         </span>
       ))}
