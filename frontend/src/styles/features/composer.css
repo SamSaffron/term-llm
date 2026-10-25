@@ -698,7 +698,7 @@
 .composer-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 10px;
   flex-shrink: 0;
   margin-inline-start: auto;
 }
