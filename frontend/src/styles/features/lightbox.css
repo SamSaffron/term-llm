@@ -209,7 +209,7 @@
 }
 
 .lightbox-btn.copied {
-  color: #4ade80;
+  color: var(--accent-green);
 }
 
 .lightbox-btn:disabled {

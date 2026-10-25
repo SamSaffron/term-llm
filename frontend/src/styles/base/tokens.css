@@ -19,7 +19,7 @@
      term-llm's green, as on term-llm.com. */
   --accent: #98d5b2;
   --accent-strong: #c1ead0;
-  --accent-green: #34d399;
+  --accent-green: #98d5b2;
   --accent-amber: #e5a210;
   --danger: #f87171;
   --backdrop: rgb(0 0 0 / 50%);
@@ -150,7 +150,7 @@
     --text-muted: #5b6660;
     --accent: #16634e;
     --accent-strong: #104c3b;
-    --accent-green: #059669;
+    --accent-green: #16634e;
     --accent-amber: #b45309;
     --danger: #dc2626;
     --backdrop: rgb(0 0 0 / 30%);
