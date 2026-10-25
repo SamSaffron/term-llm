@@ -225,6 +225,50 @@ func TestJobsV2NotifyWhenDoneAppendsWebNotificationToIdleSession(t *testing.T) {
 	}
 }
 
+func TestJobsV2NotifyHeadlessHostPreservesNoticeWithoutContinuation(t *testing.T) {
+	for _, api := range []bool{false, true} {
+		name := "jobs-only"
+		if api {
+			name = "api-jobs"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newServeRuntimeTestStore()
+			provider := mockprovider.NewMockProvider("mock").AddTextResponse("must not run")
+			rt := &serveRuntime{provider: provider, providerKey: "mock", engine: engine.NewEngine(provider, nil), defaultModel: "mock-model", store: store, platform: "web"}
+			mgr := newServeSessionManager(time.Minute, 10, nil)
+			putTestSession(mgr, "sess-origin", rt)
+			defer mgr.Close()
+			srv := &serveServer{cfg: serveServerConfig{api: api}, store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
+			defer srv.responseRuns.Close()
+
+			message := "Queued job job_123 (developer) succeeded: hello world"
+			info := core.JobNotificationProvenance{JobID: "job_123", RunID: "run_123", Agent: "developer", Status: "succeeded"}
+			if srv.startQueuedAgentNotificationContinuation(ctx, rt, "sess-origin", message, info) {
+				t.Fatal("headless host started an automatic web continuation")
+			}
+			if err := srv.notifyQueuedAgentWebNotice(ctx, "run_123", "sess-origin", message, info); err != nil {
+				t.Fatalf("notifyQueuedAgentWebNotice: %v", err)
+			}
+			if provider.CurrentTurn() != 0 || srv.responseRuns.activeRunID("sess-origin") != "" {
+				t.Fatal("headless notification invoked inference or acquired an active response")
+			}
+			store.mu.Lock()
+			msgs := append([]session.Message(nil), store.messages["sess-origin"]...)
+			store.mu.Unlock()
+			if len(msgs) != 1 || msgs[0].Role != core.RoleAssistant || msgs[0].TextContent != message {
+				t.Fatalf("fallback notification = %#v, want one persisted notice", msgs)
+			}
+			if len(rt.history) != 1 || core.MessageText(rt.history[0]) != message {
+				t.Fatalf("runtime lost fallback notification: %#v", rt.history)
+			}
+			if len(rt.pendingAskUserPrompts()) != 0 {
+				t.Fatal("headless notification created an input gate")
+			}
+		})
+	}
+}
+
 func TestJobsV2NotifyWhenDoneContinuesLoadedIdleWebSession(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	provider := mockprovider.NewMockProvider("mock").AddTextResponse("I saw the queued job finish.")
@@ -244,6 +288,7 @@ func TestJobsV2NotifyWhenDoneContinuesLoadedIdleWebSession(t *testing.T) {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 	srv := &serveServer{
+		cfg:          serveServerConfig{ui: true},
 		store:        store,
 		sessionMgr:   mgr,
 		responseRuns: newServeResponseRunManager(),
@@ -431,7 +476,7 @@ func TestJobsV2NotifyContinuationCarriesTools(t *testing.T) {
 	if _, err := mgr.GetOrCreate(context.Background(), "sess-origin"); err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	srv := &serveServer{store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
+	srv := &serveServer{cfg: serveServerConfig{ui: true}, store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
 	defer srv.responseRuns.Close()
 
 	if err := srv.notifyQueuedAgentWeb(context.Background(), "run_123", "sess-origin", "Queued job job_123 succeeded"); err != nil {
@@ -457,7 +502,7 @@ func TestJobsV2NotifyContinuationMarksJobNotice(t *testing.T) {
 	if _, err := mgr.GetOrCreate(context.Background(), "sess-origin"); err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	srv := &serveServer{store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
+	srv := &serveServer{cfg: serveServerConfig{ui: true}, store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
 	defer srv.responseRuns.Close()
 
 	message := "Queued job job_1 (core-researcher) succeeded: hi\nFull result: call wait_for_jobs with run_ids [\"run_1\"]."
