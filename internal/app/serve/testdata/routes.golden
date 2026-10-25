@@ -7,6 +7,7 @@ hub * / outer-admits=hub-bearer,OPTIONS wrappers=h
 hub * /api/attention outer-admits=hub-bearer,OPTIONS wrappers=h
 hub * /api/attention/clear outer-admits=hub-bearer,OPTIONS wrappers=h
 hub * /api/attention/seen outer-admits=hub-bearer,OPTIONS wrappers=h
+hub * /api/changes outer-admits=hub-bearer,OPTIONS wrappers=h
 hub * /api/connect outer-admits=anon,hub-bearer,node-missing,node-bad,node-good,node-unknown,registration,OPTIONS wrappers=h
 hub * /api/delegations outer-admits=hub-bearer,node-missing,node-bad,node-good,node-unknown,OPTIONS wrappers=h
 hub * /api/delegations/ outer-admits=hub-bearer,node-missing,node-bad,node-good,node-unknown,OPTIONS wrappers=h

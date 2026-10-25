@@ -62,6 +62,8 @@ check-changed:
 #   make test PKG=./internal/llm RUN='^TestName$' ARGS=-count=1
 # RUN reaches the script through the environment, unexpanded, so regex `$`
 # and quotes survive both make and the shell.
+# The wrapper expands recursive selectors from repository-owned packages and
+# rejects explicit tmp/ scratch targets (even if they are force-added to git).
 PKG ?= ./...
 test: export GOTEST_RUN = $(value RUN)
 test:

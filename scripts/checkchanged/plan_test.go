@@ -7,19 +7,21 @@ import (
 )
 
 var testPkgs = []Pkg{
-	{ImportPath: "m", Dir: ".", Imports: []string{"m/cmd"}},
-	{ImportPath: "m/cmd", Dir: "cmd", Imports: []string{"m/internal/a"}},
-	{ImportPath: "m/internal/a", Dir: "internal/a", Imports: []string{"m/internal/b"}},
-	{ImportPath: "m/internal/b", Dir: "internal/b"},
-	{ImportPath: "m/internal/c", Dir: "internal/c", TestImports: []string{"m/internal/b"}},
-	{ImportPath: "m/internal/d", Dir: "internal/d"},
-	{ImportPath: "m/internal/serveui", Dir: "internal/serveui"},
-	{ImportPath: "m/cmd/gendocs", Dir: "cmd/gendocs", Imports: []string{"m/cmd"}},
-	{ImportPath: "m/internal/e", Dir: "internal/e", Imports: []string{"other.example/reflow/sub"}},
+	{ImportPath: "m", GoFiles: []string{"pkg.go"}, Dir: ".", Imports: []string{"m/cmd"}},
+	{ImportPath: "m/cmd", GoFiles: []string{"pkg.go"}, Dir: "cmd", Imports: []string{"m/internal/a"}},
+	{ImportPath: "m/internal/a", GoFiles: []string{"pkg.go"}, Dir: "internal/a", Imports: []string{"m/internal/b"}},
+	{ImportPath: "m/internal/b", GoFiles: []string{"pkg.go"}, Dir: "internal/b"},
+	{ImportPath: "m/internal/c", GoFiles: []string{"pkg.go"}, Dir: "internal/c", TestImports: []string{"m/internal/b"}},
+	{ImportPath: "m/internal/d", GoFiles: []string{"pkg.go"}, Dir: "internal/d"},
+	{ImportPath: "m/internal/serveui", GoFiles: []string{"pkg.go"}, Dir: "internal/serveui"},
+	{ImportPath: "m/cmd/genpkgmap", GoFiles: []string{"pkg.go"}, Dir: "cmd/genpkgmap"},
+	{ImportPath: "m/cmd/gendocs", GoFiles: []string{"pkg.go"}, Dir: "cmd/gendocs", Imports: []string{"m/cmd"}},
+	{ImportPath: "m/internal/e", GoFiles: []string{"pkg.go"}, Dir: "internal/e", Imports: []string{"other.example/reflow/sub"}},
 }
 
 func plan(all bool, files ...string) Plan {
 	return BuildPlan(Input{Files: files, All: all, Pkgs: testPkgs,
+		GoFiles:    []string{"main.go", "internal/reflow/a.go"},
 		NestedMods: []string{"internal/reflow"}, NestedModPaths: map[string]string{"internal/reflow": "other.example/reflow"},
 		ExistsFile: func(string) bool { return true }})
 }
@@ -155,7 +157,7 @@ func TestInfrastructureChanges(t *testing.T) {
 
 func TestGoModAndAll(t *testing.T) {
 	p := plan(false, "go.mod")
-	if last := p.Steps[2].Args[len(p.Steps[2].Args)-1]; last != "./..." && len(p.Affected) != len(testPkgs) {
+	if len(p.Affected) != len(testPkgs) {
 		t.Fatalf("go.mod should affect all: %v", p.Affected)
 	}
 	all := plan(true)
@@ -168,8 +170,8 @@ func TestGoModAndAll(t *testing.T) {
 func TestDeletedPackageIsConservative(t *testing.T) {
 	p := BuildPlan(Input{Files: []string{"internal/gone/x.go"}, Pkgs: testPkgs,
 		ExistsFile: func(string) bool { return false }})
-	if got := p.Steps[3].Args; got[len(got)-1] != "./..." {
-		t.Fatalf("expected ./..., got %v", got)
+	if got := p.Steps[3].Args[2:]; !reflect.DeepEqual(got, p.Affected) || len(got) != len(testPkgs) {
+		t.Fatalf("expected every owned package, got %v", got)
 	}
 }
 
@@ -193,6 +195,61 @@ func TestAPITypesDriftSelection(t *testing.T) {
 	for _, file := range []string{"cmd/chat.go", "frontend/src/hub/app.tsx"} {
 		if p := plan(false, file); strings.Contains(names(p), "api types drift") {
 			t.Errorf("%s: %s", file, names(p))
+		}
+	}
+}
+
+func TestScratchChangesDoNotSelectChecks(t *testing.T) {
+	if got := names(plan(false, "tmp/bench/seed.go", "tmp/nested/go.mod", "tmp/module/main_test.go")); got != "" {
+		t.Fatalf("scratch changes selected checks: %s", got)
+	}
+}
+
+func TestFullAndFallbackPlansUseExplicitOwnedTargets(t *testing.T) {
+	for _, p := range []Plan{plan(true), plan(false, "go.mod"), plan(false, "internal/gone/x.go")} {
+		for _, s := range p.Steps {
+			for _, arg := range s.Args {
+				if arg == "./..." || (s.Name == "gofmt" && arg == ".") || scratchPath(arg) {
+					t.Fatalf("recursive or scratch target in %s: %v", s.Name, s.Args)
+				}
+			}
+			if s.Name == "go build" || s.Name == "go vet" || s.Name == "go test" {
+				if len(s.Args[2:]) != len(testPkgs) {
+					t.Fatalf("%s lost package coverage: %v", s.Name, s.Args)
+				}
+			}
+		}
+	}
+	for _, s := range plan(true).Steps {
+		if s.Name == "gofmt" && !reflect.DeepEqual(s.Args, []string{"gofmt", "-l", "internal/reflow/a.go", "main.go"}) {
+			t.Fatalf("formatting lost nested module files: %v", s.Args)
+		}
+	}
+}
+
+func TestBuildTargetsUseGoAndCgoSources(t *testing.T) {
+	pkgs := []Pkg{
+		{ImportPath: "m/go", Dir: "go", GoFiles: []string{"source.go"}},
+		{ImportPath: "m/cgo", Dir: "cgo", CgoFiles: []string{"source.go"}},
+		{ImportPath: "m/testonly", Dir: "testonly"},
+	}
+	p := BuildPlan(Input{All: true, Pkgs: pkgs})
+	for _, step := range p.Steps {
+		if step.Name == "go build" {
+			want := []string{"go", "build", "m/cgo", "m/go"}
+			if !reflect.DeepEqual(step.Args, want) {
+				t.Fatalf("build targets %v; want %v", step.Args, want)
+			}
+		}
+		if step.Name == "go vet" || step.Name == "go test" {
+			if !reflect.DeepEqual(step.Args[2:], []string{"m/cgo", "m/go", "m/testonly"}) {
+				t.Fatalf("%s lost test-only coverage: %v", step.Name, step.Args)
+			}
+		}
+	}
+	for _, step := range goSteps([]string{"m/testonly"}, pkgs[2:]) {
+		if step.Name == "go build" {
+			t.Fatalf("empty build target list would implicitly build the working directory: %v", step.Args)
 		}
 	}
 }

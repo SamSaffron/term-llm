@@ -146,6 +146,32 @@ describe('notification document ownership and attendance', () => {
     ).toBe(true);
   });
 
+  it('renews leases only while visible and renews immediately on return', async () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = 'visible';
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+    const { owner, endpoints } = fixture();
+    owner.start(presenceFixture().source);
+    await owner.publish();
+    await vi.advanceTimersByTimeAsync(15_001);
+    const visibleCalls = endpoints.pushPresence.mock.calls.length;
+    expect(visibleCalls).toBeGreaterThanOrEqual(2);
+
+    visibility = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    const hiddenCalls = endpoints.pushPresence.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(endpoints.pushPresence.mock.calls.length).toBe(hiddenCalls);
+
+    visibility = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(endpoints.pushPresence.mock.calls.length).toBe(hiddenCalls + 1);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(endpoints.pushPresence.mock.calls.length).toBe(hiddenCalls + 2);
+  });
+
   it('coalesces interaction bursts while HTTP publication is pending and publishes inactive afterward', async () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
     const { owner, endpoints } = fixture();

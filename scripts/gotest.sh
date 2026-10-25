@@ -6,6 +6,8 @@
 #   make test PKG=./internal/llm RUN='^TestName$' ARGS=-count=1
 #
 # GOTEST_RUN (set by `make test` from RUN) adds a literal -run pattern.
+# Recursive targets use repository-owned packages, never repository tmp/.
+# The Go helper also rejects explicitly supplied scratch targets.
 set -euo pipefail
 
 run_args=()
@@ -27,4 +29,4 @@ HOME="$tmp/home" \
 	TMPDIR="$tmp/tmp" \
 	GOMODCACHE="$gomodcache" \
 	GOCACHE="$gocache" \
-	go test ${run_args[@]+"${run_args[@]}"} "$@"
+	go run ./scripts/checkchanged --go-test ${run_args[@]+"${run_args[@]}"} "$@"

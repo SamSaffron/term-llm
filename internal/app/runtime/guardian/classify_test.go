@@ -69,6 +69,12 @@ func TestGuardianClassifySetupAndConfidenceBreaker(t *testing.T) {
 	if err := os.WriteFile(path, []byte("data"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// Exercise Guardian classification, not the symlink-escape guard when the
+	// platform's temporary directory itself is a symlink (for example /var).
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var events []tools.GuardianEvent
 	mgr.GuardianEventFunc = func(e tools.GuardianEvent) { events = append(events, e) }
 	for i := 0; i < 3; i++ {

@@ -16,6 +16,14 @@ import (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// The isolated shell wrapper shares package discovery with the checker.
+	if len(args) > 0 && args[0] == "--go-test" {
+		if err := runGoTest(args[1:]); err != nil {
+			fmt.Fprintln(stderr, "gotest:", err)
+			return 1
+		}
+		return 0
+	}
 	fs := flag.NewFlagSet("check-changed", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "run every check regardless of the diff")
@@ -99,7 +107,15 @@ func changedFiles(base string) ([]string, error) {
 }
 
 func listPackages() ([]Pkg, error) {
-	cmd := exec.Command("go", "list", "-e", "-json", "./...")
+	files, err := repositoryGoFiles()
+	if err != nil {
+		return nil, err
+	}
+	dirs := repositoryPackageDirs(files)
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	cmd := exec.Command("go", append([]string{"list", "-e", "-json"}, dirs...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -118,15 +134,23 @@ func listPackages() ([]Pkg, error) {
 			ImportPath                         string
 			Dir                                string
 			Imports, TestImports, XTestImports []string
+			GoFiles, CgoFiles                  []string
+			Error                              *struct{ Err string }
 		}
 		if err := dec.Decode(&raw); err != nil {
 			return nil, fmt.Errorf("decode go list: %w", err)
+		}
+		// Explicit directory listing also reports packages excluded by platform
+		// or build tags; like ./..., omit those, but retain actual source errors.
+		if raw.Error != nil && strings.Contains(raw.Error.Err, "build constraints exclude all Go files") {
+			continue
 		}
 		rel, err := filepath.Rel(root, raw.Dir)
 		if err != nil {
 			return nil, err
 		}
-		p = Pkg{ImportPath: raw.ImportPath, Dir: filepath.ToSlash(rel), Imports: raw.Imports, TestImports: raw.TestImports, XTestImports: raw.XTestImports}
+		p = Pkg{ImportPath: raw.ImportPath, Dir: filepath.ToSlash(rel), GoFiles: raw.GoFiles, CgoFiles: raw.CgoFiles,
+			Imports: raw.Imports, TestImports: raw.TestImports, XTestImports: raw.XTestImports}
 		pkgs = append(pkgs, p)
 	}
 	return pkgs, nil
@@ -134,7 +158,7 @@ func listPackages() ([]Pkg, error) {
 
 // nestedModules returns nested module directories and their module paths.
 func nestedModules() ([]string, map[string]string, error) {
-	out, err := git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*go.mod")
+	out, err := git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*go.mod", ":(top,exclude)tmp")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -142,7 +166,7 @@ func nestedModules() ([]string, map[string]string, error) {
 	paths := map[string]string{}
 	for _, f := range splitNUL(out) {
 		d := filepath.ToSlash(filepath.Dir(f))
-		if d == "." {
+		if d == "." || scratchPath(d) || dependencyPath(d) {
 			continue
 		}
 		if _, err := os.Stat(f); err != nil {
@@ -223,7 +247,14 @@ func execute(all bool, base string, dry bool, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	pl := BuildPlan(Input{Files: files, All: all, Pkgs: pkgs, NestedMods: mods, NestedModPaths: modPaths,
+	var goFiles []string
+	if all {
+		goFiles, err = repositoryGoFiles()
+		if err != nil {
+			return err
+		}
+	}
+	pl := BuildPlan(Input{Files: files, All: all, GoFiles: goFiles, Pkgs: pkgs, NestedMods: mods, NestedModPaths: modPaths,
 		ExistsFile: func(f string) bool { _, err := os.Stat(f); return err == nil }})
 
 	fmt.Fprintf(stdout, "base=%s all=%v changed files=%d changed pkgs=%d affected pkgs=%d\n",

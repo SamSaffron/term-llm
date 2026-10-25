@@ -125,12 +125,14 @@ func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Optio
 	// The delegation ledger and the dashboard node order live beside the
 	// node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
+	s.delegations.Changes = s.changes
 	s.nodeOrder = hub.NewNodeOrderStore(filepath.Join(filepath.Dir(nodesFile), "node-order.json"))
 	attentionStore, err := hub.OpenAttentionProjectionStore(filepath.Join(filepath.Dir(nodesFile), "attention.db"))
 	if err != nil {
 		return fmt.Errorf("open Hub attention projection: %w", err)
 	}
 	defer attentionStore.Close()
+	attentionStore.Changes = s.changes
 	s.attentionStore = attentionStore
 	s.startAttentionCollector()
 	s.startHealthMonitor()
@@ -173,6 +175,7 @@ func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Optio
 	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	transport := &restart.HTTPTransport{Coordinator: restart.Default}
 	srv := &http.Server{Addr: addr, Handler: transport.Handler(s.handler()), ConnContext: transport.ConnContext, ConnState: transport.ConnState}
+	srv.RegisterOnShutdown(s.changes.Close)
 
 	out := deps.Stdout
 	if authMode == "passkey" {

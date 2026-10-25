@@ -92,8 +92,8 @@ func TestServeRoutesGolden(t *testing.T) {
 			return true
 		})
 	}
-	if len(routes) != 106 {
-		t.Fatalf("route count = %d, want 106", len(routes))
+	if len(routes) != 107 {
+		t.Fatalf("route count = %d, want 107", len(routes))
 	}
 	sort.Strings(routes)
 	sort.Strings(outer)
@@ -196,8 +196,8 @@ func hubAuthRepresentatives() []hubAuthRequest {
 		apphub.NodeOrderPath: "PATCH " + apphub.NodeOrderPath,
 		"/api/nodes/":        "DELETE /api/nodes/missing", "/api/nodes": "GET /api/nodes?view=sidebar",
 		"/api/attention": "GET /api/attention", "/api/attention/clear": "POST /api/attention/clear",
-		"/api/attention/seen": "POST /api/attention/seen",
-		"/api/delegations/":   "GET /api/delegations/missing", "/api/delegations": "GET /api/delegations",
+		"/api/attention/seen": "POST /api/attention/seen", "/api/changes": "GET /api/changes",
+		"/api/delegations/": "GET /api/delegations/missing", "/api/delegations": "GET /api/delegations",
 		"/api/connect": "GET /api/connect", "/node/": "GET /node/missing/",
 	}
 	var requests []hubAuthRequest

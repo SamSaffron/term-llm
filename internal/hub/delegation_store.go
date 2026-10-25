@@ -32,6 +32,8 @@ type DelegationStore struct {
 	path string
 	// now is a hook for prune tests.
 	now func() time.Time
+	// Changes, when set, is bumped after every successful ledger write.
+	Changes *ChangeFeed
 }
 
 // NewDelegationStore returns a store backed by the given JSON file path. The
@@ -80,6 +82,7 @@ func (s *DelegationStore) writeLocked(records []Delegation) error {
 	if err := config.WriteFileAtomically(s.path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write hub delegation ledger: %w", err)
 	}
+	s.Changes.Bump()
 	return nil
 }
 

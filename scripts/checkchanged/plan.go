@@ -12,6 +12,8 @@ import (
 type Pkg struct {
 	ImportPath   string
 	Dir          string // path relative to the module root ("." for root)
+	GoFiles      []string
+	CgoFiles     []string
 	Imports      []string
 	TestImports  []string
 	XTestImports []string
@@ -28,6 +30,7 @@ type Step struct {
 type Input struct {
 	Files      []string // changed paths, slash-separated, relative to repo root
 	All        bool
+	GoFiles    []string // all repository-owned Go files, including nested modules
 	Pkgs       []Pkg    // root-module packages
 	NestedMods []string // nested module directories (relative)
 	// NestedModPaths maps a nested module directory to its module path, so
@@ -156,6 +159,9 @@ func affectsAPITypes(f string) bool {
 
 // classify records the effect of one changed file.
 func (st *state) classify(f string, in Input, byDir map[string]Pkg) {
+	if scratchPath(f) {
+		return
+	}
 	if isUnder(f, "docs-site") {
 		st.docs = true
 	}
@@ -240,8 +246,8 @@ func (st *state) applyAll(in Input) {
 	for _, m := range in.NestedMods {
 		st.nested[m] = true
 	}
-	// Match CI's repository-wide formatting check, including nested modules.
-	st.goFiles = []string{"."}
+	// Include real nested modules, never recursive filesystem/cache discovery.
+	st.goFiles = append([]string(nil), in.GoFiles...)
 }
 
 // resolveTargets fills pl.Changed/pl.Affected and returns the go package arguments.
@@ -255,7 +261,7 @@ func (st *state) resolveTargets(in Input, pl *Plan) []string {
 		}
 		sort.Strings(pl.Changed)
 		pl.Affected = append([]string(nil), pl.Changed...)
-		return []string{"./..."}
+		return append([]string(nil), pl.Affected...)
 	}
 	for k := range st.changedPkgs {
 		pl.Changed = append(pl.Changed, k)
@@ -275,13 +281,23 @@ func hasTarget(targets []string, name string) bool {
 	return false
 }
 
-func goSteps(targets []string) []Step {
-	return []Step{
-		{Name: "make build", Args: []string{"make", "build"}},
-		{Name: "go build", Args: []string{"go", "build", "./..."}},
-		{Name: "go vet", Args: append([]string{"go", "vet"}, targets...)},
-		{Name: "go test", Args: append([]string{"go", "test"}, targets...)},
+func goSteps(targets []string, pkgs []Pkg) []Step {
+	var all []string
+	for _, p := range pkgs {
+		// Recursive go build skips test-only packages; explicit targets do not.
+		if len(p.GoFiles)+len(p.CgoFiles) > 0 {
+			all = append(all, p.ImportPath)
+		}
 	}
+	sort.Strings(all)
+	steps := []Step{{Name: "make build", Args: []string{"make", "build"}}}
+	if len(all) > 0 {
+		steps = append(steps, Step{Name: "go build", Args: append([]string{"go", "build"}, all...)})
+	}
+	return append(steps,
+		Step{Name: "go vet", Args: append([]string{"go", "vet"}, targets...)},
+		Step{Name: "go test", Args: append([]string{"go", "test"}, targets...)},
+	)
 }
 
 func frontendSteps() []Step {
@@ -314,7 +330,7 @@ func BuildPlan(in Input) Plan {
 		pl.Steps = append(pl.Steps, Step{Name: "gofmt", Args: append([]string{"gofmt", "-l"}, st.goFiles...)})
 	}
 	if st.goChanged {
-		pl.Steps = append(pl.Steps, goSteps(targets)...)
+		pl.Steps = append(pl.Steps, goSteps(targets, in.Pkgs)...)
 	}
 	if st.nestedChanged {
 		pl.Steps = append(pl.Steps, Step{Name: "nested modules", Args: []string{"scripts/verify_nested_modules.sh"}})

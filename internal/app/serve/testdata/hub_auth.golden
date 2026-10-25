@@ -36,6 +36,15 @@ bearer POST /api/attention/seen [hub /api/attention/seen]
   node-unknown gate=false status=401 body="invalid hub authentication credentials"
   registration gate=false status=401 body="invalid hub authentication credentials"
   OPTIONS gate=true status=405 body="method not allowed" Allow="POST"
+bearer GET /api/changes [hub /api/changes]
+  anon gate=false status=401 body="invalid hub authentication credentials"
+  hub-bearer gate=true status=200 body="json:version"
+  node-missing gate=false status=401 body="invalid hub authentication credentials"
+  node-bad gate=false status=401 body="invalid hub authentication credentials"
+  node-good gate=false status=401 body="invalid hub authentication credentials"
+  node-unknown gate=false status=401 body="invalid hub authentication credentials"
+  registration gate=false status=401 body="invalid hub authentication credentials"
+  OPTIONS gate=true status=405 body="method not allowed" Allow="GET"
 bearer GET /api/connect [hub /api/connect]
   anon gate=true status=401 body="missing X-Term-LLM-Node-ID header"
   hub-bearer gate=true status=401 body="missing X-Term-LLM-Node-ID header"
@@ -259,6 +268,16 @@ passkey POST /api/attention/seen [hub /api/attention/seen]
   registration gate=false status=401 body="Passkey authentication is required" X-Term-LLM-Login-URL="/hub/auth/login"
   OPTIONS gate=true status=405 body="method not allowed" Allow="POST"
   session gate=true status=400 body="store_instance_id, session_id and a positive attention_seq are required"
+passkey GET /api/changes [hub /api/changes]
+  anon gate=false status=401 body="Passkey authentication is required" X-Term-LLM-Login-URL="/hub/auth/login"
+  hub-bearer gate=true status=200 body="json:version"
+  node-missing gate=false status=401 body="Passkey authentication is required" X-Term-LLM-Login-URL="/hub/auth/login"
+  node-bad gate=false status=401 body="Passkey authentication is required" X-Term-LLM-Login-URL="/hub/auth/login"
+  node-good gate=false status=401 body="Passkey authentication is required" X-Term-LLM-Login-URL="/hub/auth/login"
+  node-unknown gate=false status=401 body="Passkey authentication is required" X-Term-LLM-Login-URL="/hub/auth/login"
+  registration gate=false status=401 body="Passkey authentication is required" X-Term-LLM-Login-URL="/hub/auth/login"
+  OPTIONS gate=true status=405 body="method not allowed" Allow="GET"
+  session gate=true status=200 body="json:version"
 passkey GET /api/connect [hub /api/connect]
   anon gate=true status=401 body="missing X-Term-LLM-Node-ID header"
   hub-bearer gate=true status=401 body="missing X-Term-LLM-Node-ID header"

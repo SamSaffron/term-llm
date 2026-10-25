@@ -101,11 +101,35 @@ export class NotificationOwner {
       const active = this.attended();
       if (active !== this.publishedActive) void this.publish();
     });
-    this.timer = setInterval(() => void this.publish(), 15_000);
+    this.syncHeartbeat();
+    document.addEventListener('visibilitychange', this.visibilityChanged);
     addEventListener('pageshow', this.pageshow);
     addEventListener('pagehide', this.pagehide);
     void this.publish();
   }
+
+  /**
+   * Leases are only renewed while the document is visible. A hidden document
+   * publishes inactive once (via the presence subscription) and its lease then
+   * lapses, which delivery already treats the same as inactive. This keeps
+   * backgrounded tabs and native shells from waking every 15s.
+   */
+  private syncHeartbeat(): void {
+    const visible = !this.stopped && document.visibilityState === 'visible';
+    if (visible && this.timer === undefined) {
+      this.timer = setInterval(() => void this.publish(), 15_000);
+    } else if (!visible && this.timer !== undefined) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private readonly visibilityChanged = () => {
+    const wasRunning = this.timer !== undefined;
+    this.syncHeartbeat();
+    // Returning to view renews immediately rather than on the next tick.
+    if (!wasRunning && this.timer !== undefined) void this.publish();
+  };
 
   private attended(): boolean {
     const last = this.presence?.lastPresenceAt() || 0;
@@ -121,11 +145,13 @@ export class NotificationOwner {
 
   private readonly pageshow = () => {
     this.stopped = false;
+    this.syncHeartbeat();
     void this.publish();
   };
 
   private readonly pagehide = () => {
     this.stopped = true;
+    this.syncHeartbeat();
     void this.publish();
   };
 
@@ -214,6 +240,8 @@ export class NotificationOwner {
   dispose(): void {
     this.pagehide();
     clearInterval(this.timer);
+    this.timer = undefined;
+    document.removeEventListener('visibilitychange', this.visibilityChanged);
     this.unsubscribe?.();
     removeEventListener('pagehide', this.pagehide);
     removeEventListener('pageshow', this.pageshow);

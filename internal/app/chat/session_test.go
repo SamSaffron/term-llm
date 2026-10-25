@@ -261,7 +261,11 @@ func TestResolveChatRuntimeSystemContextUsesExplicitDirectoryWithoutChdir(t *tes
 	if err != nil {
 		t.Fatalf("resolve runtime context: %v", err)
 	}
-	for _, want := range []string{projectDir, "worktree project instructions", "worktree-skill"} {
+	canonicalProjectDir, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{canonicalProjectDir, "worktree project instructions", "worktree-skill"} {
 		if !strings.Contains(resolved.SystemPrompt, want) {
 			t.Fatalf("resolved prompt missing %q: %s", want, resolved.SystemPrompt)
 		}

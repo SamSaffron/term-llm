@@ -55,11 +55,13 @@ type hubServer struct {
 	// shares the proxy's direct-dial transport (no env proxy: requests carry
 	// node tokens) but, unlike streaming proxy traffic, gets a whole-request
 	// timeout.
-	nodeAPIClient        *http.Client
-	healthCache          hubHealthCache
-	healthCancel         context.CancelFunc
-	healthWG             sync.WaitGroup
-	attentionStore       *hub.AttentionProjectionStore
+	nodeAPIClient  *http.Client
+	healthCache    hubHealthCache
+	healthCancel   context.CancelFunc
+	healthWG       sync.WaitGroup
+	attentionStore *hub.AttentionProjectionStore
+	// changes wakes /api/changes long-polls on attention/delegation writes.
+	changes              *hub.ChangeFeed
 	attentionCancel      context.CancelFunc
 	attentionWG          sync.WaitGroup
 	attentionMu          sync.Mutex // guards projection replacement against completed acknowledgements
@@ -81,6 +83,7 @@ func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
 		store:         store,
 		prober:        hub.NewProber(transport),
 		reverse:       newHubReverseManager(),
+		changes:       hub.NewChangeFeed(),
 		nodeAPIClient: &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: hubDoNotFollowRedirects},
 	}
 	s.proxy = &httputil.ReverseProxy{

@@ -56,7 +56,11 @@ type SessionActivity struct {
 	ObservedAt               time.Time `json:"observed_at"`
 }
 
-type AttentionProjectionStore struct{ db *sql.DB }
+type AttentionProjectionStore struct {
+	db *sql.DB
+	// Changes, when set, is bumped after writes that alter listed activity.
+	Changes *ChangeFeed
+}
 
 func OpenAttentionProjectionStore(path string) (*AttentionProjectionStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -199,7 +203,7 @@ func (s *AttentionProjectionStore) ReplaceNode(ctx context.Context, nodeID, stor
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return s.bumpAfter(tx.Commit())
 }
 
 func (s *AttentionProjectionStore) MarkSuccess(ctx context.Context, nodeID string) error {
@@ -214,7 +218,7 @@ func (s *AttentionProjectionStore) MarkSuccess(ctx context.Context, nodeID strin
 func (s *AttentionProjectionStore) RemoveSeen(ctx context.Context, storeID, sessionID string, throughSeq int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM hub_session_activity
  WHERE store_instance_id=? AND session_id=? AND kind='terminal_unseen' AND attention_seq<=?`, storeID, sessionID, throughSeq)
-	return err
+	return s.bumpAfter(err)
 }
 
 func (s *AttentionProjectionStore) MarkUnavailable(ctx context.Context, nodeID string, lost bool) error {
@@ -225,7 +229,7 @@ func (s *AttentionProjectionStore) MarkUnavailable(ctx context.Context, nodeID s
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO node_attention_sync(node_id,capability_state,updated_at) VALUES(?,?,?)
  ON CONFLICT(node_id) DO UPDATE SET capability_state=excluded.capability_state, updated_at=excluded.updated_at`, nodeID, capability, now)
-	return err
+	return s.bumpAfter(err)
 }
 
 func (s *AttentionProjectionStore) MarkError(ctx context.Context, nodeID, message string) error {
@@ -344,5 +348,12 @@ func (s *AttentionProjectionStore) RemoveNode(ctx context.Context, nodeID string
 	if _, err := tx.ExecContext(ctx, `DELETE FROM node_attention_sync WHERE node_id=?`, nodeID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return s.bumpAfter(tx.Commit())
+}
+
+func (s *AttentionProjectionStore) bumpAfter(err error) error {
+	if err == nil {
+		s.Changes.Bump()
+	}
+	return err
 }

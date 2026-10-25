@@ -73,8 +73,14 @@ chat:
 	if rt.model.ApprovalModeRequested() != carried || r.opts.Yolo != true {
 		t.Fatalf("handover approval=%v options=%+v", rt.model.ApprovalModeRequested(), r.opts)
 	}
-	if rt.toolMgr == nil || rt.toolMgr.BaseDir() != sess.CWD || rt.model.CurrentAgentMentionEngine() == nil {
-		t.Fatalf("runtime lost workspace or live engine: manager=%v base=%q want=%q engine=%v", rt.toolMgr != nil, rt.toolMgr.BaseDir(), sess.CWD, rt.model.CurrentAgentMentionEngine() != nil)
+	// Workspace roots are canonicalized; temporary paths may contain symlinks
+	// (for example /var on macOS).
+	workspace, err := filepath.EvalSymlinks(sess.CWD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.toolMgr == nil || rt.toolMgr.BaseDir() != workspace || rt.model.CurrentAgentMentionEngine() == nil {
+		t.Fatalf("runtime lost workspace or live engine: manager=%v base=%q want=%q engine=%v", rt.toolMgr != nil, rt.toolMgr.BaseDir(), workspace, rt.model.CurrentAgentMentionEngine() != nil)
 	}
 	rt.cleanupResources()
 	rt.cleanupResources() // Ownership handoffs can converge; cleanup remains once-guarded.
