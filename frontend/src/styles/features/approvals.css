@@ -192,6 +192,16 @@ fieldset.ask-user-question {
   background: transparent;
 }
 
+/* Skipping the questions sits apart, on the left, in the danger colour but quiet. */
+.modal-actions .ask-user-skip {
+  margin-inline-end: auto;
+  color: var(--danger);
+}
+
+.modal-actions .ask-user-skip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 .ask-user-question-text {
   margin: 0 0 0.9rem;
   font-size: 1.02rem;

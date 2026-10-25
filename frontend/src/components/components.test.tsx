@@ -9042,6 +9042,39 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
+  it('keeps skipping apart from the way on, and hides questions to answer later', async () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.askUser.value = {
+      sessionId: 's1',
+      callId: 'ask-1',
+      questions: [
+        { question: 'First?', options: [{ label: 'Yes' }] },
+        { question: 'Second?', options: [{ label: 'No' }] },
+      ],
+    };
+    store.answerAskUser = vi.fn(async () => {});
+    store.dismissInteraction = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    const actions = () =>
+      [...screen.getByRole('dialog').querySelectorAll('.modal-actions button')].map(
+        (button) => button.textContent,
+      );
+    expect(actions()).toEqual(['Skip questions', 'Next']);
+    await userEvent.click(screen.getByRole('radio', { name: /Yes/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(actions()).toEqual(['Skip questions', 'Back', 'Send answers']);
+    await userEvent.click(screen.getByRole('button', { name: 'Answer later' }));
+    expect(store.dismissInteraction).toHaveBeenCalledWith('ask-user', store.askUser.value);
+    expect(store.answerAskUser).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Skip questions' }));
+    expect(store.answerAskUser).toHaveBeenCalledWith([], true, store.askUser.value);
+  });
+
   it('shows pending goal saves and keeps failures visible for retry', async () => {
     const store = createStore();
     store.modal.value = 'goal';

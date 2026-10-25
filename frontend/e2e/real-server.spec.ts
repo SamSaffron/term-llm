@@ -311,7 +311,7 @@ test('recovers and resolves an ask-user request across real same-context tabs', 
   await page.keyboard.press('Escape');
   await expect(page.getByText('Decision waiting — Open')).toBeVisible();
   await second.getByRole('radio', { name: /Safe/ }).check();
-  await second.getByRole('button', { name: 'Continue' }).click();
+  await second.getByRole('button', { name: /^Send answers?$/ }).click();
   await expect(second.getByRole('dialog', { name: 'Answer question' })).toBeHidden();
   await expect
     .poll(

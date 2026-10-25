@@ -129,6 +129,7 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   const [tab, setTab] = useState(0);
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
+  const [skipping, setSkipping] = useState(false);
   if (!prompt) return null;
   const question = prompt.questions[tab];
   const validate = (item: (typeof prompt.questions)[number], index: number) => {
@@ -150,18 +151,19 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   const submit = async (cancelled = false) => {
     setError('');
     setSending(true);
+    setSkipping(cancelled);
     try {
       await store.answerAskUser(cancelled ? [] : prompt.questions.map(validate), cancelled, prompt);
     } catch (value) {
       setError(errorMessage(value));
     } finally {
       setSending(false);
+      setSkipping(false);
     }
   };
-  const dismiss = () => {
-    if (tab > 0) setTab(tab - 1);
-    else store.dismissInteraction('ask-user', prompt);
-  };
+  // Hiding the dialog is not an answer: the question waits, and the agent with it.
+  const later = () => store.dismissInteraction('ask-user', prompt);
+  const last = tab === prompt.questions.length - 1;
   const next = () => {
     try {
       validate(question, tab);
@@ -180,8 +182,20 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
       }
       close={false}
       onEscape={() => {
-        if (!sending) dismiss();
+        if (!sending) later();
       }}
+      titleActions={
+        <button
+          class="icon-btn close-button"
+          type="button"
+          aria-label="Answer later"
+          title="Answer later"
+          disabled={sending}
+          onClick={later}
+        >
+          <Icon name="close" />
+        </button>
+      }
     >
       <p>The agent needs your input to continue.</p>
       {prompt.questions.length > 1 && (
@@ -245,22 +259,35 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
         )}
       </fieldset>
       {error && <div class="modal-error">{error}</div>}
+      {/* Skipping answers the agent without your answers, so it sits apart from the way on. */}
       <div class="modal-actions">
-        <button class="btn" disabled={sending} onClick={dismiss}>
-          {tab > 0 ? 'Back' : 'Dismiss'}
+        <button
+          class="btn tertiary ask-user-skip"
+          disabled={sending}
+          onClick={() => void submit(true)}
+        >
+          {skipping
+            ? 'Skipping…'
+            : prompt.questions.length > 1
+              ? 'Skip questions'
+              : 'Skip question'}
         </button>
-        {tab === 0 && (
-          <button class="btn danger" disabled={sending} onClick={() => void submit(true)}>
-            {sending ? 'Cancelling…' : 'Cancel agent request'}
+        {tab > 0 && (
+          <button class="btn" disabled={sending} onClick={() => setTab(tab - 1)}>
+            Back
           </button>
         )}
-        {tab < prompt.questions.length - 1 ? (
-          <button class="btn primary" disabled={sending} onClick={next}>
-            Next
+        {last ? (
+          <button class="btn primary" disabled={sending} onClick={() => void submit()}>
+            {sending && !skipping
+              ? 'Sending…'
+              : prompt.questions.length > 1
+                ? 'Send answers'
+                : 'Send answer'}
           </button>
         ) : (
-          <button class="btn primary" disabled={sending} onClick={() => void submit()}>
-            {sending ? 'Sending…' : 'Continue'}
+          <button class="btn primary" disabled={sending} onClick={next}>
+            Next
           </button>
         )}
       </div>
