@@ -21,7 +21,6 @@
   --overlay: rgb(0 0 0 / 60%);
   --error-text: #fecaca;
   --btn-accent-text: #212121;
-  --stop-btn-text: #fecaca;
   --spinner-ring: rgb(33 33 33 / 35%);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 10%);
   --shadow-strong: 0 2px 8px rgb(0 0 0 / 15%);
@@ -121,7 +120,6 @@
     --overlay: rgb(0 0 0 / 40%);
     --error-text: #991b1b;
     --btn-accent-text: #fff;
-    --stop-btn-text: #991b1b;
     --spinner-ring: rgb(255 255 255 / 45%);
     --shadow-soft: 0 1px 2px rgb(0 0 0 / 5%);
     --shadow-strong: 0 2px 8px rgb(0 0 0 / 8%);

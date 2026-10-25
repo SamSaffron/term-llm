@@ -924,14 +924,14 @@ mark.diff-word {
 }
 
 @media (hover: none), (pointer: coarse) {
+  /* The composer's controls have a row of their own, so they stay compact. */
   .composer-box {
-    --composer-control-size: 44px;
+    --composer-control-size: 36px;
   }
 
   .session-menu-trigger,
   .project-group-action,
   .mobile-menu,
-  .composer-icon-btn,
   .header-action,
   .icon-btn,
   .lightbox-btn {

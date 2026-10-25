@@ -790,9 +790,54 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(textbox, 'stay focused');
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
     expect(store.steer).toHaveBeenCalledWith('stay focused');
+    act(() => {
+      store.prompt.value = '';
+    });
     await userEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
     expect(store.cancel).toHaveBeenCalledOnce();
     store.dispose();
+  });
+
+  it('puts Stop in the send button’s place until there is a steer to send', async () => {
+    const store = createStore();
+    try {
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+      store.runEngine.markResponseTransportActive('s1', 'r1');
+      store.cancel = vi.fn(async () => undefined);
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const textbox = screen.getByRole('textbox', { name: 'Message' });
+      const actions = document.querySelector('.composer-actions')!;
+      const stop = () => screen.queryByRole('button', { name: 'Stop', exact: true });
+
+      expect(actions.lastElementChild).toBe(stop());
+      expect(stop()).toHaveClass('send-btn');
+      expect(document.querySelector('#sendBtn')).toBeNull();
+
+      await userEvent.type(textbox, 'try the other file');
+      expect(actions.lastElementChild).toBe(screen.getByRole('button', { name: 'Steer' }));
+      expect(stop()).not.toBeInTheDocument();
+
+      await userEvent.clear(textbox);
+      expect(actions.lastElementChild).toBe(stop());
+      await userEvent.click(stop()!);
+      expect(store.cancel).toHaveBeenCalledOnce();
+    } finally {
+      store.dispose();
+    }
   });
 
   it('does not offer a composer after a delegated response finishes', () => {
@@ -3166,7 +3211,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(
         screen.queryByRole('status', { name: 'Response status is unknown' }),
       ).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
     } finally {
       store.dispose();
     }
@@ -3197,7 +3242,7 @@ describe('Preact-owned chat surfaces', () => {
       );
 
       expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText('Steer conversation…')).toBeInTheDocument();
       expect(
         screen.getByRole('status', { name: 'Assistant is responding: Working' }),
@@ -3210,6 +3255,7 @@ describe('Preact-owned chat surfaces', () => {
       await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'steer this run');
       const steer = screen.getByRole('button', { name: 'Steer' });
       expect(steer).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
       await userEvent.click(steer);
       expect(store.steer).toHaveBeenCalledWith('steer this run');
       act(() => {
@@ -5028,35 +5074,41 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('keeps the running-response indicator instead of the live button while a turn streams', () => {
+  it('keeps the live button out of the send button’s place while a turn streams', () => {
     const store = createStore();
     store.liveStore.enabled.value = true;
     store.liveStore.capability.value = { supported: true, reason: '' };
-    store.runs.value = {
-      s1: initialProjection({
-        responseId: 'r1',
+    const projection = (responseId: string) =>
+      initialProjection({
+        responseId,
         sessionId: 's1',
         epoch: 1,
-        status: 'streaming',
-        lastSequence: 1,
+        status: 'connecting',
+        lastSequence: 0,
         startedRev: 0,
         reconnects: 0,
-      }),
-    };
-    store.runEngine.markResponseTransportActive('s1', 'r1');
+      });
+    store.runs.value = { s1: projection('pending_r1') };
     render(
       <StoreContext.Provider value={store}>
         <Composer />
       </StoreContext.Provider>,
     );
 
+    // Until the server has the response, it cannot be stopped; send shows progress.
     const send = screen.getByRole('button', { name: 'Response is running' });
     expect(send).toHaveClass('loading');
     expect(send).not.toHaveClass('live');
+
+    act(() => {
+      store.runs.value = { s1: projection('r1') };
+    });
+    expect(screen.getByRole('button', { name: 'Stop', exact: true })).not.toHaveClass('live');
+    expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start live voice' })).not.toBeInTheDocument();
   });
 
-  it('morphs the send icon into the steering icon while streaming with a draft', async () => {
+  it('morphs Stop into the steering button while streaming with a draft', async () => {
     const store = createStore();
     store.runs.value = {
       s1: initialProjection({
@@ -5076,12 +5128,12 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const send = screen.getByRole('button', { name: 'Response is running' });
-    const sendIcon = send.querySelector('.arrow')?.innerHTML;
-    expect(send).toBeEnabled();
-    expect(send).toHaveClass('loading');
-    expect(send.querySelector('.spinner')).toBeInTheDocument();
-    expect(send).not.toHaveClass('steer');
+    const stop = screen.getByRole('button', { name: 'Stop', exact: true });
+    expect(stop).toBeEnabled();
+    expect(stop).toHaveClass('send-btn');
+    expect(stop).toHaveAttribute('title', 'Stop');
+    expect(stop.querySelector('svg rect')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
 
     await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
 
@@ -5090,8 +5142,9 @@ describe('Preact-owned chat surfaces', () => {
     expect(steer).not.toHaveClass('loading');
     expect(steer).toHaveClass('steer');
     expect(steer).toHaveAttribute('title', 'Steer');
-    expect(steer.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);
+    expect(steer.querySelector('svg rect')).not.toBeInTheDocument();
     expect(steer.querySelector('.arrow path')).toHaveAttribute('d', 'M5 6v7a2 2 0 0 0 2 2h12');
+    expect(screen.queryByRole('button', { name: 'Stop', exact: true })).not.toBeInTheDocument();
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {

@@ -39,6 +39,7 @@ export type IconName =
   | 'settings'
   | 'share'
   | 'steer'
+  | 'stop'
   | 'terminal'
   | 'trash'
   | 'widgets';
@@ -216,6 +217,7 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="m14 10 5 5-5 5" />
     </>
   ),
+  stop: <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />,
   more: (
     <>
       <circle cx="5.5" cy="12" r="1" fill="currentColor" />

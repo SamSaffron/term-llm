@@ -570,7 +570,8 @@ test('keeps running controls while a response transport reconnects', async ({ pa
   await page.getByRole('textbox', { name: 'Message' }).fill('Long request');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.locator('#stopBtn')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  // Stop has taken the send button's place.
+  await expect(page.locator('#sendBtn')).toHaveCount(0);
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
   expect(

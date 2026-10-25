@@ -466,7 +466,7 @@ test('reloading a running HTTPS session never presents it as idle', async ({
 
   const unknown = page.getByRole('status', { name: 'Response status is unknown' });
   await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  await expect(page.locator('#sendBtn')).toHaveCount(0);
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(unknown).toBeHidden();
   await reconcileRunningResponse(page);

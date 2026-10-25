@@ -361,12 +361,13 @@
   border-color: var(--border-strong);
 }
 
+/* The input has the box's first row to itself; the controls share a toolbar
+   row under it. */
 .composer-box {
-  --composer-control-size: 36px;
+  --composer-control-size: 32px;
 
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: end;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 24px;
   background: var(--surface-2);
@@ -394,8 +395,8 @@
 }
 
 .slash-command-menu {
-  left: 46px;
-  right: 46px;
+  left: 6px;
+  right: 6px;
 }
 
 .slash-command-menu[hidden] {
@@ -635,7 +636,7 @@
   border: none;
   background: transparent;
   color: var(--text);
-  padding: 14px 8px;
+  padding: 8px 8px 4px;
   line-height: 1.5;
   font-size: 1rem;
   overflow-y: auto;
@@ -648,41 +649,20 @@
   outline: none;
 }
 
+/* Add on the left; the microphone and send on the right. While a response
+   runs, Stop takes the send button's place and look. */
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .composer-actions {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-}
-
-/* Center controls on the last line, including after the input grows. The
-   touch size changes without leaving Stop or the microphone off baseline. */
-.attach-btn,
-.composer-actions {
-  margin-bottom: calc((1.5rem + 28px - var(--composer-control-size)) / 2);
-}
-
-.stop-btn {
-  border: 1px solid rgb(248 113 113 / 30%);
-  background: rgb(248 113 113 / 8%);
-  color: var(--stop-btn-text);
-  border-radius: 999px;
-  height: var(--composer-control-size);
-  padding: 0 14px;
-  cursor: pointer;
-  display: none;
-  font-weight: 600;
-  font-size: 0.85rem;
-  align-items: center;
-  transition: background 0.15s ease;
-}
-
-.stop-btn:hover {
-  background: rgb(248 113 113 / 14%);
-}
-
-.stop-btn.visible {
-  display: inline-flex;
+  margin-inline-start: auto;
 }
 
 .send-btn {
@@ -809,7 +789,7 @@
   }
 
   .composer-box {
-    --composer-control-size: 44px;
+    --composer-control-size: 36px;
 
     border-radius: 22px;
     padding: 5px;
