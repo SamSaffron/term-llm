@@ -4,6 +4,7 @@ export type IconName =
   | 'add'
   | 'alert-circle'
   | 'arrow-left'
+  | 'bot'
   | 'branch'
   | 'check'
   | 'chevron-down'
@@ -21,28 +22,36 @@ export type IconName =
   | 'file-archive'
   | 'file-code'
   | 'file-link'
+  | 'file-pen'
   | 'file-table'
   | 'file-text'
   | 'fork'
   | 'folder'
+  | 'folder-search'
   | 'globe'
+  | 'image'
   | 'info'
   | 'live'
   | 'logout'
   | 'menu'
   | 'more'
   | 'markdown'
+  | 'message-circle-question'
   | 'microphone'
   | 'panel'
+  | 'plug'
   | 'restore'
+  | 'search'
   | 'send'
   | 'settings'
   | 'share'
   | 'steer'
   | 'stop'
   | 'terminal'
+  | 'text-search'
   | 'trash'
-  | 'widgets';
+  | 'widgets'
+  | 'wrench';
 
 const paths: Record<IconName, JSX.Element> = {
   add: (
@@ -321,6 +330,73 @@ const paths: Record<IconName, JSX.Element> = {
       <rect x="4" y="14" width="6" height="6" rx="1.5" />
       <rect x="14" y="14" width="6" height="6" rx="1.5" />
     </>
+  ),
+
+  // From Lucide (lucide.dev), as drawn there, for the kinds of tool call. Their licence is in
+  // LICENSE-lucide beside this file.
+  bot: (
+    <>
+      <path d="M12 8V4H8" />
+      <rect width="16" height="12" x="4" y="8" rx="2" />
+      <path d="M2 14h2" />
+      <path d="M20 14h2" />
+      <path d="M15 13v2" />
+      <path d="M9 13v2" />
+    </>
+  ),
+  'file-pen': (
+    <>
+      <path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34" />
+      <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+      <path d="M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z" />
+    </>
+  ),
+  'folder-search': (
+    <>
+      <path d="M10.7 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v4.1" />
+      <path d="m21 21-1.9-1.9" />
+      <circle cx="17" cy="17" r="3" />
+    </>
+  ),
+  image: (
+    <>
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+    </>
+  ),
+  'message-circle-question': (
+    <>
+      <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
+    </>
+  ),
+  plug: (
+    <>
+      <path d="M12 22v-5" />
+      <path d="M15 8V2" />
+      <path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z" />
+      <path d="M9 8V2" />
+    </>
+  ),
+  search: (
+    <>
+      <path d="m21 21-4.34-4.34" />
+      <circle cx="11" cy="11" r="8" />
+    </>
+  ),
+  'text-search': (
+    <>
+      <path d="M21 5H3" />
+      <path d="M10 12H3" />
+      <path d="M10 19H3" />
+      <circle cx="17" cy="15" r="3" />
+      <path d="m21 19-1.9-1.9" />
+    </>
+  ),
+  wrench: (
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z" />
   ),
 };
 

@@ -16,6 +16,7 @@ import { Modals, preloadDeferredModals } from './Modals';
 import { Sidebar } from './Sidebar';
 import { LONG_PRESS_MS } from './useReorderableList';
 import { Header } from './Header';
+import { Icon, type IconName } from './Icon';
 import { DiffSidebar, PlanSurface } from './Panels';
 import { preloadCompanionPanels } from './CompanionPanels';
 import { ChipPicker } from './ChipPicker';
@@ -3784,6 +3785,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(status?.textContent).toBe(expected);
       expect(status).toHaveAttribute('aria-label', 'Running');
       expect(status).not.toHaveClass('done');
+      expect(status).toHaveClass('running');
     },
   );
 
@@ -4383,7 +4385,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('path: main.go')).toBeInTheDocument();
   });
 
-  it('uses a search icon for grep and omits redundant per-tool chevrons', async () => {
+  it('draws a line icon for each kind of tool and omits redundant per-tool chevrons', async () => {
     const store = createStore();
     store.sessions.value[0].messages = [
       {
@@ -4406,6 +4408,14 @@ describe('Preact-owned chat surfaces', () => {
             status: 'done',
             result: 'content',
           },
+          {
+            id: 'mcp',
+            name: 'github__create_issue',
+            arguments: '{}',
+            status: 'done',
+            result: 'ok',
+          },
+          { id: 'other', name: 'update_goal', arguments: '{}', status: 'done', result: 'ok' },
         ],
       },
     ];
@@ -4415,8 +4425,17 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /2 tool calls · grep, read_file/ }));
-    expect(container.querySelector('.tool-entry-icon')).toHaveTextContent('🔍');
+    await userEvent.click(
+      screen.getByRole('button', { name: /4 tool calls · grep, read_file, github__create_issue…/ }),
+    );
+    const drawing = (name: IconName) => render(<Icon name={name} />).container.innerHTML;
+    expect(
+      [...container.querySelectorAll('.tool-entry-icon')].map((icon) => icon.innerHTML),
+    ).toEqual((['text-search', 'file-text', 'plug', 'wrench'] as const).map(drawing));
+    // The count stays in the text colour; the list of tools is muted.
+    expect(container.querySelector('.tool-group-names')).toHaveTextContent(
+      /^grep, read_file, github__create_issue…$/,
+    );
     expect(container.querySelector('.tool-toggle .tool-arrow')).toBeNull();
     expect(container.querySelector('.tool-group-toggle .tool-arrow')).not.toBeNull();
   });

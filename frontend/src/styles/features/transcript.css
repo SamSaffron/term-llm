@@ -875,11 +875,12 @@
   padding: 0 0.2rem;
 }
 
+/* Tool calls are framed in the tool colour (--tool) without a fill, so the
+   colour has a place without colouring their text. */
 .tool-card,
 .tool-group-card {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--tool) 30%, transparent);
   border-radius: 8px;
-  background: var(--surface);
   overflow: hidden;
 }
 
@@ -899,10 +900,6 @@
 
 .tool-toggle {
   align-items: baseline;
-}
-
-.tool-toggle:hover {
-  background: var(--surface-2);
 }
 
 .tool-arrow {
@@ -947,6 +944,8 @@
   white-space: nowrap;
 }
 
+/* Status by meaning: done, the usual case, is a quiet check; a failure is in
+   the danger colour, and a running call in the tool colour. */
 .tool-status {
   margin-left: auto;
   color: var(--text-muted);
@@ -954,12 +953,12 @@
   flex-shrink: 0;
 }
 
-.tool-status.done {
-  color: var(--accent-green);
+.tool-status.running {
+  color: var(--tool);
 }
 
 .tool-status.error {
-  color: var(--accent-red, #ef4444);
+  color: var(--danger);
 }
 
 .tool-elapsed {
@@ -987,7 +986,7 @@
 }
 
 .tool-details {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--tool) 30%, transparent);
   padding: 0.58rem 0.75rem 0.72rem;
   display: none;
 }
@@ -1184,13 +1183,22 @@
   align-items: center;
 }
 
-.tool-group-toggle:hover {
-  background: var(--surface-2);
+/* Pointing gives a faint wash; on a touch screen a tapped row keeps no band. */
+@media (hover: hover) {
+  .tool-toggle:hover,
+  .tool-group-toggle:hover {
+    background: color-mix(in srgb, var(--tool) 7%, transparent);
+  }
 }
 
 .tool-group-summary {
   font-weight: 600;
   min-width: 0;
+}
+
+.tool-group-names {
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .tool-group-details {
@@ -1213,10 +1221,15 @@
 .tool-entry-icon {
   flex-shrink: 0;
   width: 1.1rem;
-  padding-top: 0.5rem;
-  font-size: 0.85rem;
-  line-height: 1.2;
-  text-align: center;
+  padding-top: 0.45rem;
+  color: var(--tool);
+}
+
+.tool-entry-icon svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  margin-inline: auto;
 }
 
 .tool-group-entry-body {

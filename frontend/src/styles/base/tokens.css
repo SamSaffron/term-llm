@@ -30,6 +30,10 @@
   --gradient-accent: var(--surface-2);
   --gradient-accent-strong: var(--accent);
   --link: var(--accent);
+
+  /* Tool calls take their outline, icons and running status from this colour;
+     their text keeps the text colours. */
+  --tool: var(--text-muted);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);

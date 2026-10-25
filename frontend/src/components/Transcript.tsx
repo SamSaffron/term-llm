@@ -12,7 +12,7 @@ import { AudioMedia } from './AudioMedia';
 import { trustedPublishedMediaURL } from '../domain/audio-media';
 import { bindTranscriptMedia } from './transcript-media';
 import { ChipPicker } from './ChipPicker';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
 import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
@@ -235,22 +235,27 @@ function toolSummary(tool: ToolCall): string {
     )
     .join('\n');
 }
-function toolIcon(name: string): string {
+function toolIcon(name: string): IconName {
+  const key = name.toLowerCase();
+  // MCP tools are named server__tool (the browser's own, webmcp__tool).
+  if (key.includes('__')) return 'plug';
   return (
     (
       {
-        shell: '💻',
-        bash: '💻',
-        read_file: '📄',
-        write_file: '✏️',
-        edit_file: '✏️',
-        web_search: '🔍',
-        grep: '🔍',
-        read_url: '🌐',
-        image_generate: '🎨',
-        spawn_agent: '🤖',
-      } as Record<string, string>
-    )[name.toLowerCase()] || '🔧'
+        shell: 'terminal',
+        bash: 'terminal',
+        read_file: 'file-text',
+        write_file: 'file-pen',
+        edit_file: 'file-pen',
+        web_search: 'search',
+        grep: 'text-search',
+        glob: 'folder-search',
+        read_url: 'globe',
+        image_generate: 'image',
+        spawn_agent: 'bot',
+        ask_user: 'message-circle-question',
+      } as Record<string, IconName>
+    )[key] || 'wrench'
   );
 }
 function guardianReviewReason(message: string, outcome: string): string {
@@ -645,7 +650,7 @@ const Tool = memo(function Tool({
           <span class="tool-name">{tool.name}</span>
           {summary && <span class="tool-summary">{summary.split('\n')[0]}</span>}
           <span
-            class={`tool-status ${failed ? 'error' : tool.status === 'done' ? 'done' : ''}`}
+            class={`tool-status ${failed ? 'error' : tool.status === 'done' ? 'done' : tool.status === 'running' ? 'running' : ''}`}
             aria-label={
               failed
                 ? 'Failed'
@@ -767,11 +772,14 @@ function ToolGroup({
           <Icon name="chevron-right" />
         </span>
         <span class="tool-group-summary">
-          {visible.length} tool calls · {names.slice(0, 3).join(', ')}
-          {names.length > 3 ? '…' : ''}
+          {visible.length} tool calls ·{' '}
+          <span class="tool-group-names">
+            {names.slice(0, 3).join(', ')}
+            {names.length > 3 ? '…' : ''}
+          </span>
         </span>
         <span
-          class={`tool-status ${running || stopped ? '' : 'done'}`}
+          class={`tool-status ${running ? 'running' : stopped ? '' : 'done'}`}
           aria-label={running ? 'Running' : stopped ? 'Stopped' : 'Complete'}
         >
           {running ? (
@@ -811,7 +819,7 @@ function ToolGroup({
           visible.map((tool) => (
             <div class="tool-group-entry" key={tool.id}>
               <span class="tool-entry-icon" aria-hidden="true">
-                {toolIcon(tool.name)}
+                <Icon name={toolIcon(tool.name)} />
               </span>
               <div class="tool-group-entry-body">
                 <Tool tool={tool} tickElapsed={expanded} resolveMedia={resolveMedia} />
