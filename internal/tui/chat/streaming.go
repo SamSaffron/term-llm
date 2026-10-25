@@ -1127,7 +1127,7 @@ func (m *Model) startStreamTurn(content string, barrier *agentBarrierTurn) tea.C
 				Execute: func(runCtx context.Context, emit func(ui.StreamEvent)) error {
 					// Every transcript write of this run inherits the lease fence, so
 					// a run that loses ownership cannot commit late output.
-					runCtx = agentbarrier.RunContext(lease.context(runCtx), runSessionID, explicitStop, barrier != nil, m.mainRunManager.signalAgentBarrier)
+					runCtx = agentbarrier.RunContext(lease.context(runCtx), runSessionID, explicitStop, barrier != nil, barrier.offeredEvents(), m.mainRunManager.signalAgentBarrier)
 					settleCtx, settleCancel := m.agentBarrierSettlementContext(lease, runSessionID, runID)
 					defer settleCancel()
 					if barrier != nil {

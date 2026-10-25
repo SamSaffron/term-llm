@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 	"github.com/samsaffron/term-llm/internal/tools/agentwait"
 )
 
@@ -38,6 +39,7 @@ func (t *agentControlTool) Spec() core.ToolSpec {
 		props["agent_id"] = map[string]any{"type": "string"}
 		props["instructions"] = map[string]any{"type": "string", "description": "New instruction for a stopped agent, or steering for a running agent"}
 		props["force"] = map[string]any{"type": "boolean", "description": "Force resumption despite possible concurrent work on another host; may duplicate side effects"}
+		props["auto_resume_on_restart"] = map[string]any{"type": "boolean", "description": "Human-turn-only: set or revoke only when the human explicitly directs it in an ordinary turn; this child's permission lets a trusted parent lifecycle turn continue it after a proven host restart. Defaults false; other stop causes remain non-resumable by lifecycle turns."}
 		props["wait"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 3600}
 		required = []string{"agent_id"}
 		description = "Steer a running agent or resume a stopped agent with a fresh turn budget."
@@ -72,13 +74,14 @@ func (t *agentControlTool) Preview(args json.RawMessage) string {
 }
 
 type agentControlArgs struct {
-	AgentID      string   `json:"agent_id"`
-	AgentIDs     []string `json:"agent_ids"`
-	Instructions string   `json:"instructions"`
-	Force        bool     `json:"force"`
-	Wait         *int     `json:"wait"`
-	MaxWait      int      `json:"max_wait"`
-	Status       string   `json:"status"`
+	AgentID             string   `json:"agent_id"`
+	AgentIDs            []string `json:"agent_ids"`
+	Instructions        string   `json:"instructions"`
+	Force               bool     `json:"force"`
+	AutoResumeOnRestart *bool    `json:"auto_resume_on_restart,omitempty"`
+	Wait                *int     `json:"wait"`
+	MaxWait             int      `json:"max_wait"`
+	Status              string   `json:"status"`
 }
 
 func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
@@ -104,7 +107,7 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (c
 	case CancelAgentToolName:
 		out = t.cancel(ctx, parent, a)
 	case ContinueAgentToolName:
-		if agentLifecycleRestricted(ctx) {
+		if agentpolicy.LifecycleRestricted(ctx) {
 			return agentControlError("This host lifecycle turn cannot continue child work."), nil
 		}
 		out = t.continueRun(ctx, parent, a)
@@ -124,8 +127,8 @@ func (t *agentControlTool) list(ctx context.Context, parent string, a agentContr
 		if a.Status != "" && a.Status != "all" && r.Status != a.Status {
 			continue
 		}
-		resumable := session.AgentRunResumable(ctx, t.spawn.manager.store, r) && !agentLifecycleRestricted(ctx)
-		if notice, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool); notice && r.Status == "failed" {
+		resumable := session.AgentRunResumable(ctx, t.spawn.manager.store, r) && !agentpolicy.LifecycleRestricted(ctx)
+		if agentpolicy.IsAgentRecoveryNotice(ctx) && (r.Status == "failed" || (r.Status == "interrupted" && !agentpolicy.AgentRunLifecycleRestartAllowed(ctx, r, r.OwnerInstanceID != processAgentOwner() && ownerTerminated(r.OwnerInstanceID)))) {
 			resumable = false
 		}
 		filtered = append(filtered, map[string]any{
@@ -211,16 +214,31 @@ func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentCon
 }
 
 func (t *agentControlTool) continueRun(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
-	if notice, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool); notice {
-		record, _, err := t.spawn.manager.get(ctx, a.AgentID, parent)
-		if err != nil || (record.Status != "completed" && record.Status != "turn_limit") {
-			return agentControlError("A host lifecycle notice may continue only completed or turn_limit children; obtain explicit user confirmation in a subsequent turn to restart interrupted, cancelled, or failed work.")
+	notice := agentpolicy.IsAgentRecoveryNotice(ctx)
+	if notice {
+		if a.AutoResumeOnRestart != nil {
+			return agentControlError("A host lifecycle notice cannot change a child's restart policy.")
+		}
+		record, entry, err := t.spawn.manager.get(ctx, a.AgentID, parent)
+		if err != nil || (record.Status != "completed" && record.Status != "turn_limit" && !agentpolicy.AgentRunLifecycleRestartAllowed(ctx, record, entry == nil && record.OwnerInstanceID != processAgentOwner() && ownerTerminated(record.OwnerInstanceID))) || a.Force {
+			return agentControlError("A host lifecycle notice may continue only a child explicitly opted in before a proven host restart; cancellation, failure, parent stop, unknown causes, and live/foreign owners remain stopped.")
 		}
 	}
 	m := t.spawn.manager
 	record, e, err := m.get(ctx, a.AgentID, parent)
 	if err != nil {
 		return agentControlError(err.Error())
+	}
+	if a.AutoResumeOnRestart != nil {
+		record, err = agentpolicy.UpdateAgentRunRestartPolicy(ctx, m.store, record, parent, *a.AutoResumeOnRestart)
+		if err != nil {
+			return agentControlError(err.Error())
+		}
+		if e != nil {
+			e.manager.mu.Lock()
+			e.record.AutoResumeOnRestart = record.AutoResumeOnRestart
+			e.manager.mu.Unlock()
+		}
 	}
 	if e != nil {
 		switch record.Status {
@@ -248,8 +266,6 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if budget < 0 || budget > 3600 {
 		return agentControlError("wait must be between 0 and 3600")
 	}
-	// Resumption only needs a remaining level; the agent already belongs to
-	// this parent, so a changed allowed_agents list must not revoke it.
 	if t.spawn.RemainingDepth() < 1 {
 		return agentControlError("spawn depth budget exhausted (this agent may spawn 0 more levels)")
 	}
@@ -264,7 +280,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if !resume && strings.TrimSpace(a.Instructions) != "" {
 		prompt += "\n\nAdditional instructions: " + a.Instructions
 	}
-	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, core.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
+	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, core.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, false, record)
 	if startErr != nil {
 		return agentControlError(startErr.Error())
 	}

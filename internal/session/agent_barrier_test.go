@@ -55,6 +55,9 @@ func TestAgentBarrierMigrationV66BackfillAndSchemaEquivalence(t *testing.T) {
 		if err != nil || r.NotifiedAt.IsZero() == wantAck {
 			t.Fatalf("%s backfill=%+v err=%v", id, r, err)
 		}
+		if err != nil || r.AutoResumeOnRestart {
+			t.Fatalf("legacy restart policy must default off: %+v err=%v", r, err)
+		}
 		if id == "running" && r.Status != "running" {
 			t.Fatalf("nonterminal rewritten: %+v", r)
 		}

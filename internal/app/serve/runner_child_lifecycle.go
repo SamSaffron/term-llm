@@ -11,6 +11,7 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -223,7 +224,7 @@ func (env *cmdRunEnvironment) deliverChildLifecycleNotice(ctx context.Context, s
 			boundary.BeginChildTurn()
 		}
 		env.resetChildOutputCapture()
-		result := env.runChildLifecycleTurn(env.childLifecycleTurnContext(ctx, restricted), false, sink, turn, notice, env.childLifecycleRequest(limit))
+		result := env.runChildLifecycleTurn(env.childLifecycleTurnContext(ctx, restricted, events), false, sink, turn, notice, env.childLifecycleRequest(limit))
 		budget.spend(childLifecycleCharge(result.outcome.turns, limit, result.err))
 		outcome.adopt(result.outcome)
 		switch {
@@ -304,10 +305,10 @@ func (env *cmdRunEnvironment) resetChildOutputCapture() {
 // childLifecycleTurnContext marks a barrier turn as host-authored recovery. An
 // exhausted allowance additionally restricts the turn to collecting and
 // reporting: it may not create or continue work.
-func (env *cmdRunEnvironment) childLifecycleTurnContext(ctx context.Context, restricted bool) context.Context {
-	ctx = tools.ContextWithAgentRecoveryNotice(ctx)
+func (env *cmdRunEnvironment) childLifecycleTurnContext(ctx context.Context, restricted bool, events []session.AgentRun) context.Context {
+	ctx = agentpolicy.ContextWithAgentRecoveryNotice(ctx, events...)
 	if restricted {
-		ctx = tools.ContextWithAgentLifecycleRestricted(ctx)
+		ctx = agentpolicy.ContextWithLifecycleRestricted(ctx)
 	}
 	return ctx
 }

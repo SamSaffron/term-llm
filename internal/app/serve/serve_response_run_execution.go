@@ -9,6 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -18,7 +19,7 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 	defer close(run.settled)
 	runCtx = withNotificationWaitObserver(runCtx, run)
 	if options.agentCompletion {
-		runCtx = tools.ContextWithAgentRecoveryNotice(runCtx)
+		runCtx = agentpolicy.ContextWithAgentRecoveryNotice(runCtx, options.agentEvents...)
 		defer func() {
 			run.mu.Lock()
 			completed := run.status == "completed" && !run.cancelRequested

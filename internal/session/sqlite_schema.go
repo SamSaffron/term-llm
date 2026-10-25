@@ -1373,6 +1373,17 @@ var migrations = []migration{
 		up:          migratePushClientKindV67,
 	},
 	{version: 68, description: "durable notification turn ownership and fenced candidates", up: notificationdb.MigrateV68},
+	{version: 69, description: "persist per-child restart resumption opt-in", up: func(db schemaExecutor) error {
+		exists, err := sqliteutil.ColumnExists(db, "session_agent_runs", "auto_resume_on_restart")
+		if err != nil {
+			return fmt.Errorf("inspect session_agent_runs.auto_resume_on_restart: %w", err)
+		}
+		if exists {
+			return nil
+		}
+		_, err = db.Exec("ALTER TABLE session_agent_runs ADD COLUMN auto_resume_on_restart INTEGER NOT NULL DEFAULT 0")
+		return err
+	}},
 }
 
 // backfillProjectOrderV61 freezes the order the sidebar last showed projects

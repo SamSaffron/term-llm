@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 )
 
 // AgentContinuation is implemented by hosts that can resume a persisted child
@@ -145,7 +146,7 @@ func (m *agentManager) save(record session.AgentRun) bool {
 	return true
 }
 
-func (m *agentManager) start(ctx context.Context, name, prompt, model, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, existing session.AgentRun) (*agentEntry, error) {
+func (m *agentManager) start(ctx context.Context, name, prompt, model, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, autoResumeOnRestart bool, existing session.AgentRun) (*agentEntry, error) {
 	id := existing.ID
 	if id == "" {
 		id = session.NewID()
@@ -163,12 +164,13 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		ctx = core.ContextWithSessionID(ctx, parent)
 	}
 	now := time.Now()
-	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, BaseDir: existing.BaseDir, RunGeneration: existing.RunGeneration + 1, NotifyWhenDone: existing.NotifyWhenDone, NotifyOrigin: existing.NotifyOrigin, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
+	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, BaseDir: existing.BaseDir, RunGeneration: existing.RunGeneration + 1, NotifyWhenDone: existing.NotifyWhenDone, NotifyOrigin: existing.NotifyOrigin, AutoResumeOnRestart: autoResumeOnRestart, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
 	origin, _ := QueueAgentOriginFromContext(ctx)
 	if parent != "" && origin.SessionID == parent {
 		record.ParentResponseID = origin.ResponseID
 	}
 	if resume {
+		record.AutoResumeOnRestart = existing.AutoResumeOnRestart
 		record.TurnsUsed = existing.TurnsUsed
 		record.TurnsGranted = existing.TurnsGranted + DefaultSubagentMaxTurns
 	}
@@ -441,7 +443,7 @@ func (m *agentManager) get(ctx context.Context, id, parent string) (session.Agen
 		return record, nil, fmt.Errorf("agent not found for this parent session")
 	}
 	if e == nil && (record.Status == "queued" || record.Status == "running" || record.Status == "awaiting_approval") {
-		if record.OwnerInstanceID == m.owner || ownerTerminated(record.OwnerInstanceID) {
+		if record.OwnerInstanceID == m.owner || record.OwnerInstanceID != processAgentOwner() && ownerTerminated(record.OwnerInstanceID) {
 			record.Status = "interrupted"
 			record.StopReason = "host_restarted"
 		} else {
@@ -864,13 +866,13 @@ func interruptAgentsForParent(parent string, suppressWake bool) func(context.Con
 // returned; it may then be delivered again, which beats losing it.
 func (m *agentManager) deliver(ctx context.Context, record session.AgentRun, e *agentEntry) core.ToolOutput {
 	out := m.output(ctx, record, e)
-	recovery, _ := ctx.Value(agentRecoveryNoticeKey{}).(bool)
-	if agentLifecycleRestricted(ctx) || (recovery && (record.Status == "interrupted" || record.Status == "cancelled" || record.Status == "failed")) {
+	recovery := agentpolicy.IsAgentRecoveryNotice(ctx)
+	if agentpolicy.LifecycleRestricted(ctx) || (recovery && (record.Status == "cancelled" || record.Status == "failed" || (record.Status == "interrupted" && !agentpolicy.AgentRunLifecycleRestartAllowed(ctx, record, ownerTerminated(record.OwnerInstanceID))))) {
 		var result SpawnAgentResult
 		if json.Unmarshal([]byte(out.Content), &result) == nil && result.Resumable {
 			result.Resumable = false
-			result.Next = "Obtain explicit human confirmation in a subsequent turn before restarting this work."
-			if agentLifecycleRestricted(ctx) {
+			result.Next = "Obtain explicit human confirmation in a subsequent turn before restarting this work, unless trusted host-restart metadata records auto_resume_on_restart=true."
+			if agentpolicy.LifecycleRestricted(ctx) {
 				result.Next = "This lifecycle turn may collect results, but cannot start or continue child work."
 			}
 			out.Content = marshalAgentResult(result)

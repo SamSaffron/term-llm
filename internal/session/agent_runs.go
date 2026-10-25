@@ -89,6 +89,11 @@ func (s *SQLiteStore) SuppressPendingAgentWakes(ctx context.Context, parent stri
 	return nil
 }
 
+// AgentRunRestartPolicyStore updates a terminal child's opt-in for one exact generation.
+type AgentRunRestartPolicyStore interface {
+	SetAgentRunRestartPolicy(context.Context, string, string, int64, bool) (bool, error)
+}
+
 // AgentRunStore is an optional extension: custom session stores need not implement it.
 type AgentRunStore interface {
 	PutAgentRun(context.Context, AgentRun) error
@@ -108,30 +113,31 @@ func AsAgentRunStore(store Store) AgentRunStore {
 }
 
 type AgentRun struct {
-	ID               string               `json:"agent_id"`
-	ParentSessionID  string               `json:"parent_session_id"`
-	ParentResponseID string               `json:"parent_response_id,omitempty"`
-	AgentName        string               `json:"agent_name"`
-	Prompt           string               `json:"prompt"`
-	Model            string               `json:"model,omitempty"`
-	BaseDir          string               `json:"base_dir,omitempty"`
-	RunGeneration    int64                `json:"run_generation"`
-	NotifyWhenDone   bool                 `json:"notify_when_done,omitempty"`
-	NotifyOrigin     string               `json:"notify_origin,omitempty"` // Trusted host surface, never a tool argument
-	WakeSuppressed   bool                 `json:"wake_suppressed,omitempty"`
-	NotifiedAt       time.Time            `json:"notified_at,omitempty"`
-	Started          bool                 `json:"started"`
-	Status           string               `json:"status"`
-	StopReason       string               `json:"stop_reason,omitempty"`
-	CurrentTool      string               `json:"current_tool,omitempty"` // In-process progress; not persisted
-	TurnsUsed        int                  `json:"turns_used"`
-	TurnsGranted     int                  `json:"turns_granted"`
-	Output           string               `json:"output,omitempty"`
-	Media            []core.MediaArtifact `json:"-"`
-	Error            string               `json:"error,omitempty"`
-	OwnerInstanceID  string               `json:"owner_instance_id"`
-	UpdatedAt        time.Time            `json:"last_activity"`
-	CollectedAt      time.Time            `json:"collected_at,omitempty"`
+	ID                  string               `json:"agent_id"`
+	ParentSessionID     string               `json:"parent_session_id"`
+	ParentResponseID    string               `json:"parent_response_id,omitempty"`
+	AgentName           string               `json:"agent_name"`
+	Prompt              string               `json:"prompt"`
+	Model               string               `json:"model,omitempty"`
+	BaseDir             string               `json:"base_dir,omitempty"`
+	RunGeneration       int64                `json:"run_generation"`
+	NotifyWhenDone      bool                 `json:"notify_when_done,omitempty"`
+	AutoResumeOnRestart bool                 `json:"auto_resume_on_restart,omitempty"`
+	NotifyOrigin        string               `json:"notify_origin,omitempty"` // Trusted host surface, never a tool argument
+	WakeSuppressed      bool                 `json:"wake_suppressed,omitempty"`
+	NotifiedAt          time.Time            `json:"notified_at,omitempty"`
+	Started             bool                 `json:"started"`
+	Status              string               `json:"status"`
+	StopReason          string               `json:"stop_reason,omitempty"`
+	CurrentTool         string               `json:"current_tool,omitempty"` // In-process progress; not persisted
+	TurnsUsed           int                  `json:"turns_used"`
+	TurnsGranted        int                  `json:"turns_granted"`
+	Output              string               `json:"output,omitempty"`
+	Media               []core.MediaArtifact `json:"-"`
+	Error               string               `json:"error,omitempty"`
+	OwnerInstanceID     string               `json:"owner_instance_id"`
+	UpdatedAt           time.Time            `json:"last_activity"`
+	CollectedAt         time.Time            `json:"collected_at,omitempty"`
 }
 
 const agentRunSchemaV62 = `
@@ -170,6 +176,7 @@ CREATE TABLE IF NOT EXISTS session_agent_runs (
  media_json TEXT NOT NULL DEFAULT '[]',
  notified_at DATETIME,
  wake_suppressed INTEGER NOT NULL DEFAULT 0,
+ auto_resume_on_restart INTEGER NOT NULL DEFAULT 0,
  started INTEGER NOT NULL DEFAULT 1,
  run_status TEXT NOT NULL,
  stop_reason TEXT NOT NULL DEFAULT '',
@@ -197,22 +204,22 @@ func (s *SQLiteStore) PutAgentRun(ctx context.Context, a AgentRun) error {
 	if err != nil {
 		return fmt.Errorf("encode agent media: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO session_agent_runs (child_session_id,parent_session_id,agent_name,prompt,model,base_dir,parent_response_id,run_generation,notify_when_done,notify_origin,media_json,notified_at,wake_suppressed,started,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(child_session_id) DO UPDATE SET model=excluded.model,base_dir=excluded.base_dir,parent_response_id=excluded.parent_response_id,run_generation=excluded.run_generation,notify_when_done=excluded.notify_when_done,notify_origin=excluded.notify_origin,media_json=excluded.media_json,notified_at=CASE WHEN excluded.run_generation!=session_agent_runs.run_generation THEN excluded.notified_at ELSE COALESCE(excluded.notified_at,session_agent_runs.notified_at) END,started=excluded.started,run_status=excluded.run_status,stop_reason=excluded.stop_reason,wake_suppressed=CASE WHEN excluded.run_generation!=session_agent_runs.run_generation THEN excluded.wake_suppressed ELSE MAX(excluded.wake_suppressed,session_agent_runs.wake_suppressed) END,turns_used=excluded.turns_used,turns_granted=excluded.turns_granted,output=excluded.output,error=excluded.error,owner_instance_id=excluded.owner_instance_id,updated_at=excluded.updated_at,collected_at=CASE WHEN excluded.run_generation!=session_agent_runs.run_generation THEN excluded.collected_at ELSE COALESCE(excluded.collected_at,session_agent_runs.collected_at) END WHERE excluded.run_generation>=session_agent_runs.run_generation AND (excluded.run_generation!=session_agent_runs.run_generation OR session_agent_runs.run_status NOT IN ('completed','turn_limit','cancelled','interrupted','failed') OR excluded.run_status NOT IN ('queued','running','awaiting_approval'))`,
-		a.ID, a.ParentSessionID, a.AgentName, a.Prompt, a.Model, a.BaseDir, a.ParentResponseID, a.RunGeneration, a.NotifyWhenDone, a.NotifyOrigin, string(media), notified, a.WakeSuppressed, a.Started, a.Status, a.StopReason, a.TurnsUsed, a.TurnsGranted, a.Output, a.Error, a.OwnerInstanceID, a.UpdatedAt, collected)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO session_agent_runs (child_session_id,parent_session_id,agent_name,prompt,model,base_dir,parent_response_id,run_generation,notify_when_done,notify_origin,media_json,notified_at,wake_suppressed,auto_resume_on_restart,started,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(child_session_id) DO UPDATE SET model=excluded.model,base_dir=excluded.base_dir,parent_response_id=excluded.parent_response_id,run_generation=excluded.run_generation,notify_when_done=excluded.notify_when_done,notify_origin=excluded.notify_origin,media_json=excluded.media_json,notified_at=CASE WHEN excluded.run_generation!=session_agent_runs.run_generation THEN excluded.notified_at ELSE COALESCE(excluded.notified_at,session_agent_runs.notified_at) END,started=excluded.started,run_status=excluded.run_status,stop_reason=excluded.stop_reason,wake_suppressed=CASE WHEN excluded.run_generation!=session_agent_runs.run_generation THEN excluded.wake_suppressed ELSE MAX(excluded.wake_suppressed,session_agent_runs.wake_suppressed) END,turns_used=excluded.turns_used,turns_granted=excluded.turns_granted,output=excluded.output,error=excluded.error,owner_instance_id=excluded.owner_instance_id,updated_at=excluded.updated_at,collected_at=CASE WHEN excluded.run_generation!=session_agent_runs.run_generation THEN excluded.collected_at ELSE COALESCE(excluded.collected_at,session_agent_runs.collected_at) END WHERE excluded.run_generation>=session_agent_runs.run_generation AND (excluded.run_generation!=session_agent_runs.run_generation OR session_agent_runs.run_status NOT IN ('completed','turn_limit','cancelled','interrupted','failed') OR excluded.run_status NOT IN ('queued','running','awaiting_approval'))`,
+		a.ID, a.ParentSessionID, a.AgentName, a.Prompt, a.Model, a.BaseDir, a.ParentResponseID, a.RunGeneration, a.NotifyWhenDone, a.NotifyOrigin, string(media), notified, a.WakeSuppressed, a.AutoResumeOnRestart, a.Started, a.Status, a.StopReason, a.TurnsUsed, a.TurnsGranted, a.Output, a.Error, a.OwnerInstanceID, a.UpdatedAt, collected)
 	if err != nil {
 		return fmt.Errorf("save agent run: %w", err)
 	}
 	return nil
 }
 
-const agentRunColumns = `child_session_id,parent_session_id,agent_name,prompt,model,base_dir,parent_response_id,run_generation,notify_when_done,notify_origin,media_json,notified_at,wake_suppressed,started,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at`
+const agentRunColumns = `child_session_id,parent_session_id,agent_name,prompt,model,base_dir,parent_response_id,run_generation,notify_when_done,notify_origin,media_json,notified_at,wake_suppressed,auto_resume_on_restart,started,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at`
 
 func scanAgentRun(row interface{ Scan(...any) error }) (AgentRun, error) {
 	var a AgentRun
 	var collected, notified sql.NullTime
 	var media string
-	err := row.Scan(&a.ID, &a.ParentSessionID, &a.AgentName, &a.Prompt, &a.Model, &a.BaseDir, &a.ParentResponseID, &a.RunGeneration, &a.NotifyWhenDone, &a.NotifyOrigin, &media, &notified, &a.WakeSuppressed, &a.Started, &a.Status, &a.StopReason, &a.TurnsUsed, &a.TurnsGranted, &a.Output, &a.Error, &a.OwnerInstanceID, &a.UpdatedAt, &collected)
+	err := row.Scan(&a.ID, &a.ParentSessionID, &a.AgentName, &a.Prompt, &a.Model, &a.BaseDir, &a.ParentResponseID, &a.RunGeneration, &a.NotifyWhenDone, &a.NotifyOrigin, &media, &notified, &a.WakeSuppressed, &a.AutoResumeOnRestart, &a.Started, &a.Status, &a.StopReason, &a.TurnsUsed, &a.TurnsGranted, &a.Output, &a.Error, &a.OwnerInstanceID, &a.UpdatedAt, &collected)
 	if err != nil {
 		return a, err
 	}
@@ -226,6 +233,15 @@ func scanAgentRun(row interface{ Scan(...any) error }) (AgentRun, error) {
 		a.CollectedAt = collected.Time
 	}
 	return a, err
+}
+
+func (s *SQLiteStore) SetAgentRunRestartPolicy(ctx context.Context, id, parent string, generation int64, enabled bool) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET auto_resume_on_restart=? WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND run_status IN ('completed','turn_limit','cancelled','interrupted','failed')`, enabled, id, parent, generation)
+	if err != nil {
+		return false, fmt.Errorf("update agent restart policy: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
 }
 
 func (s *SQLiteStore) GetAgentRun(ctx context.Context, id string) (AgentRun, error) {

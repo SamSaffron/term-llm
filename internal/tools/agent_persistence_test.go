@@ -30,7 +30,7 @@ func TestAgentCollectAcrossTurnStoreHandles(t *testing.T) {
 	firstTool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	firstTool.SetRunner(&persistentLifecycleRunner{lifecycleRunner: child, store: firstStore})
 	ctx := core.ContextWithSessionID(context.Background(), "parent")
-	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
+	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"work","auto_resume_on_restart":true,"wait":0}`))
 	<-child.entered
 	close(child.release)
 	if err := firstTool.Drain(ctx); err != nil {
@@ -51,7 +51,10 @@ func TestAgentCollectAcrossTurnStoreHandles(t *testing.T) {
 		t.Fatalf("second-turn wait = %s", out.Content)
 	}
 	got, err := secondStore.GetAgentRun(ctx, first.AgentID)
-	if err != nil || got.CollectedAt.IsZero() {
+	if err != nil || !got.AutoResumeOnRestart {
+		t.Fatalf("restart opt-in did not persist: %+v, %v", got, err)
+	}
+	if got.CollectedAt.IsZero() {
 		t.Fatalf("second-turn collection = %+v, %v", got, err)
 	}
 }

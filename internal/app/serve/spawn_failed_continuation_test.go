@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -165,8 +166,8 @@ else:
 			args := json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"instructions":"Finish","wait":10}`, id))
 			for name, blockedCtx := range map[string]context.Context{
 				"wrong parent":         core.ContextWithSessionID(ctx, "another-parent"),
-				"recovery notice":      tools.ContextWithAgentRecoveryNotice(ctx),
-				"restricted lifecycle": tools.ContextWithAgentLifecycleRestricted(ctx),
+				"recovery notice":      agentpolicy.ContextWithAgentRecoveryNotice(ctx),
+				"restricted lifecycle": agentpolicy.ContextWithLifecycleRestricted(ctx),
 			} {
 				blocked, err := continueTool.Execute(blockedCtx, args)
 				if err != nil || !blocked.IsError {

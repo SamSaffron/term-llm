@@ -98,9 +98,15 @@ func TestNotificationMigrationV68RollsBackMarkerRetirementAndDDLThenRetries(t *t
 	original := migrations
 	defer func() { migrations = original }()
 	migrations = append([]migration(nil), original...)
-	last := len(migrations) - 1
-	if migrations[last].version != 68 {
-		t.Fatalf("last version=%d", migrations[last].version)
+	last := -1
+	for i := range migrations {
+		if migrations[i].version == 68 {
+			last = i
+			break
+		}
+	}
+	if last < 0 {
+		t.Fatal("v68 migration not found")
 	}
 	up := migrations[last].up
 	migrations[last].up = func(db schemaExecutor) error {
@@ -130,7 +136,7 @@ func TestNotificationMigrationV68RollsBackMarkerRetirementAndDDLThenRetries(t *t
 	if err := initSchema(db); err != nil {
 		t.Fatalf("retry=%v", err)
 	}
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 68 {
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("retry marker=%d error=%v", version, err)
 	}
 }

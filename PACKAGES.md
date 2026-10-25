@@ -152,6 +152,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/serve/http` — provides serve base-path normalization and streaming HTTP writes.
 - `internal/serveui` — embeds and serves the built web UI assets, manifests and index shell.
 - `internal/session` — owns durable sessions, messages, steering persistence and SQLite storage.
+- `internal/session/agentpolicy` — binds trusted lifecycle notices to durable child restart consent and enforces the generation-scoped resumption policy.
 - `internal/session/notificationdb` — implements durable logical-turn ownership and fenced notification delivery on the session SQLite transaction.
 - `internal/sessiontitle` — generates and validates short and long LLM session titles.
 - `internal/share` — defines provider-neutral transcript sharing.

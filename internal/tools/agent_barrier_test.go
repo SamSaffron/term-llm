@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 )
 
 func barrierStore(t *testing.T) *session.SQLiteStore {
@@ -180,9 +182,9 @@ func TestAgentBarrierRetriesFailedTerminalPersistence(t *testing.T) {
 }
 
 func TestAgentLifecycleMessageMetadataAndRestrictions(t *testing.T) {
-	msg := AgentLifecycleMessage([]session.AgentRun{{ID: "child", AgentName: "developer", Status: "completed", Output: "secret-output", Prompt: "secret-prompt", Error: "secret-error"}}, true)
+	msg := AgentLifecycleMessage([]session.AgentRun{{ID: "child", AgentName: "developer", Status: "interrupted", StopReason: "host_restarted", AutoResumeOnRestart: true, RunGeneration: 9, Output: "secret-output", Prompt: "secret-prompt", Error: "secret-error"}}, true)
 	text := core.MessageText(msg)
-	if msg.Role != core.RoleUser || !core.IsGoalSteeringMessage(msg) || !strings.Contains(text, "All subagents") || !strings.Contains(text, `"agent_name":"developer"`) {
+	if msg.Role != core.RoleUser || !core.IsGoalSteeringMessage(msg) || !strings.Contains(text, "All subagents") || !strings.Contains(text, `"agent_name":"developer"`) || !strings.Contains(text, `"auto_resume_on_restart":true`) || !strings.Contains(text, "not automatic execution") {
 		t.Fatalf("message=%+v", msg)
 	}
 	for _, secret := range []string{"secret-output", "secret-prompt", "secret-error"} {
@@ -190,7 +192,11 @@ func TestAgentLifecycleMessageMetadataAndRestrictions(t *testing.T) {
 			t.Fatalf("leaked %s", secret)
 		}
 	}
-	ctx := ContextWithAgentLifecycleRestricted(core.ContextWithSessionID(context.Background(), "parent"))
+	defaultNotice := core.MessageText(AgentLifecycleMessage([]session.AgentRun{{ID: "default-child", AgentName: "developer", Status: "interrupted", StopReason: "host_restarted"}}, false))
+	if !strings.Contains(defaultNotice, `"auto_resume_on_restart":false`) {
+		t.Fatalf("default lifecycle policy metadata missing: %s", defaultNotice)
+	}
+	ctx := agentpolicy.ContextWithLifecycleRestricted(core.ContextWithSessionID(context.Background(), "parent"))
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	for _, tool := range []core.Tool{spawn, &agentControlTool{name: ContinueAgentToolName, spawn: spawn}} {
 		out := lifecycleCall(t, tool, ctx, `{}`)
@@ -200,27 +206,126 @@ func TestAgentLifecycleMessageMetadataAndRestrictions(t *testing.T) {
 	}
 }
 
+func TestRestartResumptionSchemaIsScopedToSpawnAndContinue(t *testing.T) {
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 1}, 0).Spec()
+	if _, ok := spawn.Schema["properties"].(map[string]any)["auto_resume_on_restart"]; !ok {
+		t.Fatal("spawn_agent lacks explicit restart opt-in")
+	}
+	for _, name := range []string{ContinueAgentToolName, WaitAgentToolName, CancelAgentToolName, ListAgentsToolName} {
+		spec := (&agentControlTool{name: name}).Spec()
+		_, hasPolicy := spec.Schema["properties"].(map[string]any)["auto_resume_on_restart"]
+		if hasPolicy != (name == ContinueAgentToolName) {
+			t.Fatalf("%s restart policy schema present=%t", name, hasPolicy)
+		}
+	}
+}
+
 func TestHostLifecycleContinuationPolicy(t *testing.T) {
-	for _, status := range []string{"completed", "turn_limit", "cancelled", "interrupted"} {
-		t.Run(status, func(t *testing.T) {
+	enablePolicy := true
+	cases := []struct {
+		name       string
+		status     string
+		reason     string
+		optedIn    bool
+		offeredGen int64
+		force      bool
+		want       bool
+		owner      string
+		parent     string
+		setPolicy  *bool
+	}{
+		{name: "ordinary completion", status: "completed", want: true},
+		{name: "restart without opt in", status: "interrupted", reason: "host_restarted"},
+		{name: "opted in proven restart", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 1, want: true},
+		{name: "explicit cancellation", status: "cancelled", reason: "cancelled", optedIn: true},
+		{name: "parent stop", status: "interrupted", reason: "parent_stopped", optedIn: true},
+		{name: "failure", status: "failed", reason: "failed", optedIn: true},
+		{name: "unknown interruption", status: "interrupted", reason: "unknown", optedIn: true},
+		{name: "stale generation notice", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 2},
+		{name: "force never allowed", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 1, force: true},
+		{name: "live current owner", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 1, owner: processAgentOwner()},
+		{name: "live foreign owner", status: "running", reason: "host_restarted", optedIn: true, offeredGen: 1, owner: "foreign-host:123:1"},
+		{name: "forged interrupted owner", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 1, owner: "foreign-host:123:1"},
+		{name: "other parent", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 1, parent: "another-parent"},
+		{name: "lifecycle cannot enable", status: "completed", setPolicy: &enablePolicy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			store := barrierStore(t)
-			r := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", Status: status, Started: true, UpdatedAt: time.Now()}
+			owner := tc.owner
+			if owner == "" {
+				owner = fmt.Sprintf("%s:2147483647:1", hostnameForTest(t))
+			}
+			r := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", Status: tc.status, StopReason: tc.reason, Started: true, AutoResumeOnRestart: tc.optedIn, RunGeneration: 1, OwnerInstanceID: owner, UpdatedAt: time.Now()}
 			if err := store.PutAgentRun(context.Background(), r); err != nil {
 				t.Fatal(err)
 			}
+			runner := &lifecycleRunner{}
 			tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
-			tool.SetRunner(&persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{}, store: store})
-			ctx := ContextWithAgentRecoveryNotice(core.ContextWithSessionID(context.Background(), "parent"))
-			out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: tool}, ctx, `{"agent_id":"`+r.ID+`","wait":1}`)
-			allowed := status == "completed" || status == "turn_limit"
-			if out.IsError == allowed {
-				t.Fatalf("status=%s output=%+v", status, out)
+			tool.SetRunner(&persistentLifecycleRunner{lifecycleRunner: runner, store: store})
+			offer := r
+			offer.RunGeneration = tc.offeredGen
+			parent := tc.parent
+			if parent == "" {
+				parent = "parent"
 			}
-			if err := tool.WaitForChildren(ctx, "parent"); err != nil {
-				t.Fatal(err)
+			ctx := agentpolicy.ContextWithAgentRecoveryNotice(core.ContextWithSessionID(context.Background(), parent), offer)
+			arguments := map[string]any{"agent_id": r.ID, "wait": 0, "force": tc.force}
+			if tc.setPolicy != nil {
+				arguments["auto_resume_on_restart"] = *tc.setPolicy
+			}
+			args, _ := json.Marshal(arguments)
+			out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: tool}, ctx, string(args))
+			if out.IsError == tc.want {
+				t.Fatalf("want allowed=%t output=%+v", tc.want, out)
+			}
+			if tc.want {
+				if err := tool.WaitForChildren(ctx, "parent"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if (runner.resumed > 0) != tc.want {
+				t.Fatalf("resumed=%d want allowed=%t", runner.resumed, tc.want)
+			}
+			if tc.setPolicy != nil {
+				stored, err := store.GetAgentRun(ctx, r.ID)
+				if err != nil || stored.AutoResumeOnRestart {
+					t.Fatalf("lifecycle changed persisted policy: %+v, %v", stored, err)
+				}
 			}
 		})
 	}
+}
+
+func TestHumanContinueAgentCanSetRestartOptIn(t *testing.T) {
+	store := barrierStore(t)
+	run := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", AgentName: "developer", Prompt: "work", RunGeneration: 1, Status: "completed", Started: true, OwnerInstanceID: "dead", UpdatedAt: time.Now()}
+	if err := store.PutAgentRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	runner := &lifecycleRunner{}
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	spawn.SetRunner(&persistentLifecycleRunner{lifecycleRunner: runner, store: store})
+	ctx := core.ContextWithSessionID(context.Background(), "parent")
+	out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: spawn}, ctx, `{"agent_id":"`+run.ID+`","auto_resume_on_restart":true,"wait":0}`)
+	if out.IsError {
+		t.Fatalf("human policy change failed: %+v", out)
+	}
+	if err := spawn.WaitForChildren(ctx, "parent"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetAgentRun(ctx, run.ID)
+	if err != nil || !got.AutoResumeOnRestart || got.RunGeneration != 2 {
+		t.Fatalf("policy after human continuation = %+v, %v", got, err)
+	}
+}
+func hostnameForTest(t *testing.T) string {
+	t.Helper()
+	name, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
 }
 
 func TestAgentBarrierWithoutStoreAcknowledgesOnlyOfferedGeneration(t *testing.T) {
@@ -255,7 +360,7 @@ func TestAgentBarrierWithoutStoreAcknowledgesOnlyOfferedGeneration(t *testing.T)
 	if err != nil || e == nil || record.Output != "done" || !record.CollectedAt.IsZero() {
 		t.Fatalf("ACK discarded result: %+v %v", record, err)
 	}
-	entry, err := tool.manager.start(ctx, record.AgentName, record.Prompt, "", "", nil, nil, runner, 1, true, "follow up", record)
+	entry, err := tool.manager.start(ctx, record.AgentName, record.Prompt, "", "", nil, nil, runner, 1, true, "follow up", false, record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,9 +544,9 @@ func TestLifecycleResultHintsRespectContinuationPermissions(t *testing.T) {
 				ctx := t.Context()
 				switch mode {
 				case "recovery":
-					ctx = ContextWithAgentRecoveryNotice(ctx)
+					ctx = agentpolicy.ContextWithAgentRecoveryNotice(ctx)
 				case "restricted":
-					ctx = ContextWithAgentLifecycleRestricted(ctx)
+					ctx = agentpolicy.ContextWithLifecycleRestricted(ctx)
 				}
 				m := newAgentManager(SpawnConfig{MaxParallel: 1})
 				out := m.deliver(ctx, session.AgentRun{ID: "child", Status: status}, nil)

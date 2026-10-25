@@ -88,29 +88,8 @@ func QueueAgentOriginFromContext(ctx context.Context) (QueueAgentOriginContext, 
 	return origin, true
 }
 
-// Host-initiated lifecycle turns report recovery, but cannot automatically
-// restart side-effectful child work without a subsequent human turn.
-type agentRecoveryNoticeKey struct{}
-
-func ContextWithAgentRecoveryNotice(ctx context.Context) context.Context {
-	return context.WithValue(ctx, agentRecoveryNoticeKey{}, true)
-}
-
 // ContextWithAgentLifecycleWake installs the unconditional lifecycle signal.
 // The callback must only schedule host reconciliation, never run a turn inline.
 func ContextWithAgentLifecycleWake(ctx context.Context, wake func(string)) context.Context {
 	return ContextWithAgentCompletionWake(ctx, wake)
-}
-
-type agentLifecycleRestrictedKey struct{}
-
-// ContextWithAgentLifecycleRestricted prevents lifecycle reserve turns from
-// creating or continuing work, even if the provider emits those tool calls.
-func ContextWithAgentLifecycleRestricted(ctx context.Context) context.Context {
-	return context.WithValue(ctx, agentLifecycleRestrictedKey{}, true)
-}
-
-func agentLifecycleRestricted(ctx context.Context) bool {
-	restricted, _ := ctx.Value(agentLifecycleRestrictedKey{}).(bool)
-	return restricted
 }

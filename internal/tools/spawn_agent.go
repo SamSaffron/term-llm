@@ -16,18 +16,20 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 	"github.com/samsaffron/term-llm/internal/tools/agentwait"
 )
 
 // SpawnAgentArgs are the arguments for the spawn_agent tool.
 type SpawnAgentArgs struct {
-	AgentName      string `json:"agent_name"`                 // Required: name of the agent to spawn
-	Prompt         string `json:"prompt"`                     // Required: task/prompt for the sub-agent
-	Timeout        int    `json:"timeout,omitempty"`          // Deprecated alias for wait (seconds)
-	Wait           *int   `json:"wait,omitempty"`             // Time to wait, not a child deadline
-	Model          string `json:"model,omitempty"`            // Optional: exact provider:model override
-	CWD            string `json:"cwd,omitempty"`              // Optional: existing child working directory
-	NotifyWhenDone bool   `json:"notify_when_done,omitempty"` // Reactivate parent session after completion
+	AgentName           string `json:"agent_name"`                       // Required: name of the agent to spawn
+	Prompt              string `json:"prompt"`                           // Required: task/prompt for the sub-agent
+	Timeout             int    `json:"timeout,omitempty"`                // Deprecated alias for wait (seconds)
+	Wait                *int   `json:"wait,omitempty"`                   // Time to wait, not a child deadline
+	Model               string `json:"model,omitempty"`                  // Optional: exact provider:model override
+	CWD                 string `json:"cwd,omitempty"`                    // Optional: existing child working directory
+	NotifyWhenDone      bool   `json:"notify_when_done,omitempty"`       // Reactivate parent session after completion
+	AutoResumeOnRestart bool   `json:"auto_resume_on_restart,omitempty"` // Permit parent lifecycle turn to continue after proven host restart
 }
 
 // Interventions carry a delivery disposition because queue acceptance is not
@@ -341,6 +343,7 @@ func (t *SpawnAgentTool) Spec() core.ToolSpec {
 		Description: `Spawn a sub-agent to handle a specific task autonomously. Use this to delegate work to specialized agents that can run in parallel.
 
 Guidelines:
+- Restart resumption is off by default. Set auto_resume_on_restart=true only when the human explicitly authorizes this child to continue after a proven host restart; explicit cancellation and other failures remain stop boundaries.
 - Spawn multiple agents concurrently for independent analysis tasks
 - Each agent runs with its own context and tools
 - If the wait budget expires the child keeps running; use wait_agent, continue_agent, cancel_agent, or list_agents
@@ -363,9 +366,10 @@ Guidelines:
 					"minimum":     0,
 					"maximum":     3600,
 				},
-				"wait":             map[string]any{"type": "integer", "description": "Seconds to wait before detaching; 0 returns immediately (default 300)", "minimum": 0, "maximum": 3600},
-				"notify_when_done": map[string]any{"type": "boolean", "description": "Wake the original parent agent loop when the child finishes; requires a supported persistent host session"},
-				"cwd":              map[string]any{"type": "string", "description": "Optional existing child working directory; relative paths resolve against the parent's current working directory. Access still requires normal workspace approval."},
+				"wait":                   map[string]any{"type": "integer", "description": "Seconds to wait before detaching; 0 returns immediately (default 300)", "minimum": 0, "maximum": 3600},
+				"notify_when_done":       map[string]any{"type": "boolean", "description": "Wake the original parent agent loop when the child finishes; requires a supported persistent host session"},
+				"auto_resume_on_restart": map[string]any{"type": "boolean", "description": "Opt this child into continuation by a trusted parent lifecycle turn after a proven host restart only. Defaults false; does not permit resumption after cancellation, failure, parent stop, or unknown causes."},
+				"cwd":                    map[string]any{"type": "string", "description": "Optional existing child working directory; relative paths resolve against the parent's current working directory. Access still requires normal workspace approval."},
 				"model": map[string]any{
 					"type":        "string",
 					"description": "Optional model override in exact provider:model format. If omitted, the sub-agent uses its configured/default model.",
@@ -521,7 +525,7 @@ func spawnAgentErrorOutput(content string, timedOut bool) core.ToolOutput {
 
 // Execute runs the spawn_agent tool.
 func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
-	if agentLifecycleRestricted(ctx) {
+	if agentpolicy.LifecycleRestricted(ctx) {
 		return agentControlError("This host lifecycle turn cannot spawn child work."), nil
 	}
 	var a SpawnAgentArgs
@@ -581,7 +585,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 	cb := func(eventCallID string, event SubagentEvent) {
 		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
 	}
-	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", session.AgentRun{BaseDir: baseDir, NotifyWhenDone: a.NotifyWhenDone, NotifyOrigin: origin})
+	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", a.AutoResumeOnRestart, session.AgentRun{BaseDir: baseDir, NotifyWhenDone: a.NotifyWhenDone, NotifyOrigin: origin})
 	if startErr != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/session/agentpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -24,12 +25,12 @@ func StopRequested(ctx context.Context) (bool, bool) {
 }
 
 // RunContext preserves human authority and lifecycle routing across view changes.
-func RunContext(ctx context.Context, sessionID string, stopped *atomic.Bool, barrier bool, wake func(string)) context.Context {
+func RunContext(ctx context.Context, sessionID string, stopped *atomic.Bool, barrier bool, events []session.AgentRun, wake func(string)) context.Context {
 	ctx = ContextWithStop(core.ContextWithSessionID(ctx, sessionID), stopped)
 	ctx = tools.ContextWithQueueAgentOrigin(ctx, tools.QueueAgentOriginContext{Origin: "tui", SessionID: sessionID, ResponseID: parentResponseID(ctx)})
 	ctx = tools.ContextWithAgentCompletionWake(ctx, wake)
 	if barrier {
-		ctx = tools.ContextWithAgentRecoveryNotice(ctx)
+		ctx = agentpolicy.ContextWithAgentRecoveryNotice(ctx, events...)
 	}
 	return ctx
 }

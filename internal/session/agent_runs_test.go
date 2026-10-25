@@ -196,3 +196,40 @@ func TestAgentWakeDurableAdmissionRejectsInvalidatedEvent(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentRestartPolicyDefaultsOffAndSurvivesGenerations(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	run := AgentRun{ID: "restart-opt-in", ParentSessionID: "parent", AgentName: "developer", Prompt: "work", RunGeneration: 1, Status: "interrupted", StopReason: "host_restarted", Started: true, OwnerInstanceID: "dead", UpdatedAt: time.Now()}
+	if err := store.PutAgentRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetAgentRun(ctx, run.ID)
+	if err != nil || got.AutoResumeOnRestart {
+		t.Fatalf("default policy = %+v, %v", got, err)
+	}
+	changed, err := store.SetAgentRunRestartPolicy(ctx, run.ID, "parent", 1, true)
+	if err != nil || !changed {
+		t.Fatalf("enable policy = %t, %v", changed, err)
+	}
+	got, err = store.GetAgentRun(ctx, run.ID)
+	if err != nil || !got.AutoResumeOnRestart {
+		t.Fatalf("enabled policy = %+v, %v", got, err)
+	}
+	run.RunGeneration, run.Status, run.AutoResumeOnRestart = 2, "running", false
+	if err := store.PutAgentRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.GetAgentRun(ctx, run.ID)
+	if err != nil || !got.AutoResumeOnRestart || got.RunGeneration != 2 {
+		t.Fatalf("policy across generation = %+v, %v", got, err)
+	}
+	changed, err = store.SetAgentRunRestartPolicy(ctx, run.ID, "another-parent", 2, false)
+	if err != nil || changed {
+		t.Fatalf("wrong-parent policy update = %t, %v", changed, err)
+	}
+}
