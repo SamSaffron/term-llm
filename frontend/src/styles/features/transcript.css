@@ -314,9 +314,13 @@
   align-self: center;
 }
 
-/* The buttons' own padding already sets them off from the text. */
+/* The buttons' own padding already sets them off from the text. The row starts
+   where the text does, by the first icon's stroke (16px icons in 30px buttons,
+   the stroke a twelfth of the way in). */
 .message.assistant > .turn-action-panel {
   margin-top: -0.35rem;
+  padding-inline: 0;
+  margin-inline-start: calc((16px - 30px) / 2 - 16px / 12);
 }
 
 @media (hover: hover) {
@@ -463,54 +467,20 @@
 
 .message.job-notice .message-body {
   background: transparent;
-  border-color: var(--border);
   color: var(--text-muted);
   font-size: 0.9rem;
   white-space: normal;
   padding: 0;
   overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--tool) 45%, transparent);
+  border-radius: var(--radius-md);
 }
 
-.message.job-notice-failed .message-body {
-  border-color: rgb(248 113 113 / 28%);
-}
-
-.job-notice-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  border: 0;
-  background: transparent;
+/* A queued job's notice is drawn like a group of tool calls (it uses their toggle,
+   arrow and status); its title is in the text colour. */
+.message.job-notice .job-notice-toggle {
   color: var(--text);
-  padding: 0.5rem 0.75rem;
-  font: inherit;
-  font-size: 0.92rem;
-  cursor: pointer;
-  width: 100%;
-  text-align: left;
-}
-
-.job-notice-toggle:hover {
-  background: var(--surface-2);
-}
-
-.job-notice-icon {
-  width: 1rem;
-  height: 1rem;
-  flex: none;
-  color: var(--accent-green);
-}
-
-.job-notice-failed .job-notice-icon {
-  color: var(--danger);
-}
-
-.job-notice-chevron {
-  width: 1rem;
-  height: 1rem;
-  flex: none;
-  color: var(--text-muted);
-  margin-left: auto;
+  line-height: normal;
 }
 
 .job-notice-label {

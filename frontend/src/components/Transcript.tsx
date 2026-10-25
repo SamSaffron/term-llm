@@ -1201,19 +1201,32 @@ const MessageRow = memo(function MessageRow({
         data-message-id={message.id}
         data-durable-id={message.durableRowId}
       >
+        {/* Drawn like a group of tool calls: the arrow, the title with its agent muted, the status. */}
         <div class="message-body">
           <button
             type="button"
-            class="job-notice-toggle"
+            class="job-notice-toggle tool-group-toggle"
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
           >
-            <Icon name={failed ? 'alert-circle' : 'check'} class="job-notice-icon" />
-            <span>
-              Queued job {status}
-              {agent ? ` · ${agent}` : ''}
+            <span class="tool-arrow">
+              <Icon name="chevron-right" />
             </span>
-            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} class="job-notice-chevron" />
+            <span class="tool-group-summary">
+              Queued job {status}
+              {agent && (
+                <>
+                  {' '}
+                  · <span class="tool-group-names">{agent}</span>
+                </>
+              )}
+            </span>
+            <span
+              class={`tool-status ${failed ? 'error' : 'done'}`}
+              aria-label={failed ? 'Failed' : 'Complete'}
+            >
+              {failed ? '✕' : '✓'}
+            </span>
           </button>
           {expanded && (
             <div>
