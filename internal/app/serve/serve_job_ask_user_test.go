@@ -15,12 +15,13 @@ import (
 )
 
 func TestJobAskUserFailsFastWithoutHumanAuthorization(t *testing.T) {
+	const unavailableMessage = "ask_user is unavailable in this background context because no user is present to answer. No answer or selection was made."
 	args := map[string]any{"questions": []map[string]any{{
 		"header": "Permission", "question": "May I proceed?", "options": []map[string]any{
 			{"label": "Yes", "description": "Proceed"}, {"label": "No", "description": "Stop"},
 		},
 	}}}
-	provider := mockprovider.NewMockProvider("mock").AddToolCall("job-question", tools.AskUserToolName, args).AddTextResponse("Input is unavailable; I will not assume approval.")
+	provider := mockprovider.NewMockProvider("mock").AddToolCall("job-question", tools.AskUserToolName, args).AddTextResponse("No user is present to answer; no answer or selection was made.")
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 	runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -45,8 +46,8 @@ func TestJobAskUserFailsFastWithoutHumanAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if output.TrustedUserInput != "" || !strings.Contains(output.Content, "background") || !strings.Contains(output.Content, "No user authorization") {
-		t.Fatalf("background output must clearly deny human input/authorization: %+v", output)
+	if output.TrustedUserInput != "" || !strings.Contains(output.Content, unavailableMessage) {
+		t.Fatalf("background output must report unavailable input without an answer: %+v", output)
 	}
 	if role, text, ok := core.ApprovalTurnForTool(tools.AskUserToolName, output); ok {
 		t.Fatalf("background failure became trusted approval: role=%s text=%q", role, text)
@@ -61,7 +62,7 @@ func TestJobAskUserFailsFastWithoutHumanAuthorization(t *testing.T) {
 	if len(env.runtime.pendingAskUserPrompts()) != 0 {
 		t.Fatal("job created an input gate")
 	}
-	if !strings.Contains(result.Text.String(), "will not assume approval") {
+	if !strings.Contains(result.Text.String(), "no answer or selection was made") {
 		t.Fatalf("job did not continue: %q", result.Text.String())
 	}
 	requests := provider.RecordedRequests()
@@ -80,7 +81,7 @@ func TestJobAskUserFailsFastWithoutHumanAuthorization(t *testing.T) {
 	found := false
 	for _, msg := range requests[1].Messages {
 		text := core.CollectToolResultText(msg.Parts)
-		if strings.Contains(text, "No user authorization") {
+		if strings.Contains(text, unavailableMessage) {
 			found = true
 		}
 	}
