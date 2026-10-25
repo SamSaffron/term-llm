@@ -555,7 +555,7 @@ export function Worktrees() {
                 </span>
               </div>
               <button
-                class={`btn ${removeStage === 'idle' ? 'danger-quiet' : 'danger'}`}
+                class={`btn danger ${removeStage === 'idle' ? '' : 'primary'}`}
                 type="button"
                 aria-describedby="worktreeRemoveHelp"
                 disabled={Boolean(busy) || streaming}

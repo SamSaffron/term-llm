@@ -91,8 +91,8 @@
 }
 
 .icon-btn {
-  border: 1px solid var(--border);
-  background: var(--surface-2);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text-muted);
   border-radius: 8px;
   width: var(--control-size);
@@ -108,7 +108,7 @@
 }
 
 .icon-btn:hover {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--text);
 }
 

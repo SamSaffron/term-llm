@@ -142,38 +142,6 @@
   flex-wrap: wrap;
 }
 
-.btn {
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  padding: 0.62rem 0.9rem;
-  cursor: pointer;
-  font-weight: 600;
-  transition: background 0.15s ease;
-}
-
-.btn:hover:not(:disabled) {
-  background: var(--surface-3);
-}
-
-.btn.primary {
-  border-color: var(--border-strong);
-  background: var(--gradient-accent-strong);
-  color: var(--btn-accent-text);
-  font-weight: 700;
-}
-
-.btn.primary:hover:not(:disabled) {
-  opacity: 0.85;
-  background: var(--gradient-accent-strong);
-}
-
-.btn:disabled {
-  opacity: 0.65;
-  cursor: not-allowed;
-}
-
 .modal .icon-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;

@@ -571,23 +571,6 @@
   background: color-mix(in srgb, var(--danger) 8%, var(--surface-2));
 }
 
-.worktree-modal .btn.danger-quiet {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
-  background: transparent;
-  color: var(--danger);
-}
-
-.worktree-modal .btn.danger-quiet:hover:not(:disabled) {
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-}
-
-.worktree-modal .btn.danger {
-  border-color: var(--danger);
-  background: var(--danger);
-  color: var(--btn-accent-text);
-}
-
 .worktree-muted-note {
   margin: 0;
   color: var(--text-muted);

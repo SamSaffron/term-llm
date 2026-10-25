@@ -102,7 +102,7 @@
   margin-inline-start: auto;
 }
 
-/* Scoped so these win over the generic .btn rules loaded later (modals.css). */
+/* Scoped so these win over the shared .btn rules (base/buttons.css). */
 .voice-status .voice-status-actions .btn {
   flex: 0 0 auto;
   min-width: 44px;

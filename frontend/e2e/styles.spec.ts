@@ -161,7 +161,7 @@ test('composer attachments and status chips keep clearance above the input', asy
 test('default light and dark controls keep readable text', async ({ page }) => {
   await page.setContent(
     `<button data-contrast class="diff-queue-send">Send comments</button>
-    <div class="worktree-modal"><button data-contrast class="btn danger">Remove worktree</button></div>`,
+    <div class="worktree-modal"><button data-contrast class="btn danger primary">Remove worktree</button></div>`,
   );
   // Measure settled colors rather than intermediate transition frames.
   await page.addStyleTag({ content: `${css}\n[data-contrast] { transition: none; }` });

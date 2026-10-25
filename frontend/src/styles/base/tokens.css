@@ -12,6 +12,9 @@
   --border-strong: rgb(255 255 255 / 15%);
   --text: #ececec;
   --text-muted: #9a9a9a;
+
+  /* The accent: primary buttons, links, focus rings and other active states
+     follow it, so a theme sets one colour (links can still be set apart). */
   --accent: #ececec;
   --accent-strong: #fff;
   --accent-green: #34d399;
@@ -25,8 +28,8 @@
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 10%);
   --shadow-strong: 0 2px 8px rgb(0 0 0 / 15%);
   --gradient-accent: var(--surface-2);
-  --gradient-accent-strong: var(--accent-strong);
-  --link: #60a5fa;
+  --gradient-accent-strong: var(--accent);
+  --link: var(--accent);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -41,6 +44,7 @@
   /* One size for icon buttons and header controls: the message box's, the
      header's and the sidebar's. Larger on touch screens and narrow windows. */
   --control-size: 32px;
+  --control-size-small: 28px;
   --header-action-height: var(--control-size);
   --header-action-radius: 10px;
   --header-action-padding-x: 0.65rem;
@@ -105,6 +109,7 @@
 @media (width <= 700px), (hover: none), (pointer: coarse) {
   :root {
     --control-size: 36px;
+    --control-size-small: 32px;
   }
 }
 
@@ -134,8 +139,6 @@
     --shadow-soft: 0 1px 2px rgb(0 0 0 / 5%);
     --shadow-strong: 0 2px 8px rgb(0 0 0 / 8%);
     --gradient-accent: var(--surface-2);
-    --gradient-accent-strong: var(--accent-strong);
-    --link: #2563eb;
     --diff-add-bg: rgb(31 136 61 / 12%);
     --diff-add-ln-bg: rgb(31 136 61 / 22%);
     --diff-del-bg: rgb(207 34 46 / 10%);
