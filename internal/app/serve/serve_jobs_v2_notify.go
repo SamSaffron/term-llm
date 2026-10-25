@@ -208,7 +208,9 @@ func (s *serveServer) notifyQueuedAgentWebNotice(ctx context.Context, runID, ses
 }
 
 func (s *serveServer) startQueuedAgentNotificationContinuation(ctx context.Context, rt *serveRuntime, sessionID, message string, info core.JobNotificationProvenance) bool {
-	if s == nil || rt == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(message) == "" {
+	// A cached web runtime does not make a headless jobs/API host an owner
+	// of automatic UI turns. Preserve the notice via the caller's fallback.
+	if s == nil || !s.cfg.ui || rt == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(message) == "" {
 		return false
 	}
 	if rt.hasActiveRun() {

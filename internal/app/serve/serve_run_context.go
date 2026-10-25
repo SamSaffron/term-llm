@@ -20,7 +20,13 @@ func (rt *serveRuntime) prepareRunContext(ctx context.Context, collaboration too
 		switch rt.platform {
 		case "", "web":
 			askUser = rt.awaitAskUser
-		case "telegram", "jobs":
+		case "jobs":
+			// Keep the tool exposed, but report unavailable input without
+			// implying a user answered when no user is present.
+			askUser = func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
+				return nil, fmt.Errorf("ask_user is unavailable in this background context because no user is present to answer. No answer or selection was made.")
+			}
+		case "telegram":
 			platform := rt.platform
 			askUser = func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
 				return nil, fmt.Errorf("ask_user is not available on %s sessions", platform)

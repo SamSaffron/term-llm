@@ -43,6 +43,16 @@ term-llm serve web jobs
 term-llm serve web jobs telegram   # all platforms at once
 ```
 
+### Automatic parent continuations
+
+Automatic continuation of a web session when its child agents finish requires
+an instance started with the `web` platform, such as `serve web` or
+`serve web api jobs`. An API-only or jobs-only instance does not claim pending
+web-parent completion events, even when it shares the session database or has
+cached that session. This keeps any subsequent question on a host with a web UI.
+Explicit API requests and manual collection of child results remain available
+without the `web` platform.
+
 ## Default platforms
 
 To avoid specifying platforms every time, set them in `config.yaml`:

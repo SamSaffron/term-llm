@@ -18,7 +18,7 @@ import (
 // create a competing turn while a response is active. An incremented signal
 // closes the scan/finish race when another child settles during a delivery.
 func (s *serveServer) wakeAgentParent(parent string) {
-	if s == nil || parent == "" || s.sessionMgr == nil || session.AsAgentRunDeliveryStore(s.store) == nil {
+	if s == nil || !s.cfg.ui || parent == "" || s.sessionMgr == nil || session.AsAgentRunDeliveryStore(s.store) == nil {
 		return
 	}
 	s.agentWakeMu.Lock()
@@ -92,6 +92,11 @@ func (s *serveServer) waitAgentWakeRetry(attempt int) bool {
 // deliverAgentWake returns false for retryable host/provider failures. Busy
 // foreign leases and outstanding remote children are reconciled periodically.
 func (s *serveServer) deliverAgentWake(parent string) bool {
+	// Automatic UI turns belong to a web host, not a jobs-only/API-only peer
+	// sharing its store. Explicit API inference remains available on all hosts.
+	if s == nil || !s.cfg.ui {
+		return true
+	}
 	store := session.AsAgentRunDeliveryStore(s.store)
 	if !s.waitForIdleAgentParent(parent) {
 		return true // shutdown or explicit human stop, not a provider failure
@@ -203,7 +208,8 @@ func agentEventsNeedAcknowledgment(ctx context.Context, store session.AgentRunDe
 // top-level session opened on web can be serviced here regardless of where it
 // was created. Never take nested orchestration from its owning child runner.
 func (s *serveServer) ownsAgentWakeParent(meta *session.Session) bool {
-	if meta == nil || meta.Archived || meta.IsSubagent || sessionIsDelegatedChild(meta) {
+	// A loaded web runtime alone does not give a headless host UI ownership.
+	if s == nil || !s.cfg.ui || meta == nil || meta.Archived || meta.IsSubagent || sessionIsDelegatedChild(meta) {
 		return false
 	}
 	if meta.Origin == session.OriginWeb {
@@ -280,6 +286,10 @@ func (s *serveServer) waitAgentResponseSettled(run *responseRun) bool {
 // path, not on a second scheduler. Only proven-dead owners yield restart
 // interruption events.
 func (s *serveServer) reconcileAgentWakes(ctx context.Context) {
+	// Leave shared durable events pending for a host that can present UI input.
+	if s == nil || !s.cfg.ui {
+		return
+	}
 	s.agentWakeMu.Lock()
 	restoring := s.restoringWebRuns
 	s.agentWakeMu.Unlock()
