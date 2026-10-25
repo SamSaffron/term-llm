@@ -397,7 +397,7 @@
   border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
   border-radius: var(--radius-lg);
   background: var(--surface-2);
-  padding: 10px;
+  padding: 8px;
   position: relative;
 
   --prompt-inline: 8px;
@@ -664,7 +664,7 @@
   border: none;
   background: transparent;
   color: var(--text);
-  padding: 6px var(--prompt-inline) 12px;
+  padding: 6px var(--prompt-inline) 10px;
   line-height: 1.5;
   font-size: 1rem;
   overflow-y: auto;
