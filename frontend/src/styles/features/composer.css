@@ -401,6 +401,9 @@
   position: relative;
 
   --prompt-inline: 8px;
+
+  /* Its buttons are 32px on every screen, close to ChatGPT's and Claude's. */
+  --control-size: 32px;
 }
 
 .composer-box:focus-within {
