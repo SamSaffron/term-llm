@@ -364,8 +364,6 @@
 /* The input has the box's first row to itself; the controls share a toolbar
    row under it. */
 .composer-box {
-  --composer-control-size: 32px;
-
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
@@ -447,8 +445,8 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  width: var(--composer-control-size);
-  height: var(--composer-control-size);
+  width: var(--control-size);
+  height: var(--control-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -666,8 +664,8 @@
 }
 
 .send-btn {
-  width: var(--composer-control-size);
-  height: var(--composer-control-size);
+  width: var(--control-size);
+  height: var(--control-size);
   border: none;
   border-radius: 999px;
   background: var(--gradient-accent-strong);
@@ -789,8 +787,6 @@
   }
 
   .composer-box {
-    --composer-control-size: 36px;
-
     border-radius: 22px;
     padding: 5px;
   }

@@ -596,8 +596,8 @@ dialog.chip-popover::backdrop {
   appearance: none;
   display: inline-grid;
   flex: none;
-  width: 2rem;
-  height: 2rem;
+  width: var(--control-size);
+  height: var(--control-size);
   margin: -0.25rem -0.25rem 0 0;
   padding: 0;
   place-items: center;
@@ -756,8 +756,8 @@ dialog.chip-popover::backdrop {
   }
 
   .runtime-popover-close {
-    width: 44px;
-    height: 44px;
+    width: var(--control-size);
+    height: var(--control-size);
     margin: -0.35rem -0.35rem -0.35rem 0;
     background: var(--surface-3);
     color: var(--text);

@@ -857,7 +857,7 @@ mark.diff-word {
   }
 
   .worktree-trigger {
-    width: 34px;
+    width: var(--control-size);
     padding: 0;
     justify-content: center;
   }
@@ -867,8 +867,8 @@ mark.diff-word {
   }
 
   .diff-toggle {
-    min-width: 42px;
-    width: 42px;
+    min-width: var(--control-size);
+    width: var(--control-size);
     padding: 0;
   }
 
@@ -924,16 +924,16 @@ mark.diff-word {
 }
 
 @media (hover: none), (pointer: coarse) {
-  /* The composer's controls have a row of their own, so they stay compact. */
-  .composer-box {
-    --composer-control-size: 36px;
-  }
-
   .session-menu-trigger,
   .project-group-action,
   .mobile-menu,
   .header-action,
-  .icon-btn,
+  .icon-btn {
+    min-width: var(--control-size);
+    min-height: var(--control-size);
+  }
+
+  /* The media viewer's controls float over the image: full-size touch targets. */
   .lightbox-btn {
     min-width: 44px;
     min-height: 44px;

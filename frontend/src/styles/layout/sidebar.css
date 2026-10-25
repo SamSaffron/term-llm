@@ -43,8 +43,8 @@
 }
 
 .sidebar-rail-btn {
-  width: 36px;
-  height: 36px;
+  width: var(--control-size);
+  height: var(--control-size);
 }
 
 .sidebar-panel {
@@ -95,8 +95,8 @@
   background: var(--surface-2);
   color: var(--text-muted);
   border-radius: 8px;
-  width: 34px;
-  height: 34px;
+  width: var(--control-size);
+  height: var(--control-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;

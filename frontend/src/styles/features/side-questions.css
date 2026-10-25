@@ -222,8 +222,8 @@
 
 .side-question-send {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: var(--control-size);
+  height: var(--control-size);
   place-items: center;
   border: 0;
   border-radius: 50%;

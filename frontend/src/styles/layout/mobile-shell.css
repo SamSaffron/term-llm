@@ -118,8 +118,8 @@
 
   .mobile-menu {
     display: inline-flex;
-    width: 33px;
-    height: 33px;
+    width: var(--control-size);
+    height: var(--control-size);
   }
 
   .diff-toggle {

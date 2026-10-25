@@ -527,7 +527,7 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
 
   const diffToggle = page.getByRole('button', { name: 'Toggle file changes' });
   await diffToggle.click();
-  await expect(diffToggle).toHaveCSS('width', '34px');
+  await expect(diffToggle).toHaveCSS('width', '32px');
   await expect(diffToggle.locator('.diff-toggle-file-icon')).toBeVisible();
   await expect(diffToggle.locator('.diff-toggle-stat-add')).toBeHidden();
   await expect(diffToggle.locator('.diff-toggle-stat-del')).toBeHidden();
@@ -548,7 +548,7 @@ test('collapses file-change counts to an icon at narrow widths', async ({ page }
   await open(page);
 
   const toggle = page.getByRole('button', { name: 'Toggle file changes' });
-  await expect(toggle).toHaveCSS('width', '34px');
+  await expect(toggle).toHaveCSS('width', '32px');
   await expect(toggle.locator('.diff-toggle-file-icon')).toBeVisible();
   await expect(toggle.locator('.diff-toggle-stat-add')).toBeHidden();
   await expect(toggle.locator('.diff-toggle-stat-del')).toBeHidden();
