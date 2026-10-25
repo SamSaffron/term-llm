@@ -57,6 +57,33 @@ func TestAgentRunContinuationResetsCollectionAndWakeGeneration(t *testing.T) {
 	}
 }
 
+func TestAgentRestartClaimResetsCollectedDeliveryState(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now()
+	collected := now.Add(-time.Hour)
+	run := AgentRun{ID: "child", ParentSessionID: "parent", RunGeneration: 1, Status: "interrupted", StopReason: "host_restarted", OwnerInstanceID: "previous-owner", AutoResumeOnRestart: true, CollectedAt: collected, NotifiedAt: collected, UpdatedAt: now}
+	if err := store.PutAgentRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimAgentRunRestart(ctx, run.ID, run.ParentSessionID, 1, run.OwnerInstanceID, "new-owner", now)
+	if err != nil || !claimed {
+		t.Fatalf("claim collected restart: %t, %v", claimed, err)
+	}
+	got, err := store.GetAgentRun(ctx, run.ID)
+	if err != nil || got.RunGeneration != 2 || got.Status != "queued" || got.StopReason != "" || got.OwnerInstanceID != "new-owner" || !got.AutoResumeOnRestart || !got.CollectedAt.IsZero() || !got.NotifiedAt.IsZero() {
+		t.Fatalf("restart inherited previous generation delivery state: %+v, %v", got, err)
+	}
+	claimed, err = store.ClaimAgentRunRestart(ctx, run.ID, run.ParentSessionID, 1, run.OwnerInstanceID, "duplicate-owner", now)
+	if err != nil || claimed {
+		t.Fatalf("stale restart claim: %t, %v", claimed, err)
+	}
+}
+
 func TestAsAgentRunStoreUnsupported(t *testing.T) {
 	if got := AsAgentRunStore(NewLoggingStore(&NoopStore{}, nil)); got != nil {
 		t.Fatalf("unsupported store gained persistence: %T", got)

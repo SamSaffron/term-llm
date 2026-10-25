@@ -223,20 +223,22 @@ func TestRestartResumptionSchemaIsScopedToSpawnAndContinue(t *testing.T) {
 func TestHostLifecycleContinuationPolicy(t *testing.T) {
 	enablePolicy := true
 	cases := []struct {
-		name       string
-		status     string
-		reason     string
-		optedIn    bool
-		offeredGen int64
-		force      bool
-		want       bool
-		owner      string
-		parent     string
-		setPolicy  *bool
+		name          string
+		status        string
+		reason        string
+		optedIn       bool
+		offeredGen    int64
+		force         bool
+		want          bool
+		owner         string
+		parent        string
+		setPolicy     *bool
+		collectBefore bool
 	}{
 		{name: "ordinary completion", status: "completed", want: true},
 		{name: "restart without opt in", status: "interrupted", reason: "host_restarted"},
 		{name: "opted in proven restart", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 1, want: true},
+		{name: "collect before opted in restart", status: "interrupted", reason: "host_restarted", optedIn: true, offeredGen: 1, want: true, collectBefore: true},
 		{name: "explicit cancellation", status: "cancelled", reason: "cancelled", optedIn: true},
 		{name: "parent stop", status: "interrupted", reason: "parent_stopped", optedIn: true},
 		{name: "failure", status: "failed", reason: "failed", optedIn: true},
@@ -270,6 +272,17 @@ func TestHostLifecycleContinuationPolicy(t *testing.T) {
 				parent = "parent"
 			}
 			ctx := agentpolicy.ContextWithAgentRecoveryNotice(core.ContextWithSessionID(context.Background(), parent), offer)
+			if tc.collectBefore {
+				waitArgs := fmt.Sprintf(`{"agent_ids":[%q],"max_wait":0}`, r.ID)
+				out := lifecycleCall(t, &agentControlTool{name: WaitAgentToolName, spawn: tool}, ctx, waitArgs)
+				if out.IsError {
+					t.Fatalf("collect interrupted output: %+v", out)
+				}
+				collected, err := store.GetAgentRun(ctx, r.ID)
+				if err != nil || collected.CollectedAt.IsZero() {
+					t.Fatalf("interrupted output was not collected: %+v, %v", collected, err)
+				}
+			}
 			arguments := map[string]any{"agent_id": r.ID, "wait": 0, "force": tc.force}
 			if tc.setPolicy != nil {
 				arguments["auto_resume_on_restart"] = *tc.setPolicy

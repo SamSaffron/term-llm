@@ -251,8 +251,9 @@ func (s *SQLiteStore) SetAgentRunRestartPolicy(ctx context.Context, id, parent s
 
 // ClaimAgentRunRestart advances only the still-offered, opted-in interrupted generation.
 // The previous owner and parent stop fence are compared in the same write that claims it.
+// Collecting the old output does not revoke consent; delivery state is reset for the new generation.
 func (s *SQLiteStore) ClaimAgentRunRestart(ctx context.Context, id, parent string, generation int64, previousOwner, newOwner string, at time.Time) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET run_generation=run_generation+1,run_status='queued',stop_reason='',owner_instance_id=?,updated_at=?,notified_at=NULL WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND run_status='interrupted' AND stop_reason='host_restarted' AND auto_resume_on_restart=1 AND owner_instance_id=? AND wake_suppressed=0 AND collected_at IS NULL`, newOwner, at, id, parent, generation, previousOwner)
+	result, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET run_generation=run_generation+1,run_status='queued',stop_reason='',owner_instance_id=?,updated_at=?,notified_at=NULL,collected_at=NULL WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND run_status='interrupted' AND stop_reason='host_restarted' AND auto_resume_on_restart=1 AND owner_instance_id=? AND wake_suppressed=0`, newOwner, at, id, parent, generation, previousOwner)
 	if err != nil {
 		return false, fmt.Errorf("claim opted-in agent restart: %w", err)
 	}
