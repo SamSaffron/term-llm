@@ -14,21 +14,25 @@
    seeds of their own. */
 
 :root {
-  --bg: #171c1a;
+  --bg: #151917;
   --text: #e9eee9;
   --accent: #98d5b2;
   --tint: var(--accent);
   --bg-accent: rgb(255 255 255 / 3%);
   --bg-accent-2: rgb(255 255 255 / 2%);
-  --surface: color-mix(in oklab, color-mix(in oklab, var(--bg), var(--text) 1.5%), var(--tint) 3%);
+  --surface: color-mix(
+    in oklab,
+    color-mix(in oklab, var(--bg), var(--text) 1.5%),
+    var(--tint) 2.5%
+  );
   --surface-strong: var(--surface);
-  --surface-2: color-mix(in oklab, var(--bg), var(--tint) 11%);
-  --surface-3: color-mix(in oklab, var(--bg), var(--tint) 19.5%);
-  --border: color-mix(in oklab, color-mix(in oklab, var(--bg), var(--text) 4.5%), var(--tint) 12%);
+  --surface-2: color-mix(in oklab, var(--bg), var(--tint) 9.5%);
+  --surface-3: color-mix(in oklab, var(--bg), var(--tint) 16.5%);
+  --border: color-mix(in oklab, color-mix(in oklab, var(--bg), var(--text) 4.5%), var(--tint) 10%);
   --border-strong: color-mix(
     in oklab,
     color-mix(in oklab, var(--bg), var(--text) 6.5%),
-    var(--tint) 20%
+    var(--tint) 17%
   );
   --text-muted: color-mix(in oklab, var(--text), var(--bg) 25%);
 
