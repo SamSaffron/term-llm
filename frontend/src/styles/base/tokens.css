@@ -35,11 +35,11 @@
 
   /* Tool calls take their outline, icons and running status from this colour;
      their text keeps the text colours. */
-  --tool: var(--text-muted);
+  --tool: var(--accent);
 
   /* Inline code, and the bar beside a block quote, so a theme can colour them. */
-  --code: var(--text);
-  --quote-rule: var(--border-strong);
+  --code: var(--accent);
+  --quote-rule: var(--accent);
 
   /* Three corner sizes for the whole app. Small: pills and small things. Medium:
      bubbles, code blocks, tool calls, tables, buttons and inputs. Large: the
