@@ -36,8 +36,22 @@ func newAgentWakeFixture(t *testing.T, provider *mockprovider.MockProvider) (*se
 	rt := &serveRuntime{provider: provider, providerKey: "debug", engine: engine.NewEngine(provider, registry), store: store, defaultModel: "fast", platform: "web", sessionMeta: parent}
 	mgr := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) { return rt, nil })
 	putTestSession(mgr, parent.ID, rt)
-	srv := &serveServer{store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager(), cfgRef: &config.Config{Providers: map[string]config.ProviderConfig{"debug": {Model: "fast"}}}}
-	t.Cleanup(func() { srv.agentWakeWG.Wait(); srv.responseRuns.Close(); mgr.Close() })
+	srv := &serveServer{cfg: serveServerConfig{ui: true}, store: store, sessionMgr: mgr, responseRuns: newServeResponseRunManager(), cfgRef: &config.Config{Providers: map[string]config.ProviderConfig{"debug": {Model: "fast"}}}}
+	// These tests drive reconciliation explicitly; shutdown only bounds worker
+	// cleanup, not a second periodic lifecycle scanner racing the assertions.
+	srv.responseLifecycleOnce.Do(func() {})
+	t.Cleanup(func() {
+		if srv.shutdownCh != nil {
+			select {
+			case <-srv.shutdownCh:
+			default:
+				close(srv.shutdownCh)
+			}
+		}
+		srv.agentWakeWG.Wait()
+		srv.responseRuns.Close()
+		mgr.Close()
+	})
 	return srv, store, rt
 }
 

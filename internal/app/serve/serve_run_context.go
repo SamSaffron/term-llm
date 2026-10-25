@@ -20,7 +20,13 @@ func (rt *serveRuntime) prepareRunContext(ctx context.Context, collaboration too
 		switch rt.platform {
 		case "", "web":
 			askUser = rt.awaitAskUser
-		case "telegram", "jobs":
+		case "jobs":
+			// Keep the tool exposed, but never wait or imply a human approved
+			// anything when a background job has no interactive input surface.
+			askUser = func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
+				return nil, fmt.Errorf("ask_user is unavailable in a background job: interactive user input is unavailable. No user authorization was provided; do not assume approval")
+			}
+		case "telegram":
 			platform := rt.platform
 			askUser = func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
 				return nil, fmt.Errorf("ask_user is not available on %s sessions", platform)
