@@ -399,6 +399,7 @@
   background: var(--surface-2);
   padding: 6px;
   position: relative;
+
   --prompt-inline: 8px;
 }
 
@@ -684,10 +685,11 @@
   gap: 4px;
 }
 
-/* The first button's icon starts where the text does; its tappable square reaches
-   into the box's margin instead (as in ChatGPT). 1.3rem is the icon's size. */
+/* The first button's icon (the +) starts where the text does, by its stroke: the
+   icon is 1.3rem and its stroke starts a sixth of the way in. Its tappable square
+   reaches into the box's margin instead, as in ChatGPT. */
 .composer-toolbar > :first-child {
-  margin-inline-start: calc(var(--prompt-inline) - (var(--control-size) - 1.3rem) / 2);
+  margin-inline-start: calc(var(--prompt-inline) - (var(--control-size) - 1.3rem) / 2 - 1.3rem / 6);
 }
 
 .composer-actions {
@@ -826,6 +828,7 @@
   .composer-box {
     border-radius: var(--radius-lg);
     padding: 5px;
+
     --prompt-inline: 6px;
   }
 }
