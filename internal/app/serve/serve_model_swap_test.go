@@ -340,7 +340,10 @@ func TestPersistModelSwapMarkerTreatsZeroValueSessionAsUncompacted(t *testing.T)
 	}
 }
 
-func TestPersistModelSwapMarkerDoesNotRewriteUnknownCompactionState(t *testing.T) {
+// The caller cannot see compaction state (metadata lookup fails), but the store
+// reads the boundary in the write transaction, so persisting the marker is safe:
+// the archive and boundary survive and the marker lands in the active tail.
+func TestPersistModelSwapMarkerKeepsArchiveWithoutCompactionMetadata(t *testing.T) {
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -385,17 +388,28 @@ func TestPersistModelSwapMarkerDoesNotRewriteUnknownCompactionState(t *testing.T
 		t.Fatalf("Get after marker: %v", err)
 	}
 	if after.CompactionSeq != before.CompactionSeq || after.CompactionCount != before.CompactionCount {
-		t.Fatalf("unknown compaction state cleared boundary from %d/%d to %d/%d", before.CompactionSeq, before.CompactionCount, after.CompactionSeq, after.CompactionCount)
+		t.Fatalf("marker write cleared boundary from %d/%d to %d/%d", before.CompactionSeq, before.CompactionCount, after.CompactionSeq, after.CompactionCount)
 	}
 	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
 	if err != nil {
 		t.Fatalf("GetMessages: %v", err)
 	}
 	if len(messages) < 2 || messages[0].TextContent != "old prompt" || messages[1].TextContent != "old reply" {
-		t.Fatalf("unknown compaction state rewrote pre-compaction scrollback: %#v", messages)
+		t.Fatalf("marker write rewrote pre-compaction scrollback: %#v", messages)
 	}
-	if candidate.historyPersisted {
-		t.Fatal("marker history was marked persisted after metadata lookup failure")
+	if !candidate.historyPersisted {
+		t.Fatal("marker history was not persisted")
+	}
+	active, err := session.LoadActiveMessages(ctx, store, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawMarker bool
+	for _, msg := range active {
+		sawMarker = sawMarker || msg.Role == core.RoleEvent
+	}
+	if len(active) != len(activeHistory)+1 || !sawMarker {
+		t.Fatalf("marker missing from active context: %#v", active)
 	}
 }
 
@@ -512,5 +526,37 @@ func TestPersistModelSwapMarkerPreservesCompactedScrollback(t *testing.T) {
 	}
 	if markerIndex == 0 || markerIndex+1 >= len(messages) || messages[markerIndex-1].TextContent != "continue" || messages[markerIndex+1].TextContent != "new reply" {
 		t.Fatalf("model-swap marker has wrong compacted-history position, index=%d messages=%#v", markerIndex, messages)
+	}
+}
+
+// The swap fallback must load what runtime hydration loads: the active
+// context. A whole-transcript read fed archived rows to the model and, through
+// ReplaceMessages, copied them into the compacted session's active tail.
+func TestLoadPersistedLLMHistoryReturnsActiveContext(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "p", Model: "m", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range []core.Message{core.UserText("archived prompt"), core.AssistantText("archived reply")} {
+		if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CompactMessages(ctx, sess.ID, []session.Message{
+		*session.NewMessage(sess.ID, core.UserText("summary"), -1),
+		*session.NewMessage(sess.ID, core.AssistantText("ack"), -1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := (&serveServer{store: store}).loadPersistedLLMHistory(ctx, sess.ID)
+	if len(got) != 2 || core.MessageText(got[0]) != "summary" || core.MessageText(got[1]) != "ack" {
+		t.Fatalf("history = %+v, want only the active context [summary ack]", got)
 	}
 }

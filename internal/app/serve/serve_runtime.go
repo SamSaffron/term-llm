@@ -1232,17 +1232,25 @@ func inlinePersistContext(ctx context.Context, timeout time.Duration) (context.C
 	return context.WithTimeout(ctx, timeout)
 }
 
+// persistSnapshot replaces the session's active context with snapshot. The
+// store keeps a compacted session's archived rows and boundary.
 func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, snapshot []core.Message) bool {
-	return rt.persistSnapshotWithInitialBoundary(ctx, sessionID, snapshot, false)
+	return rt.persistSnapshotWithInitialBoundary(ctx, sessionID, snapshot, false, false)
 }
 
-// persistInitialSnapshot replaces the transcript with provider-complete input
-// context and republishes its final branchable row under the new row identity.
+// persistInitialSnapshot replaces the active context with provider-complete
+// input context and republishes its final branchable row under the new row
+// identity.
 func (rt *serveRuntime) persistInitialSnapshot(ctx context.Context, sessionID string, snapshot []core.Message) bool {
-	return rt.persistSnapshotWithInitialBoundary(ctx, sessionID, snapshot, true)
+	return rt.persistSnapshotWithInitialBoundary(ctx, sessionID, snapshot, false, true)
 }
 
-func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, sessionID string, snapshot []core.Message, publishInitialBoundary bool) bool {
+// persistSnapshotWithInitialBoundary writes a runtime snapshot. reset replaces
+// the whole transcript and clears any compaction boundary (explicit
+// fresh-history runs only); otherwise the store replaces the active context and
+// keeps a compacted archive. publishInitialBoundary republishes the final
+// branchable row of provider-complete initial context.
+func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, sessionID string, snapshot []core.Message, reset, publishInitialBoundary bool) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
 	}
@@ -1258,10 +1266,10 @@ func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, 
 		messages = append(messages, *sessionMsg)
 	}
 	_, err := runResponseRunPersistence(ctx, snapshot, func(fence session.ResponseRunFence) (int64, error) {
-		return replaceResponseRunMessages(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, messages)
+		return writeResponseRunTranscript(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, messages, reset)
 	})
 	if err != nil {
-		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
+		log.Printf("[serve] session snapshot replacement (reset=%t) failed for %s: %v", reset, sessionID, err)
 		return false
 	}
 	boundaryPublished := true
@@ -1279,39 +1287,7 @@ func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, 
 			}
 		}
 	}
-	userTurns := countUserMessages(snapshot)
-	if rt.sessionMeta != nil {
-		updated := *rt.sessionMeta
-		needsUpdate := false
-		if updated.UserTurns != userTurns {
-			updated.UserTurns = userTurns
-			needsUpdate = true
-		}
-		if updated.Summary == "" {
-			for _, msg := range snapshot {
-				if msg.Role != core.RoleUser {
-					continue
-				}
-				if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
-					updated.Summary = session.TruncateSummary(text)
-					needsUpdate = true
-					break
-				}
-			}
-		}
-		if needsUpdate {
-			if goalStore := rt.goalStateStore(); goalStore != nil && strings.TrimSpace(sessionID) != "" {
-				if refreshed, refreshErr := goalStore.Get(dbCtx, sessionID); refreshErr == nil && refreshed != nil {
-					updated.Goal = refreshed.Goal.Clone()
-				}
-			}
-			if updateErr := rt.store.Update(dbCtx, &updated); updateErr != nil {
-				log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
-			} else {
-				*rt.sessionMeta = updated
-			}
-		}
-	}
+	rt.refreshSessionMetaAfterSnapshot(dbCtx, sessionID, snapshot)
 	if setErr := rt.store.SetCurrent(dbCtx, sessionID); setErr != nil {
 		log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
 	}
@@ -1321,43 +1297,48 @@ func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, 
 	return boundaryPublished
 }
 
-func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID string, snapshot []core.Message) bool {
-	if rt.store == nil || sessionID == "" {
-		return false
+// refreshSessionMetaAfterSnapshot reloads session metadata after a transcript
+// replacement. The store owns turn counters and the compaction boundary, and
+// for a compacted session the snapshot is only the active tail, so nothing is
+// recomputed from it. Only an empty summary is filled from the first user
+// message.
+func (rt *serveRuntime) refreshSessionMetaAfterSnapshot(ctx context.Context, sessionID string, snapshot []core.Message) {
+	if rt.sessionMeta == nil {
+		return
 	}
-	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
-	defer cancel()
-
-	messages := make([]session.Message, 0, len(snapshot))
+	refreshed, err := rt.store.Get(ctx, sessionID)
+	if err != nil || refreshed == nil {
+		// Never write metadata derived from a stale in-memory copy.
+		log.Printf("[serve] session metadata refresh failed for %s: %v", sessionID, err)
+		return
+	}
+	*rt.sessionMeta = *refreshed
+	if rt.sessionMeta.Summary != "" {
+		return
+	}
+	updated := *rt.sessionMeta
 	for _, msg := range snapshot {
-		if msg.Role == "" {
+		if msg.Role != core.RoleUser {
 			continue
 		}
-		sessionMsg := session.NewMessage(sessionID, msg, -1)
-		messages = append(messages, *sessionMsg)
-	}
-	_, err := runResponseRunPersistence(ctx, snapshot, func(fence session.ResponseRunFence) (int64, error) {
-		return replaceCompactedResponseRunMessages(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, messages)
-	})
-	if err != nil {
-		log.Printf("[serve] session ReplaceCompactedMessages failed for %s: %v", sessionID, err)
-		return false
-	}
-	if run := responseRunFromContext(ctx); run != nil {
-		run.invalidateDurableBoundary()
-	}
-	if rt.sessionMeta != nil {
-		if refreshed, err := rt.store.Get(dbCtx, sessionID); err == nil && refreshed != nil {
-			rt.sessionMeta = refreshed
+		if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
+			updated.Summary = session.TruncateSummary(text)
+			break
 		}
 	}
-	if setErr := rt.store.SetCurrent(dbCtx, sessionID); setErr != nil {
-		log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
+	if updated.Summary == "" {
+		return
 	}
-	if statusErr := rt.store.UpdateStatus(dbCtx, sessionID, session.StatusActive); statusErr != nil {
-		log.Printf("[serve] session UpdateStatus(active) failed for %s: %v", sessionID, statusErr)
+	if goalStore := rt.goalStateStore(); goalStore != nil && strings.TrimSpace(sessionID) != "" {
+		if refreshed, refreshErr := goalStore.Get(ctx, sessionID); refreshErr == nil && refreshed != nil {
+			updated.Goal = refreshed.Goal.Clone()
+		}
 	}
-	return true
+	if err := rt.store.Update(ctx, &updated); err != nil {
+		log.Printf("[serve] session Update failed for %s: %v", sessionID, err)
+		return
+	}
+	*rt.sessionMeta = updated
 }
 
 type appendMessagesResult struct {

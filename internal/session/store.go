@@ -26,6 +26,12 @@ var ErrNotFound = errors.New("session: not found")
 // mutation method that reports the exact transcript revision it commits.
 var ErrTranscriptRevisionUnsupported = errors.New("session: transcript revision unsupported")
 
+// ErrEmptyActiveContext rejects replacing a compacted session's active context
+// with no messages. An empty tail would leave a boundary with no rows after it,
+// which LoadActiveMessages and the next replacement treat as stale: the archive
+// would become active again and then be overwritten.
+var ErrEmptyActiveContext = errors.New("session: compacted active context cannot be empty")
+
 var (
 	// ErrTranscriptConflict means a transcript mutation was based on a stale
 	// revision or head row and must be retried after refreshing the transcript.
@@ -71,7 +77,14 @@ type Store interface {
 	GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]Message, error)
 	// GetMessageByID retrieves a single message by its global message id.
 	GetMessageByID(ctx context.Context, msgID int64) (*Message, error)
+	// ReplaceMessages replaces the active context: the whole transcript, or for a
+	// compacted session only the rows from its boundary on, keeping the archive.
+	// See README.md "Transcript replacement and compaction".
 	ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error
+	// ResetMessages replaces the complete transcript and clears any compaction
+	// boundary, deleting archived rows. Only for callers that own the whole
+	// conversation.
+	ResetMessages(ctx context.Context, sessionID string, messages []Message) error
 	CompactMessages(ctx context.Context, sessionID string, messages []Message) error
 
 	// Metrics operations (for incremental session saving)
@@ -722,6 +735,7 @@ type TranscriptRevisionWriter interface {
 	AddMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message) (int64, error)
 	UpdateStreamingMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message, finalizeText bool) (int64, error)
 	ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error)
+	ResetMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error)
 }
 
 // BatchTranscriptRevisionWriter atomically appends an ordered message suffix
@@ -818,12 +832,6 @@ func FindMessageByClientMessageID(ctx context.Context, store Store, sessionID, c
 		}
 	}
 	return nil, ErrNotFound
-}
-
-// CompactedTranscriptRevisionWriter reports the exact revision committed by an
-// atomic compaction replacement.
-type CompactedTranscriptRevisionWriter interface {
-	ReplaceCompactedMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error)
 }
 
 // GeneratedTitleUpdater is an optional Store capability for updating only the

@@ -118,7 +118,11 @@ func containmentStall(t *testing.T, s *hubServer, node hub.Node, c *hubReverseCo
 	t.Helper()
 	socket := c.conn.UnderlyingConn().(*containmentConn)
 	socket.armed.Store(true)
-	done := containmentDo(s, ctx, node, "/upload", bytes.Repeat([]byte("x"), 16<<20))
+	// Far beyond the 4 KiB server send buffer and a non-reading peer's receive
+	// window, so the writer blocks; the checks below fail loudly if it does not.
+	// Keep it modest: under -race, decoding one huge fragmented JSON message is
+	// superlinear (16 MiB took ~10s locally and overran CI's watchdog).
+	done := containmentDo(s, ctx, node, "/upload", bytes.Repeat([]byte("x"), 4<<20))
 	select {
 	case <-socket.writing:
 	case <-time.After(2 * time.Second):
@@ -213,8 +217,8 @@ func TestHubReverseContainmentQueuedCancellation(t *testing.T) {
 			_ = peer.WriteJSON(hubReverseResponse{ID: frame.ID, Status: 200, Body: []byte(`{}`)})
 		}
 	}()
-	// Draining the 16 MiB stall payload is cleanup, not the property under test;
-	// it takes ~0.9s under -race on a fast host, so allow slow CI runners.
+	// Draining the stall payload is cleanup, not the property under test; it
+	// takes under a second under -race on a fast host, so allow slow CI runners.
 	if err := containmentAwaitWithin(t, first, 15*time.Second); err != nil {
 		t.Fatal(err)
 	}

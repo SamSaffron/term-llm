@@ -1,8 +1,44 @@
-# Steering persistence and ownership
+# Session persistence
+
+## Transcript replacement and compaction
+
+A compacted session has two parts: the **archive** (rows before
+`compaction_seq`, kept for scrollback and search) and the **active context**
+(rows from `compaction_seq` on, the summary plus everything after it).
+`LoadActiveMessages` returns the active context, and runtimes hold only that.
+
+| Operation | Replaces | Boundary | Use when |
+|---|---|---|---|
+| `ReplaceMessages` | the active context | kept | you hold what `LoadActiveMessages` returned, plus changes. This is the default. |
+| `ResetMessages` | the whole transcript | cleared, archive deleted | you own the complete conversation: an explicit fresh-history run, or a transcript held complete in memory (Telegram). |
+| `CompactMessages` | appends a new active context | moved to the appended rows | applying a compaction (`ApplyCompaction`). |
+
+Rules the store enforces inside the write transaction, so callers never choose
+a mode from session metadata:
+
+- No boundary, or a stale one with no rows at or after it, means the whole
+  transcript is active. A stale boundary is cleared, matching
+  `LoadActiveMessages`.
+- With a live boundary, an empty `ReplaceMessages` is rejected
+  (`ErrEmptyActiveContext`): it would leave a stale boundary that turns the
+  archive active again. Use `ResetMessages` to clear a transcript on purpose.
+- A whole-transcript write recounts `user_turns`. A tail rewrite only adds
+  user turns beyond those it replaces, never decreasing the count; retained
+  compaction-tail copies never count.
+
+Never pass a whole transcript (for example from `GetMessages`) to
+`ReplaceMessages` for a session that may be compacted: the archive would be
+copied into the active tail. The store cannot tell a stale snapshot from a new
+one, so a writer must hold the session (runtime lock or turn lease) between
+loading the active context and replacing it.
+
+Contract tests: `transcript_replace_test.go`.
+
+## Steering persistence
 
 `internal/session` owns steering persistence, operation fencing, recovery state, and the session-side ownership boundary. User-facing steering documentation lives in the [usage guide](https://term-llm.com/guides/usage/) and the [web UI and API guide](https://term-llm.com/guides/web-ui-and-api/).
 
-## Ownership and recovery
+### Ownership and recovery
 
 Server operations are session-scoped and keyed by a distinct stable request ID. Retrying the same ID returns the same immutable source and batch, including terminal results. Do not construct a fallback `/responses` request from rush-owned entries after a transport error.
 

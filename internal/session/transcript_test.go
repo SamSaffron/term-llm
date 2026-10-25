@@ -233,7 +233,11 @@ func TestSQLiteStoreTranscriptRevisionCoversMessageWritePaths(t *testing.T) {
 		*NewMessage(sess.ID, core.AssistantText("continuation changed"), -1),
 	}
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
-		return store.ReplaceCompactedMessages(ctx, sess.ID, active)
+		return store.ReplaceMessages(ctx, sess.ID, active)
+	})
+
+	requireTranscriptRevIncrease(t, store, sess.ID, func() error {
+		return store.ResetMessages(ctx, sess.ID, replacement)
 	})
 
 	requireTranscriptRevIncrease(t, store, sess.ID, func() error {

@@ -194,11 +194,19 @@ func copyLLMMessageSlice(messages []core.Message) []core.Message {
 	return out
 }
 
+// loadPersistedLLMHistory loads the session's active context, as runtime
+// hydration does. It must not read the whole transcript: for a compacted
+// session that would feed archived rows to the model and, via ReplaceMessages,
+// copy them into the active tail.
 func (s *serveServer) loadPersistedLLMHistory(ctx context.Context, sessionID string) []core.Message {
 	if s.store == nil || sessionID == "" {
 		return nil
 	}
-	stored, err := s.store.GetMessages(ctx, sessionID, 0, 0)
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil {
+		return nil
+	}
+	stored, err := session.LoadActiveMessages(ctx, s.store, sess)
 	if err != nil || len(stored) == 0 {
 		return nil
 	}
@@ -487,23 +495,9 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 
-			compacted := session.HasCompactionBoundary(candidate.sessionMeta)
-			persistedSession, getErr := candidate.store.Get(persistCtx, sessionID)
-			switch {
-			case getErr != nil && !compacted:
-				log.Printf("[serve] model-swap marker persistence skipped for %s: compaction state unavailable: %v", sessionID, getErr)
-				return
-			case getErr == nil && persistedSession != nil:
-				compacted = session.HasCompactionBoundary(persistedSession)
-			case getErr == nil && persistedSession == nil && !compacted:
-				log.Printf("[serve] model-swap marker persistence skipped for %s: session metadata unavailable", sessionID)
-				return
-			}
-			if compacted {
-				candidate.historyPersisted = candidate.persistCompactedSnapshot(persistCtx, sessionID, updatedHistory)
-			} else {
-				candidate.historyPersisted = candidate.persistSnapshot(persistCtx, sessionID, updatedHistory)
-			}
+			// The store reads the compaction boundary in the write transaction and
+			// keeps any archive, so no pre-read of compaction state is needed.
+			candidate.historyPersisted = candidate.persistSnapshot(persistCtx, sessionID, updatedHistory)
 		}
 		return
 	}

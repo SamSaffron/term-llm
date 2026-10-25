@@ -627,7 +627,18 @@ func (s *serveRuntimeTestStore) GetMessageByID(ctx context.Context, msgID int64)
 	return nil, session.ErrNotFound
 }
 
+// ReplaceMessages follows the store contract: for a session with a compaction
+// boundary only the active tail is replaced and archived rows are kept.
 func (s *serveRuntimeTestStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	return s.writeMessages(ctx, sessionID, messages, false)
+}
+
+// ResetMessages replaces the whole transcript and clears any boundary.
+func (s *serveRuntimeTestStore) ResetMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	return s.writeMessages(ctx, sessionID, messages, true)
+}
+
+func (s *serveRuntimeTestStore) writeMessages(ctx context.Context, sessionID string, messages []session.Message, reset bool) error {
 	if s.replaceMessagesHook != nil {
 		if err := s.replaceMessagesHook(ctx, sessionID, messages); err != nil {
 			return err
@@ -639,13 +650,43 @@ func (s *serveRuntimeTestStore) ReplaceMessages(ctx context.Context, sessionID s
 	if err := s.replaceFailures[s.replaceCalls]; err != nil {
 		return err
 	}
-	out := make([]session.Message, len(messages))
+	sess := s.sessions[sessionID]
+	var out []session.Message
+	base := 0
+	if !reset && session.HasCompactionBoundary(sess) && sess.CompactionSeq < len(s.messages[sessionID]) {
+		if len(messages) == 0 {
+			return session.ErrEmptyActiveContext
+		}
+		base = sess.CompactionSeq
+		out = append(out, s.messages[sessionID][:base]...)
+	} else if sess != nil {
+		sess.CompactionSeq, sess.CompactionCount = -1, 0
+		sess.UserTurns = 0
+	}
+	if sess != nil {
+		// As in the SQLite store: a whole-transcript write recounts user turns
+		// (reset to 0 above); a tail rewrite adds only turns beyond those replaced.
+		added := 0
+		for _, msg := range messages {
+			if msg.Role == core.RoleUser && !msg.CompactionTail {
+				added++
+			}
+		}
+		for _, msg := range s.messages[sessionID][base:] {
+			if base > 0 && msg.Role == core.RoleUser && !msg.CompactionTail {
+				added--
+			}
+		}
+		if added > 0 {
+			sess.UserTurns += added
+		}
+	}
 	for i, msg := range messages {
 		copyMsg := msg
-		if copyMsg.Sequence < 0 {
-			copyMsg.Sequence = i
+		if copyMsg.Sequence < 0 || base > 0 {
+			copyMsg.Sequence = base + i
 		}
-		out[i] = copyMsg
+		out = append(out, copyMsg)
 	}
 	s.messages[sessionID] = out
 	return nil
@@ -705,6 +746,13 @@ func (s *serveRuntimeTestStore) UpdateStreamingMessageWithTranscriptRev(ctx cont
 
 func (s *serveRuntimeTestStore) ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []session.Message) (int64, error) {
 	if err := s.ReplaceMessages(ctx, sessionID, messages); err != nil {
+		return 0, err
+	}
+	return s.nextTranscriptRev(), nil
+}
+
+func (s *serveRuntimeTestStore) ResetMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []session.Message) (int64, error) {
+	if err := s.ResetMessages(ctx, sessionID, messages); err != nil {
 		return 0, err
 	}
 	return s.nextTranscriptRev(), nil
