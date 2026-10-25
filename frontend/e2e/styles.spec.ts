@@ -264,12 +264,14 @@ test('the default palette keeps readable contrast in both colour schemes', async
         text: Math.min(contrast('--text', '--bg'), contrast('--text', '--surface-2')),
         muted: Math.min(contrast('--text-muted', '--bg'), contrast('--text-muted', '--surface-2')),
         link: contrast('--link', '--bg'),
+        code: contrast('--code', '--bg'),
         button: contrast('--btn-accent-text', '--accent'),
       };
     });
     expect(ratio.text, `${colorScheme}: text`).toBeGreaterThanOrEqual(7);
     expect(ratio.muted, `${colorScheme}: muted text`).toBeGreaterThanOrEqual(4.5);
     expect(ratio.link, `${colorScheme}: links`).toBeGreaterThanOrEqual(4.5);
+    expect(ratio.code, `${colorScheme}: inline code`).toBeGreaterThanOrEqual(4.5);
     expect(ratio.button, `${colorScheme}: text on the accent`).toBeGreaterThanOrEqual(4.5);
   }
 });

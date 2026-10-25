@@ -54,8 +54,9 @@
      their text keeps the text colours. */
   --tool: var(--accent);
 
-  /* Inline code, and the bar beside a block quote, so a theme can colour them. */
-  --code: var(--accent);
+  /* Inline code, and the bar beside a block quote, so a theme can colour them.
+     Code is lavender, term-llm.com's keyword colour, beside the green. */
+  --code: #d6b0e2;
   --quote-rule: var(--accent);
 
   /* Three corner sizes for the whole app. Small: pills and small things. Medium:
@@ -182,6 +183,7 @@
     );
     --text-muted: color-mix(in oklab, var(--text), var(--bg) 31%);
     --accent: #16634e;
+    --code: #7d3890;
     --accent-green: #059669;
     --accent-amber: #b45309;
     --danger: #dc2626;
