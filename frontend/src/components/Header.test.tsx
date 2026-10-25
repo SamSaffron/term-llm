@@ -65,4 +65,20 @@ describe('runtime header', () => {
     expect(screen.getByRole('combobox', { name: 'Runtime model' })).toBeDisabled();
     expect(screen.getByRole('combobox', { name: 'Runtime model' })).toHaveValue('gpt-5.6-sol');
   });
+
+  it('insets the runtime selects’ arrows like the other selects', async () => {
+    store = new AppStore(testConfig);
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /^Runtime settings:/ }));
+    for (const name of ['Provider', 'Runtime model', 'Reasoning effort']) {
+      const select = screen.getByRole('combobox', { name });
+      expect(select.parentElement, name).toHaveClass('control-select');
+      expect(select.parentElement?.querySelector('.control-select-chevron'), name).not.toBeNull();
+    }
+  });
 });
