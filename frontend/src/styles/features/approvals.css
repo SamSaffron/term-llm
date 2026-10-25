@@ -135,7 +135,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0;
+  gap: 0.5rem;
 }
 
 .ask-user-step {
@@ -180,6 +180,16 @@
   border-radius: var(--radius-md);
   background: var(--surface-2);
   padding: 1rem;
+}
+
+/* In the dialog the question and its option cards sit on the dialog itself, with
+   no panel behind them. */
+fieldset.ask-user-question {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .ask-user-question-text {
