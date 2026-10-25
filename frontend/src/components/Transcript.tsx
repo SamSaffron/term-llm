@@ -13,6 +13,7 @@ import { trustedPublishedMediaURL } from '../domain/audio-media';
 import { bindTranscriptMedia } from './transcript-media';
 import { ChipPicker } from './ChipPicker';
 import { Icon, type IconName } from './Icon';
+import { followChatGutter } from '../platform/page-chrome';
 import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
 import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
@@ -1416,6 +1417,8 @@ function NewChatControls() {
 export function Transcript() {
   const store = useStore();
   const scroll = useRef<HTMLElement>(null);
+  // The message box sits exactly under the messages, which are centred left of this scrollbar.
+  useLayoutEffect(() => followChatGutter(scroll.current), []);
   const content = useRef<HTMLDivElement>(null);
   const stickToTail = useRef(true);
   const programmaticScrollTops = useRef<number[]>([]);

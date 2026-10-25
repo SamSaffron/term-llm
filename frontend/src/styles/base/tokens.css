@@ -35,6 +35,22 @@
   /* Tool calls take their outline, icons and running status from this colour;
      their text keeps the text colours. */
   --tool: var(--text-muted);
+
+  /* Inline code, and the bar beside a block quote, so a theme can colour them. */
+  --code: var(--text);
+  --quote-rule: var(--border-strong);
+
+  /* Three corner sizes for the whole app. Small: pills and small things. Medium:
+     bubbles, code blocks, tool calls, tables, buttons and inputs. Large: the
+     message box, menus, popovers, toasts and sheets. Circles and hairline
+     corners keep their own shape. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* The chat's scrollbar width, measured by the transcript, so the message box
+     can sit exactly under the messages (0 where scrollbars float). */
+  --chat-gutter: 0px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -51,7 +67,7 @@
   --control-size: 32px;
   --control-size-small: 28px;
   --header-action-height: var(--control-size);
-  --header-action-radius: 10px;
+  --header-action-radius: var(--radius-md);
   --header-action-padding-x: 0.65rem;
   --header-cluster-gap: 0.35rem;
   --header-action-bg: transparent;

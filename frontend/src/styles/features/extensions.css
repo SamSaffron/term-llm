@@ -12,7 +12,7 @@
   padding: 1rem;
   margin: 0.75rem 0;
   border: 1px dashed var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 
 .extension-empty strong {
@@ -35,7 +35,7 @@
   gap: 0.5rem;
   align-items: center;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 0.7rem;
   background: var(--surface);
 }
@@ -114,7 +114,7 @@
 
 .extension-recovery {
   padding: 0.8rem;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--accent-amber);
   margin: 0.6rem 0;
   font-size: 0.85rem;
@@ -132,6 +132,6 @@
   gap: 0.6rem;
   margin: 0 0 1rem;
   padding: 0.65rem 0.85rem;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
 }

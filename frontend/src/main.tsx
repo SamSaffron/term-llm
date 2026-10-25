@@ -1,6 +1,7 @@
 import { effect } from '@preact/signals';
 import { initializeExtensionRecovery } from './stores/extension-runtime';
 import { loadExtensions, watchExtensionActivation } from './api/extensions';
+import { followThemeColor } from './platform/page-chrome';
 import { render } from 'preact';
 import { App } from './app/App';
 import { readInjectedConfig } from './app/config';
@@ -27,7 +28,10 @@ async function bootstrap(): Promise<void> {
     if (store.startupDone.value && !store.authRequired.value && !extensionsStarted) {
       extensionsStarted = true;
       requestAnimationFrame(() => {
-        void loadExtensions(store).then(() => watchExtensionActivation(store));
+        // A theme's page colour reaches the browser's own bar once its stylesheet is in.
+        void loadExtensions(store)
+          .finally(followThemeColor)
+          .then(() => watchExtensionActivation(store));
       });
     }
   });

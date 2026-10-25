@@ -2,10 +2,18 @@
 
 .composer {
   background: var(--bg);
-  padding: 0.75rem calc(1rem + var(--safe-right)) max(1rem, var(--safe-bottom))
-    calc(1rem + var(--safe-left));
+  padding: 0.75rem calc(1.1rem + var(--safe-right) + var(--chat-gutter))
+    max(1rem, var(--safe-bottom)) calc(1.1rem + var(--safe-left));
   position: relative;
   z-index: var(--z-local-raised);
+}
+
+/* On phones the box has the messages' side margin, so it lines up with the text above it. */
+@media (width <= 767px) {
+  .composer {
+    padding-inline: calc(1rem + var(--safe-left))
+      calc(1rem + var(--safe-right) + var(--chat-gutter));
+  }
 }
 
 .composer-inner {
@@ -14,6 +22,26 @@
   display: flex;
   flex-direction: column;
   gap: 0;
+  position: relative;
+}
+
+/* The conversation fades out over the 24px just above the box instead of ending at
+   a straight edge. */
+.composer-inner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 0.75rem);
+  height: 1.5rem;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+
+@media (width <= 700px) {
+  .composer-inner::before {
+    bottom: calc(100% + 0.45rem);
+  }
 }
 
 .voice-status {
@@ -25,7 +53,7 @@
   margin: 0 0.3rem 0.45rem;
   padding: 6px 8px 6px 12px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: var(--text);
 }
@@ -108,7 +136,7 @@
   min-width: 44px;
   min-height: 36px;
   padding: 0.35rem 0.8rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
   font-weight: 600;
   line-height: 1.2;
@@ -158,7 +186,7 @@
   padding: 0.65rem 0.85rem;
   min-height: 44px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
   color: var(--text);
 }
@@ -237,7 +265,7 @@
 .live-status-dot,
 .live-status-spinner {
   flex: 0 0 auto;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
 }
 
 .live-status-dot {
@@ -305,7 +333,7 @@
   gap: 0.5rem;
   min-width: 0;
   padding: 0.5rem 0.85rem;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--surface-2);
 }
@@ -345,7 +373,7 @@
 .pending-steering-action {
   flex-shrink: 0;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
   padding: 0.3rem 0.65rem;
@@ -366,15 +394,15 @@
 .composer-box {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 24px;
+  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: var(--radius-lg);
   background: var(--surface-2);
   padding: 6px;
   position: relative;
 }
 
 .composer-box:focus-within {
-  border-color: var(--border-strong);
+  border-color: color-mix(in srgb, var(--text) 16%, transparent);
 }
 
 .slash-command-menu,
@@ -383,7 +411,7 @@
   bottom: calc(100% + 8px);
   padding: 0.35rem;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-strong);
   z-index: var(--z-floating-panel);
@@ -409,7 +437,7 @@
   gap: 0.75rem;
   padding: 0.58rem 0.65rem;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -451,7 +479,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
   transition:
     background 0.15s ease,
@@ -470,7 +498,7 @@
   color: var(--text);
   background: color-mix(in srgb, var(--accent) 16%, var(--surface));
   border: 1px solid var(--accent);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md);
 }
 
 .compaction-status {
@@ -493,7 +521,7 @@
 .goal-chip {
   align-self: flex-start;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--text);
   padding: 0.35rem 0.7rem;
@@ -542,7 +570,7 @@
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   padding: 0.75rem;
@@ -573,7 +601,7 @@
 .composer-add-menu button {
   width: 100%;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   padding: 0.58rem 0.65rem;
@@ -667,7 +695,7 @@
   width: var(--control-size);
   height: var(--control-size);
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: var(--gradient-accent-strong);
   color: var(--btn-accent-text);
   display: inline-flex;
@@ -694,8 +722,10 @@
 }
 
 .send-btn:disabled {
-  opacity: 0.35;
+  opacity: 1;
   cursor: not-allowed;
+  background: color-mix(in srgb, var(--text) 30%, var(--surface-2));
+  color: color-mix(in srgb, var(--text) 55%, var(--surface-2));
 }
 
 .send-btn .spinner {
@@ -746,15 +776,15 @@
 
 @media (width <= 700px) {
   .composer {
-    padding: 0.45rem calc(0.5rem + var(--safe-right)) max(1rem, var(--safe-bottom))
-      calc(0.5rem + var(--safe-left));
+    padding: 0.45rem calc(1rem + var(--safe-right) + var(--chat-gutter))
+      max(1rem, var(--safe-bottom)) calc(1rem + var(--safe-left));
   }
 
   .voice-status {
     min-height: 58px;
     margin: 0 0.15rem 0.4rem;
     padding: 6px 6px 6px 10px;
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
   }
 
   .voice-status .voice-status-actions .btn {
@@ -770,7 +800,7 @@
     flex-wrap: wrap;
     margin: 0 0.15rem 0.4rem;
     padding: 0.65rem 0.75rem;
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
   }
 
   .live-status-transcript:not(.live-status-transcript-expanded) {
@@ -787,7 +817,7 @@
   }
 
   .composer-box {
-    border-radius: 22px;
+    border-radius: var(--radius-lg);
     padding: 5px;
   }
 

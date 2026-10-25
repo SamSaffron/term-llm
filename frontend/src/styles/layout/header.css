@@ -12,10 +12,10 @@
 }
 
 .main-header {
-  min-height: 64px;
+  min-height: 0;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  padding: calc(0.85rem + var(--safe-top)) calc(1.15rem + var(--safe-right)) 0.85rem
+  background: var(--bg);
+  padding: calc(0.5rem + var(--safe-top)) calc(1.15rem + var(--safe-right)) 0.5rem
     calc(1.15rem + var(--safe-left));
   position: relative;
   z-index: var(--z-local-raised);
@@ -204,7 +204,7 @@
   width: 0.42rem;
   height: 0.42rem;
   flex: none;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--accent-green);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-green) 12%, transparent);
 }
@@ -220,7 +220,7 @@
   align-items: center;
   gap: 0.25rem;
   padding: 0.2rem 0.5rem;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -394,10 +394,8 @@
   max-height: min(320px, calc(var(--app-height) - 1rem));
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow:
-    0 12px 32px rgb(0 0 0 / 45%),
-    0 2px 6px rgb(0 0 0 / 30%);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-strong);
   padding: 0.25rem;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -432,7 +430,7 @@
   padding: 0.4rem 0.55rem;
   margin-bottom: 0.35rem;
   border: 1px solid var(--surface-border, var(--surface-3));
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--surface-1, transparent);
   color: var(--text);
   font: inherit;
@@ -456,7 +454,7 @@
   width: 100%;
   padding: 0.45rem 0.6rem;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   font: inherit;
   text-align: left;
@@ -602,7 +600,7 @@ dialog.chip-popover::backdrop {
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -636,17 +634,17 @@ dialog.chip-popover::backdrop {
 
 .runtime-popover-label {
   color: var(--text-muted);
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .runtime-popover-select {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   background: var(--surface-1, var(--surface));
   color: var(--text);
   padding: 0.55rem 0.65rem;
@@ -686,7 +684,7 @@ dialog.chip-popover::backdrop {
   height: 1.35rem;
   padding: 0;
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface-3);
   cursor: pointer;
 }
@@ -734,7 +732,7 @@ dialog.chip-popover::backdrop {
   }
 
   .chip-popover-runtime {
-    border-radius: 18px;
+    border-radius: var(--radius-lg);
     padding: 0.85rem 0.9rem calc(0.9rem + var(--safe-bottom));
     box-shadow:
       0 18px 48px rgb(0 0 0 / 42%),
@@ -773,7 +771,7 @@ dialog.chip-popover::backdrop {
 
   .runtime-popover-select {
     min-height: 48px;
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     font-size: 16px;
     padding: 0.65rem 0.75rem;
   }
@@ -841,7 +839,7 @@ dialog.chip-popover::backdrop {
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 0.6rem 0.75rem;
   font: inherit;
 }

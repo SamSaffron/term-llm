@@ -9,7 +9,7 @@
 
 .message.path-note details {
   border: 1px dashed var(--border);
-  border-radius: 0.6rem;
+  border-radius: var(--radius-md);
   padding: 0.55rem 0.7rem;
   background: var(--surface-2);
 }
@@ -68,7 +68,7 @@
   min-height: 2.35rem;
   padding: 0.55rem 2rem 0.55rem 2.25rem;
   border: 1px solid var(--border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
@@ -120,10 +120,10 @@
   padding: 0.3rem 0.25rem 0.2rem;
   background: var(--surface);
   color: var(--text-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .branch-tree-section-count {
@@ -144,7 +144,7 @@
   align-items: start;
   width: 100%;
   border: 1px solid transparent;
-  border-radius: 0.55rem;
+  border-radius: var(--radius-md);
   padding: 0.55rem 0.65rem;
   background: transparent;
   color: var(--text);
@@ -202,7 +202,7 @@
   width: 100%;
   min-height: 2.5rem;
   border: 1px dashed var(--border);
-  border-radius: 0.55rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -223,7 +223,7 @@
   flex-direction: column;
   gap: 0.25rem;
   border: 1px dashed var(--border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   padding: 0.9rem;
   color: var(--text-muted);
   font-size: 0.85rem;
@@ -246,7 +246,7 @@
   width: 100%;
   padding: 0.7rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 0.6rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -292,7 +292,7 @@
   min-height: 5.5rem;
   padding: 0.65rem;
   border: 1px solid var(--border);
-  border-radius: 0.55rem;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   font: inherit;

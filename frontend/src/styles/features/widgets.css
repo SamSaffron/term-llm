@@ -7,7 +7,7 @@
   flex-direction: column;
   padding: 0;
   overflow: hidden;
-  border-radius: 18px;
+  border-radius: var(--radius-md);
 }
 
 .widgets-modal .modal-title-row {
@@ -43,7 +43,7 @@
   flex: 0 0 auto;
   padding: 0.25rem 0.55rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--text-muted);
   font-size: 0.74rem;
@@ -64,7 +64,7 @@
   min-height: 2.35rem;
   padding: 0.55rem 2rem 0.55rem 2.25rem;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   appearance: none;
   background: var(--surface-2);
   color: var(--text);
@@ -110,7 +110,7 @@
   min-height: 4.25rem;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--surface-2) 72%, transparent);
   transition:
     background 0.14s ease,
@@ -159,7 +159,7 @@
   height: 2rem;
   flex: 0 0 auto;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--text-muted);
 }
@@ -231,7 +231,7 @@
   flex: 0 0 auto;
   padding: 0.08rem 0.42rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text-muted);
   font-size: 0.68rem;
@@ -242,7 +242,7 @@
 .widget-status-dot {
   width: 0.4rem;
   height: 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: currentcolor;
 }
 
@@ -273,7 +273,7 @@
   min-height: 1.8rem;
   padding: 0.25rem 0.5rem;
   border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--danger);
   font: inherit;
@@ -318,7 +318,7 @@
   gap: 0.25rem;
   padding: 0.95rem;
   border: 1px dashed var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--surface-2) 70%, transparent);
   color: var(--text-muted);
   font-size: 0.9rem;
@@ -348,7 +348,7 @@
 @media (width <= 600px) {
   .modal.widgets-modal {
     max-height: calc(var(--app-height) - 1rem - var(--safe-top) - var(--safe-bottom));
-    border-radius: 14px;
+    border-radius: var(--radius-md);
   }
 
   .widget-grid {

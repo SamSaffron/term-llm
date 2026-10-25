@@ -165,7 +165,7 @@
   align-items: start;
   gap: 0.5rem;
   padding: 0.52rem 0.48rem;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   transition:
     background-color var(--panel-fade-duration) ease,
@@ -267,7 +267,7 @@
 .plan-sheet-handle span {
   width: 42px;
   height: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--border-strong);
 }
 
@@ -342,7 +342,7 @@
     max-height: min(72dvh, calc(var(--app-height) - var(--safe-top) - 1rem));
     border: 1px solid var(--border);
     border-bottom: 0;
-    border-radius: 18px 18px 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     box-shadow: 0 -10px 34px rgb(0 0 0 / 35%);
     transform: translateY(100%);
   }

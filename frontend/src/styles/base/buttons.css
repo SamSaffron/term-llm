@@ -12,7 +12,7 @@
   min-height: var(--control-size);
   padding: 0 0.8rem;
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   font: inherit;

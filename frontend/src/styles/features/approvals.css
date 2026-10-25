@@ -8,7 +8,7 @@
   max-height: 100%;
   overflow: hidden;
   padding: 0;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
 }
 
 .approval-modal .modal-title-row {
@@ -58,7 +58,7 @@
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
 }
 
@@ -102,7 +102,7 @@
   color: var(--text-muted);
   font-size: 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0.1rem 0.35rem;
 }
 
@@ -177,7 +177,7 @@
 
 .ask-user-question {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   padding: 1rem;
 }

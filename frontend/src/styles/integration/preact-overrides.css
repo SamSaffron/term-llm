@@ -27,7 +27,7 @@
   gap: 0.55rem;
   padding: 0.58rem 0.65rem;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -132,7 +132,7 @@
   margin-left: 0.4rem;
   padding: 0.25rem 0.45rem;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -262,7 +262,7 @@
   margin-block: 0.6rem;
   padding: 0.8rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   overflow-wrap: anywhere;
@@ -310,7 +310,7 @@
 
 .audio-media-card audio:focus-visible,
 .audio-media-download:focus-visible {
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -321,7 +321,7 @@
   max-width: 100%;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: transparent;
   cursor: zoom-in;
@@ -341,7 +341,7 @@
   gap: 0.35rem;
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   font-size: 0.8rem;
   text-decoration: none;
@@ -385,7 +385,7 @@ a.message-file:focus-visible {
   width: fit-content;
   padding: 0.25rem 0.35rem;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -546,7 +546,7 @@ a.message-file:focus-visible {
   margin: 0 0.3rem 0.45rem;
   padding: 0.55rem 0.7rem;
   border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--danger);
   font-size: 0.82rem;
 }
@@ -587,7 +587,7 @@ a.message-file:focus-visible {
   max-width: 9rem;
   padding: 0.35rem 1.45rem 0.35rem 0.5rem;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
@@ -708,7 +708,7 @@ mark.diff-word {
   width: 100%;
   padding: 0.65rem 0.7rem;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -747,7 +747,7 @@ mark.diff-word {
 .branch-tree-row > button {
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   cursor: pointer;
@@ -760,7 +760,7 @@ mark.diff-word {
   gap: 0.5rem;
   padding: 0.65rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .branch-tree-row > div {
@@ -889,10 +889,6 @@ mark.diff-word {
     width: 100%;
   }
 
-  .message.user {
-    width: min(88%, 820px);
-  }
-
   .modal-overlay {
     align-items: flex-end;
     padding: calc(0.5rem + var(--safe-top)) calc(0.5rem + var(--safe-right))
@@ -902,7 +898,7 @@ mark.diff-word {
   .modal {
     max-height: calc(var(--app-height) - 1rem - var(--safe-top) - var(--safe-bottom));
     overflow: auto;
-    border-radius: 12px;
+    border-radius: var(--radius-md);
   }
 
   .wide-modal {
@@ -978,10 +974,11 @@ mark.diff-word {
   }
 
   .chat-scroll {
-    padding-inline: calc(0.65rem + var(--safe-right)) calc(0.65rem + var(--safe-left));
+    padding-inline: calc(1rem + var(--safe-left)) calc(1rem + var(--safe-right));
   }
 
   .composer {
-    padding-inline: calc(0.4rem + var(--safe-right)) calc(0.4rem + var(--safe-left));
+    padding-inline: calc(1rem + var(--safe-left))
+      calc(1rem + var(--safe-right) + var(--chat-gutter));
   }
 }

@@ -1,7 +1,7 @@
 /* Shared treatment for X buttons that dismiss an entire surface. */
 
 .close-button {
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
 }
 
 .icon-btn.close-button {

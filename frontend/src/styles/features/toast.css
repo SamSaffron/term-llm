@@ -25,7 +25,7 @@
   max-width: 100%;
   padding: 0.6rem 0.55rem 0.6rem 0.7rem;
   border: 1px solid color-mix(in srgb, var(--toast-accent) 28%, var(--border-strong));
-  border-radius: 0.65rem;
+  border-radius: var(--radius-lg);
   color: var(--text);
   background: var(--surface-strong);
   background: color-mix(in srgb, var(--surface-strong) 96%, var(--toast-accent));
@@ -69,7 +69,7 @@
   margin: -0.15rem -0.1rem -0.15rem 0;
   padding: 0;
   border: 0;
-  border-radius: 0.35rem;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;

@@ -41,7 +41,7 @@
 
 .shell-dock-resizer::after {
   position: absolute;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: #78838f;
   content: '';
   opacity: 0;
@@ -118,7 +118,7 @@
   align-items: center;
   justify-content: center;
   border: 1px solid #363d46;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   background: #111418;
   color: #98c379;
   font-family: var(--font-mono);
@@ -163,7 +163,7 @@
 .shell-status-dot {
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: #e5c07b;
   box-shadow: 0 0 0 3px rgb(229 192 123 / 10%);
 }
@@ -214,7 +214,7 @@
   gap: 2px;
   padding: 2px;
   border: 1px solid #3a424c;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: #111418;
 }
 
@@ -226,7 +226,7 @@
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: #89939f;
   cursor: pointer;
@@ -328,7 +328,7 @@
   align-items: center;
   padding: 0 9px;
   border: 1px solid #426247;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   color: #b9d9a7;
   font-size: 11px;
   font-weight: 650;
@@ -448,7 +448,7 @@
   .shell-prompt-mark {
     width: 30px;
     height: 30px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     font-size: 11px;
   }
 

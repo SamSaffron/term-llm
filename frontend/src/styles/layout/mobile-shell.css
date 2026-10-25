@@ -158,7 +158,7 @@
   .header-controls-row .model-chip[data-chip='worktree'] .chip-trigger:not(.header-action) {
     min-height: 32px;
     padding: 0 0.5rem;
-    border-radius: 7px;
+    border-radius: var(--radius-md);
   }
 
   .header-controls-row .model-chip[data-chip='worktree'] .chip-trigger:not(.header-action):hover,
@@ -179,11 +179,7 @@
   }
 
   .chat-scroll {
-    padding: 0.8rem calc(0.75rem + var(--safe-right)) 0.7rem calc(0.75rem + var(--safe-left));
-  }
-
-  .message.user {
-    width: min(92%, 820px);
+    padding: 0.8rem calc(1rem + var(--safe-right)) 0.7rem calc(1rem + var(--safe-left));
   }
 
   .settings-row {

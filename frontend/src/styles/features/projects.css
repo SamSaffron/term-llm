@@ -24,7 +24,7 @@
    opaque and sits above their menu buttons, which touch screens always show. */
 .project-group.is-dragging {
   z-index: var(--z-local-dragging);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow:
     0 0 0 1px var(--border),
@@ -57,7 +57,7 @@
   height: 2.15rem;
   padding: 0.48rem 0.75rem;
   border: 0;
-  border-radius: 0.4rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -105,7 +105,7 @@
   color: var(--text-muted);
   min-width: 2rem;
   min-height: 2rem;
-  border-radius: 0.4rem;
+  border-radius: var(--radius-md);
   cursor: pointer;
   opacity: 0;
   transition:
@@ -258,7 +258,7 @@
   gap: 0.42rem;
   padding: 0.82rem 0.9rem;
   border: 1px solid color-mix(in srgb, var(--accent-green) 30%, var(--border));
-  border-radius: 0.7rem;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--accent-green) 6%, var(--surface-2));
 }
 
@@ -277,7 +277,7 @@
 .project-choice-recommended {
   flex: 0 0 auto;
   padding: 0.15rem 0.42rem;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent-green) 13%, transparent);
   color: var(--accent-green);
   font-size: 0.61rem;
@@ -319,7 +319,7 @@
   min-height: 3.5rem;
   padding: 0.62rem 0.72rem;
   border: 1px solid var(--border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   background: var(--bg);
   color: var(--text);
   text-align: left;
@@ -359,7 +359,7 @@
   width: 0.92rem;
   height: 0.92rem;
   border: 1.5px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   box-shadow: inset 0 0 0 0.2rem var(--bg);
   transition:
     background 0.12s ease,
@@ -430,7 +430,7 @@
   gap: 0.25rem;
   padding: 1rem;
   border: 1px dashed var(--border);
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   text-align: center;
   font-size: 0.75rem;
@@ -448,7 +448,7 @@
   box-sizing: border-box;
   padding: 0.66rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 0.62rem;
+  border-radius: var(--radius-md);
   background: var(--bg);
   color: var(--text);
   font: inherit;
@@ -478,7 +478,7 @@
 }
 
 .project-path-control .project-input {
-  border-radius: 0.62rem 0 0 0.62rem;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .project-path-input {
@@ -492,7 +492,7 @@
   padding: 0 0.8rem;
   border: 1px solid var(--border);
   border-left: 0;
-  border-radius: 0 0.62rem 0.62rem 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
   background: var(--surface-2);
   color: var(--text);
   font:
@@ -508,7 +508,7 @@
 .project-directory-browser {
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 0.7rem;
+  border-radius: var(--radius-md);
   background: var(--bg);
   box-shadow: inset 0 1px rgb(255 255 255 / 1.5%);
 }
@@ -535,7 +535,7 @@
   height: 1.9rem;
   padding: 0;
   border: 0;
-  border-radius: 0.42rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font:
@@ -574,7 +574,7 @@
   white-space: nowrap;
   padding: 0.35rem 0.45rem;
   border: 0;
-  border-radius: 0.38rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font: 500 0.75rem/1 var(--font-mono);
@@ -632,7 +632,7 @@
   min-height: 2.35rem;
   padding: 0.35rem 0.48rem;
   border: 0;
-  border-radius: 0.48rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -681,7 +681,7 @@
   min-height: 1.15rem;
   padding: 0.12rem 0.38rem;
   border: 1px solid color-mix(in srgb, var(--accent-green) 30%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent-green) 10%, transparent);
   color: var(--accent-green);
   font-size: 0.62rem;
@@ -707,7 +707,7 @@
 
 .project-browser-skeleton span {
   height: 0.72rem;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   animation: project-skeleton-pulse 1.2s ease-in-out infinite alternate;
 }
@@ -715,7 +715,7 @@
 .project-browser-skeleton span:first-child {
   width: 1rem;
   height: 1rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
 }
 
 .project-browser-empty,
@@ -784,7 +784,7 @@
   margin: 0 1.25rem 1rem;
   padding: 0.8rem 0.85rem;
   border: 1px solid color-mix(in srgb, var(--accent-green) 28%, var(--border));
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--accent-green) 7%, var(--surface-2));
 }
 
@@ -840,11 +840,11 @@
 }
 
 .modal .project-path-control input {
-  border-radius: 8px 0 0 8px;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .modal .project-browse-button {
-  border-radius: 0 8px 8px 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 
 .modal .project-resolution-summary {
