@@ -967,14 +967,6 @@
   text-decoration-color: currentcolor;
 }
 
-.markdown-body a[target='_blank']::after {
-  content: '\2197';
-  display: inline-block;
-  margin-left: 0.15em;
-  font-size: 0.8em;
-  opacity: 0.6;
-}
-
 .markdown-body .katex {
   font-size: 1.02em;
 }
