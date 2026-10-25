@@ -14,16 +14,17 @@
   --text-muted: #9a9a9a;
 
   /* The accent: primary buttons, links, focus rings and other active states
-     follow it, so a theme sets one colour (links can still be set apart). */
-  --accent: #ececec;
-  --accent-strong: #fff;
+     follow it, so a theme sets one colour (links can still be set apart).
+     term-llm's green, as on term-llm.com. */
+  --accent: #98d5b2;
+  --accent-strong: #c1ead0;
   --accent-green: #34d399;
   --accent-amber: #e5a210;
   --danger: #f87171;
   --backdrop: rgb(0 0 0 / 50%);
   --overlay: rgb(0 0 0 / 60%);
   --error-text: #fecaca;
-  --btn-accent-text: #212121;
+  --btn-accent-text: #15271d;
   --spinner-ring: rgb(33 33 33 / 35%);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 10%);
   --shadow-strong: 0 2px 8px rgb(0 0 0 / 15%);
@@ -130,8 +131,8 @@
     --border-strong: rgb(0 0 0 / 15%);
     --text: #0d0d0d;
     --text-muted: #6e6e6e;
-    --accent: #0d0d0d;
-    --accent-strong: #0d0d0d;
+    --accent: #16634e;
+    --accent-strong: #104c3b;
     --accent-green: #059669;
     --accent-amber: #b45309;
     --danger: #dc2626;
