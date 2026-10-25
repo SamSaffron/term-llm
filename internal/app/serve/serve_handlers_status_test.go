@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -545,4 +546,67 @@ func readStatusEntryForSession(t *testing.T, store session.Store, sessionID stri
 	}
 	t.Fatalf("session %q missing from status response: %s", sessionID, rr.Body.String())
 	return sessionsStatusTestEntry{}
+}
+
+func TestHandleSessionsStatusExplicitIDsReturnsExactlyThoseSessions(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now()
+	running, archived, other := session.NewID(), session.NewID(), session.NewID()
+	for _, id := range []string{running, archived, other} {
+		if err := store.Create(ctx, &session.Session{ID: id, Provider: "test", Model: "test", Mode: session.ModeChat,
+			Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive, Archived: id == archived}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A running session not in the request must not be appended as "critical".
+	for _, id := range []string{running, other} {
+		if _, err := store.AdmitResponseRun(ctx, session.ResponseRunAdmission{ResponseID: "resp-" + id, SessionID: id,
+			RunEpoch: 1, OwnerInstanceID: "other-process", StartedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+	rr := httptest.NewRecorder()
+	srv.handleSessionsStatus(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/status?ids="+running+","+archived+",,"+running+",missing", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Sessions []struct {
+			ID                  string `json:"id"`
+			ActiveRun           bool   `json:"active_run"`
+			InteractionRequired bool   `json:"interaction_required"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, entry := range body.Sessions {
+		got[entry.ID] = entry.ActiveRun
+	}
+	if len(body.Sessions) != 2 || !got[running] {
+		t.Fatalf("want exactly running (active) + archived, got %s", rr.Body.String())
+	}
+	if active, ok := got[archived]; !ok || active {
+		t.Fatalf("archived session must be included and idle, got %s", rr.Body.String())
+	}
+
+	tooMany := make([]string, statusSessionIDsMax+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("s%d", i)
+	}
+	for _, query := range []string{"ids=,", "ids=" + strings.Join(tooMany, ",")} {
+		rr := httptest.NewRecorder()
+		srv.handleSessionsStatus(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/status?"+query, nil))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", query[:10], rr.Code)
+		}
+	}
 }

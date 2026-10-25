@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -48,6 +49,34 @@ func listStatusAttention(ctx context.Context, store session.AttentionStore, kind
 	return map[string]session.AttentionItem{}
 }
 
+// statusSessionIDsMax bounds an explicit `ids=` status lookup.
+const statusSessionIDsMax = 100
+
+// parseStatusSessionIDs parses `ids=a,b,c`. Nil means no explicit set was
+// requested; an explicitly empty set is an error.
+func parseStatusSessionIDs(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	seen := make(map[string]bool)
+	ids := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(part)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("ids must list at least one session id")
+	}
+	if len(ids) > statusSessionIDsMax {
+		return nil, fmt.Errorf("ids accepts at most %d session ids", statusSessionIDsMax)
+	}
+	return ids, nil
+}
+
 func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -67,7 +96,13 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	includeArchived := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "1") ||
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
-	sessions, err := s.store.List(r.Context(), session.ListOptions{
+	requestedIDs, err := parseStatusSessionIDs(r.URL.Query().Get("ids"))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	listOptions := session.ListOptions{
 		// Bound the polling projection independently of the total session history.
 		// The grouped sidebar pages older rows on demand; status polling is only a
 		// freshness hint and must remain cheap for long-lived stores.
@@ -76,7 +111,13 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		Categories:       categories,
 		SortByActivity:   true,
 		ExcludeSubagents: true,
-	})
+	}
+	if requestedIDs != nil {
+		// Exactly the requested rows (e.g. search matches outside the recent
+		// window); the caller already chose them, so no list filters apply.
+		listOptions = session.ListOptions{IDs: requestedIDs, Limit: -1, Archived: true, SortByActivity: true}
+	}
+	sessions, err := s.store.List(r.Context(), listOptions)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
 		return
@@ -118,7 +159,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			missing = append(missing, id)
 		}
 	}
-	if len(missing) > 0 {
+	if requestedIDs == nil && len(missing) > 0 {
 		// Ordinary active response/interaction rows retain the sidebar's
 		// top-level filter. Compaction has an independent exception below.
 		critical, listErr := s.store.List(r.Context(), session.ListOptions{
@@ -140,6 +181,11 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	if requestedIDs != nil {
+		// An explicit ID set is not a sidebar projection: never append
+		// unrequested compaction rows.
+		compactionIDs = nil
+	}
 	compactions, listErr := s.compactionStatusSessions(r.Context(), compactionIDs, listed)
 	if listErr != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load compacting sessions")
@@ -152,7 +198,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 
 	// An explicitly opened child transcript still needs status reconciliation
 	// and response-stream attachment, even though it is not a sidebar/Hub row.
-	if selected != "" && !listed[selected] {
+	if requestedIDs == nil && selected != "" && !listed[selected] {
 		selectedSessions, listErr := s.store.List(r.Context(), session.ListOptions{
 			IDs: []string{selected}, Limit: -1, Archived: true,
 		})
