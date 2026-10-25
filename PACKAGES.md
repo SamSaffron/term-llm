@@ -11,6 +11,8 @@ One line per root-module package, generated from package doc comments by `make d
 - `cmd/genpkgmap` — regenerates PACKAGES.md, the one-line-per-package map of the root module built from package doc comments.
 - `cmd/gentsapi` — writes the registered Go serve JSON contracts for the frontend.
 - `cmd/imagetest` — Standalone test binary to debug image rendering with streaming markdown
+- `cmd/peer-broker` — peer-broker runs the standalone version 2 mobile-share rendezvous broker.
+- `cmd/peer-testdevice` — peer-testdevice is a synthetic mobile-sharing protocol test device.
 - `cmd/precompressui` — gzips the generated web UI bundle in place so the binary embeds compressed bytes and the server can send them unchanged.
 - `cmd/servicesmoke` — exercises installed service specifications and real runners without touching a supervisor.
 - `internal/acp` — implements the client side of Agent Client Protocol v1.
@@ -125,13 +127,18 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/memory` — stores decayed memory fragments, insights and images in SQLite.
 - `internal/mentions` — indexes workspace files and parses @mentions from prompts and composers.
 - `internal/mitmca` — provides the ephemeral certificate authority shared by term-llm's loopback TLS proxies.
+- `internal/mobileshare` — owns the server-side mobile-sharing lifecycle, admission, persistence, and owner API for a single term-llm web target.
+- `internal/mobileshare/testdevice` — implements a synthetic mobile-share device for protocol interoperability tests and manual development.
 - `internal/modelpolicy` — enforces the ordered intersection of agent model rules.
 - `internal/music` — generates music through the ElevenLabs and Venice providers and saves it.
 - `internal/notification` — defines the shared Web Push wire envelope and event identity helpers.
 - `internal/oauth` — implements ChatGPT, Copilot and Grok OAuth login and refresh flows.
 - `internal/openaiapi` — resolves the public OpenAI API endpoint settings shared by every API-key OpenAI client (Responses, model listing, embeddings, images and transcription).
+- `internal/pairing` — implements the frozen v2 identity-pairing and signed transport-handshake contract, strict termllm://pair invitations, persistent Ed25519 identities, and durable revocation-only web-v1 grants.
 - `internal/passkeyauth` — provides application-neutral WebAuthn authentication primitives for first-party term-llm servers.
 - `internal/pathutil` — provides shared path manipulation utilities.
+- `internal/peer` — bridges HTTP requests to a fixed http.Handler over a reliable, ordered WebRTC DataChannel.
+- `internal/peerbroker` — implements the version 2 mobile-share rendezvous service.
 - `internal/plan` — owns the shared update_plan snapshot model, validation, history extraction, and bounded rendering helpers.
 - `internal/pprof` — runs the opt-in profiling HTTP server and tracks its port file.
 - `internal/process` — provides advisory process discovery, never restart authority.

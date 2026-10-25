@@ -34,6 +34,9 @@ func (s *serveServer) contextWithShutdown(ctx context.Context) (context.Context,
 }
 
 func (s *serveServer) Stop(ctx context.Context) error {
+	if s.mobileSharing != nil {
+		defer s.mobileSharing.Close()
+	}
 	if s.reloadRunsUnregister != nil {
 		s.reloadRunsUnregister()
 		s.reloadRunsUnregister = nil

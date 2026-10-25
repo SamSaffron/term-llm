@@ -58,8 +58,8 @@ type Data struct {
 	}
 }
 
-// Keep emission order as well as membership: the first 31 names are cmd-origin
-// contracts, followed by 18 library types in Go-key order.
+// Keep emission order as well as membership: cmd-origin contracts are followed
+// by library types in Go-key order.
 func TestWireNamesInventory(t *testing.T) {
 	got, err := Generate("../..")
 	if err != nil {

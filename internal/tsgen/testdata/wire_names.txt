@@ -38,6 +38,12 @@ CoreJobNotificationProvenance
 CoreModelSwapMarker
 CorePathNoteProvenance
 CoreSkillActivationProvenance
+MobileshareAuthorityStatement
+MobileshareDeviceStatus
+MobileshareInvitationStatus
+MobileshareRequestStatus
+MobileshareState
+MobileshareStatus
 SessionResponseRunState
 SessionSessionMode
 SessionSessionOrigin

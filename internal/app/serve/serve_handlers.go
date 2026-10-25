@@ -38,6 +38,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/samsaffron/term-llm/internal/mobileshare"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
@@ -2902,18 +2903,18 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 
 func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 	if s.browserAuth != nil {
-		return func(w http.ResponseWriter, r *http.Request) {
+		return mobileshare.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
 			if p, ok := hubPrincipal(r); !ok || p.SessionID == "" {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Passkey authentication is required")
 				return
 			}
 			next(w, r)
-		}
+		})
 	}
 	if !s.cfg.requireAuth {
 		return next
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
+	return mobileshare.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			next(w, r)
 			return
@@ -2923,7 +2924,7 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
-	}
+	})
 }
 
 func cookieAuthAllowed(r *http.Request) bool {

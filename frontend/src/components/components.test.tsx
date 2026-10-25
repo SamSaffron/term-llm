@@ -9019,7 +9019,7 @@ describe('Preact-owned chat surfaces', () => {
         <Modals />
       </StoreContext.Provider>,
     );
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.getByRole('tab', { name: 'Model' })).toHaveAttribute('aria-selected', 'true');
     expect(fetchExtensions).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('Effort'), { target: { value: 'high' } });

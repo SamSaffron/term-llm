@@ -14,12 +14,27 @@ const LazyExtensionSettings = lazyComponent(
   <p>Loading extension settings…</p>,
 );
 
+const LazyMobileSharingSettings = lazyComponent(
+  () =>
+    import('./MobileSharingSettings')
+      .then(({ MobileSharingSettings }) => MobileSharingSettings)
+      .catch(() => () => <p>Could not load mobile sharing settings. Reload the page to retry.</p>),
+  <p>Loading mobile sharing settings…</p>,
+);
+
+const settingsTabs = [
+  { label: 'Model', slug: 'model' },
+  { label: 'Interface', slug: 'interface' },
+  { label: 'Extensions', slug: 'extensions' },
+  { label: 'Mobile Sharing', slug: 'mobile-sharing' },
+  { label: 'Connection', slug: 'connection' },
+] as const;
+
 export function Settings() {
   const store = useStore();
   const [tab, setTab] = useState('model');
   const [extensionsVisited, setExtensionsVisited] = useState(false);
   const activeTab = tab;
-  const tabs = ['Model', 'Interface', 'Extensions', 'Connection'];
   const selectTab = (name: string) => {
     setTab(name);
     if (name === 'extensions') setExtensionsVisited(true);
@@ -52,27 +67,28 @@ export function Settings() {
   return (
     <Overlay title="Settings" className="settings-modal" dismissDisabled={saving}>
       <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-        {tabs.map((label, index) => {
-          const name = label.toLowerCase();
+        {settingsTabs.map(({ label, slug }, index) => {
           return (
             <button
               type="button"
               role="tab"
-              id={`settings-${name}-tab`}
-              aria-controls={`settings-${name}-panel`}
-              aria-selected={activeTab === name}
-              tabIndex={activeTab === name ? 0 : -1}
-              onClick={() => selectTab(name)}
+              id={`settings-${slug}-tab`}
+              aria-controls={`settings-${slug}-panel`}
+              aria-selected={activeTab === slug}
+              tabIndex={activeTab === slug ? 0 : -1}
+              onClick={() => selectTab(slug)}
               onKeyDown={(event) => {
                 let next: number;
-                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+                if (event.key === 'ArrowRight') next = (index + 1) % settingsTabs.length;
+                else if (event.key === 'ArrowLeft')
+                  next = (index + settingsTabs.length - 1) % settingsTabs.length;
                 else if (event.key === 'Home') next = 0;
-                else if (event.key === 'End') next = tabs.length - 1;
+                else if (event.key === 'End') next = settingsTabs.length - 1;
                 else return;
                 event.preventDefault();
-                selectTab(tabs[next].toLowerCase());
-                document.getElementById(`settings-${tabs[next].toLowerCase()}-tab`)?.focus();
+                const nextTab = settingsTabs[next];
+                selectTab(nextTab.slug);
+                document.getElementById(`settings-${nextTab.slug}-tab`)?.focus();
               }}
             >
               {label}
@@ -300,6 +316,15 @@ export function Settings() {
         class="settings-panel"
       >
         {extensionsVisited && <LazyExtensionSettings />}
+      </div>
+      <div
+        id="settings-mobile-sharing-panel"
+        role="tabpanel"
+        aria-labelledby="settings-mobile-sharing-tab"
+        hidden={activeTab !== 'mobile-sharing'}
+        class="settings-panel"
+      >
+        {activeTab === 'mobile-sharing' && <LazyMobileSharingSettings active />}
       </div>
       {saveError && <p role="alert">{saveError}</p>}
       {(activeTab === 'model' || (activeTab === 'connection' && !store.config.passkeyAuth)) && (

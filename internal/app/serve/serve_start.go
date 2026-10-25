@@ -21,8 +21,10 @@ import (
 	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
 	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/mobileshare"
 	"github.com/samsaffron/term-llm/internal/restart"
 	platform "github.com/samsaffron/term-llm/internal/serve"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -364,6 +366,19 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 				sess, getErr := store.Get(context.Background(), sessionID)
 				return getErr == nil && sess != nil
 			}),
+		}
+		if hasWeb {
+			storeID, storeErr := session.SessionInputStoreIdentity(store)
+			if attentionStore, ok := session.AsAttentionStore(store); ok {
+				storeID, storeErr = attentionStore.StoreInstanceID(ctx)
+			}
+			if storeErr != nil {
+				return fmt.Errorf("mobile sharing target identity: %w", storeErr)
+			}
+			s.mobileSharing, err = mobileshare.NewServer(agentName, storeID, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", resolvedApproval.Mode))
+			if err != nil {
+				return fmt.Errorf("initialize mobile sharing: %w", err)
+			}
 		}
 		if hasWeb {
 			s.extensions, err = newServeExtensions(opts.ExtensionsDir, opts.ExtensionIDs, deps.Flags.Extensions, opts.DisableExtensions)

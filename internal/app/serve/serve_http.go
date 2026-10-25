@@ -87,6 +87,11 @@ func (s *serveServer) Start() (startErr error) {
 		s.startEventWatcher()
 		s.startResponseLifecycle()
 		s.startCompletionPushDispatcher()
+		if s.mobileSharing != nil {
+			if err := s.mobileSharing.Start(); err != nil {
+				s.verboseLog("mobile sharing startup: %v", err)
+			}
+		}
 		return nil
 	}
 }
@@ -107,6 +112,10 @@ func (s *serveServer) httpHandler() http.Handler {
 
 	inner.HandleFunc("/healthz", s.handleHealth)
 	inner.HandleFunc("/v1/providers", s.auth(s.cors(s.handleProviders)))
+	if s.mobileSharing != nil {
+		inner.HandleFunc("/v1/mobile-sharing", s.auth(s.cors(s.mobileSharing.Handler().ServeHTTP)))
+		inner.HandleFunc("/v1/mobile-sharing/", s.auth(s.cors(s.mobileSharing.Handler().ServeHTTP)))
+	}
 	inner.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
 	inner.HandleFunc("/v1/mentions/search", s.auth(s.cors(s.handleMentionSearch)))
 	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
@@ -174,6 +183,9 @@ func (s *serveServer) httpHandler() http.Handler {
 
 	if s.cfg.ui {
 		inner.HandleFunc("/", s.cors(s.handleUI)) // catch-all SPA
+	}
+	if s.mobileSharing != nil {
+		s.mobileSharing.SetHandler(inner)
 	}
 
 	// Jobs-only serve instances have no UI surface, so mount at root and keep

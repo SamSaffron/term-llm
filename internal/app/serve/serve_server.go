@@ -18,6 +18,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mentions"
+	"github.com/samsaffron/term-llm/internal/mobileshare"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -45,6 +46,7 @@ type serveServer struct {
 	sessionStore             runtime.SessionStoreOverrides
 	memoryPaths              appmemory.Paths
 	mediaPublisher           *serveMediaPublisher
+	mobileSharing            *mobileshare.Runtime
 	approvalDefault          tools.ApprovalMode
 	sharePublisherFactory    func() (share.Publisher, error)
 	shareMu                  sync.Mutex

@@ -80,6 +80,18 @@ export type CorePathNoteProvenance = { "source_session_id": string; "anchor_mess
 
 export type CoreSkillActivationProvenance = { "name": string; "source": string; "source_path": string; "origin": string; "execution": string; "raw_arguments"?: string; "agent"?: string; "model"?: string; "allowed_tools"?: (string)[]; "allowed_tools_present"?: boolean; "run_id"?: string; "child_session_id"?: string; "status"?: string; "started_at"?: string; "completed_at"?: string; "activated_at": string; };
 
+export type MobileshareAuthorityStatement = { "agent_name"?: string; "description": string; "same_uid_note": string; };
+
+export type MobileshareDeviceStatus = { "id": string; "name": string; "approved_at"?: string; "last_seen_at"?: string; "connection": string; };
+
+export type MobileshareInvitationStatus = { "url": string; "qr_data_url": string; "expires_at": string; };
+
+export type MobileshareRequestStatus = { "id": string; "name": string; "requested_at"?: string; };
+
+export type MobileshareState = string;
+
+export type MobileshareStatus = { "state": MobileshareState; "reason"?: string; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: MobileshareInvitationStatus; "pending_requests": (MobileshareRequestStatus)[] | null; "devices": (MobileshareDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": MobileshareAuthorityStatement; };
+
 export type SessionResponseRunState = NotificationdbResponseRunState;
 
 export type SessionSessionMode = string;
