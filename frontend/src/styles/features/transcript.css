@@ -314,6 +314,11 @@
   align-self: center;
 }
 
+/* The buttons' own padding already sets them off from the text. */
+.message.assistant > .turn-action-panel {
+  margin-top: -0.35rem;
+}
+
 @media (hover: hover) {
   .message.assistant .turn-action-panel {
     opacity: 0.5;
