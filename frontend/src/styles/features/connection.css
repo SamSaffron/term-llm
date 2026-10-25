@@ -4,13 +4,7 @@
   display: grid;
   place-items: center;
   padding: 48px 24px;
-  background:
-    radial-gradient(
-      ellipse at 50% 0,
-      color-mix(in srgb, var(--accent-green) 5%, transparent),
-      transparent 60%
-    ),
-    var(--bg);
+  background: radial-gradient(ellipse at 50% 0, rgb(52 211 153 / 5%), transparent 60%), var(--bg);
 }
 
 .connection-card {
@@ -107,7 +101,7 @@
 
 .connection-terminal mark {
   color: var(--accent-green);
-  background: color-mix(in srgb, var(--accent-green) 10%, transparent);
+  background: rgb(52 211 153 / 10%);
   border-radius: 3px;
   padding: 3px 5px;
 }

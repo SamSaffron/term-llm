@@ -339,8 +339,8 @@
   height: 0.48rem;
   justify-self: center;
   border-radius: var(--radius-sm);
-  background: var(--accent-green);
-  box-shadow: 0 0 0 0.14rem color-mix(in srgb, var(--accent-green) 12%, transparent);
+  background: #22c55e;
+  box-shadow: 0 0 0 0.14rem rgb(34 197 94 / 12%);
 }
 
 .sidebar-search-wrap {

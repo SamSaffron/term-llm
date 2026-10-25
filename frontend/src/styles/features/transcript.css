@@ -838,7 +838,7 @@
 
 .turn-action-btn.copied {
   color: var(--accent-green);
-  background: color-mix(in srgb, var(--accent-green) 8%, transparent);
+  background: rgb(52 211 153 / 8%);
 }
 
 .turn-action-btn.copied::after {
