@@ -1,17 +1,18 @@
-/* Design tokens: color scheme, spacing, layout and syntax palettes. */
+/* Design tokens: color scheme, spacing, layout and syntax palettes. The colours
+   are term-llm.com's: slightly green neutrals and a green accent. */
 
 :root {
-  --bg: #212121;
+  --bg: #171c1a;
   --bg-accent: rgb(255 255 255 / 3%);
   --bg-accent-2: rgb(255 255 255 / 2%);
-  --surface: #2f2f2f;
-  --surface-strong: #2f2f2f;
-  --surface-2: #373737;
-  --surface-3: #424242;
-  --border: rgb(255 255 255 / 8%);
-  --border-strong: rgb(255 255 255 / 15%);
-  --text: #ececec;
-  --text-muted: #9a9a9a;
+  --surface: #1d2320;
+  --surface-strong: #1d2320;
+  --surface-2: #242d27;
+  --surface-3: #293c30;
+  --border: #2c3630;
+  --border-strong: #38463d;
+  --text: #e9eee9;
+  --text-muted: #a9b6ad;
 
   /* The accent: primary buttons, links, focus rings and other active states
      follow it, so a theme sets one colour (links can still be set apart).
@@ -136,17 +137,17 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #fff;
+    --bg: #fcfcfa;
     --bg-accent: rgb(0 0 0 / 2%);
     --bg-accent-2: rgb(0 0 0 / 1%);
     --surface: #fff;
     --surface-strong: #fff;
-    --surface-2: #f7f7f8;
-    --surface-3: #ececec;
-    --border: rgb(0 0 0 / 8%);
-    --border-strong: rgb(0 0 0 / 15%);
-    --text: #0d0d0d;
-    --text-muted: #6e6e6e;
+    --surface-2: #f3f4f1;
+    --surface-3: #e9ece6;
+    --border: #e6e9e3;
+    --border-strong: #dce1da;
+    --text: #222b28;
+    --text-muted: #5b6660;
     --accent: #16634e;
     --accent-strong: #104c3b;
     --accent-green: #059669;
