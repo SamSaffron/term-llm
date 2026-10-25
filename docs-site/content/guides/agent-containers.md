@@ -104,6 +104,33 @@ After first boot, the volume is the source of truth. Future boots ignore image b
 
 The service supervisor runs as root. The Web UI, jobs server, first-boot `bootstrap-jobs` one-shot, shells, and normal agent work run as the `agent` Linux user.
 
+### Volume ownership and legacy repair
+
+Normal boots do not recursively scan or change ownership of `/home/agent`,
+including first bootstrap on a populated volume. Bootstrap assigns `agent:agent`
+only to files, directories, and copied trees it creates; pre-existing content
+keeps its ownership. Copied seed trees are owned without following symlinks.
+
+The volume `init.sh` hook still runs as **root** so it can install system services.
+Custom hooks must create agent files as `agent` (for example with
+`sudo -Hu agent ...`) or explicitly assign ownership to their own new files.
+There is no automatic ownership repair after the hook.
+
+For a legacy volume containing root-owned agent files, back up the volume and
+inspect ownership first. Open a container shell with
+`term-llm contain shell myagent`, then explicitly repair only the affected path,
+for example:
+
+```bash
+sudo chown -hR -P agent:agent /home/agent/.config/term-llm
+```
+
+This is a manual maintenance operation, not a boot step. If the entire home
+really needs repair, replace the path with `/home/agent`; that walks the whole
+volume and changes intentionally different owners too. Prefer the narrowest
+path, and do not run repair while services are writing to it. `-h` and `-P`
+keep symlinks from changing ownership of their targets.
+
 ## Services
 
 | Service | What it does |
