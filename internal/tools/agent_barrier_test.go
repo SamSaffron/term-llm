@@ -308,17 +308,137 @@ func TestHumanContinueAgentCanSetRestartOptIn(t *testing.T) {
 	spawn.SetRunner(&persistentLifecycleRunner{lifecycleRunner: runner, store: store})
 	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: spawn}, ctx, `{"agent_id":"`+run.ID+`","auto_resume_on_restart":true,"wait":0}`)
-	if out.IsError {
-		t.Fatalf("human policy change failed: %+v", out)
-	}
-	if err := spawn.WaitForChildren(ctx, "parent"); err != nil {
-		t.Fatal(err)
+	if out.IsError || !strings.Contains(out.Content, "child was not started or steered") {
+		t.Fatalf("human policy change failed or started work: %+v", out)
 	}
 	got, err := store.GetAgentRun(ctx, run.ID)
-	if err != nil || !got.AutoResumeOnRestart || got.RunGeneration != 2 {
-		t.Fatalf("policy after human continuation = %+v, %v", got, err)
+	if err != nil || !got.AutoResumeOnRestart || got.RunGeneration != 1 {
+		t.Fatalf("policy-only update = %+v, %v", got, err)
+	}
+	if runner.resumed != 0 {
+		t.Fatalf("policy-only update resumed runner %d times", runner.resumed)
 	}
 }
+
+func TestHumanContinueAgentCanSetPolicyForLiveRemoteChildWithoutSteering(t *testing.T) {
+	for _, status := range []string{"queued", "running", "awaiting_approval"} {
+		for _, enabled := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/enabled=%t", status, enabled), func(t *testing.T) {
+				store := barrierStore(t)
+				run := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", AgentName: "developer", Prompt: "work", RunGeneration: 3, Status: status, Started: status != "queued", AutoResumeOnRestart: !enabled, OwnerInstanceID: "another-host:123:456", UpdatedAt: time.Now()}
+				if err := store.PutAgentRun(context.Background(), run); err != nil {
+					t.Fatal(err)
+				}
+				runner := &lifecycleRunner{}
+				spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+				spawn.SetRunner(&persistentLifecycleRunner{lifecycleRunner: runner, store: store})
+				ctx := core.ContextWithSessionID(context.Background(), "parent")
+				args := fmt.Sprintf(`{"agent_id":%q,"auto_resume_on_restart":%t}`, run.ID, enabled)
+				out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: spawn}, ctx, args)
+				if out.IsError || !strings.Contains(out.Content, "child was not started or steered") {
+					t.Fatalf("policy update failed or steered active remote child: %+v", out)
+				}
+				got, err := store.GetAgentRun(ctx, run.ID)
+				if err != nil || got.AutoResumeOnRestart != enabled || got.RunGeneration != run.RunGeneration {
+					t.Fatalf("live policy update = %+v, %v", got, err)
+				}
+				if runner.resumed != 0 {
+					t.Fatalf("policy-only update invoked runner %d times", runner.resumed)
+				}
+			})
+		}
+	}
+}
+
+type restartClaimInterleavingStore struct {
+	*session.SQLiteStore
+	beforeClaim func(context.Context, string, string, int64) error
+}
+
+func (s *restartClaimInterleavingStore) ClaimAgentRunRestart(ctx context.Context, id, parent string, generation int64, previousOwner, newOwner string, at time.Time) (bool, error) {
+	if s.beforeClaim != nil {
+		if err := s.beforeClaim(ctx, id, parent, generation); err != nil {
+			return false, err
+		}
+	}
+	return s.SQLiteStore.ClaimAgentRunRestart(ctx, id, parent, generation, previousOwner, newOwner, at)
+}
+
+func TestRestartAdmissionCASRejectsInterleavedStateChanges(t *testing.T) {
+	for _, action := range []string{"revoke", "cancel", "generation", "owner", "parent_stop"} {
+		t.Run(action, func(t *testing.T) {
+			base := barrierStore(t)
+			store := &restartClaimInterleavingStore{SQLiteStore: base}
+			owner := fmt.Sprintf("%s:2147483647:1", hostnameForTest(t))
+			run := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", AgentName: "developer", Prompt: "work", RunGeneration: 7, Status: "interrupted", StopReason: "host_restarted", Started: true, AutoResumeOnRestart: true, OwnerInstanceID: owner, UpdatedAt: time.Now()}
+			if err := base.PutAgentRun(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			store.beforeClaim = func(ctx context.Context, id, parent string, generation int64) error {
+				switch action {
+				case "revoke":
+					_, err := base.SetAgentRunRestartPolicy(ctx, id, parent, generation, false)
+					return err
+				case "cancel":
+					current, err := base.GetAgentRun(ctx, id)
+					if err != nil {
+						return err
+					}
+					current.Status, current.StopReason = "cancelled", "cancelled"
+					return base.PutAgentRun(ctx, current)
+				case "generation", "owner":
+					current, err := base.GetAgentRun(ctx, id)
+					if err != nil {
+						return err
+					}
+					if action == "generation" {
+						current.RunGeneration++
+					} else {
+						current.OwnerInstanceID = fmt.Sprintf("%s:2147483646:2", hostnameForTest(t))
+					}
+					return base.PutAgentRun(ctx, current)
+				case "parent_stop":
+					return base.SuppressPendingAgentWakes(ctx, parent)
+				default:
+					return fmt.Errorf("unexpected interleave %q", action)
+				}
+			}
+			runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+			spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+			spawn.SetRunner(&persistentLifecycleRunner{lifecycleRunner: runner, store: store})
+			ctx := agentpolicy.ContextWithAgentRecoveryNotice(core.ContextWithSessionID(context.Background(), "parent"), run)
+			out := lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: spawn}, ctx, `{"agent_id":"`+run.ID+`","wait":0}`)
+			close(runner.release)
+			if err := spawn.WaitForChildren(ctx, "parent"); err != nil {
+				t.Fatal(err)
+			}
+			if !out.IsError {
+				t.Fatalf("%s interleave unexpectedly admitted restart: %+v", action, out)
+			}
+			got, err := base.GetAgentRun(ctx, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantGeneration := run.RunGeneration
+			if action == "generation" {
+				wantGeneration++
+			}
+			if got.RunGeneration != wantGeneration {
+				t.Fatalf("phantom restart generation: got %d want %d, row=%+v", got.RunGeneration, wantGeneration, got)
+			}
+			runner.mu.Lock()
+			calls, resumed := runner.calls, runner.resumed
+			runner.mu.Unlock()
+			if resumed != 0 || calls != 0 {
+				t.Fatalf("runner started after %s interleave: resumed=%d calls=%d", action, resumed, calls)
+			}
+			if _, exists := processAgentEntries.Load(run.ID); exists {
+				t.Fatal("failed restart claim registered a phantom process entry")
+			}
+		})
+	}
+}
+
 func hostnameForTest(t *testing.T) string {
 	t.Helper()
 	name, err := os.Hostname()
@@ -360,7 +480,7 @@ func TestAgentBarrierWithoutStoreAcknowledgesOnlyOfferedGeneration(t *testing.T)
 	if err != nil || e == nil || record.Output != "done" || !record.CollectedAt.IsZero() {
 		t.Fatalf("ACK discarded result: %+v %v", record, err)
 	}
-	entry, err := tool.manager.start(ctx, record.AgentName, record.Prompt, "", "", nil, nil, runner, 1, true, "follow up", false, record)
+	entry, err := tool.manager.start(ctx, record.AgentName, record.Prompt, "", "", nil, nil, runner, 1, true, "follow up", false, record, "")
 	if err != nil {
 		t.Fatal(err)
 	}

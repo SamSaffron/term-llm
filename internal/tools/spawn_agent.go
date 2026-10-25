@@ -585,7 +585,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 	cb := func(eventCallID string, event SubagentEvent) {
 		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
 	}
-	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", a.AutoResumeOnRestart, session.AgentRun{BaseDir: baseDir, NotifyWhenDone: a.NotifyWhenDone, NotifyOrigin: origin})
+	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", a.AutoResumeOnRestart, session.AgentRun{BaseDir: baseDir, NotifyWhenDone: a.NotifyWhenDone, NotifyOrigin: origin}, "")
 	if startErr != nil {
 		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}

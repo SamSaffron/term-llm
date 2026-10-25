@@ -3,6 +3,7 @@ package agentpolicy
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -33,7 +34,25 @@ func IsAgentRecoveryNotice(ctx context.Context) bool {
 	return ok
 }
 
-// UpdateAgentRunRestartPolicy changes only the exact current terminal generation.
+func ClaimAgentRunRestart(ctx context.Context, store session.AgentRunStore, id, parent string, generation int64, previousOwner, newOwner string, previousOwnerDead bool, at time.Time) error {
+	if !previousOwnerDead {
+		return errors.New("agent restart refused because the previous owner is not proven dead")
+	}
+	claimStore, ok := store.(session.AgentRunRestartClaimStore)
+	if !ok {
+		return errors.New("agent restart claim is unavailable")
+	}
+	claimed, err := claimStore.ClaimAgentRunRestart(ctx, id, parent, generation, previousOwner, newOwner, at)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return errors.New("agent restart refused because its policy, generation, owner, or parent stop state changed")
+	}
+	return nil
+}
+
+// UpdateAgentRunRestartPolicy changes only the exact current child generation.
 func UpdateAgentRunRestartPolicy(ctx context.Context, store session.AgentRunStore, run session.AgentRun, parent string, enabled bool) (session.AgentRun, error) {
 	policyStore, ok := store.(session.AgentRunRestartPolicyStore)
 	if !ok {
@@ -44,7 +63,7 @@ func UpdateAgentRunRestartPolicy(ctx context.Context, store session.AgentRunStor
 		return run, err
 	}
 	if !updated {
-		return run, errors.New("child restart policy was not changed because its generation is no longer terminal/current")
+		return run, errors.New("child restart policy was not changed because its generation is no longer current or the parent stopped")
 	}
 	run.AutoResumeOnRestart = enabled
 	return run, nil

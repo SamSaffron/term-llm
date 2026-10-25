@@ -111,7 +111,7 @@ func (usageTurnRunner) RunAgentWithCallback(_ context.Context, _, _ string, _ in
 func TestAgentLifecycleCountsOnlyChildModelTurns(t *testing.T) {
 	m := newAgentManager(SpawnConfig{MaxParallel: 1})
 	ctx := core.ContextWithSessionID(context.Background(), "parent")
-	e, err := m.start(ctx, "developer", "work", "", "call", nil, nil, usageTurnRunner{}, 0, false, "", false, session.AgentRun{})
+	e, err := m.start(ctx, "developer", "work", "", "call", nil, nil, usageTurnRunner{}, 0, false, "", false, session.AgentRun{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestAgentCallbackDetachWaitsForInFlightDelivery(t *testing.T) {
 	entry, err := m.start(core.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", func(string, SubagentEvent) {
 		close(entered)
 		<-unblock
-	}, nil, runner, 0, false, "", false, session.AgentRun{})
+	}, nil, runner, 0, false, "", false, session.AgentRun{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestResumeEventsCountTurnsAndReachAttachedWaiter(t *testing.T) {
 	owner.SetRunner(runner)
 	ctx := core.ContextWithSessionID(context.Background(), "parent")
 	record := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", AgentName: "developer", Prompt: "work", Started: true, Status: "completed", TurnsUsed: 1}
-	e, err := owner.manager.start(ctx, record.AgentName, record.Prompt, "", "continue-call", nil, nil, runner, 1, true, "continue", false, record)
+	e, err := owner.manager.start(ctx, record.AgentName, record.Prompt, "", "continue-call", nil, nil, runner, 1, true, "continue", false, record, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestCollectedRunEvictsAfterDoneCloses(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	m := newAgentManager(SpawnConfig{MaxParallel: 1})
 	m.store = store
-	e, err := m.start(core.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", nil, nil, runner, 0, false, "", false, session.AgentRun{})
+	e, err := m.start(core.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", nil, nil, runner, 0, false, "", false, session.AgentRun{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

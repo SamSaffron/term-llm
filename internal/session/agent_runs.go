@@ -89,9 +89,14 @@ func (s *SQLiteStore) SuppressPendingAgentWakes(ctx context.Context, parent stri
 	return nil
 }
 
-// AgentRunRestartPolicyStore updates a terminal child's opt-in for one exact generation.
+// AgentRunRestartPolicyStore updates one exact child generation's opt-in.
 type AgentRunRestartPolicyStore interface {
 	SetAgentRunRestartPolicy(context.Context, string, string, int64, bool) (bool, error)
+}
+
+// AgentRunRestartClaimStore atomically claims an explicitly opted-in restart.
+type AgentRunRestartClaimStore interface {
+	ClaimAgentRunRestart(context.Context, string, string, int64, string, string, time.Time) (bool, error)
 }
 
 // AgentRunStore is an optional extension: custom session stores need not implement it.
@@ -236,9 +241,20 @@ func scanAgentRun(row interface{ Scan(...any) error }) (AgentRun, error) {
 }
 
 func (s *SQLiteStore) SetAgentRunRestartPolicy(ctx context.Context, id, parent string, generation int64, enabled bool) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET auto_resume_on_restart=? WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND run_status IN ('completed','turn_limit','cancelled','interrupted','failed')`, enabled, id, parent, generation)
+	result, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET auto_resume_on_restart=? WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND run_status IN ('queued','running','awaiting_approval','completed','turn_limit','cancelled','interrupted','failed') AND wake_suppressed=0 AND stop_reason!='parent_stopped'`, enabled, id, parent, generation)
 	if err != nil {
 		return false, fmt.Errorf("update agent restart policy: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
+// ClaimAgentRunRestart advances only the still-offered, opted-in interrupted generation.
+// The previous owner and parent stop fence are compared in the same write that claims it.
+func (s *SQLiteStore) ClaimAgentRunRestart(ctx context.Context, id, parent string, generation int64, previousOwner, newOwner string, at time.Time) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET run_generation=run_generation+1,run_status='queued',stop_reason='',owner_instance_id=?,updated_at=?,notified_at=NULL WHERE child_session_id=? AND parent_session_id=? AND run_generation=? AND run_status='interrupted' AND stop_reason='host_restarted' AND auto_resume_on_restart=1 AND owner_instance_id=? AND wake_suppressed=0 AND collected_at IS NULL`, newOwner, at, id, parent, generation, previousOwner)
+	if err != nil {
+		return false, fmt.Errorf("claim opted-in agent restart: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	return rows == 1, err

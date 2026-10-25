@@ -39,10 +39,10 @@ func (t *agentControlTool) Spec() core.ToolSpec {
 		props["agent_id"] = map[string]any{"type": "string"}
 		props["instructions"] = map[string]any{"type": "string", "description": "New instruction for a stopped agent, or steering for a running agent"}
 		props["force"] = map[string]any{"type": "boolean", "description": "Force resumption despite possible concurrent work on another host; may duplicate side effects"}
-		props["auto_resume_on_restart"] = map[string]any{"type": "boolean", "description": "Human-turn-only: set or revoke only when the human explicitly directs it in an ordinary turn; this child's permission lets a trusted parent lifecycle turn continue it after a proven host restart. Defaults false; other stop causes remain non-resumable by lifecycle turns."}
+		props["auto_resume_on_restart"] = map[string]any{"type": "boolean", "description": "Human-turn-only policy update. When supplied to continue_agent, only set or revoke this child's policy for its current generation and return without starting or steering it; omit instructions/force. On spawn_agent, opts in the new child. A trusted parent lifecycle turn may continue an opted-in child only after the previous owner's death is locally proven (Linux host/PID/start-time, or supported Unix PID-disappearance proof; never remote-host inference). Defaults false; other stop causes remain non-resumable."}
 		props["wait"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 3600}
 		required = []string{"agent_id"}
-		description = "Steer a running agent or resume a stopped agent with a fresh turn budget."
+		description = "Steer a running agent or resume a stopped agent; auto_resume_on_restart performs only a policy update without starting or steering."
 	case CancelAgentToolName:
 		props["agent_id"] = map[string]any{"type": "string"}
 		required = []string{"agent_id"}
@@ -215,30 +215,39 @@ func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentCon
 
 func (t *agentControlTool) continueRun(ctx context.Context, parent string, a agentControlArgs) core.ToolOutput {
 	notice := agentpolicy.IsAgentRecoveryNotice(ctx)
-	if notice {
+	if notice && (a.AutoResumeOnRestart != nil || a.Force) {
 		if a.AutoResumeOnRestart != nil {
 			return agentControlError("A host lifecycle notice cannot change a child's restart policy.")
 		}
-		record, entry, err := t.spawn.manager.get(ctx, a.AgentID, parent)
-		if err != nil || (record.Status != "completed" && record.Status != "turn_limit" && !agentpolicy.AgentRunLifecycleRestartAllowed(ctx, record, entry == nil && record.OwnerInstanceID != processAgentOwner() && ownerTerminated(record.OwnerInstanceID))) || a.Force {
-			return agentControlError("A host lifecycle notice may continue only a child explicitly opted in before a proven host restart; cancellation, failure, parent stop, unknown causes, and live/foreign owners remain stopped.")
-		}
+		return agentControlError("A host lifecycle notice cannot force child work.")
 	}
 	m := t.spawn.manager
 	record, e, err := m.get(ctx, a.AgentID, parent)
 	if err != nil {
+		if notice {
+			return agentControlError("A host lifecycle notice may continue only a child explicitly opted in before a proven host restart; cancellation, failure, parent stop, unknown causes, and live/foreign owners remain stopped.")
+		}
 		return agentControlError(err.Error())
 	}
+	if notice && record.Status != "completed" && record.Status != "turn_limit" && !agentpolicy.AgentRunLifecycleRestartAllowed(ctx, record, e == nil && record.OwnerInstanceID != processAgentOwner() && ownerTerminated(record.OwnerInstanceID)) {
+		return agentControlError("A host lifecycle notice may continue only a child explicitly opted in before a proven host restart; cancellation, failure, parent stop, unknown causes, and live/foreign owners remain stopped.")
+	}
 	if a.AutoResumeOnRestart != nil {
+		if a.Force || strings.TrimSpace(a.Instructions) != "" {
+			return agentControlError("auto_resume_on_restart is a policy-only operation; omit force and instructions")
+		}
 		record, err = agentpolicy.UpdateAgentRunRestartPolicy(ctx, m.store, record, parent, *a.AutoResumeOnRestart)
 		if err != nil {
 			return agentControlError(err.Error())
 		}
 		if e != nil {
 			e.manager.mu.Lock()
-			e.record.AutoResumeOnRestart = record.AutoResumeOnRestart
+			if e.record.RunGeneration == record.RunGeneration {
+				e.record.AutoResumeOnRestart = record.AutoResumeOnRestart
+			}
 			e.manager.mu.Unlock()
 		}
+		return core.TextOutput(fmt.Sprintf("auto_resume_on_restart=%t for child %s at generation %d; child was not started or steered", *a.AutoResumeOnRestart, record.ID, record.RunGeneration))
 	}
 	if e != nil {
 		switch record.Status {
@@ -280,7 +289,11 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if !resume && strings.TrimSpace(a.Instructions) != "" {
 		prompt += "\n\nAdditional instructions: " + a.Instructions
 	}
-	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, core.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, false, record)
+	restartOwner := ""
+	if notice && record.Status == "interrupted" {
+		restartOwner = record.OwnerInstanceID
+	}
+	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, core.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, false, record, restartOwner)
 	if startErr != nil {
 		return agentControlError(startErr.Error())
 	}

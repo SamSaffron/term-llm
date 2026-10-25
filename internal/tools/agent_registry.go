@@ -106,31 +106,7 @@ func processAgentOwner() string {
 
 // ownerTerminated requires proof: never infer death from a stale timestamp.
 func ownerTerminated(owner string) bool {
-	host, _ := os.Hostname()
-	parts := strings.Split(owner, ":")
-	if len(parts) != 3 || parts[0] != host {
-		return false
-	}
-	pid, err := strconv.Atoi(parts[1])
-	if err != nil || pid <= 0 {
-		return false
-	}
-	if runtime.GOOS != "linux" {
-		return ownerPIDTerminated(pid)
-	} // Non-Linux Unix can prove ESRCH, but not process start identity.
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if errors.Is(err, os.ErrNotExist) {
-		return true
-	}
-	if err != nil {
-		return false
-	}
-	i := strings.LastIndexByte(string(stat), ')')
-	if i < 0 {
-		return false
-	}
-	fields := strings.Fields(string(stat)[i+1:])
-	return len(fields) > 19 && fields[19] != parts[2]
+	return agentpolicy.OwnerTerminated(owner, ownerPIDTerminated)
 }
 
 func (m *agentManager) save(record session.AgentRun) bool {
@@ -146,7 +122,7 @@ func (m *agentManager) save(record session.AgentRun) bool {
 	return true
 }
 
-func (m *agentManager) start(ctx context.Context, name, prompt, model, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, autoResumeOnRestart bool, existing session.AgentRun) (*agentEntry, error) {
+func (m *agentManager) start(ctx context.Context, name, prompt, model, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, autoResumeOnRestart bool, existing session.AgentRun, restartOwner string) (*agentEntry, error) {
 	id := existing.ID
 	if id == "" {
 		id = session.NewID()
@@ -238,6 +214,11 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		case <-previous.done:
 		default:
 			return abort("agent is already running in this process")
+		}
+	}
+	if restartOwner != "" {
+		if err := agentpolicy.ClaimAgentRunRestart(ctx, m.store, id, parent, existing.RunGeneration, restartOwner, m.owner, ownerTerminated(restartOwner), time.Now()); err != nil {
+			return abort(fmt.Sprintf("agent restart admission failed: %v", err))
 		}
 	}
 	e.childRemainingDepth = max(m.remainingDepth-1, 0) // Snapshot before a queued run can detach.
