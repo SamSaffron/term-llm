@@ -260,8 +260,8 @@
 }
 
 .message.user .message-body {
-  background: var(--surface-2);
-  border-color: var(--border);
+  background: var(--surface-soft);
+  border-color: var(--border-strong);
   color: var(--text);
   white-space: pre-wrap;
 }

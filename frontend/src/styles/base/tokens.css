@@ -28,6 +28,9 @@
   --surface-strong: var(--surface);
   --surface-2: color-mix(in oklab, var(--bg), var(--tint) 9.5%);
   --surface-3: color-mix(in oklab, var(--bg), var(--tint) 16.5%);
+
+  /* Your messages and the message box: half a panel's tint, so their outline leads. */
+  --surface-soft: color-mix(in oklab, var(--surface-2) 50%, var(--bg));
   --border: color-mix(in oklab, color-mix(in oklab, var(--bg), var(--text) 4.5%), var(--tint) 10%);
   --border-strong: color-mix(
     in oklab,

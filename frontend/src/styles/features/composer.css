@@ -389,9 +389,9 @@
 .composer-box {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  background: var(--surface-2);
+  background: var(--surface-soft);
   padding: 8px;
   position: relative;
 
@@ -726,8 +726,7 @@
 .send-btn:disabled {
   opacity: 1;
   cursor: not-allowed;
-  background: color-mix(in srgb, var(--text) 30%, var(--surface-2));
-  color: color-mix(in srgb, var(--text) 55%, var(--surface-2));
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .send-btn .spinner {
