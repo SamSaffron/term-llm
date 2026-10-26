@@ -92,7 +92,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--danger);
+  background: var(--accent);
 }
 
 .voice-status-spinner,
@@ -295,15 +295,15 @@
 
 @keyframes voice-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgb(248 113 113 / 55%);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
   }
 
   70% {
-    box-shadow: 0 0 0 10px rgb(248 113 113 / 0%);
+    box-shadow: 0 0 0 10px transparent;
   }
 
   100% {
-    box-shadow: 0 0 0 0 rgb(248 113 113 / 0%);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
@@ -479,7 +479,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
   transition:
     background 0.15s ease,
@@ -635,14 +635,11 @@
   outline: none;
 }
 
-.voice-btn.recording {
-  background: rgb(248 113 113 / 14%);
-  color: var(--danger);
-}
-
+/* Recording is the one solid accent button: on, beside a send that waits. */
+.voice-btn.recording,
 .voice-btn.recording:hover {
-  background: rgb(248 113 113 / 20%);
-  color: var(--danger);
+  background: var(--accent);
+  color: var(--btn-accent-text);
 }
 
 .voice-btn.busy:not(.recording) {
