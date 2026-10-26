@@ -26,8 +26,14 @@ func WriteJSONGzip(w http.ResponseWriter, r *http.Request, status int, payload a
 }
 
 func WriteJSONGzipBody(w http.ResponseWriter, r *http.Request, status int, body []byte) {
+	WriteGzipBody(w, r, status, "application/json", body)
+}
+
+// WriteGzipBody writes body with contentType, gzip-compressing it under the
+// same rules as WriteJSONGzipBody.
+func WriteGzipBody(w http.ResponseWriter, r *http.Request, status int, contentType string, body []byte) {
 	h := w.Header()
-	h.Set("Content-Type", "application/json")
+	h.Set("Content-Type", contentType)
 	AddVary(h, "Accept-Encoding")
 
 	if len(body) > JSONGzipMinBytes && AcceptsGzip(r.Header.Get("Accept-Encoding")) {

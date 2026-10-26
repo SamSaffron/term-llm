@@ -9,7 +9,11 @@ import {
   recoveryURL,
 } from './extension-runtime';
 import { updateSessionRoute } from '../platform/routing';
-import { loadExtensions, watchExtensionActivation } from '../api/extensions';
+import {
+  loadExtensions,
+  removeRenderedExtensionStyles,
+  watchExtensionActivation,
+} from '../api/extensions';
 import { AppStore } from './app-store';
 
 beforeEach(() => {
@@ -102,6 +106,104 @@ describe('extension recovery', () => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+// Mirrors the links internal/app/serve/serve_extension_styles.go puts in <head>.
+function renderedStyle(id: string, generation: string, loaded = true): HTMLLinkElement {
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.dataset.extension = id;
+  link.href = `/ui/extensions/${generation}/${id}/style.css`;
+  if (loaded) Object.defineProperty(link, 'sheet', { value: {} });
+  document.head.append(link);
+  return link;
+}
+
+function stylesFixture(enabled: string[]) {
+  const entries = ['varnish', 'tokyo-night'].map((id) => ({
+    id,
+    title: id,
+    description: '',
+    css: 'style.css',
+  }));
+  const status = {
+    disabled: false,
+    enabled,
+    entries,
+    errors: [],
+    generation: 'current',
+  };
+  return {
+    endpoints: { extensionsStatus: vi.fn(async () => status) },
+    api: { url: (path: string) => `/ui${path}` },
+    toast: vi.fn(),
+  } as unknown as AppStore;
+}
+
+const extensionLinks = () =>
+  [...document.head.querySelectorAll<HTMLLinkElement>('link[data-extension]')].map(
+    (link) => `${link.dataset.extension} ${new URL(link.href).pathname}`,
+  );
+
+describe('server-rendered extension styles', () => {
+  beforeEach(() => removeRenderedExtensionStyles());
+
+  it('adopts loaded styles instead of loading a second copy', async () => {
+    const link = renderedStyle('varnish', 'current');
+    await loadExtensions(stylesFixture(['varnish']));
+    expect(document.head.contains(link)).toBe(true);
+    expect(extensionLinks()).toEqual(['varnish /ui/extensions/current/varnish/style.css']);
+    expect(extensionRuntime.loaded.value).toEqual(['varnish']);
+  });
+
+  it('replaces styles from another generation or that failed to load', async () => {
+    const stale = renderedStyle('varnish', 'old');
+    const failed = renderedStyle('tokyo-night', 'current', false);
+    stale.dataset.settled = failed.dataset.settled = '';
+    const loading = loadExtensions(stylesFixture(['varnish', 'tokyo-night']));
+    for (let i = 0; i < 2; i++) {
+      await vi.waitFor(() =>
+        expect(
+          document.head.querySelector('link[data-extension]:not([data-settled])'),
+        ).toBeTruthy(),
+      );
+      const link = document.head.querySelector<HTMLLinkElement>(
+        'link[data-extension]:not([data-settled])',
+      )!;
+      // The previous styles stay applied until their replacement has loaded.
+      expect(document.head.contains(stale)).toBe(true);
+      link.dataset.settled = '';
+      link.dispatchEvent(new Event('load'));
+    }
+    await loading;
+    expect(document.head.contains(stale)).toBe(false);
+    expect(document.head.contains(failed)).toBe(false);
+    expect(extensionLinks()).toEqual([
+      'varnish /ui/extensions/current/varnish/style.css',
+      'tokyo-night /ui/extensions/current/tokyo-night/style.css',
+    ]);
+  });
+
+  it('drops styles for extensions that are no longer enabled', async () => {
+    renderedStyle('tokyo-night', 'current');
+    await loadExtensions(stylesFixture([]));
+    expect(extensionLinks()).toEqual([]);
+  });
+
+  it('keeps styles when the status request fails', async () => {
+    renderedStyle('varnish', 'current');
+    await loadExtensions({
+      endpoints: { extensionsStatus: vi.fn(async () => Promise.reject(new Error('offline'))) },
+    } as unknown as AppStore);
+    expect(extensionLinks()).toEqual(['varnish /ui/extensions/current/varnish/style.css']);
+  });
+
+  it('drops styles in safe mode', async () => {
+    renderedStyle('varnish', 'current');
+    extensionRuntime.safeMode.value = true;
+    await loadExtensions(stylesFixture(['varnish']));
+    expect(extensionLinks()).toEqual([]);
+  });
 });
 
 function activationFixture() {
