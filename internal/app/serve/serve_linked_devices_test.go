@@ -35,6 +35,30 @@ func TestPeerBootstrapAndHealthExposeScopedReadOnlyIdentity(t *testing.T) {
 	}
 }
 
+func TestPasskeyHealthIdentityRejectsBearerButTrustsLinkedDevice(t *testing.T) {
+	server := newTestServeServer()
+	defer server.sessionMgr.Close()
+	server.cfg.requireAuth = true
+	server.cfg.token = "legacy-owner-token"
+	server.cfg.agentName = "agent"
+	server.browserAuth = newWebPasskeyHandler(newTestPasskeyHub(t, "/chat").passkey)
+
+	bearer := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	bearer.Header.Set("Authorization", "Bearer legacy-owner-token")
+	recorder := httptest.NewRecorder()
+	server.handleHealth(recorder, bearer)
+	if strings.Contains(recorder.Body.String(), `"agent"`) {
+		t.Fatalf("passkey-mode bearer exposed identity: %s", recorder.Body.String())
+	}
+
+	device := linkeddevices.WithDevicePrincipal(bearer, linkeddevices.DevicePrincipal{DeviceID: "device", Scope: linkeddevices.ScopeWebV1})
+	recorder = httptest.NewRecorder()
+	server.handleHealth(recorder, device)
+	if !strings.Contains(recorder.Body.String(), `"agent":"agent"`) {
+		t.Fatalf("linked-device health omitted identity in passkey mode: %s", recorder.Body.String())
+	}
+}
+
 func TestPeerCapabilitiesDisableOwnerAndDeviceOnlyControls(t *testing.T) {
 	server := newTestServeServer()
 	defer server.sessionMgr.Close()

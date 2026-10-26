@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
 	"github.com/samsaffron/term-llm/internal/pairing"
 	"github.com/samsaffron/term-llm/internal/peer"
 	"github.com/samsaffron/term-llm/internal/peerbroker"
@@ -42,6 +43,23 @@ func TestRuntimeOffAndUnavailableMakeNoOutboundCalls(t *testing.T) {
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("off/unavailable runtime made %d outbound calls", got)
+	}
+}
+
+func TestServeHostDegradesUnavailableRuntime(t *testing.T) {
+	host, err := NewServeHost(true, context.Background(), nil, "agent", "/", true, "title", "manual", &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	status := host.Status()
+	if status.State != StateUnavailable || !strings.Contains(status.Reason, "no rendezvous service") {
+		t.Fatalf("status = %+v", status)
+	}
+	var logs atomic.Int64
+	host.StartAndLog(func(string, ...any) { logs.Add(1) })
+	if logs.Load() != 0 {
+		t.Fatal("unavailable optional runtime logged a startup failure")
 	}
 }
 
@@ -80,6 +98,9 @@ func TestDefaultICEPolicyRejectionMakesRuntimeUnavailableWithoutRetry(t *testing
 	if status.State != StateUnavailable || !strings.Contains(status.Reason, "rendezvous rejected linked devices registration: bad_request: invalid ice_policy") {
 		t.Fatalf("status = %+v, want clear unavailable rejection", status)
 	}
+	if !status.CanResume || !status.CanReset {
+		t.Fatalf("rejected registration recovery flags = %+v", status)
+	}
 	runtime.mu.Lock()
 	reconnecting := runtime.reconnecting
 	runtime.mu.Unlock()
@@ -88,6 +109,264 @@ func TestDefaultICEPolicyRejectionMakesRuntimeUnavailableWithoutRetry(t *testing
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("broker calls = %d, want one challenge and one rejected registration", got)
+	}
+}
+
+func TestRejectedPairAnswerDeliveryRollsBackGrantWithoutPresence(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := httptest.NewServer(brokerHandler)
+	defer broker.Close()
+	defer brokerHandler.Close()
+	runtime, err := New(Options{
+		DataDir: t.TempDir(), Target: "delivery-error", StoreInstanceID: "delivery-error-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	beforeSend, releaseSend := make(chan struct{}), make(chan struct{})
+	presenceDropped := make(chan struct{}, 1)
+	runtime.testBeforePairAnswerSend = func() { close(beforeSend); <-releaseSend }
+	runtime.testDropInvitationPeer = func(*peerbroker.Frame) bool {
+		select {
+		case presenceDropped <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var invitationURL string
+	if err := runtime.NewInvitation(ctx, func(raw string) (string, error) { invitationURL = raw; return "qr", nil }); err != nil {
+		t.Fatal(err)
+	}
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{DeviceName: "Original", StatePath: t.TempDir() + "/device.json", OnSAS: func(code string) { sas <- code }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairResult := make(chan error, 1)
+	go func() { _, pairErr := device.Pair(ctx, invitationURL); pairResult <- pairErr }()
+	code := <-sas
+	var pendingID string
+	for pendingID == "" {
+		status := runtime.Status()
+		if len(status.PendingRequests) == 1 {
+			pendingID = status.PendingRequests[0].ID
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("pair request did not become pending")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	approveResult := make(chan error, 1)
+	go func() { approveResult <- runtime.Approve(ctx, pendingID, code) }()
+	select {
+	case <-beforeSend:
+	case <-ctx.Done():
+		t.Fatal("approval did not reach answer delivery gap")
+	}
+	link, err := pairing.ParseLink(invitationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := peerbroker.NewClient(link.Broker, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostHash := sha256.Sum256(link.HostKey)
+	hostID := base64.RawURLEncoding.EncodeToString(hostHash[:])
+	if _, err := client.DialInvitation(ctx, hostID, link.BrokerInvitationID(), link.InvitationCapability); err == nil {
+		t.Fatal("duplicate invitation socket was accepted")
+	}
+	select {
+	case <-presenceDropped:
+	case <-ctx.Done():
+		t.Fatal("duplicate invitation presence was not delayed")
+	}
+	close(releaseSend)
+	if err := <-approveResult; err == nil || !strings.Contains(err.Error(), peerbroker.CodePeerOffline) {
+		t.Fatalf("approval delivery error = %v", err)
+	}
+	if err := <-pairResult; err == nil {
+		t.Fatal("original invitation received rejected pair answer")
+	}
+	if status := runtime.Status(); len(status.Devices) != 0 || len(status.PendingRequests) != 0 {
+		t.Fatalf("rejected answer left grant or pending request: %+v", status)
+	}
+	grants, err := runtime.grants.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("rejected answer persisted grants: %+v", grants)
+	}
+}
+
+func TestPairAnswerDeliveryWaitEndsWithLifecycleOrBroker(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		end  func(*Runtime) error
+	}{
+		{name: "stop", end: func(runtime *Runtime) error { return runtime.Stop() }},
+		{name: "reset", end: func(runtime *Runtime) error { return runtime.Reset(context.Background()) }},
+		{name: "cancel invitation", end: func(runtime *Runtime) error { return runtime.CancelInvitation(context.Background()) }},
+		{name: "broker disconnect", end: func(runtime *Runtime) error {
+			runtime.mu.Lock()
+			conn := runtime.brokerConn
+			runtime.mu.Unlock()
+			return conn.Close()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, oldGrants, approveResult := startDroppedPairAnswerDelivery(t)
+			endResult := make(chan error, 1)
+			go func() { endResult <- test.end(runtime) }()
+			select {
+			case err := <-approveResult:
+				if err == nil {
+					t.Fatal("approval succeeded without broker delivery acknowledgement")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("approval remained blocked after lifecycle or broker ended")
+			}
+			select {
+			case err := <-endResult:
+				if err != nil {
+					t.Fatalf("end delivery wait: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("lifecycle operation remained blocked by approval")
+			}
+			grants, err := oldGrants.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(grants) != 0 {
+				t.Fatalf("cancelled delivery persisted captured grant: %+v", grants)
+			}
+		})
+	}
+}
+
+func startDroppedPairAnswerDelivery(t *testing.T) (*Runtime, *pairing.GrantStore, <-chan error) {
+	t.Helper()
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(brokerHandler.Close)
+	broker := httptest.NewServer(brokerHandler)
+	t.Cleanup(broker.Close)
+	runtime, err := New(Options{
+		DataDir: t.TempDir(), Target: t.Name(), StoreInstanceID: t.Name() + "-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	var invitationURL string
+	if err := runtime.NewInvitation(ctx, func(raw string) (string, error) { invitationURL = raw; return "qr", nil }); err != nil {
+		t.Fatal(err)
+	}
+	deliveryDropped := make(chan struct{}, 1)
+	runtime.testDropPairAnswerDelivery = func(*peerbroker.Frame) bool {
+		select {
+		case deliveryDropped <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{DeviceName: "Device", StatePath: t.TempDir() + "/device.json", OnSAS: func(code string) { sas <- code }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = device.Pair(ctx, invitationURL) }()
+	code := <-sas
+	var pendingID string
+	for pendingID == "" {
+		status := runtime.Status()
+		if len(status.PendingRequests) == 1 {
+			pendingID = status.PendingRequests[0].ID
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("pair request did not become pending")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	oldGrants := runtime.grants
+	approveResult := make(chan error, 1)
+	go func() { approveResult <- runtime.Approve(context.Background(), pendingID, code) }()
+	select {
+	case <-deliveryDropped:
+	case <-ctx.Done():
+		t.Fatal("pair answer did not reach broker delivery acknowledgement")
+	}
+	return runtime, oldGrants, approveResult
+}
+
+func TestOwnerCanStopAndResumeAfterBrokerPolicyFix(t *testing.T) {
+	first, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	var active http.Handler = first
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) { active.ServeHTTP(w, request) }))
+	defer broker.Close()
+	cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{BrokerURL: broker.URL, ICEServers: config.DefaultLinkedDevicesICEServers()}}
+	serverOpts := ServerOptionsFromConfig(cfg)
+	runtime, err := New(Options{
+		DataDir: t.TempDir(), Target: "policy-recovery", StoreInstanceID: "policy-recovery-store", BasePath: "/",
+		Authenticated: true, BrokerURL: serverOpts.BrokerURL, ICEPolicy: serverOpts.ICEPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.Enable(context.Background()); err == nil {
+		t.Fatal("broker without configured TURN provider accepted default policy")
+	}
+	owner := httptest.NewServer(runtime.Handler())
+	defer owner.Close()
+	response, err := http.Post(owner.URL+"/v1/linked-devices/stop", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("stop after policy rejection = %d", response.StatusCode)
+	}
+	second, err := peerbroker.NewHandler(peerbroker.Config{Coturn: &peerbroker.CoturnConfig{
+		URLs: []string{"turns:stun.term-llm.com:5349?transport=tcp"}, SharedSecret: strings.Repeat("s", peerbroker.MinCredentialLen),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	active = second
+	response, err = http.Post(owner.URL+"/v1/linked-devices/resume", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("resume after broker fix = %d", response.StatusCode)
+	}
+	if status := runtime.Status(); !status.BrokerConnected || status.State == StateUnavailable {
+		t.Fatalf("status after broker fix = %+v", status)
 	}
 }
 
@@ -113,6 +392,14 @@ func TestPermanentBrokerRejectionClassification(t *testing.T) {
 				t.Fatalf("reason = %q", reason)
 			}
 		})
+	}
+}
+
+func TestRuntimeRejectsInvalidAdmissionEnvironment(t *testing.T) {
+	t.Setenv(AdmissionEnv, "short")
+	_, err := New(Options{DataDir: t.TempDir(), Target: "env-admission", StoreInstanceID: "env-admission-store", Authenticated: true, BrokerURL: "http://127.0.0.1:1"})
+	if err == nil || !strings.Contains(err.Error(), "admission credential") {
+		t.Fatalf("invalid admission environment error = %v", err)
 	}
 }
 
@@ -394,7 +681,7 @@ func TestNewServerBoundsHostLabelAndDegradesOptionalFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unavailable.Close()
-	if status := unavailable.Status(); status.State != StateUnavailable {
+	if status := unavailable.Status(); status.State != StateUnavailable || status.CanResume || status.CanReset {
 		t.Fatalf("optional failure status = %+v", status)
 	}
 }

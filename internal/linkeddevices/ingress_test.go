@@ -81,6 +81,38 @@ func TestRouteAllowedDefaultDeny(t *testing.T) {
 	}
 }
 
+func TestIdentityRequestTrusted(t *testing.T) {
+	tests := []struct {
+		name                         string
+		requireAuth                  bool
+		token, presented             string
+		passkeyMode, passkey, device bool
+		want                         bool
+	}{
+		{name: "auth disabled", want: true},
+		{name: "missing authority", requireAuth: true, token: "secret"},
+		{name: "bearer", requireAuth: true, token: "secret", presented: "secret", want: true},
+		{name: "wrong bearer", requireAuth: true, token: "secret", presented: "wrong"},
+		{name: "passkey mode rejects bearer", requireAuth: true, token: "secret", presented: "secret", passkeyMode: true},
+		{name: "passkey", requireAuth: true, token: "secret", passkeyMode: true, passkey: true, want: true},
+		{name: "device in passkey mode", requireAuth: true, token: "secret", passkeyMode: true, device: true, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+			if test.presented != "" {
+				request.Header.Set("Authorization", "Bearer "+test.presented)
+			}
+			if test.device {
+				request = WithDevicePrincipal(request, DevicePrincipal{DeviceID: "device", Scope: ScopeWebV1})
+			}
+			if got := IdentityRequestTrusted(request, test.requireAuth, test.token, test.passkeyMode, test.passkey); got != test.want {
+				t.Fatalf("IdentityRequestTrusted() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAdmitDevice(t *testing.T) {
 	ownerCalls := 0
 	owner := func(w http.ResponseWriter, _ *http.Request) { ownerCalls++; w.WriteHeader(http.StatusUnauthorized) }

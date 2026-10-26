@@ -131,13 +131,48 @@ func TestHostGeneratedInvitationStoredHashedAndOneUse(t *testing.T) {
 	if conn.Ready.Role != PeerInvitation {
 		t.Fatalf("ready = %+v", conn.Ready)
 	}
-	replacement, err := client.DialInvitation(context.Background(), registration.HostID, "invite_1", capability)
-	if err != nil {
-		t.Fatalf("authenticated duplicate invitation socket: %v", err)
+	if _, err := client.DialInvitation(context.Background(), registration.HostID, "invite_1", capability); err == nil {
+		t.Fatal("authenticated duplicate invitation socket was accepted")
 	}
-	_ = replacement.Close()
 	if _, err := conn.Recv(); err == nil {
-		t.Fatal("superseded invitation socket remained open")
+		t.Fatal("duplicate invitation left the original socket open")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		h.mu.Lock()
+		connections := h.connections
+		h.mu.Unlock()
+		if connections == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("duplicate invitation left %d broker connections open", connections)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	h.mu.Lock()
+	_, retained := h.hosts[registration.HostID].invitations["invite_1"]
+	h.mu.Unlock()
+	if retained {
+		t.Fatal("duplicate invitation remained routable")
+	}
+}
+
+func TestHostRevokesInvitationBeforeUse(t *testing.T) {
+	_, client, _ := newBrokerClient(t, Config{})
+	registration := mustRegister(t, client, mustKey(t), "", nil)
+	capability := strings.Repeat("i", MinCredentialLen)
+	if _, err := client.RegisterInvitation(context.Background(), registration.HostID, registration.LeaseCapability, "invite_revoke", HashCapability(capability), time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RevokeInvitation(context.Background(), registration.HostID, "wrong", "invite_revoke"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("wrong lease revoke error = %v", err)
+	}
+	if err := client.RevokeInvitation(context.Background(), registration.HostID, registration.LeaseCapability, "invite_revoke"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DialInvitation(context.Background(), registration.HostID, "invite_revoke", capability); err == nil {
+		t.Fatal("revoked invitation remained usable")
 	}
 }
 
@@ -438,6 +473,26 @@ func TestTURNProviderRevalidatesDeviceAuthorityAfterMint(t *testing.T) {
 }
 
 func rawJSON(value any) json.RawMessage { data, _ := json.Marshal(value); return data }
+
+func TestICEPolicyValidationRequiresValidRegistrationSignature(t *testing.T) {
+	_, client, _ := newBrokerClient(t, Config{})
+	key := mustKey(t)
+	publicKey := key.Public().(ed25519.PublicKey)
+	encodedKey := base64.RawURLEncoding.EncodeToString(publicKey)
+	var challenge Challenge
+	if err := client.do(context.Background(), http.MethodPost, "/v2/challenges", "", challengeRequest{PublicKey: encodedKey}, http.StatusCreated, &challenge); err != nil {
+		t.Fatal(err)
+	}
+	policy := []wireICEServer{{URLs: []string{"turns:private-provider.example:5349"}, CredentialSource: "broker"}}
+	request := registerRequest{
+		PublicKey: encodedKey, ChallengeID: challenge.ID,
+		Signature: base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)), ICEPolicy: &policy,
+	}
+	var registration Registration
+	if err := client.do(context.Background(), http.MethodPost, "/v2/hosts", "", request, http.StatusCreated, &registration); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("invalid signature exposed ICE policy validation: %v", err)
+	}
+}
 
 func TestICEPolicySignatureBinding(t *testing.T) {
 	coturnSecret := strings.Repeat("c", MinCredentialLen)

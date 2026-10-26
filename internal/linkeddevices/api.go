@@ -28,7 +28,7 @@ func (r *Runtime) handleOwner(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(request.URL.Path, "/v1/linked-devices")
-	if request.Method != http.MethodGet && request.Method != http.MethodHead && !r.ownerMutationAllowed(path == "/reset") {
+	if request.Method != http.MethodGet && request.Method != http.MethodHead && !r.ownerMutationAllowed(path) {
 		http.Error(w, "linked devices are unavailable", http.StatusConflict)
 		return
 	}
@@ -46,7 +46,10 @@ func (r *Runtime) handleOwner(w http.ResponseWriter, request *http.Request) {
 		}
 		writeOwnerJSON(w, http.StatusCreated, r.status(true))
 	case path == "/invitations/current" && request.Method == http.MethodDelete:
-		r.CancelInvitation()
+		if err := r.CancelInvitation(request.Context()); err != nil {
+			writeOwnerError(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	case strings.HasPrefix(path, "/requests/") && request.Method == http.MethodPost:
 		r.handleRequestAction(w, request, strings.TrimPrefix(path, "/requests/"))
@@ -68,7 +71,7 @@ func (r *Runtime) handleOwner(w http.ResponseWriter, request *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case path == "/resume" && request.Method == http.MethodPost:
-		if err := r.Enable(request.Context()); err != nil {
+		if err := r.Resume(request.Context()); err != nil {
 			writeOwnerError(w, err)
 			return
 		}
@@ -116,7 +119,7 @@ func (r *Runtime) handleRequestAction(w http.ResponseWriter, request *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (r *Runtime) ownerMutationAllowed(reset bool) bool {
+func (r *Runtime) ownerMutationAllowed(path string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.unlock == nil {
@@ -125,7 +128,10 @@ func (r *Runtime) ownerMutationAllowed(reset bool) bool {
 	if r.availableReason == "" {
 		return true
 	}
-	return reset && (strings.Contains(r.availableReason, "reset is required") || strings.Contains(r.availableReason, "rendezvous service changed"))
+	if brokerRegistrationRejected(r.availableReason) {
+		return path == "/resume" || path == "/stop" || path == "/reset"
+	}
+	return path == "/reset" && (strings.Contains(r.availableReason, "reset is required") || strings.Contains(r.availableReason, "rendezvous service changed"))
 }
 
 func sameOrigin(request *http.Request) bool {

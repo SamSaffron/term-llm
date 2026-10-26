@@ -3,6 +3,7 @@ package pairing
 import (
 	"crypto/ed25519"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -155,10 +156,21 @@ func strictParams(raw string, allowed []string, optional map[string]bool) (map[s
 
 func validateBroker(raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
-		return fmt.Errorf("%w: broker must be a plain http(s) URL", ErrInvalid)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return fmt.Errorf("%w: broker must be a plain HTTPS URL or loopback HTTP URL", ErrInvalid)
 	}
-	return nil
+	if u.Scheme == "https" || u.Scheme == "http" && brokerLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("%w: broker must be a plain HTTPS URL or loopback HTTP URL", ErrInvalid)
+}
+
+func brokerLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func ValidateCapability(c string) error {

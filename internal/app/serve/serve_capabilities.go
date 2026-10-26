@@ -79,8 +79,6 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	payload["attention_diagnostics"] = s.attentionDiagnostics.snapshot()
-	if linkeddevices.ShapeCapabilities(r, payload) {
-		w.Header().Set("Cache-Control", "no-store")
-	}
+	linkeddevices.ShapeCapabilities(w, r, payload)
 	writeJSON(w, http.StatusOK, payload)
 }

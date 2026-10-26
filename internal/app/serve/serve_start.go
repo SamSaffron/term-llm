@@ -24,7 +24,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/restart"
 	platform "github.com/samsaffron/term-llm/internal/serve"
-	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -367,18 +366,8 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 				return getErr == nil && sess != nil
 			}),
 		}
-		if hasWeb {
-			storeID, storeErr := session.SessionInputStoreIdentity(store)
-			if attentionStore, ok := session.AsAttentionStore(store); ok {
-				storeID, storeErr = attentionStore.StoreInstanceID(ctx)
-			}
-			if storeErr != nil {
-				storeID = ""
-			}
-			s.linkedDevices, err = linkeddevices.NewServer(agentName, storeID, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", resolvedApproval.Mode), linkeddevices.ServerOptionsFromConfig(cfg))
-			if err != nil {
-				return fmt.Errorf("initialize linked devices: %w", err)
-			}
+		if s.linkedDevices, err = linkeddevices.NewServeHost(hasWeb, ctx, store, agentName, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, resolvedApproval.Mode.String(), cfg); err != nil {
+			return err
 		}
 		if hasWeb {
 			s.extensions, err = newServeExtensions(opts.ExtensionsDir, opts.ExtensionIDs, deps.Flags.Extensions, opts.DisableExtensions)

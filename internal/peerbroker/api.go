@@ -217,6 +217,7 @@ const (
 	FrameReady     = "ready"
 	FrameSignal    = "signal"
 	FramePeer      = "peer"
+	FrameDelivered = "delivered"
 	FrameError     = "error"
 	PeerHost       = "host"
 	PeerInvitation = "invitation"

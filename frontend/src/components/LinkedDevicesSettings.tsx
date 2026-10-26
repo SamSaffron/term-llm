@@ -165,9 +165,11 @@ export function LinkedDevicesSettings({ active }: { active: boolean }) {
   const devices = status.devices ?? [];
   const isUnavailable = status.state === 'unavailable';
   const canStop = ['sharing', 'pending', 'inviting', 'reconnecting'].includes(status.state);
+  const canResume = ['reconnecting', 'stopped'].includes(status.state) || status.can_resume;
   const canReset =
     ['sharing', 'pending', 'inviting', 'reconnecting', 'stopped'].includes(status.state) ||
-    status.reset_required;
+    status.reset_required ||
+    status.can_reset;
 
   return (
     <section class="linked-devices" aria-label="Linked devices">
@@ -356,7 +358,7 @@ export function LinkedDevicesSettings({ active }: { active: boolean }) {
         </div>
       )}
 
-      {(!isUnavailable || status.reset_required) && (
+      {(!isUnavailable || canResume || canReset) && (
         <div class="linked-devices-controls">
           {status.state === 'sharing' && (
             <button
@@ -378,17 +380,7 @@ export function LinkedDevicesSettings({ active }: { active: boolean }) {
               {busy === 'stop' ? 'Stopping' : 'Stop sharing'}
             </button>
           )}
-          {status.state === 'reconnecting' && (
-            <button
-              class="btn primary"
-              type="button"
-              disabled={Boolean(busy)}
-              onClick={() => void mutate('resume', () => resumeLinkedDevices(store.api))}
-            >
-              {busy === 'resume' ? 'Resuming' : 'Resume'}
-            </button>
-          )}
-          {status.state === 'stopped' && (
+          {canResume && (
             <button
               class="btn primary"
               type="button"

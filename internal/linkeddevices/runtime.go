@@ -27,13 +27,14 @@ import (
 )
 
 const (
-	invitationTTL    = 5 * time.Minute
-	leaseRenewal     = time.Minute
-	renewRetryDelay  = 250 * time.Millisecond
-	reconnectInitial = 250 * time.Millisecond
-	reconnectMaximum = 30 * time.Second
-	maxDevices       = 16
-	maxConnections   = 4
+	invitationTTL             = 5 * time.Minute
+	leaseRenewal              = time.Minute
+	renewRetryDelay           = 250 * time.Millisecond
+	reconnectInitial          = 250 * time.Millisecond
+	reconnectMaximum          = 30 * time.Second
+	maxDevices                = 16
+	maxConnections            = 4
+	pairAnswerDeliveryTimeout = 10 * time.Second
 )
 
 type Options struct {
@@ -79,9 +80,11 @@ type invitation struct {
 }
 
 type pendingRequest struct {
-	pairing  *pairing.PendingPairing
-	kind, id string
-	created  time.Time
+	pairing      *pairing.PendingPairing
+	kind, id     string
+	created      time.Time
+	disconnected bool
+	delivery     chan error
 }
 
 type brokerRegistrationAttempt struct {
@@ -101,38 +104,42 @@ type deviceSession struct {
 
 // Runtime owns one target's durable grants, rendezvous lease and live peers.
 type Runtime struct {
-	mu                      sync.Mutex
-	lifecycleMu             sync.Mutex
-	renewMu                 sync.Mutex
-	opts                    Options
-	dir                     string
-	availableReason         string
-	resetRequired           bool
-	settings                settingsState
-	identity                *pairing.Identity
-	grants                  *pairing.GrantStore
-	host                    *pairing.Host
-	broker                  *peerbroker.Client
-	hostID, leaseCapability string
-	brokerConn              *peerbroker.Conn
-	brokerConnected         bool
-	connecting              bool
-	reconnecting            bool
-	invitation              *invitation
-	pending                 map[string]*pendingRequest
-	sessions                map[string]*deviceSession
-	warnings                []string
-	ctx                     context.Context
-	cancel                  context.CancelFunc
-	sharingCtx              context.Context
-	sharingCancel           context.CancelFunc
-	generation              uint64
-	handshakes              int
-	newHandshakes           int
-	peerRequests            sync.WaitGroup
-	wg                      sync.WaitGroup
-	unlock                  func() error
-	started                 bool
+	mu                         sync.Mutex
+	lifecycleMu                sync.Mutex
+	renewMu                    sync.Mutex
+	opts                       Options
+	dir                        string
+	availableReason            string
+	resetRequired              bool
+	settings                   settingsState
+	identity                   *pairing.Identity
+	grants                     *pairing.GrantStore
+	host                       *pairing.Host
+	broker                     *peerbroker.Client
+	hostID, leaseCapability    string
+	brokerConn                 *peerbroker.Conn
+	brokerConnected            bool
+	connecting                 bool
+	reconnecting               bool
+	invitation                 *invitation
+	invitationSeq              uint64
+	pending                    map[string]*pendingRequest
+	sessions                   map[string]*deviceSession
+	warnings                   []string
+	ctx                        context.Context
+	cancel                     context.CancelFunc
+	sharingCtx                 context.Context
+	sharingCancel              context.CancelFunc
+	generation                 uint64
+	handshakes                 int
+	newHandshakes              int
+	peerRequests               sync.WaitGroup
+	wg                         sync.WaitGroup
+	unlock                     func() error
+	started                    bool
+	testBeforePairAnswerSend   func()
+	testDropInvitationPeer     func(*peerbroker.Frame) bool
+	testDropPairAnswerDelivery func(*peerbroker.Frame) bool
 }
 
 // NewServer constructs the standard serve-web runtime with administrator-owned
@@ -183,6 +190,9 @@ func New(opts Options) (*Runtime, error) {
 	if opts.AdmissionCredential == "" {
 		opts.AdmissionCredential = strings.TrimSpace(os.Getenv(AdmissionEnv))
 	}
+	if opts.AdmissionCredential != "" && !validAdmissionCredential(opts.AdmissionCredential) {
+		return nil, errors.New("linked devices admission credential must be 32-256 printable non-space ASCII characters")
+	}
 	r := &Runtime{opts: opts, settings: settingsState{Version: stateVersion}, pending: map[string]*pendingRequest{}, sessions: map[string]*deviceSession{}}
 	if opts.DataDir == "" {
 		var err error
@@ -212,6 +222,18 @@ func New(opts Options) (*Runtime, error) {
 	}
 	r.evaluateAvailability()
 	return r, nil
+}
+
+func validAdmissionCredential(value string) bool {
+	if len(value) < peerbroker.MinCredentialLen || len(value) > 256 {
+		return false
+	}
+	for i := range len(value) {
+		if value[i] < 0x21 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func targetDirectory(target string) string {
@@ -416,6 +438,12 @@ func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegist
 	old := r.brokerConn
 	r.wg.Add(2)
 	r.hostID, r.leaseCapability, r.brokerConn, r.brokerConnected = registration.HostID, registration.LeaseCapability, conn, true
+	if r.invitation != nil {
+		r.host.CancelPairing(r.invitation.link.InvitationID)
+		r.invitation = nil
+		r.pending = map[string]*pendingRequest{}
+		r.warnings = append(r.warnings, "the invitation was cancelled after the rendezvous reconnected; create a new invitation")
+	}
 	r.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
@@ -471,12 +499,16 @@ func (r *Runtime) receiveLoop(conn *peerbroker.Conn) {
 		frame, err := conn.Recv()
 		if err != nil {
 			r.mu.Lock()
-			if r.brokerConn == conn {
+			current := r.brokerConn == conn
+			if current {
 				r.brokerConnected = false
 				r.brokerConn = nil
 			}
 			enabled := r.settings.Enabled
 			r.mu.Unlock()
+			if current {
+				r.failPairAnswerDeliveries(errors.New("rendezvous disconnected before pairing answer delivery"))
+			}
 			if enabled && r.ctx.Err() == nil {
 				r.setWarning("rendezvous disconnected; reconnecting")
 				r.scheduleReconnect()
@@ -485,8 +517,16 @@ func (r *Runtime) receiveLoop(conn *peerbroker.Conn) {
 		}
 		if frame.Type == peerbroker.FrameSignal {
 			r.handleSignal(conn, frame)
+		} else if frame.Type == peerbroker.FrameDelivered && frame.PeerKind == peerbroker.PeerInvitation {
+			if r.testDropPairAnswerDelivery == nil || !r.testDropPairAnswerDelivery(frame) {
+				r.completePairAnswerDelivery(frame.PeerID, nil)
+			}
+		} else if frame.Type == peerbroker.FrameError && frame.PeerKind == peerbroker.PeerInvitation {
+			r.completePairAnswerDelivery(frame.PeerID, fmt.Errorf("rendezvous rejected pairing answer delivery: %s", frame.Error))
 		} else if frame.Type == peerbroker.FramePeer && frame.PeerKind == peerbroker.PeerInvitation && frame.PeerConnected != nil && !*frame.PeerConnected {
-			r.cancelDisconnectedInvitation(frame.PeerID)
+			if r.testDropInvitationPeer == nil || !r.testDropInvitationPeer(frame) {
+				r.cancelDisconnectedInvitation(frame.PeerID)
+			}
 		}
 	}
 }
@@ -674,7 +714,12 @@ func (r *Runtime) status(includeInvitation bool) Status {
 			}
 		}
 	}
-	status := Status{Enabled: r.settings.Enabled, ResetRequired: r.resetRequired, BrokerConnected: r.brokerConnected, PendingRequests: []RequestStatus{}, Devices: []DeviceStatus{}, Warnings: append([]string(nil), r.warnings...), Authority: r.authority()}
+	recoverableRejection := brokerRegistrationRejected(r.availableReason)
+	status := Status{
+		Enabled: r.settings.Enabled, ResetRequired: r.resetRequired, CanResume: recoverableRejection,
+		CanReset: r.resetRequired || recoverableRejection, BrokerConnected: r.brokerConnected,
+		PendingRequests: []RequestStatus{}, Devices: []DeviceStatus{}, Warnings: append([]string(nil), r.warnings...), Authority: r.authority(),
+	}
 	if r.identity != nil {
 		status.HostFingerprint = r.identity.Fingerprint()
 	}

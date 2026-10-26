@@ -46,7 +46,7 @@ type serveServer struct {
 	sessionStore             runtime.SessionStoreOverrides
 	memoryPaths              appmemory.Paths
 	mediaPublisher           *serveMediaPublisher
-	linkedDevices            *linkeddevices.Runtime
+	linkedDevices            *linkeddevices.ServeHost
 	approvalDefault          tools.ApprovalMode
 	sharePublisherFactory    func() (share.Publisher, error)
 	shareMu                  sync.Mutex

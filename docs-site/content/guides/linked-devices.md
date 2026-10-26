@@ -92,7 +92,9 @@ The owned endpoints are intended for admitted testing, not a public relay
 service. `broker_url` deliberately has no public default and no public broker or
 credential issuer is deployed. `TERM_LLM_LINKED_DEVICES_BROKER_URL` and
 `TERM_LLM_LINKED_DEVICES_ADMISSION` remain deployment overrides when their YAML
-fields are empty.
+fields are empty. Broker URLs require HTTPS, except that loopback HTTP is
+accepted for local development; credentials, query strings, and fragments are
+not valid broker URLs.
 
 `ice_servers` is a list of standard WebRTC ICE server records:
 
@@ -127,9 +129,14 @@ linked_devices:
 ```
 
 Changing the broker URL requires **Forget all** because clients pin the broker
-and host identity. Restart the serve process after changing ICE policy. Existing
-connections continue until they disconnect; new connections fetch the current
-policy and fresh broker credentials.
+and host identity. Restart the serve process after changing the local ICE policy.
+If registration was rejected because the broker's TURN provider did not match
+the configured policy, fix the broker and use **Resume** to make one deliberate
+new registration attempt; the runtime does not retry permanent policy errors in
+the background. Existing connections continue until they disconnect; new
+connections fetch the current policy and fresh broker credentials. Any live QR
+invitation is cancelled with a warning after a broker reconnect because the new
+broker lease cannot retain the old invitation slot.
 
 ## Testing service
 

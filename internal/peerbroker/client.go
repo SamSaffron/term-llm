@@ -139,6 +139,15 @@ func (c *Client) RegisterInvitation(ctx context.Context, hostID, leaseCapability
 	}
 	return &out, nil
 }
+
+func (c *Client) RevokeInvitation(ctx context.Context, hostID, leaseCapability, invitationID string) error {
+	if !validPeerID(invitationID) {
+		return errors.New("peerbroker: invalid invitation ID")
+	}
+	path := hostPath(hostID, "/invitations/") + url.PathEscape(invitationID)
+	return c.do(ctx, http.MethodDelete, path, leaseCapability, nil, http.StatusNoContent, nil)
+}
+
 func (c *Client) ICE(ctx context.Context, hostID, peerKind, peerID, capability string) (*ICECredentials, error) {
 	path, err := peerPath(hostID, "/ice", peerKind, peerID)
 	if err != nil {

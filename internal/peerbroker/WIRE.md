@@ -52,15 +52,15 @@ Broker URLs require HTTPS/WSS except on loopback.
 Renewal replaces the complete device hash set. Removing or changing an entry
 revokes that broker credential and closes its active socket. The validated host
 ICE policy remains attached to that lease; process restart/re-registration sends
-and signs it again. Invitations are one use at the authenticated host. The
-broker allows a later socket presenting
-the same valid invitation capability to replace the earlier socket. Replacement
-emits a disconnected-presence event, so the host cancels the invitation even if
-the replacement remains silent; a second MAC-authenticated `pair_request` is
-also rejected by the host pairing authority. The broker cannot authenticate a
-pairing request itself. Broker slots remain memory-only and expire at their
-advertised expiry. Host leases default to three minutes and are renewed every
-minute.
+and signs it again. Invitations are one-use at the broker and authenticated
+host. A second socket presenting the same invitation capability invalidates the
+broker slot and closes both sockets; it never replaces the original answer
+route. A disconnected consumed invitation cannot reconnect. The host may also
+revoke an unused slot early with authenticated
+`DELETE /v2/hosts/{host}/invitations/{invitation}`. The broker cannot
+authenticate a pairing request itself. Broker slots remain memory-only and
+expire at their advertised expiry. Host leases default to three minutes and are
+renewed every minute.
 
 ## Host ICE policy
 
@@ -96,16 +96,22 @@ All messages are JSON text frames.
 ```json
 {"type":"ready","role":"device","peer_kind":"device","peer_id":"...","peer_connected":true,"lease_expires_at":"..."}
 {"type":"signal","peer_kind":"host","body":{"v":2,"type":"transport_hello"}}
+{"type":"delivered","peer_kind":"invitation","peer_id":"..."}
 {"type":"peer","peer_kind":"host","peer_connected":false}
 {"type":"error","peer_kind":"host","error":"peer_offline"}
 ```
 
 Device and invitation senders MUST omit routing fields on `signal`; the broker
 sets their authenticated source identity. The host supplies `peer_kind` and
-`peer_id` when routing to a device or invitation. `body` is exactly one pairing
-v2 JSON message. There is no offline mailbox.
+`peer_id` when routing to a device or invitation. A host-to-invitation signal
+receives `delivered` only after the broker has queued it to that exact live
+invitation slot; this is broker route-queue acceptance, **not client receipt**.
+A later network loss can therefore leave an accepted grant undelivered. A
+definitive routing failure instead returns `error`, allowing reconnect-capability
+publication to roll back. `body` is exactly one pairing v2 JSON message. There
+is no offline mailbox.
 
-`ready`, `peer`, and `error` are **unsigned broker advice**. They are useful for
+`ready`, `peer`, `delivered`, and `error` are **unsigned broker advice**. They are useful for
 retry/UI state but convey no host authority. `pair_request`, `pair_answer`, and
 all transport messages have the MAC/signature authority defined by pairing
 WIRE v2. `pair_reject` is also advisory and unsigned. ICE server data is

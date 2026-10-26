@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -211,6 +214,88 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 }
 
+func TestReplacementDuringAcceptedRenewalCannotReceivePairAnswerOrLeaveGrant(t *testing.T) {
+	now := time.Now()
+	provider := &trackingTURNProvider{urls: []string{"turns:managed.example:5349?transport=tcp"}, now: now}
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{TURNProvider: provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlled := newBlockedRenewBroker(brokerHandler)
+	broker := httptest.NewServer(controlled)
+	defer broker.Close()
+	defer brokerHandler.Close()
+	staticCredential := strings.Repeat("s", peerbroker.MinCredentialLen)
+	policy := peerbroker.NewHostICEConfig([]peerbroker.ConfiguredICEServer{
+		{URLs: []string{"stun:stun.example:3478"}},
+		{URLs: []string{"turns:static.example:5349?transport=tcp"}, CredentialSource: peerbroker.CredentialSourceStatic, Username: "static-user", Credential: staticCredential},
+		{URLs: provider.URLs(), CredentialSource: peerbroker.CredentialSourceBroker},
+	})
+	runtime, err := linkeddevices.New(linkeddevices.Options{
+		DataDir: t.TempDir(), Target: "renew-duplicate", StoreInstanceID: "renew-duplicate-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, ICEPolicy: &policy, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var invitationURL string
+	if err := runtime.NewInvitation(ctx, func(raw string) (string, error) { invitationURL = raw; return "qr", nil }); err != nil {
+		t.Fatal(err)
+	}
+	link, err := pairing.ParseLink(invitationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{DeviceName: "Original", StatePath: t.TempDir() + "/device.json", OnSAS: func(code string) { sas <- code }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairResult := make(chan error, 1)
+	go func() { _, pairErr := device.Pair(ctx, invitationURL); pairResult <- pairErr }()
+	code := <-sas
+	var pendingID string
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
+		if len(status.PendingRequests) == 1 {
+			pendingID = status.PendingRequests[0].ID
+		}
+		return pendingID != ""
+	})
+	approveResult := make(chan error, 1)
+	go func() { approveResult <- runtime.Approve(ctx, pendingID, code) }()
+	select {
+	case <-controlled.accepted:
+	case <-ctx.Done():
+		t.Fatal("approved reconnect capability hash did not reach broker renewal")
+	}
+	client, err := peerbroker.NewClient(link.Broker, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostHash := sha256.Sum256(link.HostKey)
+	hostID := base64.RawURLEncoding.EncodeToString(hostHash[:])
+	if _, err := client.DialInvitation(ctx, hostID, link.BrokerInvitationID(), link.InvitationCapability); err == nil {
+		t.Fatal("replacement invitation socket was accepted during renewal")
+	}
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool { return len(status.PendingRequests) == 0 })
+	close(controlled.release)
+	if err := <-approveResult; err == nil {
+		t.Fatal("cancelled approval completed after replacement")
+	}
+	if err := <-pairResult; err == nil {
+		t.Fatal("original pairing received a reconnect capability after replacement")
+	}
+	if status := runtime.Status(); len(status.Devices) != 0 {
+		t.Fatalf("cancelled approval left a ghost grant: %+v", status.Devices)
+	}
+	if got := provider.calls.Load(); got != 0 {
+		t.Fatalf("cancelled invitation reached broker TURN provider %d times", got)
+	}
+}
+
 func TestSilentDuplicateInvitationSocketBurnsPendingApproval(t *testing.T) {
 	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
 	if err != nil {
@@ -272,30 +357,15 @@ func TestSilentDuplicateInvitationSocketBurnsPendingApproval(t *testing.T) {
 	}
 	hostHash := sha256.Sum256(link.HostKey)
 	hostID := base64.RawURLEncoding.EncodeToString(hostHash[:])
-	silent, err := client.DialInvitation(ctx, hostID, link.BrokerInvitationID(), link.InvitationCapability)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := client.DialInvitation(ctx, hostID, link.BrokerInvitationID(), link.InvitationCapability); err == nil {
+		t.Fatal("silent duplicate invitation socket was accepted")
 	}
-	defer silent.Close()
 	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
 		return len(status.PendingRequests) == 0 && len(status.Warnings) > 0
 	})
 	if err := runtime.Approve(ctx, pendingID, code); err == nil {
-		t.Fatal("silent replacement left the first pending request approvable")
+		t.Fatal("silent duplicate left the first pending request approvable")
 	}
-	received := make(chan *peerbroker.Frame, 1)
-	go func() {
-		frame, _ := silent.Recv()
-		received <- frame
-	}()
-	select {
-	case frame := <-received:
-		if frame != nil && frame.Type == peerbroker.FrameSignal {
-			t.Fatalf("silent replacement received pairing answer: %+v", frame)
-		}
-	case <-time.After(100 * time.Millisecond):
-	}
-	_ = silent.Close()
 	select {
 	case err := <-firstResult:
 		if err == nil {
@@ -358,9 +428,17 @@ func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 	secondResult := make(chan error, 1)
 	go func() { _, pairErr := second.Pair(ctx, invitation.Invitation.URL); secondResult <- pairErr }()
 	select {
-	case <-secondSAS:
+	case err := <-secondResult:
+		if err == nil {
+			t.Fatal("duplicate invitation pairing unexpectedly completed")
+		}
 	case <-ctx.Done():
-		t.Fatal("second authenticated redemption did not reach the host")
+		t.Fatal("duplicate invitation socket was not rejected")
+	}
+	select {
+	case code := <-secondSAS:
+		t.Fatalf("duplicate invitation reached pairing authority with SAS %q", code)
+	default:
 	}
 	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
 		return len(status.PendingRequests) == 0 && len(status.Warnings) > 0
@@ -376,8 +454,70 @@ func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("superseded first pairing did not terminate")
 	}
-	cancel()
-	<-secondResult
+}
+
+func TestStaleInvitationResponseCannotOverwriteResetGeneration(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlled := newBlockedInvitationBroker(brokerHandler)
+	broker := httptest.NewServer(controlled)
+	defer broker.Close()
+	defer brokerHandler.Close()
+	runtime, err := linkeddevices.New(linkeddevices.Options{
+		DataDir: t.TempDir(), Target: "stale-invitation", StoreInstanceID: "stale-invitation-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	oldResult := make(chan error, 1)
+	go func() { oldResult <- runtime.NewInvitation(ctx, func(string) (string, error) { return "old-qr", nil }) }()
+	select {
+	case <-controlled.accepted:
+	case <-ctx.Done():
+		t.Fatal("old invitation registration did not reach broker")
+	}
+	if err := runtime.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var replacementURL string
+	if err := runtime.NewInvitation(ctx, func(raw string) (string, error) { replacementURL = raw; return "new-qr", nil }); err != nil {
+		t.Fatal(err)
+	}
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{DeviceName: "Replacement", StatePath: t.TempDir() + "/replacement.json", OnSAS: func(code string) { sas <- code }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairResult := make(chan error, 1)
+	go func() { _, pairErr := device.Pair(ctx, replacementURL); pairResult <- pairErr }()
+	code := <-sas
+	var pendingID string
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
+		if len(status.PendingRequests) == 1 {
+			pendingID = status.PendingRequests[0].ID
+		}
+		return pendingID != ""
+	})
+	close(controlled.release)
+	if err := <-oldResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("stale invitation result = %v, want context canceled", err)
+	}
+	status := runtime.Status()
+	if len(status.PendingRequests) != 1 || status.PendingRequests[0].ID != pendingID {
+		t.Fatalf("stale invitation replaced current pending request: %+v", status)
+	}
+	if err := runtime.Approve(ctx, pendingID, code); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-pairResult; err != nil {
+		t.Fatalf("replacement invitation did not pair: %v", err)
+	}
 }
 
 func TestRegistrationCannotPublishAcrossResetResume(t *testing.T) {
@@ -474,6 +614,83 @@ func TestRegistrationCannotPublishAcrossResetResume(t *testing.T) {
 	}
 }
 
+type blockedInvitationBroker struct {
+	next     http.Handler
+	once     sync.Once
+	accepted chan struct{}
+	release  chan struct{}
+}
+
+func newBlockedInvitationBroker(next http.Handler) *blockedInvitationBroker {
+	return &blockedInvitationBroker{next: next, accepted: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *blockedInvitationBroker) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	blocked := false
+	if strings.HasSuffix(request.URL.Path, "/invitations") {
+		b.once.Do(func() { blocked = true })
+	}
+	if !blocked {
+		b.next.ServeHTTP(w, request)
+		return
+	}
+	recorder := httptest.NewRecorder()
+	b.next.ServeHTTP(recorder, request)
+	close(b.accepted)
+	<-b.release
+	for key, values := range recorder.Header() {
+		w.Header()[key] = append([]string(nil), values...)
+	}
+	w.WriteHeader(recorder.Code)
+	_, _ = w.Write(recorder.Body.Bytes())
+}
+
+type trackingTURNProvider struct {
+	urls  []string
+	now   time.Time
+	calls atomic.Int64
+}
+
+func (p *trackingTURNProvider) URLs() []string { return append([]string(nil), p.urls...) }
+func (p *trackingTURNProvider) Mint(_ context.Context, subject string, urls []string) (peerbroker.ICECredentials, error) {
+	p.calls.Add(1)
+	return peerbroker.ICECredentials{
+		ICEServers: []peerbroker.ICEServer{{URLs: append([]string(nil), urls...), Username: "managed:" + subject, Credential: "managed-credential"}},
+		ExpiresAt:  p.now.Add(time.Hour),
+	}, nil
+}
+
+type blockedRenewBroker struct {
+	next     http.Handler
+	once     sync.Once
+	accepted chan struct{}
+	release  chan struct{}
+}
+
+func newBlockedRenewBroker(next http.Handler) *blockedRenewBroker {
+	return &blockedRenewBroker{next: next, accepted: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *blockedRenewBroker) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	blocked := false
+	if strings.HasSuffix(request.URL.Path, "/renew") {
+		b.once.Do(func() { blocked = true })
+	}
+	if !blocked {
+		b.next.ServeHTTP(w, request)
+		return
+	}
+	recorder := httptest.NewRecorder()
+	b.next.ServeHTTP(recorder, request)
+	close(b.accepted)
+	<-b.release
+	for key, values := range recorder.Header() {
+		w.Header()[key] = append([]string(nil), values...)
+	}
+	w.WriteHeader(recorder.Code)
+	_, _ = w.Write(recorder.Body.Bytes())
+}
+
 type controlledReadyBroker struct {
 	next      http.Handler
 	mu        sync.Mutex
@@ -542,6 +759,45 @@ func (b *replaceableBroker) replace(handler http.Handler) {
 	b.mu.Lock()
 	b.handler = handler
 	b.mu.Unlock()
+}
+
+func TestReconnectCancelsInvitationThatBrokerLeaseCannotRetain(t *testing.T) {
+	first, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	switcher := &replaceableBroker{handler: first}
+	broker := httptest.NewServer(switcher)
+	defer broker.Close()
+	defer first.Close()
+	runtime, err := linkeddevices.New(linkeddevices.Options{
+		DataDir: t.TempDir(), Target: "reconnect-invite", StoreInstanceID: "reconnect-invite-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := runtime.NewInvitation(ctx, func(string) (string, error) { return "qr", nil }); err != nil {
+		t.Fatal(err)
+	}
+	if status := runtime.Status(); status.State != linkeddevices.StateInviting {
+		t.Fatalf("invitation was not advertised before reconnect: %+v", status)
+	}
+	first.Close()
+	second, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	switcher.replace(second)
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
+		return status.BrokerConnected && status.State != linkeddevices.StateInviting && slices.ContainsFunc(status.Warnings, func(warning string) bool {
+			return strings.Contains(warning, "invitation was cancelled after the rendezvous reconnected")
+		})
+	})
 }
 
 func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {

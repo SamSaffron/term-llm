@@ -53,40 +53,21 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"status": "ok"}
-	// Identity fields (agent, version, capabilities) are only reported to
-	// trusted callers — a valid bearer token, or any caller when auth is
-	// disabled — so the unauthenticated health probe stays anonymous. The hub
-	// prober sends the node token and uses these for its dashboard.
-	if s.healthIdentityTrusted(r) {
+	// Identity fields (agent, version, capabilities) are only reported to a
+	// trusted linked device, a passkey session in passkey mode, a valid token in
+	// bearer mode, or any caller when auth is disabled. The unauthenticated
+	// health probe stays anonymous while the hub prober can report identity.
+	passkeyMode := s.browserAuth != nil
+	passkeyAuthenticated := false
+	if passkeyMode {
+		_, passkeyAuthenticated = s.browserAuth.authenticatePasskeyRequest(r)
+	}
+	if linkeddevices.IdentityRequestTrusted(r, s.cfg.requireAuth, s.cfg.token, passkeyMode, passkeyAuthenticated) {
 		resp["agent"] = s.cfg.agentName
 		resp["version"] = buildinfo.Version
 		resp["capabilities"] = s.capabilityList()
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// healthIdentityTrusted reports whether a trusted mobile peer, auth-disabled
-// loopback serve, bearer token, or passkey session may receive node identity.
-func (s *serveServer) healthIdentityTrusted(r *http.Request) bool {
-	if _, ok := linkeddevices.DeviceFromRequest(r); ok {
-		return true
-	}
-	if s.browserAuth != nil {
-		_, ok := s.browserAuth.authenticatePasskeyRequest(r)
-		return ok
-	}
-	if !s.cfg.requireAuth {
-		return true
-	}
-	if s.cfg.token == "" {
-		return false
-	}
-	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, prefix)), []byte(s.cfg.token)) == 1
 }
 
 // capabilityList describes what this serve exposes, for hub discovery.

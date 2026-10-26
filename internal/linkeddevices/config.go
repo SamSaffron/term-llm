@@ -1,6 +1,8 @@
 package linkeddevices
 
 import (
+	"strings"
+
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/peerbroker"
 )
@@ -13,7 +15,11 @@ func ServerOptionsFromConfig(cfg *config.Config) ServerOptions {
 	}
 	if cfg.LinkedDevicesEnabled() {
 		if err := cfg.ResolveLinkedDevices(); err != nil {
-			return ServerOptions{UnavailableReason: "linked devices configuration credentials could not be resolved"}
+			reason := "linked devices configuration credentials could not be resolved or are invalid"
+			if strings.Contains(err.Error(), "linked_devices.broker_url") {
+				reason = "linked devices broker URL is invalid or could not be resolved"
+			}
+			return ServerOptions{UnavailableReason: reason}
 		}
 	}
 	servers := make([]peerbroker.ConfiguredICEServer, len(cfg.LinkedDevices.ICEServers))

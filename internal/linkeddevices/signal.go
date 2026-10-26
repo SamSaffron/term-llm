@@ -65,7 +65,11 @@ func (r *Runtime) cancelDisconnectedInvitation(id string) {
 		return
 	}
 	r.host.CancelPairing(r.invitation.link.InvitationID)
-	delete(r.pending, id)
+	if pending := r.pending[id]; pending != nil && pending.delivery != nil {
+		pending.disconnected = true
+	} else {
+		delete(r.pending, id)
+	}
 	r.invitation = nil
 	r.warnings = append(r.warnings, "the invitation connection changed and was cancelled")
 }
@@ -97,12 +101,20 @@ func (r *Runtime) Approve(ctx context.Context, id, code string) error {
 	r.mu.Lock()
 	pending := r.pending[id]
 	conn := r.brokerConn
+	sharingCtx := r.sharingCtx
+	host, grants := r.host, r.grants
+	if pending != nil && sharingCtx != nil && sharingCtx.Err() == nil {
+		r.peerRequests.Add(1)
+	} else {
+		pending = nil
+	}
 	r.mu.Unlock()
 	if pending == nil {
 		return pairing.ErrUnknownInvitation
 	}
+	defer r.peerRequests.Done()
 	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(code)), []byte(pending.pairing.SAS)) != 1 {
-		r.host.Reject(pending.pairing, "code mismatch")
+		host.Reject(pending.pairing, "code mismatch")
 		r.mu.Lock()
 		delete(r.pending, id)
 		r.invitation = nil
@@ -110,33 +122,148 @@ func (r *Runtime) Approve(ctx context.Context, id, code string) error {
 		r.mu.Unlock()
 		return pairing.ErrDenied
 	}
-	if err := r.host.Approve(ctx, pending.pairing, fixedApprover(true)); err != nil {
+	if err := host.Approve(ctx, pending.pairing, fixedApprover(true)); err != nil {
 		return err
 	}
-	answer, grant, err := r.host.CompletePairing(pending.pairing)
+	answer, grant, err := host.CompletePairing(pending.pairing)
 	if err != nil {
 		return err
+	}
+	if !r.pendingPairingCurrent(id, pending) {
+		r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
+		return pairing.ErrDenied
 	}
 	// Publish the new reconnect hash before revealing the raw capability. This
 	// makes pair_answer the commit point from the device's perspective.
 	if err := r.renewNow(ctx); err != nil {
-		_ = r.grants.Remove(grant.DeviceID)
+		r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
 		return err
+	}
+	if !r.pendingPairingCurrent(id, pending) {
+		r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
+		return pairing.ErrDenied
 	}
 	if conn == nil {
-		_ = r.grants.Remove(grant.DeviceID)
+		r.clearPendingPairing(id, pending)
+		r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
 		return errors.New("rendezvous disconnected before approval completed")
 	}
+	delivery, ok := r.beginPairAnswerDelivery(id, pending)
+	if !ok {
+		r.clearPendingPairing(id, pending)
+		r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
+		return pairing.ErrDenied
+	}
+	if r.testBeforePairAnswerSend != nil {
+		r.testBeforePairAnswerSend()
+	}
 	if err := conn.Send(pending.kind, pending.id, marshalSignal(answer)); err != nil {
-		_ = r.grants.Remove(grant.DeviceID)
-		_ = r.renewNow(ctx)
+		r.clearPendingPairing(id, pending)
+		r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
 		return err
 	}
-	r.mu.Lock()
-	delete(r.pending, id)
-	r.invitation = nil
-	r.mu.Unlock()
+	deliveryTimer := time.NewTimer(pairAnswerDeliveryTimeout)
+	defer deliveryTimer.Stop()
+	select {
+	case err := <-delivery:
+		if err != nil {
+			r.clearPendingPairing(id, pending)
+			r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
+			return err
+		}
+	case <-sharingCtx.Done():
+		r.clearPendingPairing(id, pending)
+		r.rollbackPairingGrant(sharingCtx, grants, grant.DeviceID)
+		return errors.New("linked devices sharing stopped before pairing answer delivery")
+	case <-deliveryTimer.C:
+		r.clearPendingPairing(id, pending)
+		timedOut, cancel := context.WithCancel(sharingCtx)
+		cancel()
+		r.rollbackPairingGrant(timedOut, grants, grant.DeviceID)
+		return errors.New("timed out waiting for rendezvous pairing answer delivery")
+	case <-ctx.Done():
+		r.clearPendingPairing(id, pending)
+		r.rollbackPairingGrant(ctx, grants, grant.DeviceID)
+		return ctx.Err()
+	}
+	r.clearPendingPairing(id, pending)
 	return nil
+}
+
+func (r *Runtime) beginPairAnswerDelivery(id string, pending *pendingRequest) (<-chan error, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pending[id] != pending || pending.disconnected || r.invitation == nil || r.invitation.id != id {
+		return nil, false
+	}
+	pending.delivery = make(chan error, 1)
+	return pending.delivery, true
+}
+
+func (r *Runtime) completePairAnswerDelivery(id string, deliveryErr error) {
+	r.mu.Lock()
+	pending := r.pending[id]
+	if pending == nil || pending.delivery == nil {
+		r.mu.Unlock()
+		return
+	}
+	delivery := pending.delivery
+	r.mu.Unlock()
+	select {
+	case delivery <- deliveryErr:
+	default:
+	}
+}
+
+func (r *Runtime) failPairAnswerDeliveries(deliveryErr error) {
+	r.mu.Lock()
+	deliveries := make([]chan error, 0, len(r.pending))
+	for _, pending := range r.pending {
+		if pending.delivery != nil {
+			deliveries = append(deliveries, pending.delivery)
+		}
+	}
+	r.mu.Unlock()
+	for _, delivery := range deliveries {
+		select {
+		case delivery <- deliveryErr:
+		default:
+		}
+	}
+}
+
+func (r *Runtime) clearPendingPairing(id string, pending *pendingRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pending[id] == pending {
+		delete(r.pending, id)
+	}
+	if r.invitation != nil && r.invitation.id == id {
+		r.invitation = nil
+	}
+}
+
+func (r *Runtime) pendingPairingCurrent(id string, pending *pendingRequest) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pending[id] == pending && !pending.disconnected && r.invitation != nil && r.invitation.id == id
+}
+
+func (r *Runtime) rollbackPairingGrant(ctx context.Context, grants *pairing.GrantStore, deviceID string) {
+	r.mu.Lock()
+	if r.grants != grants {
+		r.mu.Unlock()
+		return
+	}
+	err := grants.Remove(deviceID)
+	r.mu.Unlock()
+	if err != nil {
+		r.setWarning("cancelled pairing could not remove its local grant")
+		return
+	}
+	if err := r.renewNow(ctx); err != nil {
+		r.setWarning("cancelled pairing grant removal is pending rendezvous synchronization")
+	}
 }
 
 func (r *Runtime) Deny(id string) error {
@@ -301,6 +428,19 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *
 	}
 }
 
+func (r *Runtime) Resume(ctx context.Context) error {
+	r.mu.Lock()
+	if brokerRegistrationRejected(r.availableReason) {
+		r.availableReason = ""
+	}
+	r.mu.Unlock()
+	return r.Enable(ctx)
+}
+
+func brokerRegistrationRejected(reason string) bool {
+	return strings.HasPrefix(reason, "rendezvous rejected linked devices registration:")
+}
+
 func (r *Runtime) Enable(ctx context.Context) error {
 	r.lifecycleMu.Lock()
 	r.mu.Lock()
@@ -369,14 +509,32 @@ func (r *Runtime) stopLocked() error {
 	return err
 }
 
-func (r *Runtime) CancelInvitation() {
+func (r *Runtime) CancelInvitation(ctx context.Context) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.invitation != nil {
-		r.host.CancelPairing(r.invitation.link.InvitationID)
-		r.invitation = nil
+	if r.invitation == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	id := r.invitation.id
+	r.host.CancelPairing(r.invitation.link.InvitationID)
+	r.invitation = nil
+	for _, pending := range r.pending {
+		if pending.delivery == nil {
+			continue
+		}
+		select {
+		case pending.delivery <- errors.New("pairing invitation canceled before answer delivery"):
+		default:
+		}
 	}
 	r.pending = map[string]*pendingRequest{}
+	r.invitationSeq++
+	broker, hostID, capability := r.broker, r.hostID, r.leaseCapability
+	r.mu.Unlock()
+	if broker == nil || hostID == "" || capability == "" {
+		return nil
+	}
+	return broker.RevokeInvitation(ctx, hostID, capability, id)
 }
 
 func (r *Runtime) Revoke(ctx context.Context, id string) error {
@@ -454,6 +612,11 @@ func (r *Runtime) NewInvitation(ctx context.Context, qr func(string) (string, er
 	if r.invitation != nil {
 		r.host.CancelPairing(r.invitation.link.InvitationID)
 	}
+	r.invitation = nil
+	r.pending = map[string]*pendingRequest{}
+	r.invitationSeq++
+	attempt := r.invitationSeq
+	generation, broker, host := r.generation, r.broker, r.host
 	hostID, capability := r.hostID, r.leaseCapability
 	r.mu.Unlock()
 	id, err := randomToken(pairing.InvitationIDSize)
@@ -465,21 +628,39 @@ func (r *Runtime) NewInvitation(ctx context.Context, qr func(string) (string, er
 		return err
 	}
 	expires := r.opts.Now().Add(invitationTTL).UTC().Truncate(time.Second)
-	if _, err := r.broker.RegisterInvitation(ctx, hostID, capability, id, peerbroker.HashCapability(invitationCapability), expires); err != nil {
+	if _, err := broker.RegisterInvitation(ctx, hostID, capability, id, peerbroker.HashCapability(invitationCapability), expires); err != nil {
 		return err
 	}
-	link, err := r.host.NewPairingForInvitation(id, invitationCapability, expires)
+	if !r.invitationGenerationCurrent(attempt, generation, broker, host, hostID, capability) {
+		return context.Canceled
+	}
+	link, err := host.NewPairingForInvitation(id, invitationCapability, expires)
 	if err != nil {
 		return err
 	}
 	qrDataURL, err := qr(link.String())
 	if err != nil {
-		r.host.CancelPairing(link.InvitationID)
+		host.CancelPairing(link.InvitationID)
 		return fmt.Errorf("encode pairing QR: %w", err)
 	}
 	r.mu.Lock()
+	if !r.invitationGenerationCurrentLocked(attempt, generation, broker, host, hostID, capability) {
+		r.mu.Unlock()
+		host.CancelPairing(link.InvitationID)
+		return context.Canceled
+	}
 	r.invitation = &invitation{id: id, capability: invitationCapability, link: link, qrDataURL: qrDataURL}
-	r.pending = map[string]*pendingRequest{}
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *Runtime) invitationGenerationCurrent(attempt, generation uint64, broker *peerbroker.Client, host *pairing.Host, hostID, capability string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.invitationGenerationCurrentLocked(attempt, generation, broker, host, hostID, capability)
+}
+
+func (r *Runtime) invitationGenerationCurrentLocked(attempt, generation uint64, broker *peerbroker.Client, host *pairing.Host, hostID, capability string) bool {
+	return r.settings.Enabled && r.invitationSeq == attempt && r.generation == generation && r.broker == broker && r.host == host &&
+		r.hostID == hostID && r.leaseCapability == capability
 }

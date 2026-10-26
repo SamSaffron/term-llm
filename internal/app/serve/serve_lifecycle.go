@@ -34,9 +34,7 @@ func (s *serveServer) contextWithShutdown(ctx context.Context) (context.Context,
 }
 
 func (s *serveServer) Stop(ctx context.Context) error {
-	if s.linkedDevices != nil {
-		_ = s.linkedDevices.Close()
-	}
+	_ = s.linkedDevices.Close()
 	if s.reloadRunsUnregister != nil {
 		s.reloadRunsUnregister()
 		s.reloadRunsUnregister = nil

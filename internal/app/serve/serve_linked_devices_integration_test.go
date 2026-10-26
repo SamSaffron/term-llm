@@ -121,7 +121,7 @@ func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func(
 	server := newTestServeServer("mounted response")
 	server.cfg = serveServerConfig{ui: true, basePath: basePath, requireAuth: true, token: "owner-token"}
 	server.store = newSessionDirectoryTestStore(t)
-	server.linkedDevices = runtime
+	server.linkedDevices = &linkeddevices.ServeHost{Runtime: runtime}
 	_ = server.httpHandler()
 
 	owner := httptest.NewServer(runtime.Handler())

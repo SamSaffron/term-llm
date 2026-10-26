@@ -168,6 +168,17 @@ func TestHostRejectsBasePathsThatRequireEscaping(t *testing.T) {
 	}
 }
 
+func TestBrokerURLRequiresHTTPSExceptLoopback(t *testing.T) {
+	for _, raw := range []string{"https://broker.example.com", "http://localhost:8091", "http://127.0.0.1:8091", "http://[::1]:8091"} {
+		if err := validateBroker(raw); err != nil {
+			t.Fatalf("validateBroker(%q): %v", raw, err)
+		}
+	}
+	if err := validateBroker("http://192.168.1.2:8091"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("LAN HTTP broker error = %v", err)
+	}
+}
+
 func TestStrictPairLink(t *testing.T) {
 	host, _, clock := newTestHost(t)
 	link, err := host.NewPairingForInvitation(invitationID(), "invite_cap", clock.nowTime.Add(time.Minute))

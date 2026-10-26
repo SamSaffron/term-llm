@@ -209,6 +209,42 @@ describe('LinkedDevicesSettings', () => {
     }
   });
 
+  it('shows typed recovery actions for a broker configuration rejection only', async () => {
+    vi.mocked(linkedDevicesAPI.getLinkedDevices).mockResolvedValue({
+      ...offStatus,
+      state: 'unavailable',
+      reason: 'rendezvous rejected linked devices registration',
+      can_resume: true,
+      can_reset: true,
+    });
+    const recoverable = view();
+    try {
+      await screen.findByText('Unavailable', { selector: '.linked-devices-state strong' });
+      fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+      await waitFor(() =>
+        expect(linkedDevicesAPI.resumeLinkedDevices).toHaveBeenCalledWith(recoverable.store.api),
+      );
+      expect(screen.getByRole('button', { name: 'Forget all' })).toBeVisible();
+    } finally {
+      recoverable.unmount();
+      recoverable.store.dispose();
+    }
+
+    vi.mocked(linkedDevicesAPI.getLinkedDevices).mockResolvedValue({
+      ...offStatus,
+      state: 'unavailable',
+      reason: 'no rendezvous service is configured in this build',
+    });
+    const disabled = view();
+    try {
+      await screen.findByText('Unavailable', { selector: '.linked-devices-state strong' });
+      expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Forget all' })).toBeNull();
+    } finally {
+      disabled.store.dispose();
+    }
+  });
+
   it('revokes with confirmation, stops and resumes directly, and confirms forget all', async () => {
     vi.mocked(linkedDevicesAPI.getLinkedDevices).mockResolvedValue({
       ...offStatus,

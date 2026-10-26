@@ -102,7 +102,14 @@ func (h *Handler) serveWS(conn *websocket.Conn, hostID string, role wsRole, tok 
 		slot := host.invitations[role.id]
 		if slot.peer != nil {
 			close(slot.peer.kick)
+			slot.peer = nil
+			delete(host.invitations, role.id)
 			h.notifyPresenceLocked(host, role, false)
+			h.connections--
+			h.mu.Unlock()
+			closeWS(conn, WSCloseSuperseded, "duplicate invitation")
+			_ = conn.Close()
+			return
 		}
 		slot.consumed = true
 		slot.peer = peer
@@ -254,7 +261,7 @@ func (h *Handler) readWS(conn *websocket.Conn, hostID string, role wsRole, sende
 			finish(websocket.CloseMessageTooBig, CodeTooLarge)
 			return
 		}
-		code := h.routeSignal(hostID, role, frame)
+		code := h.routeSignal(hostID, role, sender, frame)
 		if code == CodeQuotaExceeded {
 			finish(WSCloseQuotaExceeded, code)
 			return
@@ -269,7 +276,7 @@ func validSignalBody(body json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(body)
 	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) && json.Valid(trimmed)
 }
-func (h *Handler) routeSignal(hostID string, role wsRole, frame Frame) string {
+func (h *Handler) routeSignal(hostID string, role wsRole, sender *wsPeer, frame Frame) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	host := h.hosts[hostID]
@@ -306,6 +313,11 @@ func (h *Handler) routeSignal(hostID string, role wsRole, frame Frame) string {
 	frame.Type, frame.Role, frame.PeerConnected, frame.LeaseExpiresAt, frame.Error = FrameSignal, "", nil, nil, ""
 	if !enqueueFrame(target, frame) {
 		return CodeQueueFull
+	}
+	if role.kind == PeerHost && frame.PeerKind == PeerInvitation {
+		if !enqueueFrame(sender, Frame{Type: FrameDelivered, PeerID: frame.PeerID, PeerKind: frame.PeerKind}) {
+			return CodeQueueFull
+		}
 	}
 	return ""
 }

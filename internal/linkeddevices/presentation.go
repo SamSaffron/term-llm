@@ -6,12 +6,13 @@ import (
 )
 
 // ShapeCapabilities replaces owner-only feature claims with the deliberately
-// narrow web-v1 peer profile. It returns true when a peer profile was applied.
-func ShapeCapabilities(request *http.Request, payload map[string]any) bool {
+// narrow web-v1 peer profile and marks the response private when applied.
+func ShapeCapabilities(response http.ResponseWriter, request *http.Request, payload map[string]any) {
 	principal, ok := DeviceFromRequest(request)
 	if !ok {
-		return false
+		return
 	}
+	response.Header().Set("Cache-Control", "no-store")
 	payload["projects"] = map[string]bool{"enabled": false}
 	payload["worktrees"] = map[string]bool{"enabled": false}
 	payload["shell"] = map[string]any{"enabled": false, "reason": "not available through Linked devices"}
@@ -22,7 +23,6 @@ func ShapeCapabilities(request *http.Request, payload map[string]any) bool {
 		"transcript_sharing": false, "uploads": false, "voice": false,
 		"push_notifications": false, "device_tools": false,
 	}
-	return true
 }
 
 // PeerIndexHTML adds a request-local authentication marker without mutating the

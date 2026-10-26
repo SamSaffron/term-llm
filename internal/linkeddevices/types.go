@@ -45,6 +45,8 @@ type Status struct {
 	State           State              `json:"state"`
 	Reason          string             `json:"reason,omitempty"`
 	ResetRequired   bool               `json:"reset_required,omitempty"`
+	CanResume       bool               `json:"can_resume,omitempty"`
+	CanReset        bool               `json:"can_reset,omitempty"`
 	Enabled         bool               `json:"enabled"`
 	BrokerConnected bool               `json:"broker_connected"`
 	HostFingerprint string             `json:"host_fingerprint,omitempty"`

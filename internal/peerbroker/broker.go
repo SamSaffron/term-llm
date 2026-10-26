@@ -69,6 +69,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	mux.HandleFunc("POST /v2/hosts", h.handleRegister)
 	mux.HandleFunc("POST /v2/hosts/{host}/renew", h.handleRenew)
 	mux.HandleFunc("POST /v2/hosts/{host}/invitations", h.handleInvitation)
+	mux.HandleFunc("DELETE /v2/hosts/{host}/invitations/{invitation}", h.handleDeleteInvitation)
 	mux.HandleFunc("GET /v2/hosts/{host}/ice", h.handleICE)
 	mux.HandleFunc("GET /v2/hosts/{host}/ws", h.handleWS)
 	h.mux = mux
@@ -223,8 +224,18 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate ICE policy if provided
 	var icePolicy HostICEConfig
+
+	h.mu.Lock()
+	ch, ok := h.challenges[req.ChallengeID]
+	delete(h.challenges, req.ChallengeID)
+	h.mu.Unlock()
+	keyHash := hashCapability(string(key))
+	// Verify signature includes ICE policy
+	if !ok || !ch.expiresAt.After(h.cfg.Now()) || subtle.ConstantTimeCompare(ch.keyHash[:], keyHash[:]) != 1 || !ed25519.Verify(key, registrationPayload(key, req.ChallengeID, ch.nonce, req.Devices, req.ICEPolicy), sig) {
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "")
+		return
+	}
 	var turnURLs []string
 	if h.cfg.TURNProvider != nil {
 		turnURLs = h.cfg.TURNProvider.URLs()
@@ -236,17 +247,6 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		icePolicy = validated
-	}
-
-	h.mu.Lock()
-	ch, ok := h.challenges[req.ChallengeID]
-	delete(h.challenges, req.ChallengeID)
-	h.mu.Unlock()
-	keyHash := hashCapability(string(key))
-	// Verify signature includes ICE policy
-	if !ok || !ch.expiresAt.After(h.cfg.Now()) || subtle.ConstantTimeCompare(ch.keyHash[:], keyHash[:]) != 1 || !ed25519.Verify(key, registrationPayload(key, req.ChallengeID, ch.nonce, req.Devices, req.ICEPolicy), sig) {
-		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "")
-		return
 	}
 	leaseCap, err := randomToken(capabilityBytes)
 	if err != nil {
@@ -344,6 +344,35 @@ func (h *Handler) handleInvitation(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	writeJSON(w, http.StatusCreated, InvitationSlot{InvitationID: req.InvitationID, ExpiresAt: req.ExpiresAt.UTC()})
 }
+func (h *Handler) handleDeleteInvitation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("invitation")
+	tok, ok := bearer(r)
+	if !validPeerID(id) {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid invitation_id")
+		return
+	}
+	h.mu.Lock()
+	host := h.hosts[r.PathValue("host")]
+	if !ok || !h.hostAuthorizedLocked(host, tok) {
+		h.mu.Unlock()
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "")
+		return
+	}
+	slot := host.invitations[id]
+	if slot == nil {
+		h.mu.Unlock()
+		writeError(w, http.StatusNotFound, CodeNotFound, "")
+		return
+	}
+	delete(host.invitations, id)
+	if slot.peer != nil {
+		close(slot.peer.kick)
+		h.notifyPresenceLocked(host, wsRole{kind: PeerInvitation, id: id}, false)
+	}
+	h.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) peerEndpointErrorLocked(hostID string, host *hostLease, kind, id, tok string, hasToken, validQuery bool) (int, string) {
 	if host == nil {
 		if until, ok := h.expiredHosts[hostID]; ok && until.After(h.cfg.Now()) {
@@ -375,7 +404,7 @@ func (h *Handler) peerAuthorizedLocked(host *hostLease, kind, id, tok string) bo
 		return device != nil && capabilityEqual(device.capHash, tok)
 	case PeerInvitation:
 		invite := host.invitations[id]
-		return invite != nil && invite.expiresAt.After(h.cfg.Now()) && capabilityEqual(invite.capHash, tok)
+		return invite != nil && (!invite.consumed || invite.peer != nil) && invite.expiresAt.After(h.cfg.Now()) && capabilityEqual(invite.capHash, tok)
 	default:
 		return false
 	}

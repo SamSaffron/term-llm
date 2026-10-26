@@ -24,7 +24,7 @@ export type LinkedDevicesRequestStatus = { "id": string; "name": string; "reques
 
 export type LinkedDevicesState = string;
 
-export type LinkedDevicesStatus = { "state": LinkedDevicesState; "reason"?: string; "reset_required"?: boolean; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: LinkedDevicesInvitationStatus; "pending_requests": (LinkedDevicesRequestStatus)[] | null; "devices": (LinkedDevicesDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": LinkedDevicesAuthorityStatement; };
+export type LinkedDevicesStatus = { "state": LinkedDevicesState; "reason"?: string; "reset_required"?: boolean; "can_resume"?: boolean; "can_reset"?: boolean; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: LinkedDevicesInvitationStatus; "pending_requests": (LinkedDevicesRequestStatus)[] | null; "devices": (LinkedDevicesDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": LinkedDevicesAuthorityStatement; };
 
 export type ServeContextUsage = { "used_tokens": number; "input_limit"?: number; "cached_input_tokens"?: number; "estimated": boolean; };
 

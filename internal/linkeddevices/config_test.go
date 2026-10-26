@@ -63,6 +63,24 @@ func TestLinkedDevicesServerOptionsDoNotResolveCredentialsWhileDisabled(t *testi
 	}
 }
 
+func TestLinkedDevicesServerOptionsDiagnoseInvalidEnvironment(t *testing.T) {
+	t.Run("broker URL", func(t *testing.T) {
+		t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", "http://10.0.0.5:8091")
+		got := ServerOptionsFromConfig(&config.Config{})
+		if !strings.Contains(got.UnavailableReason, "broker URL") {
+			t.Fatalf("unavailable reason = %q", got.UnavailableReason)
+		}
+	})
+	t.Run("admission", func(t *testing.T) {
+		t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", "https://broker.example.com")
+		t.Setenv("TERM_LLM_LINKED_DEVICES_ADMISSION", "short")
+		got := ServerOptionsFromConfig(&config.Config{})
+		if !strings.Contains(got.UnavailableReason, "credentials") || strings.Contains(got.UnavailableReason, "short") {
+			t.Fatalf("unavailable reason = %q", got.UnavailableReason)
+		}
+	})
+}
+
 func TestLinkedDevicesServerOptionsRedactResolutionFailure(t *testing.T) {
 	t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", "http://127.0.0.1:1")
 	secretPath := filepath.Join(t.TempDir(), "missing-private-secret")

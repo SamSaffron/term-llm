@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -21,6 +22,29 @@ type LinkedDevicesICEServerConfig struct {
 	Username         string   `mapstructure:"username" yaml:"username,omitempty" json:"username,omitempty"`
 	Credential       string   `mapstructure:"credential" yaml:"credential,omitempty" json:"credential,omitempty"`
 }
+
+func (c LinkedDevicesConfig) String() string {
+	admission := ""
+	if c.AdmissionCredential != "" {
+		admission = "[REDACTED]"
+	}
+	return fmt.Sprintf("config.LinkedDevicesConfig{BrokerURL:%q, AdmissionCredential:%s, ICEServers:%v}", c.BrokerURL, admission, c.ICEServers)
+}
+
+func (c LinkedDevicesConfig) GoString() string { return c.String() }
+
+func (c LinkedDevicesICEServerConfig) String() string {
+	username, credential := "", ""
+	if c.Username != "" {
+		username = "[REDACTED]"
+	}
+	if c.Credential != "" {
+		credential = "[REDACTED]"
+	}
+	return fmt.Sprintf("config.LinkedDevicesICEServerConfig{URLs:%v, CredentialSource:%q, Username:%s, Credential:%s}", c.URLs, c.CredentialSource, username, credential)
+}
+
+func (c LinkedDevicesICEServerConfig) GoString() string { return c.String() }
 
 // initializeLinkedDevices applies defaults and validates the linked_devices configuration.
 func (c *Config) initializeLinkedDevices() error {
@@ -42,6 +66,11 @@ func (c *Config) ValidateLinkedDevices() error {
 		return nil
 	}
 	ld := &c.LinkedDevices
+	if brokerURL := strings.TrimSpace(ld.BrokerURL); brokerURL != "" && !linkedDevicesDeferredValue(brokerURL) {
+		if err := validateLinkedDevicesBrokerURL(brokerURL); err != nil {
+			return fmt.Errorf("linked_devices.broker_url: %w", err)
+		}
+	}
 	if credential := strings.TrimSpace(ld.AdmissionCredential); credential != "" && !linkedDevicesDeferredValue(credential) {
 		if err := validateResolvedBrokerCredential(credential); err != nil {
 			return fmt.Errorf("linked_devices.admission_credential: %w", err)
@@ -206,6 +235,12 @@ func (c *Config) ResolveLinkedDevices() error {
 		return nil
 	}
 	ld := &c.LinkedDevices
+	if strings.TrimSpace(ld.BrokerURL) == "" {
+		ld.BrokerURL = strings.TrimSpace(os.Getenv("TERM_LLM_LINKED_DEVICES_BROKER_URL"))
+	}
+	if strings.TrimSpace(ld.AdmissionCredential) == "" {
+		ld.AdmissionCredential = strings.TrimSpace(os.Getenv("TERM_LLM_LINKED_DEVICES_ADMISSION"))
+	}
 
 	// Resolve broker_url if set
 	if strings.TrimSpace(ld.BrokerURL) != "" {
@@ -215,6 +250,9 @@ func (c *Config) ResolveLinkedDevices() error {
 		}
 		if strings.TrimSpace(resolved) == "" {
 			return fmt.Errorf("linked_devices.broker_url: resolved value is empty")
+		}
+		if err := validateLinkedDevicesBrokerURL(resolved); err != nil {
+			return fmt.Errorf("linked_devices.broker_url: %w", err)
 		}
 		ld.BrokerURL = resolved
 	}
@@ -259,6 +297,28 @@ func (c *Config) ResolveLinkedDevices() error {
 	}
 
 	return nil
+}
+
+func validateLinkedDevicesBrokerURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("must be scheme://host[/path] without credentials, query, or fragment")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && linkedDevicesLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("HTTPS is required except for loopback")
+}
+
+func linkedDevicesLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func linkedDevicesDeferredValue(value string) bool {

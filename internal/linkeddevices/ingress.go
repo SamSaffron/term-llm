@@ -2,6 +2,7 @@ package linkeddevices
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"strings"
@@ -38,6 +39,31 @@ func AdmitDevice(next, existing http.HandlerFunc) http.HandlerFunc {
 		}
 		existing(w, r)
 	}
+}
+
+// IdentityRequestTrusted reports whether a health request may receive node
+// identity. Linked devices are independently trusted. In passkey mode only an
+// authenticated passkey session is trusted; bearer matching is exclusive to
+// bearer mode, preserving the serve authentication mode's precedence.
+func IdentityRequestTrusted(r *http.Request, requireAuth bool, bearerToken string, passkeyMode, passkeyAuthenticated bool) bool {
+	if _, ok := DeviceFromRequest(r); ok {
+		return true
+	}
+	if passkeyMode {
+		return passkeyAuthenticated
+	}
+	if !requireAuth {
+		return true
+	}
+	if bearerToken == "" {
+		return false
+	}
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, prefix)), []byte(bearerToken)) == 1
 }
 
 const ScopeWebV1 = "web-v1"

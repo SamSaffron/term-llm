@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -606,6 +607,44 @@ func TestLinkedDevicesKeySpecsSensitive(t *testing.T) {
 	}
 	if !iceServersFound {
 		t.Error("ice_servers KeySpec not found")
+	}
+}
+
+func TestLinkedDevicesBrokerURLValidationAndEnvironmentAdmission(t *testing.T) {
+	for _, raw := range []string{"http://10.0.0.5:8091", "https://user@example.com", "https://example.com?query=1"} {
+		cfg := &Config{LinkedDevices: LinkedDevicesConfig{BrokerURL: raw}}
+		if err := cfg.ValidateLinkedDevices(); err == nil || !strings.Contains(err.Error(), "linked_devices.broker_url") {
+			t.Fatalf("broker URL %q error = %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"https://broker.example.com/path", "http://127.0.0.1:8091", "http://localhost:8091"} {
+		cfg := &Config{LinkedDevices: LinkedDevicesConfig{BrokerURL: raw}}
+		if err := cfg.ValidateLinkedDevices(); err != nil {
+			t.Fatalf("broker URL %q: %v", raw, err)
+		}
+	}
+	t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", "https://broker.example.com")
+	t.Setenv("TERM_LLM_LINKED_DEVICES_ADMISSION", "short")
+	cfg := &Config{}
+	if err := cfg.ResolveLinkedDevices(); err == nil || !strings.Contains(err.Error(), "admission_credential") {
+		t.Fatalf("short environment admission error = %v", err)
+	}
+}
+
+func TestLinkedDevicesConfigFormattingRedactsSecrets(t *testing.T) {
+	admission := strings.Repeat("a", 32)
+	username, credential := "static-user", "static-password"
+	cfg := LinkedDevicesConfig{
+		BrokerURL: "https://broker.example.com", AdmissionCredential: admission,
+		ICEServers: []LinkedDevicesICEServerConfig{{
+			URLs: []string{"turns:relay.example.com:5349"}, CredentialSource: "static", Username: username, Credential: credential,
+		}},
+	}
+	formatted := fmt.Sprintf("%v %#v", cfg, cfg)
+	for _, secret := range []string{admission, username, credential} {
+		if strings.Contains(formatted, secret) {
+			t.Fatalf("formatted linked-device config leaked %q: %s", secret, formatted)
+		}
 	}
 }
 

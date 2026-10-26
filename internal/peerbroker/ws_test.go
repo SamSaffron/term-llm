@@ -164,12 +164,23 @@ func TestInvitationRoutingWrongCapabilityReplayAndNoSecretFrame(t *testing.T) {
 	if frame.PeerKind != PeerInvitation || frame.PeerID != "pair_1" {
 		t.Fatalf("invitation route = %+v", frame)
 	}
-	_ = guest.Close()
-	redeemer, err := client.DialInvitation(context.Background(), registration.HostID, "pair_1", invitationCap)
-	if err != nil {
-		t.Fatalf("authenticated duplicate redemption must reach the host: %v", err)
+	if err := host.Send(PeerInvitation, "pair_1", json.RawMessage(`{"answer":1}`)); err != nil {
+		t.Fatal(err)
 	}
-	_ = redeemer.Close()
+	if frame := recvType(t, guest, FrameSignal); frame.PeerKind != PeerInvitation || frame.PeerID != "pair_1" {
+		t.Fatalf("host answer route = %+v", frame)
+	}
+	if frame := recvType(t, host, FrameDelivered); frame.PeerKind != PeerInvitation || frame.PeerID != "pair_1" {
+		t.Fatalf("host answer delivery = %+v", frame)
+	}
+	_ = guest.Close()
+	presence := recvType(t, host, FramePeer)
+	if presence.PeerConnected == nil || *presence.PeerConnected {
+		t.Fatalf("invitation disconnect presence = %+v", presence)
+	}
+	if _, err := client.DialInvitation(context.Background(), registration.HostID, "pair_1", invitationCap); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("consumed invitation redemption error = %v", err)
+	}
 }
 
 func TestOfflineAndSignalLimits(t *testing.T) {
