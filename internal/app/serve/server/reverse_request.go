@@ -101,10 +101,15 @@ func HandleHubReverseRequest(ctx context.Context, frame ReverseRequest, token, l
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		status := http.StatusBadGateway
 		if ctx.Err() != nil {
-			return
+			// Local reload interrupts HTTP work, not the healthy Hub connection.
+			if !errors.Is(context.Cause(ctx), restart.ErrInterrupt) {
+				return
+			}
+			status = http.StatusServiceUnavailable
 		}
-		sendError(http.StatusBadGateway, err.Error())
+		sendError(status, err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -129,7 +134,7 @@ func HandleHubReverseRequest(ctx context.Context, frame ReverseRequest, token, l
 				_ = writeFrame(ReverseResponse{Type: ReverseFrameResponseEnd, ID: frame.ID})
 				return
 			}
-			if ctx.Err() == nil {
+			if ctx.Err() == nil || errors.Is(context.Cause(ctx), restart.ErrInterrupt) {
 				_ = writeFrame(ReverseResponse{Type: ReverseFrameResponseEnd, ID: frame.ID, Error: readErr.Error()})
 			}
 			return

@@ -323,7 +323,7 @@ func (s *hubServer) handleCreateDelegation(w http.ResponseWriter, r *http.Reques
 		UpdatedAt:  now,
 	}
 
-	if !allowServeProducer(w) {
+	if !allowServeProducer(w, r) {
 		return
 	}
 	if err := s.delegations.Add(d); err != nil {

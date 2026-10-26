@@ -40,12 +40,13 @@ transports require explicit ownership adapters, not URL/method heuristics. `HTTP
 use explicit root admission. Transport admission and cancellation registration
 are atomic with respect to drain. Requests arriving during drain retain caller
 cancellation and share one fixed deadline: the normal grace period plus five
-seconds for final controls. At that deadline they receive cooperative
-interruption and new handler/connection admission closes until rollback or exec.
-Traffic cannot extend the window; cancelled requests still own their actual
-settlement and response flushing. This allowance is not permission to start a
-producer: detached ingress must acquire Root before effects; request-scoped
-producers fence admission inside their already-owned transport lifetime.
+seconds of final owned controls. At that deadline owned requests receive
+cooperative interruption; subsequent controls/connections are unowned observers
+until replacement seals admission. They can still release approval/shell blockers
+without traffic prolonging drain, but exec may cut off their replies (clients
+retry). Cancelled owned requests still retain actual settlement/flush ownership.
+Detached producers acquire Root; request-scoped producer fences also reject
+unowned observers, including after a failed replacement returns to ready.
 
 ### Mode adapters
 

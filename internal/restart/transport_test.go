@@ -225,20 +225,49 @@ func TestHTTPTransportDrainWindowCannotBeRenewed(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("long drain request never interrupted")
 	}
+	var observerCtx context.Context
 	for i := 0; i < 10; i++ {
 		rec := httptest.NewRecorder()
-		transport.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("request admitted beyond fixed window") })).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/read", nil))
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("late status = %d", rec.Code)
+		transport.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			observerCtx = r.Context()
+			if r.Context().Err() != nil {
+				t.Error("late control cancelled")
+			}
+			if !c.DrainingRequest(r.Context()) {
+				t.Error("late producer fence missing")
+			}
+			if _, release, err := Child(r.Context()); !errors.Is(err, ErrReleased) {
+				if release != nil {
+					release()
+				}
+				t.Errorf("late observer inherited ownership: %v", err)
+			}
+			if _, release, err := c.Root(r.Context()); !errors.Is(err, ErrDraining) {
+				if release != nil {
+					release()
+				}
+				t.Errorf("late producer admitted: %v", err)
+			}
+		})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/read", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("late control status=%d", rec.Code)
 		}
 	}
-	// A fresh HTTP/1 connection cannot take a response-flush ticket after the
-	// deadline either, even if its handler has not been dispatched yet.
+	// Fresh HTTP/1 connections remain usable for controls, but do not take a
+	// response-flush ticket after the deadline either.
 	conn, peer := net.Pipe()
 	defer conn.Close()
 	defer peer.Close()
 	transport.ConnContext(t.Context(), conn)
 	transport.ConnState(conn, http.StateActive)
+	entry := transport.connections[conn]
+	entry.mu.Lock()
+	hasTicket := entry.release != nil
+	entry.mu.Unlock()
+	// An unowned connection uses a no-op release, not an admission ticket.
+	if !hasTicket {
+		t.Fatal("late connection was closed rather than admitted")
+	}
 	c.mu.Lock()
 	active := c.active
 	c.mu.Unlock()
@@ -251,6 +280,13 @@ func TestHTTPTransportDrainWindowCannotBeRenewed(t *testing.T) {
 		t.Fatal("replacement before cancelled handler settled")
 	default:
 	}
+	lateStarted, lateDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(lateDone)
+		transport.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { close(lateStarted); <-caller.Done() })).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/late-control", nil))
+	}()
+	<-lateStarted
+	defer func() { cancel(); <-lateDone }()
 	close(settled)
 	<-done
 	select {
@@ -259,6 +295,11 @@ func TestHTTPTransportDrainWindowCannotBeRenewed(t *testing.T) {
 		t.Fatal("steady requests prevented replacement")
 	}
 	waitAttempt(t, c)
+	// A held observer must not become an unowned producer just because
+	// rollback reopened ordinary admission.
+	if !c.DrainingRequest(observerCtx) || c.DrainingRequest(t.Context()) {
+		t.Fatal("rollback lost observer fence or blocked fresh requests")
+	}
 }
 
 func TestHTTPTransportAdmissionRegistersInterruptBeforeDrain(t *testing.T) {

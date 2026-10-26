@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// httpDrainAllowance is a final, fixed control window after the normal grace
+// httpDrainAllowance is a final, fixed ownership window after the normal grace
 // period. Neither overlapping requests nor fresh connections can extend it.
 const httpDrainAllowance = 5 * time.Second
 
 // HTTPTransport accounts for finite request effects and response flushing while
-// permitting controls/lease maintenance during drain's bounded intake window.
+// permitting controls/lease maintenance throughout drain.
 // Detached producers must use Root; request-bound producers must fence admission
 // before effects. Passive streams detach explicitly, never by method or URL.
 type HTTPTransport struct {
@@ -90,16 +90,21 @@ func (h *HTTPTransport) Handler(next http.Handler) http.Handler {
 	})
 }
 
-// httpActivity atomically classifies transport ownership and cancellation. Work
-// admitted before drain stays interruptible. New controls get a usable context
-// even during cancellation, but only until this attempt's fixed deadline. After
-// that both connection and handler admission close, preventing steady traffic
-// from starving quiescence. Cancellation never releases actual ownership.
+// httpActivity atomically classifies transport ownership and cancellation.
+// After the fixed ownership window, controls are observers: they can release
+// blockers but cannot prolong drain, and exec may cut off their replies.
+// Producers must fence admission independently. Existing ownership still waits
+// for actual settlement, never merely cancellation.
 func (c *Coordinator) httpActivity(ctx context.Context, handler bool) (context.Context, func(), error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.draining && (c.status.Phase == "replacing" || !time.Now().Before(c.httpDeadline)) {
-		return ctx, nil, ErrDraining
+	if c.draining {
+		if c.status.Phase == "replacing" {
+			return ctx, nil, ErrDraining
+		}
+		if !time.Now().Before(c.httpDeadline) {
+			return context.WithValue(ctx, operationKey{}, &operation{coordinator: c, released: true}), func() {}, nil
+		}
 	}
 	source := "HTTP connection"
 	if handler {
@@ -122,6 +127,15 @@ func (c *Coordinator) httpActivity(ctx context.Context, handler bool) (context.C
 		release = func() { finish(); releaseOwner() }
 	}
 	return ctx, release, nil
+}
+
+// DrainingRequest also fences observer requests admitted without ownership,
+// even if a failed replacement returned to ready before they reached ingress.
+func (c *Coordinator) DrainingRequest(ctx context.Context) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	op, _ := ctx.Value(operationKey{}).(*operation)
+	return c.draining || (op != nil && op.coordinator == c && op.released)
 }
 
 // Passive releases only the observer request and its HTTP connection. Call at

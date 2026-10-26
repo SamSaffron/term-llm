@@ -143,7 +143,7 @@ func TestProducerGatePreservesTransportOwnership(t *testing.T) {
 	defer cancel()
 	var owned context.Context
 	(&restart.HTTPTransport{Coordinator: c}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowServeProducer(w) {
+		if !allowServeProducer(w, r) {
 			t.Fatal("producer rejected while ready")
 		}
 		owned = r.Context()

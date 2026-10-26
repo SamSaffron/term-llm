@@ -21,9 +21,9 @@ func admitServeWork(w http.ResponseWriter, r *http.Request) (context.Context, fu
 }
 
 // allowServeProducer fences new work inside an already-owned HTTPTransport
-// handler. Its ticket and cancellation registration predate this admission check.
-func allowServeProducer(w http.ResponseWriter) bool {
-	if !restart.Default.Draining() {
+// handler, rejecting late unowned observers even after replacement rollback.
+func allowServeProducer(w http.ResponseWriter, r *http.Request) bool {
+	if !restart.Default.DrainingRequest(r.Context()) {
 		return true
 	}
 	w.Header().Set("Retry-After", "1")

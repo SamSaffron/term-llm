@@ -77,7 +77,7 @@ func (s *serveServer) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !allowServeProducer(w) {
+	if !allowServeProducer(w, r) {
 		return
 	}
 

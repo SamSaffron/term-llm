@@ -20,7 +20,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		writeAnthropicError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return
 	}
-	if restart.Default.Draining() {
+	if restart.Default.DrainingRequest(r.Context()) {
 		w.Header().Set("Retry-After", "1")
 		writeAnthropicError(w, http.StatusServiceUnavailable, "server_reloading", restart.ErrDraining.Error())
 		return

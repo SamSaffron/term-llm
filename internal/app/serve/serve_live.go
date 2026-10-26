@@ -644,7 +644,7 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !allowServeProducer(w) {
+	if !allowServeProducer(w, r) {
 		return
 	}
 
@@ -1011,7 +1011,7 @@ func (s *serveServer) handleLiveSessionAudio(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
 		return
 	}
-	if !allowServeProducer(w) {
+	if !allowServeProducer(w, r) {
 		return
 	}
 	pcmSession, ok := record.claimAudio(r.URL.Query().Get("token"), time.Now())
