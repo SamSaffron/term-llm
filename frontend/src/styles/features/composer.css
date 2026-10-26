@@ -402,7 +402,7 @@
 }
 
 .composer-box:focus-within {
-  border-color: var(--border-strong);
+  border-color: var(--focus-edge);
 }
 
 .slash-command-menu,

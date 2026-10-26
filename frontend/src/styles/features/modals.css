@@ -100,7 +100,7 @@
 .modal input:not([type='radio'], [type='checkbox']):focus,
 .modal textarea:focus {
   outline: none;
-  border-color: var(--border-strong);
+  border-color: var(--focus-edge);
 }
 
 .rename-improve-btn {
