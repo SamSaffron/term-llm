@@ -21,7 +21,7 @@ import (
 	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
 	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/mobileshare"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/restart"
 	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -375,9 +375,9 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 			if storeErr != nil {
 				storeID = ""
 			}
-			s.mobileSharing, err = mobileshare.NewServer(agentName, storeID, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", resolvedApproval.Mode))
+			s.linkedDevices, err = linkeddevices.NewServer(agentName, storeID, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", resolvedApproval.Mode))
 			if err != nil {
-				return fmt.Errorf("initialize mobile sharing: %w", err)
+				return fmt.Errorf("initialize linked devices: %w", err)
 			}
 		}
 		if hasWeb {

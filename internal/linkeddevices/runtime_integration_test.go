@@ -1,8 +1,10 @@
-package mobileshare_test
+package linkeddevices_test
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,8 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mobileshare"
-	"github.com/samsaffron/term-llm/internal/mobileshare/testdevice"
+	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
+	"github.com/samsaffron/term-llm/internal/pairing"
 	"github.com/samsaffron/term-llm/internal/peerbroker"
 )
 
@@ -46,7 +50,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		http.NotFound(w, r)
 	})
 	dataDir := t.TempDir()
-	runtime, err := mobileshare.New(mobileshare.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner})
+	runtime, err := linkeddevices.New(linkeddevices.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +58,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 
 	owner := httptest.NewServer(runtime.Handler())
 	defer owner.Close()
-	response, err := http.Post(owner.URL+"/v1/mobile-sharing/invitations", "application/json", strings.NewReader("{}"))
+	response, err := http.Post(owner.URL+"/v1/linked-devices/invitations", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +67,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		response.Body.Close()
 		t.Fatalf("create invitation = %d: %s", response.StatusCode, data)
 	}
-	var invite mobileshare.Status
+	var invite linkeddevices.Status
 	if err := json.NewDecoder(response.Body).Decode(&invite); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +107,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 			}
 		}
 	}
-	response = postJSON(t, http.DefaultClient, owner.URL+"/v1/mobile-sharing/requests/"+pendingID+"/approve", map[string]string{"code": code})
+	response = postJSON(t, http.DefaultClient, owner.URL+"/v1/linked-devices/requests/"+pendingID+"/approve", map[string]string{"code": code})
 	if response.StatusCode != http.StatusNoContent {
 		data, _ := io.ReadAll(response.Body)
 		response.Body.Close()
@@ -149,7 +153,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner.Close()
-	runtime, err = mobileshare.New(mobileshare.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner})
+	runtime, err = linkeddevices.New(linkeddevices.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +173,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 	defer session.Close()
 
-	response, err = session.HTTPClient().Get("http://peer/v1/mobile-sharing")
+	response, err = session.HTTPClient().Get("http://peer/v1/linked-devices")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +191,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-streamStarted
-	request, _ := http.NewRequest(http.MethodDelete, owner.URL+"/v1/mobile-sharing/devices/"+pairing.DeviceID, nil)
+	request, _ := http.NewRequest(http.MethodDelete, owner.URL+"/v1/linked-devices/devices/"+pairing.DeviceID, nil)
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -207,6 +211,101 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 }
 
+func TestSilentDuplicateInvitationSocketBurnsPendingApproval(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := httptest.NewServer(brokerHandler)
+	defer broker.Close()
+	defer brokerHandler.Close()
+	runtime, err := linkeddevices.New(linkeddevices.Options{
+		DataDir: t.TempDir(), Target: "silent-duplicate", StoreInstanceID: "silent-duplicate-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	owner := httptest.NewServer(runtime.Handler())
+	defer owner.Close()
+	response, err := http.Post(owner.URL+"/v1/linked-devices/invitations", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invitation linkeddevices.Status
+	if err := json.NewDecoder(response.Body).Decode(&invitation); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if invitation.Invitation == nil {
+		t.Fatal("invitation missing")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sas := make(chan string, 1)
+	first, err := testdevice.New(testdevice.Config{DeviceName: "First", StatePath: t.TempDir() + "/first.json", OnSAS: func(code string) { sas <- code }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResult := make(chan error, 1)
+	go func() { _, pairErr := first.Pair(ctx, invitation.Invitation.URL); firstResult <- pairErr }()
+	var code, pendingID string
+	select {
+	case code = <-sas:
+	case <-ctx.Done():
+		t.Fatal("first device did not authenticate invitation")
+	}
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
+		if len(status.PendingRequests) == 1 {
+			pendingID = status.PendingRequests[0].ID
+		}
+		return pendingID != ""
+	})
+	link, err := pairing.ParseLink(invitation.Invitation.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := peerbroker.NewClient(link.Broker, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostHash := sha256.Sum256(link.HostKey)
+	hostID := base64.RawURLEncoding.EncodeToString(hostHash[:])
+	silent, err := client.DialInvitation(ctx, hostID, link.BrokerInvitationID(), link.InvitationCapability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
+		return len(status.PendingRequests) == 0 && len(status.Warnings) > 0
+	})
+	if err := runtime.Approve(ctx, pendingID, code); err == nil {
+		t.Fatal("silent replacement left the first pending request approvable")
+	}
+	received := make(chan *peerbroker.Frame, 1)
+	go func() {
+		frame, _ := silent.Recv()
+		received <- frame
+	}()
+	select {
+	case frame := <-received:
+		if frame != nil && frame.Type == peerbroker.FrameSignal {
+			t.Fatalf("silent replacement received pairing answer: %+v", frame)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = silent.Close()
+	select {
+	case err := <-firstResult:
+		if err == nil {
+			t.Fatal("superseded first pairing unexpectedly completed")
+		}
+	case <-ctx.Done():
+		t.Fatal("superseded first pairing did not terminate")
+	}
+}
+
 func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
 	if err != nil {
@@ -215,7 +314,7 @@ func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 	broker := httptest.NewServer(brokerHandler)
 	defer broker.Close()
 	defer brokerHandler.Close()
-	runtime, err := mobileshare.New(mobileshare.Options{
+	runtime, err := linkeddevices.New(linkeddevices.Options{
 		DataDir: t.TempDir(), Target: "duplicate", StoreInstanceID: "duplicate-store", BasePath: "/",
 		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
 	})
@@ -225,11 +324,11 @@ func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 	defer runtime.Close()
 	owner := httptest.NewServer(runtime.Handler())
 	defer owner.Close()
-	response, err := http.Post(owner.URL+"/v1/mobile-sharing/invitations", "application/json", strings.NewReader("{}"))
+	response, err := http.Post(owner.URL+"/v1/linked-devices/invitations", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var invitation mobileshare.Status
+	var invitation linkeddevices.Status
 	if err := json.NewDecoder(response.Body).Decode(&invitation); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +349,7 @@ func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 		t.Fatal("first device did not authenticate invitation")
 	}
 	var pendingID string
-	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool {
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
 		if len(status.PendingRequests) == 1 {
 			pendingID = status.PendingRequests[0].ID
 		}
@@ -263,7 +362,7 @@ func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("second authenticated redemption did not reach the host")
 	}
-	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool {
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
 		return len(status.PendingRequests) == 0 && len(status.Warnings) > 0
 	})
 	if err := runtime.Approve(ctx, pendingID, "000000"); err == nil {
@@ -279,6 +378,152 @@ func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
 	}
 	cancel()
 	<-secondResult
+}
+
+func TestRegistrationCannotPublishAcrossResetResume(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlled := newControlledReadyBroker(brokerHandler)
+	broker := httptest.NewServer(controlled)
+	defer broker.Close()
+	defer brokerHandler.Close()
+	defer close(controlled.finish)
+	runtime, err := linkeddevices.New(linkeddevices.Options{
+		DataDir: t.TempDir(), Target: "registration-generation", StoreInstanceID: "registration-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	oldFingerprint := runtime.Status().HostFingerprint
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	firstEnable := make(chan error, 1)
+	go func() { firstEnable <- runtime.Enable(ctx) }()
+	select {
+	case <-controlled.blocked:
+	case <-ctx.Done():
+		t.Fatal("initial registration did not reach controlled ready")
+	}
+	resetDone := make(chan error, 1)
+	go func() { resetDone <- runtime.Reset(ctx) }()
+	select {
+	case <-controlled.canceled:
+	case <-time.After(time.Second):
+		close(controlled.release)
+		t.Fatal("reset did not cancel the generation-owned ready wait")
+	}
+	resumeDone := make(chan error, 1)
+	go func() { resumeDone <- runtime.Enable(ctx) }()
+	close(controlled.release)
+	if err := <-resetDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-resumeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-firstEnable; err == nil {
+		t.Fatal("stale initial registration unexpectedly succeeded")
+	}
+	status := runtime.Status()
+	if !status.BrokerConnected || status.HostFingerprint == oldFingerprint {
+		t.Fatalf("post-reset status = %+v, want connected replacement identity", status)
+	}
+
+	owner := httptest.NewServer(runtime.Handler())
+	defer owner.Close()
+	response, err := http.Post(owner.URL+"/v1/linked-devices/invitations", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invitation linkeddevices.Status
+	if err := json.NewDecoder(response.Body).Decode(&invitation); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated || invitation.Invitation == nil {
+		t.Fatalf("post-reset invitation = %d %+v", response.StatusCode, invitation)
+	}
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{DeviceName: "Replacement identity", StatePath: t.TempDir() + "/device.json", OnSAS: func(code string) { sas <- code }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paired := make(chan error, 1)
+	go func() { _, pairErr := device.Pair(ctx, invitation.Invitation.URL); paired <- pairErr }()
+	var code, pendingID string
+	select {
+	case code = <-sas:
+	case <-ctx.Done():
+		t.Fatal("post-reset pairing did not report SAS")
+	}
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
+		if len(status.PendingRequests) == 1 {
+			pendingID = status.PendingRequests[0].ID
+		}
+		return pendingID != ""
+	})
+	if err := runtime.Approve(ctx, pendingID, code); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-paired; err != nil {
+		t.Fatalf("pairing through replacement identity: %v", err)
+	}
+}
+
+type controlledReadyBroker struct {
+	next      http.Handler
+	mu        sync.Mutex
+	intercept bool
+	blocked   chan struct{}
+	canceled  chan struct{}
+	release   chan struct{}
+	finish    chan struct{}
+}
+
+func newControlledReadyBroker(next http.Handler) *controlledReadyBroker {
+	return &controlledReadyBroker{
+		next: next, blocked: make(chan struct{}), canceled: make(chan struct{}),
+		release: make(chan struct{}), finish: make(chan struct{}),
+	}
+}
+
+func (b *controlledReadyBroker) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	b.mu.Lock()
+	intercept := !b.intercept && websocket.IsWebSocketUpgrade(request) && strings.HasSuffix(request.URL.Path, "/ws") && request.URL.RawQuery == ""
+	if intercept {
+		b.intercept = true
+	}
+	b.mu.Unlock()
+	if !intercept {
+		b.next.ServeHTTP(w, request)
+		return
+	}
+	conn, err := (&websocket.Upgrader{Subprotocols: []string{peerbroker.WSSubprotocol}, CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	close(b.blocked)
+	readDone := make(chan struct{})
+	go func() {
+		_, _, _ = conn.ReadMessage()
+		close(readDone)
+	}()
+	select {
+	case <-readDone:
+		close(b.canceled)
+	case <-b.release:
+		if conn.WriteJSON(peerbroker.Frame{Type: peerbroker.FrameReady, Role: peerbroker.PeerHost}) == nil {
+			select {
+			case <-readDone:
+			case <-b.finish:
+			}
+		}
+	}
 }
 
 type replaceableBroker struct {
@@ -309,7 +554,7 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 	defer broker.Close()
 	defer first.Close()
 
-	runtime, err := mobileshare.New(mobileshare.Options{
+	runtime, err := linkeddevices.New(linkeddevices.Options{
 		DataDir: t.TempDir(), Target: "restart", StoreInstanceID: "restart-store", BasePath: "/",
 		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
 	})
@@ -335,14 +580,14 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 	_ = session.Close()
 
 	first.Close()
-	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool { return !status.BrokerConnected })
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool { return !status.BrokerConnected })
 	second, err := peerbroker.NewHandler(peerbroker.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer second.Close()
 	switcher.replace(second)
-	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool { return status.BrokerConnected })
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool { return status.BrokerConnected })
 	session, err = device.Connect(ctx)
 	if err != nil {
 		t.Fatalf("connect after broker restart: %v", err)
@@ -352,7 +597,7 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 	if err := runtime.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if status := runtime.Status(); status.State != mobileshare.StateStopped {
+	if status := runtime.Status(); status.State != linkeddevices.StateStopped {
 		t.Fatalf("stopped status = %+v", status)
 	}
 	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -360,7 +605,7 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 	if err := runtime.Enable(resumeCtx); err != nil {
 		t.Fatal(err)
 	}
-	waitRuntimeStatus(t, resumeCtx, runtime, func(status mobileshare.Status) bool { return status.BrokerConnected })
+	waitRuntimeStatus(t, resumeCtx, runtime, func(status linkeddevices.Status) bool { return status.BrokerConnected })
 	session, err = device.Connect(resumeCtx)
 	if err != nil {
 		t.Fatalf("connect after resume: %v", err)
@@ -368,15 +613,15 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 	_ = session.Close()
 }
 
-func pairRuntimeDevice(t *testing.T, ctx context.Context, runtime *mobileshare.Runtime, device *testdevice.Device, sas <-chan string) {
+func pairRuntimeDevice(t *testing.T, ctx context.Context, runtime *linkeddevices.Runtime, device *testdevice.Device, sas <-chan string) {
 	t.Helper()
 	owner := httptest.NewServer(runtime.Handler())
 	defer owner.Close()
-	response, err := http.Post(owner.URL+"/v1/mobile-sharing/invitations", "application/json", strings.NewReader("{}"))
+	response, err := http.Post(owner.URL+"/v1/linked-devices/invitations", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var invite mobileshare.Status
+	var invite linkeddevices.Status
 	if err := json.NewDecoder(response.Body).Decode(&invite); err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +638,7 @@ func pairRuntimeDevice(t *testing.T, ctx context.Context, runtime *mobileshare.R
 		t.Fatal("SAS was not reported")
 	}
 	var pending string
-	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool {
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
 		if len(status.PendingRequests) == 1 {
 			pending = status.PendingRequests[0].ID
 		}
@@ -407,7 +652,7 @@ func pairRuntimeDevice(t *testing.T, ctx context.Context, runtime *mobileshare.R
 	}
 }
 
-func waitRuntimeStatus(t *testing.T, ctx context.Context, runtime *mobileshare.Runtime, ready func(mobileshare.Status) bool) {
+func waitRuntimeStatus(t *testing.T, ctx context.Context, runtime *linkeddevices.Runtime, ready func(linkeddevices.Status) bool) {
 	t.Helper()
 	for {
 		if ready(runtime.Status()) {
@@ -415,7 +660,7 @@ func waitRuntimeStatus(t *testing.T, ctx context.Context, runtime *mobileshare.R
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("timed out waiting for mobile sharing status")
+			t.Fatal("timed out waiting for linked devices status")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

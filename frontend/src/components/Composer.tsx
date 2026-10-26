@@ -764,7 +764,7 @@ function ConversationComposer() {
         entry?.sessionId === store.activeSession.value?.id &&
         ['waiting', 'dismissed', 'failed'].includes(entry.state),
     );
-  const peerMode = store.peerMode.value;
+  const linkedDevicesMode = store.linkedDevicesMode.value;
   const voiceBusy = ['requesting-permission', 'recording', 'preparing', 'transcribing'].includes(
     voiceState.phase,
   );
@@ -774,7 +774,7 @@ function ConversationComposer() {
   // button. A running turn keeps its progress indicator, and an open call always
   // keeps its stop control.
   const liveButton =
-    !peerMode &&
+    !linkedDevicesMode &&
     !hasDraft &&
     (liveActive ||
       (store.liveStore.enabled.value && store.liveStore.capability.value.supported && !runActive));
@@ -863,13 +863,13 @@ function ConversationComposer() {
       class="composer"
       onDragEnter={(event) => {
         event.preventDefault();
-        if (peerMode) return;
+        if (linkedDevicesMode) return;
         setDragging(true);
         inspectDraggedFiles(event.dataTransfer?.files || null);
       }}
       onDragOver={(event) => {
         event.preventDefault();
-        if (peerMode) return;
+        if (linkedDevicesMode) return;
         inspectDraggedFiles(event.dataTransfer?.files || null);
         if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       }}
@@ -881,7 +881,7 @@ function ConversationComposer() {
       }}
       onDrop={(event) => {
         event.preventDefault();
-        if (peerMode) return;
+        if (linkedDevicesMode) return;
         setDragging(false);
         inspectDraggedFiles(event.dataTransfer?.files || null);
         if (event.dataTransfer?.files.length) store.addAttachments(event.dataTransfer.files);
@@ -924,9 +924,9 @@ function ConversationComposer() {
             <div role="status">Pending steering…</div>
           ))}
         {unconfirmedSend && <UnconfirmedSendNotice ownerId={store.activeSessionId.value} />}
-        {!peerMode && <VoiceStatus snapshot={voiceSnapshot} voice={voice} />}
-        {!peerMode && <LiveStatus live={store.liveStore} />}
-        {!peerMode && !voiceState.capability.supported && (
+        {!linkedDevicesMode && <VoiceStatus snapshot={voiceSnapshot} voice={voice} />}
+        {!linkedDevicesMode && <LiveStatus live={store.liveStore} />}
+        {!linkedDevicesMode && !voiceState.capability.supported && (
           <span class="voice-unsupported" id="voiceUnsupported">
             {voiceState.capability.reason}
           </span>
@@ -1028,7 +1028,7 @@ function ConversationComposer() {
           </div>
         )}
         <div class="composer-box">
-          {!peerMode && (
+          {!linkedDevicesMode && (
             <>
               <button
                 ref={attach}
@@ -1205,7 +1205,7 @@ function ConversationComposer() {
             aria-expanded={completions.length > 0}
             value={store.prompt.value}
             onPaste={(event) => {
-              if (peerMode) return;
+              if (linkedDevicesMode) return;
               const files = Array.from(event.clipboardData?.items || [])
                 .filter((item) => item.kind === 'file')
                 .map((item) => item.getAsFile())
@@ -1315,7 +1315,7 @@ function ConversationComposer() {
                 Stop
               </button>
             )}
-            {!peerMode && (
+            {!linkedDevicesMode && (
               <button
                 class={`composer-icon-btn voice-btn ${voiceState.phase === 'recording' ? 'recording' : ''} ${voiceBusy ? 'busy' : ''}`}
                 id="voiceBtn"

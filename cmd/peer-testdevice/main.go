@@ -1,4 +1,4 @@
-// peer-testdevice is a synthetic mobile-sharing protocol test device.
+// peer-testdevice is a synthetic linked-device protocol test device.
 // It is a standalone development tool, is not a production client, and is not
 // registered with the term-llm Cobra command tree.
 package main
@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mobileshare/testdevice"
+	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
 )
 
 func main() {
@@ -51,7 +51,7 @@ func main() {
 	if !strings.HasPrefix(requestPath, "/") {
 		fatalf("-path must begin with /")
 	}
-	fmt.Fprintln(os.Stderr, "SYNTHETIC TEST DEVICE — not a production mobile client")
+	fmt.Fprintln(os.Stderr, "SYNTHETIC TEST DEVICE — not a production client")
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

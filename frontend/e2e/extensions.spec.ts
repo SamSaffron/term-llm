@@ -35,7 +35,7 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
     'Model',
     'Interface',
     'Extensions',
-    'Mobile Sharing',
+    'Linked devices',
     'Connection',
   ]);
   if (testInfo.project.name === 'desktop')

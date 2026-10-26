@@ -1,4 +1,4 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"strings"

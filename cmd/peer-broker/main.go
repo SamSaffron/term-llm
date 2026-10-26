@@ -1,4 +1,4 @@
-// peer-broker runs the standalone version 2 mobile-share rendezvous broker.
+// peer-broker runs the standalone version 2 linked-device rendezvous broker.
 // It provides no hosted defaults or deployment automation.
 package main
 

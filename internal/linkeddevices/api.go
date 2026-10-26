@@ -1,4 +1,4 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"encoding/base64"
@@ -20,16 +20,16 @@ func (r *Runtime) handleOwner(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if _, device := DeviceFromRequest(request); device {
-		http.Error(w, "manage mobile sharing from this server's own browser session", http.StatusForbidden)
+		http.Error(w, "manage linked devices from this server's own browser session", http.StatusForbidden)
 		return
 	}
 	if request.Method != http.MethodGet && request.Method != http.MethodHead && !sameOrigin(request) {
 		http.Error(w, "same-origin request required", http.StatusForbidden)
 		return
 	}
-	path := strings.TrimPrefix(request.URL.Path, "/v1/mobile-sharing")
+	path := strings.TrimPrefix(request.URL.Path, "/v1/linked-devices")
 	if request.Method != http.MethodGet && request.Method != http.MethodHead && !r.ownerMutationAllowed(path == "/reset") {
-		http.Error(w, "mobile sharing is unavailable", http.StatusConflict)
+		http.Error(w, "linked devices are unavailable", http.StatusConflict)
 		return
 	}
 	switch {
@@ -169,5 +169,5 @@ func writeOwnerError(w http.ResponseWriter, err error) {
 	if errors.Is(err, pairing.ErrDenied) {
 		status = http.StatusForbidden
 	}
-	http.Error(w, "mobile sharing request failed", status)
+	http.Error(w, "linked-device request failed", status)
 }

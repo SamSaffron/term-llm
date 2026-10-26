@@ -51,12 +51,14 @@ Broker URLs require HTTPS/WSS except on loopback.
 
 Renewal replaces the complete device hash set. Removing or changing an entry
 revokes that broker credential and closes its active socket. Invitations are
-one use at the authenticated host. The broker allows a later
-socket presenting the same valid invitation capability to replace the earlier
-socket so a second MAC-authenticated `pair_request` reaches the host and burns
-the invitation; the broker cannot make that duplicate-authentication decision
-itself. Broker slots remain memory-only and expire at their advertised expiry.
-Host leases default to three minutes and are renewed every minute.
+one use at the authenticated host. The broker allows a later socket presenting
+the same valid invitation capability to replace the earlier socket. Replacement
+emits a disconnected-presence event, so the host cancels the invitation even if
+the replacement remains silent; a second MAC-authenticated `pair_request` is
+also rejected by the host pairing authority. The broker cannot authenticate a
+pairing request itself. Broker slots remain memory-only and expire at their
+advertised expiry. Host leases default to three minutes and are renewed every
+minute.
 
 ## WebSocket envelopes
 

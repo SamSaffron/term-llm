@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mobileshare"
-	"github.com/samsaffron/term-llm/internal/mobileshare/testdevice"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
 	"github.com/samsaffron/term-llm/internal/peer"
 	"github.com/samsaffron/term-llm/internal/peerbroker"
 )
 
-func TestMobileSharingDispatchesMountedServeHandler(t *testing.T) {
+func TestLinkedDevicesDispatchesMountedServeHandler(t *testing.T) {
 	for _, basePath := range []string{"/", "/chat", "/deep/mount"} {
 		t.Run(basePath, func(t *testing.T) {
 			client, closeFixture := mountedPeerServeFixture(t, basePath)
@@ -33,7 +33,7 @@ func TestMobileSharingDispatchesMountedServeHandler(t *testing.T) {
 			asset := "/" + uiBuildAsset(t, "dist/app.js")
 			assertPeerResponse(t, client, http.MethodGet, peerWirePath(basePath, asset), nil, http.StatusOK, "javascript", "")
 			assertPeerResponse(t, client, http.MethodGet, peerWirePath(basePath, "/v1/sessions"), nil, http.StatusOK, "application/json", "sessions")
-			assertPeerResponse(t, client, http.MethodGet, peerWirePath(basePath, "/v1/capabilities"), nil, http.StatusOK, "application/json", `"peer"`)
+			assertPeerResponse(t, client, http.MethodGet, peerWirePath(basePath, "/v1/capabilities"), nil, http.StatusOK, "application/json", `"linked_devices"`)
 
 			body := bytes.NewBufferString(`{"input":"mounted request","stream":true}`)
 			response := assertPeerResponse(t, client, http.MethodPost, peerWirePath(basePath, "/v1/responses"), body, http.StatusOK, "text/event-stream", "data:")
@@ -44,7 +44,7 @@ func TestMobileSharingDispatchesMountedServeHandler(t *testing.T) {
 			}
 
 			for _, denied := range []struct{ method, path string }{
-				{http.MethodGet, "/v1/mobile-sharing"},
+				{http.MethodGet, "/v1/linked-devices"},
 				{http.MethodGet, "/v1/sharing/capabilities"},
 				{http.MethodPost, "/uploads"},
 				{http.MethodPost, "/v1/push/subscribe"},
@@ -111,7 +111,7 @@ func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func(
 	}
 	broker := httptest.NewServer(brokerHandler)
 
-	runtime, err := mobileshare.New(mobileshare.Options{
+	runtime, err := linkeddevices.New(linkeddevices.Options{
 		DataDir: t.TempDir(), Target: "mounted-test", StoreInstanceID: "mounted-store",
 		BasePath: basePath, Authenticated: true, AgentName: "test", HostLabel: "Mounted test", BrokerURL: broker.URL,
 	})
@@ -121,15 +121,15 @@ func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func(
 	server := newTestServeServer("mounted response")
 	server.cfg = serveServerConfig{ui: true, basePath: basePath, requireAuth: true, token: "owner-token"}
 	server.store = newSessionDirectoryTestStore(t)
-	server.mobileSharing = runtime
+	server.linkedDevices = runtime
 	_ = server.httpHandler()
 
 	owner := httptest.NewServer(runtime.Handler())
-	response, err := http.Post(owner.URL+"/v1/mobile-sharing/invitations", "application/json", strings.NewReader("{}"))
+	response, err := http.Post(owner.URL+"/v1/linked-devices/invitations", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var status mobileshare.Status
+	var status linkeddevices.Status
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
 		t.Fatal(err)
 	}
@@ -178,10 +178,10 @@ func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func(
 		t.Fatal(err)
 	}
 	cleanup := sync.OnceFunc(func() {
-		cancel()
-		_ = session.Close()
 		owner.Close()
 		_ = runtime.Close()
+		cancel()
+		_ = session.Close()
 		server.sessionMgr.Close()
 		broker.Close()
 		brokerHandler.Close()

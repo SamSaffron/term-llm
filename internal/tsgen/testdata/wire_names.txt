@@ -5,6 +5,12 @@ HubNodeSessionView
 HubNodeSessionsView
 HubNodeView
 JobsV2RunEvent
+LinkedDevicesAuthorityStatement
+LinkedDevicesDeviceStatus
+LinkedDevicesInvitationStatus
+LinkedDevicesRequestStatus
+LinkedDevicesState
+LinkedDevicesStatus
 ServeContextUsage
 ServeEvent
 ServeMentionSearchItem
@@ -38,12 +44,6 @@ CoreJobNotificationProvenance
 CoreModelSwapMarker
 CorePathNoteProvenance
 CoreSkillActivationProvenance
-MobileshareAuthorityStatement
-MobileshareDeviceStatus
-MobileshareInvitationStatus
-MobileshareRequestStatus
-MobileshareState
-MobileshareStatus
 SessionResponseRunState
 SessionSessionMode
 SessionSessionOrigin

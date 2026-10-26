@@ -1,4 +1,4 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 
 type devicePrincipalKey struct{}
 
-// DevicePrincipal identifies a grant that was verified by the mobile-sharing
+// DevicePrincipal identifies a grant that was verified by the linked-devices
 // transport. It deliberately carries no owner authority.
 type DevicePrincipal struct {
 	DeviceID string
@@ -22,7 +22,7 @@ func WithDevicePrincipal(r *http.Request, principal DevicePrincipal) *http.Reque
 	return r.WithContext(context.WithValue(r.Context(), devicePrincipalKey{}, principal))
 }
 
-// DeviceFromRequest returns the verified mobile device principal, if any.
+// DeviceFromRequest returns the verified linked-device principal, if any.
 func DeviceFromRequest(r *http.Request) (DevicePrincipal, bool) {
 	principal, ok := r.Context().Value(devicePrincipalKey{}).(DevicePrincipal)
 	return principal, ok && principal.DeviceID != "" && principal.Scope == ScopeWebV1
@@ -72,14 +72,14 @@ func prepareMountedRequest(request *http.Request, basePath string) error {
 	return nil
 }
 
-// RouteAllowed is the positive mobile-device route policy. New server routes
+// RouteAllowed is the positive linked-device route policy. New server routes
 // remain denied until deliberately classified here and in the route audit test.
 func RouteAllowed(method, path string) bool {
 	method = strings.ToUpper(method)
 	if method == http.MethodHead {
 		method = http.MethodGet
 	}
-	if method == http.MethodOptions || strings.HasPrefix(path, "/v1/mobile-sharing") {
+	if method == http.MethodOptions || strings.HasPrefix(path, "/v1/linked-devices") {
 		return false
 	}
 	if method == http.MethodGet && shellPath(path) {

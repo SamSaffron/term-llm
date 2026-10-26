@@ -4,7 +4,7 @@ declare global {
   interface Window {
     TERM_LLM_UI_PREFIX?: string;
     TERM_LLM_AUTH_MODE?: string;
-    TERM_LLM_PEER_SCOPE?: string;
+    TERM_LLM_LINKED_DEVICES_SCOPE?: string;
     TERM_LLM_UI_VERSION?: string;
     TERM_LLM_CACHE_SCOPE?: string;
     TERM_LLM_SHELL_AUTHORIZED?: boolean;
@@ -35,7 +35,7 @@ export interface HubContext {
 
 export interface AppConfig {
   passkeyAuth?: boolean;
-  peerScope?: string;
+  linkedDevicesScope?: string;
   prefix: string;
   version: string;
   sidebarCategories: string[];
@@ -84,8 +84,9 @@ export function readInjectedConfig(target: Window = window): AppConfig {
     prefix,
     notificationVersion: target.TERM_LLM_NOTIFICATION_VERSION,
     passkeyAuth: target.TERM_LLM_AUTH_MODE === 'passkey',
-    peerScope:
-      target.TERM_LLM_AUTH_MODE === 'peer' && target.TERM_LLM_PEER_SCOPE === 'web-v1'
+    linkedDevicesScope:
+      target.TERM_LLM_AUTH_MODE === 'linked-devices' &&
+      target.TERM_LLM_LINKED_DEVICES_SCOPE === 'web-v1'
         ? 'web-v1'
         : '',
     version: String(target.TERM_LLM_UI_VERSION || ''),

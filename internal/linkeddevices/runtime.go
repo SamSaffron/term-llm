@@ -1,4 +1,4 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"context"
@@ -29,6 +29,7 @@ import (
 const (
 	invitationTTL    = 5 * time.Minute
 	leaseRenewal     = time.Minute
+	renewRetryDelay  = 250 * time.Millisecond
 	reconnectInitial = 250 * time.Millisecond
 	reconnectMaximum = 30 * time.Second
 	maxDevices       = 16
@@ -63,6 +64,14 @@ type pendingRequest struct {
 	created  time.Time
 }
 
+type brokerRegistrationAttempt struct {
+	ctx        context.Context
+	generation uint64
+	broker     *peerbroker.Client
+	identity   *pairing.Identity
+	grants     *pairing.GrantStore
+}
+
 type deviceSession struct {
 	endpoint *peer.Endpoint
 	cancel   context.CancelFunc
@@ -71,6 +80,7 @@ type deviceSession struct {
 // Runtime owns one target's durable grants, rendezvous lease and live peers.
 type Runtime struct {
 	mu                      sync.Mutex
+	lifecycleMu             sync.Mutex
 	renewMu                 sync.Mutex
 	opts                    Options
 	dir                     string
@@ -108,11 +118,11 @@ type Runtime struct {
 func NewServer(target, storeID, basePath string, authenticated bool, hostLabel, approval string) (*Runtime, error) {
 	opts := Options{Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated, AgentName: target, HostLabel: safeHostLabel(hostLabel, target), ApprovalDescription: approval}
 	if storeID == "" {
-		return newUnavailableRuntime(opts, "mobile sharing cannot identify this session store"), nil
+		return newUnavailableRuntime(opts, "linked devices cannot identify this session store"), nil
 	}
 	runtime, err := New(opts)
 	if err != nil {
-		return newUnavailableRuntime(opts, "mobile sharing local state could not be initialized"), nil
+		return newUnavailableRuntime(opts, "linked devices local state could not be initialized"), nil
 	}
 	return runtime, nil
 }
@@ -149,21 +159,21 @@ func New(opts Options) (*Runtime, error) {
 		var err error
 		opts.DataDir, err = appdata.GetDataDir()
 		if err != nil {
-			return nil, fmt.Errorf("resolve mobile sharing data directory: %w", err)
+			return nil, fmt.Errorf("resolve linked devices data directory: %w", err)
 		}
 		r.opts.DataDir = opts.DataDir
 	}
 	r.ctx, r.cancel = context.WithCancel(context.Background())
-	r.dir = filepath.Join(opts.DataDir, "mobile-sharing", targetDirectory(opts.Target))
+	r.dir = filepath.Join(opts.DataDir, "linked-devices", targetDirectory(opts.Target))
 	if err := os.MkdirAll(r.dir, 0o700); err != nil {
-		return nil, fmt.Errorf("mobile sharing state directory: %w", err)
+		return nil, fmt.Errorf("linked devices state directory: %w", err)
 	}
 	if err := os.Chmod(r.dir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure mobile sharing state directory: %w", err)
+		return nil, fmt.Errorf("secure linked devices state directory: %w", err)
 	}
 	unlock, err := filelock.TryLock(filepath.Join(r.dir, "runtime.lock"))
 	if err != nil {
-		r.availableReason = "mobile sharing is active in another server"
+		r.availableReason = "linked devices are active in another server"
 		return r, nil
 	}
 	r.unlock = unlock
@@ -198,12 +208,12 @@ func (r *Runtime) loadState() error {
 	}
 	if exists {
 		if target.Version != stateVersion || target.Target != r.opts.Target || target.StoreInstanceID != r.opts.StoreInstanceID {
-			r.availableReason = "mobile sharing state belongs to a different session store; reset is required"
+			r.availableReason = "linked devices state belongs to a different session store; reset is required"
 			r.resetRequired = true
 			return nil
 		}
 		if target.BrokerURL != "" && r.opts.BrokerURL != "" && target.BrokerURL != r.opts.BrokerURL {
-			r.availableReason = "the rendezvous service changed; forget all phones before continuing"
+			r.availableReason = "the rendezvous service changed; forget all devices before continuing"
 			r.resetRequired = true
 			return nil
 		}
@@ -216,7 +226,7 @@ func (r *Runtime) loadState() error {
 	if ok, err := loadJSON(filepath.Join(r.dir, "settings.json"), &r.settings); err != nil {
 		return err
 	} else if ok && r.settings.Version != stateVersion {
-		return errors.New("mobile sharing settings use an unsupported version")
+		return errors.New("linked devices settings use an unsupported version")
 	}
 	id, err := pairing.LoadOrCreateIdentity(filepath.Join(r.dir, "identity.json"))
 	if err != nil {
@@ -246,9 +256,9 @@ func (r *Runtime) evaluateAvailability() {
 	}
 	switch {
 	case !r.opts.Authenticated:
-		r.availableReason = "mobile sharing requires bearer or passkey authentication"
+		r.availableReason = "linked devices requires bearer or passkey authentication"
 	case !peer.PlatformSupported():
-		r.availableReason = "mobile sharing is not supported on this platform"
+		r.availableReason = "linked devices are not supported on this platform"
 	case r.opts.BrokerURL == "":
 		r.availableReason = "no rendezvous service is configured in this build"
 	}
@@ -261,22 +271,29 @@ func (r *Runtime) SetHandler(handler http.Handler) {
 }
 
 func (r *Runtime) Start() error {
+	r.lifecycleMu.Lock()
 	r.mu.Lock()
 	if r.started {
 		r.mu.Unlock()
+		r.lifecycleMu.Unlock()
 		return nil
 	}
 	r.started = true
 	enabled := r.settings.Enabled && r.availableReason == ""
-	if enabled {
-		r.startSharingLocked()
+	if !enabled {
+		r.mu.Unlock()
+		r.lifecycleMu.Unlock()
+		return nil
 	}
+	r.startSharingLocked()
+	attempt := r.registrationAttemptLocked()
+	r.wg.Add(1)
 	r.mu.Unlock()
-	if enabled {
-		if err := r.connectBroker(r.ctx); err != nil {
-			r.scheduleReconnect()
-		}
+	r.lifecycleMu.Unlock()
+	if err := r.connectBroker(attempt.ctx, attempt); err != nil {
+		r.scheduleReconnect()
 	}
+	r.wg.Done()
 	return nil
 }
 
@@ -284,13 +301,13 @@ func (r *Runtime) persistSettingsLocked() error {
 	return writeJSONPrivate(filepath.Join(r.dir, "settings.json"), r.settings)
 }
 
-func (r *Runtime) reconnectHashes() ([]peerbroker.DeviceCapabilityHash, error) {
-	grants, err := r.grants.List()
+func reconnectHashes(grants *pairing.GrantStore) ([]peerbroker.DeviceCapabilityHash, error) {
+	values, err := grants.List()
 	if err != nil {
 		return nil, err
 	}
-	out := make([]peerbroker.DeviceCapabilityHash, 0, len(grants))
-	for _, grant := range grants {
+	out := make([]peerbroker.DeviceCapabilityHash, 0, len(values))
+	for _, grant := range values {
 		if grant.RevokedAt == nil {
 			out = append(out, peerbroker.DeviceCapabilityHash{DeviceID: grant.DeviceID, Hash: pairing.B64(grant.ReconnectCapabilityHash).String()})
 		}
@@ -309,14 +326,21 @@ func (r *Runtime) pinBroker() error {
 		return writeJSONPrivate(path, target)
 	}
 	if target.BrokerURL != r.opts.BrokerURL {
-		return errors.New("the rendezvous service changed; forget all phones before continuing")
+		return errors.New("the rendezvous service changed; forget all devices before continuing")
 	}
 	return nil
 }
 
-func (r *Runtime) connectBroker(ctx context.Context) error {
+func (r *Runtime) registrationAttemptLocked() brokerRegistrationAttempt {
+	return brokerRegistrationAttempt{
+		ctx: r.sharingCtx, generation: r.generation,
+		broker: r.broker, identity: r.identity, grants: r.grants,
+	}
+}
+
+func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegistrationAttempt) error {
 	r.mu.Lock()
-	if r.brokerConnected {
+	if r.brokerConnected && r.generation == attempt.generation {
 		r.mu.Unlock()
 		return nil
 	}
@@ -330,37 +354,37 @@ func (r *Runtime) connectBroker(ctx context.Context) error {
 	if err := r.pinBroker(); err != nil {
 		return err
 	}
-	hashes, err := r.reconnectHashes()
+	hashes, err := reconnectHashes(attempt.grants)
 	if err != nil {
 		return err
 	}
-	registration, err := r.broker.RegisterHostWithSigner(ctx, r.identity.PublicKey(), r.opts.AdmissionCredential, hashes, func(payload []byte) ([]byte, error) { return r.identity.Sign(payload), nil })
+	registration, err := attempt.broker.RegisterHostWithSigner(connectCtx, attempt.identity.PublicKey(), r.opts.AdmissionCredential, hashes, func(payload []byte) ([]byte, error) { return attempt.identity.Sign(payload), nil })
 	if err != nil {
 		r.setWarning("rendezvous unreachable")
 		return err
 	}
-	conn, err := r.broker.DialHost(ctx, registration.HostID, registration.LeaseCapability)
+	conn, err := attempt.broker.DialHost(connectCtx, registration.HostID, registration.LeaseCapability)
 	if err != nil {
 		r.setWarning("rendezvous unreachable")
 		return err
 	}
 	r.mu.Lock()
-	if !r.settings.Enabled || r.ctx.Err() != nil {
+	if !r.settings.Enabled || r.ctx.Err() != nil || attempt.ctx.Err() != nil ||
+		r.generation != attempt.generation || r.identity != attempt.identity || r.broker != attempt.broker {
 		r.mu.Unlock()
 		_ = conn.Close()
 		return context.Canceled
 	}
 	old := r.brokerConn
-	sharingCtx := r.sharingCtx
+	r.wg.Add(2)
 	r.hostID, r.leaseCapability, r.brokerConn, r.brokerConnected = registration.HostID, registration.LeaseCapability, conn, true
 	r.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
 	r.clearWarnings("rendezvous unreachable", "rendezvous disconnected; reconnecting")
-	r.wg.Add(2)
 	go r.receiveLoop(conn)
-	go r.renewLoop(sharingCtx, conn)
+	go r.renewLoop(attempt.ctx, conn)
 	return nil
 }
 
@@ -380,12 +404,26 @@ func (r *Runtime) renewLoop(ctx context.Context, conn *peerbroker.Conn) {
 			if !current || ctx == nil {
 				return
 			}
-			if err := r.renewNow(ctx); err != nil {
+			if err := r.renewWithRetry(ctx); err != nil {
 				r.setWarning("rendezvous unreachable")
 				_ = conn.Close()
 				return
 			}
 		}
+	}
+}
+
+func (r *Runtime) renewWithRetry(ctx context.Context) error {
+	if err := r.renewNow(ctx); err == nil {
+		return nil
+	}
+	timer := time.NewTimer(renewRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return r.renewNow(ctx)
 	}
 }
 
@@ -409,6 +447,8 @@ func (r *Runtime) receiveLoop(conn *peerbroker.Conn) {
 		}
 		if frame.Type == peerbroker.FrameSignal {
 			r.handleSignal(conn, frame)
+		} else if frame.Type == peerbroker.FramePeer && frame.PeerKind == peerbroker.PeerInvitation && frame.PeerConnected != nil && !*frame.PeerConnected {
+			r.cancelDisconnectedInvitation(frame.PeerID)
 		}
 	}
 }
@@ -444,11 +484,12 @@ func (r *Runtime) reconnectLoop(ctx context.Context, generation uint64) {
 		}
 		r.mu.Lock()
 		current := r.settings.Enabled && r.generation == generation && !r.brokerConnected
+		attempt := r.registrationAttemptLocked()
 		r.mu.Unlock()
 		if !current {
 			return
 		}
-		if err := r.connectBroker(ctx); err == nil {
+		if err := r.connectBroker(ctx, attempt); err == nil {
 			return
 		}
 		delay = min(delay*2, reconnectMaximum)
@@ -528,6 +569,8 @@ func (r *Runtime) closeSessionsLocked() {
 }
 
 func (r *Runtime) Close() error {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
 	if r.cancel != nil {
 		r.cancel()
 	}

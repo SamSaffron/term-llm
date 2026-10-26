@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/app/uploads"
-	"github.com/samsaffron/term-llm/internal/mobileshare"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -79,7 +79,7 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	payload["attention_diagnostics"] = s.attentionDiagnostics.snapshot()
-	if mobileshare.ShapeCapabilities(r, payload) {
+	if linkeddevices.ShapeCapabilities(r, payload) {
 		w.Header().Set("Cache-Control", "no-store")
 	}
 	writeJSON(w, http.StatusOK, payload)

@@ -1,30 +1,29 @@
 ---
-title: Mobile sharing
+title: Linked devices
 ---
 
-# Mobile sharing
+# Linked devices
 
-Mobile sharing is a preview feature for connecting a native mobile client to one
+Linked devices is a preview feature for connecting a compatible client to one
 `term-llm serve web` target without exposing its HTTP listener to the internet.
-Open **Settings → Mobile Sharing** to see the target's current state.
+Open **Settings → Linked devices** to see the target's current state.
 
 ## Availability
 
 The tab is always honest about availability. A server needs bearer or passkey
 authentication and an operator-provided rendezvous service. term-llm does not
 ship a public broker URL or silently make an outbound connection. With no
-rendezvous configured, the tab says **Not available** and sharing remains off.
-
-The native iPhone companion and any public broker/TURN deployment are separate
-from the public core implementation. The repository includes a synthetic Go/Pion
-test device for protocol and local integration testing; it is not a phone.
+rendezvous configured, the tab says **Not available** and linking remains off.
+The repository includes a synthetic Go/Pion client for protocol and local
+integration testing; it is not production client evidence.
 
 ## Pair a device
 
-1. Open **Settings → Mobile Sharing**.
+1. Open **Settings → Linked devices**.
 2. Select **Connect**.
-3. Scan the five-minute, one-use QR code with a compatible native client.
-4. Enter the six-digit code shown by that client before the pending card's
+3. Scan the five-minute, one-use QR code or copy the pairing link into a
+   compatible client.
+4. Enter the six-digit confirmation code shown by that client before the pending card's
    two-minute approval countdown expires.
 5. Review the authority statement and approve.
 
@@ -43,14 +42,14 @@ identity. Recreating a deleted container volume produces a different identity;
 a client must not silently replace its pinned host key.
 
 Revoking a device closes its active stream and refuses reconnects. Revocation
-stops future mobile-sharing connections only. It cannot undo actions already
+stops that device's future connections only. It cannot undo actions already
 taken or retrieve information already disclosed.
 
 ## Security boundary
 
 A paired device reaches a positive allowlist of this server's chat, session,
 event, and read-only media routes over an authenticated WebRTC DataChannel. It
-cannot reach mobile-sharing owner endpoints, auth, admin, MCP, jobs, shell,
+cannot reach linked-device owner endpoints, auth, admin, MCP, jobs, shell,
 push, live voice, upload creation, transcript publishing, workspace file-content,
 worktree, or extension/widget management routes. The peer capability response
 hides or explains those unsupported controls. This allowlist limits network
@@ -78,8 +77,8 @@ STUN URLs and coturn TURN-REST settings; minted TURN credentials default to one
 hour and it has no public defaults. A broker exposed beyond an owned loopback or
 private deployment must configure an admission credential and appropriate
 network-level abuse controls. The serve
-runtime reads `TERM_LLM_MOBILE_SHARING_BROKER_URL` and the optional
-`TERM_LLM_MOBILE_SHARING_ADMISSION` from its environment. These are internal
+runtime reads `TERM_LLM_LINKED_DEVICES_BROKER_URL` and the optional
+`TERM_LLM_LINKED_DEVICES_ADMISSION` from its environment. These are internal
 operator injection points, not ordinary serve flags or YAML settings.
 
 The complete pairing and broker contracts are documented in

@@ -14,19 +14,19 @@ const LazyExtensionSettings = lazyComponent(
   <p>Loading extension settings…</p>,
 );
 
-const LazyMobileSharingSettings = lazyComponent(
+const LazyLinkedDevicesSettings = lazyComponent(
   () =>
-    import('./MobileSharingSettings')
-      .then(({ MobileSharingSettings }) => MobileSharingSettings)
-      .catch(() => () => <p>Could not load mobile sharing settings. Reload the page to retry.</p>),
-  <p>Loading mobile sharing settings…</p>,
+    import('./LinkedDevicesSettings')
+      .then(({ LinkedDevicesSettings }) => LinkedDevicesSettings)
+      .catch(() => () => <p>Could not load linked devices settings. Reload the page to retry.</p>),
+  <p>Loading linked devices settings…</p>,
 );
 
 const settingsTabs = [
   { label: 'Model', slug: 'model' },
   { label: 'Interface', slug: 'interface' },
   { label: 'Extensions', slug: 'extensions' },
-  { label: 'Mobile Sharing', slug: 'mobile-sharing' },
+  { label: 'Linked devices', slug: 'linked-devices' },
   { label: 'Connection', slug: 'connection' },
 ] as const;
 
@@ -35,7 +35,7 @@ export function Settings() {
   const [tab, setTab] = useState('model');
   const [extensionsVisited, setExtensionsVisited] = useState(false);
   const activeTab = tab;
-  const visibleTabs = store.peerMode.value
+  const visibleTabs = store.linkedDevicesMode.value
     ? settingsTabs.filter(({ slug }) => slug === 'model' || slug === 'interface')
     : settingsTabs;
   const selectTab = (name: string) => {
@@ -196,7 +196,7 @@ export function Settings() {
             />
           </label>
         </div>
-        {!store.peerMode.value && (
+        {!store.linkedDevicesMode.value && (
           <div class="settings-field">
             <label class="settings-toggle">
               <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
@@ -215,10 +215,10 @@ export function Settings() {
         )}
         <div class="settings-field notification-settings">
           <span class="settings-label">Notifications</span>
-          {store.peerMode.value ? (
+          {store.linkedDevicesMode.value ? (
             <div class="notification-state notification-state-unsupported" role="status">
               <strong>Unavailable</strong>
-              <span>Push notifications are not available over Mobile Sharing.</span>
+              <span>Push notifications are not available through Linked devices.</span>
             </div>
           ) : (
             <>
@@ -332,13 +332,13 @@ export function Settings() {
         {extensionsVisited && <LazyExtensionSettings />}
       </div>
       <div
-        id="settings-mobile-sharing-panel"
+        id="settings-linked-devices-panel"
         role="tabpanel"
-        aria-labelledby="settings-mobile-sharing-tab"
-        hidden={activeTab !== 'mobile-sharing'}
+        aria-labelledby="settings-linked-devices-tab"
+        hidden={activeTab !== 'linked-devices'}
         class="settings-panel"
       >
-        {activeTab === 'mobile-sharing' && <LazyMobileSharingSettings active />}
+        {activeTab === 'linked-devices' && <LazyLinkedDevicesSettings active />}
       </div>
       {saveError && <p role="alert">{saveError}</p>}
       {(activeTab === 'model' || (activeTab === 'connection' && !store.config.passkeyAuth)) && (

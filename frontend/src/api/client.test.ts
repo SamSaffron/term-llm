@@ -213,7 +213,7 @@ describe('API transport', () => {
     );
     const auth = vi.fn();
     const api = new APIClient(config, { getToken: () => '', onAuthRequired: auth });
-    await expect(api.get('/v1/mobile-sharing')).rejects.toMatchObject({ status: 403 });
+    await expect(api.get('/v1/linked-devices')).rejects.toMatchObject({ status: 403 });
     expect(auth).not.toHaveBeenCalled();
   });
 

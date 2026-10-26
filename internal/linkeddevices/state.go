@@ -1,4 +1,4 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"encoding/json"
@@ -34,7 +34,7 @@ func loadJSON(path string, dst any) (bool, error) {
 		return false, err
 	}
 	if info.Mode().Perm()&0o077 != 0 {
-		return false, fmt.Errorf("mobile sharing state %s is not private", path)
+		return false, fmt.Errorf("linked devices state %s is not private", path)
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
 		return false, fmt.Errorf("decode %s: %w", path, err)
@@ -53,7 +53,7 @@ func writeJSONPrivate(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".mobile-sharing-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".linked-devices-*")
 	if err != nil {
 		return err
 	}

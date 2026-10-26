@@ -86,7 +86,7 @@ func TestPairConnectPersistAndReconnect(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "device", "state.json")
 	var deviceSAS string
 	device, err := New(Config{
-		DeviceName: "Synthetic phone", StatePath: statePath, BrokerHTTP: brokerServer.Client(),
+		DeviceName: "Synthetic client", StatePath: statePath, BrokerHTTP: brokerServer.Client(),
 		Endpoint: peer.EndpointConfig{SettingEngine: settings}, OnSAS: func(s string) { deviceSAS = s },
 	})
 	if err != nil {

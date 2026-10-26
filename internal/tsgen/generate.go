@@ -25,7 +25,7 @@ var Registry = []string{
 	"internal/app/serve.serveShellCreateRequest", "internal/app/serve.serveShellInputRequest", "internal/app/serve.sessionInterruptRequest", "internal/app/serve.sessionRuntimeGoalRequest",
 	"internal/app/serve.sessionMessagesResponse",
 	"internal/app/serve.serveSessionActivity",
-	"internal/mobileshare.Status",
+	"internal/linkeddevices.Status",
 }
 
 const module = "github.com/samsaffron/term-llm/"
@@ -115,7 +115,13 @@ var bareNamePackages = map[string]bool{
 // Wire names survive Go declaration moves/renames. Add overrides only when a
 // declaration enters the registered closure; RunEvent is currently the sole jobs DTO.
 var wireNames = map[string]string{
-	"internal/app/serve/jobs.RunEvent": "JobsV2RunEvent",
+	"internal/app/serve/jobs.RunEvent":          "JobsV2RunEvent",
+	"internal/linkeddevices.AuthorityStatement": "LinkedDevicesAuthorityStatement",
+	"internal/linkeddevices.DeviceStatus":       "LinkedDevicesDeviceStatus",
+	"internal/linkeddevices.InvitationStatus":   "LinkedDevicesInvitationStatus",
+	"internal/linkeddevices.RequestStatus":      "LinkedDevicesRequestStatus",
+	"internal/linkeddevices.State":              "LinkedDevicesState",
+	"internal/linkeddevices.Status":             "LinkedDevicesStatus",
 }
 
 func tsName(key string) string {

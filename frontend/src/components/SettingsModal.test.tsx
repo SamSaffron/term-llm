@@ -5,15 +5,17 @@ import { AppStore } from '../stores/app-store';
 import { testConfig } from '../stores/store-test-fixtures';
 import { Settings } from './SettingsModal';
 
-vi.mock('./MobileSharingSettings', () => ({
-  MobileSharingSettings: ({ active }: { active: boolean }) => (
-    <p data-testid="mobile-sharing-loaded">{active ? 'mobile active' : 'mobile inactive'}</p>
+vi.mock('./LinkedDevicesSettings', () => ({
+  LinkedDevicesSettings: ({ active }: { active: boolean }) => (
+    <p data-testid="linked-devices-loaded">
+      {active ? 'linked devices active' : 'linked devices inactive'}
+    </p>
   ),
 }));
 
-it('hides owner-only tabs and push controls for a scoped Mobile Sharing peer', () => {
+it('hides owner-only tabs and push controls for a linked-device client', () => {
   const store = new AppStore(testConfig);
-  store.peerMode.value = true;
+  store.linkedDevicesMode.value = true;
   try {
     render(
       <StoreContext.Provider value={store}>
@@ -21,11 +23,11 @@ it('hides owner-only tabs and push controls for a scoped Mobile Sharing peer', (
       </StoreContext.Provider>,
     );
     expect(screen.queryByRole('tab', { name: 'Extensions' })).toBeNull();
-    expect(screen.queryByRole('tab', { name: 'Mobile Sharing' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Linked devices' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Connection' })).toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: 'Interface' }));
     expect(
-      screen.getByText('Push notifications are not available over Mobile Sharing.'),
+      screen.getByText('Push notifications are not available through Linked devices.'),
     ).toBeVisible();
     expect(screen.queryByText('Show widgets in sidebar')).toBeNull();
   } finally {
@@ -33,7 +35,7 @@ it('hides owner-only tabs and push controls for a scoped Mobile Sharing peer', (
   }
 });
 
-it('registers the lazy mobile-sharing settings tab with its stable slug', async () => {
+it('registers the lazy linked-devices settings tab with its stable slug', async () => {
   const store = new AppStore(testConfig);
   try {
     render(
@@ -41,18 +43,18 @@ it('registers the lazy mobile-sharing settings tab with its stable slug', async 
         <Settings />
       </StoreContext.Provider>,
     );
-    const tab = screen.getByRole('tab', { name: 'Mobile Sharing' });
-    expect(tab).toHaveAttribute('id', 'settings-mobile-sharing-tab');
-    expect(tab).toHaveAttribute('aria-controls', 'settings-mobile-sharing-panel');
-    expect(screen.queryByTestId('mobile-sharing-loaded')).toBeNull();
+    const tab = screen.getByRole('tab', { name: 'Linked devices' });
+    expect(tab).toHaveAttribute('id', 'settings-linked-devices-tab');
+    expect(tab).toHaveAttribute('aria-controls', 'settings-linked-devices-panel');
+    expect(screen.queryByTestId('linked-devices-loaded')).toBeNull();
 
     fireEvent.click(tab);
-    expect(await screen.findByText('mobile active')).toBeVisible();
-    expect(document.getElementById('settings-mobile-sharing-panel')).not.toHaveAttribute('hidden');
+    expect(await screen.findByText('linked devices active')).toBeVisible();
+    expect(document.getElementById('settings-linked-devices-panel')).not.toHaveAttribute('hidden');
 
     fireEvent.click(screen.getByRole('tab', { name: 'Model' }));
-    expect(screen.queryByTestId('mobile-sharing-loaded')).toBeNull();
-    expect(document.getElementById('settings-mobile-sharing-panel')).toHaveAttribute('hidden');
+    expect(screen.queryByTestId('linked-devices-loaded')).toBeNull();
+    expect(document.getElementById('settings-linked-devices-panel')).toHaveAttribute('hidden');
   } finally {
     store.dispose();
   }

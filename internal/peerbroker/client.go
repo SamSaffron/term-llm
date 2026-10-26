@@ -308,7 +308,14 @@ func (c *Client) dial(ctx context.Context, hostID, kind, id, credential string) 
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = ws.Close()
+			// Dial contexts bound registration, not the lifetime of a returned
+			// connection. If ready won the race, leave that connection open.
+			select {
+			case <-readyDone:
+				return
+			default:
+				_ = ws.Close()
+			}
 		case <-readyDone:
 		}
 	}()

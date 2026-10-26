@@ -4602,9 +4602,9 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.openShare).toHaveBeenCalledWith(42);
   });
 
-  it('does not offer transcript publishing to a scoped Mobile Sharing peer', () => {
+  it('does not offer transcript publishing to a linked-device client', () => {
     const store = createStore();
-    store.peerMode.value = true;
+    store.linkedDevicesMode.value = true;
     store.sessions.value[0].messages = [
       {
         id: 'a1',
@@ -4934,9 +4934,9 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('hides upload, voice, and live controls for a scoped Mobile Sharing peer', async () => {
+  it('hides upload, voice, and live controls for a linked-device client', async () => {
     const store = createStore();
-    store.peerMode.value = true;
+    store.linkedDevicesMode.value = true;
     store.liveStore.enabled.value = true;
     store.liveStore.capability.value = { supported: true, reason: '' };
     render(

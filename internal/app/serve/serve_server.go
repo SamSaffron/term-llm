@@ -13,12 +13,12 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/live"
 	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mentions"
-	"github.com/samsaffron/term-llm/internal/mobileshare"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -46,7 +46,7 @@ type serveServer struct {
 	sessionStore             runtime.SessionStoreOverrides
 	memoryPaths              appmemory.Paths
 	mediaPublisher           *serveMediaPublisher
-	mobileSharing            *mobileshare.Runtime
+	linkedDevices            *linkeddevices.Runtime
 	approvalDefault          tools.ApprovalMode
 	sharePublisherFactory    func() (share.Publisher, error)
 	shareMu                  sync.Mutex

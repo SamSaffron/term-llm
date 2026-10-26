@@ -14,6 +14,18 @@ export type HubNodeView = { "id": string; "name": string; "source": string; "con
 
 export type JobsV2RunEvent = { "id": number; "run_id": string; "event_type": string; "message"?: string; "data"?: unknown; "created_at": string; };
 
+export type LinkedDevicesAuthorityStatement = { "agent_name"?: string; "description": string; "same_uid_note": string; };
+
+export type LinkedDevicesDeviceStatus = { "id": string; "name": string; "approved_at"?: string; "last_seen_at"?: string; "connection": string; };
+
+export type LinkedDevicesInvitationStatus = { "url": string; "qr_data_url": string; "expires_at": string; };
+
+export type LinkedDevicesRequestStatus = { "id": string; "name": string; "requested_at"?: string; "expires_at"?: string; };
+
+export type LinkedDevicesState = string;
+
+export type LinkedDevicesStatus = { "state": LinkedDevicesState; "reason"?: string; "reset_required"?: boolean; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: LinkedDevicesInvitationStatus; "pending_requests": (LinkedDevicesRequestStatus)[] | null; "devices": (LinkedDevicesDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": LinkedDevicesAuthorityStatement; };
+
 export type ServeContextUsage = { "used_tokens": number; "input_limit"?: number; "cached_input_tokens"?: number; "estimated": boolean; };
 
 export type ServeEvent = { "v": number; "sequence": number; "instance_id": string; "type": string; "occurred_at": number; "session_id"?: string; "response_id"?: string; "project_id"?: string; "parent_session_id"?: string; "transcript_rev"?: number; "run_epoch"?: number; "operation_id"?: string; "reason"?: string; };
@@ -79,18 +91,6 @@ export type CoreModelSwapMarker = { "type": string; "from_provider"?: string; "f
 export type CorePathNoteProvenance = { "source_session_id": string; "anchor_message_id"?: number; "source_messages"?: number; "omitted_messages"?: number; "read_files"?: (string)[]; "modified_files"?: (string)[]; "model"?: string; "focus"?: string; };
 
 export type CoreSkillActivationProvenance = { "name": string; "source": string; "source_path": string; "origin": string; "execution": string; "raw_arguments"?: string; "agent"?: string; "model"?: string; "allowed_tools"?: (string)[]; "allowed_tools_present"?: boolean; "run_id"?: string; "child_session_id"?: string; "status"?: string; "started_at"?: string; "completed_at"?: string; "activated_at": string; };
-
-export type MobileshareAuthorityStatement = { "agent_name"?: string; "description": string; "same_uid_note": string; };
-
-export type MobileshareDeviceStatus = { "id": string; "name": string; "approved_at"?: string; "last_seen_at"?: string; "connection": string; };
-
-export type MobileshareInvitationStatus = { "url": string; "qr_data_url": string; "expires_at": string; };
-
-export type MobileshareRequestStatus = { "id": string; "name": string; "requested_at"?: string; "expires_at"?: string; };
-
-export type MobileshareState = string;
-
-export type MobileshareStatus = { "state": MobileshareState; "reason"?: string; "reset_required"?: boolean; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: MobileshareInvitationStatus; "pending_requests": (MobileshareRequestStatus)[] | null; "devices": (MobileshareDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": MobileshareAuthorityStatement; };
 
 export type SessionResponseRunState = NotificationdbResponseRunState;
 

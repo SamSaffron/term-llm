@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -87,7 +88,8 @@ func NewHost(id *Identity, grants *GrantStore, opts HostOptions) (*Host, error) 
 }
 
 func validBasePath(path string) bool {
-	return strings.HasPrefix(path, "/") && !strings.ContainsAny(path, "?#\\\r\n") && !strings.Contains(path, "..")
+	return strings.HasPrefix(path, "/") && !strings.ContainsAny(path, "?#\\\r\n") &&
+		!strings.Contains(path, "..") && (&url.URL{Path: path}).EscapedPath() == path
 }
 func (h *Host) Identity() *Identity { return h.id }
 func (h *Host) Grants() *GrantStore { return h.grants }

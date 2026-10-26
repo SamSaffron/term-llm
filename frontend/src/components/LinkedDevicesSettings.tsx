@@ -1,26 +1,26 @@
-import '../styles/features/mobile-sharing.css';
+import '../styles/features/linked-devices.css';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import {
-  approveMobileSharingRequest,
-  cancelMobileSharingInvitation,
-  createMobileSharingInvitation,
-  denyMobileSharingRequest,
-  getMobileSharing,
-  resetMobileSharing,
-  resumeMobileSharing,
-  revokeMobileSharingDevice,
-  stopMobileSharing,
-  type MobileSharingStatus,
-} from '../api/mobile-sharing';
+  approveLinkedDevicesRequest,
+  cancelLinkedDevicesInvitation,
+  createLinkedDevicesInvitation,
+  denyLinkedDevicesRequest,
+  getLinkedDevices,
+  resetLinkedDevices,
+  resumeLinkedDevices,
+  revokeLinkedDevicesDevice,
+  stopLinkedDevices,
+  type LinkedDevicesStatus,
+} from '../api/linked-devices';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
 import { copyText } from '../platform/clipboard';
 
-export const MOBILE_SHARING_POLL_MS = 1_500;
+export const LINKED_DEVICES_POLL_MS = 1_500;
 
 type ConfirmAction = 'reset';
 
-const stateLabels: Record<MobileSharingStatus['state'], string> = {
+const stateLabels: Record<LinkedDevicesStatus['state'], string> = {
   unavailable: 'Unavailable',
   off: 'Off',
   inviting: 'Invitation open',
@@ -47,9 +47,9 @@ function deviceTime(value?: string): string {
     : 'Last seen recently';
 }
 
-export function MobileSharingSettings({ active }: { active: boolean }) {
+export function LinkedDevicesSettings({ active }: { active: boolean }) {
   const store = useStore();
-  const [status, setStatus] = useState<MobileSharingStatus | null>(null);
+  const [status, setStatus] = useState<LinkedDevicesStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -65,7 +65,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
     async (signal?: AbortSignal) => {
       setLoading(true);
       try {
-        const next = await getMobileSharing(store.api, signal);
+        const next = await getLinkedDevices(store.api, signal);
         if (!activeRef.current || signal?.aborted) return;
         setStatus((current) =>
           next.state === 'inviting' && !next.invitation && current?.invitation
@@ -90,7 +90,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       await load(controller.signal);
-      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), MOBILE_SHARING_POLL_MS);
+      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), LINKED_DEVICES_POLL_MS);
     };
     void poll();
     return () => {
@@ -127,7 +127,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
     setBusy('invite');
     setError('');
     try {
-      const next = await createMobileSharingInvitation(store.api);
+      const next = await createLinkedDevicesInvitation(store.api);
       if (activeRef.current) setStatus(next);
     } catch (cause) {
       if (activeRef.current) setError(errorMessage(cause));
@@ -138,22 +138,22 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
 
   const confirmedAction = () => {
     setConfirming(null);
-    void mutate('reset', () => resetMobileSharing(store.api));
+    void mutate('reset', () => resetLinkedDevices(store.api));
   };
 
   if (loading && !status && !error)
     return (
-      <section class="mobile-sharing" aria-label="Mobile sharing">
-        <p role="status">Checking mobile sharing…</p>
+      <section class="linked-devices" aria-label="Linked devices">
+        <p role="status">Checking linked devices…</p>
       </section>
     );
 
   if (!status)
     return (
-      <section class="mobile-sharing" aria-label="Mobile sharing">
-        <div class="mobile-sharing-state is-unavailable">
-          <strong>Mobile sharing unavailable</strong>
-          <p>{error || 'The server did not provide mobile sharing status.'}</p>
+      <section class="linked-devices" aria-label="Linked devices">
+        <div class="linked-devices-state is-unavailable">
+          <strong>Linked devices unavailable</strong>
+          <p>{error || 'The server did not provide linked devices status.'}</p>
           <button class="btn" type="button" disabled={loading} onClick={() => void load()}>
             {loading ? 'Checking…' : 'Try again'}
           </button>
@@ -170,27 +170,27 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
     status.reset_required;
 
   return (
-    <section class="mobile-sharing" aria-label="Mobile sharing">
-      <div class={`mobile-sharing-state is-${status.state}`} role="status">
-        <span>Mobile sharing</span>
+    <section class="linked-devices" aria-label="Linked devices">
+      <div class={`linked-devices-state is-${status.state}`} role="status">
+        <span>Linked devices</span>
         <strong>{stateLabels[status.state]}</strong>
       </div>
-      {status.reason && <p class="mobile-sharing-reason">{status.reason}</p>}
+      {status.reason && <p class="linked-devices-reason">{status.reason}</p>}
       {(status.warnings ?? []).map((warning) => (
-        <p class="mobile-sharing-warning" role="status" key={warning}>
+        <p class="linked-devices-warning" role="status" key={warning}>
           {warning}
         </p>
       ))}
       {error && (
-        <p class="mobile-sharing-error" role="alert">
+        <p class="linked-devices-error" role="alert">
           {error}
         </p>
       )}
 
       {status.state === 'off' && (
-        <div class="mobile-sharing-section">
+        <div class="linked-devices-section">
           <h3>Connect a device</h3>
-          <p>Create a short-lived invitation, then scan it from your device.</p>
+          <p>Scan the QR code or copy the pairing link into a compatible client.</p>
           <button
             class="btn primary"
             type="button"
@@ -203,18 +203,18 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
       )}
 
       {status.invitation && (
-        <div class="mobile-sharing-section mobile-sharing-invitation">
+        <div class="linked-devices-section linked-devices-invitation">
           <div>
-            <h3>Mobile invitation</h3>
-            <p class="mobile-sharing-countdown" aria-live="polite">
+            <h3>Pairing invitation</h3>
+            <p class="linked-devices-countdown" aria-live="polite">
               {countdown(status.invitation.expires_at, now)}
             </p>
           </div>
           <img
             src={status.invitation.qr_data_url}
-            alt="QR code for the mobile sharing invitation"
+            alt="QR code for the linked devices invitation"
           />
-          <div class="mobile-sharing-invite-actions">
+          <div class="linked-devices-invite-actions">
             <button
               class="btn"
               type="button"
@@ -232,20 +232,20 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               type="button"
               disabled={Boolean(busy)}
               onClick={() =>
-                void mutate('cancel-invite', () => cancelMobileSharingInvitation(store.api))
+                void mutate('cancel-invite', () => cancelLinkedDevicesInvitation(store.api))
               }
             >
               {busy === 'cancel-invite' ? 'Cancelling…' : 'Cancel invitation'}
             </button>
           </div>
-          <p class="mobile-sharing-warning" role="note">
+          <p class="linked-devices-warning" role="note">
             Keep the invitation link private until it expires.
           </p>
         </div>
       )}
 
       {status.state === 'inviting' && !status.invitation && (
-        <div class="mobile-sharing-section">
+        <div class="linked-devices-section">
           <h3>Invitation already active</h3>
           <p>
             Pairing secrets are displayed only once. Cancel this invitation and create a new one if
@@ -256,7 +256,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
             type="button"
             disabled={Boolean(busy)}
             onClick={() =>
-              void mutate('cancel-invite', () => cancelMobileSharingInvitation(store.api))
+              void mutate('cancel-invite', () => cancelLinkedDevicesInvitation(store.api))
             }
           >
             Cancel active invitation
@@ -265,15 +265,15 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
       )}
 
       {requests.length > 0 && (
-        <div class="mobile-sharing-section">
+        <div class="linked-devices-section">
           <h3>Pending devices</h3>
-          <div class="mobile-sharing-list">
+          <div class="linked-devices-list">
             {requests.map((request) => {
               const code = codes[request.id] || '';
               return (
-                <div class="mobile-sharing-card" key={request.id}>
+                <div class="linked-devices-card" key={request.id}>
                   <div>
-                    <strong>{request.name || 'Unnamed mobile device'}</strong>
+                    <strong>{request.name || 'Unnamed device'}</strong>
                     <small>
                       Enter the code shown on that device
                       {request.expires_at ? ` · ${countdown(request.expires_at, now)}` : ''}.
@@ -285,9 +285,9 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
                       <p>{status.authority.same_uid_note}</p>
                     </details>
                   </div>
-                  <label for={`mobile-sharing-code-${request.id}`}>Code from your phone</label>
+                  <label for={`linked-devices-code-${request.id}`}>Confirmation code</label>
                   <input
-                    id={`mobile-sharing-code-${request.id}`}
+                    id={`linked-devices-code-${request.id}`}
                     value={code}
                     inputMode="text"
                     autoComplete="one-time-code"
@@ -297,14 +297,14 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
                       setCodes({ ...codes, [request.id]: event.currentTarget.value.toUpperCase() })
                     }
                   />
-                  <div class="mobile-sharing-card-actions">
+                  <div class="linked-devices-card-actions">
                     <button
                       class="btn primary"
                       type="button"
                       disabled={Boolean(busy) || !code.trim()}
                       onClick={() =>
                         void mutate(`approve-${request.id}`, () =>
-                          approveMobileSharingRequest(store.api, request.id, code.trim()),
+                          approveLinkedDevicesRequest(store.api, request.id, code.trim()),
                         )
                       }
                     >
@@ -316,7 +316,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
                       disabled={Boolean(busy)}
                       onClick={() =>
                         void mutate(`deny-${request.id}`, () =>
-                          denyMobileSharingRequest(store.api, request.id),
+                          denyLinkedDevicesRequest(store.api, request.id),
                         )
                       }
                     >
@@ -331,13 +331,13 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
       )}
 
       {devices.length > 0 && (
-        <div class="mobile-sharing-section">
+        <div class="linked-devices-section">
           <h3>Approved devices</h3>
-          <div class="mobile-sharing-list">
+          <div class="linked-devices-list">
             {devices.map((device) => (
-              <div class="mobile-sharing-card mobile-sharing-device" key={device.id}>
+              <div class="linked-devices-card linked-devices-device" key={device.id}>
                 <div>
-                  <strong>{device.name || 'Unnamed mobile device'}</strong>
+                  <strong>{device.name || 'Unnamed device'}</strong>
                   <small>
                     {device.connection} · {deviceTime(device.last_seen_at)}
                   </small>
@@ -357,7 +357,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
       )}
 
       {(!isUnavailable || status.reset_required) && (
-        <div class="mobile-sharing-controls">
+        <div class="linked-devices-controls">
           {status.state === 'sharing' && (
             <button
               class="btn primary"
@@ -373,7 +373,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               class="btn"
               type="button"
               disabled={Boolean(busy)}
-              onClick={() => void mutate('stop', () => stopMobileSharing(store.api))}
+              onClick={() => void mutate('stop', () => stopLinkedDevices(store.api))}
             >
               {busy === 'stop' ? 'Stopping' : 'Stop sharing'}
             </button>
@@ -383,7 +383,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               class="btn primary"
               type="button"
               disabled={Boolean(busy)}
-              onClick={() => void mutate('resume', () => resumeMobileSharing(store.api))}
+              onClick={() => void mutate('resume', () => resumeLinkedDevices(store.api))}
             >
               {busy === 'resume' ? 'Resuming' : 'Resume'}
             </button>
@@ -393,7 +393,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               class="btn primary"
               type="button"
               disabled={Boolean(busy)}
-              onClick={() => void mutate('resume', () => resumeMobileSharing(store.api))}
+              onClick={() => void mutate('resume', () => resumeLinkedDevices(store.api))}
             >
               {busy === 'resume' ? 'Resuming' : 'Resume'}
             </button>
@@ -413,11 +413,11 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
 
       {revokeTarget && (
         <div
-          class="mobile-sharing-confirm"
+          class="linked-devices-confirm"
           role="alertdialog"
-          aria-labelledby="mobile-sharing-revoke-title"
+          aria-labelledby="linked-devices-revoke-title"
         >
-          <strong id="mobile-sharing-revoke-title">
+          <strong id="linked-devices-revoke-title">
             Revoke {revokeTarget.name || 'this device'}?
           </strong>
           <p>This device will no longer be able to connect.</p>
@@ -432,7 +432,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
                 const target = revokeTarget;
                 setRevokeTarget(null);
                 void mutate(`revoke-${target.id}`, () =>
-                  revokeMobileSharingDevice(store.api, target.id),
+                  revokeLinkedDevicesDevice(store.api, target.id),
                 );
               }}
             >
@@ -444,11 +444,11 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
 
       {confirming && (
         <div
-          class="mobile-sharing-confirm"
+          class="linked-devices-confirm"
           role="alertdialog"
-          aria-labelledby="mobile-sharing-confirm-title"
+          aria-labelledby="linked-devices-confirm-title"
         >
-          <strong id="mobile-sharing-confirm-title">Forget all devices?</strong>
+          <strong id="linked-devices-confirm-title">Forget all devices?</strong>
           <p>All invitations, pending requests, and approved devices will be removed.</p>
           <div>
             <button class="btn" type="button" onClick={() => setConfirming(null)}>

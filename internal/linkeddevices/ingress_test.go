@@ -1,4 +1,4 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"net/http"
@@ -63,8 +63,8 @@ func TestRouteAllowedDefaultDeny(t *testing.T) {
 		{http.MethodGet, "/v1/sessions/s1/mcp", false},
 		{http.MethodPost, "/uploads", false},
 		{http.MethodGet, "/admin/widgets/status", false},
-		{http.MethodGet, "/v1/mobile-sharing", false},
-		{http.MethodPost, "/v1/mobile-sharing/stop", false},
+		{http.MethodGet, "/v1/linked-devices", false},
+		{http.MethodPost, "/v1/linked-devices/stop", false},
 		{http.MethodGet, "/v1/mcp/catalogue", false},
 		{http.MethodGet, "/v2/jobs", false},
 		{http.MethodGet, "/api/sessions/s1", false},

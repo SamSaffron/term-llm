@@ -1,4 +1,4 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"context"
@@ -51,13 +51,23 @@ func (r *Runtime) handleSignal(conn *peerbroker.Conn, frame *peerbroker.Frame) {
 		if !ok {
 			return
 		}
-		r.wg.Add(1)
 		go func() {
-			defer r.wg.Done()
 			defer r.releaseTransport(newDevice)
 			r.acceptTransport(ctx, generation, conn, frame.PeerKind, frame.PeerID, verified)
 		}()
 	}
+}
+
+func (r *Runtime) cancelDisconnectedInvitation(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.invitation == nil || r.invitation.id != id {
+		return
+	}
+	r.host.CancelPairing(r.invitation.link.InvitationID)
+	delete(r.pending, id)
+	r.invitation = nil
+	r.warnings = append(r.warnings, "the invitation connection changed and was cancelled")
 }
 
 func (r *Runtime) handlePairRequest(conn *peerbroker.Conn, kind, id string, request *pairing.PairRequest) {
@@ -149,7 +159,7 @@ func (r *Runtime) Deny(id string) error {
 func (r *Runtime) renewNow(ctx context.Context) error {
 	r.renewMu.Lock()
 	defer r.renewMu.Unlock()
-	hashes, err := r.reconnectHashes()
+	hashes, err := reconnectHashes(r.grants)
 	if err != nil {
 		return err
 	}
@@ -185,16 +195,18 @@ func (r *Runtime) reserveTransport(id string) (context.Context, uint64, bool, bo
 	if newDevice {
 		r.newHandshakes++
 	}
+	r.wg.Add(1)
 	return r.sharingCtx, r.generation, newDevice, true
 }
 
 func (r *Runtime) releaseTransport(newDevice bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.handshakes--
 	if newDevice {
 		r.newHandshakes--
 	}
+	r.mu.Unlock()
+	r.wg.Done()
 }
 
 func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *peerbroker.Conn, kind, id string, verified *pairing.VerifiedTransport) {
@@ -223,7 +235,7 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *
 	server, err := peer.NewServer(peer.ServerConfig{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 			if !r.beginPeerRequest(generation) {
-				http.Error(w, "mobile sharing is stopping", http.StatusServiceUnavailable)
+				http.Error(w, "linked devices is stopping", http.StatusServiceUnavailable)
 				return
 			}
 			defer r.peerRequests.Done()
@@ -288,10 +300,12 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *
 }
 
 func (r *Runtime) Enable(ctx context.Context) error {
+	r.lifecycleMu.Lock()
 	r.mu.Lock()
 	if r.availableReason != "" {
 		reason := r.availableReason
 		r.mu.Unlock()
+		r.lifecycleMu.Unlock()
 		return errors.New(reason)
 	}
 	already := r.settings.Enabled && r.brokerConnected
@@ -300,20 +314,38 @@ func (r *Runtime) Enable(ctx context.Context) error {
 	r.startSharingLocked()
 	if err := r.persistSettingsLocked(); err != nil {
 		r.mu.Unlock()
+		r.lifecycleMu.Unlock()
 		return err
 	}
-	r.mu.Unlock()
 	if already {
+		r.mu.Unlock()
+		r.lifecycleMu.Unlock()
 		return nil
 	}
-	if err := r.connectBroker(ctx); err != nil {
+	attempt := r.registrationAttemptLocked()
+	r.wg.Add(1)
+	r.mu.Unlock()
+	r.lifecycleMu.Unlock()
+
+	connectCtx, cancel := context.WithCancel(attempt.ctx)
+	stopOwnerCancel := context.AfterFunc(ctx, cancel)
+	err := r.connectBroker(connectCtx, attempt)
+	stopOwnerCancel()
+	cancel()
+	r.wg.Done()
+	if err != nil {
 		r.scheduleReconnect()
-		return err
 	}
-	return nil
+	return err
 }
 
 func (r *Runtime) Stop() error {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	return r.stopLocked()
+}
+
+func (r *Runtime) stopLocked() error {
 	r.mu.Lock()
 	r.settings.Enabled = false
 	r.stopSharingLocked()
@@ -363,7 +395,9 @@ func (r *Runtime) Revoke(ctx context.Context, id string) error {
 }
 
 func (r *Runtime) Reset(ctx context.Context) error {
-	if err := r.Stop(); err != nil {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if err := r.stopLocked(); err != nil {
 		return err
 	}
 	r.mu.Lock()

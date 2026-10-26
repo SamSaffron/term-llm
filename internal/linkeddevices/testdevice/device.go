@@ -43,8 +43,8 @@ type Pairing struct {
 	HostLabel string
 }
 
-// Device is an intentionally synthetic implementation of the mobile side of
-// pairing v2 and the peer bridge.
+// Device is an intentionally synthetic client implementation of pairing v2 and
+// the peer bridge.
 type Device struct {
 	cfg      Config
 	identity *pairing.Identity

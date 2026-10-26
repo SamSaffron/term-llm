@@ -1,4 +1,4 @@
-// Package peerbroker implements the version 2 mobile-share rendezvous service.
+// Package peerbroker implements the version 2 linked-device rendezvous service.
 //
 // A host proves possession of an Ed25519 key by signing a short-lived broker
 // challenge. Successful registration creates a renewable, short (three minute

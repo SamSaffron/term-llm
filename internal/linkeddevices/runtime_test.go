@@ -1,10 +1,11 @@
-package mobileshare
+package linkeddevices
 
 import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -88,6 +89,44 @@ func TestSessionCleanupUsesEndpointIdentity(t *testing.T) {
 	runtime.removeSession("device", replacement)
 	if runtime.sessions["device"] != nil {
 		t.Fatal("terminal endpoint remained counted as connected")
+	}
+}
+
+func TestRenewRetriesSingleTransientFailure(t *testing.T) {
+	var renewCalls atomic.Int64
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if !strings.HasSuffix(request.URL.Path, "/renew") {
+			http.NotFound(w, request)
+			return
+		}
+		if renewCalls.Add(1) == 1 {
+			http.Error(w, "transient", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(peerbroker.Lease{LeaseExpiresAt: time.Now().Add(time.Minute)})
+	}))
+	defer broker.Close()
+	runtime, err := New(Options{
+		DataDir: t.TempDir(), Target: "renew-retry", StoreInstanceID: "renew-retry-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.mu.Lock()
+	runtime.hostID = base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	runtime.leaseCapability = "test-lease-capability"
+	runtime.brokerConnected = true
+	runtime.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.renewWithRetry(ctx); err != nil {
+		t.Fatalf("single transient renewal failure was not retried: %v", err)
+	}
+	if got := renewCalls.Load(); got != 2 {
+		t.Fatalf("renew calls = %d, want 2", got)
 	}
 }
 
@@ -288,7 +327,7 @@ func TestNewServerBoundsHostLabelAndDegradesOptionalFailures(t *testing.T) {
 }
 
 func TestOwnerAPIAcceptsHubSameOriginMetadata(t *testing.T) {
-	request := httptest.NewRequest(http.MethodPost, "http://node.internal/v1/mobile-sharing/stop", nil)
+	request := httptest.NewRequest(http.MethodPost, "http://node.internal/v1/linked-devices/stop", nil)
 	request.Header.Set("Origin", "https://hub.example")
 	request.Header.Set("Sec-Fetch-Site", "same-origin")
 	if !sameOrigin(request) {
@@ -307,7 +346,7 @@ func TestOwnerAPIRejectsDeviceAndCrossSiteMutation(t *testing.T) {
 	}
 	defer runtime.Close()
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/mobile-sharing", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/linked-devices", nil)
 	request = WithDevicePrincipal(request, DevicePrincipal{DeviceID: "device", Scope: ScopeWebV1})
 	recorder := httptest.NewRecorder()
 	runtime.Handler().ServeHTTP(recorder, request)
@@ -315,7 +354,7 @@ func TestOwnerAPIRejectsDeviceAndCrossSiteMutation(t *testing.T) {
 		t.Fatalf("device owner request = %d", recorder.Code)
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/v1/mobile-sharing/stop", nil)
+	request = httptest.NewRequest(http.MethodPost, "/v1/linked-devices/stop", nil)
 	request.Header.Set("Origin", "https://attacker.invalid")
 	recorder = httptest.NewRecorder()
 	runtime.Handler().ServeHTTP(recorder, request)

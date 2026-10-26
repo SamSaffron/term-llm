@@ -159,6 +159,15 @@ func TestMACBeforeDuplicateAndDuplicateBurn(t *testing.T) {
 	}
 }
 
+func TestHostRejectsBasePathsThatRequireEscaping(t *testing.T) {
+	host, _, _ := newTestHost(t)
+	for _, path := range []string{"/my agent", "/café", "/literal%20escape"} {
+		if _, err := NewHost(host.id, host.grants, HostOptions{Broker: "https://broker.example", BasePath: path}); !errors.Is(err, ErrInvalid) {
+			t.Errorf("NewHost base path %q = %v, want invalid", path, err)
+		}
+	}
+}
+
 func TestStrictPairLink(t *testing.T) {
 	host, _, clock := newTestHost(t)
 	link, err := host.NewPairingForInvitation(invitationID(), "invite_cap", clock.nowTime.Add(time.Minute))

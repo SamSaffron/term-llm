@@ -102,6 +102,7 @@ func (h *Handler) serveWS(conn *websocket.Conn, hostID string, role wsRole, tok 
 		slot := host.invitations[role.id]
 		if slot.peer != nil {
 			close(slot.peer.kick)
+			h.notifyPresenceLocked(host, role, false)
 		}
 		slot.consumed = true
 		slot.peer = peer

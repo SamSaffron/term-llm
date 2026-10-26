@@ -50,7 +50,7 @@ export function responseError(
 const PEER_ERROR_HEADER = 'X-Term-LLM-Peer-Error';
 const PEER_SCOPE_DENIED = 'scope_denied';
 
-export function peerScopeDenied(response: Pick<Response, 'status' | 'headers'>): boolean {
+export function linkedDevicesScopeDenied(response: Pick<Response, 'status' | 'headers'>): boolean {
   return response.status === 403 && response.headers.get(PEER_ERROR_HEADER) === PEER_SCOPE_DENIED;
 }
 
@@ -297,7 +297,7 @@ export class APIClient {
         }
         if (
           (response.status === 401 || response.status === 403) &&
-          !peerScopeDenied(response) &&
+          !linkedDevicesScopeDenied(response) &&
           controls.auth !== 'ignore' &&
           !externalAuthRedirecting
         )
@@ -433,7 +433,7 @@ export class APIClient {
           this.hooks.onVersionMismatch?.();
         if (
           (xhr.status === 401 || xhr.status === 403) &&
-          !peerScopeDenied({ status: xhr.status, headers: responseHeaders }) &&
+          !linkedDevicesScopeDenied({ status: xhr.status, headers: responseHeaders }) &&
           !externalAuthRedirecting
         ) {
           const loginURL = trustedExternalLoginURL({

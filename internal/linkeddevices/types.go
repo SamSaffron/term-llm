@@ -1,11 +1,11 @@
-package mobileshare
+package linkeddevices
 
 import "time"
 
 const (
 	DefaultBrokerURL = ""
-	BrokerURLEnv     = "TERM_LLM_MOBILE_SHARING_BROKER_URL"
-	AdmissionEnv     = "TERM_LLM_MOBILE_SHARING_ADMISSION"
+	BrokerURLEnv     = "TERM_LLM_LINKED_DEVICES_BROKER_URL"
+	AdmissionEnv     = "TERM_LLM_LINKED_DEVICES_ADMISSION"
 )
 
 type State string

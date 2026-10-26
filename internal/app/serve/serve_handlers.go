@@ -34,6 +34,7 @@ import (
 	buildinfo "github.com/samsaffron/term-llm/internal/buildinfo"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -67,7 +68,7 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 // healthIdentityTrusted reports whether a trusted mobile peer, auth-disabled
 // loopback serve, bearer token, or passkey session may receive node identity.
 func (s *serveServer) healthIdentityTrusted(r *http.Request) bool {
-	if _, ok := mobileshare.DeviceFromRequest(r); ok {
+	if _, ok := linkeddevices.DeviceFromRequest(r); ok {
 		return true
 	}
 	if s.browserAuth != nil {
@@ -2904,7 +2905,7 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 
 func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 	if s.browserAuth != nil {
-		return mobileshare.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
+		return linkeddevices.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
 			if p, ok := hubPrincipal(r); !ok || p.SessionID == "" {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Passkey authentication is required")
 				return
@@ -2915,7 +2916,7 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 	if !s.cfg.requireAuth {
 		return next
 	}
-	return mobileshare.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
+	return linkeddevices.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			next(w, r)
 			return
