@@ -462,7 +462,7 @@
 }
 
 .message.job-notice {
-  width: min(100%, 820px);
+  width: min(100%, 560px);
 }
 
 .message.job-notice .message-body {
@@ -1103,9 +1103,12 @@
 }
 
 /* Tool calls are framed in the tool colour (--tool) without a fill, so the
-   colour has a place without colouring their text. */
+   colour has a place without colouring their text. They are asides to the
+   reply, so they stay narrower than its text; long summaries and commands
+   truncate rather than widen the card. */
 .tool-card,
 .tool-group-card {
+  max-width: 560px;
   border: 1px solid color-mix(in srgb, var(--tool) 45%, transparent);
   border-radius: var(--radius-md);
   overflow: hidden;
