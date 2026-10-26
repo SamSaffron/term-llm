@@ -55,9 +55,10 @@ func TestHostedChildReloadSettlesBeforeReplacement(t *testing.T) {
 				mock.AddTextResponse("own turn")
 			}
 			mock.AddTurn(mockprovider.MockTurn{Text: "work", ToolCalls: []core.ToolCall{{ID: "read", Name: "read_file", Arguments: args}}}).AddTextResponse("finished")
-			// Request reload from the streamed text, before the engine checks its
-			// completed-response boundary. Before the fix this parks the inner owner.
-			sink := &reloadChildSink{handle: handle, coordinator: c, target: 1}
+			// Natural completion requests reload from streamed text, before the
+			// completed-response boundary. Interruption requests it from inside
+			// the tool: the grace period must not expire before tool dispatch.
+			sink := &reloadChildSink{handle: handle, coordinator: c, target: 1, interrupt: tc.interrupt}
 			if lifecycle {
 				sink.target = 2
 			}
@@ -83,7 +84,7 @@ func TestHostedChildReloadSettlesBeforeReplacement(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			cwd := t.TempDir()
-			blocked := &reloadSettlementTool{interrupted: make(chan struct{}), settle: make(chan struct{})}
+			blocked := &reloadSettlementTool{onStart: c.Request, interrupted: make(chan struct{}), settle: make(chan struct{})}
 			// Model the nested detached owner taken by the agent manager before
 			// launching a child. It too must survive until the runner returns.
 			owned, releaseParent, err := c.Root(ctx)
@@ -161,13 +162,14 @@ type reloadChildSink struct {
 	handle       childRunSession
 	coordinator  *restart.Coordinator
 	turn, target int
+	interrupt    bool
 }
 
 func (s *reloadChildSink) ChildRunSession() childRunSession { return s.handle }
 func (s *reloadChildSink) Event(ev core.Event) {
 	if ev.Type == core.EventTextDelta && ev.Text != "finished" {
 		s.turn++
-		if s.turn == s.target {
+		if s.turn == s.target && !s.interrupt {
 			s.coordinator.Request()
 		}
 	}
@@ -176,13 +178,17 @@ func (s *reloadChildSink) BeginChildTurn() {}
 
 // Cancellation is not settlement: the runner must retain its ownership while a
 // tool joins, even though the tool has already acknowledged the grace signal.
-type reloadSettlementTool struct{ interrupted, settle chan struct{} }
+type reloadSettlementTool struct {
+	onStart             func()
+	interrupted, settle chan struct{}
+}
 
 func (*reloadSettlementTool) Spec() core.ToolSpec {
 	return core.ToolSpec{Name: "read_file", Schema: map[string]any{"type": "object"}}
 }
 func (*reloadSettlementTool) Preview(json.RawMessage) string { return "reload settlement fixture" }
 func (t *reloadSettlementTool) Execute(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
+	t.onStart()
 	<-ctx.Done()
 	close(t.interrupted)
 	<-t.settle

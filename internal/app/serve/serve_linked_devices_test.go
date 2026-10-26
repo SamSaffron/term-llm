@@ -20,11 +20,20 @@ func TestPeerBootstrapAndHealthExposeScopedReadOnlyIdentity(t *testing.T) {
 	server.cfg.agentName = "agent"
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request = linkeddevices.WithDevicePrincipal(request, linkeddevices.DevicePrincipal{DeviceID: "device", Scope: linkeddevices.ScopeWebV1})
-	body := string(linkeddevices.PeerIndexHTML(request, server.renderIndexHTML()))
-	if !strings.Contains(body, `TERM_LLM_AUTH_MODE="linked-devices"`) || !strings.Contains(body, `TERM_LLM_LINKED_DEVICES_SCOPE="web-v1"`) {
-		t.Fatalf("peer bootstrap marker missing: %s", body)
+	for _, path := range []string{"/", "/index.html", "/session-1"} {
+		peerRequest := request.Clone(request.Context())
+		peerRequest.URL.Path = path
+		// Exercise both explicit index and SPA fallback through the shared shell handler.
+		recorder := httptest.NewRecorder()
+		server.handleUI(recorder, peerRequest)
+		body := recorder.Body.String()
+		if recorder.Code != http.StatusOK || !strings.Contains(body, `TERM_LLM_AUTH_MODE="linked-devices"`) || !strings.Contains(body, `TERM_LLM_LINKED_DEVICES_SCOPE="web-v1"`) {
+			t.Fatalf("%s: peer bootstrap marker missing: %d %s", path, recorder.Code, body)
+		}
 	}
-	ownerBody := string(linkeddevices.PeerIndexHTML(httptest.NewRequest(http.MethodGet, "/", nil), server.renderIndexHTML()))
+	owner := httptest.NewRecorder()
+	server.handleUI(owner, httptest.NewRequest(http.MethodGet, "/", nil))
+	ownerBody := owner.Body.String()
 	if strings.Contains(ownerBody, `TERM_LLM_LINKED_DEVICES_SCOPE`) {
 		t.Fatal("cached owner shell inherited peer bootstrap marker")
 	}
