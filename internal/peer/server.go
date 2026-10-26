@@ -37,6 +37,8 @@ type ServerConfig struct {
 	OnClose func()
 	// Logf receives diagnostics; nil discards them.
 	Logf func(format string, args ...any)
+
+	testOnBackpressure func()
 }
 
 // Server serves bridge DataChannels with a fixed http.Handler. Concurrency
@@ -109,6 +111,7 @@ func (s *Server) ServeChannel(ctx context.Context, dc *webrtc.DataChannel) error
 		streams: map[string]context.CancelFunc{},
 		replies: make(chan struct{}, s.cfg.Limits.MaxConcurrentStreams),
 	}
+	sc.conn.testOnBackpressure = s.cfg.testOnBackpressure
 	dc.OnClose(func() {
 		sc.conn.markClosed()
 		cancel()

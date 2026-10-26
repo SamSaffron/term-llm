@@ -19,10 +19,11 @@ type conn struct {
 	dc     *webrtc.DataChannel
 	limits Limits
 
-	sendGate  chan struct{}
-	low       chan struct{}
-	closed    chan struct{}
-	closeOnce sync.Once
+	sendGate           chan struct{}
+	low                chan struct{}
+	closed             chan struct{}
+	closeOnce          sync.Once
+	testOnBackpressure func()
 }
 
 func newConn(dc *webrtc.DataChannel, limits Limits) *conn {
@@ -83,6 +84,9 @@ func (c *conn) send(ctx context.Context, f *Frame) error {
 	}
 	high := uint64(c.limits.MaxBufferedBytes)
 	for c.dc.BufferedAmount() > high {
+		if c.testOnBackpressure != nil {
+			c.testOnBackpressure()
+		}
 		select {
 		case <-c.low:
 		case <-ctx.Done():

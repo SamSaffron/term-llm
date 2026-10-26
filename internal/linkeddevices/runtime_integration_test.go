@@ -214,6 +214,146 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 }
 
+func TestConcurrentRequestsFailAcrossReconnectWithoutMutationReplay(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer brokerHandler.Close()
+	broker := httptest.NewServer(brokerHandler)
+	defer broker.Close()
+
+	mutationStarted := make(chan struct{})
+	readStarted := make(chan struct{})
+	mutationCanceled := make(chan struct{})
+	readCanceled := make(chan struct{})
+	releaseOld := make(chan struct{})
+	oldHandlersDone := make(chan struct{}, 2)
+	lateMutationWrite := make(chan error, 1)
+	var mutationDispatches atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/responses":
+			mutationDispatches.Add(1)
+			close(mutationStarted)
+			<-r.Context().Done()
+			close(mutationCanceled)
+			<-releaseOld
+			_, err := io.WriteString(w, "late mutation response")
+			lateMutationWrite <- err
+			oldHandlersDone <- struct{}{}
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/status":
+			close(readStarted)
+			<-r.Context().Done()
+			close(readCanceled)
+			<-releaseOld
+			oldHandlersDone <- struct{}{}
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+			_, _ = io.WriteString(w, "fresh-generation")
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	runtime, err := linkeddevices.New(linkeddevices.Options{
+		DataDir: t.TempDir(), Target: "failure-generation", StoreInstanceID: "failure-generation-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: handler,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{StatePath: t.TempDir() + "/device.json", OnSAS: func(code string) { sas <- code }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairRuntimeDevice(t, ctx, runtime, device, sas)
+	oldSession, err := device.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldSession.Close()
+
+	mutationResult := make(chan error, 1)
+	go func() {
+		request, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://peer/v1/responses", strings.NewReader("{}"))
+		response, requestErr := oldSession.HTTPClient().Do(request)
+		if response != nil {
+			response.Body.Close()
+		}
+		mutationResult <- requestErr
+	}()
+	readResult := make(chan error, 1)
+	go func() {
+		response, requestErr := oldSession.HTTPClient().Get("http://peer/v1/sessions/status")
+		if response != nil {
+			response.Body.Close()
+		}
+		readResult <- requestErr
+	}()
+	waitTestSignal(t, ctx, mutationStarted, "mutation dispatch")
+	waitTestSignal(t, ctx, readStarted, "read dispatch")
+	if err := oldSession.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, result := range map[string]<-chan error{"mutation": mutationResult, "read": readResult} {
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatalf("%s request completed successfully after connection loss", name)
+			}
+		case <-ctx.Done():
+			t.Fatalf("%s request remained pending after connection loss", name)
+		}
+	}
+	waitTestSignal(t, ctx, mutationCanceled, "mutation handler cancellation")
+	waitTestSignal(t, ctx, readCanceled, "read handler cancellation")
+
+	newSession, err := device.Connect(ctx)
+	if err != nil {
+		t.Fatalf("reconnect while old handlers drain: %v", err)
+	}
+	defer newSession.Close()
+	assertFreshGenerationRead(t, newSession)
+	close(releaseOld)
+	waitTestSignal(t, ctx, oldHandlersDone, "old mutation handler drain")
+	waitTestSignal(t, ctx, oldHandlersDone, "old read handler drain")
+	if err := <-lateMutationWrite; err == nil {
+		t.Fatal("old mutation handler published a late response after reconnect")
+	}
+	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
+		return len(status.Devices) == 1 && status.Devices[0].Connection != "offline"
+	})
+	assertFreshGenerationRead(t, newSession)
+	if got := mutationDispatches.Load(); got != 1 {
+		t.Fatalf("uncertain mutation dispatched %d times, want exactly once", got)
+	}
+}
+
+func assertFreshGenerationRead(t *testing.T, session *testdevice.Session) {
+	t.Helper()
+	response, err := session.HTTPClient().Get("http://peer/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusOK || string(body) != "fresh-generation" {
+		t.Fatalf("fresh read status=%d body=%q err=%v", response.StatusCode, body, readErr)
+	}
+}
+
+func waitTestSignal(t *testing.T, ctx context.Context, signal <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
 func TestReplacementDuringAcceptedRenewalCannotReceivePairAnswerOrLeaveGrant(t *testing.T) {
 	now := time.Now()
 	provider := &trackingTURNProvider{urls: []string{"turns:managed.example:5349?transport=tcp"}, now: now}

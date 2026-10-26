@@ -18,10 +18,12 @@ import (
 )
 
 type pairConfig struct {
-	handler   http.Handler
-	gate      func(context.Context) error
-	authorize func(*http.Request) error
-	limits    Limits
+	handler            http.Handler
+	gate               func(context.Context) error
+	authorize          func(*http.Request) error
+	limits             Limits
+	onClose            func()
+	testOnBackpressure func()
 	// rawInit, when set, opens a raw channel instead of a Client.
 	rawLabel string
 	rawInit  *webrtc.DataChannelInit
@@ -77,7 +79,10 @@ func newPair(t *testing.T, cfg pairConfig) *pair {
 	}
 	t.Cleanup(func() { _ = cliEP.Close() })
 
-	srv, err := NewServer(ServerConfig{Handler: cfg.handler, SessionGate: cfg.gate, Authorize: cfg.authorize, Limits: cfg.limits, Logf: t.Logf})
+	srv, err := NewServer(ServerConfig{
+		Handler: cfg.handler, SessionGate: cfg.gate, Authorize: cfg.authorize, Limits: cfg.limits,
+		OnClose: cfg.onClose, Logf: t.Logf, testOnBackpressure: cfg.testOnBackpressure,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
