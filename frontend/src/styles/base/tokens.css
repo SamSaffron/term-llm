@@ -66,7 +66,7 @@
 
   /* A focused text field keeps its tone and gains this edge; buttons and
      choices show an accent ring for keyboard focus. */
-  --focus-edge: color-mix(in oklab, var(--accent) 60%, var(--surface-2));
+  --focus-edge: color-mix(in oklab, var(--accent) 40%, var(--surface-2));
 
   /* Inline code, and the bar beside a block quote, so a theme can colour them.
      Code is peach, term-llm.com's number colour, warm beside the green. */
