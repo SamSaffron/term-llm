@@ -9608,6 +9608,48 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it.each([
+    { source: '\n\nFirst\nSecond\n\n', expected: 'First\nSecond' },
+    { source: ' \t\r\n\t\r\nFirst\r\nSecond\r\n \t', expected: 'First\r\nSecond' },
+    { source: '\n\n \t', expected: '' },
+    { source: 'Price:\u00a0', expected: 'Price:\u00a0' },
+    { source: '\u00a0\nHello', expected: '\u00a0\nHello' },
+    { source: '\n\nHello\u2003\n', expected: 'Hello\u2003' },
+  ])(
+    'normalizes only layout whitespace in a plain streaming tail: $source',
+    ({ source, expected }) => {
+      const { container, rerender } = render(<Markdown value={source} streaming />);
+      const tail = container.querySelector('.streaming-tail-plain');
+      expect(tail).toBeInTheDocument();
+      expect(tail?.textContent).toBe(expected);
+      rerender(<Markdown value={source} streaming={false} />);
+      expect(container.textContent).toBe(expected);
+      expect(container.querySelector('.streaming-tail')).not.toBeInTheDocument();
+    },
+  );
+
+  it('keeps the plain tail text node and restores spaces when more text arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(<Markdown value="Hello " streaming />);
+      const node = container.querySelector('.streaming-tail-plain')?.firstChild;
+      expect(node?.textContent).toBe('Hello');
+      for (const source of ['Hello world ', 'Hello world again']) {
+        rerender(<Markdown value={source} streaming />);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+        expect(container.querySelector('.streaming-tail-plain')?.firstChild).toBe(node);
+        expect(node?.textContent).toBe(source.trimEnd());
+      }
+      rerender(<Markdown value="Hello world again" streaming={false} />);
+      expect(container.textContent).toBe('Hello world again');
+      expect(container.firstChild?.firstChild).toBe(node);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not add code-copy controls while a markdown fence is open', () => {
     render(<Markdown value={'```sh\necho "hello"'} streaming />);
     expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();

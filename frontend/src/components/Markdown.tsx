@@ -158,6 +158,12 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
   return streaming ? rendered : value;
 }
 
+// Hide layout whitespace that pre-wrap would draw around an unfinished paragraph.
+// Unlike trimEnd()/\s, these ranges preserve content such as non-breaking spaces.
+function plainTailDisplayText(source: string): string {
+  return source.replace(/^(?:[ \t]*\r?\n)+/, '').replace(/[ \t\r\n]+$/, '');
+}
+
 interface ActiveCodeDOM {
   block: ActiveFencedCodeBlock;
   pre: HTMLPreElement;
@@ -328,9 +334,7 @@ class AssistantStreamRenderer {
   private renderTail(source: string): void {
     if (!this.tail) return;
     const plain = canStreamPlainTextTailIncremental(this.scanState, source);
-    // Blank lines around the unfinished paragraph are not content (Markdown drops
-    // them), but pre-wrap would draw them until the turn ends and they collapse.
-    const text = plain ? source.replace(/^\s*\n/, '').trimEnd() : '';
+    const text = plain ? plainTailDisplayText(source) : '';
     const node = this.tail.firstChild;
     if (
       plain &&
