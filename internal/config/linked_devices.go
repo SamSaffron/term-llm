@@ -12,6 +12,7 @@ import (
 type LinkedDevicesConfig struct {
 	BrokerURL           string                         `mapstructure:"broker_url" yaml:"broker_url,omitempty"`
 	AdmissionCredential string                         `mapstructure:"admission_credential" yaml:"admission_credential,omitempty"`
+	Diagnostics         bool                           `mapstructure:"diagnostics" yaml:"diagnostics"`
 	ICEServers          []LinkedDevicesICEServerConfig `mapstructure:"ice_servers" yaml:"ice_servers"`
 }
 
@@ -28,7 +29,7 @@ func (c LinkedDevicesConfig) String() string {
 	if c.AdmissionCredential != "" {
 		admission = "[REDACTED]"
 	}
-	return fmt.Sprintf("config.LinkedDevicesConfig{BrokerURL:%q, AdmissionCredential:%s, ICEServers:%v}", c.BrokerURL, admission, c.ICEServers)
+	return fmt.Sprintf("config.LinkedDevicesConfig{BrokerURL:%q, AdmissionCredential:%s, Diagnostics:%t, ICEServers:%v}", c.BrokerURL, admission, c.Diagnostics, c.ICEServers)
 }
 
 func (c LinkedDevicesConfig) GoString() string { return c.String() }

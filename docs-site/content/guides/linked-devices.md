@@ -78,6 +78,7 @@ broker. The standard `config.yaml` surface is:
 linked_devices:
   broker_url: "https://broker.example.com"
   admission_credential: "file:///run/secrets/term-llm-broker-admission"
+  diagnostics: false
   ice_servers:
     - urls:
         - stun:stun.term-llm.com:3478
@@ -95,6 +96,13 @@ credential issuer is deployed. `TERM_LLM_LINKED_DEVICES_BROKER_URL` and
 fields are empty. Broker URLs require HTTPS, except that loopback HTTP is
 accepted for local development; credentials, query strings, and fragments are
 not valid broker URLs.
+
+`diagnostics: true` opts this serve process into a local stderr timeline prefixed
+with `[linked-devices]`. Records contain only fixed lifecycle outcomes, monotonic
+elapsed time, finite route templates, candidate class, status, duration, and
+bounded counters. They never include URLs or queries, device/session identifiers,
+credentials, headers, bodies, SDP, network addresses, or arbitrary error text.
+The default is `false` and emits nothing.
 
 `ice_servers` is a list of standard WebRTC ICE server records:
 

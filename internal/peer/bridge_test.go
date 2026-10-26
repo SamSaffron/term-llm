@@ -23,6 +23,8 @@ type pairConfig struct {
 	authorize          func(*http.Request) error
 	limits             Limits
 	onClose            func()
+	observer           DiagnosticObserver
+	now                func() time.Time
 	testOnBackpressure func()
 	// rawInit, when set, opens a raw channel instead of a Client.
 	rawLabel string
@@ -81,7 +83,7 @@ func newPair(t *testing.T, cfg pairConfig) *pair {
 
 	srv, err := NewServer(ServerConfig{
 		Handler: cfg.handler, SessionGate: cfg.gate, Authorize: cfg.authorize, Limits: cfg.limits,
-		OnClose: cfg.onClose, Logf: t.Logf, testOnBackpressure: cfg.testOnBackpressure,
+		OnClose: cfg.onClose, Observer: cfg.observer, Now: cfg.now, Logf: t.Logf, testOnBackpressure: cfg.testOnBackpressure,
 	})
 	if err != nil {
 		t.Fatal(err)

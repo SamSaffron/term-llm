@@ -53,6 +53,7 @@ type Options struct {
 	Handler             http.Handler
 	HTTPClient          *http.Client
 	Now                 func() time.Time
+	Diagnostics         peer.DiagnosticObserver
 }
 
 // ServerOptions contains administrator-owned linked-device configuration.
@@ -61,6 +62,7 @@ type ServerOptions struct {
 	AdmissionCredential string
 	ICEPolicy           *peerbroker.HostICEConfig
 	UnavailableReason   string
+	Diagnostics         bool
 }
 
 func (o ServerOptions) String() string {
@@ -68,7 +70,7 @@ func (o ServerOptions) String() string {
 	if o.AdmissionCredential != "" {
 		admission = "[REDACTED]"
 	}
-	return fmt.Sprintf("linkeddevices.ServerOptions{BrokerURL:%q, AdmissionCredential:%s, ICEPolicy:%v, UnavailableReason:%q}", o.BrokerURL, admission, o.ICEPolicy, o.UnavailableReason)
+	return fmt.Sprintf("linkeddevices.ServerOptions{BrokerURL:%q, AdmissionCredential:%s, ICEPolicy:%v, UnavailableReason:%q, Diagnostics:%t}", o.BrokerURL, admission, o.ICEPolicy, o.UnavailableReason, o.Diagnostics)
 }
 
 func (o ServerOptions) GoString() string { return o.String() }
@@ -140,6 +142,7 @@ type Runtime struct {
 	testBeforePairAnswerSend   func()
 	testDropInvitationPeer     func(*peerbroker.Frame) bool
 	testDropPairAnswerDelivery func(*peerbroker.Frame) bool
+	diagnosticConnectionSeq    uint64
 }
 
 // NewServer constructs the standard serve-web runtime with administrator-owned
@@ -149,6 +152,9 @@ func NewServer(target, storeID, basePath string, authenticated bool, hostLabel, 
 		Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated,
 		AgentName: target, HostLabel: safeHostLabel(hostLabel, target), ApprovalDescription: approval,
 		BrokerURL: serverOpts.BrokerURL, AdmissionCredential: serverOpts.AdmissionCredential, ICEPolicy: serverOpts.ICEPolicy,
+	}
+	if serverOpts.Diagnostics {
+		opts.Diagnostics = stderrDiagnosticTimeline(time.Now)
 	}
 	if serverOpts.UnavailableReason != "" {
 		return newUnavailableRuntime(opts, serverOpts.UnavailableReason), nil
@@ -445,6 +451,10 @@ func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegist
 		r.warnings = append(r.warnings, "the invitation was cancelled after the rendezvous reconnected; create a new invitation")
 	}
 	r.mu.Unlock()
+	r.observeDiagnostic(peer.DiagnosticEvent{
+		Stage: peer.DiagnosticBrokerConnected, Outcome: peer.DiagnosticOutcomeConnected,
+		Generation: attempt.generation,
+	})
 	if old != nil {
 		_ = old.Close()
 	}
@@ -504,9 +514,13 @@ func (r *Runtime) receiveLoop(conn *peerbroker.Conn) {
 				r.brokerConnected = false
 				r.brokerConn = nil
 			}
-			enabled := r.settings.Enabled
+			enabled, generation := r.settings.Enabled, r.generation
 			r.mu.Unlock()
 			if current {
+				r.observeDiagnostic(peer.DiagnosticEvent{
+					Stage: peer.DiagnosticBrokerDisconnected, Outcome: peer.DiagnosticOutcomeDisconnected,
+					Reason: peer.DiagnosticReasonChannelClosed, Generation: generation,
+				})
 				r.failPairAnswerDeliveries(errors.New("rendezvous disconnected before pairing answer delivery"))
 			}
 			if enabled && r.ctx.Err() == nil {
@@ -567,6 +581,10 @@ func (r *Runtime) reconnectLoop(ctx context.Context, generation uint64) {
 		if !current {
 			return
 		}
+		r.observeDiagnostic(peer.DiagnosticEvent{
+			Stage: peer.DiagnosticRecoveryAttempt, Outcome: peer.DiagnosticOutcomeStarted,
+			Generation: generation,
+		})
 		if err := r.connectBroker(ctx, attempt); err == nil {
 			return
 		}
@@ -676,16 +694,24 @@ func (r *Runtime) Close() error {
 		r.cancel()
 	}
 	r.mu.Lock()
+	wasConnected, generation := r.brokerConnected, r.generation
 	r.settings.Enabled = false
 	r.stopSharingLocked()
 	if r.brokerConn != nil {
 		_ = r.brokerConn.Close()
 		r.brokerConn = nil
 	}
+	r.brokerConnected = false
 	r.closeSessionsLocked()
 	unlock := r.unlock
 	r.unlock = nil
 	r.mu.Unlock()
+	if wasConnected {
+		r.observeDiagnostic(peer.DiagnosticEvent{
+			Stage: peer.DiagnosticBrokerDisconnected, Outcome: peer.DiagnosticOutcomeDisconnected,
+			Reason: peer.DiagnosticReasonContextCanceled, Generation: generation,
+		})
+	}
 	r.peerRequests.Wait()
 	r.wg.Wait()
 	if unlock != nil {

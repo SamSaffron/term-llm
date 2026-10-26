@@ -320,6 +320,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `file_tracking.path` | string | `""` | — |
 | `linked_devices.broker_url` | string | — | HTTPS rendezvous broker URL; loopback HTTP is allowed for development. |
 | `linked_devices.admission_credential` | string | — | Optional private credential used only to admit host registration at the broker. |
+| `linked_devices.diagnostics` | boolean | `false` | Emit a local redacted linked-device transport timeline to stderr. |
 | `linked_devices.ice_servers` | list of object | `[{"urls":["stun:stun.term-llm.com:3478"]},{"urls":["turns:stun.term-llm.com:5349?transport=tcp"],"credential_source":"broker"}]` | Ordered STUN/TURN policy shared by the host and approved devices; an explicit empty list uses host candidates only. |
 <!-- END GENERATED: configuration -->
 

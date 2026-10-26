@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -35,7 +37,12 @@ type ServerConfig struct {
 	MaxChannels int
 	// OnClose runs after a bridge channel closes and all of its request handlers drain.
 	OnClose func()
-	// Logf receives diagnostics; nil discards them.
+	// Observer receives closed, privacy-safe lifecycle events. Nil disables all
+	// diagnostic classification and emission.
+	Observer DiagnosticObserver
+	// Now supplies the monotonic clock used for request durations.
+	Now func() time.Time
+	// Logf receives operational diagnostics; nil discards them.
 	Logf func(format string, args ...any)
 
 	testOnBackpressure func()
@@ -44,9 +51,10 @@ type ServerConfig struct {
 // Server serves bridge DataChannels with a fixed http.Handler. Concurrency
 // limits apply across all channels served by the same Server.
 type Server struct {
-	cfg      ServerConfig
-	sem      chan struct{}
-	channels chan struct{}
+	cfg         ServerConfig
+	sem         chan struct{}
+	channels    chan struct{}
+	nextRequest atomic.Uint64
 }
 
 // DefaultMaxChannels is the default ServerConfig.MaxChannels.
@@ -71,6 +79,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.RemoteAddr == "" {
 		cfg.RemoteAddr = "webrtc-peer"
+	}
+	if cfg.Observer != nil && cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
@@ -108,10 +119,15 @@ func (s *Server) ServeChannel(ctx context.Context, dc *webrtc.DataChannel) error
 		conn:    newConn(dc, s.cfg.Limits),
 		ctx:     ctx,
 		cancel:  cancel,
-		streams: map[string]context.CancelFunc{},
+		streams: map[string]*serverStream{},
 		replies: make(chan struct{}, s.cfg.Limits.MaxConcurrentStreams),
 	}
 	sc.conn.testOnBackpressure = s.cfg.testOnBackpressure
+	if s.cfg.Observer != nil {
+		dc.OnOpen(func() {
+			s.cfg.Observer(DiagnosticEvent{Stage: DiagnosticChannelOpen, Outcome: DiagnosticOutcomeConnected})
+		})
+	}
 	dc.OnClose(func() {
 		sc.conn.markClosed()
 		cancel()
@@ -141,10 +157,15 @@ type serverConn struct {
 	mu      sync.Mutex
 	wg      sync.WaitGroup
 	closing bool
-	streams map[string]context.CancelFunc
+	streams map[string]*serverStream
 	// replies bounds pending rejection replies so a peer that floods
 	// requests without reading cannot pile up goroutines.
 	replies chan struct{}
+}
+
+type serverStream struct {
+	cancel context.CancelFunc
+	trace  *requestDiagnostics
 }
 
 func (sc *serverConn) onMessage(msg webrtc.DataChannelMessage) {
@@ -163,17 +184,20 @@ func (sc *serverConn) onMessage(msg webrtc.DataChannelMessage) {
 		sc.startRequest(f)
 	case TypeCancel:
 		sc.mu.Lock()
-		cancel := sc.streams[f.ID]
+		stream := sc.streams[f.ID]
+		if stream != nil && stream.trace != nil {
+			stream.trace.peerCanceled.Store(true)
+		}
 		sc.mu.Unlock()
-		if cancel != nil {
-			cancel()
+		if stream != nil {
+			stream.cancel()
 		}
 	}
 }
 
 // reply sends a complete short response without blocking the read loop.
 func (sc *serverConn) reply(id string, status int, msg string) {
-	sc.background(func() { writeError(newResponseWriter(sc.ctx, sc.conn, id, false), status, msg) })
+	sc.background(func() { writeError(newResponseWriter(sc.ctx, sc.conn, id, false, nil), status, msg) })
 }
 
 // background runs a bounded control send off the read loop; when the bound
@@ -222,7 +246,8 @@ func (sc *serverConn) startRequest(f *Frame) {
 		return
 	}
 	ctx, cancel := context.WithCancel(sc.ctx)
-	sc.streams[f.ID] = cancel
+	trace := sc.srv.newRequestDiagnostics(f)
+	sc.streams[f.ID] = &serverStream{cancel: cancel, trace: trace}
 	sc.wg.Add(1)
 	sc.mu.Unlock()
 
@@ -235,17 +260,20 @@ func (sc *serverConn) startRequest(f *Frame) {
 			cancel()
 			<-sc.srv.sem
 		}()
-		sc.serve(ctx, f)
+		sc.serve(ctx, f, trace)
 	}()
 }
 
-func (sc *serverConn) serve(ctx context.Context, f *Frame) {
+func (sc *serverConn) serve(ctx context.Context, f *Frame, trace *requestDiagnostics) {
 	cfg := &sc.srv.cfg
-	rw := newResponseWriter(ctx, sc.conn, f.ID, f.Method == http.MethodHead)
+	rw := newResponseWriter(ctx, sc.conn, f.ID, f.Method == http.MethodHead, trace)
 	req, status, err := sc.buildRequest(ctx, f)
 	if err != nil {
 		writeError(rw, status, err.Error())
 		return
+	}
+	if trace != nil {
+		trace.start()
 	}
 	defer func() {
 		if p := recover(); p != nil {

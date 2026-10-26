@@ -19,7 +19,7 @@ func ServerOptionsFromConfig(cfg *config.Config) ServerOptions {
 			if strings.Contains(err.Error(), "linked_devices.broker_url") {
 				reason = "linked devices broker URL is invalid or could not be resolved"
 			}
-			return ServerOptions{UnavailableReason: reason}
+			return ServerOptions{UnavailableReason: reason, Diagnostics: cfg.LinkedDevices.Diagnostics}
 		}
 	}
 	servers := make([]peerbroker.ConfiguredICEServer, len(cfg.LinkedDevices.ICEServers))
@@ -36,5 +36,6 @@ func ServerOptionsFromConfig(cfg *config.Config) ServerOptions {
 		BrokerURL:           cfg.LinkedDevices.BrokerURL,
 		AdmissionCredential: cfg.LinkedDevices.AdmissionCredential,
 		ICEPolicy:           &policy,
+		Diagnostics:         cfg.LinkedDevices.Diagnostics,
 	}
 }

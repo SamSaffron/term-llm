@@ -48,6 +48,7 @@ func TestLinkedDevicesServerOptionsDoNotResolveCredentialsWhileDisabled(t *testi
 	marker := filepath.Join(t.TempDir(), "resolved")
 	reference := "$(touch " + marker + "; printf secret)"
 	cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{
+		Diagnostics:         true,
 		AdmissionCredential: reference,
 		ICEServers: []config.LinkedDevicesICEServerConfig{{
 			URLs: []string{"turn:relay.example.com:3478"}, CredentialSource: "static", Username: "device", Credential: reference,
@@ -55,8 +56,8 @@ func TestLinkedDevicesServerOptionsDoNotResolveCredentialsWhileDisabled(t *testi
 	}}
 
 	got := ServerOptionsFromConfig(cfg)
-	if got.UnavailableReason != "" {
-		t.Fatalf("disabled configuration reason = %q", got.UnavailableReason)
+	if got.UnavailableReason != "" || !got.Diagnostics {
+		t.Fatalf("disabled configuration options = %+v", got)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("disabled linked devices resolved a credential: %v", err)

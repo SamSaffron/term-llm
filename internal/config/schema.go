@@ -516,6 +516,7 @@ var keySpecs = []KeySpec{
 
 	optional("linked_devices.broker_url", described("HTTPS rendezvous broker URL; loopback HTTP is allowed for development.")),
 	optional("linked_devices.admission_credential", sensitive(), described("Optional private credential used only to admit host registration at the broker.")),
+	def("linked_devices.diagnostics", false, described("Emit a local redacted linked-device transport timeline to stderr.")),
 	def("linked_devices.ice_servers", DefaultLinkedDevicesICEServers(), redactExplicit(), described("Ordered STUN/TURN policy shared by the host and approved devices; an explicit empty list uses host candidates only.")),
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
 	"github.com/samsaffron/term-llm/internal/pairing"
+	"github.com/samsaffron/term-llm/internal/peer"
 	"github.com/samsaffron/term-llm/internal/peerbroker"
 )
 
@@ -214,6 +215,95 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 }
 
+func TestRuntimeDiagnosticsReportActualPionLifecycleAndRequest(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer brokerHandler.Close()
+	broker := httptest.NewServer(brokerHandler)
+	defer broker.Close()
+
+	clock := &runtimeDiagnosticClock{now: time.Now()}
+	collector := newRuntimeDiagnosticCollector()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, "models")
+	})
+	runtime, err := linkeddevices.New(linkeddevices.Options{
+		DataDir: t.TempDir(), Target: "diagnostics", StoreInstanceID: "diagnostics-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: handler,
+		Now: clock.Next, Diagnostics: collector.Observe,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{
+		StatePath: t.TempDir() + "/device.json", Now: clock.Next,
+		OnSAS: func(code string) { sas <- code },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairRuntimeDevice(t, ctx, runtime, device, sas)
+	session, err := device.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	response, err := session.HTTPClient().Get("http://peer/v1/models?token=must-not-appear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil || string(body) != "models" {
+		t.Fatalf("response = %q, %v", body, readErr)
+	}
+
+	events := collector.waitFor(ctx, t, peer.DiagnosticRequestEnd)
+	ordered := []peer.DiagnosticStage{
+		peer.DiagnosticBrokerConnected, peer.DiagnosticIdentityVerified, peer.DiagnosticICEConnected,
+		peer.DiagnosticChannelOpen, peer.DiagnosticRequestStart, peer.DiagnosticResponseHeaders, peer.DiagnosticRequestEnd,
+	}
+	last := -1
+	for _, stage := range ordered {
+		index := diagnosticStageIndex(events, stage)
+		if index <= last {
+			t.Fatalf("diagnostic stage %q index=%d after=%d; events=%+v", stage, index, last, events)
+		}
+		last = index
+	}
+	identity := diagnosticEventForStage(events, peer.DiagnosticIdentityVerified)
+	ice := diagnosticEventForStage(events, peer.DiagnosticICEConnected)
+	channel := diagnosticEventForStage(events, peer.DiagnosticChannelOpen)
+	start := diagnosticEventForStage(events, peer.DiagnosticRequestStart)
+	headers := diagnosticEventForStage(events, peer.DiagnosticResponseHeaders)
+	end := diagnosticEventForStage(events, peer.DiagnosticRequestEnd)
+	if identity.Generation == 0 || identity.Connection == 0 || ice.Generation != identity.Generation || ice.Connection != identity.Connection ||
+		channel.Generation != identity.Generation || channel.Connection != identity.Connection || start.Connection != identity.Connection {
+		t.Fatalf("diagnostic ownership mismatch: identity=%+v ice=%+v channel=%+v start=%+v", identity, ice, channel, start)
+	}
+	if ice.Candidate != peer.DiagnosticCandidateHost && ice.Candidate != peer.DiagnosticCandidateUnknown {
+		t.Fatalf("loopback candidate class = %q", ice.Candidate)
+	}
+	if start.Method != peer.DiagnosticMethodGET || start.Route != peer.DiagnosticRouteModels || headers.Status != http.StatusCreated ||
+		end.Status != http.StatusCreated || end.Bytes != uint64(len("models")) || end.Duration <= 0 || end.Request != start.Request {
+		t.Fatalf("request diagnostics start=%+v headers=%+v end=%+v", start, headers, end)
+	}
+	if diagnosticTerminalCount(events, start.Connection, start.Request) != 1 {
+		t.Fatalf("request terminal count != 1: %+v", events)
+	}
+}
+
 func TestConcurrentRequestsFailAcrossReconnectWithoutMutationReplay(t *testing.T) {
 	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
 	if err != nil {
@@ -254,9 +344,10 @@ func TestConcurrentRequestsFailAcrossReconnectWithoutMutationReplay(t *testing.T
 			http.NotFound(w, r)
 		}
 	})
+	collector := newRuntimeDiagnosticCollector()
 	runtime, err := linkeddevices.New(linkeddevices.Options{
 		DataDir: t.TempDir(), Target: "failure-generation", StoreInstanceID: "failure-generation-store", BasePath: "/",
-		Authenticated: true, BrokerURL: broker.URL, Handler: handler,
+		Authenticated: true, BrokerURL: broker.URL, Handler: handler, Diagnostics: collector.Observe,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -329,6 +420,35 @@ func TestConcurrentRequestsFailAcrossReconnectWithoutMutationReplay(t *testing.T
 	assertFreshGenerationRead(t, newSession)
 	if got := mutationDispatches.Load(); got != 1 {
 		t.Fatalf("uncertain mutation dispatched %d times, want exactly once", got)
+	}
+	events := collector.waitForTerminalCount(ctx, t, 4)
+	var oldConnection, newConnection uint64
+	for _, event := range events {
+		if event.Stage != peer.DiagnosticRequestStart {
+			continue
+		}
+		switch event.Route {
+		case peer.DiagnosticRouteResponses, peer.DiagnosticRouteSessionStatus:
+			if oldConnection == 0 {
+				oldConnection = event.Connection
+			} else if event.Connection != oldConnection {
+				t.Fatalf("old concurrent requests crossed connections: %+v", events)
+			}
+		case peer.DiagnosticRouteModels:
+			if newConnection == 0 {
+				newConnection = event.Connection
+			} else if event.Connection != newConnection {
+				t.Fatalf("new reads crossed connections: %+v", events)
+			}
+		}
+	}
+	if oldConnection == 0 || newConnection == 0 || oldConnection == newConnection {
+		t.Fatalf("diagnostic connection ownership old=%d new=%d events=%+v", oldConnection, newConnection, events)
+	}
+	for _, event := range events {
+		if event.Stage == peer.DiagnosticRequestStart && diagnosticTerminalCount(events, event.Connection, event.Request) != 1 {
+			t.Fatalf("request connection=%d request=%d terminal count != 1: %+v", event.Connection, event.Request, events)
+		}
 	}
 }
 
@@ -950,9 +1070,10 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 	defer broker.Close()
 	defer first.Close()
 
+	collector := newRuntimeDiagnosticCollector()
 	runtime, err := linkeddevices.New(linkeddevices.Options{
 		DataDir: t.TempDir(), Target: "restart", StoreInstanceID: "restart-store", BasePath: "/",
-		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(), Diagnostics: collector.Observe,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -984,6 +1105,19 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 	defer second.Close()
 	switcher.replace(second)
 	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool { return status.BrokerConnected })
+	events := collector.waitForCount(ctx, t, peer.DiagnosticBrokerConnected, 2)
+	if diagnosticStageIndex(events, peer.DiagnosticBrokerDisconnected) < 0 || diagnosticStageIndex(events, peer.DiagnosticRecoveryAttempt) < 0 {
+		t.Fatalf("broker recovery diagnostics = %+v", events)
+	}
+	connected := 0
+	for _, event := range events {
+		if event.Stage == peer.DiagnosticBrokerConnected {
+			connected++
+		}
+	}
+	if connected < 2 {
+		t.Fatalf("broker connected events = %d, want initial and recovered; events=%+v", connected, events)
+	}
 	session, err = device.Connect(ctx)
 	if err != nil {
 		t.Fatalf("connect after broker restart: %v", err)
@@ -1007,6 +1141,129 @@ func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
 		t.Fatalf("connect after resume: %v", err)
 	}
 	_ = session.Close()
+}
+
+type runtimeDiagnosticClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *runtimeDiagnosticClock) Next() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(time.Millisecond)
+	return c.now
+}
+
+type runtimeDiagnosticCollector struct {
+	mu     sync.Mutex
+	events []peer.DiagnosticEvent
+	notify chan struct{}
+}
+
+func newRuntimeDiagnosticCollector() *runtimeDiagnosticCollector {
+	return &runtimeDiagnosticCollector{notify: make(chan struct{}, 64)}
+}
+
+func (c *runtimeDiagnosticCollector) Observe(event peer.DiagnosticEvent) {
+	c.mu.Lock()
+	c.events = append(c.events, event)
+	c.mu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (c *runtimeDiagnosticCollector) snapshot() []peer.DiagnosticEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]peer.DiagnosticEvent(nil), c.events...)
+}
+
+func (c *runtimeDiagnosticCollector) waitFor(ctx context.Context, t *testing.T, stage peer.DiagnosticStage) []peer.DiagnosticEvent {
+	t.Helper()
+	for {
+		events := c.snapshot()
+		if diagnosticStageIndex(events, stage) >= 0 {
+			return events
+		}
+		select {
+		case <-c.notify:
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for diagnostic stage %q; events=%+v", stage, events)
+		}
+	}
+}
+
+func (c *runtimeDiagnosticCollector) waitForCount(ctx context.Context, t *testing.T, stage peer.DiagnosticStage, want int) []peer.DiagnosticEvent {
+	t.Helper()
+	for {
+		events := c.snapshot()
+		count := 0
+		for _, event := range events {
+			if event.Stage == stage {
+				count++
+			}
+		}
+		if count >= want {
+			return events
+		}
+		select {
+		case <-c.notify:
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %d diagnostic stages %q; events=%+v", want, stage, events)
+		}
+	}
+}
+
+func (c *runtimeDiagnosticCollector) waitForTerminalCount(ctx context.Context, t *testing.T, want int) []peer.DiagnosticEvent {
+	t.Helper()
+	for {
+		events := c.snapshot()
+		count := 0
+		for _, event := range events {
+			if event.Stage == peer.DiagnosticRequestEnd || event.Stage == peer.DiagnosticRequestCancel || event.Stage == peer.DiagnosticRequestFailure {
+				count++
+			}
+		}
+		if count >= want {
+			return events
+		}
+		select {
+		case <-c.notify:
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %d terminal diagnostics; events=%+v", want, events)
+		}
+	}
+}
+
+func diagnosticStageIndex(events []peer.DiagnosticEvent, stage peer.DiagnosticStage) int {
+	for index, event := range events {
+		if event.Stage == stage {
+			return index
+		}
+	}
+	return -1
+}
+
+func diagnosticEventForStage(events []peer.DiagnosticEvent, stage peer.DiagnosticStage) peer.DiagnosticEvent {
+	index := diagnosticStageIndex(events, stage)
+	if index < 0 {
+		return peer.DiagnosticEvent{}
+	}
+	return events[index]
+}
+
+func diagnosticTerminalCount(events []peer.DiagnosticEvent, connection, request uint64) int {
+	count := 0
+	for _, event := range events {
+		if event.Connection == connection && event.Request == request &&
+			(event.Stage == peer.DiagnosticRequestEnd || event.Stage == peer.DiagnosticRequestCancel || event.Stage == peer.DiagnosticRequestFailure) {
+			count++
+		}
+	}
+	return count
 }
 
 func pairRuntimeDevice(t *testing.T, ctx context.Context, runtime *linkeddevices.Runtime, device *testdevice.Device, sas <-chan string) {

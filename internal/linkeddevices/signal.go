@@ -51,9 +51,10 @@ func (r *Runtime) handleSignal(conn *peerbroker.Conn, frame *peerbroker.Frame) {
 		if !ok {
 			return
 		}
+		connection := r.beginDiagnosticConnection(generation)
 		go func() {
 			defer r.releaseTransport(newDevice)
-			r.acceptTransport(ctx, generation, conn, frame.PeerKind, frame.PeerID, verified)
+			r.acceptTransport(ctx, generation, connection, conn, frame.PeerKind, frame.PeerID, verified)
 		}()
 	}
 }
@@ -336,7 +337,7 @@ func (r *Runtime) releaseTransport(newDevice bool) {
 	r.wg.Done()
 }
 
-func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *peerbroker.Conn, kind, id string, verified *pairing.VerifiedTransport) {
+func (r *Runtime) acceptTransport(ctx context.Context, generation, connection uint64, conn *peerbroker.Conn, kind, id string, verified *pairing.VerifiedTransport) {
 	r.mu.Lock()
 	if !r.settings.Enabled || r.generation != generation {
 		r.mu.Unlock()
@@ -355,12 +356,29 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *
 		return
 	}
 	endpoint.PeerConnection().OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateConnected && r.opts.Diagnostics != nil {
+			candidate := peer.DiagnosticCandidateUnknown
+			if stats, selected, _ := endpoint.SelectedPair(); selected {
+				candidate = diagnosticCandidateClass(stats)
+			}
+			r.observeDiagnostic(peer.DiagnosticEvent{
+				Stage: peer.DiagnosticICEConnected, Outcome: peer.DiagnosticOutcomeConnected,
+				Generation: generation, Connection: connection, Candidate: candidate,
+			})
+		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			r.removeSession(id, endpoint)
 		}
 	})
 	sessionCtx, cancel := context.WithCancel(ctx)
 	basePath := r.opts.BasePath
+	var observer peer.DiagnosticObserver
+	if r.opts.Diagnostics != nil {
+		observer = func(event peer.DiagnosticEvent) {
+			event.Generation, event.Connection = generation, connection
+			r.observeDiagnostic(event)
+		}
+	}
 	server, err := peer.NewServer(peer.ServerConfig{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 			if !r.beginPeerRequest(generation) {
@@ -382,6 +400,8 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *
 		},
 		OnClose:     func() { r.removeSession(id, endpoint) },
 		MaxChannels: 1,
+		Observer:    observer,
+		Now:         r.opts.Now,
 	})
 	if err != nil {
 		cancel()
@@ -489,6 +509,7 @@ func (r *Runtime) Stop() error {
 
 func (r *Runtime) stopLocked() error {
 	r.mu.Lock()
+	wasConnected, generation := r.brokerConnected, r.generation
 	r.settings.Enabled = false
 	r.stopSharingLocked()
 	err := r.persistSettingsLocked()
@@ -504,6 +525,12 @@ func (r *Runtime) stopLocked() error {
 	r.brokerConnected = false
 	r.closeSessionsLocked()
 	r.mu.Unlock()
+	if wasConnected {
+		r.observeDiagnostic(peer.DiagnosticEvent{
+			Stage: peer.DiagnosticBrokerDisconnected, Outcome: peer.DiagnosticOutcomeDisconnected,
+			Reason: peer.DiagnosticReasonContextCanceled, Generation: generation,
+		})
+	}
 	r.peerRequests.Wait()
 	r.wg.Wait()
 	return err

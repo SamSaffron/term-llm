@@ -28,6 +28,9 @@ func TestLinkedDevicesDefaults(t *testing.T) {
 	if cfg.LinkedDevices.AdmissionCredential != "" {
 		t.Errorf("expected empty admission_credential, got %q", cfg.LinkedDevices.AdmissionCredential)
 	}
+	if cfg.LinkedDevices.Diagnostics {
+		t.Error("linked-device diagnostics must default off")
+	}
 
 	// Check default ICE servers
 	expected := DefaultLinkedDevicesICEServers()
@@ -48,6 +51,19 @@ func TestLinkedDevicesDefaults(t *testing.T) {
 		if server.CredentialSource != exp.CredentialSource {
 			t.Errorf("server[%d]: expected credential_source %q, got %q", i, exp.CredentialSource, server.CredentialSource)
 		}
+	}
+}
+
+func TestLinkedDevicesDiagnosticsOptIn(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	writeTestConfig(t, configDir, "default_provider: openai\nlinked_devices:\n  diagnostics: true\n")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LinkedDevices.Diagnostics {
+		t.Fatal("linked_devices.diagnostics opt-in was not loaded")
 	}
 }
 
@@ -583,13 +599,18 @@ func TestLinkedDevicesEnabled(t *testing.T) {
 func TestLinkedDevicesKeySpecsSensitive(t *testing.T) {
 	specs := ConfigKeySpecs()
 
-	var admissionFound, iceServersFound bool
+	var admissionFound, diagnosticsFound, iceServersFound bool
 	for _, spec := range specs {
 		switch spec.Path {
 		case "linked_devices.admission_credential":
 			admissionFound = true
 			if !spec.Sensitive {
 				t.Error("admission_credential should be marked sensitive")
+			}
+		case "linked_devices.diagnostics":
+			diagnosticsFound = true
+			if !spec.HasDefault || spec.Default != false || spec.Sensitive || spec.RedactExplicit {
+				t.Errorf("diagnostics KeySpec = %+v", spec)
 			}
 		case "linked_devices.ice_servers":
 			iceServersFound = true
@@ -604,6 +625,9 @@ func TestLinkedDevicesKeySpecsSensitive(t *testing.T) {
 
 	if !admissionFound {
 		t.Error("admission_credential KeySpec not found")
+	}
+	if !diagnosticsFound {
+		t.Error("diagnostics KeySpec not found")
 	}
 	if !iceServersFound {
 		t.Error("ice_servers KeySpec not found")
