@@ -2,6 +2,7 @@ package mobileshare
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -40,6 +41,36 @@ func AdmitDevice(next, existing http.HandlerFunc) http.HandlerFunc {
 }
 
 const ScopeWebV1 = "web-v1"
+
+var errOutsideBasePath = errors.New("request is outside the shared mount")
+
+// prepareMountedRequest validates the advertised browser mount and strips it
+// exactly once. The peer sends browser-visible paths (for example
+// /chat/v1/sessions), while serve's inner mux expects /v1/sessions.
+func prepareMountedRequest(request *http.Request, basePath string) error {
+	if basePath == "" || basePath == "/" {
+		return nil
+	}
+	escaped := request.URL.EscapedPath()
+	if escaped != basePath && !strings.HasPrefix(escaped, basePath+"/") {
+		return errOutsideBasePath
+	}
+	path := request.URL.Path
+	if path != basePath && !strings.HasPrefix(path, basePath+"/") {
+		return errOutsideBasePath
+	}
+	path = strings.TrimPrefix(path, basePath)
+	if path == "" {
+		path = "/"
+	}
+	request.URL.Path = path
+	request.URL.RawPath = ""
+	request.RequestURI = path
+	if request.URL.RawQuery != "" {
+		request.RequestURI += "?" + request.URL.RawQuery
+	}
+	return nil
+}
 
 // RouteAllowed is the positive mobile-device route policy. New server routes
 // remain denied until deliberately classified here and in the route audit test.
@@ -91,16 +122,29 @@ func shellPath(path string) bool {
 	if path == "/" || path == "/manifest.webmanifest" || path == "/sw.js" || path == "/favicon.ico" {
 		return true
 	}
-	// SPA routes do not contain an extension and are outside API/admin mounts.
-	return !strings.HasPrefix(path, "/v") && !strings.HasPrefix(path, "/api/") &&
-		!strings.HasPrefix(path, "/admin/") && !strings.HasPrefix(path, "/auth/") &&
-		!strings.HasPrefix(path, "/widgets") && !strings.HasPrefix(path, "/extensions/") &&
-		!strings.Contains(path, ".")
+	if path == "/chat" {
+		return true
+	}
+	if !strings.HasPrefix(path, "/chat/") {
+		return false
+	}
+	rest := strings.TrimPrefix(path, "/chat/")
+	return rest != "" && !strings.Contains(rest, "/") && !strings.Contains(rest, ".")
 }
 
 func sessionReadAllowed(path string) bool {
-	return !strings.Contains(path, "/shell") && !strings.Contains(path, "/mcp") &&
-		!strings.Contains(path, "/publish")
+	rest := strings.TrimPrefix(path, "/v1/sessions/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 1 {
+		return parts[0] != ""
+	}
+	suffix := parts[1]
+	switch suffix {
+	case "messages", "state", "transcript", "transcript/bodies", "attention/unseen", "children",
+		"runtime/approvals", "diff-comments", "inspect", "inspect/bodies":
+		return true
+	}
+	return strings.HasPrefix(suffix, "skill-runs/")
 }
 
 func hasAnyPrefix(value string, prefixes ...string) bool {

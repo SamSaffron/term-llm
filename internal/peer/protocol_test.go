@@ -1,10 +1,26 @@
 package peer
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 )
+
+func TestSendAdmissionIsContextCancellable(t *testing.T) {
+	connection := &conn{
+		limits:   (Limits{}).withDefaults(),
+		sendGate: make(chan struct{}, 1),
+		low:      make(chan struct{}, 1),
+		closed:   make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := connection.send(ctx, &Frame{Type: TypeResponseBody, ID: "blocked"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("send waiting behind another writer = %v, want cancellation", err)
+	}
+}
 
 func TestFrameWireFormat(t *testing.T) {
 	f := &Frame{Type: TypeRequest, ID: "7", Method: "POST", Path: "/x", Header: http.Header{"Accept": {"a", "b"}}, Body: []byte("hi")}
@@ -47,7 +63,7 @@ func TestLimitsKeepBodiesInsideFrames(t *testing.T) {
 }
 
 func TestCleanRequestPath(t *testing.T) {
-	for _, ok := range []string{"/", "/api/v1/x?y=1&z=%20", "/chat/sessions/abc"} {
+	for _, ok := range []string{"/", "/api/v1/x?y=1&z=%20", "/v1/sessions/search?q=src%2Fmain.go", "/chat/sessions/abc?url=https%3A%2F%2Fexample.com%2Fa"} {
 		if _, err := cleanRequestPath(ok); err != nil {
 			t.Errorf("%q rejected: %v", ok, err)
 		}

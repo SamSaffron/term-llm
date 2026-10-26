@@ -29,7 +29,15 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
     await page.getByRole('button', { name: 'Open sidebar' }).click();
   await page.locator('#settingsBtn').click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
-  await expect(settings.getByRole('tab')).toHaveCount(4);
+  const tabs = settings.getByRole('tab');
+  await expect(tabs).toHaveCount(5);
+  await expect(tabs).toHaveText([
+    'Model',
+    'Interface',
+    'Extensions',
+    'Mobile Sharing',
+    'Connection',
+  ]);
   if (testInfo.project.name === 'desktop')
     expect((await settings.boundingBox())!.width).toBeGreaterThan(700);
   await page.screenshot({ path: testInfo.outputPath('01-settings-model.png'), fullPage: true });

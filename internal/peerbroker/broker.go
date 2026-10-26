@@ -40,20 +40,21 @@ type hostLease struct {
 	invitations map[string]*invitationSlot
 	devices     map[string]*deviceSlot
 	host        *wsPeer
-	iceMints    int
+	iceMints    map[string]int
 	signals     int
 	stop        chan struct{}
 }
 type Handler struct {
-	cfg         Config
-	mux         *http.ServeMux
-	limiter     *tokenBucket
-	mu          sync.Mutex
-	challenges  map[string]storedChallenge
-	hosts       map[string]*hostLease
-	connections int
-	closed      bool
-	closedCh    chan struct{}
+	cfg          Config
+	mux          *http.ServeMux
+	limiter      *tokenBucket
+	mu           sync.Mutex
+	challenges   map[string]storedChallenge
+	hosts        map[string]*hostLease
+	expiredHosts map[string]time.Time
+	connections  int
+	closed       bool
+	closedCh     chan struct{}
 }
 
 func NewHandler(cfg Config) (*Handler, error) {
@@ -61,7 +62,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{cfg: cfg, limiter: newTokenBucket(cfg.RequestRate, cfg.RequestBurst, cfg.Now), challenges: map[string]storedChallenge{}, hosts: map[string]*hostLease{}, closedCh: make(chan struct{})}
+	h := &Handler{cfg: cfg, limiter: newTokenBucket(cfg.RequestRate, cfg.RequestBurst, cfg.Now), challenges: map[string]storedChallenge{}, hosts: map[string]*hostLease{}, expiredHosts: map[string]time.Time{}, closedCh: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v2/challenges", h.handleChallenge)
 	mux.HandleFunc("POST /v2/hosts", h.handleRegister)
@@ -115,6 +116,7 @@ func (h *Handler) Close() {
 		delete(h.hosts, id)
 	}
 	clear(h.challenges)
+	clear(h.expiredHosts)
 }
 func (h *Handler) HostCount() int {
 	h.mu.Lock()
@@ -227,7 +229,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hostID := hostIDForKey(key)
-	lease := &hostLease{id: hostID, keyHash: keyHash, leaseHash: hashCapability(leaseCap), expiresAt: h.cfg.Now().Add(h.cfg.LeaseTTL), invitations: map[string]*invitationSlot{}, devices: devices, stop: make(chan struct{})}
+	lease := &hostLease{id: hostID, keyHash: keyHash, leaseHash: hashCapability(leaseCap), expiresAt: h.cfg.Now().Add(h.cfg.LeaseTTL), invitations: map[string]*invitationSlot{}, devices: devices, iceMints: map[string]int{}, stop: make(chan struct{})}
 	h.mu.Lock()
 	if old := h.hosts[hostID]; old != nil {
 		h.removeHostLocked(old)
@@ -237,6 +239,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.hosts[hostID] = lease
+	delete(h.expiredHosts, hostID)
 	h.mu.Unlock()
 	writeJSON(w, http.StatusCreated, Registration{HostID: hostID, LeaseCapability: leaseCap, LeaseExpiresAt: lease.expiresAt.UTC()})
 }
@@ -268,7 +271,7 @@ func (h *Handler) handleRenew(w http.ResponseWriter, r *http.Request) {
 	}
 	host.devices = devices
 	host.expiresAt = h.cfg.Now().Add(h.cfg.LeaseTTL)
-	host.iceMints = 0
+	clear(host.iceMints)
 	host.signals = 0
 	expires := host.expiresAt.UTC()
 	h.mu.Unlock()
@@ -316,6 +319,22 @@ func (h *Handler) handleInvitation(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	writeJSON(w, http.StatusCreated, InvitationSlot{InvitationID: req.InvitationID, ExpiresAt: req.ExpiresAt.UTC()})
 }
+func (h *Handler) peerEndpointErrorLocked(hostID string, host *hostLease, kind, id, tok string, hasToken, validQuery bool) (int, string) {
+	if host == nil {
+		if until, ok := h.expiredHosts[hostID]; ok && until.After(h.cfg.Now()) {
+			return http.StatusGone, CodeExpired
+		}
+		return http.StatusNotFound, CodeNotFound
+	}
+	if !host.expiresAt.After(h.cfg.Now()) {
+		return http.StatusGone, CodeExpired
+	}
+	if !hasToken || !validQuery || !h.peerAuthorizedLocked(host, kind, id, tok) {
+		return http.StatusUnauthorized, CodeUnauthorized
+	}
+	return 0, ""
+}
+
 func (h *Handler) hostAuthorizedLocked(host *hostLease, tok string) bool {
 	return host != nil && host.expiresAt.After(h.cfg.Now()) && capabilityEqual(host.leaseHash, tok)
 }
@@ -343,10 +362,16 @@ func (h *Handler) sweepLocked() {
 			delete(h.challenges, id)
 		}
 	}
+	for id, until := range h.expiredHosts {
+		if !until.After(now) {
+			delete(h.expiredHosts, id)
+		}
+	}
 	for id, host := range h.hosts {
 		if !host.expiresAt.After(now) {
 			h.removeHostLocked(host)
 			delete(h.hosts, id)
+			h.expiredHosts[id] = now.Add(h.cfg.LeaseTTL)
 			continue
 		}
 		for iid, invite := range host.invitations {

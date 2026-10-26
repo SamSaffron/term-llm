@@ -188,6 +188,7 @@ export class AppStore {
   readonly runs: Signal<Record<string, ResponseProjection>>;
   readonly connected: Signal<boolean>;
   readonly authRequired: Signal<boolean>;
+  readonly peerMode = signal(false);
   readonly startup = signal('Loading your chat shell…');
   readonly startupFailed = signal(false);
   readonly startupDone = signal(false);
@@ -315,6 +316,7 @@ export class AppStore {
     persistentCache?: PersistentCache,
   ) {
     this.services = new AppStoreServices(config, storage, persistentCache);
+    this.peerMode.value = config.peerScope === 'web-v1';
     this.startupMetrics = this.services.startupMetrics;
     this.keys = this.services.keys;
     this.api = this.services.api;
@@ -1345,6 +1347,8 @@ export class AppStore {
   }
 
   private applyCapabilities(data: Record<string, unknown>): void {
+    const peer = recordValue(data.peer);
+    this.peerMode.value = peer?.active === true;
     const projects =
       data.projects && typeof data.projects === 'object'
         ? (data.projects as Record<string, unknown>)

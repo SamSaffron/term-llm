@@ -35,6 +35,9 @@ export function Settings() {
   const [tab, setTab] = useState('model');
   const [extensionsVisited, setExtensionsVisited] = useState(false);
   const activeTab = tab;
+  const visibleTabs = store.peerMode.value
+    ? settingsTabs.filter(({ slug }) => slug === 'model' || slug === 'interface')
+    : settingsTabs;
   const selectTab = (name: string) => {
     setTab(name);
     if (name === 'extensions') setExtensionsVisited(true);
@@ -67,7 +70,7 @@ export function Settings() {
   return (
     <Overlay title="Settings" className="settings-modal" dismissDisabled={saving}>
       <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-        {settingsTabs.map(({ label, slug }, index) => {
+        {visibleTabs.map(({ label, slug }, index) => {
           return (
             <button
               type="button"
@@ -79,14 +82,14 @@ export function Settings() {
               onClick={() => selectTab(slug)}
               onKeyDown={(event) => {
                 let next: number;
-                if (event.key === 'ArrowRight') next = (index + 1) % settingsTabs.length;
+                if (event.key === 'ArrowRight') next = (index + 1) % visibleTabs.length;
                 else if (event.key === 'ArrowLeft')
-                  next = (index + settingsTabs.length - 1) % settingsTabs.length;
+                  next = (index + visibleTabs.length - 1) % visibleTabs.length;
                 else if (event.key === 'Home') next = 0;
-                else if (event.key === 'End') next = settingsTabs.length - 1;
+                else if (event.key === 'End') next = visibleTabs.length - 1;
                 else return;
                 event.preventDefault();
-                const nextTab = settingsTabs[next];
+                const nextTab = visibleTabs[next];
                 selectTab(nextTab.slug);
                 document.getElementById(`settings-${nextTab.slug}-tab`)?.focus();
               }}
@@ -193,76 +196,87 @@ export function Settings() {
             />
           </label>
         </div>
-        <div class="settings-field">
-          <label class="settings-toggle">
-            <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
-            <ToggleSwitch
-              checked={store.showWidgets.value}
-              onChange={(event) => {
-                store.showWidgets.value = event.currentTarget.checked;
-                store.storage.setItem(
-                  store.keys.showWidgetsSidebar,
-                  event.currentTarget.checked ? '1' : '0',
-                );
-              }}
-            />
-          </label>
-        </div>
+        {!store.peerMode.value && (
+          <div class="settings-field">
+            <label class="settings-toggle">
+              <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
+              <ToggleSwitch
+                checked={store.showWidgets.value}
+                onChange={(event) => {
+                  store.showWidgets.value = event.currentTarget.checked;
+                  store.storage.setItem(
+                    store.keys.showWidgetsSidebar,
+                    event.currentTarget.checked ? '1' : '0',
+                  );
+                }}
+              />
+            </label>
+          </div>
+        )}
         <div class="settings-field notification-settings">
           <span class="settings-label">Notifications</span>
-          <div
-            class={`notification-state notification-state-${store.notifications.value.status}`}
-            role="status"
-            aria-live="polite"
-          >
-            <strong>
-              {store.notifications.value.status === 'subscribed'
-                ? store.notifications.value.verified
-                  ? 'Enabled'
-                  : 'Enabled · verification pending'
-                : store.notifications.value.status === 'blocked'
-                  ? 'Blocked'
-                  : store.notifications.value.status === 'stale'
-                    ? 'Needs repair'
-                    : store.notifications.value.status === 'unsubscribed'
-                      ? 'Not enabled'
-                      : 'Unavailable'}
-            </strong>
-            <span>{store.notifications.value.detail}</span>
-          </div>
-          <div class="notification-actions">
-            {store.notifications.value.status === 'unsubscribed' && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.enableNotifications()}
+          {store.peerMode.value ? (
+            <div class="notification-state notification-state-unsupported" role="status">
+              <strong>Unavailable</strong>
+              <span>Push notifications are not available over Mobile Sharing.</span>
+            </div>
+          ) : (
+            <>
+              <div
+                class={`notification-state notification-state-${store.notifications.value.status}`}
+                role="status"
+                aria-live="polite"
               >
-                Enable notifications
-              </button>
-            )}
-            {store.notifications.value.status === 'stale' && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.retryNotifications()}
-              >
-                Retry repair
-              </button>
-            )}
-            {(store.notifications.value.status === 'subscribed' ||
-              store.notifications.value.status === 'stale') && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.disableNotifications()}
-              >
-                Disable
-              </button>
-            )}
-          </div>
+                <strong>
+                  {store.notifications.value.status === 'subscribed'
+                    ? store.notifications.value.verified
+                      ? 'Enabled'
+                      : 'Enabled · verification pending'
+                    : store.notifications.value.status === 'blocked'
+                      ? 'Blocked'
+                      : store.notifications.value.status === 'stale'
+                        ? 'Needs repair'
+                        : store.notifications.value.status === 'unsubscribed'
+                          ? 'Not enabled'
+                          : 'Unavailable'}
+                </strong>
+                <span>{store.notifications.value.detail}</span>
+              </div>
+              <div class="notification-actions">
+                {store.notifications.value.status === 'unsubscribed' && (
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={store.notifications.value.busy}
+                    onClick={() => void store.enableNotifications()}
+                  >
+                    Enable notifications
+                  </button>
+                )}
+                {store.notifications.value.status === 'stale' && (
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={store.notifications.value.busy}
+                    onClick={() => void store.retryNotifications()}
+                  >
+                    Retry repair
+                  </button>
+                )}
+                {(store.notifications.value.status === 'subscribed' ||
+                  store.notifications.value.status === 'stale') && (
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={store.notifications.value.busy}
+                    onClick={() => void store.disableNotifications()}
+                  >
+                    Disable
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
       <div

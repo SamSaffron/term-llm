@@ -43,7 +43,20 @@ func (r *Runtime) handleSignal(conn *peerbroker.Conn, frame *peerbroker.Frame) {
 		if frame.PeerKind != peerbroker.PeerDevice || frame.PeerID != value.DeviceID.String() {
 			return
 		}
-		go r.acceptTransport(conn, frame.PeerKind, frame.PeerID, value)
+		verified, err := r.host.VerifyTransport(value)
+		if err != nil {
+			return
+		}
+		ctx, generation, newDevice, ok := r.reserveTransport(frame.PeerID)
+		if !ok {
+			return
+		}
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			defer r.releaseTransport(newDevice)
+			r.acceptTransport(ctx, generation, conn, frame.PeerKind, frame.PeerID, verified)
+		}()
 	}
 }
 
@@ -134,6 +147,8 @@ func (r *Runtime) Deny(id string) error {
 }
 
 func (r *Runtime) renewNow(ctx context.Context) error {
+	r.renewMu.Lock()
+	defer r.renewMu.Unlock()
 	hashes, err := r.reconnectHashes()
 	if err != nil {
 		return err
@@ -148,19 +163,49 @@ func (r *Runtime) renewNow(ctx context.Context) error {
 	return err
 }
 
-func (r *Runtime) acceptTransport(conn *peerbroker.Conn, kind, id string, request *pairing.TransportRequest) {
-	verified, err := r.host.VerifyTransport(request)
-	if err != nil {
-		return
-	}
+func (r *Runtime) removeSession(id string, endpoint *peer.Endpoint) {
 	r.mu.Lock()
-	if !r.settings.Enabled || len(r.sessions) >= maxConnections && r.sessions[id] == nil {
+	defer r.mu.Unlock()
+	if session := r.sessions[id]; session != nil && session.endpoint == endpoint {
+		delete(r.sessions, id)
+	}
+}
+
+func (r *Runtime) reserveTransport(id string) (context.Context, uint64, bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.settings.Enabled || r.sharingCtx == nil || r.sharingCtx.Err() != nil || r.handshakes >= maxConnections {
+		return nil, 0, false, false
+	}
+	newDevice := r.sessions[id] == nil
+	if newDevice && len(r.sessions)+r.newHandshakes >= maxConnections {
+		return nil, 0, false, false
+	}
+	r.handshakes++
+	if newDevice {
+		r.newHandshakes++
+	}
+	return r.sharingCtx, r.generation, newDevice, true
+}
+
+func (r *Runtime) releaseTransport(newDevice bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.handshakes--
+	if newDevice {
+		r.newHandshakes--
+	}
+}
+
+func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *peerbroker.Conn, kind, id string, verified *pairing.VerifiedTransport) {
+	r.mu.Lock()
+	if !r.settings.Enabled || r.generation != generation {
 		r.mu.Unlock()
 		return
 	}
 	hostID, leaseCapability := r.hostID, r.leaseCapability
 	r.mu.Unlock()
-	ice, err := r.broker.ICE(r.ctx, hostID, peerbroker.PeerHost, "", leaseCapability)
+	ice, err := r.broker.ICE(ctx, hostID, peerbroker.PeerHost, "", leaseCapability)
 	if err != nil {
 		return
 	}
@@ -168,18 +213,33 @@ func (r *Runtime) acceptTransport(conn *peerbroker.Conn, kind, id string, reques
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithCancel(r.ctx)
+	endpoint.PeerConnection().OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			r.removeSession(id, endpoint)
+		}
+	})
+	sessionCtx, cancel := context.WithCancel(ctx)
+	basePath := r.opts.BasePath
 	server, err := peer.NewServer(peer.ServerConfig{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if !r.beginPeerRequest(generation) {
+				http.Error(w, "mobile sharing is stopping", http.StatusServiceUnavailable)
+				return
+			}
+			defer r.peerRequests.Done()
 			r.opts.Handler.ServeHTTP(w, WithDevicePrincipal(request, DevicePrincipal{DeviceID: id, Scope: ScopeWebV1}))
 		}),
 		SessionGate: func(context.Context) error { _, err := r.grants.Authorize(id, verified.DeviceKey); return err },
 		Authorize: func(request *http.Request) error {
+			if err := prepareMountedRequest(request, basePath); err != nil {
+				return err
+			}
 			if !RouteAllowed(request.Method, request.URL.Path) {
 				return errors.New("route is not available to paired devices")
 			}
 			return nil
 		},
+		OnClose:     func() { r.removeSession(id, endpoint) },
 		MaxChannels: 1,
 	})
 	if err != nil {
@@ -187,8 +247,8 @@ func (r *Runtime) acceptTransport(conn *peerbroker.Conn, kind, id string, reques
 		_ = endpoint.Close()
 		return
 	}
-	endpoint.Serve(ctx, server)
-	answerDescription, err := endpoint.AcceptOffer(ctx, webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: verified.OfferSDP})
+	endpoint.Serve(sessionCtx, server)
+	answerDescription, err := endpoint.AcceptOffer(sessionCtx, webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: verified.OfferSDP})
 	if err != nil {
 		cancel()
 		_ = endpoint.Close()
@@ -201,12 +261,21 @@ func (r *Runtime) acceptTransport(conn *peerbroker.Conn, kind, id string, reques
 		return
 	}
 	r.mu.Lock()
-	if old := r.sessions[id]; old != nil {
+	_, grantErr := r.grants.Authorize(id, verified.DeviceKey)
+	if !r.settings.Enabled || r.generation != generation || sessionCtx.Err() != nil || grantErr != nil ||
+		len(r.sessions) >= maxConnections && r.sessions[id] == nil {
+		r.mu.Unlock()
+		cancel()
+		_ = endpoint.Close()
+		return
+	}
+	old := r.sessions[id]
+	r.sessions[id] = &deviceSession{endpoint: endpoint, cancel: cancel}
+	r.mu.Unlock()
+	if old != nil {
 		old.cancel()
 		_ = old.endpoint.Close()
 	}
-	r.sessions[id] = &deviceSession{endpoint: endpoint, cancel: cancel}
-	r.mu.Unlock()
 	if err := conn.Send(kind, id, marshalSignal(answer)); err != nil {
 		r.mu.Lock()
 		if r.sessions[id] != nil && r.sessions[id].endpoint == endpoint {
@@ -228,6 +297,7 @@ func (r *Runtime) Enable(ctx context.Context) error {
 	already := r.settings.Enabled && r.brokerConnected
 	r.started = true
 	r.settings.Enabled = true
+	r.startSharingLocked()
 	if err := r.persistSettingsLocked(); err != nil {
 		r.mu.Unlock()
 		return err
@@ -236,12 +306,17 @@ func (r *Runtime) Enable(ctx context.Context) error {
 	if already {
 		return nil
 	}
-	return r.connectBroker(ctx)
+	if err := r.connectBroker(ctx); err != nil {
+		r.scheduleReconnect()
+		return err
+	}
+	return nil
 }
 
 func (r *Runtime) Stop() error {
 	r.mu.Lock()
 	r.settings.Enabled = false
+	r.stopSharingLocked()
 	err := r.persistSettingsLocked()
 	if r.invitation != nil {
 		r.host.CancelPairing(r.invitation.link.InvitationID)
@@ -255,6 +330,8 @@ func (r *Runtime) Stop() error {
 	r.brokerConnected = false
 	r.closeSessionsLocked()
 	r.mu.Unlock()
+	r.peerRequests.Wait()
+	r.wg.Wait()
 	return err
 }
 
@@ -279,7 +356,10 @@ func (r *Runtime) Revoke(ctx context.Context, id string) error {
 		delete(r.sessions, id)
 	}
 	r.mu.Unlock()
-	return r.renewNow(ctx)
+	if err := r.renewNow(ctx); err != nil {
+		r.setWarning("device revoked locally; rendezvous synchronization is pending")
+	}
+	return nil
 }
 
 func (r *Runtime) Reset(ctx context.Context) error {
@@ -306,8 +386,16 @@ func (r *Runtime) Reset(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	r.identity, r.grants, r.host, r.warnings = id, grants, host, nil
+	var broker *peerbroker.Client
+	if r.opts.BrokerURL != "" {
+		broker, err = peerbroker.NewClient(r.opts.BrokerURL, r.opts.HTTPClient)
+		if err != nil {
+			return err
+		}
+	}
+	r.identity, r.grants, r.host, r.broker, r.warnings = id, grants, host, broker, nil
 	r.availableReason = ""
+	r.resetRequired = false
 	r.evaluateAvailability()
 	return nil
 }
@@ -317,7 +405,13 @@ func (r *Runtime) NewInvitation(ctx context.Context, qr func(string) (string, er
 		return err
 	}
 	r.mu.Lock()
-	if len(r.mustListGrants()) >= maxDevices {
+	active := 0
+	for _, grant := range r.mustListGrants() {
+		if grant.RevokedAt == nil {
+			active++
+		}
+	}
+	if active >= maxDevices {
 		r.mu.Unlock()
 		return errors.New("the maximum of 16 paired devices has been reached")
 	}

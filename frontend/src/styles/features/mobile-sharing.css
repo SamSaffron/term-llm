@@ -44,7 +44,6 @@
   font-size: 0.85rem;
 }
 
-.mobile-sharing-authority,
 .mobile-sharing-warning {
   padding: 0.75rem 0.85rem;
   border-left: 3px solid var(--accent-amber);
@@ -92,10 +91,11 @@
 .mobile-sharing-invitation img {
   grid-column: 2;
   grid-row: 1 / span 2;
-  width: 9rem;
-  max-width: 32vw;
+  width: clamp(15rem, 28vw, 16rem);
+  max-width: 40vw;
+  box-sizing: border-box;
   aspect-ratio: 1;
-  padding: 0.4rem;
+  padding: 0.75rem;
   border-radius: 0.5rem;
   background: white;
 }
@@ -140,9 +140,19 @@
 }
 
 .mobile-sharing-card small,
-.mobile-sharing-card label {
+.mobile-sharing-card label,
+.mobile-sharing-card details {
   color: var(--text-muted);
   font-size: 0.75rem;
+}
+
+.mobile-sharing-card p {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+}
+
+.mobile-sharing-card summary {
+  cursor: pointer;
 }
 
 .mobile-sharing-card input {
@@ -191,7 +201,7 @@
   .mobile-sharing-invitation img {
     grid-column: 1;
     grid-row: auto;
-    width: min(12rem, 70vw);
+    width: min(16rem, 82vw);
     max-width: none;
     justify-self: center;
   }

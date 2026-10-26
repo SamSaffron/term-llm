@@ -373,7 +373,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 				storeID, storeErr = attentionStore.StoreInstanceID(ctx)
 			}
 			if storeErr != nil {
-				return fmt.Errorf("mobile sharing target identity: %w", storeErr)
+				storeID = ""
 			}
 			s.mobileSharing, err = mobileshare.NewServer(agentName, storeID, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", resolvedApproval.Mode))
 			if err != nil {

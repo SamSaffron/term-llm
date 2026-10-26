@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -133,6 +134,17 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
+	for {
+		status := runtime.Status()
+		if len(status.Devices) == 1 && status.Devices[0].Connection == "offline" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("disconnected device remained counted as live")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +204,220 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	_ = streamResponse.Body.Close()
 	if _, err := device.Connect(ctx); err == nil {
 		t.Fatal("revoked device reconnected")
+	}
+}
+
+func TestDuplicateInvitationThroughBrokerBurnsPendingApproval(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := httptest.NewServer(brokerHandler)
+	defer broker.Close()
+	defer brokerHandler.Close()
+	runtime, err := mobileshare.New(mobileshare.Options{
+		DataDir: t.TempDir(), Target: "duplicate", StoreInstanceID: "duplicate-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	owner := httptest.NewServer(runtime.Handler())
+	defer owner.Close()
+	response, err := http.Post(owner.URL+"/v1/mobile-sharing/invitations", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invitation mobileshare.Status
+	if err := json.NewDecoder(response.Body).Decode(&invitation); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if invitation.Invitation == nil {
+		t.Fatal("invitation missing")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	firstSAS, secondSAS := make(chan string, 1), make(chan string, 1)
+	first, _ := testdevice.New(testdevice.Config{DeviceName: "First", StatePath: t.TempDir() + "/first.json", OnSAS: func(code string) { firstSAS <- code }})
+	second, _ := testdevice.New(testdevice.Config{DeviceName: "Second", StatePath: t.TempDir() + "/second.json", OnSAS: func(code string) { secondSAS <- code }})
+	firstResult := make(chan error, 1)
+	go func() { _, pairErr := first.Pair(ctx, invitation.Invitation.URL); firstResult <- pairErr }()
+	select {
+	case <-firstSAS:
+	case <-ctx.Done():
+		t.Fatal("first device did not authenticate invitation")
+	}
+	var pendingID string
+	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool {
+		if len(status.PendingRequests) == 1 {
+			pendingID = status.PendingRequests[0].ID
+		}
+		return pendingID != ""
+	})
+	secondResult := make(chan error, 1)
+	go func() { _, pairErr := second.Pair(ctx, invitation.Invitation.URL); secondResult <- pairErr }()
+	select {
+	case <-secondSAS:
+	case <-ctx.Done():
+		t.Fatal("second authenticated redemption did not reach the host")
+	}
+	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool {
+		return len(status.PendingRequests) == 0 && len(status.Warnings) > 0
+	})
+	if err := runtime.Approve(ctx, pendingID, "000000"); err == nil {
+		t.Fatal("burned duplicate invitation remained approvable")
+	}
+	select {
+	case err := <-firstResult:
+		if err == nil {
+			t.Fatal("superseded first pairing unexpectedly completed")
+		}
+	case <-ctx.Done():
+		t.Fatal("superseded first pairing did not terminate")
+	}
+	cancel()
+	<-secondResult
+}
+
+type replaceableBroker struct {
+	mu      sync.RWMutex
+	handler http.Handler
+}
+
+func (b *replaceableBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b.mu.RLock()
+	handler := b.handler
+	b.mu.RUnlock()
+	handler.ServeHTTP(w, r)
+}
+
+func (b *replaceableBroker) replace(handler http.Handler) {
+	b.mu.Lock()
+	b.handler = handler
+	b.mu.Unlock()
+}
+
+func TestRuntimeRecoversBrokerRestartAndStopResume(t *testing.T) {
+	first, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	switcher := &replaceableBroker{handler: first}
+	broker := httptest.NewServer(switcher)
+	defer broker.Close()
+	defer first.Close()
+
+	runtime, err := mobileshare.New(mobileshare.Options{
+		DataDir: t.TempDir(), Target: "restart", StoreInstanceID: "restart-store", BasePath: "/",
+		Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sas := make(chan string, 1)
+	device, err := testdevice.New(testdevice.Config{
+		DeviceName: "Restart device", StatePath: t.TempDir() + "/device.json",
+		OnSAS: func(code string) { sas <- code },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairRuntimeDevice(t, ctx, runtime, device, sas)
+	session, err := device.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = session.Close()
+
+	first.Close()
+	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool { return !status.BrokerConnected })
+	second, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	switcher.replace(second)
+	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool { return status.BrokerConnected })
+	session, err = device.Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect after broker restart: %v", err)
+	}
+	_ = session.Close()
+
+	if err := runtime.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if status := runtime.Status(); status.State != mobileshare.StateStopped {
+		t.Fatalf("stopped status = %+v", status)
+	}
+	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer resumeCancel()
+	if err := runtime.Enable(resumeCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitRuntimeStatus(t, resumeCtx, runtime, func(status mobileshare.Status) bool { return status.BrokerConnected })
+	session, err = device.Connect(resumeCtx)
+	if err != nil {
+		t.Fatalf("connect after resume: %v", err)
+	}
+	_ = session.Close()
+}
+
+func pairRuntimeDevice(t *testing.T, ctx context.Context, runtime *mobileshare.Runtime, device *testdevice.Device, sas <-chan string) {
+	t.Helper()
+	owner := httptest.NewServer(runtime.Handler())
+	defer owner.Close()
+	response, err := http.Post(owner.URL+"/v1/mobile-sharing/invitations", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invite mobileshare.Status
+	if err := json.NewDecoder(response.Body).Decode(&invite); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if invite.Invitation == nil {
+		t.Fatal("invitation missing")
+	}
+	paired := make(chan error, 1)
+	go func() { _, pairErr := device.Pair(ctx, invite.Invitation.URL); paired <- pairErr }()
+	var code string
+	select {
+	case code = <-sas:
+	case <-ctx.Done():
+		t.Fatal("SAS was not reported")
+	}
+	var pending string
+	waitRuntimeStatus(t, ctx, runtime, func(status mobileshare.Status) bool {
+		if len(status.PendingRequests) == 1 {
+			pending = status.PendingRequests[0].ID
+		}
+		return pending != ""
+	})
+	if err := runtime.Approve(ctx, pending, code); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-paired; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitRuntimeStatus(t *testing.T, ctx context.Context, runtime *mobileshare.Runtime, ready func(mobileshare.Status) bool) {
+	t.Helper()
+	for {
+		if ready(runtime.Status()) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for mobile sharing status")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

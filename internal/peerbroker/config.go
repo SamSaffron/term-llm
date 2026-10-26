@@ -139,7 +139,7 @@ func (c Config) withDefaults() (Config, error) {
 				return c, fmt.Errorf("peerbroker: TURN URL: %w", err)
 			}
 		}
-		c.Coturn.TTL = defaultDuration(c.Coturn.TTL, 10*time.Minute)
+		c.Coturn.TTL = defaultDuration(c.Coturn.TTL, time.Hour)
 		if c.Coturn.TTL < time.Minute || c.Coturn.TTL > 24*time.Hour {
 			return c, errors.New("peerbroker: coturn TTL must be between 1m and 24h")
 		}

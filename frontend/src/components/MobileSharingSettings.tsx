@@ -18,7 +18,7 @@ import { copyText } from '../platform/clipboard';
 
 export const MOBILE_SHARING_POLL_MS = 1_500;
 
-type ConfirmAction = 'stop' | 'resume' | 'reset';
+type ConfirmAction = 'reset';
 
 const stateLabels: Record<MobileSharingStatus['state'], string> = {
   unavailable: 'Unavailable',
@@ -26,6 +26,7 @@ const stateLabels: Record<MobileSharingStatus['state'], string> = {
   inviting: 'Invitation open',
   pending: 'Approval pending',
   sharing: 'Sharing',
+  reconnecting: 'Reconnecting',
   stopped: 'Stopped',
 };
 
@@ -99,12 +100,13 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
   }, [active, load]);
 
   const invitationExpiresAt = status?.invitation?.expires_at;
+  const pendingExpiresAt = status?.pending_requests?.[0]?.expires_at;
   useEffect(() => {
-    if (!active || !invitationExpiresAt) return;
+    if (!active || (!invitationExpiresAt && !pendingExpiresAt)) return;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [active, invitationExpiresAt]);
+  }, [active, invitationExpiresAt, pendingExpiresAt]);
 
   const mutate = async (key: string, action: () => Promise<void>) => {
     if (busy) return;
@@ -134,15 +136,9 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
     }
   };
 
-  const confirmedAction = (action: ConfirmAction) => {
+  const confirmedAction = () => {
     setConfirming(null);
-    const operation =
-      action === 'stop'
-        ? () => stopMobileSharing(store.api)
-        : action === 'resume'
-          ? () => resumeMobileSharing(store.api)
-          : () => resetMobileSharing(store.api);
-    void mutate(action, operation);
+    void mutate('reset', () => resetMobileSharing(store.api));
   };
 
   if (loading && !status && !error)
@@ -168,8 +164,10 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
   const requests = status.pending_requests ?? [];
   const devices = status.devices ?? [];
   const isUnavailable = status.state === 'unavailable';
-  const canStop = ['sharing', 'pending', 'inviting'].includes(status.state);
-  const canReset = ['sharing', 'pending', 'inviting', 'stopped'].includes(status.state);
+  const canStop = ['sharing', 'pending', 'inviting', 'reconnecting'].includes(status.state);
+  const canReset =
+    ['sharing', 'pending', 'inviting', 'reconnecting', 'stopped'].includes(status.state) ||
+    status.reset_required;
 
   return (
     <section class="mobile-sharing" aria-label="Mobile sharing">
@@ -177,12 +175,12 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
         <span>Mobile sharing</span>
         <strong>{stateLabels[status.state]}</strong>
       </div>
-      <div class="mobile-sharing-authority">
-        <strong>{status.authority.agent_name || 'This server'}</strong>
-        <p>{status.authority.description}</p>
-        <p>{status.authority.same_uid_note}</p>
-      </div>
       {status.reason && <p class="mobile-sharing-reason">{status.reason}</p>}
+      {(status.warnings ?? []).map((warning) => (
+        <p class="mobile-sharing-warning" role="status" key={warning}>
+          {warning}
+        </p>
+      ))}
       {error && (
         <p class="mobile-sharing-error" role="alert">
           {error}
@@ -191,15 +189,15 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
 
       {status.state === 'off' && (
         <div class="mobile-sharing-section">
-          <h3>Connect a mobile device</h3>
-          <p>Create a short-lived invitation, then scan it from the device you want to approve.</p>
+          <h3>Connect a device</h3>
+          <p>Create a short-lived invitation, then scan it from your device.</p>
           <button
             class="btn primary"
             type="button"
             disabled={Boolean(busy)}
             onClick={() => void createInvitation()}
           >
-            {busy === 'invite' ? 'Creating…' : 'Connect a phone'}
+            {busy === 'invite' ? 'Connecting' : 'Connect'}
           </button>
         </div>
       )}
@@ -241,8 +239,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
             </button>
           </div>
           <p class="mobile-sharing-warning" role="note">
-            Treat the copied link like a password until it expires. A request still requires the
-            one-time code shown on the mobile device and your approval here.
+            Keep the invitation link private until it expires.
           </p>
         </div>
       )}
@@ -277,9 +274,18 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
                 <div class="mobile-sharing-card" key={request.id}>
                   <div>
                     <strong>{request.name || 'Unnamed mobile device'}</strong>
-                    <small>Confirm the SAS code shown on that device.</small>
+                    <small>
+                      Enter the code shown on that device
+                      {request.expires_at ? ` · ${countdown(request.expires_at, now)}` : ''}.
+                    </small>
+                    <p>This device can read conversations and use this agent’s tools.</p>
+                    <details>
+                      <summary>Access details</summary>
+                      <p>{status.authority.description}</p>
+                      <p>{status.authority.same_uid_note}</p>
+                    </details>
                   </div>
-                  <label for={`mobile-sharing-code-${request.id}`}>One-time SAS code</label>
+                  <label for={`mobile-sharing-code-${request.id}`}>Code from your phone</label>
                   <input
                     id={`mobile-sharing-code-${request.id}`}
                     value={code}
@@ -350,7 +356,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
         </div>
       )}
 
-      {!isUnavailable && (
+      {(!isUnavailable || status.reset_required) && (
         <div class="mobile-sharing-controls">
           {status.state === 'sharing' && (
             <button
@@ -359,7 +365,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               disabled={Boolean(busy)}
               onClick={() => void createInvitation()}
             >
-              Connect another phone
+              Connect
             </button>
           )}
           {canStop && (
@@ -367,9 +373,19 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               class="btn"
               type="button"
               disabled={Boolean(busy)}
-              onClick={() => setConfirming('stop')}
+              onClick={() => void mutate('stop', () => stopMobileSharing(store.api))}
             >
-              Stop mobile sharing…
+              {busy === 'stop' ? 'Stopping' : 'Stop sharing'}
+            </button>
+          )}
+          {status.state === 'reconnecting' && (
+            <button
+              class="btn primary"
+              type="button"
+              disabled={Boolean(busy)}
+              onClick={() => void mutate('resume', () => resumeMobileSharing(store.api))}
+            >
+              {busy === 'resume' ? 'Resuming' : 'Resume'}
             </button>
           )}
           {status.state === 'stopped' && (
@@ -377,9 +393,9 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               class="btn primary"
               type="button"
               disabled={Boolean(busy)}
-              onClick={() => setConfirming('resume')}
+              onClick={() => void mutate('resume', () => resumeMobileSharing(store.api))}
             >
-              Resume sharing…
+              {busy === 'resume' ? 'Resuming' : 'Resume'}
             </button>
           )}
           {canReset && (
@@ -389,7 +405,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
               disabled={Boolean(busy)}
               onClick={() => setConfirming('reset')}
             >
-              Forget all phones…
+              Forget all
             </button>
           )}
         </div>
@@ -404,10 +420,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
           <strong id="mobile-sharing-revoke-title">
             Revoke {revokeTarget.name || 'this device'}?
           </strong>
-          <p>
-            Revocation stops this device's future mobile-sharing connections only. It cannot undo
-            actions already taken or retrieve information already disclosed.
-          </p>
+          <p>This device will no longer be able to connect.</p>
           <div>
             <button class="btn" type="button" onClick={() => setRevokeTarget(null)}>
               Cancel
@@ -423,7 +436,7 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
                 );
               }}
             >
-              Confirm revoke
+              Revoke
             </button>
           </div>
         </div>
@@ -435,30 +448,14 @@ export function MobileSharingSettings({ active }: { active: boolean }) {
           role="alertdialog"
           aria-labelledby="mobile-sharing-confirm-title"
         >
-          <strong id="mobile-sharing-confirm-title">
-            {confirming === 'stop'
-              ? 'Stop all mobile access?'
-              : confirming === 'resume'
-                ? 'Resume approved device access?'
-                : 'Reset mobile sharing?'}
-          </strong>
-          <p>
-            {confirming === 'stop'
-              ? 'Approved devices will be unable to connect until sharing is resumed.'
-              : confirming === 'resume'
-                ? 'Previously approved devices will regain the same-UID authority described above.'
-                : 'All invitations, pending requests, and approved devices will be removed.'}
-          </p>
+          <strong id="mobile-sharing-confirm-title">Forget all devices?</strong>
+          <p>All invitations, pending requests, and approved devices will be removed.</p>
           <div>
             <button class="btn" type="button" onClick={() => setConfirming(null)}>
               Cancel
             </button>
-            <button class="btn danger" type="button" onClick={() => confirmedAction(confirming)}>
-              {confirming === 'stop'
-                ? 'Confirm stop'
-                : confirming === 'resume'
-                  ? 'Confirm resume'
-                  : 'Confirm reset'}
+            <button class="btn danger" type="button" onClick={confirmedAction}>
+              Forget all
             </button>
           </div>
         </div>

@@ -300,7 +300,7 @@ func TestBridgeSessionGateAndRouteAuthorization(t *testing.T) {
 			return nil
 		},
 	})
-	get := func(path string) (int, string) {
+	get := func(path string) (int, string, http.Header) {
 		t.Helper()
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
 		resp, err := p.httpClient().Do(req)
@@ -312,20 +312,20 @@ func TestBridgeSessionGateAndRouteAuthorization(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return resp.StatusCode, string(b)
+		return resp.StatusCode, string(b), resp.Header
 	}
 
-	if code, _ := get("/api/x"); code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated session: %d", code)
+	if code, _, header := get("/api/x"); code != http.StatusUnauthorized || header.Get(PeerErrorHeader) != PeerErrorAuthorizationRevoked {
+		t.Fatalf("unauthenticated session: status=%d peer-error=%q", code, header.Get(PeerErrorHeader))
 	}
 	if len(authorizedPaths) != 0 {
 		t.Fatal("route authorizer ran before session gate")
 	}
 	authenticated.Store(true)
-	if code, _ := get("/admin/secret"); code != http.StatusForbidden {
-		t.Fatalf("denied route: %d", code)
+	if code, _, header := get("/admin/secret"); code != http.StatusForbidden || header.Get(PeerErrorHeader) != PeerErrorScopeDenied {
+		t.Fatalf("denied route: status=%d peer-error=%q", code, header.Get(PeerErrorHeader))
 	}
-	if code, body := get("/api/x"); code != http.StatusOK || body != "ok" {
+	if code, body, _ := get("/api/x"); code != http.StatusOK || body != "ok" {
 		t.Fatalf("allowed route: %d %q", code, body)
 	}
 	if calls.Load() != 1 {

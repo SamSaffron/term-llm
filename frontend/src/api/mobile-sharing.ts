@@ -2,7 +2,7 @@ import type { APIClient } from './client';
 import type { MobileshareStatus } from './generated/types';
 
 export type MobileSharingState =
-  'unavailable' | 'off' | 'inviting' | 'pending' | 'sharing' | 'stopped';
+  'unavailable' | 'off' | 'inviting' | 'pending' | 'sharing' | 'reconnecting' | 'stopped';
 
 export type MobileSharingStatus = Omit<MobileshareStatus, 'state'> & {
   state: MobileSharingState;

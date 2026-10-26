@@ -764,6 +764,7 @@ function ConversationComposer() {
         entry?.sessionId === store.activeSession.value?.id &&
         ['waiting', 'dismissed', 'failed'].includes(entry.state),
     );
+  const peerMode = store.peerMode.value;
   const voiceBusy = ['requesting-permission', 'recording', 'preparing', 'transcribing'].includes(
     voiceState.phase,
   );
@@ -773,6 +774,7 @@ function ConversationComposer() {
   // button. A running turn keeps its progress indicator, and an open call always
   // keeps its stop control.
   const liveButton =
+    !peerMode &&
     !hasDraft &&
     (liveActive ||
       (store.liveStore.enabled.value && store.liveStore.capability.value.supported && !runActive));
@@ -861,11 +863,13 @@ function ConversationComposer() {
       class="composer"
       onDragEnter={(event) => {
         event.preventDefault();
+        if (peerMode) return;
         setDragging(true);
         inspectDraggedFiles(event.dataTransfer?.files || null);
       }}
       onDragOver={(event) => {
         event.preventDefault();
+        if (peerMode) return;
         inspectDraggedFiles(event.dataTransfer?.files || null);
         if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       }}
@@ -877,6 +881,7 @@ function ConversationComposer() {
       }}
       onDrop={(event) => {
         event.preventDefault();
+        if (peerMode) return;
         setDragging(false);
         inspectDraggedFiles(event.dataTransfer?.files || null);
         if (event.dataTransfer?.files.length) store.addAttachments(event.dataTransfer.files);
@@ -919,9 +924,9 @@ function ConversationComposer() {
             <div role="status">Pending steering…</div>
           ))}
         {unconfirmedSend && <UnconfirmedSendNotice ownerId={store.activeSessionId.value} />}
-        <VoiceStatus snapshot={voiceSnapshot} voice={voice} />
-        <LiveStatus live={store.liveStore} />
-        {!voiceState.capability.supported && (
+        {!peerMode && <VoiceStatus snapshot={voiceSnapshot} voice={voice} />}
+        {!peerMode && <LiveStatus live={store.liveStore} />}
+        {!peerMode && !voiceState.capability.supported && (
           <span class="voice-unsupported" id="voiceUnsupported">
             {voiceState.capability.reason}
           </span>
@@ -1023,125 +1028,129 @@ function ConversationComposer() {
           </div>
         )}
         <div class="composer-box">
-          <button
-            ref={attach}
-            class="composer-icon-btn attach-btn"
-            id="attachBtn"
-            type="button"
-            aria-label="Add"
-            aria-haspopup="menu"
-            aria-controls="addMenu"
-            aria-expanded={menu}
-            onClick={() => setMenu(!menu)}
-          >
-            <Icon name="add" />
-          </button>
-          {menu && (
-            <div ref={addMenu} class="composer-add-menu" id="addMenu" role="menu">
+          {!peerMode && (
+            <>
               <button
+                ref={attach}
+                class="composer-icon-btn attach-btn"
+                id="attachBtn"
                 type="button"
-                role="menuitem"
-                onClick={() => {
-                  file.current?.click();
-                  setMenu(false);
-                }}
+                aria-label="Add"
+                aria-haspopup="menu"
+                aria-controls="addMenu"
+                aria-expanded={menu}
+                onClick={() => setMenu(!menu)}
               >
-                <span class="composer-add-menu-icon">
-                  <Icon name="add" />
-                </span>
-                <span>Upload file</span>
+                <Icon name="add" />
               </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  camera.current?.click();
-                  setMenu(false);
-                }}
-              >
-                <span class="composer-add-menu-icon">◉</span>
-                <span>Take photo</span>
-              </button>
-              {store.config.locationSharing && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    void store.shareLocation();
-                    setMenu(false);
-                  }}
-                >
-                  <span class="composer-add-menu-icon">◎</span>
-                  <span>Share current location</span>
-                </button>
+              {menu && (
+                <div ref={addMenu} class="composer-add-menu" id="addMenu" role="menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      file.current?.click();
+                      setMenu(false);
+                    }}
+                  >
+                    <span class="composer-add-menu-icon">
+                      <Icon name="add" />
+                    </span>
+                    <span>Upload file</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      camera.current?.click();
+                      setMenu(false);
+                    }}
+                  >
+                    <span class="composer-add-menu-icon">◉</span>
+                    <span>Take photo</span>
+                  </button>
+                  {store.config.locationSharing && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        void store.shareLocation();
+                        setMenu(false);
+                      }}
+                    >
+                      <span class="composer-add-menu-icon">◎</span>
+                      <span>Share current location</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      store.modal.value = 'mcp';
+                      void store.loadMCP();
+                      setMenu(false);
+                    }}
+                  >
+                    <span class="composer-add-menu-icon">
+                      <Icon name="widgets" />
+                    </span>
+                    <span>MCP servers</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      store.modal.value = 'goal';
+                      setMenu(false);
+                    }}
+                  >
+                    <span class="composer-add-menu-icon">○</span>
+                    <span>Set goal…</span>
+                  </button>
+                  {store.worktreesAvailable() && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        store.modal.value = 'worktrees';
+                        void store.loadWorktrees();
+                        setMenu(false);
+                      }}
+                    >
+                      <span class="composer-add-menu-icon">
+                        <Icon name="branch" />
+                      </span>
+                      <span>Worktrees</span>
+                    </button>
+                  )}
+                </div>
               )}
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  store.modal.value = 'mcp';
-                  void store.loadMCP();
-                  setMenu(false);
+              <input
+                ref={file}
+                type="file"
+                id="fileInput"
+                multiple
+                accept={store.attachmentAccept.value}
+                hidden
+                onChange={(event) => {
+                  if (event.currentTarget.files) store.addAttachments(event.currentTarget.files);
+                  event.currentTarget.value = '';
                 }}
-              >
-                <span class="composer-add-menu-icon">
-                  <Icon name="widgets" />
-                </span>
-                <span>MCP servers</span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  store.modal.value = 'goal';
-                  setMenu(false);
+              />
+              <input
+                ref={camera}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                aria-label="Take a photo"
+                hidden
+                onChange={(event) => {
+                  if (event.currentTarget.files) store.addAttachments(event.currentTarget.files);
+                  event.currentTarget.value = '';
                 }}
-              >
-                <span class="composer-add-menu-icon">○</span>
-                <span>Set goal…</span>
-              </button>
-              {store.worktreesAvailable() && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    store.modal.value = 'worktrees';
-                    void store.loadWorktrees();
-                    setMenu(false);
-                  }}
-                >
-                  <span class="composer-add-menu-icon">
-                    <Icon name="branch" />
-                  </span>
-                  <span>Worktrees</span>
-                </button>
-              )}
-            </div>
+              />
+            </>
           )}
-          <input
-            ref={file}
-            type="file"
-            id="fileInput"
-            multiple
-            accept={store.attachmentAccept.value}
-            hidden
-            onChange={(event) => {
-              if (event.currentTarget.files) store.addAttachments(event.currentTarget.files);
-              event.currentTarget.value = '';
-            }}
-          />
-          <input
-            ref={camera}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            aria-label="Take a photo"
-            hidden
-            onChange={(event) => {
-              if (event.currentTarget.files) store.addAttachments(event.currentTarget.files);
-              event.currentTarget.value = '';
-            }}
-          />
           {completions.length > 0 && (
             <div
               class="slash-command-menu"
@@ -1196,6 +1205,7 @@ function ConversationComposer() {
             aria-expanded={completions.length > 0}
             value={store.prompt.value}
             onPaste={(event) => {
+              if (peerMode) return;
               const files = Array.from(event.clipboardData?.items || [])
                 .filter((item) => item.kind === 'file')
                 .map((item) => item.getAsFile())
@@ -1305,22 +1315,24 @@ function ConversationComposer() {
                 Stop
               </button>
             )}
-            <button
-              class={`composer-icon-btn voice-btn ${voiceState.phase === 'recording' ? 'recording' : ''} ${voiceBusy ? 'busy' : ''}`}
-              id="voiceBtn"
-              type="button"
-              aria-label="Record voice message"
-              aria-describedby={!voiceState.capability.supported ? 'voiceUnsupported' : undefined}
-              disabled={
-                !voiceState.capability.supported ||
-                voiceBusy ||
-                voiceState.phase === 'failed' ||
-                liveActive
-              }
-              onClick={startVoice}
-            >
-              <Icon name="microphone" />
-            </button>
+            {!peerMode && (
+              <button
+                class={`composer-icon-btn voice-btn ${voiceState.phase === 'recording' ? 'recording' : ''} ${voiceBusy ? 'busy' : ''}`}
+                id="voiceBtn"
+                type="button"
+                aria-label="Record voice message"
+                aria-describedby={!voiceState.capability.supported ? 'voiceUnsupported' : undefined}
+                disabled={
+                  !voiceState.capability.supported ||
+                  voiceBusy ||
+                  voiceState.phase === 'failed' ||
+                  liveActive
+                }
+                onClick={startVoice}
+              >
+                <Icon name="microphone" />
+              </button>
+            )}
             <button
               class={`send-btn ${liveButton ? 'live' : ''} ${liveButton && ['listening', 'speaking'].includes(store.liveStore.phase.value) ? 'live-pulse' : ''} ${loading || (liveButton && store.liveStore.phase.value === 'working') ? 'loading' : ''} ${steering ? 'steer' : ''}`}
               id="sendBtn"

@@ -38,7 +38,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
-	"github.com/samsaffron/term-llm/internal/mobileshare"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
@@ -65,10 +64,12 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// healthIdentityTrusted reports whether the health request may receive node
-// identity fields: either auth is disabled (loopback-only serves), or the
-// request carries a valid bearer token or passkey browser session.
+// healthIdentityTrusted reports whether a trusted mobile peer, auth-disabled
+// loopback serve, bearer token, or passkey session may receive node identity.
 func (s *serveServer) healthIdentityTrusted(r *http.Request) bool {
+	if _, ok := mobileshare.DeviceFromRequest(r); ok {
+		return true
+	}
 	if s.browserAuth != nil {
 		_, ok := s.browserAuth.authenticatePasskeyRequest(r)
 		return ok

@@ -47,6 +47,13 @@ export function responseError(
   return new APIError(message, status, body, type);
 }
 
+const PEER_ERROR_HEADER = 'X-Term-LLM-Peer-Error';
+const PEER_SCOPE_DENIED = 'scope_denied';
+
+export function peerScopeDenied(response: Pick<Response, 'status' | 'headers'>): boolean {
+  return response.status === 403 && response.headers.get(PEER_ERROR_HEADER) === PEER_SCOPE_DENIED;
+}
+
 export interface TransportHooks {
   getToken(): string;
   notificationOriginHeaders?(): Promise<Record<string, string>>;
@@ -290,6 +297,7 @@ export class APIClient {
         }
         if (
           (response.status === 401 || response.status === 403) &&
+          !peerScopeDenied(response) &&
           controls.auth !== 'ignore' &&
           !externalAuthRedirecting
         )
@@ -423,7 +431,11 @@ export class APIClient {
         const serverVersion = responseHeaders.get('X-Term-LLM-UI-Version');
         if (serverVersion && this.config.version && serverVersion !== this.config.version)
           this.hooks.onVersionMismatch?.();
-        if ((xhr.status === 401 || xhr.status === 403) && !externalAuthRedirecting) {
+        if (
+          (xhr.status === 401 || xhr.status === 403) &&
+          !peerScopeDenied({ status: xhr.status, headers: responseHeaders }) &&
+          !externalAuthRedirecting
+        ) {
           const loginURL = trustedExternalLoginURL({
             status: xhr.status,
             headers: responseHeaders,

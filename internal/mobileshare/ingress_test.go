@@ -6,16 +6,51 @@ import (
 	"testing"
 )
 
+func TestPrepareMountedRequestStripsExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name, basePath, target, wantPath string
+		wantErr                          bool
+	}{
+		{name: "root", basePath: "/", target: "/v1/sessions?limit=1", wantPath: "/v1/sessions"},
+		{name: "mount root", basePath: "/chat", target: "/chat", wantPath: "/"},
+		{name: "mounted API", basePath: "/chat", target: "/chat/v1/sessions?limit=1", wantPath: "/v1/sessions"},
+		{name: "deep mount", basePath: "/deep/mount", target: "/deep/mount/dist/app.js", wantPath: "/dist/app.js"},
+		{name: "strip once", basePath: "/chat", target: "/chat/chat/v1/sessions", wantPath: "/chat/v1/sessions"},
+		{name: "neighbor", basePath: "/chat", target: "/chatty/v1/sessions", wantErr: true},
+		{name: "unmounted", basePath: "/chat", target: "/v1/sessions", wantErr: true},
+		{name: "encoded mount", basePath: "/chat", target: "/ch%61t/v1/sessions", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, test.target, nil)
+			err := prepareMountedRequest(request, test.basePath)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("prepareMountedRequest() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if err == nil && request.URL.Path != test.wantPath {
+				t.Fatalf("path = %q, want %q", request.URL.Path, test.wantPath)
+			}
+		})
+	}
+}
+
 func TestRouteAllowedDefaultDeny(t *testing.T) {
 	tests := []struct {
 		method, path string
 		want         bool
 	}{
 		{http.MethodGet, "/", true},
+		{http.MethodGet, "/chat/session-1", true},
+		{http.MethodGet, "/chat/session-1/extra", false},
+		{http.MethodGet, "/future-owner-route", false},
 		{http.MethodGet, "/dist/app.js", true},
 		{http.MethodGet, "/v1/sessions", true},
 		{http.MethodPost, "/v1/sessions", true},
 		{http.MethodGet, "/v1/sessions/s1/messages", true},
+		{http.MethodGet, "/v1/sessions/s1/transcript", true},
+		{http.MethodGet, "/v1/sessions/s1/file-changes/content", false},
+		{http.MethodGet, "/v1/sessions/s1/shares", false},
+		{http.MethodGet, "/v1/sessions/s1/tree", false},
 		{http.MethodPost, "/v1/sessions/s1/approval", true},
 		{http.MethodPost, "/v1/sessions/s1/ask_user", true},
 		{http.MethodPost, "/v1/responses", true},

@@ -299,13 +299,27 @@ func (c *Client) dial(ctx context.Context, hostID, kind, id, credential string) 
 	}
 	ws.SetReadLimit(2 << 20)
 	conn := &Conn{ws: ws}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = ws.SetReadDeadline(deadline)
+	readyDeadline := time.Now().Add(wsReadyTimeout)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(readyDeadline) {
+		readyDeadline = deadline
 	}
+	_ = ws.SetReadDeadline(readyDeadline)
+	readyDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ws.Close()
+		case <-readyDone:
+		}
+	}()
 	frame, err := conn.Recv()
+	close(readyDone)
 	_ = ws.SetReadDeadline(time.Time{})
 	if err != nil || frame.Type != FrameReady {
 		_ = ws.Close()
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("peerbroker: websocket registration: %w", ctx.Err())
+		}
 		return nil, errors.New("peerbroker: websocket registration failed")
 	}
 	conn.Ready = *frame

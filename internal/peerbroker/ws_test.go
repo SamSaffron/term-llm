@@ -2,10 +2,16 @@ package peerbroker
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func recvType(t *testing.T, conn *Conn, want string) *Frame {
@@ -22,6 +28,53 @@ func recvType(t *testing.T, conn *Conn, want string) *Frame {
 			_ = conn.SetReadDeadline(time.Time{})
 			return frame
 		}
+	}
+}
+
+func TestDialCancellationClosesSocketWhileWaitingForReady(t *testing.T) {
+	upgraded := make(chan struct{})
+	closed := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		close(upgraded)
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		close(closed)
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := mustKey(t)
+	hostID := hostIDForKey(key.Public().(ed25519.PublicKey))
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, dialErr := client.DialDevice(ctx, hostID, "device", strings.Repeat("d", MinCredentialLen))
+		result <- dialErr
+	}()
+	select {
+	case <-upgraded:
+	case <-time.After(time.Second):
+		t.Fatal("websocket was not upgraded")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("dial cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dial remained blocked waiting for ready after cancellation")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("canceled registration socket remained open")
 	}
 }
 
@@ -112,9 +165,11 @@ func TestInvitationRoutingWrongCapabilityReplayAndNoSecretFrame(t *testing.T) {
 		t.Fatalf("invitation route = %+v", frame)
 	}
 	_ = guest.Close()
-	if _, err := client.DialInvitation(context.Background(), registration.HostID, "pair_1", invitationCap); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("replay error = %v", err)
+	redeemer, err := client.DialInvitation(context.Background(), registration.HostID, "pair_1", invitationCap)
+	if err != nil {
+		t.Fatalf("authenticated duplicate redemption must reach the host: %v", err)
 	}
+	_ = redeemer.Close()
 }
 
 func TestOfflineAndSignalLimits(t *testing.T) {

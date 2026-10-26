@@ -38,7 +38,7 @@ func main() {
 	flag.Var(&turn, "turn", "coturn TURN URL (repeatable; no default)")
 	flag.StringVar(&options.TURNSecretFile, "turn-rest-secret-file", "", "Private coturn TURN REST shared-secret file")
 	flag.StringVar(&options.TURNUsername, "turn-username", "", "Optional coturn username namespace")
-	flag.DurationVar(&options.TURNTTL, "turn-ttl", 10*time.Minute, "Minted coturn credential lifetime")
+	flag.DurationVar(&options.TURNTTL, "turn-ttl", time.Hour, "Minted coturn credential lifetime")
 	flag.DurationVar(&options.LeaseTTL, "lease-ttl", peerbroker.DefaultLeaseTTL, "Renewable host lease lifetime")
 	flag.IntVar(&options.MaxHosts, "max-hosts", 256, "Concurrent host lease limit")
 	flag.Parse()

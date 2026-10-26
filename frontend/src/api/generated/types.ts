@@ -86,11 +86,11 @@ export type MobileshareDeviceStatus = { "id": string; "name": string; "approved_
 
 export type MobileshareInvitationStatus = { "url": string; "qr_data_url": string; "expires_at": string; };
 
-export type MobileshareRequestStatus = { "id": string; "name": string; "requested_at"?: string; };
+export type MobileshareRequestStatus = { "id": string; "name": string; "requested_at"?: string; "expires_at"?: string; };
 
 export type MobileshareState = string;
 
-export type MobileshareStatus = { "state": MobileshareState; "reason"?: string; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: MobileshareInvitationStatus; "pending_requests": (MobileshareRequestStatus)[] | null; "devices": (MobileshareDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": MobileshareAuthorityStatement; };
+export type MobileshareStatus = { "state": MobileshareState; "reason"?: string; "reset_required"?: boolean; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: MobileshareInvitationStatus; "pending_requests": (MobileshareRequestStatus)[] | null; "devices": (MobileshareDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": MobileshareAuthorityStatement; };
 
 export type SessionResponseRunState = NotificationdbResponseRunState;
 

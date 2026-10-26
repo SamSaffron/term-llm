@@ -18,6 +18,16 @@ const (
 	ChannelLabel = "term-llm-http-v1"
 )
 
+const (
+	// PeerErrorHeader distinguishes bridge authorization results from ordinary
+	// application 401/403 responses.
+	PeerErrorHeader = "X-Term-LLM-Peer-Error"
+	// PeerErrorAuthorizationRevoked means the durable device grant is no longer valid.
+	PeerErrorAuthorizationRevoked = "authorization_revoked"
+	// PeerErrorScopeDenied means the grant is valid but the requested route is outside its scope.
+	PeerErrorScopeDenied = "scope_denied"
+)
+
 // Frame types.
 const (
 	TypeRequest       = "request"
@@ -149,9 +159,13 @@ func cleanRequestPath(raw string) (*url.URL, error) {
 			return nil, errors.New("path contains forbidden characters")
 		}
 	}
-	lower := strings.ToLower(raw)
+	pathname := raw
+	if query := strings.IndexByte(pathname, '?'); query >= 0 {
+		pathname = pathname[:query]
+	}
+	lowerPath := strings.ToLower(pathname)
 	for _, bad := range []string{"%2f", "%5c", "%00", "%2e"} {
-		if strings.Contains(lower, bad) {
+		if strings.Contains(lowerPath, bad) {
 			return nil, errors.New("path contains forbidden escapes")
 		}
 	}

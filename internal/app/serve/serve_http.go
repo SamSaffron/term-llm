@@ -185,7 +185,7 @@ func (s *serveServer) httpHandler() http.Handler {
 		inner.HandleFunc("/", s.cors(s.handleUI)) // catch-all SPA
 	}
 	if s.mobileSharing != nil {
-		s.mobileSharing.SetHandler(inner)
+		s.mobileSharing.SetHandler(s.reloadTransport().Handler(inner))
 	}
 
 	// Jobs-only serve instances have no UI surface, so mount at root and keep

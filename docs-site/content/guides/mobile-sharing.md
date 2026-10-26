@@ -22,9 +22,10 @@ test device for protocol and local integration testing; it is not a phone.
 ## Pair a device
 
 1. Open **Settings → Mobile Sharing**.
-2. Select **Connect a phone**.
+2. Select **Connect**.
 3. Scan the five-minute, one-use QR code with a compatible native client.
-4. Enter the six-digit code shown by that client in the pending request card.
+4. Enter the six-digit code shown by that client before the pending card's
+   two-minute approval countdown expires.
 5. Review the authority statement and approve.
 
 The QR secret is returned once and is not persisted. Closing Settings does not
@@ -33,8 +34,11 @@ cancel that invitation and create another. A second valid device attempting to
 use the same invitation cancels it.
 
 Approved devices survive a server or container restart and reconnect without a
-new QR. **Stop mobile sharing** disconnects devices but keeps approvals.
-**Forget all phones** clears every approval and rotates this target's host
+new QR. Temporary broker loss is shown as **Reconnecting** and the server
+re-registers with bounded backoff; **Resume** can request an immediate retry. A process
+reload or server shutdown cancels active streams, so clients retry them after
+reconnecting. **Stop sharing** disconnects devices but keeps approvals.
+**Forget all** clears every approval and rotates this target's host
 identity. Recreating a deleted container volume produces a different identity;
 a client must not silently replace its pinned host key.
 
@@ -47,9 +51,10 @@ taken or retrieve information already disclosed.
 A paired device reaches a positive allowlist of this server's chat, session,
 event, and read-only media routes over an authenticated WebRTC DataChannel. It
 cannot reach mobile-sharing owner endpoints, auth, admin, MCP, jobs, shell,
-push, live voice, uploads, publishing, worktree, or extension/widget management
-routes. This allowlist limits network management surfaces; it is not a tool
-sandbox.
+push, live voice, upload creation, transcript publishing, workspace file-content,
+worktree, or extension/widget management routes. The peer capability response
+hides or explains those unsupported controls. This allowlist limits network
+management surfaces; it is not a tool sandbox.
 
 The agent and sharing runtime run as the same OS user. In the standard contained
 agent the agent also has passwordless sudo, runs with `--yolo`, and can read the
@@ -69,7 +74,10 @@ term-llm access or read chat traffic.
 
 `cmd/peer-broker` is a standalone broker for development and owned deployments.
 It binds to loopback by default and requires TLS off loopback. It accepts static
-STUN URLs and coturn TURN-REST settings; it has no public defaults. The serve
+STUN URLs and coturn TURN-REST settings; minted TURN credentials default to one
+hour and it has no public defaults. A broker exposed beyond an owned loopback or
+private deployment must configure an admission credential and appropriate
+network-level abuse controls. The serve
 runtime reads `TERM_LLM_MOBILE_SHARING_BROKER_URL` and the optional
 `TERM_LLM_MOBILE_SHARING_ADMISSION` from its environment. These are internal
 operator injection points, not ordinary serve flags or YAML settings.

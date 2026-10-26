@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -26,10 +27,12 @@ import (
 )
 
 const (
-	invitationTTL  = 5 * time.Minute
-	leaseRenewal   = time.Minute
-	maxDevices     = 16
-	maxConnections = 4
+	invitationTTL    = 5 * time.Minute
+	leaseRenewal     = time.Minute
+	reconnectInitial = 250 * time.Millisecond
+	reconnectMaximum = 30 * time.Second
+	maxDevices       = 16
+	maxConnections   = 4
 )
 
 type Options struct {
@@ -68,9 +71,11 @@ type deviceSession struct {
 // Runtime owns one target's durable grants, rendezvous lease and live peers.
 type Runtime struct {
 	mu                      sync.Mutex
+	renewMu                 sync.Mutex
 	opts                    Options
 	dir                     string
 	availableReason         string
+	resetRequired           bool
 	settings                settingsState
 	identity                *pairing.Identity
 	grants                  *pairing.GrantStore
@@ -80,12 +85,19 @@ type Runtime struct {
 	brokerConn              *peerbroker.Conn
 	brokerConnected         bool
 	connecting              bool
+	reconnecting            bool
 	invitation              *invitation
 	pending                 map[string]*pendingRequest
 	sessions                map[string]*deviceSession
 	warnings                []string
 	ctx                     context.Context
 	cancel                  context.CancelFunc
+	sharingCtx              context.Context
+	sharingCancel           context.CancelFunc
+	generation              uint64
+	handshakes              int
+	newHandshakes           int
+	peerRequests            sync.WaitGroup
 	wg                      sync.WaitGroup
 	unlock                  func() error
 	started                 bool
@@ -94,7 +106,26 @@ type Runtime struct {
 // NewServer constructs the standard serve-web runtime without exposing
 // operator-only broker injection as ordinary serve configuration.
 func NewServer(target, storeID, basePath string, authenticated bool, hostLabel, approval string) (*Runtime, error) {
-	return New(Options{Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated, AgentName: target, HostLabel: hostLabel, ApprovalDescription: approval})
+	opts := Options{Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated, AgentName: target, HostLabel: safeHostLabel(hostLabel, target), ApprovalDescription: approval}
+	if storeID == "" {
+		return newUnavailableRuntime(opts, "mobile sharing cannot identify this session store"), nil
+	}
+	runtime, err := New(opts)
+	if err != nil {
+		return newUnavailableRuntime(opts, "mobile sharing local state could not be initialized"), nil
+	}
+	return runtime, nil
+}
+
+func newUnavailableRuntime(opts Options, reason string) *Runtime {
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Runtime{
+		opts: opts, availableReason: reason, settings: settingsState{Version: stateVersion},
+		pending: map[string]*pendingRequest{}, sessions: map[string]*deviceSession{}, ctx: ctx, cancel: cancel,
+	}
 }
 
 func New(opts Options) (*Runtime, error) {
@@ -168,10 +199,12 @@ func (r *Runtime) loadState() error {
 	if exists {
 		if target.Version != stateVersion || target.Target != r.opts.Target || target.StoreInstanceID != r.opts.StoreInstanceID {
 			r.availableReason = "mobile sharing state belongs to a different session store; reset is required"
+			r.resetRequired = true
 			return nil
 		}
 		if target.BrokerURL != "" && r.opts.BrokerURL != "" && target.BrokerURL != r.opts.BrokerURL {
 			r.availableReason = "the rendezvous service changed; forget all phones before continuing"
+			r.resetRequired = true
 			return nil
 		}
 	} else {
@@ -235,9 +268,14 @@ func (r *Runtime) Start() error {
 	}
 	r.started = true
 	enabled := r.settings.Enabled && r.availableReason == ""
+	if enabled {
+		r.startSharingLocked()
+	}
 	r.mu.Unlock()
 	if enabled {
-		return r.connectBroker(r.ctx)
+		if err := r.connectBroker(r.ctx); err != nil {
+			r.scheduleReconnect()
+		}
 	}
 	return nil
 }
@@ -313,39 +351,39 @@ func (r *Runtime) connectBroker(ctx context.Context) error {
 		return context.Canceled
 	}
 	old := r.brokerConn
+	sharingCtx := r.sharingCtx
 	r.hostID, r.leaseCapability, r.brokerConn, r.brokerConnected = registration.HostID, registration.LeaseCapability, conn, true
 	r.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
+	r.clearWarnings("rendezvous unreachable", "rendezvous disconnected; reconnecting")
 	r.wg.Add(2)
 	go r.receiveLoop(conn)
-	go r.renewLoop(conn)
+	go r.renewLoop(sharingCtx, conn)
 	return nil
 }
 
-func (r *Runtime) renewLoop(conn *peerbroker.Conn) {
+func (r *Runtime) renewLoop(ctx context.Context, conn *peerbroker.Conn) {
 	defer r.wg.Done()
 	ticker := time.NewTicker(leaseRenewal)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-r.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			r.mu.Lock()
 			current := r.brokerConn == conn && r.settings.Enabled
-			hostID, capability := r.hostID, r.leaseCapability
+			ctx := r.sharingCtx
 			r.mu.Unlock()
-			if !current {
+			if !current || ctx == nil {
 				return
 			}
-			hashes, err := r.reconnectHashes()
-			if err == nil {
-				_, err = r.broker.Renew(r.ctx, hostID, capability, hashes)
-			}
-			if err != nil {
+			if err := r.renewNow(ctx); err != nil {
 				r.setWarning("rendezvous unreachable")
+				_ = conn.Close()
+				return
 			}
 		}
 	}
@@ -364,13 +402,64 @@ func (r *Runtime) receiveLoop(conn *peerbroker.Conn) {
 			enabled := r.settings.Enabled
 			r.mu.Unlock()
 			if enabled && r.ctx.Err() == nil {
-				r.setWarning("rendezvous disconnected; retry from Resume")
+				r.setWarning("rendezvous disconnected; reconnecting")
+				r.scheduleReconnect()
 			}
 			return
 		}
 		if frame.Type == peerbroker.FrameSignal {
 			r.handleSignal(conn, frame)
 		}
+	}
+}
+
+func (r *Runtime) scheduleReconnect() {
+	r.mu.Lock()
+	if r.reconnecting || !r.settings.Enabled || r.availableReason != "" || r.sharingCtx == nil || r.sharingCtx.Err() != nil {
+		r.mu.Unlock()
+		return
+	}
+	ctx, generation := r.sharingCtx, r.generation
+	r.reconnecting = true
+	r.wg.Add(1)
+	r.mu.Unlock()
+	go r.reconnectLoop(ctx, generation)
+}
+
+func (r *Runtime) reconnectLoop(ctx context.Context, generation uint64) {
+	defer r.wg.Done()
+	defer func() {
+		r.mu.Lock()
+		r.reconnecting = false
+		r.mu.Unlock()
+	}()
+	delay := reconnectInitial
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		r.mu.Lock()
+		current := r.settings.Enabled && r.generation == generation && !r.brokerConnected
+		r.mu.Unlock()
+		if !current {
+			return
+		}
+		if err := r.connectBroker(ctx); err == nil {
+			return
+		}
+		delay = min(delay*2, reconnectMaximum)
+	}
+}
+
+func (r *Runtime) clearWarnings(messages ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, message := range messages {
+		r.warnings = slices.DeleteFunc(r.warnings, func(existing string) bool { return existing == message })
 	}
 }
 
@@ -404,6 +493,32 @@ func toICEServers(in []peerbroker.ICEServer) []webrtc.ICEServer {
 	return out
 }
 
+func (r *Runtime) startSharingLocked() (context.Context, uint64) {
+	if r.sharingCtx == nil || r.sharingCtx.Err() != nil {
+		r.generation++
+		r.sharingCtx, r.sharingCancel = context.WithCancel(r.ctx)
+	}
+	return r.sharingCtx, r.generation
+}
+
+func (r *Runtime) stopSharingLocked() {
+	r.generation++
+	if r.sharingCancel != nil {
+		r.sharingCancel()
+	}
+	r.sharingCtx, r.sharingCancel = nil, nil
+}
+
+func (r *Runtime) beginPeerRequest(generation uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.settings.Enabled || r.generation != generation || r.ctx.Err() != nil {
+		return false
+	}
+	r.peerRequests.Add(1)
+	return true
+}
+
 func (r *Runtime) closeSessionsLocked() {
 	for id, session := range r.sessions {
 		session.cancel()
@@ -417,6 +532,8 @@ func (r *Runtime) Close() error {
 		r.cancel()
 	}
 	r.mu.Lock()
+	r.settings.Enabled = false
+	r.stopSharingLocked()
 	if r.brokerConn != nil {
 		_ = r.brokerConn.Close()
 		r.brokerConn = nil
@@ -425,6 +542,7 @@ func (r *Runtime) Close() error {
 	unlock := r.unlock
 	r.unlock = nil
 	r.mu.Unlock()
+	r.peerRequests.Wait()
 	r.wg.Wait()
 	if unlock != nil {
 		return unlock()
@@ -437,12 +555,22 @@ func (r *Runtime) Status() Status { return r.status(false) }
 func (r *Runtime) status(includeInvitation bool) Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.invitation != nil && !r.opts.Now().Before(r.invitation.link.ExpiresAt) {
+	now := r.opts.Now()
+	if r.invitation != nil && !now.Before(r.invitation.link.ExpiresAt) {
 		r.host.CancelPairing(r.invitation.link.InvitationID)
 		r.invitation = nil
 		r.pending = map[string]*pendingRequest{}
 	}
-	status := Status{Enabled: r.settings.Enabled, BrokerConnected: r.brokerConnected, PendingRequests: []RequestStatus{}, Devices: []DeviceStatus{}, Warnings: append([]string(nil), r.warnings...), Authority: r.authority()}
+	for id, pending := range r.pending {
+		if !now.Before(pending.pairing.ExpiresAt) {
+			r.host.CancelPairing(pending.pairing.InvitationID)
+			delete(r.pending, id)
+			if r.invitation != nil && r.invitation.id == id {
+				r.invitation = nil
+			}
+		}
+	}
+	status := Status{Enabled: r.settings.Enabled, ResetRequired: r.resetRequired, BrokerConnected: r.brokerConnected, PendingRequests: []RequestStatus{}, Devices: []DeviceStatus{}, Warnings: append([]string(nil), r.warnings...), Authority: r.authority()}
 	if r.identity != nil {
 		status.HostFingerprint = r.identity.Fingerprint()
 	}
@@ -460,8 +588,12 @@ func (r *Runtime) status(includeInvitation bool) Status {
 		return status
 	}
 	status.Devices = r.deviceStatuses()
+	if !r.brokerConnected {
+		status.State = StateReconnecting
+		return status
+	}
 	for id, request := range r.pending {
-		status.PendingRequests = append(status.PendingRequests, RequestStatus{ID: id, Name: request.pairing.DeviceName, RequestedAt: request.created})
+		status.PendingRequests = append(status.PendingRequests, RequestStatus{ID: id, Name: request.pairing.DeviceName, RequestedAt: request.created, ExpiresAt: request.pairing.ExpiresAt})
 	}
 	sort.Slice(status.PendingRequests, func(i, j int) bool {
 		return status.PendingRequests[i].RequestedAt.Before(status.PendingRequests[j].RequestedAt)

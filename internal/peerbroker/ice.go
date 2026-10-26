@@ -27,21 +27,25 @@ func (h *Handler) handleICE(w http.ResponseWriter, r *http.Request) {
 	tok, hasToken := bearer(r)
 	kind, id, validQuery := requestPeer(r)
 	h.mu.Lock()
-	host := h.hosts[r.PathValue("host")]
-	if !hasToken || !validQuery || !h.peerAuthorizedLocked(host, kind, id, tok) {
+	hostID := r.PathValue("host")
+	host := h.hosts[hostID]
+	if status, code := h.peerEndpointErrorLocked(hostID, host, kind, id, tok, hasToken, validQuery); code != "" {
 		h.mu.Unlock()
-		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "")
+		writeError(w, status, code, "")
 		return
 	}
-	if host.iceMints >= h.cfg.MaxICEMintsPerLease {
+	quotaKey := kind + ":" + id
+	if h.cfg.Coturn != nil && host.iceMints[quotaKey] >= h.cfg.MaxICEMintsPerLease {
 		h.mu.Unlock()
 		writeError(w, http.StatusTooManyRequests, CodeQuotaExceeded, "")
 		return
 	}
-	host.iceMints++
-	hostID := host.id
+	if h.cfg.Coturn != nil {
+		host.iceMints[quotaKey]++
+	}
+	mintHostID := host.id
 	h.mu.Unlock()
-	writeJSON(w, http.StatusOK, h.mintICE(hostID, id))
+	writeJSON(w, http.StatusOK, h.mintICE(mintHostID, id))
 }
 func (h *Handler) mintICE(hostID, peerID string) ICECredentials {
 	servers := make([]ICEServer, 0, 2)

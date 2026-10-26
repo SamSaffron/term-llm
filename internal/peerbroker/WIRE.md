@@ -51,8 +51,12 @@ Broker URLs require HTTPS/WSS except on loopback.
 
 Renewal replaces the complete device hash set. Removing or changing an entry
 revokes that broker credential and closes its active socket. Invitations are
-one use and memory-only at the host; broker slots expire at their advertised
-expiry. Host leases default to three minutes and are renewed every minute.
+one use at the authenticated host. The broker allows a later
+socket presenting the same valid invitation capability to replace the earlier
+socket so a second MAC-authenticated `pair_request` reaches the host and burns
+the invitation; the broker cannot make that duplicate-authentication decision
+itself. Broker slots remain memory-only and expire at their advertised expiry.
+Host leases default to three minutes and are renewed every minute.
 
 ## WebSocket envelopes
 
@@ -115,7 +119,9 @@ pin.
 - reconnect hashes per broker host: 32 (the term-llm runtime admits at most 16
   paired devices and four concurrent device sessions);
 - invitations per host: 16;
-- ICE mints per lease: 8.
+- ICE mints per authenticated principal per lease: 8 when TURN credentials are
+  minted; static STUN-only responses do not consume this quota. Renewal resets
+  each principal's bounded counter.
 
 Clients MUST enforce the 256 KiB decoded pairing-message limit before parsing
 and SHOULD cap the outer broker frame at 256 KiB + 512 bytes. Limits are server

@@ -21,6 +21,7 @@ const (
 	WSCloseQuotaExceeded   = 4005
 	WSCloseViolation       = 4006
 	wsWriteTimeout         = 10 * time.Second
+	wsReadyTimeout         = 10 * time.Second
 	wsPongTimeout          = 45 * time.Second
 	wsPingInterval         = 20 * time.Second
 )
@@ -48,13 +49,14 @@ func (h *Handler) handleWS(w http.ResponseWriter, r *http.Request) {
 	hostID := r.PathValue("host")
 	h.mu.Lock()
 	host := h.hosts[hostID]
-	valid := hasToken && validQuery && h.peerAuthorizedLocked(host, kind, id, tok)
-	if valid && kind == PeerInvitation {
-		valid = !host.invitations[id].consumed
-	}
+	status, code := h.peerEndpointErrorLocked(hostID, host, kind, id, tok, hasToken, validQuery)
+	valid := code == ""
 	if !valid {
 		h.mu.Unlock()
-		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "")
+		if code == "" {
+			status, code = http.StatusUnauthorized, CodeUnauthorized
+		}
+		writeError(w, status, code, "")
 		return
 	}
 	if h.connections >= h.cfg.MaxConnections {
@@ -78,7 +80,7 @@ func (h *Handler) serveWS(conn *websocket.Conn, hostID string, role wsRole, tok 
 	peer := &wsPeer{queue: make(chan Frame, h.cfg.MaxPendingSignals), kick: make(chan struct{})}
 	h.mu.Lock()
 	host := h.hosts[hostID]
-	if !h.peerAuthorizedLocked(host, role.kind, role.id, tok) || role.kind == PeerInvitation && host.invitations[role.id].consumed {
+	if !h.peerAuthorizedLocked(host, role.kind, role.id, tok) {
 		h.connections--
 		h.mu.Unlock()
 		closeWS(conn, WSCloseLeaseExpired, CodeExpired)
@@ -98,6 +100,9 @@ func (h *Handler) serveWS(conn *websocket.Conn, hostID string, role wsRole, tok 
 		slot.peer = peer
 	case PeerInvitation:
 		slot := host.invitations[role.id]
+		if slot.peer != nil {
+			close(slot.peer.kick)
+		}
 		slot.consumed = true
 		slot.peer = peer
 	}

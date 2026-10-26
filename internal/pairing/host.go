@@ -171,6 +171,7 @@ type PendingPairing struct {
 	DeviceName        string
 	DeviceFingerprint string
 	SAS               string
+	ExpiresAt         time.Time
 	req               PairRequest
 	requestHash       []byte
 }
@@ -215,6 +216,7 @@ func (h *Host) VerifyPairRequest(req *PairRequest) (*PendingPairing, error) {
 	if deadline := now.Add(h.opts.ApprovalTTL); deadline.Before(s.expires) {
 		s.expires = deadline
 	}
+	p.ExpiresAt = s.expires
 	return p, nil
 }
 func (h *Host) invitationFor(p *PendingPairing, now time.Time) (*pairInvitation, error) {

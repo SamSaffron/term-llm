@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -134,6 +133,9 @@ func sameOrigin(request *http.Request) bool {
 	if site == "cross-site" || site == "same-site" {
 		return false
 	}
+	if site == "same-origin" {
+		return true
+	}
 	origin := strings.TrimSpace(request.Header.Get("Origin"))
 	if origin == "" {
 		return true
@@ -167,9 +169,5 @@ func writeOwnerError(w http.ResponseWriter, err error) {
 	if errors.Is(err, pairing.ErrDenied) {
 		status = http.StatusForbidden
 	}
-	message := "mobile sharing request failed"
-	if status == http.StatusBadRequest {
-		message = fmt.Sprintf("mobile sharing request failed: %v", err)
-	}
-	http.Error(w, message, status)
+	http.Error(w, "mobile sharing request failed", status)
 }

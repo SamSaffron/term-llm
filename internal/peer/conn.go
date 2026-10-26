@@ -19,7 +19,7 @@ type conn struct {
 	dc     *webrtc.DataChannel
 	limits Limits
 
-	mu        sync.Mutex
+	sendGate  chan struct{}
 	low       chan struct{}
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -27,11 +27,13 @@ type conn struct {
 
 func newConn(dc *webrtc.DataChannel, limits Limits) *conn {
 	c := &conn{
-		dc:     dc,
-		limits: limits,
-		low:    make(chan struct{}, 1),
-		closed: make(chan struct{}),
+		dc:       dc,
+		limits:   limits,
+		sendGate: make(chan struct{}, 1),
+		low:      make(chan struct{}, 1),
+		closed:   make(chan struct{}),
 	}
+	c.sendGate <- struct{}{}
 	dc.SetBufferedAmountLowThreshold(uint64(limits.MaxBufferedBytes / 2))
 	dc.OnBufferedAmountLow(func() {
 		select {
@@ -68,8 +70,17 @@ func (c *conn) send(ctx context.Context, f *Frame) error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	select {
+	case <-c.sendGate:
+		defer func() { c.sendGate <- struct{}{} }()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closed:
+		return ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	high := uint64(c.limits.MaxBufferedBytes)
 	for c.dc.BufferedAmount() > high {
 		select {

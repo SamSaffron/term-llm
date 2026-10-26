@@ -11,12 +11,13 @@ const (
 type State string
 
 const (
-	StateUnavailable State = "unavailable"
-	StateOff         State = "off"
-	StateInviting    State = "inviting"
-	StatePending     State = "pending"
-	StateSharing     State = "sharing"
-	StateStopped     State = "stopped"
+	StateUnavailable  State = "unavailable"
+	StateOff          State = "off"
+	StateInviting     State = "inviting"
+	StatePending      State = "pending"
+	StateSharing      State = "sharing"
+	StateReconnecting State = "reconnecting"
+	StateStopped      State = "stopped"
 )
 
 type InvitationStatus struct {
@@ -29,6 +30,7 @@ type RequestStatus struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	RequestedAt time.Time `json:"requested_at,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
 type DeviceStatus struct {
@@ -42,6 +44,7 @@ type DeviceStatus struct {
 type Status struct {
 	State           State              `json:"state"`
 	Reason          string             `json:"reason,omitempty"`
+	ResetRequired   bool               `json:"reset_required,omitempty"`
 	Enabled         bool               `json:"enabled"`
 	BrokerConnected bool               `json:"broker_connected"`
 	HostFingerprint string             `json:"host_fingerprint,omitempty"`

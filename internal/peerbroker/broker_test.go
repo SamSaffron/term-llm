@@ -131,9 +131,13 @@ func TestHostGeneratedInvitationStoredHashedAndOneUse(t *testing.T) {
 	if conn.Ready.Role != PeerInvitation {
 		t.Fatalf("ready = %+v", conn.Ready)
 	}
-	_ = conn.Close()
-	if _, err := client.DialInvitation(context.Background(), registration.HostID, "invite_1", capability); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("invitation replay error = %v", err)
+	replacement, err := client.DialInvitation(context.Background(), registration.HostID, "invite_1", capability)
+	if err != nil {
+		t.Fatalf("authenticated duplicate invitation socket: %v", err)
+	}
+	_ = replacement.Close()
+	if _, err := conn.Recv(); err == nil {
+		t.Fatal("superseded invitation socket remained open")
 	}
 }
 
@@ -155,6 +159,99 @@ func TestICEStaticAndCoturnREST(t *testing.T) {
 	want := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	if turn.Credential != want || !strings.Contains(turn.Username, ":mobile:phone") {
 		t.Fatalf("TURN credential = %+v", turn)
+	}
+}
+
+func assertBrokerCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != code {
+		t.Fatalf("error = %v, want broker code %q", err, code)
+	}
+}
+
+func TestPeerEndpointsDistinguishOfflineExpiryAndRevocation(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	h, client, _ := newBrokerClient(t, Config{LeaseTTL: time.Minute, Now: func() time.Time { return now }})
+	key := mustKey(t)
+	hostID := hostIDForKey(key.Public().(ed25519.PublicKey))
+	deviceID := "phone_1"
+	deviceCap := strings.Repeat("d", MinCredentialLen)
+
+	_, err := client.ICE(context.Background(), hostID, PeerDevice, deviceID, deviceCap)
+	assertBrokerCode(t, err, CodeNotFound)
+	_, err = client.DialDevice(context.Background(), hostID, deviceID, deviceCap)
+	assertBrokerCode(t, err, CodeNotFound)
+
+	registration := mustRegister(t, client, key, "", []DeviceCapabilityHash{{DeviceID: deviceID, Hash: HashCapability(deviceCap)}})
+	wrong := strings.Repeat("w", MinCredentialLen)
+	_, err = client.ICE(context.Background(), hostID, PeerDevice, deviceID, wrong)
+	assertBrokerCode(t, err, CodeUnauthorized)
+	_, err = client.DialDevice(context.Background(), hostID, deviceID, wrong)
+	assertBrokerCode(t, err, CodeUnauthorized)
+
+	if _, err := client.Renew(context.Background(), hostID, registration.LeaseCapability, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ICE(context.Background(), hostID, PeerDevice, deviceID, deviceCap)
+	assertBrokerCode(t, err, CodeUnauthorized)
+	_, err = client.DialDevice(context.Background(), hostID, deviceID, deviceCap)
+	assertBrokerCode(t, err, CodeUnauthorized)
+
+	registration = mustRegister(t, client, key, "", []DeviceCapabilityHash{{DeviceID: deviceID, Hash: HashCapability(deviceCap)}})
+	now = now.Add(2 * time.Minute)
+	_, err = client.ICE(context.Background(), registration.HostID, PeerDevice, deviceID, deviceCap)
+	assertBrokerCode(t, err, CodeExpired)
+	_, err = client.DialDevice(context.Background(), registration.HostID, deviceID, deviceCap)
+	assertBrokerCode(t, err, CodeExpired)
+
+	h.mu.Lock()
+	_, retained := h.expiredHosts[registration.HostID]
+	h.mu.Unlock()
+	if !retained {
+		t.Fatal("expired lease was not retained long enough to distinguish it from an unknown host")
+	}
+}
+
+func TestICEQuotaIsPerPrincipalResetByRenewalAndSkipsStaticOnly(t *testing.T) {
+	secret := strings.Repeat("s", MinCredentialLen)
+	_, client, _ := newBrokerClient(t, Config{
+		MaxICEMintsPerLease: 2,
+		Coturn:              &CoturnConfig{URLs: []string{"turn:relay.example:3478"}, SharedSecret: secret, TTL: time.Hour},
+	})
+	deviceOne, deviceTwo := strings.Repeat("1", MinCredentialLen), strings.Repeat("2", MinCredentialLen)
+	devices := []DeviceCapabilityHash{
+		{DeviceID: "one", Hash: HashCapability(deviceOne)},
+		{DeviceID: "two", Hash: HashCapability(deviceTwo)},
+	}
+	registration := mustRegister(t, client, mustKey(t), "", devices)
+	for range 2 {
+		if _, err := client.ICE(context.Background(), registration.HostID, PeerDevice, "one", deviceOne); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.ICE(context.Background(), registration.HostID, PeerDevice, "one", deviceOne); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("per-device quota error = %v", err)
+	}
+	if _, err := client.ICE(context.Background(), registration.HostID, PeerDevice, "two", deviceTwo); err != nil {
+		t.Fatalf("one device starved another: %v", err)
+	}
+	if _, err := client.ICE(context.Background(), registration.HostID, PeerHost, "", registration.LeaseCapability); err != nil {
+		t.Fatalf("device mints starved host: %v", err)
+	}
+	if _, err := client.Renew(context.Background(), registration.HostID, registration.LeaseCapability, devices); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ICE(context.Background(), registration.HostID, PeerDevice, "one", deviceOne); err != nil {
+		t.Fatalf("renewal did not reset quota: %v", err)
+	}
+
+	_, staticClient, _ := newBrokerClient(t, Config{MaxICEMintsPerLease: 1})
+	staticRegistration := mustRegister(t, staticClient, mustKey(t), "", devices[:1])
+	for range 4 {
+		if _, err := staticClient.ICE(context.Background(), staticRegistration.HostID, PeerDevice, "one", deviceOne); err != nil {
+			t.Fatalf("static-only ICE was unnecessarily quota limited: %v", err)
+		}
 	}
 }
 

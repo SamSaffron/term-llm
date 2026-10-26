@@ -33,6 +33,8 @@ type ServerConfig struct {
 	// across all callers of ServeChannel; defaults to DefaultMaxChannels.
 	// Endpoint.Serve additionally limits each peer to one channel.
 	MaxChannels int
+	// OnClose runs after a bridge channel closes and all of its request handlers drain.
+	OnClose func()
 	// Logf receives diagnostics; nil discards them.
 	Logf func(format string, args ...any)
 }
@@ -114,8 +116,15 @@ func (s *Server) ServeChannel(ctx context.Context, dc *webrtc.DataChannel) error
 	dc.OnMessage(sc.onMessage)
 	go func() {
 		<-ctx.Done()
+		sc.mu.Lock()
+		sc.closing = true
+		sc.mu.Unlock()
 		sc.conn.close()
+		sc.wg.Wait()
 		<-s.channels
+		if s.cfg.OnClose != nil {
+			s.cfg.OnClose()
+		}
 	}()
 	return nil
 }
@@ -127,6 +136,8 @@ type serverConn struct {
 	cancel context.CancelFunc
 
 	mu      sync.Mutex
+	wg      sync.WaitGroup
+	closing bool
 	streams map[string]context.CancelFunc
 	// replies bounds pending rejection replies so a peer that floods
 	// requests without reading cannot pile up goroutines.
@@ -165,14 +176,23 @@ func (sc *serverConn) reply(id string, status int, msg string) {
 // background runs a bounded control send off the read loop; when the bound
 // is exhausted the peer is not draining replies and the channel is closed.
 func (sc *serverConn) background(fn func()) {
+	sc.mu.Lock()
+	if sc.closing {
+		sc.mu.Unlock()
+		return
+	}
 	select {
 	case sc.replies <- struct{}{}:
 	default:
+		sc.mu.Unlock()
 		sc.srv.cfg.Logf("peer: closing bridge channel: too many pending rejections")
 		sc.cancel()
 		return
 	}
+	sc.wg.Add(1)
+	sc.mu.Unlock()
 	go func() {
+		defer sc.wg.Done()
 		defer func() { <-sc.replies }()
 		fn()
 	}()
@@ -180,6 +200,10 @@ func (sc *serverConn) background(fn func()) {
 
 func (sc *serverConn) startRequest(f *Frame) {
 	sc.mu.Lock()
+	if sc.closing || sc.ctx.Err() != nil {
+		sc.mu.Unlock()
+		return
+	}
 	if _, dup := sc.streams[f.ID]; dup {
 		sc.mu.Unlock()
 		sc.background(func() {
@@ -196,9 +220,11 @@ func (sc *serverConn) startRequest(f *Frame) {
 	}
 	ctx, cancel := context.WithCancel(sc.ctx)
 	sc.streams[f.ID] = cancel
+	sc.wg.Add(1)
 	sc.mu.Unlock()
 
 	go func() {
+		defer sc.wg.Done()
 		defer func() {
 			sc.mu.Lock()
 			delete(sc.streams, f.ID)
@@ -294,6 +320,12 @@ func requestsWebSocket(header http.Header) bool {
 func writeError(rw *responseWriter, status int, msg string) {
 	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	rw.Header().Set("X-Content-Type-Options", "nosniff")
+	switch status {
+	case http.StatusUnauthorized:
+		rw.Header().Set(PeerErrorHeader, PeerErrorAuthorizationRevoked)
+	case http.StatusForbidden:
+		rw.Header().Set(PeerErrorHeader, PeerErrorScopeDenied)
+	}
 	rw.WriteHeader(status)
 	_, _ = io.WriteString(rw, msg+"\n")
 	rw.finish("")
