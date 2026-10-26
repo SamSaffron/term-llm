@@ -58,6 +58,12 @@
      their text keeps the text colours. */
   --tool: var(--accent);
 
+  /* Status and selection speak in a tint, never an edge: one fill per colour. */
+  --accent-tint: color-mix(in srgb, var(--accent) 10%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 8%, transparent);
+  --amber-tint: color-mix(in srgb, var(--accent-amber) 10%, transparent);
+  --green-tint: color-mix(in srgb, var(--accent-green) 8%, transparent);
+
   /* Inline code, and the bar beside a block quote, so a theme can colour them.
      Code is peach, term-llm.com's number colour, warm beside the green. */
   --code: #e9be91;
@@ -96,7 +102,7 @@
   --header-action-bg-hover: var(--surface-2);
   --header-action-bg-active: var(--surface-3);
   --header-action-border: transparent;
-  --header-action-border-active: var(--border-strong);
+  --header-action-border-active: transparent;
   --header-action-shadow: none;
   --header-action-text: var(--text);
   --layout-transition-duration: 0.2s;

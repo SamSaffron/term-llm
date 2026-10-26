@@ -229,7 +229,7 @@
 .chip-trigger:not(.header-action):hover,
 .chip-trigger:not(.header-action):focus-visible,
 .chip-trigger:not(.header-action)[aria-expanded='true'] {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--text);
   outline: none;
 }
@@ -357,7 +357,7 @@
   min-width: 180px;
   max-width: min(360px, calc(100vw - 1rem));
   max-height: min(320px, calc(var(--app-height) - 1rem));
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-strong);
@@ -366,10 +366,6 @@
   overscroll-behavior: contain;
   font-size: 0.85rem;
   animation: chip-popover-in 0.12s ease-out;
-
-  /* Touch scrolling is driven by containPopoverScroll: iOS otherwise pans the
-     page instead of a scroller nested in a top-layer dialog. Pinch zoom stays
-     native because the handler ignores multi-touch gestures. */
   touch-action: pinch-zoom;
 }
 
@@ -394,9 +390,9 @@
   box-sizing: border-box;
   padding: 0.4rem 0.55rem;
   margin-bottom: 0.35rem;
-  border: 1px solid var(--surface-border, var(--surface-3));
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--surface-1, transparent);
+  background: var(--surface-2);
   color: var(--text);
   font: inherit;
   font-size: 0.85rem;
@@ -404,7 +400,7 @@
 }
 
 .chip-popover-filter:focus {
-  border-color: var(--accent, var(--surface-3));
+  border-color: var(--border-strong);
 }
 
 .chip-popover-item[hidden] {
@@ -434,7 +430,7 @@
 .chip-popover-item:hover,
 .chip-popover-item.focused,
 .chip-popover-item:focus {
-  background: var(--surface-3);
+  background: var(--surface-2);
   outline: none;
 }
 
@@ -601,9 +597,9 @@ dialog.chip-popover::backdrop {
 .runtime-popover-select {
   width: 100%;
   min-width: 0;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--surface-1, var(--surface));
+  background: var(--surface-2);
   color: var(--text);
   padding: 0.55rem 0.65rem;
   font: inherit;
@@ -641,7 +637,7 @@ dialog.chip-popover::backdrop {
   width: 2.35rem;
   height: 1.35rem;
   padding: 0;
-  border: 1px solid var(--border-strong);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--surface-3);
   cursor: pointer;
@@ -661,13 +657,13 @@ dialog.chip-popover::backdrop {
 }
 
 .runtime-popover-fast-toggle[aria-checked='true'] {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, var(--surface-3));
+  border-color: transparent;
+  background: var(--accent);
 }
 
 .runtime-popover-fast-toggle[aria-checked='true'] span {
   transform: translateX(0.98rem);
-  background: var(--text);
+  background: var(--btn-accent-text);
 }
 
 .runtime-popover-fast-toggle:focus-visible {
@@ -774,7 +770,7 @@ dialog.chip-popover::backdrop {
 
 .settings-select {
   width: 100%;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   background: var(--surface-2);
   color: var(--text);
   border-radius: var(--radius-md);

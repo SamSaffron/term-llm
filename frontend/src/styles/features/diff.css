@@ -566,7 +566,7 @@
 }
 
 .markdown-body .hljs {
-  background: var(--surface-2);
+  background: transparent;
 }
 
 :is(.markdown-body, .diff-code)
@@ -1202,7 +1202,6 @@
   width: var(--header-action-height);
   min-width: var(--header-action-height);
   padding-inline: 0;
-  border-color: var(--border-strong);
   background: var(--surface-3);
   color: var(--text);
 }

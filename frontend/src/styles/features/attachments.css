@@ -13,7 +13,7 @@
   align-items: center;
   gap: 0.35rem;
   background: var(--surface-2);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 0.25rem 0.5rem;
   font-size: 0.82rem;

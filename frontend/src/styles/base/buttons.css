@@ -1,7 +1,7 @@
 /* One button language. Emphasis: primary (the one main action in a place,
-   filled with the accent), secondary (the default: an outline), tertiary
-   (quiet: no outline or fill until pointed at), and destructive (the danger
-   colour on any of them). Two sizes: large (the control size) and small.
+   filled with the accent), secondary (the default: a tone), tertiary (quiet:
+   no fill until pointed at), and destructive (the danger colour on any of
+   them). Buttons are tonal, never outlined; hover steps one tone up. Two sizes: large (the control size) and small.
    Icon-only buttons are square. */
 
 .btn {
@@ -11,9 +11,9 @@
   gap: 0.4rem;
   min-height: var(--control-size);
   padding: 0 0.8rem;
-  border: 1px solid var(--border-strong);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: transparent;
+  background: var(--surface-2);
   color: var(--text);
   font: inherit;
   font-size: 0.875rem;
@@ -29,7 +29,7 @@
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--surface-2);
+  background: var(--surface-3);
 }
 
 .btn:focus-visible {
@@ -56,20 +56,21 @@
 .btn.tertiary {
   border-color: transparent;
   color: var(--text-muted);
+  background: transparent;
 }
 
 .btn.tertiary:hover:not(:disabled) {
   color: var(--text);
+  background: var(--surface-2);
 }
 
 .btn.danger {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-color: transparent;
   color: var(--danger);
 }
 
 .btn.danger:hover:not(:disabled) {
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  background: var(--danger-tint);
 }
 
 .btn.danger.primary {

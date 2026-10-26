@@ -150,7 +150,7 @@
   .header-controls-row
     .model-chip[data-chip='worktree']
     .chip-trigger:not(.header-action)[aria-expanded='true'] {
-    background: var(--surface-3);
+    background: var(--surface-2);
   }
 
   .model-picker {

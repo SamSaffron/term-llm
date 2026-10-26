@@ -154,7 +154,8 @@
 }
 
 .voice-status-failed {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-color: transparent;
+  background: var(--danger-tint);
 }
 
 .voice-status-failed .voice-status-mark {
@@ -180,9 +181,9 @@
   margin: 0 0 0.45rem;
   padding: 0.65rem 0.85rem;
   min-height: 44px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  background: var(--accent-tint);
   color: var(--text);
 }
 
@@ -329,7 +330,7 @@
   min-width: 0;
   padding: 0.5rem 0.85rem;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   background: var(--surface-2);
 }
 
@@ -367,9 +368,9 @@
 
 .pending-steering-action {
   flex-shrink: 0;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: transparent;
   color: var(--text);
   padding: 0.3rem 0.65rem;
   font: inherit;
@@ -381,7 +382,6 @@
 
 .pending-steering-action:hover {
   background: var(--surface-3);
-  border-color: var(--border-strong);
 }
 
 /* The input has the box's first row to itself; the controls share a toolbar
@@ -496,8 +496,8 @@
   margin-bottom: 0.45rem;
   padding: 0.55rem 0.75rem;
   color: var(--text);
-  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
-  border: 1px solid var(--accent);
+  background: var(--accent-tint);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
 }
 
@@ -515,7 +515,7 @@
 .approval-mode-chip,
 .goal-chip {
   align-self: flex-start;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--text);
@@ -531,13 +531,11 @@
 
 .approval-mode-chip {
   margin-bottom: 0.45rem;
-  border-color: rgb(245 158 11 / 45%);
-  background: rgb(245 158 11 / 13%);
+  background: var(--amber-tint);
 }
 
 .approval-mode-chip.approval-mode-yolo {
-  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: var(--danger-tint);
 }
 
 .approval-mode-chip-label,
@@ -550,15 +548,13 @@
 }
 
 .goal-chip.goal-active {
-  border-color: rgb(34 197 94 / 35%);
-  background: rgb(34 197 94 / 12%);
+  background: var(--green-tint);
 }
 
 .goal-chip.goal-paused,
 .goal-chip.goal-blocked,
 .goal-chip.goal-budget_limited {
-  border-color: rgb(245 158 11 / 38%);
-  background: rgb(245 158 11 / 13%);
+  background: var(--amber-tint);
 }
 
 .goal-objective-input {

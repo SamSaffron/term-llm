@@ -48,7 +48,6 @@
 
 .session-row-menu.open .session-menu-trigger {
   opacity: 1;
-  border-color: var(--border);
   background: var(--surface-3);
   color: var(--text);
 }

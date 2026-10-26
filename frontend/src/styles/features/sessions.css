@@ -264,11 +264,11 @@
 }
 
 .session-btn:hover:not(.active) {
-  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  background: var(--surface-2);
 }
 
 .session-btn.active {
-  background: var(--surface-2);
+  background: var(--surface-3);
 }
 
 .session-title {
@@ -366,7 +366,6 @@
 .session-row.menu-open .session-menu-trigger {
   background: var(--surface-3);
   color: var(--text);
-  border-color: var(--border);
 }
 
 /* Pinned conversations reorder by dragging the whole row: the mouse lifts it
@@ -409,7 +408,7 @@
   padding: 0.3rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  background: var(--surface-2);
+  background: var(--surface);
   box-shadow: var(--shadow-strong);
   z-index: var(--z-local-popover);
   overflow-y: auto;

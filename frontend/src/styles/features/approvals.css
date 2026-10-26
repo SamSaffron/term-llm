@@ -57,7 +57,7 @@
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--surface-2);
 }
@@ -206,7 +206,7 @@
 }
 
 .ask-user-question {
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--surface-2);
   padding: 1rem;
@@ -229,7 +229,7 @@ fieldset.ask-user-question {
 }
 
 .modal-actions .ask-user-skip:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  background: var(--danger-tint);
 }
 
 /* The question reads as body text, under its header as a small label. */

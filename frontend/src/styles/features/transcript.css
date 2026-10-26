@@ -8,9 +8,9 @@
   width: min(900px, calc(100% - 2.2rem));
   margin: 0.7rem auto 0;
   padding: 0.65rem 0.8rem;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--surface-2);
   color: var(--text);
   font-size: 0.83rem;
   box-sizing: border-box;
@@ -342,8 +342,8 @@
 }
 
 .message.error .message-body {
-  background: color-mix(in srgb, var(--danger) 6%, transparent);
-  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+  background: var(--danger-tint);
+  border-color: transparent;
   color: var(--error-text);
 }
 
@@ -417,8 +417,8 @@
 
 .message.compaction .message-body,
 .message.compaction-boundary .message-body {
-  background: rgb(229 162 16 / 8%);
-  border-color: rgb(229 162 16 / 22%);
+  background: var(--amber-tint);
+  border-color: transparent;
   color: var(--text-muted);
   font-size: 0.9rem;
   white-space: normal;
@@ -531,7 +531,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 0.75rem;
-  background: var(--surface);
+  background: transparent;
   color: var(--text);
   white-space: pre-wrap;
   font-family: var(--font-mono);
@@ -684,8 +684,7 @@
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   color: var(--text-muted);
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--text) 3.5%, transparent);
+  background: var(--surface-2);
 }
 
 .markdown-body pre:has(> code[data-lang]) .code-copy-btn {
@@ -706,9 +705,9 @@
   right: 6px;
   width: 28px;
   height: 28px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: transparent;
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -870,7 +869,7 @@
   font-family: var(--font-mono);
   font-variant-ligatures: none;
   background: var(--surface-2);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   padding: 0.1em 0.35em;
   border-radius: var(--radius-sm);
   font-size: 0.87em;
@@ -963,7 +962,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.32rem;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 0.08rem 0.42rem;
   font-size: 0.69rem;
@@ -985,32 +984,27 @@
 
 .interrupt-badge.pending {
   color: var(--text);
-  border-color: var(--border-strong);
   background: var(--surface-2);
 }
 
 .interrupt-badge.steer {
   color: var(--accent-green);
-  border-color: color-mix(in srgb, var(--accent-green) 30%, transparent);
-  background: color-mix(in srgb, var(--accent-green) 8%, transparent);
+  background: var(--green-tint);
 }
 
 .interrupt-badge.cancel {
   color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  background: var(--danger-tint);
 }
 
 .interrupt-badge.queue {
   color: var(--accent-amber);
-  border-color: var(--border);
-  background: var(--surface);
+  background: var(--surface-2);
 }
 
 .interrupt-badge.error {
   color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  background: var(--danger-tint);
 }
 
 .message.assistant .message-meta,
@@ -1338,9 +1332,9 @@
   align-items: baseline;
   gap: 0.45rem;
   padding: 0.55rem 0.65rem;
-  border: 1px solid color-mix(in srgb, var(--accent-green) 30%, var(--border));
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--accent-green) 7%, transparent);
+  background: var(--green-tint);
 }
 
 .ask-user-result-value > :first-child {
@@ -1353,7 +1347,7 @@
   padding: 0.65rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--surface);
+  background: transparent;
   font-family: var(--font-mono);
   font-variant-ligatures: none;
   font-size: 0.83rem;
@@ -1374,9 +1368,9 @@
   gap: 0.35rem;
   margin-top: 0.65rem;
   padding: 0.6rem 0.7rem;
-  border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  background: var(--danger-tint);
   color: var(--danger);
   font-size: 0.78rem;
 }
