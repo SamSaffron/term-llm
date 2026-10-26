@@ -19,7 +19,6 @@ import (
 	"time"
 
 	serveshell "github.com/samsaffron/term-llm/internal/app/serve/shell"
-	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/worktree"
@@ -500,82 +499,4 @@ func waitForShellExit(t *testing.T, shell *serveShell) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("shell process did not exit")
-}
-
-// Approval waits and an interactive shell retain real execution ownership after
-// grace. Late controls must still release both, over a fresh HTTP connection.
-func TestLateApprovalAndShellDeleteReleaseReload(t *testing.T) {
-	old := restart.Default
-	c := &restart.Coordinator{InterruptAfter: time.Millisecond}
-	restart.Default = c
-	defer func() { restart.Default = old }()
-	srv, _, cwd := newShellTestServer(t, false)
-	srv.sessionMgr = newServeSessionManager(time.Hour, 10, nil)
-	defer srv.sessionMgr.Close()
-	rt := newTestRuntime()
-	putTestSession(srv.sessionMgr, "shell-session", rt)
-	owned, release, err := c.Root(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	approvalCtx, timer := newResponseRunTimerFrom(owned, time.Second, realResponseRunClock{})
-	defer timer.stop()
-	events := make(chan map[string]any, 1)
-	rt.approvalCtx, rt.pauseResponseTimeout = approvalCtx, timer.pause
-	rt.approvalEventFunc = func(_ string, data map[string]any) error { events <- data; return nil }
-	approvalDone := make(chan error, 1)
-	go func() { _, err := rt.awaitApproval("/test/file.txt", false, false, ""); release(); approvalDone <- err }()
-	prompt := <-events
-	shell, _, err := srv.shells.Create("shell-session", cwd, 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ts := httptest.NewUnstartedServer(srv.httpHandler())
-	ts.Config.ConnContext, ts.Config.ConnState = srv.reloadTransport().ConnContext, srv.reloadTransport().ConnState
-	ts.Start()
-	defer ts.Close()
-	replaced := make(chan struct{}, 1)
-	stop, err := c.Bind(t.Context(), func(context.Context) error { replaced <- struct{}{}; return errors.New("fixture exec") })
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stop()
-	c.Request()
-	// Use the actual allowance deadline, not a sleep or a second timing knob.
-	window, finish, err := srv.reloadTransport().AdmitRequest(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer finish()
-	select {
-	case <-window.Done():
-	case <-time.After(7 * time.Second):
-		t.Fatal("control ownership window never elapsed")
-	}
-	finish()
-	select {
-	case <-replaced:
-		t.Fatal("reload ignored approval/shell ownership")
-	default:
-	}
-	base := ts.URL + "/ui/v1/sessions/shell-session"
-	resp := shellJSONRequest(t, ts.Client(), http.MethodPost, base+"/approval", "", map[string]any{"approval_id": prompt["approval_id"], "choice": 0})
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("late approval status=%d", resp.StatusCode)
-	}
-	if err := <-approvalDone; err != nil {
-		t.Fatalf("approval wait ended without submission: %v", err)
-	}
-	resp = shellJSONRequest(t, ts.Client(), http.MethodDelete, base+"/shell", "", map[string]any{"shell_id": shell.ID()})
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("late shell close status=%d", resp.StatusCode)
-	}
-	select {
-	case <-replaced:
-	case <-time.After(2 * time.Second):
-		t.Fatal("resolved blockers still prevented replacement")
-	}
 }

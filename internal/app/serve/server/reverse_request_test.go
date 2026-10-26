@@ -2,14 +2,9 @@ package server
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
-
-	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 func TestHubReverseRequestAllowsEncodedSlashInQuery(t *testing.T) {
@@ -82,101 +77,3 @@ func TestHubReverseRequestRejectsInvalidPaths(t *testing.T) {
 		})
 	}
 }
-
-func TestHubReverseRequestReloadTerminalFrame(t *testing.T) {
-	for _, afterHeaders := range []bool{false, true} {
-		name := "before_headers"
-		if afterHeaders {
-			name = "after_headers"
-		}
-		t.Run(name, func(t *testing.T) {
-			c := &restart.Coordinator{InterruptAfter: time.Millisecond}
-			ctx, release, err := (&restart.HTTPTransport{Coordinator: c}).AdmitRequest(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer release()
-			replaced := make(chan struct{}, 1)
-			stop, err := c.Bind(t.Context(), func(context.Context) error {
-				replaced <- struct{}{}
-				return errors.New("fixture exec")
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer stop()
-			interrupt := func() error {
-				c.Request()
-				select {
-				case <-ctx.Done():
-				case <-time.After(time.Second):
-					t.Fatal("reload did not interrupt local HTTP request")
-				}
-				if !errors.Is(context.Cause(ctx), restart.ErrInterrupt) {
-					t.Fatalf("cancellation cause = %v", context.Cause(ctx))
-				}
-				return ctx.Err()
-			}
-			client := &http.Client{Transport: reverseRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-				if !afterHeaders {
-					return nil, interrupt()
-				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     http.Header{"Content-Type": {"application/json"}},
-					Body:       io.NopCloser(reverseReadFunc(func([]byte) (int, error) { return 0, interrupt() })),
-					Request:    req,
-				}, nil
-			})}
-			var frames []ReverseResponse
-			func() {
-				defer release() // Match the connector's ownership through the final write.
-				HandleHubReverseRequest(ctx, ReverseRequest{ID: "req", Method: http.MethodPost, Path: "/chat"}, "", "http://node", "/chat", client, func(frame ReverseResponse) error {
-					frames = append(frames, frame)
-					if frame.Error != "" {
-						// A child cannot be admitted from a prematurely released owner.
-						_, finish, err := restart.Child(ctx)
-						if err != nil {
-							t.Fatalf("ownership released during terminal write: %v", err)
-						}
-						finish()
-						select {
-						case <-replaced:
-							t.Fatal("replacement started during terminal write")
-						default:
-						}
-					}
-					return nil
-				})
-			}()
-			wantCount, wantType, wantStatus := 1, ReverseFrameResponseStart, http.StatusServiceUnavailable
-			if afterHeaders {
-				wantCount, wantType, wantStatus = 2, ReverseFrameResponseEnd, 0
-				if len(frames) == 0 || frames[0].Type != ReverseFrameResponseStart || frames[0].Status != http.StatusOK || frames[0].Error != "" {
-					t.Fatalf("missing successful headers: %+v", frames)
-				}
-			}
-			if len(frames) != wantCount {
-				t.Fatalf("frames = %+v; want %d frames ending in %s error", frames, wantCount, wantType)
-			}
-			if last := frames[len(frames)-1]; last.Type != wantType || last.ID != "req" || last.Status != wantStatus || last.Error == "" {
-				t.Fatalf("terminal frame = %+v; want %s status %d with error", last, wantType, wantStatus)
-			}
-			select {
-			case <-replaced:
-			case <-time.After(time.Second):
-				t.Fatal("completed terminal write prevented replacement")
-			}
-		})
-	}
-}
-
-type reverseRoundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f reverseRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-type reverseReadFunc func([]byte) (int, error)
-
-func (f reverseReadFunc) Read(p []byte) (int, error) { return f(p) }

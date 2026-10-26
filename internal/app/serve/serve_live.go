@@ -644,10 +644,6 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !allowServeProducer(w, r) {
-		return
-	}
-
 	provider, err := s.liveProvider()
 	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", err.Error())
@@ -1009,9 +1005,6 @@ func (s *serveServer) handleLiveSessionAudio(w http.ResponseWriter, r *http.Requ
 	record, ok := s.lookupLiveSession(liveID)
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
-		return
-	}
-	if !allowServeProducer(w, r) {
 		return
 	}
 	pcmSession, ok := record.claimAudio(r.URL.Query().Get("token"), time.Now())

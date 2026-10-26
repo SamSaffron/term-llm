@@ -19,14 +19,3 @@ func admitServeWork(w http.ResponseWriter, r *http.Request) (context.Context, fu
 	}
 	return ctx, release, true
 }
-
-// allowServeProducer fences new work inside an already-owned HTTPTransport
-// handler, rejecting late unowned observers even after replacement rollback.
-func allowServeProducer(w http.ResponseWriter, r *http.Request) bool {
-	if !restart.Default.DrainingRequest(r.Context()) {
-		return true
-	}
-	w.Header().Set("Retry-After", "1")
-	writeOpenAIError(w, http.StatusServiceUnavailable, "server_reloading", restart.ErrDraining.Error())
-	return false
-}

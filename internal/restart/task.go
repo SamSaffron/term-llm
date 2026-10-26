@@ -138,34 +138,9 @@ func (c *Coordinator) interruptionDelay() time.Duration {
 // policy. Its descendants keep ordinary ownership accounting, but do not inherit
 // a claim that their execution can be checkpointed and resumed.
 func (c *Coordinator) Cancellable(ctx context.Context) (context.Context, func()) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.cancellableLocked(ctx)
-}
-
-// cancellableLocked lets transport admission register cancellation under the
-// same lock as ownership, so a concurrent drain cannot change its classification.
-func (c *Coordinator) cancellableLocked(ctx context.Context) (context.Context, func()) {
-	stepCtx, cancel := context.WithCancelCause(ctx)
-	step := &taskStep{cancel: cancel}
-	task := &Task{coordinator: c, steps: map[*taskStep]struct{}{step: {}}}
-	if c.tasks == nil {
-		c.tasks = make(map[*Task]struct{})
-	}
-	c.tasks[task] = struct{}{}
-	if c.interrupting {
-		cancel(ErrInterrupt)
-	}
-	var once sync.Once
-	return stepCtx, func() {
-		once.Do(func() {
-			c.mu.Lock()
-			task.closed = true
-			delete(c.tasks, task)
-			c.mu.Unlock()
-			cancel(context.Canceled)
-		})
-	}
+	taskCtx, closeTask := c.NewTask(ctx)
+	stepCtx, closeStep := CurrentTask(taskCtx).Step(ctx)
+	return stepCtx, func() { closeStep(); closeTask() }
 }
 
 // OnRequest installs a nonblocking request notification (for example, asking an

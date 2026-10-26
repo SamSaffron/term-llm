@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
@@ -18,11 +17,6 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 	if err := requireJSONContentType(r); err != nil {
 		writeAnthropicError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
-		return
-	}
-	if restart.Default.DrainingRequest(r.Context()) {
-		w.Header().Set("Retry-After", "1")
-		writeAnthropicError(w, http.StatusServiceUnavailable, "server_reloading", restart.ErrDraining.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())

@@ -252,9 +252,6 @@ func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Request) {
-	if !allowServeProducer(w, r) {
-		return
-	}
 	root, ok := s.currentGitRootOr409(w, r)
 	if !ok {
 		return
