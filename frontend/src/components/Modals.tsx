@@ -169,6 +169,17 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
       setSkipping(false);
     }
   };
+  // Who is asking and where: the asking session's agent, and the conversation it
+  // paused (a subagent's parent, whose title is the one you know).
+  const find = (id?: string) =>
+    id
+      ? store.sessions.value.find((item) => item.id === id) ||
+        (store.activeSession.value?.id === id ? store.activeSession.value : undefined)
+      : undefined;
+  const asking = find(prompt.sessionId);
+  const place = (find(asking?.parentSessionId) || asking)?.title;
+  const count = prompt.questions.length;
+  const title = `${asking?.agent || 'The agent'} has ${count > 1 ? `${count} questions` : 'a question'}`;
   // Hiding the dialog is not an answer: the question waits, and the agent with it.
   const later = () => store.dismissInteraction('ask-user', prompt);
   const last = tab === prompt.questions.length - 1;
@@ -183,11 +194,7 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   };
   return (
     <Overlay
-      title={
-        prompt.questions.length > 1
-          ? `Question ${tab + 1} of ${prompt.questions.length}`
-          : 'Answer question'
-      }
+      title={title}
       close={false}
       onEscape={() => {
         if (!sending) later();
@@ -205,29 +212,41 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
         </button>
       }
     >
-      <p>The agent needs your input to continue.</p>
+      <div class="ask-user-context">
+        <Icon name="pause" />
+        <span>{place ? `Paused in ${place}` : 'Paused until you answer'}</span>
+      </div>
       {/* Progress through the questions: a segment each, the current one in the accent. */}
-      {prompt.questions.length > 1 && (
-        <div class="ask-user-steps">
-          {prompt.questions.map((item, index) => {
-            const label = `Question ${index + 1}${item.header ? `: ${item.header}` : ''}`;
-            return (
-              <button
-                type="button"
-                class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
-                aria-label={label}
-                title={label}
-                aria-current={index === tab ? 'step' : undefined}
-                disabled={sending}
-                onClick={() => setTab(index)}
-              />
-            );
-          })}
+      {count > 1 && (
+        <div class="ask-user-progress">
+          <div class="ask-user-steps">
+            {prompt.questions.map((item, index) => {
+              const label = `Question ${index + 1}${item.header ? `: ${item.header}` : ''}`;
+              return (
+                <button
+                  type="button"
+                  class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
+                  aria-label={label}
+                  title={label}
+                  aria-current={index === tab ? 'step' : undefined}
+                  disabled={sending}
+                  onClick={() => setTab(index)}
+                />
+              );
+            })}
+          </div>
+          <span class="ask-user-count">
+            {tab + 1} of {count}
+          </span>
         </div>
       )}
       <fieldset ref={fieldset} class="ask-user-question" disabled={sending} aria-busy={sending}>
         <legend class="ask-user-question-text">
-          {question.header && <strong>{question.header}: </strong>}
+          {question.header && (
+            <>
+              <span class="ask-user-label">{question.header}</span>{' '}
+            </>
+          )}
           {question.question}
         </legend>
         {question.options?.map((option) => (

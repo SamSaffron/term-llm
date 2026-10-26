@@ -9035,7 +9035,7 @@ describe('Preact-owned chat surfaces', () => {
     act(() => {
       store.approval.value = null;
     });
-    expect(screen.getByRole('heading', { name: 'Answer question' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'The agent has a question' })).toBeInTheDocument();
     act(() => {
       store.askUser.value = null;
     });
@@ -9096,6 +9096,9 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     const step = (name: string) => screen.getByRole('button', { name });
+    expect(screen.getByRole('heading', { name: 'The agent has 2 questions' })).toBeInTheDocument();
+    expect(screen.getByText('1 of 2')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Language Which language?' })).toBeInTheDocument();
     expect(step('Question 1: Language')).toHaveAttribute('aria-current', 'step');
     expect(step('Question 2')).not.toHaveAttribute('aria-current');
     await vi.waitFor(() => expect(screen.getByRole('radio', { name: /Go/ })).toHaveFocus());
@@ -9106,6 +9109,34 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('radio', { name: /SQLite/ })).toHaveFocus();
     await userEvent.click(step('Question 1: Language'));
     expect(screen.getByRole('radio', { name: /Rust/ })).toHaveFocus();
+  });
+
+  it('names the asking agent and the conversation it paused', () => {
+    const store = createStore();
+    const parent = store.sessions.value[0];
+    store.sessions.value = [
+      ...store.sessions.value,
+      {
+        ...parent,
+        id: 'child-1',
+        title: 'Review the change',
+        agent: 'reviewer',
+        parentSessionId: parent.id,
+      },
+    ];
+    store.activeSessionId.value = 'child-1';
+    store.askUser.value = {
+      sessionId: 'child-1',
+      callId: 'ask-4',
+      questions: [{ question: 'Ship it?', options: [{ label: 'Yes' }] }],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('heading', { name: 'reviewer has a question' })).toBeInTheDocument();
+    expect(screen.getByText(`Paused in ${parent.title}`)).toBeInTheDocument();
   });
 
   it('shows no progress for a single question', () => {
@@ -9122,7 +9153,8 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     expect(document.querySelector('.ask-user-steps')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Answer question' })).toBeInTheDocument();
+    expect(screen.queryByText(/ of 1$/)).toBeNull();
+    expect(screen.getByRole('heading', { name: 'The agent has a question' })).toBeInTheDocument();
   });
 
   it('shows pending goal saves and keeps failures visible for retry', async () => {

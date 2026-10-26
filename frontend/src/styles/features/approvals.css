@@ -131,10 +131,42 @@
   }
 }
 
+/* Under the title: that the agent is paused, and in which conversation. */
+.ask-user-context {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: -0.1rem 0 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.ask-user-context svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.ask-user-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.ask-user-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 /* The steps are a thin segmented bar: answered segments in a soft accent, the
    current one in the accent. Each segment is a button taller than the bar it
    draws, so it is easy to tap. */
 .ask-user-steps {
+  flex: 1;
   display: flex;
   gap: 4px;
 }
@@ -200,10 +232,19 @@ fieldset.ask-user-question {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
+/* The question reads as body text, under its header as a small label. */
 .ask-user-question-text {
-  margin: 0 0 0.9rem;
-  font-size: 1.02rem;
-  font-weight: 700;
-  line-height: 1.45;
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5;
   color: var(--text);
+}
+
+.ask-user-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
 }

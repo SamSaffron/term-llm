@@ -47,6 +47,7 @@ export type IconName =
   | 'share'
   | 'steer'
   | 'stop'
+  | 'pause'
   | 'terminal'
   | 'text-search'
   | 'trash'
@@ -227,6 +228,12 @@ const paths: Record<IconName, JSX.Element> = {
     </>
   ),
   stop: <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />,
+  pause: (
+    <>
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </>
+  ),
   more: (
     <>
       <circle cx="5.5" cy="12" r="1" fill="currentColor" />

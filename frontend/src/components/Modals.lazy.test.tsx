@@ -137,7 +137,7 @@ it('renders agent approval and ask-user prompts without waiting for a chunk', ()
     act(() => {
       store.approval.value = null;
     });
-    expect(screen.getByRole('heading', { name: 'Answer question' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /has a question$/ })).toBeInTheDocument();
   } finally {
     store.dispose();
   }

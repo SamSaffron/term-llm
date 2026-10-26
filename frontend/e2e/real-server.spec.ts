@@ -307,12 +307,12 @@ test('recovers and resolves an ask-user request across real same-context tabs', 
   const question = 'Which path should the browser fixture take?';
   await expect(page.getByText(question)).toBeVisible();
   await expect(second.getByText(question)).toBeVisible();
-  await expect(page.getByRole('dialog', { name: 'Answer question' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: /has a question$/ })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByText('Decision waiting — Open')).toBeVisible();
   await second.getByRole('radio', { name: /Safe/ }).check();
   await second.getByRole('button', { name: /^Send answers?$/ }).click();
-  await expect(second.getByRole('dialog', { name: 'Answer question' })).toBeHidden();
+  await expect(second.getByRole('dialog', { name: /has a question$/ })).toBeHidden();
   await expect
     .poll(
       () =>
