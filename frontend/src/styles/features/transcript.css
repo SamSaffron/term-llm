@@ -205,6 +205,17 @@
   background: var(--surface);
 }
 
+/* A user message has the same copy button, after its time and mirrored to the
+   bubble's edge by the icon's stroke. */
+.message.user > .message-meta {
+  margin-top: -0.35rem;
+  padding-inline-end: 0;
+}
+
+.message.user .turn-copy-btn {
+  margin-inline-end: calc((16px - 30px) / 2 - 16px / 12);
+}
+
 .message.error .message-body {
   background: rgb(248 113 113 / 8%);
   border-color: rgb(248 113 113 / 25%);
