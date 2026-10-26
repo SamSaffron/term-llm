@@ -127,11 +127,6 @@
     min-width: 50px;
   }
 
-  .header-right {
-    margin-left: auto;
-    flex-shrink: 0;
-  }
-
   .header-stats {
     font-size: 0.78rem;
     min-width: 0;

@@ -19,36 +19,6 @@
 }
 
 /* Sidebar */
-.new-project-btn {
-  appearance: none;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  padding: 0.58rem 0.65rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 0.88rem;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-
-.new-project-btn svg {
-  width: 17px;
-  height: 17px;
-}
-
-.new-project-btn:hover,
-.new-project-btn:focus-visible {
-  border-color: var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  outline: none;
-}
 
 .session-row .session-btn {
   min-width: 0;
@@ -201,15 +171,6 @@
   gap: 0.32rem;
   min-height: 1rem;
   font-size: 0.72rem;
-}
-
-.message-role {
-  color: var(--text);
-  font-weight: 650;
-}
-
-.message-meta-separator {
-  opacity: 0.45;
 }
 
 .message.user .message-meta {
@@ -581,25 +542,6 @@ a.message-file:focus-visible {
 }
 
 /* File changes */
-.diff-scope-select {
-  appearance: none;
-  display: block;
-  max-width: 9rem;
-  padding: 0.35rem 1.45rem 0.35rem 0.5rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.diff-scope-select:hover,
-.diff-scope-select:focus-visible {
-  border-color: var(--border-strong);
-  outline: none;
-}
 
 .diff-file-body {
   overflow: hidden;
@@ -732,51 +674,6 @@ mark.diff-word {
   white-space: nowrap;
 }
 
-.project-create-form {
-  display: grid;
-  gap: 0.55rem;
-  margin-top: 1rem;
-}
-
-.project-create-form h3 {
-  margin: 0;
-  font-size: 0.9rem;
-}
-
-.project-create-form > button:not(.btn),
-.branch-tree-row > button {
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.branch-tree-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(3, auto);
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.branch-tree-row > div {
-  min-width: 0;
-}
-
-.branch-tree-row small {
-  display: block;
-  margin-top: 0.18rem;
-  color: var(--text-muted);
-}
-
-.branch-tree-row input {
-  grid-column: 1 / -2;
-}
-
 .side-question-send svg {
   width: 1rem;
   height: 1rem;
@@ -903,15 +800,6 @@ mark.diff-word {
 
   .wide-modal {
     width: 100%;
-  }
-
-  .branch-tree-row {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .branch-tree-row > div,
-  .branch-tree-row input {
-    grid-column: 1 / -1;
   }
 
   .diff-sidebar {

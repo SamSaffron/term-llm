@@ -1,11 +1,6 @@
 /* Revisioned transcript virtualization. */
 
-/* Revisioned transcript virtualization. Durable turns are mounted as bounded
-   containers; each contiguous unloaded interval is one explicit spacer. */
-.transcript-turn {
-  display: contents;
-}
-
+/* Each contiguous unloaded interval is one explicit spacer. */
 .transcript-gap {
   box-sizing: border-box;
   min-height: 1px;

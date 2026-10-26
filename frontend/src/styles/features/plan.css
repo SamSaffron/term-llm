@@ -23,10 +23,6 @@
   min-height: var(--header-action-height);
 }
 
-.worktree-compact-icon {
-  display: none;
-}
-
 .plan-toggle {
   position: relative;
   gap: 0.28rem;
@@ -239,19 +235,8 @@
   color: var(--accent-amber);
 }
 
-.plan-sheet,
-.plan-sheet-backdrop {
+.plan-sheet {
   display: none;
-}
-
-.plan-sheet-backdrop {
-  position: fixed;
-  inset: var(--app-offset-top) 0 0;
-  z-index: var(--z-sheet-backdrop);
-  background: rgb(0 0 0 / 44%);
-  opacity: 0;
-  backdrop-filter: blur(2px);
-  animation: plan-backdrop-in var(--panel-fade-duration) ease forwards;
 }
 
 .plan-sheet-handle {
@@ -281,12 +266,6 @@
   border: 0 !important;
   clip: rect(0, 0, 0, 0) !important;
   white-space: nowrap !important;
-}
-
-@keyframes plan-backdrop-in {
-  to {
-    opacity: 1;
-  }
 }
 
 @media (width <= 1099px) and (width >= 768px) {
@@ -325,10 +304,6 @@
 
   .plan-panel {
     display: none;
-  }
-
-  .plan-sheet-backdrop.open {
-    display: block;
   }
 
   .plan-sheet {
@@ -379,24 +354,11 @@
   .worktree-trigger .chip-label {
     display: none;
   }
-
-  .worktree-compact-icon {
-    display: inline;
-  }
-
-  .header-context-actions .chip-sep {
-    display: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .plan-surface,
   .plan-progress-track > span {
     transition: none;
-  }
-
-  .plan-sheet-backdrop {
-    animation: none;
-    opacity: 1;
   }
 }

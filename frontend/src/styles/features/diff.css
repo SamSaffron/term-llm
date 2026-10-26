@@ -56,10 +56,6 @@
   white-space: nowrap;
 }
 
-.diff-scope-select {
-  display: none;
-}
-
 .diff-sidebar-header .chip-trigger.diff-scope-trigger {
   flex: none;
   gap: 0.32rem;
@@ -371,19 +367,6 @@
 
 .diff-count-muted {
   color: var(--text-muted);
-}
-
-.diff-note {
-  padding: 0.6rem 0.75rem;
-  color: var(--text-muted);
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    sans-serif;
-  font-size: 0.8rem;
 }
 
 .diff-image-comparison {
@@ -1253,18 +1236,6 @@
   white-space: nowrap;
 }
 
-.diff-toggle.has-queued .diff-toggle-badge::after {
-  content: '';
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 7px;
-  height: 7px;
-  border: 2px solid var(--surface);
-  border-radius: 50%;
-  background: var(--accent);
-}
-
 .diff-filter-row {
   padding: 0.45rem 0.75rem;
   border-bottom: 1px solid var(--border);
@@ -1479,10 +1450,6 @@
 
 .diff-toggle-stat-del {
   color: var(--danger);
-}
-
-.diff-toggle-stat-neutral {
-  color: var(--text-muted);
 }
 
 @media (width <= 900px) {

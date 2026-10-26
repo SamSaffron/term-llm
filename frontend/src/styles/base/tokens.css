@@ -124,9 +124,7 @@
   --z-lightbox: 100;
   --z-blocking-overlay: 120;
   --z-toast: 900;
-  --z-popover-backdrop: 999;
   --z-popover: 1000;
-  --z-sheet-backdrop: var(--z-popover);
   --z-sheet: 1001;
   --z-runtime-popover: 10000;
   --diff-add-bg: rgb(46 160 67 / 18%);
