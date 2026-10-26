@@ -467,8 +467,9 @@
   font-size: inherit;
 }
 
+.message.tool,
 .message.job-notice {
-  width: min(100%, 560px);
+  width: min(100%, 820px);
 }
 
 .message.job-notice .message-body {
@@ -1022,15 +1023,24 @@
 
 /* Your words are filled, the agent's activity is outlined: tool calls have an
    edge in the tool colour (--tool) and no fill, so the colour has a place
-   without colouring their text. They are asides to the reply, so they stay
-   narrower than its text; long summaries and commands truncate rather than
-   widen the card. */
+   without colouring their text. On wider screens they stop just short of the
+   reply's width (98%): wrapped text rarely runs to its full width, so a
+   slightly narrower edge lines up with it by eye. Long summaries and
+   commands truncate rather than widen the card. */
 .tool-card,
 .tool-group-card {
-  max-width: 560px;
+  max-width: 100%;
   border: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
   border-radius: var(--radius-sm);
   overflow: hidden;
+}
+
+@media (width >= 768px) {
+  .tool-card,
+  .tool-group-card,
+  .message.job-notice .message-body {
+    max-width: 98%;
+  }
 }
 
 /* Calls that follow each other join into one block, like the rows of a table: the
@@ -1457,6 +1467,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
+  max-width: none;
 }
 
 /* Nested toggles drop the card padding so their status glyphs line up
