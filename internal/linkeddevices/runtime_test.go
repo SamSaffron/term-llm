@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/pairing"
 	"github.com/samsaffron/term-llm/internal/peer"
 	"github.com/samsaffron/term-llm/internal/peerbroker"
@@ -40,6 +42,77 @@ func TestRuntimeOffAndUnavailableMakeNoOutboundCalls(t *testing.T) {
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("off/unavailable runtime made %d outbound calls", got)
+	}
+}
+
+func TestDefaultICEPolicyRejectionMakesRuntimeUnavailableWithoutRetry(t *testing.T) {
+	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer brokerHandler.Close()
+	var calls atomic.Int64
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		brokerHandler.ServeHTTP(w, request)
+	}))
+	defer broker.Close()
+
+	cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{
+		BrokerURL:  broker.URL,
+		ICEServers: config.DefaultLinkedDevicesICEServers(),
+	}}
+	serverOpts := ServerOptionsFromConfig(cfg)
+	runtime, err := New(Options{
+		DataDir: t.TempDir(), Target: "default-policy", StoreInstanceID: "default-policy-store", BasePath: "/",
+		Authenticated: true, BrokerURL: serverOpts.BrokerURL, ICEPolicy: serverOpts.ICEPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	err = runtime.Enable(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "invalid ice_policy") {
+		t.Fatalf("enable error = %v, want rejected ICE policy", err)
+	}
+	status := runtime.Status()
+	if status.State != StateUnavailable || !strings.Contains(status.Reason, "rendezvous rejected linked devices registration: bad_request: invalid ice_policy") {
+		t.Fatalf("status = %+v, want clear unavailable rejection", status)
+	}
+	runtime.mu.Lock()
+	reconnecting := runtime.reconnecting
+	runtime.mu.Unlock()
+	if reconnecting {
+		t.Fatal("permanent registration rejection started automatic retry")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("broker calls = %d, want one challenge and one rejected registration", got)
+	}
+}
+
+func TestPermanentBrokerRejectionClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		permanent bool
+	}{
+		{name: "policy", err: &peerbroker.APIError{StatusCode: http.StatusBadRequest, Code: peerbroker.CodeBadRequest, Message: "invalid ice_policy"}, permanent: true},
+		{name: "admission", err: &peerbroker.APIError{StatusCode: http.StatusUnauthorized, Code: peerbroker.CodeUnauthorized}, permanent: true},
+		{name: "expired lease", err: &peerbroker.APIError{StatusCode: http.StatusGone, Code: peerbroker.CodeExpired}, permanent: false},
+		{name: "rate limited", err: &peerbroker.APIError{StatusCode: http.StatusTooManyRequests, Code: peerbroker.CodeRateLimited}, permanent: false},
+		{name: "server failure", err: &peerbroker.APIError{StatusCode: http.StatusServiceUnavailable, Code: peerbroker.CodeInternal}, permanent: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reason, permanent := permanentBrokerRejection(test.err)
+			if permanent != test.permanent {
+				t.Fatalf("permanent = %v, want %v (reason %q)", permanent, test.permanent, reason)
+			}
+			if permanent && !strings.Contains(reason, "rendezvous rejected linked devices registration") {
+				t.Fatalf("reason = %q", reason)
+			}
+		})
 	}
 }
 
@@ -306,7 +379,7 @@ func TestResetRequiredRuntimeRebuildsBrokerDependencies(t *testing.T) {
 
 func TestNewServerBoundsHostLabelAndDegradesOptionalFailures(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	runtime, err := NewServer("agent", "store", "/chat", true, strings.Repeat("long title ", 20)+"\x00", "approval")
+	runtime, err := NewServer("agent", "store", "/chat", true, strings.Repeat("long title ", 20)+"\x00", "approval", ServerOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,13 +389,25 @@ func TestNewServerBoundsHostLabelAndDegradesOptionalFailures(t *testing.T) {
 		t.Fatalf("host label was not bounded: %q", label)
 	}
 
-	unavailable, err := NewServer("agent", "", "/chat", true, "title", "approval")
+	unavailable, err := NewServer("agent", "", "/chat", true, "title", "approval", ServerOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unavailable.Close()
 	if status := unavailable.Status(); status.State != StateUnavailable {
 		t.Fatalf("optional failure status = %+v", status)
+	}
+}
+
+func TestServerOptionsRedactCredentials(t *testing.T) {
+	secret := "private-static-turn-password"
+	policy := peerbroker.NewHostICEConfig([]peerbroker.ConfiguredICEServer{{
+		URLs: []string{"turn:relay.example.com:3478"}, CredentialSource: peerbroker.CredentialSourceStatic,
+		Username: "device", Credential: secret,
+	}})
+	options := ServerOptions{BrokerURL: "https://broker.example.com", AdmissionCredential: secret, ICEPolicy: &policy}
+	if text := fmt.Sprintf("%v %#v", options, options); strings.Contains(text, secret) {
+		t.Fatalf("server options leaked credentials: %s", text)
 	}
 }
 

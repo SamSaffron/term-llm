@@ -375,7 +375,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 			if storeErr != nil {
 				storeID = ""
 			}
-			s.linkedDevices, err = linkeddevices.NewServer(agentName, storeID, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", resolvedApproval.Mode))
+			s.linkedDevices, err = linkeddevices.NewServer(agentName, storeID, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", resolvedApproval.Mode), linkeddevices.ServerOptionsFromConfig(cfg))
 			if err != nil {
 				return fmt.Errorf("initialize linked devices: %w", err)
 			}

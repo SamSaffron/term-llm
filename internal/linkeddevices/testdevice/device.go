@@ -263,6 +263,11 @@ func (s *Session) HTTPClient() *http.Client { return s.client }
 // Pairing returns the authority metadata applying to bridged requests.
 func (s *Session) Pairing() Pairing { return s.pairing }
 
+// SelectedPair reports the active Pion candidate pair for integration diagnostics.
+func (s *Session) SelectedPair() (peer.SelectedPairStats, bool, error) {
+	return s.endpoint.SelectedPair()
+}
+
 // Close closes the HTTP bridge and Pion peer connection.
 func (s *Session) Close() error {
 	return errors.Join(s.bridge.Close(), s.endpoint.Close())

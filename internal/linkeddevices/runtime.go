@@ -47,10 +47,30 @@ type Options struct {
 	ApprovalDescription string
 	BrokerURL           string
 	AdmissionCredential string
+	ICEPolicy           *peerbroker.HostICEConfig
+	Endpoint            peer.EndpointConfig
 	Handler             http.Handler
 	HTTPClient          *http.Client
 	Now                 func() time.Time
 }
+
+// ServerOptions contains administrator-owned linked-device configuration.
+type ServerOptions struct {
+	BrokerURL           string
+	AdmissionCredential string
+	ICEPolicy           *peerbroker.HostICEConfig
+	UnavailableReason   string
+}
+
+func (o ServerOptions) String() string {
+	admission := ""
+	if o.AdmissionCredential != "" {
+		admission = "[REDACTED]"
+	}
+	return fmt.Sprintf("linkeddevices.ServerOptions{BrokerURL:%q, AdmissionCredential:%s, ICEPolicy:%v, UnavailableReason:%q}", o.BrokerURL, admission, o.ICEPolicy, o.UnavailableReason)
+}
+
+func (o ServerOptions) GoString() string { return o.String() }
 
 type invitation struct {
 	id, capability string
@@ -65,11 +85,13 @@ type pendingRequest struct {
 }
 
 type brokerRegistrationAttempt struct {
-	ctx        context.Context
-	generation uint64
-	broker     *peerbroker.Client
-	identity   *pairing.Identity
-	grants     *pairing.GrantStore
+	ctx                 context.Context
+	generation          uint64
+	broker              *peerbroker.Client
+	identity            *pairing.Identity
+	grants              *pairing.GrantStore
+	admissionCredential string
+	icePolicy           *peerbroker.HostICEConfig
 }
 
 type deviceSession struct {
@@ -113,10 +135,17 @@ type Runtime struct {
 	started                 bool
 }
 
-// NewServer constructs the standard serve-web runtime without exposing
-// operator-only broker injection as ordinary serve configuration.
-func NewServer(target, storeID, basePath string, authenticated bool, hostLabel, approval string) (*Runtime, error) {
-	opts := Options{Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated, AgentName: target, HostLabel: safeHostLabel(hostLabel, target), ApprovalDescription: approval}
+// NewServer constructs the standard serve-web runtime with administrator-owned
+// broker and ICE settings.
+func NewServer(target, storeID, basePath string, authenticated bool, hostLabel, approval string, serverOpts ServerOptions) (*Runtime, error) {
+	opts := Options{
+		Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated,
+		AgentName: target, HostLabel: safeHostLabel(hostLabel, target), ApprovalDescription: approval,
+		BrokerURL: serverOpts.BrokerURL, AdmissionCredential: serverOpts.AdmissionCredential, ICEPolicy: serverOpts.ICEPolicy,
+	}
+	if serverOpts.UnavailableReason != "" {
+		return newUnavailableRuntime(opts, serverOpts.UnavailableReason), nil
+	}
 	if storeID == "" {
 		return newUnavailableRuntime(opts, "linked devices cannot identify this session store"), nil
 	}
@@ -335,6 +364,7 @@ func (r *Runtime) registrationAttemptLocked() brokerRegistrationAttempt {
 	return brokerRegistrationAttempt{
 		ctx: r.sharingCtx, generation: r.generation,
 		broker: r.broker, identity: r.identity, grants: r.grants,
+		admissionCredential: r.opts.AdmissionCredential, icePolicy: r.opts.ICEPolicy,
 	}
 }
 
@@ -358,13 +388,21 @@ func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegist
 	if err != nil {
 		return err
 	}
-	registration, err := attempt.broker.RegisterHostWithSigner(connectCtx, attempt.identity.PublicKey(), r.opts.AdmissionCredential, hashes, func(payload []byte) ([]byte, error) { return attempt.identity.Sign(payload), nil })
+	registration, err := attempt.broker.RegisterHostWithSignerAndPolicy(connectCtx, attempt.identity.PublicKey(), attempt.admissionCredential, hashes, attempt.icePolicy, func(payload []byte) ([]byte, error) { return attempt.identity.Sign(payload), nil })
 	if err != nil {
+		if reason, permanent := permanentBrokerRejection(err); permanent {
+			r.setRegistrationUnavailable(attempt, reason)
+			return err
+		}
 		r.setWarning("rendezvous unreachable")
 		return err
 	}
 	conn, err := attempt.broker.DialHost(connectCtx, registration.HostID, registration.LeaseCapability)
 	if err != nil {
+		if reason, permanent := permanentBrokerRejection(err); permanent {
+			r.setRegistrationUnavailable(attempt, reason)
+			return err
+		}
 		r.setWarning("rendezvous unreachable")
 		return err
 	}
@@ -483,7 +521,7 @@ func (r *Runtime) reconnectLoop(ctx context.Context, generation uint64) {
 		case <-timer.C:
 		}
 		r.mu.Lock()
-		current := r.settings.Enabled && r.generation == generation && !r.brokerConnected
+		current := r.settings.Enabled && r.availableReason == "" && r.generation == generation && !r.brokerConnected
 		attempt := r.registrationAttemptLocked()
 		r.mu.Unlock()
 		if !current {
@@ -493,6 +531,29 @@ func (r *Runtime) reconnectLoop(ctx context.Context, generation uint64) {
 			return
 		}
 		delay = min(delay*2, reconnectMaximum)
+	}
+}
+
+func permanentBrokerRejection(err error) (string, bool) {
+	var apiErr *peerbroker.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode < http.StatusBadRequest || apiErr.StatusCode >= http.StatusInternalServerError ||
+		apiErr.StatusCode == http.StatusRequestTimeout || apiErr.StatusCode == http.StatusTooManyRequests ||
+		errors.Is(err, peerbroker.ErrExpired) || errors.Is(err, peerbroker.ErrRateLimited) {
+		return "", false
+	}
+	detail := apiErr.Code
+	if apiErr.Message != "" {
+		detail += ": " + apiErr.Message
+	}
+	return "rendezvous rejected linked devices registration: " + detail, true
+}
+
+func (r *Runtime) setRegistrationUnavailable(attempt brokerRegistrationAttempt, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.settings.Enabled && r.generation == attempt.generation && r.identity == attempt.identity && r.broker == attempt.broker {
+		r.availableReason = reason
+		r.warnings = slices.DeleteFunc(r.warnings, func(existing string) bool { return existing == "rendezvous unreachable" })
 	}
 }
 

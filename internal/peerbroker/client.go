@@ -58,23 +58,40 @@ func GenerateHostKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 // RegisterHost proves the host key and installs the complete initial set of
 // device reconnect capability hashes. The broker returns only its own lease
 // capability; device capabilities remain host-generated.
+// This is a compatibility method that omits ICE policy.
 func (c *Client) RegisterHost(ctx context.Context, privateKey ed25519.PrivateKey, admissionCredential string, devices []DeviceCapabilityHash) (*Registration, error) {
+	return c.RegisterHostWithPolicy(ctx, privateKey, admissionCredential, devices, nil)
+}
+
+// RegisterHostWithPolicy proves the host key and installs device hashes and ICE policy.
+func (c *Client) RegisterHostWithPolicy(ctx context.Context, privateKey ed25519.PrivateKey, admissionCredential string, devices []DeviceCapabilityHash, icePolicy *HostICEConfig) (*Registration, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("peerbroker: invalid Ed25519 private key")
 	}
 	publicKey := privateKey.Public().(ed25519.PublicKey)
-	return c.RegisterHostWithSigner(ctx, publicKey, admissionCredential, devices, func(payload []byte) ([]byte, error) {
+	return c.RegisterHostWithSignerAndPolicy(ctx, publicKey, admissionCredential, devices, icePolicy, func(payload []byte) ([]byte, error) {
 		return ed25519.Sign(privateKey, payload), nil
 	})
 }
 
 // RegisterHostWithSigner proves a host identity without requiring callers to
 // export its private key. sign must produce an Ed25519 signature over payload.
+// This is a compatibility method that omits ICE policy.
 func (c *Client) RegisterHostWithSigner(ctx context.Context, publicKey ed25519.PublicKey, admissionCredential string, devices []DeviceCapabilityHash, sign func([]byte) ([]byte, error)) (*Registration, error) {
+	return c.RegisterHostWithSignerAndPolicy(ctx, publicKey, admissionCredential, devices, nil, sign)
+}
+
+// RegisterHostWithSignerAndPolicy proves a host identity with ICE policy.
+// sign must produce an Ed25519 signature over payload including the policy.
+func (c *Client) RegisterHostWithSignerAndPolicy(ctx context.Context, publicKey ed25519.PublicKey, admissionCredential string, devices []DeviceCapabilityHash, icePolicy *HostICEConfig, sign func([]byte) ([]byte, error)) (*Registration, error) {
 	if len(publicKey) != ed25519.PublicKeySize || sign == nil {
 		return nil, errors.New("peerbroker: invalid Ed25519 signer")
 	}
 	devices = append([]DeviceCapabilityHash{}, devices...)
+	var wirePolicy *[]wireICEServer
+	if icePolicy != nil {
+		wirePolicy = icePolicy.wire()
+	}
 	encodedKey := base64.RawURLEncoding.EncodeToString(publicKey)
 	var challenge Challenge
 	if err := c.do(ctx, http.MethodPost, "/v2/challenges", admissionCredential, challengeRequest{PublicKey: encodedKey}, http.StatusCreated, &challenge); err != nil {
@@ -86,11 +103,11 @@ func (c *Client) RegisterHostWithSigner(ctx context.Context, publicKey ed25519.P
 	if _, err := decodeToken(challenge.Nonce, 32); err != nil || challenge.ExpiresAt.IsZero() {
 		return nil, errors.New("peerbroker: malformed or expired challenge response")
 	}
-	signature, err := sign(registrationPayload(publicKey, challenge.ID, challenge.Nonce, devices))
+	signature, err := sign(registrationPayload(publicKey, challenge.ID, challenge.Nonce, devices, wirePolicy))
 	if err != nil || len(signature) != ed25519.SignatureSize {
 		return nil, errors.New("peerbroker: host signer failed")
 	}
-	req := registerRequest{PublicKey: encodedKey, ChallengeID: challenge.ID, Signature: base64.RawURLEncoding.EncodeToString(signature), Devices: devices}
+	req := registerRequest{PublicKey: encodedKey, ChallengeID: challenge.ID, Signature: base64.RawURLEncoding.EncodeToString(signature), Devices: devices, ICEPolicy: wirePolicy}
 	var registration Registration
 	if err := c.do(ctx, http.MethodPost, "/v2/hosts", "", req, http.StatusCreated, &registration); err != nil {
 		return nil, err

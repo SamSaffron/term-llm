@@ -50,8 +50,10 @@ Broker URLs require HTTPS/WSS except on loopback.
    hello/challenge/offer/answer from pairing WIRE v2. No QR is reused.
 
 Renewal replaces the complete device hash set. Removing or changing an entry
-revokes that broker credential and closes its active socket. Invitations are
-one use at the authenticated host. The broker allows a later socket presenting
+revokes that broker credential and closes its active socket. The validated host
+ICE policy remains attached to that lease; process restart/re-registration sends
+and signs it again. Invitations are one use at the authenticated host. The
+broker allows a later socket presenting
 the same valid invitation capability to replace the earlier socket. Replacement
 emits a disconnected-presence event, so the host cancels the invitation even if
 the replacement remains silent; a second MAC-authenticated `pair_request` is
@@ -59,6 +61,33 @@ also rejected by the host pairing authority. The broker cannot authenticate a
 pairing request itself. Broker slots remain memory-only and expire at their
 advertised expiry. Host leases default to three minutes and are renewed every
 minute.
+
+## Host ICE policy
+
+Host registration may include an ordered `ice_policy` array. The exact array is
+included in the Ed25519 registration transcript after the canonical device hash
+set. Omitting the field preserves the broker's legacy global STUN/coturn policy;
+an explicit empty array selects host candidates only.
+
+Each entry contains `urls` plus one credential mode:
+
+- STUN/STUNS has no `credential_source`, username, or credential;
+- `credential_source: "broker"` is TURN/TURNS without embedded credentials. The
+  broker accepts only URLs advertised by its configured server-side credential
+  provider and returns bounded principal credentials;
+- `credential_source: "static"` is TURN/TURNS with a host-supplied username and
+  credential. The broker holds these credentials in memory for the trusted host
+  lease and returns them only to the host and an authorized device capability.
+
+Invitation ICE requests return only STUN entries from either an explicit policy
+or the legacy global configuration. They never receive static or broker-minted
+TURN credentials, call the TURN credential provider, or consume mint quota.
+
+The host and approved device independently call the authenticated ICE endpoint
+for every new transport, so both consume the same accepted policy and receive
+fresh broker credentials. Static/STUN-only responses do not consume mint quota.
+A broker REST shared secret is deployment-private and never appears in this
+wire contract.
 
 ## WebSocket envelopes
 

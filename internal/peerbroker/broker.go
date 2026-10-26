@@ -43,6 +43,7 @@ type hostLease struct {
 	iceMints    map[string]int
 	signals     int
 	stop        chan struct{}
+	icePolicy   HostICEConfig // validated host-requested ICE policy
 }
 type Handler struct {
 	cfg          Config
@@ -166,7 +167,7 @@ func (h *Handler) admitted(r *http.Request) bool {
 	return ok && subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }
 
-func registrationPayload(publicKey []byte, challengeID, nonce string, devices []DeviceCapabilityHash) []byte {
+func registrationPayload(publicKey []byte, challengeID, nonce string, devices []DeviceCapabilityHash, icePolicy *[]wireICEServer) []byte {
 	canonical := append([]DeviceCapabilityHash(nil), devices...)
 	sort.Slice(canonical, func(i, j int) bool { return canonical[i].DeviceID < canonical[j].DeviceID })
 	encoded, _ := json.Marshal(canonical)
@@ -179,6 +180,13 @@ func registrationPayload(publicKey []byte, challengeID, nonce string, devices []
 	b.WriteString(nonce)
 	b.WriteByte(0)
 	b.Write(encoded)
+	b.WriteByte(0)
+	// ICE server order is significant to WebRTC preference, so bind the exact
+	// ordered policy rather than treating it as a set.
+	if icePolicy != nil {
+		policyJSON, _ := json.Marshal(*icePolicy)
+		b.Write(policyJSON)
+	}
 	return b.Bytes()
 }
 func parseDevices(devices []DeviceCapabilityHash, max int) (map[string]*deviceSlot, error) {
@@ -214,12 +222,29 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid registration")
 		return
 	}
+
+	// Validate ICE policy if provided
+	var icePolicy HostICEConfig
+	var turnURLs []string
+	if h.cfg.TURNProvider != nil {
+		turnURLs = h.cfg.TURNProvider.URLs()
+	}
+	if req.ICEPolicy != nil {
+		validated, err := validateHostICEPolicy(*req.ICEPolicy, turnURLs)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, CodeBadRequest, fmt.Sprintf("invalid ice_policy: %s", err))
+			return
+		}
+		icePolicy = validated
+	}
+
 	h.mu.Lock()
 	ch, ok := h.challenges[req.ChallengeID]
 	delete(h.challenges, req.ChallengeID)
 	h.mu.Unlock()
 	keyHash := hashCapability(string(key))
-	if !ok || !ch.expiresAt.After(h.cfg.Now()) || subtle.ConstantTimeCompare(ch.keyHash[:], keyHash[:]) != 1 || !ed25519.Verify(key, registrationPayload(key, req.ChallengeID, ch.nonce, req.Devices), sig) {
+	// Verify signature includes ICE policy
+	if !ok || !ch.expiresAt.After(h.cfg.Now()) || subtle.ConstantTimeCompare(ch.keyHash[:], keyHash[:]) != 1 || !ed25519.Verify(key, registrationPayload(key, req.ChallengeID, ch.nonce, req.Devices, req.ICEPolicy), sig) {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "")
 		return
 	}
@@ -229,7 +254,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hostID := hostIDForKey(key)
-	lease := &hostLease{id: hostID, keyHash: keyHash, leaseHash: hashCapability(leaseCap), expiresAt: h.cfg.Now().Add(h.cfg.LeaseTTL), invitations: map[string]*invitationSlot{}, devices: devices, iceMints: map[string]int{}, stop: make(chan struct{})}
+	lease := &hostLease{id: hostID, keyHash: keyHash, leaseHash: hashCapability(leaseCap), expiresAt: h.cfg.Now().Add(h.cfg.LeaseTTL), invitations: map[string]*invitationSlot{}, devices: devices, iceMints: map[string]int{}, stop: make(chan struct{}), icePolicy: icePolicy}
 	h.mu.Lock()
 	if old := h.hosts[hostID]; old != nil {
 		h.removeHostLocked(old)

@@ -1,6 +1,7 @@
 package peerbroker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -24,6 +25,14 @@ type CoturnConfig struct {
 	SharedSecret string
 	TTL          time.Duration
 	Username     string
+}
+
+// TURNCredentialProvider mints bounded credentials for an operator-approved set
+// of TURN URLs. Implementations may use local TURN-REST signing or a managed
+// server-side API; provider secrets must never be returned in ICECredentials.
+type TURNCredentialProvider interface {
+	URLs() []string
+	Mint(context.Context, string, []string) (ICECredentials, error)
 }
 
 func (c CoturnConfig) String() string {
@@ -56,6 +65,7 @@ type Config struct {
 	AdmissionCredential string
 	STUNURLs            []string
 	Coturn              *CoturnConfig
+	TURNProvider        TURNCredentialProvider
 	Now                 func() time.Time
 }
 
@@ -63,6 +73,8 @@ func (c Config) String() string {
 	turn := "<nil>"
 	if c.Coturn != nil {
 		turn = c.Coturn.String()
+	} else if c.TURNProvider != nil {
+		turn = "<configured>"
 	}
 	admission := ""
 	if c.AdmissionCredential != "" {
@@ -124,6 +136,9 @@ func (c Config) withDefaults() (Config, error) {
 			return c, fmt.Errorf("peerbroker: STUN URL: %w", err)
 		}
 	}
+	if c.Coturn != nil && c.TURNProvider != nil {
+		return c, errors.New("peerbroker: configure either coturn or a TURN credential provider, not both")
+	}
 	if c.Coturn != nil {
 		coturn := *c.Coturn
 		coturn.URLs = append([]string(nil), c.Coturn.URLs...)
@@ -145,6 +160,17 @@ func (c Config) withDefaults() (Config, error) {
 		}
 		if strings.ContainsAny(c.Coturn.Username, ":\r\n\x00") || len(c.Coturn.Username) > 64 {
 			return c, errors.New("peerbroker: invalid coturn username")
+		}
+		c.TURNProvider = coturnRESTProvider{config: *c.Coturn, now: c.Now}
+	} else if c.TURNProvider != nil {
+		urls := c.TURNProvider.URLs()
+		if len(urls) == 0 || len(urls) > 16 {
+			return c, errors.New("peerbroker: TURN credential provider requires 1-16 TURN URLs")
+		}
+		for _, raw := range urls {
+			if err := validateICEURL(raw, true); err != nil {
+				return c, fmt.Errorf("peerbroker: TURN credential provider URL: %w", err)
+			}
 		}
 	}
 	return c, nil
@@ -178,6 +204,131 @@ func validateICEURL(raw string, turn bool) error {
 		return errors.New("URL must use stun or stuns")
 	}
 	return nil
+}
+
+// validateHostICEPolicy validates a host-requested ICE policy.
+// It enforces limits on count, URL validity, credential source rules, and authority class consistency.
+func validateHostICEPolicy(policy []wireICEServer, brokerTURNURLs []string) (HostICEConfig, error) {
+	const maxServers = 8
+	const maxURLsPerEntry = 8
+	const maxTotalURLs = 16
+
+	if len(policy) > maxServers {
+		return HostICEConfig{}, fmt.Errorf("too many ICE server entries (max %d)", maxServers)
+	}
+
+	var totalURLs int
+	servers := make([]ConfiguredICEServer, 0, len(policy))
+
+	for i, wire := range policy {
+		if len(wire.URLs) == 0 {
+			return HostICEConfig{}, fmt.Errorf("server[%d]: no URLs", i)
+		}
+		if len(wire.URLs) > maxURLsPerEntry {
+			return HostICEConfig{}, fmt.Errorf("server[%d]: too many URLs (max %d)", i, maxURLsPerEntry)
+		}
+		totalURLs += len(wire.URLs)
+		if totalURLs > maxTotalURLs {
+			return HostICEConfig{}, fmt.Errorf("too many total URLs (max %d)", maxTotalURLs)
+		}
+
+		// Determine authority class from first URL
+		isSTUN, isTURN := false, false
+		for j, raw := range wire.URLs {
+			if len(raw) > 512 || strings.ContainsAny(raw, "\r\n\x00") {
+				return HostICEConfig{}, fmt.Errorf("server[%d].urls[%d]: invalid URL", i, j)
+			}
+			u, err := url.Parse(raw)
+			if err != nil {
+				return HostICEConfig{}, fmt.Errorf("server[%d].urls[%d]: invalid URL", i, j)
+			}
+			// Check scheme first
+			switch u.Scheme {
+			case "stun", "stuns":
+				isSTUN = true
+			case "turn", "turns":
+				isTURN = true
+			default:
+				return HostICEConfig{}, fmt.Errorf("server[%d].urls[%d]: invalid scheme %q", i, j, u.Scheme)
+			}
+			if u.User != nil || u.Fragment != "" || u.Opaque == "" {
+				return HostICEConfig{}, fmt.Errorf("server[%d].urls[%d]: URL must not have userinfo or fragment", i, j)
+			}
+		}
+
+		// Mixed STUN/TURN in a single entry is forbidden
+		if isSTUN && isTURN {
+			return HostICEConfig{}, fmt.Errorf("server[%d]: mixed STUN and TURN URLs", i)
+		}
+
+		// Validate credential source
+		switch wire.CredentialSource {
+		case "":
+			// STUN only
+			if !isSTUN {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: empty credential_source requires STUN URLs", i)
+			}
+			if wire.Username != "" || wire.Credential != "" {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: STUN entry must not have username or credential", i)
+			}
+			servers = append(servers, ConfiguredICEServer{URLs: append([]string(nil), wire.URLs...)})
+
+		case "broker":
+			// TURN only, broker-minted credentials
+			if !isTURN {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: credential_source=broker requires TURN URLs", i)
+			}
+			if wire.Username != "" || wire.Credential != "" {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: broker entry must not have username or credential", i)
+			}
+			// Validate that all URLs match the configured credential provider.
+			for _, reqURL := range wire.URLs {
+				if !urlInList(reqURL, brokerTURNURLs) {
+					return HostICEConfig{}, fmt.Errorf("server[%d]: broker TURN URL not in configured credential provider URLs", i)
+				}
+			}
+			servers = append(servers, ConfiguredICEServer{
+				URLs:             append([]string(nil), wire.URLs...),
+				CredentialSource: CredentialSourceBroker,
+			})
+
+		case "static":
+			// TURN only, static credentials
+			if !isTURN {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: credential_source=static requires TURN URLs", i)
+			}
+			if wire.Username == "" || wire.Credential == "" {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: static entry requires username and credential", i)
+			}
+			if strings.ContainsAny(wire.Username, "\r\n\x00") || len(wire.Username) > 256 {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: invalid username", i)
+			}
+			if strings.ContainsAny(wire.Credential, "\r\n\x00") || len(wire.Credential) > 256 {
+				return HostICEConfig{}, fmt.Errorf("server[%d]: invalid credential", i)
+			}
+			servers = append(servers, ConfiguredICEServer{
+				URLs:             append([]string(nil), wire.URLs...),
+				CredentialSource: CredentialSourceStatic,
+				Username:         wire.Username,
+				Credential:       wire.Credential,
+			})
+
+		default:
+			return HostICEConfig{}, fmt.Errorf("server[%d]: invalid credential_source %q", i, wire.CredentialSource)
+		}
+	}
+
+	return NewHostICEConfig(servers), nil
+}
+
+// urlInList checks if a URL exactly matches one in the list.
+func urlInList(needle string, haystack []string) bool {
+	for _, item := range haystack {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultInt(v, d int) int {

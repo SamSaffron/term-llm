@@ -126,6 +126,93 @@ func (c ICECredentials) String() string {
 }
 func (c ICECredentials) GoString() string { return c.String() }
 
+// CredentialSource identifies how TURN credentials are obtained.
+type CredentialSource string
+
+const (
+	CredentialSourceBroker CredentialSource = "broker"
+	CredentialSourceStatic CredentialSource = "static"
+)
+
+// ConfiguredICEServer represents one configured ICE server entry.
+type ConfiguredICEServer struct {
+	URLs             []string
+	CredentialSource CredentialSource
+	Username         string
+	Credential       string
+}
+
+func (s ConfiguredICEServer) String() string {
+	cred := ""
+	if s.Credential != "" {
+		cred = "[REDACTED]"
+	}
+	return fmt.Sprintf("peerbroker.ConfiguredICEServer{URLs:%v, CredentialSource:%q, Username:%q, Credential:%s}", s.URLs, s.CredentialSource, s.Username, cred)
+}
+func (s ConfiguredICEServer) GoString() string { return s.String() }
+
+// HostICEConfig represents the validated host-requested ICE policy.
+// It is stored in the host lease and determines effective ICE responses.
+type HostICEConfig struct {
+	configured bool
+	servers    []ConfiguredICEServer
+}
+
+// NewHostICEConfig constructs a HostICEConfig from validated servers.
+// The input slice is copied to prevent external mutation.
+func NewHostICEConfig(servers []ConfiguredICEServer) HostICEConfig {
+	copied := make([]ConfiguredICEServer, len(servers))
+	for i, srv := range servers {
+		copied[i] = ConfiguredICEServer{
+			URLs:             append([]string(nil), srv.URLs...),
+			CredentialSource: srv.CredentialSource,
+			Username:         srv.Username,
+			Credential:       srv.Credential,
+		}
+	}
+	return HostICEConfig{configured: true, servers: copied}
+}
+
+// Servers returns a copy of the configured ICE servers.
+func (h HostICEConfig) Servers() []ConfiguredICEServer {
+	out := make([]ConfiguredICEServer, len(h.servers))
+	for i, srv := range h.servers {
+		out[i] = ConfiguredICEServer{
+			URLs:             append([]string(nil), srv.URLs...),
+			CredentialSource: srv.CredentialSource,
+			Username:         srv.Username,
+			Credential:       srv.Credential,
+		}
+	}
+	return out
+}
+
+// Configured reports whether the host explicitly supplied an ICE policy. A
+// configured policy may contain zero servers to request host-only candidates.
+func (h HostICEConfig) Configured() bool { return h.configured }
+
+// Empty returns true if there are no configured ICE servers.
+func (h HostICEConfig) Empty() bool {
+	return len(h.servers) == 0
+}
+
+func (h HostICEConfig) String() string {
+	if len(h.servers) == 0 {
+		return "peerbroker.HostICEConfig{servers:[]}"
+	}
+	// Redact credentials in String representation
+	redacted := make([]string, len(h.servers))
+	for i, srv := range h.servers {
+		cred := ""
+		if srv.Credential != "" {
+			cred = "[REDACTED]"
+		}
+		redacted[i] = fmt.Sprintf("{URLs:%v, CredentialSource:%q, Credential:%s}", srv.URLs, srv.CredentialSource, cred)
+	}
+	return fmt.Sprintf("peerbroker.HostICEConfig{servers:%v}", redacted)
+}
+func (h HostICEConfig) GoString() string { return h.String() }
+
 const (
 	FrameReady     = "ready"
 	FrameSignal    = "signal"
@@ -152,11 +239,36 @@ func (f Frame) String() string {
 }
 func (f Frame) GoString() string { return f.String() }
 
+// wireICEServer is the JSON wire representation of a configured ICE server.
+type wireICEServer struct {
+	URLs             []string `json:"urls"`
+	CredentialSource string   `json:"credential_source,omitempty"`
+	Username         string   `json:"username,omitempty"`
+	Credential       string   `json:"credential,omitempty"`
+}
+
+func (h HostICEConfig) wire() *[]wireICEServer {
+	if !h.configured {
+		return nil
+	}
+	servers := make([]wireICEServer, len(h.servers))
+	for i, server := range h.servers {
+		servers[i] = wireICEServer{
+			URLs:             append([]string(nil), server.URLs...),
+			CredentialSource: string(server.CredentialSource),
+			Username:         server.Username,
+			Credential:       server.Credential,
+		}
+	}
+	return &servers
+}
+
 type registerRequest struct {
 	PublicKey   string                 `json:"public_key"`
 	ChallengeID string                 `json:"challenge_id"`
 	Signature   string                 `json:"signature"`
 	Devices     []DeviceCapabilityHash `json:"devices"`
+	ICEPolicy   *[]wireICEServer       `json:"ice_policy,omitempty"`
 }
 type challengeRequest struct {
 	PublicKey string `json:"public_key"`

@@ -221,7 +221,9 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation uint64, conn *
 	if err != nil {
 		return
 	}
-	endpoint, err := peer.NewEndpoint(peer.EndpointConfig{ICEServers: toICEServers(ice.ICEServers)})
+	endpointConfig := r.opts.Endpoint
+	endpointConfig.ICEServers = toICEServers(ice.ICEServers)
+	endpoint, err := peer.NewEndpoint(endpointConfig)
 	if err != nil {
 		return
 	}
