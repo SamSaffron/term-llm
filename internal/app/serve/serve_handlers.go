@@ -15,7 +15,6 @@ import (
 	"log"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -269,8 +268,7 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	// basePath is already stripped by http.StripPrefix; URL.Path is "/" or "/session-id" etc.
 	assetName := strings.TrimPrefix(r.URL.Path, "/")
 	if assetName == "index.html" {
-		cacheControl := "no-cache, no-store, must-revalidate"
-		serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", cacheControl, false)
+		s.serveIndexHTML(w, r)
 		return
 	}
 	if assetName == "manifest.webmanifest" {
@@ -304,7 +302,7 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SPA catch-all: serve index.html only for extensionless application routes.
-	serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", "no-cache, no-store, must-revalidate", false)
+	s.serveIndexHTML(w, r)
 }
 
 // uiAssetContentType maps an embedded asset name to its Content-Type, or ""
@@ -2920,36 +2918,10 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-
-		var gotToken string
-		auth := strings.TrimSpace(r.Header.Get("Authorization"))
-		if scheme, rest, ok := strings.Cut(auth, " "); ok && strings.EqualFold(scheme, "Bearer") {
-			gotToken = strings.TrimSpace(rest)
-		}
-		if gotToken == "" {
-			if xKey := strings.TrimSpace(r.Header.Get("x-api-key")); xKey != "" {
-				gotToken = xKey
-			}
-		}
-		if gotToken == "" && cookieAuthAllowed(r) {
-			// Cookie fallback is needed for browser-initiated requests that cannot set
-			// Authorization headers. Keep it GET-only for normal API/UI routes, but
-			// allow all widget methods: widget iframe fetches include same-site cookies,
-			// and the widget proxy strips Cookie before forwarding to the app.
-			if cookie, err := r.Cookie("term_llm_token"); err == nil && cookie.Value != "" {
-				if decoded, decErr := url.QueryUnescape(cookie.Value); decErr == nil {
-					gotToken = decoded
-				} else {
-					gotToken = cookie.Value
-				}
-			}
-		}
-
-		if gotToken == "" || subtle.ConstantTimeCompare([]byte(gotToken), []byte(s.cfg.token)) != 1 {
+		if !s.bearerTokenValid(r) {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid authentication credentials")
 			return
 		}
-
 		next(w, r)
 	}
 }
