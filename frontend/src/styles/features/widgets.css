@@ -96,7 +96,7 @@
   min-height: 4.25rem;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--surface-2) 72%, transparent);
   transition:
     background 0.14s ease,

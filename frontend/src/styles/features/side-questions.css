@@ -197,7 +197,7 @@
   gap: 0.35rem;
   padding: 0.28rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   transition: border-color var(--panel-fade-duration) ease;
 }

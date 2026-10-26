@@ -359,7 +359,7 @@
   max-height: min(320px, calc(var(--app-height) - 1rem));
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-strong);
   padding: 0.25rem;
   overflow-y: auto;
@@ -689,7 +689,7 @@ dialog.chip-popover::backdrop {
   }
 
   .chip-popover-runtime {
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     padding: 0.85rem 0.9rem calc(0.9rem + var(--safe-bottom));
     box-shadow:
       0 18px 48px rgb(0 0 0 / 42%),

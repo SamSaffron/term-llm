@@ -515,7 +515,7 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
   await open(page);
   const sessionButton = page.getByRole('button', { name: 'First chat', exact: true });
   await expect(sessionButton).toHaveCSS('display', 'flex');
-  await expect(sessionButton).toHaveCSS('border-radius', '4px');
+  await expect(sessionButton).toHaveCSS('border-radius', '3px');
   await expect(page.locator('#newChatBtn svg')).toBeVisible();
   await expect(page.locator('#attachBtn svg')).toBeVisible();
   await expect(page.locator('.message-body')).toHaveCSS('border-radius', '6px');
@@ -675,7 +675,7 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
     false,
   );
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-  await expect(page.locator('.composer-box')).toHaveCSS('border-radius', '8px');
+  await expect(page.locator('.composer-box')).toHaveCSS('border-radius', '6px');
   await expect(page.locator('#sendBtn svg')).toBeVisible();
 });
 
@@ -692,7 +692,7 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
   await expect(runtime).toBeVisible();
   await expect(runtimeClose).toBeFocused();
   await expect(page.getByRole('combobox', { name: 'Provider' })).not.toBeFocused();
-  await expect(runtime).toHaveCSS('border-radius', '8px');
+  await expect(runtime).toHaveCSS('border-radius', '6px');
   await expect(page.getByRole('combobox', { name: 'Runtime model' })).toHaveCSS(
     'min-height',
     '48px',

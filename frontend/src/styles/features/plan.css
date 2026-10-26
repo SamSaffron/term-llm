@@ -315,7 +315,7 @@
     max-height: min(72dvh, calc(var(--app-height) - var(--safe-top) - 1rem));
     border: 1px solid var(--border);
     border-bottom: 0;
-    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
     box-shadow: 0 -10px 34px rgb(0 0 0 / 35%);
     transform: translateY(100%);
   }

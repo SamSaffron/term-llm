@@ -41,7 +41,7 @@
   width: 100%;
   max-height: min(80dvh, calc(var(--app-height) - var(--safe-top)));
   margin-top: auto;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   transform: translateY(var(--drawer-swipe-offset-y, 0));
   touch-action: pan-x pan-down;
 }

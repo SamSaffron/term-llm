@@ -63,13 +63,12 @@
   --code: #e9be91;
   --quote-rule: color-mix(in oklab, var(--accent) 45%, var(--bg));
 
-  /* Three corner sizes for the whole app. Small: pills and small things. Medium:
-     bubbles, code blocks, tool calls, tables, buttons and inputs. Large: the
-     message box, menus, popovers, toasts and sheets. Circles and hairline
-     corners keep their own shape. */
-  --radius-sm: 4px;
+  /* Two corner sizes for the whole app. Medium: what you talk to and use, like
+     your messages, the message box, buttons, inputs, menus, dialogs and sheets.
+     Small: small things like chips and badges, and the machine's output: tool
+     calls, code and tables. Circles and hairline corners keep their own shape. */
+  --radius-sm: 3px;
   --radius-md: 6px;
-  --radius-lg: 8px;
 
   /* The chat's scrollbar width, measured by the transcript, so the message box
      can sit exactly under the messages (0 where scrollbars float). */

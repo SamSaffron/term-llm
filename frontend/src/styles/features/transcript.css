@@ -275,7 +275,7 @@
 
 .message.user .message-body {
   background: var(--surface-2);
-  border-color: var(--border);
+  border-color: transparent;
   color: var(--text);
   white-space: pre-wrap;
 }
@@ -472,14 +472,14 @@
 }
 
 .message.job-notice .message-body {
-  background: color-mix(in srgb, var(--tool) 4%, transparent);
+  background: transparent;
   color: var(--text-muted);
   font-size: 0.9rem;
   white-space: normal;
   padding: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--tool) 15%, transparent);
-  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
+  border-radius: var(--radius-sm);
 }
 
 /* A queued job's notice is drawn like a group of tool calls (it uses their toggle,
@@ -657,7 +657,7 @@
   box-sizing: border-box;
   margin: 1em 0;
   padding: 0;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   overflow: auto;
   border: 1px solid var(--border-strong);
 }
@@ -897,7 +897,7 @@
   display: block;
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
 }
 
 .markdown-body th,
@@ -1026,16 +1026,16 @@
   padding: 0 0.2rem;
 }
 
-/* Tool calls are a faint wash of the tool colour (--tool) with a quiet edge, so
-   the colour has a place without colouring their text. They are asides to the
-   reply, so they stay narrower than its text; long summaries and commands
-   truncate rather than widen the card. */
+/* Your words are filled, the agent's activity is outlined: tool calls have an
+   edge in the tool colour (--tool) and no fill, so the colour has a place
+   without colouring their text. They are asides to the reply, so they stay
+   narrower than its text; long summaries and commands truncate rather than
+   widen the card. */
 .tool-card,
 .tool-group-card {
   max-width: 560px;
-  border: 1px solid color-mix(in srgb, var(--tool) 15%, transparent);
-  background: color-mix(in srgb, var(--tool) 4%, transparent);
-  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -1195,7 +1195,7 @@
 }
 
 .tool-details {
-  border-top: 1px solid color-mix(in srgb, var(--tool) 15%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
   padding: 0.58rem 0.75rem 0.72rem;
   display: none;
 }
@@ -1351,7 +1351,7 @@
 .tool-details pre {
   margin: 0;
   padding: 0.65rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
   font-family: var(--font-mono);
@@ -1375,7 +1375,7 @@
   margin-top: 0.65rem;
   padding: 0.6rem 0.7rem;
   border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--danger) 6%, transparent);
   color: var(--danger);
   font-size: 0.78rem;
@@ -1470,7 +1470,7 @@
 .tool-group-entry-body .tool-toggle {
   padding: 0.45rem 0;
   gap: 0.45rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
 }
 
 .tool-group-entry-body .tool-details {
