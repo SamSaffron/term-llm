@@ -274,8 +274,8 @@
 }
 
 .message.user .message-body {
-  background: var(--surface-soft);
-  border-color: var(--border-strong);
+  background: var(--surface-2);
+  border-color: var(--border);
   color: var(--text);
   white-space: pre-wrap;
 }
@@ -472,13 +472,13 @@
 }
 
 .message.job-notice .message-body {
-  background: transparent;
+  background: color-mix(in srgb, var(--tool) 4%, transparent);
   color: var(--text-muted);
   font-size: 0.9rem;
   white-space: normal;
   padding: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--tool) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tool) 15%, transparent);
   border-radius: var(--radius-md);
 }
 
@@ -630,7 +630,7 @@
 
 .markdown-body hr {
   border: 0;
-  border-top: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent);
+  border-top: 1px solid var(--border);
   margin: 1.6em 0;
 }
 
@@ -896,7 +896,7 @@
   font-size: 0.92em;
   display: block;
   overflow-x: auto;
-  border: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
 
@@ -907,13 +907,12 @@
   overflow-wrap: break-word;
   text-align: left;
   vertical-align: top;
-  border-bottom: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border);
 }
 
 .markdown-body th {
   background: color-mix(in srgb, var(--text) 4%, transparent);
   font-weight: 650;
-  border-bottom-color: color-mix(in srgb, var(--text-muted) 40%, transparent);
   white-space: nowrap;
 }
 
@@ -1027,14 +1026,15 @@
   padding: 0 0.2rem;
 }
 
-/* Tool calls are framed in the tool colour (--tool) without a fill, so the
-   colour has a place without colouring their text. They are asides to the
+/* Tool calls are a faint wash of the tool colour (--tool) with a quiet edge, so
+   the colour has a place without colouring their text. They are asides to the
    reply, so they stay narrower than its text; long summaries and commands
    truncate rather than widen the card. */
 .tool-card,
 .tool-group-card {
   max-width: 560px;
-  border: 1px solid color-mix(in srgb, var(--tool) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tool) 15%, transparent);
+  background: color-mix(in srgb, var(--tool) 4%, transparent);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
@@ -1195,7 +1195,7 @@
 }
 
 .tool-details {
-  border-top: 1px solid color-mix(in srgb, var(--tool) 45%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--tool) 15%, transparent);
   padding: 0.58rem 0.75rem 0.72rem;
   display: none;
 }

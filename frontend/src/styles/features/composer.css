@@ -389,9 +389,9 @@
 .composer-box {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--surface-soft);
+  background: var(--surface-2);
   padding: 8px;
   position: relative;
 
