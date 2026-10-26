@@ -400,7 +400,7 @@
 }
 
 .chip-popover-filter:focus {
-  border-color: var(--border-strong);
+  background: var(--surface-3);
 }
 
 .chip-popover-item[hidden] {
@@ -608,8 +608,7 @@ dialog.chip-popover::backdrop {
 }
 
 .runtime-popover-select:focus {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--border-strong) 32%, transparent);
+  background: var(--surface-3);
 }
 
 .runtime-popover-select:disabled {
@@ -804,6 +803,6 @@ dialog.chip-popover::backdrop {
 }
 
 .settings-select:focus {
-  outline: 2px solid var(--border-strong);
-  border-color: var(--border-strong);
+  outline: none;
+  background: var(--surface-3);
 }

@@ -99,8 +99,8 @@
 
 .modal input:not([type='radio'], [type='checkbox']):focus,
 .modal textarea:focus {
-  outline: 2px solid var(--border-strong);
-  border-color: var(--border-strong);
+  outline: none;
+  background: var(--surface-3);
 }
 
 .rename-improve-btn {
