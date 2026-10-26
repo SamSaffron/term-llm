@@ -42,7 +42,11 @@
   z-index: var(--z-local-raised);
 }
 
+/* --message-gap is the space between messages (more on phones); calls that join
+   into one block take it back. */
 .messages {
+  --message-gap: 0.85rem;
+
   width: 100%;
   max-width: 900px;
   min-width: 0;
@@ -50,7 +54,7 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
+  gap: var(--message-gap);
 }
 
 .new-chat-pickers {
@@ -557,19 +561,17 @@
   margin: 1.3em 0 0.4em;
 }
 
-.markdown-body h4 {
-  font-size: 1em;
+/* h4 keeps the text size. */
+.markdown-body :is(h4, h5, h6) {
   margin: 1.2em 0 0.35em;
 }
 
 .markdown-body h5 {
   font-size: 0.95em;
-  margin: 1.2em 0 0.35em;
 }
 
 .markdown-body h6 {
   font-size: 0.9em;
-  margin: 1.2em 0 0.35em;
   color: var(--text-muted);
 }
 
@@ -1032,16 +1034,7 @@
 .messages > .message.tool + .tool-group,
 .messages > .tool-group + .message.tool,
 .messages > .tool-group + .tool-group {
-  margin-top: -0.85rem;
-}
-
-@media (width <= 767px) {
-  .messages > .message.tool + .message.tool,
-  .messages > .message.tool + .tool-group,
-  .messages > .tool-group + .message.tool,
-  .messages > .tool-group + .tool-group {
-    margin-top: -1rem;
-  }
+  margin-top: calc(-1 * var(--message-gap));
 }
 
 .messages > .message.tool:has(+ .message.tool, + .tool-group) > .tool-card,

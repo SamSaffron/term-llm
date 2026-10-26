@@ -770,7 +770,7 @@ mark.diff-word {
   }
 
   .messages {
-    gap: 1rem;
+    --message-gap: 1rem;
   }
 
   .message {

@@ -424,14 +424,6 @@
   grid-column: 1 / -1;
 }
 
-.worktree-primary-actions .btn,
-.worktree-footer .btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-}
-
 .worktree-primary-actions svg,
 .worktree-footer .btn svg {
   width: 0.9rem;
