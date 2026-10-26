@@ -37,7 +37,15 @@ for the process-global coordinator. Calls without reload ownership are unchanged
 `Coordinator.HTTPConnections` additionally accounts for HTTP/1 response flushing;
 handler return alone is insufficient. Passive streams and hijacked/stateful
 transports require explicit ownership adapters, not URL/method heuristics. `HTTPTransport` supplies the general web/Hub transport adapter, while producers
-use explicit root admission.
+use explicit root admission. Transport admission and cancellation registration
+are atomic with respect to drain. Requests arriving during drain retain caller
+cancellation and share one fixed deadline: the normal grace period plus five
+seconds for final controls. At that deadline they receive cooperative
+interruption and new handler/connection admission closes until rollback or exec.
+Traffic cannot extend the window; cancelled requests still own their actual
+settlement and response flushing. This allowance is not permission to start a
+producer: detached ingress must acquire Root before effects; request-scoped
+producers fence admission inside their already-owned transport lifetime.
 
 ### Mode adapters
 

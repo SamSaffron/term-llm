@@ -785,7 +785,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 	closeTask := func() {}
 	if options.rush == nil && options.modelSwap == nil {
-		runCtx, closeTask = newResponseReloadTask(runCtx, options.parentContext != nil)
+		runCtx, closeTask = restart.Default.NewTask(runCtx)
+		restart.CurrentTask(runCtx).SetSuspendAllowed(func() bool { return options.parentContext == nil })
 	}
 	defer func() {
 		if !launched {

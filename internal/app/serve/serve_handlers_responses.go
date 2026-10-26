@@ -176,7 +176,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	firstParty, identifiedUserBatch, stop := s.validateResponsesAdmissionRequest(w, r, ctx, &req, inputMessages, &replaceHistory)
-	if stop {
+	if stop || (!req.Stream && !allowServeProducer(w)) {
 		return
 	}
 

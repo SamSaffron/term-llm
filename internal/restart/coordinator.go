@@ -38,6 +38,7 @@ type Coordinator struct {
 	InterruptAfter time.Duration // Grace before cancelling opted-in task steps; default 30 seconds.
 	tasks          map[*Task]struct{}
 	interrupting   bool
+	httpDeadline   time.Time     // One fixed transport allowance per reload; never extended by traffic.
 	Timeout        time.Duration // Optional drain limit; zero waits until owned work finishes.
 	Observe        func(Status)
 	Diagnostic     func(string, []Blocker) // Optional slow-drain log; configure before Bind. Called outside mu.
@@ -98,6 +99,14 @@ func (c *Coordinator) Activity(ctx context.Context) (context.Context, func(), er
 func (c *Coordinator) admit(ctx context.Context, duringDrain, root bool) (context.Context, func(), error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	source := "unknown"
+	if _, file, line, ok := runtime.Caller(2); ok {
+		source = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	}
+	return c.admitLocked(ctx, duringDrain, root, source)
+}
+
+func (c *Coordinator) admitLocked(ctx context.Context, duringDrain, root bool, source string) (context.Context, func(), error) {
 	parent, _ := ctx.Value(operationKey{}).(*operation)
 	if !root && parent != nil && parent.coordinator == c {
 		if parent.released {
@@ -105,10 +114,6 @@ func (c *Coordinator) admit(ctx context.Context, duringDrain, root bool) (contex
 		}
 	} else if c.draining && (!duringDrain || c.status.Phase == "replacing") {
 		return ctx, nil, ErrDraining
-	}
-	source := "unknown"
-	if _, file, line, ok := runtime.Caller(2); ok {
-		source = fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
 	return c.trackLocked(ctx, source)
 }
@@ -250,6 +255,7 @@ func (c *Coordinator) Request() {
 func (c *Coordinator) startLocked() {
 	c.pending = false
 	c.draining = true
+	c.httpDeadline = time.Now().Add(c.interruptionDelay() + httpDrainAllowance)
 	if c.pause != nil {
 		close(c.pause)
 	}

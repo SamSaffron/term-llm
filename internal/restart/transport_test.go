@@ -111,7 +111,7 @@ func TestHTTPTransportNewRequestsDuringDrain(t *testing.T) {
 	for _, phase := range []string{"draining", "cancelling"} {
 		for _, method := range []string{http.MethodGet, http.MethodPost} {
 			t.Run(phase+"/"+method, func(t *testing.T) {
-				c := &Coordinator{draining: true, interrupting: phase == "cancelling", status: Status{Phase: phase}}
+				c := &Coordinator{draining: true, httpDeadline: time.Now().Add(time.Hour), interrupting: phase == "cancelling", status: Status{Phase: phase}}
 				transport := &HTTPTransport{Coordinator: c}
 				caller, cancel := context.WithCancelCause(context.Background())
 				defer cancel(context.Canceled)
@@ -119,6 +119,9 @@ func TestHTTPTransportNewRequestsDuringDrain(t *testing.T) {
 				called := false
 				transport.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					called = true
+					if deadline, ok := r.Context().Deadline(); !ok || !deadline.Equal(c.httpDeadline) {
+						t.Fatalf("control deadline=%v/%v, want fixed %v", deadline, ok, c.httpDeadline)
+					}
 					if err := r.Context().Err(); err != nil {
 						t.Fatalf("new request cancelled during %s: %v", phase, context.Cause(r.Context()))
 					}
@@ -168,4 +171,130 @@ func TestHTTPTransportInterruptsOngoingRequest(t *testing.T) {
 	if c.active != 0 || len(c.tasks) != 0 {
 		t.Fatalf("handler leaked ownership: active=%d tasks=%d", c.active, len(c.tasks))
 	}
+}
+
+// A control admitted after interruption must have time to run, but neither a
+// long handler nor a stream of overlapping requests can renew that allowance.
+func TestHTTPTransportDrainWindowCannotBeRenewed(t *testing.T) {
+	c := &Coordinator{InterruptAfter: time.Hour}
+	transport := &HTTPTransport{Coordinator: c}
+	_, releaseBlocker, err := c.Root(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseBlocker()
+	replaced := make(chan struct{}, 1)
+	stop, err := c.Bind(t.Context(), func(context.Context) error { replaced <- struct{}{}; return errors.New("fixture exec") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	c.Request()
+	c.mu.Lock()
+	c.interrupting = true
+	c.httpDeadline = time.Now().Add(100 * time.Millisecond)
+	c.mu.Unlock()
+	caller, cancel := context.WithCancel(t.Context())
+	cancelled, settled, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer func() {
+		cancel()
+		select {
+		case <-settled:
+		default:
+			close(settled)
+		}
+		<-done
+	}()
+	handler := transport.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Context().Err() != nil {
+			t.Error("control born cancelled")
+		}
+		<-r.Context().Done()
+		if !errors.Is(context.Cause(r.Context()), ErrInterrupt) {
+			t.Errorf("cause = %v", context.Cause(r.Context()))
+		}
+		close(cancelled)
+		<-settled
+	}))
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/control", nil).WithContext(caller))
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("long drain request never interrupted")
+	}
+	for i := 0; i < 10; i++ {
+		rec := httptest.NewRecorder()
+		transport.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("request admitted beyond fixed window") })).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/read", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("late status = %d", rec.Code)
+		}
+	}
+	// A fresh HTTP/1 connection cannot take a response-flush ticket after the
+	// deadline either, even if its handler has not been dispatched yet.
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	transport.ConnContext(t.Context(), conn)
+	transport.ConnState(conn, http.StateActive)
+	c.mu.Lock()
+	active := c.active
+	c.mu.Unlock()
+	if active != 2 {
+		t.Fatalf("cancelled handler/blocker ownership = %d, want 2", active)
+	}
+	releaseBlocker()
+	select {
+	case <-replaced:
+		t.Fatal("replacement before cancelled handler settled")
+	default:
+	}
+	close(settled)
+	<-done
+	select {
+	case <-replaced:
+	case <-time.After(time.Second):
+		t.Fatal("steady requests prevented replacement")
+	}
+	waitAttempt(t, c)
+}
+
+func TestHTTPTransportAdmissionRegistersInterruptBeforeDrain(t *testing.T) {
+	c := &Coordinator{InterruptAfter: time.Millisecond}
+	ctx, release, err := (&HTTPTransport{Coordinator: c}).AdmitRequest(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	replaced := make(chan struct{}, 1)
+	stop, err := c.Bind(t.Context(), func(context.Context) error { replaced <- struct{}{}; return errors.New("fixture exec") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	// Drain starts between transport admission and application dispatch. The
+	// request is already registered, never reclassified by a later Draining read.
+	c.Request()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("pre-drain admission escaped interruption")
+	}
+	if !errors.Is(context.Cause(ctx), ErrInterrupt) {
+		t.Fatalf("cause = %v", context.Cause(ctx))
+	}
+	select {
+	case <-replaced:
+		t.Fatal("interruption released request ownership")
+	default:
+	}
+	release()
+	select {
+	case <-replaced:
+	case <-time.After(time.Second):
+		t.Fatal("released request prevented replacement")
+	}
+	waitAttempt(t, c)
 }

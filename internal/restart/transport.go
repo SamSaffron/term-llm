@@ -5,12 +5,17 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
+// httpDrainAllowance is a final, fixed control window after the normal grace
+// period. Neither overlapping requests nor fresh connections can extend it.
+const httpDrainAllowance = 5 * time.Second
+
 // HTTPTransport accounts for finite request effects and response flushing while
-// permitting controls/lease maintenance during drain. Long-running operations
-// started by handlers must use Root. Passive streams explicitly detach; HTTP
-// methods and URL strings are not used as proxies for ownership.
+// permitting controls/lease maintenance during drain's bounded intake window.
+// Detached producers must use Root; request-bound producers must fence admission
+// before effects. Passive streams detach explicitly, never by method or URL.
 type HTTPTransport struct {
 	Coordinator *Coordinator
 	mu          sync.Mutex
@@ -49,7 +54,7 @@ func (h *HTTPTransport) ConnState(conn net.Conn, state http.ConnState) {
 		if entry.release != nil {
 			return
 		}
-		_, release, err := h.Coordinator.Activity(context.Background())
+		_, release, err := h.Coordinator.httpActivity(context.Background(), false)
 		if err != nil {
 			_ = conn.Close()
 			return
@@ -64,24 +69,59 @@ func (h *HTTPTransport) ConnState(conn net.Conn, state http.ConnState) {
 		}
 	}
 }
+
+// AdmitRequest accounts for a request through actual completion, including
+// protocol adapters (such as reverse forwarding) that dispatch outside net/http.
+// It shares Handler's bounded drain allowance, never root producer admission.
+func (h *HTTPTransport) AdmitRequest(ctx context.Context) (context.Context, func(), error) {
+	return h.Coordinator.httpActivity(ctx, true)
+}
+
 func (h *HTTPTransport) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, release, err := h.Coordinator.Activity(r.Context())
+		ctx, release, err := h.AdmitRequest(r.Context())
 		if err != nil {
+			w.Header().Set("Retry-After", "1")
 			http.Error(w, ErrDraining.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		defer release()
-		// Controls arriving during drain must remain usable, including after
-		// the grace period. Only requests already running opt into interruption;
-		// the caller's cancellation and Activity ownership still apply to all.
-		if !h.Coordinator.Draining() {
-			var finish func()
-			ctx, finish = h.Coordinator.Cancellable(ctx)
-			defer finish()
-		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// httpActivity atomically classifies transport ownership and cancellation. Work
+// admitted before drain stays interruptible. New controls get a usable context
+// even during cancellation, but only until this attempt's fixed deadline. After
+// that both connection and handler admission close, preventing steady traffic
+// from starving quiescence. Cancellation never releases actual ownership.
+func (c *Coordinator) httpActivity(ctx context.Context, handler bool) (context.Context, func(), error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.draining && (c.status.Phase == "replacing" || !time.Now().Before(c.httpDeadline)) {
+		return ctx, nil, ErrDraining
+	}
+	source := "HTTP connection"
+	if handler {
+		source = "HTTP handler"
+	}
+	ctx, release, err := c.admitLocked(ctx, true, false, source)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if handler {
+		var finish func()
+		if c.draining {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadlineCause(ctx, c.httpDeadline, ErrInterrupt)
+			finish = cancel
+		} else {
+			ctx, finish = c.cancellableLocked(ctx)
+		}
+		releaseOwner := release
+		release = func() { finish(); releaseOwner() }
+	}
+	return ctx, release, nil
 }
 
 // Passive releases only the observer request and its HTTP connection. Call at

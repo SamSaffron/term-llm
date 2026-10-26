@@ -77,6 +77,10 @@ func (s *serveServer) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !allowServeProducer(w) {
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxVoiceMultipartBytes)
 	if err := r.ParseMultipartForm(maxVoiceUploadBytes); err != nil {
 		if r.MultipartForm != nil {

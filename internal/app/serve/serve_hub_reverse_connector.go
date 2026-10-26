@@ -113,6 +113,7 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 			cancel()
 		}
 	}()
+	transport := &restart.HTTPTransport{Coordinator: restart.Default}
 	for {
 		var req hubReverseRequest
 		if err := conn.ReadJSON(&req); err != nil {
@@ -128,7 +129,7 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 			}
 			continue
 		}
-		reqCtx, release, reloadErr := restart.Default.Activity(ctx)
+		reqCtx, release, reloadErr := transport.AdmitRequest(ctx)
 		if reloadErr != nil {
 			writeMu.Lock()
 			_ = conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: req.ID, Status: 503, Error: reloadErr.Error()})

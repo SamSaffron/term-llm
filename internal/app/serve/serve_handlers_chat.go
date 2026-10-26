@@ -22,6 +22,9 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return
 	}
+	if !allowServeProducer(w) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())
 	defer cancel()
 

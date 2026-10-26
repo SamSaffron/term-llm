@@ -19,3 +19,14 @@ func admitServeWork(w http.ResponseWriter, r *http.Request) (context.Context, fu
 	}
 	return ctx, release, true
 }
+
+// allowServeProducer fences new work inside an already-owned HTTPTransport
+// handler. Its ticket and cancellation registration predate this admission check.
+func allowServeProducer(w http.ResponseWriter) bool {
+	if !restart.Default.Draining() {
+		return true
+	}
+	w.Header().Set("Retry-After", "1")
+	writeOpenAIError(w, http.StatusServiceUnavailable, "server_reloading", restart.ErrDraining.Error())
+	return false
+}
