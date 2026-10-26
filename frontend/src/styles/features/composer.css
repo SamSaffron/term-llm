@@ -50,11 +50,11 @@
   flex-wrap: wrap;
   gap: 0.5rem 0.75rem;
   min-height: 50px;
-  margin: 0 0.3rem 0.45rem;
+  margin: 0 0 0.45rem;
   padding: 6px 8px 6px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -177,7 +177,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
-  margin: 0 0.3rem 0.45rem;
+  margin: 0 0 0.45rem;
   padding: 0.65rem 0.85rem;
   min-height: 44px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
@@ -635,11 +635,15 @@
   outline: none;
 }
 
-/* Recording is the one solid accent button: on, beside a send that waits. */
+/* The mic lights up while it records (it is disabled until the recording
+   ends, so it keeps full strength here); Stop in the strip is the one solid
+   accent button, and send waits. */
 .voice-btn.recording,
-.voice-btn.recording:hover {
-  background: var(--accent);
-  color: var(--btn-accent-text);
+.voice-btn.recording:hover,
+.voice-btn.recording:disabled {
+  background: transparent;
+  color: var(--accent);
+  opacity: 1;
 }
 
 .voice-btn.busy:not(.recording) {
@@ -780,7 +784,7 @@
 
   .voice-status {
     min-height: 58px;
-    margin: 0 0.15rem 0.4rem;
+    margin: 0 0 0.4rem;
     padding: 6px 6px 6px 10px;
     border-radius: var(--radius-md);
   }
@@ -796,7 +800,7 @@
 
   .live-status {
     flex-wrap: wrap;
-    margin: 0 0.15rem 0.4rem;
+    margin: 0 0 0.4rem;
     padding: 0.65rem 0.75rem;
     border-radius: var(--radius-md);
   }
