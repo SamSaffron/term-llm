@@ -328,15 +328,21 @@ class AssistantStreamRenderer {
   private renderTail(source: string): void {
     if (!this.tail) return;
     const plain = canStreamPlainTextTailIncremental(this.scanState, source);
+    // Blank lines around the unfinished paragraph are not content (Markdown drops
+    // them), but pre-wrap would draw them until the turn ends and they collapse.
+    const text = plain ? source.replace(/^\s*\n/, '').trimEnd() : '';
+    const node = this.tail.firstChild;
     if (
       plain &&
       this.tailPlain &&
-      source.startsWith(this.tailSource) &&
-      this.tail.firstChild?.nodeType === Node.TEXT_NODE
+      node?.nodeType === Node.TEXT_NODE &&
+      this.tail.childNodes.length === 1
     ) {
-      (this.tail.firstChild as Text).appendData(source.slice(this.tailSource.length));
+      const shown = node as Text;
+      if (text.startsWith(shown.data)) shown.appendData(text.slice(shown.data.length));
+      else shown.data = text;
     } else if (plain) {
-      this.tail.replaceChildren(document.createTextNode(source));
+      this.tail.replaceChildren(document.createTextNode(text));
     } else {
       const prepared = document.createElement('div');
       prepared.innerHTML = renderMarkdown(source, this.resolveMedia);

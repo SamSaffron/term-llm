@@ -9587,6 +9587,27 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('does not draw the blank lines around a streaming paragraph', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(<Markdown value={'\n\nFirst'} streaming />);
+      rerender(<Markdown value={'\n\nFirst line of the reply.\n\n'} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      const tail = container.querySelector('.streaming-tail-plain');
+      expect(tail).toBeInTheDocument();
+      expect(tail?.textContent).toBe('First line of the reply.');
+      rerender(<Markdown value={'\n\nFirst line of the reply.\n\nSecond'} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(container.textContent).not.toMatch(/^\s|\s$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not add code-copy controls while a markdown fence is open', () => {
     render(<Markdown value={'```sh\necho "hello"'} streaming />);
     expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
