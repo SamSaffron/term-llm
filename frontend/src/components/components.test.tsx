@@ -5151,7 +5151,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(stop).toBeEnabled();
     expect(stop).toHaveClass('send-btn');
     expect(stop).toHaveAttribute('title', 'Stop');
-    expect(stop.querySelector('svg rect')).toBeInTheDocument();
+    expect(stop.querySelector('svg use')?.getAttribute('href')).toMatch(/#stop$/);
     expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
 
     await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
@@ -5161,8 +5161,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(steer).not.toHaveClass('loading');
     expect(steer).toHaveClass('steer');
     expect(steer).toHaveAttribute('title', 'Steer');
-    expect(steer.querySelector('svg rect')).not.toBeInTheDocument();
-    expect(steer.querySelector('.arrow path')).toHaveAttribute('d', 'M5 6v7a2 2 0 0 0 2 2h12');
+    expect(steer.querySelector('.arrow use')?.getAttribute('href')).toMatch(/#steer$/);
     expect(screen.queryByRole('button', { name: 'Stop', exact: true })).not.toBeInTheDocument();
   });
 

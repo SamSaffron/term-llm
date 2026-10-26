@@ -502,11 +502,15 @@ func TestLazyChunksReuseCanonicalEntryModuleURL(t *testing.T) {
 func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	const bootstrap = `<script>window.TERM_LLM_UI_PREFIX="/chat/nodes/alpha";</script>`
 	rendered := string(RenderIndexHTML("/chat/nodes/alpha", bootstrap))
+	if IconSprite() == "" {
+		t.Fatal("the build must emit the hashed icon sprite the entry draws from")
+	}
 	for _, want := range []string{
 		`<base href="/chat/nodes/alpha/">`,
 		bootstrap,
 		`href="` + ChatAssetManifest().EntryCSS[0] + `"`,
 		`type="module" src="` + ChatAssetManifest().EntryJS + `"`,
+		`rel="preload" href="` + IconSprite() + `" as="image"`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered index missing %q", want)
