@@ -192,7 +192,7 @@ fieldset.ask-user-question {
   background: transparent;
 }
 
-/* Skipping the questions sits apart, on the left, in the danger colour but quiet. */
+/* Declining sits apart, on the left, in the danger colour but quiet. */
 .modal-actions .ask-user-skip {
   margin-inline-end: auto;
   color: var(--danger);

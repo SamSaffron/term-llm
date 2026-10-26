@@ -9042,7 +9042,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
-  it('keeps skipping apart from the way on, and hides questions to answer later', async () => {
+  it('keeps declining apart from the way on, and minimizes questions to answer later', async () => {
     const store = createStore();
     store.activeSessionId.value = 's1';
     store.askUser.value = {
@@ -9064,14 +9064,14 @@ describe('Preact-owned chat surfaces', () => {
       [...screen.getByRole('dialog').querySelectorAll('.modal-actions button')].map(
         (button) => button.textContent,
       );
-    expect(actions()).toEqual(['Skip questions', 'Next']);
+    expect(actions()).toEqual(['Decline', 'Next']);
     await userEvent.click(screen.getByRole('radio', { name: /Yes/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Next' }));
-    expect(actions()).toEqual(['Skip questions', 'Back', 'Send answers']);
-    await userEvent.click(screen.getByRole('button', { name: 'Answer later' }));
+    expect(actions()).toEqual(['Decline', 'Back', 'Send answers']);
+    await userEvent.click(screen.getByRole('button', { name: 'Minimize' }));
     expect(store.dismissInteraction).toHaveBeenCalledWith('ask-user', store.askUser.value);
     expect(store.answerAskUser).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: 'Skip questions' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Decline' }));
     expect(store.answerAskUser).toHaveBeenCalledWith([], true, store.askUser.value);
   });
 

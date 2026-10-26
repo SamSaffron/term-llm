@@ -188,12 +188,12 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
         <button
           class="icon-btn close-button"
           type="button"
-          aria-label="Answer later"
-          title="Answer later"
+          aria-label="Minimize"
+          title="Minimize"
           disabled={sending}
           onClick={later}
         >
-          <Icon name="close" />
+          <Icon name="chevron-down" />
         </button>
       }
     >
@@ -259,18 +259,14 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
         )}
       </fieldset>
       {error && <div class="modal-error">{error}</div>}
-      {/* Skipping answers the agent without your answers, so it sits apart from the way on. */}
+      {/* Declining answers the agent without your answers, so it sits apart from the way on. */}
       <div class="modal-actions">
         <button
           class="btn tertiary ask-user-skip"
           disabled={sending}
           onClick={() => void submit(true)}
         >
-          {skipping
-            ? 'Skipping…'
-            : prompt.questions.length > 1
-              ? 'Skip questions'
-              : 'Skip question'}
+          {skipping ? 'Declining…' : 'Decline'}
         </button>
         {tab > 0 && (
           <button class="btn" disabled={sending} onClick={() => setTab(tab - 1)}>
