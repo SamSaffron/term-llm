@@ -60,6 +60,38 @@ func TestDiagnosticTimelineRedactsUnknownAndAdversarialFields(t *testing.T) {
 	}
 }
 
+func TestDiagnosticTimelineSinkCanEmitOneReentrantEvent(t *testing.T) {
+	now := time.Unix(2000, 0)
+	clock := func() time.Time {
+		now = now.Add(time.Millisecond)
+		return now
+	}
+	var observer peer.DiagnosticObserver
+	var lines []string
+	reentered := false
+	observer = newDiagnosticTimeline(true, clock, func(line string) {
+		lines = append(lines, line)
+		if !reentered {
+			reentered = true
+			observer(peer.DiagnosticEvent{Stage: peer.DiagnosticRequestEnd, Outcome: peer.DiagnosticOutcomeFinished})
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		observer(peer.DiagnosticEvent{Stage: peer.DiagnosticRequestStart, Outcome: peer.DiagnosticOutcomeStarted})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reentrant diagnostic sink deadlocked")
+	}
+	if len(lines) != 2 || !strings.Contains(lines[0], "stage=request_start") || !strings.Contains(lines[1], "stage=request_end") {
+		t.Fatalf("reentrant lines = %q", lines)
+	}
+}
+
 func TestDiagnosticCandidateClassIsFinite(t *testing.T) {
 	for _, test := range []struct {
 		stats peer.SelectedPairStats

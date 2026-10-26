@@ -28,6 +28,11 @@ type responseWriter struct {
 	err     error
 	bytes   uint64
 	trace   *requestDiagnostics
+
+	diagnosticQueue    [2]DiagnosticEvent
+	diagnosticHead     int
+	diagnosticCount    int
+	diagnosticDraining bool
 }
 
 var _ http.Flusher = (*responseWriter)(nil)
@@ -66,19 +71,19 @@ func (d *requestDiagnostics) start() {
 	})
 }
 
-func (d *requestDiagnostics) headers(status int) {
+func (d *requestDiagnostics) headers(status int) (DiagnosticEvent, bool) {
 	if d == nil || !d.started.Load() {
-		return
+		return DiagnosticEvent{}, false
 	}
-	d.observer(DiagnosticEvent{
+	return DiagnosticEvent{
 		Stage: DiagnosticResponseHeaders, Outcome: DiagnosticOutcomeStarted,
 		Method: d.method, Route: d.route, Request: d.request, Status: status,
-	})
+	}, true
 }
 
-func (d *requestDiagnostics) terminal(status int, bytes uint64, sendErr error, handlerFailed bool, ctxErr error) {
+func (d *requestDiagnostics) terminal(status int, bytes uint64, sendErr error, handlerFailed bool, ctxErr error) (DiagnosticEvent, bool) {
 	if d == nil || !d.started.Load() {
-		return
+		return DiagnosticEvent{}, false
 	}
 	stage, outcome, reason := DiagnosticRequestEnd, DiagnosticOutcomeFinished, DiagnosticReasonNone
 	switch {
@@ -97,10 +102,50 @@ func (d *requestDiagnostics) terminal(status int, bytes uint64, sendErr error, h
 	if duration < 0 {
 		duration = 0
 	}
-	d.observer(DiagnosticEvent{
+	return DiagnosticEvent{
 		Stage: stage, Outcome: outcome, Reason: reason, Method: d.method, Route: d.route,
 		Request: d.request, Status: status, Bytes: bytes, Duration: duration,
-	})
+	}, true
+}
+
+func (w *responseWriter) queueDiagnosticLocked(event DiagnosticEvent, ok bool) {
+	if !ok {
+		return
+	}
+	if w.diagnosticCount == len(w.diagnosticQueue) {
+		panic("peer: diagnostic event queue overflow")
+	}
+	index := (w.diagnosticHead + w.diagnosticCount) % len(w.diagnosticQueue)
+	w.diagnosticQueue[index] = event
+	w.diagnosticCount++
+}
+
+func (w *responseWriter) drainDiagnostics() {
+	if w.trace == nil {
+		return
+	}
+	w.mu.Lock()
+	if w.diagnosticDraining {
+		w.mu.Unlock()
+		return
+	}
+	w.diagnosticDraining = true
+	w.mu.Unlock()
+
+	for {
+		w.mu.Lock()
+		if w.diagnosticCount == 0 {
+			w.diagnosticDraining = false
+			w.mu.Unlock()
+			return
+		}
+		event := w.diagnosticQueue[w.diagnosticHead]
+		w.diagnosticQueue[w.diagnosticHead] = DiagnosticEvent{}
+		w.diagnosticHead = (w.diagnosticHead + 1) % len(w.diagnosticQueue)
+		w.diagnosticCount--
+		w.mu.Unlock()
+		w.trace.observer(event)
+	}
 }
 
 func (w *responseWriter) Header() http.Header { return w.header }
@@ -119,11 +164,14 @@ func (w *responseWriter) WriteHeader(code int) {
 
 func (w *responseWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if err := w.startLocked(); err != nil {
+		w.mu.Unlock()
+		w.drainDiagnostics()
 		return 0, err
 	}
 	if w.head {
+		w.mu.Unlock()
+		w.drainDiagnostics()
 		return len(p), nil
 	}
 	chunk := w.conn.limits.BodyChunkBytes
@@ -134,21 +182,26 @@ func (w *responseWriter) Write(p []byte) (int, error) {
 		p = p[n:]
 		if len(w.buf) == chunk {
 			if err := w.flushLocked(); err != nil {
+				w.mu.Unlock()
+				w.drainDiagnostics()
 				return written, err
 			}
 		}
 		written += n
 	}
+	w.mu.Unlock()
+	w.drainDiagnostics()
 	return written, nil
 }
 
 // Flush sends the status line, headers and any buffered body now.
 func (w *responseWriter) Flush() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.startLocked() == nil {
 		_ = w.flushLocked()
 	}
+	w.mu.Unlock()
+	w.drainDiagnostics()
 }
 
 func (w *responseWriter) send(f *Frame) error {
@@ -176,14 +229,14 @@ func (w *responseWriter) startLocked() error {
 	}
 	err := w.send(&Frame{Type: TypeResponseStart, ID: w.id, Status: w.status, Header: sanitizeResponseHeader(w.header)})
 	if err == nil {
-		w.trace.headers(w.status)
+		w.queueDiagnosticLocked(w.trace.headers(w.status))
 	}
 	if errors.Is(err, errFrameTooLarge) {
 		// Oversized headers: report a failure the requester can see.
 		w.err = nil
 		w.status = http.StatusInternalServerError
 		if w.send(&Frame{Type: TypeResponseStart, ID: w.id, Status: w.status}) == nil {
-			w.trace.headers(w.status)
+			w.queueDiagnosticLocked(w.trace.headers(w.status))
 			w.endLocked("response headers exceed frame limit")
 		}
 		w.err = err // later writes fail
@@ -215,20 +268,19 @@ func (w *responseWriter) endLocked(errMsg string) {
 			sendErr = ErrClosed
 		default:
 		}
-		w.trace.terminal(w.status, w.bytes, sendErr, errMsg != "", ctxErr)
+		w.queueDiagnosticLocked(w.trace.terminal(w.status, w.bytes, sendErr, errMsg != "", ctxErr))
 		// Cancelled by the requester or the channel: nothing more is sent.
 		return
 	}
 	if err := w.conn.send(w.ctx, &Frame{Type: TypeResponseEnd, ID: w.id, Error: errMsg}); err != nil && w.err == nil {
 		w.err = err
 	}
-	w.trace.terminal(w.status, w.bytes, w.err, errMsg != "", nil)
+	w.queueDiagnosticLocked(w.trace.terminal(w.status, w.bytes, w.err, errMsg != "", nil))
 }
 
 // finish completes a response after the handler returns.
 func (w *responseWriter) finish(errMsg string) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.startLocked() == nil {
 		_ = w.flushLocked()
 	}
@@ -236,6 +288,8 @@ func (w *responseWriter) finish(errMsg string) {
 		errMsg = w.err.Error()
 	}
 	w.endLocked(errMsg)
+	w.mu.Unlock()
+	w.drainDiagnostics()
 }
 
 // abort ends a response after a handler panic: a 500 if nothing was sent

@@ -39,7 +39,6 @@ type diagnosticTimeline struct {
 
 func (d *diagnosticTimeline) observe(event peer.DiagnosticEvent) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	elapsed := d.now().Sub(d.startedAt)
 	if elapsed < 0 {
 		elapsed = 0
@@ -50,6 +49,8 @@ func (d *diagnosticTimeline) observe(event peer.DiagnosticEvent) {
 		elapsed = d.lastElapsed
 	}
 	d.lastElapsed = elapsed
+	d.mu.Unlock()
+
 	event = sanitizeDiagnosticEvent(event)
 	var line strings.Builder
 	fmt.Fprintf(&line, "[linked-devices] +%dms stage=%s", elapsed/time.Millisecond, event.Stage)

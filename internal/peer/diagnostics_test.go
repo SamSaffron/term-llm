@@ -141,6 +141,66 @@ func TestDiagnosticRequestLifecycleUsesFiniteRouteAndActualCounters(t *testing.T
 	}
 }
 
+func TestDiagnosticResponseObserverCanReenterFlush(t *testing.T) {
+	clock := &diagnosticTestClock{now: time.Unix(150, 0)}
+	collector := newDiagnosticEventCollector()
+	var captured http.ResponseWriter
+	var reentrantTimedOut atomic.Bool
+	observer := func(event DiagnosticEvent) {
+		collector.Observe(event)
+		if event.Stage != DiagnosticResponseHeaders {
+			return
+		}
+		done := make(chan struct{})
+		go func() {
+			captured.(http.Flusher).Flush()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			reentrantTimedOut.Store(true)
+		}
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		captured = w
+		w.WriteHeader(http.StatusAccepted)
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, "ok")
+	})
+	p := newPair(t, pairConfig{handler: handler, observer: observer, now: clock.Next})
+	response, err := p.httpClient().Get("http://peer/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil || string(body) != "ok" {
+		t.Fatalf("response = %q, %v", body, readErr)
+	}
+	if reentrantTimedOut.Load() {
+		t.Fatal("response-header observer deadlocked while reentering Flush")
+	}
+	events := waitDiagnosticStages(t, collector, DiagnosticRequestStart, DiagnosticResponseHeaders, DiagnosticRequestEnd)
+	if countDiagnosticStage(events, DiagnosticResponseHeaders) != 1 ||
+		countDiagnosticStage(events, DiagnosticRequestEnd)+countDiagnosticStage(events, DiagnosticRequestCancel)+countDiagnosticStage(events, DiagnosticRequestFailure) != 1 {
+		t.Fatalf("reentrant request lifecycle = %+v", events)
+	}
+	if diagnosticStageIndexForTest(events, DiagnosticRequestStart) > diagnosticStageIndexForTest(events, DiagnosticResponseHeaders) ||
+		diagnosticStageIndexForTest(events, DiagnosticResponseHeaders) > diagnosticStageIndexForTest(events, DiagnosticRequestEnd) {
+		t.Fatalf("reentrant request lifecycle out of order: %+v", events)
+	}
+}
+
+func diagnosticStageIndexForTest(events []DiagnosticEvent, stage DiagnosticStage) int {
+	for index, event := range events {
+		if event.Stage == stage {
+			return index
+		}
+	}
+	return -1
+}
+
 func TestDiagnosticCancellationEmitsOneTerminalEvent(t *testing.T) {
 	clock := &diagnosticTestClock{now: time.Unix(200, 0)}
 	collector := newDiagnosticEventCollector()

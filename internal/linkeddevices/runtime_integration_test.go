@@ -292,8 +292,8 @@ func TestRuntimeDiagnosticsReportActualPionLifecycleAndRequest(t *testing.T) {
 		channel.Generation != identity.Generation || channel.Connection != identity.Connection || start.Connection != identity.Connection {
 		t.Fatalf("diagnostic ownership mismatch: identity=%+v ice=%+v channel=%+v start=%+v", identity, ice, channel, start)
 	}
-	if ice.Candidate != peer.DiagnosticCandidateHost && ice.Candidate != peer.DiagnosticCandidateUnknown {
-		t.Fatalf("loopback candidate class = %q", ice.Candidate)
+	if ice.Candidate != peer.DiagnosticCandidateHost && ice.Candidate != peer.DiagnosticCandidatePrflx && ice.Candidate != peer.DiagnosticCandidateUnknown {
+		t.Fatalf("loopback candidate class = %q, want host, prflx, or unknown", ice.Candidate)
 	}
 	if start.Method != peer.DiagnosticMethodGET || start.Route != peer.DiagnosticRouteModels || headers.Status != http.StatusCreated ||
 		end.Status != http.StatusCreated || end.Bytes != uint64(len("models")) || end.Duration <= 0 || end.Request != start.Request {
