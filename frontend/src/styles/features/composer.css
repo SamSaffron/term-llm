@@ -402,8 +402,7 @@
 }
 
 .composer-box:focus-within {
-  border-color: transparent;
-  background: var(--surface-3);
+  border-color: var(--border-strong);
 }
 
 .slash-command-menu,

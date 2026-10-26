@@ -400,7 +400,7 @@
 }
 
 .chip-popover-filter:focus {
-  background: var(--surface-3);
+  border-color: var(--border-strong);
 }
 
 .chip-popover-item[hidden] {
@@ -608,7 +608,7 @@ dialog.chip-popover::backdrop {
 }
 
 .runtime-popover-select:focus {
-  background: var(--surface-3);
+  border-color: var(--border-strong);
 }
 
 .runtime-popover-select:disabled {
@@ -804,5 +804,5 @@ dialog.chip-popover::backdrop {
 
 .settings-select:focus {
   outline: none;
-  background: var(--surface-3);
+  border-color: var(--border-strong);
 }
