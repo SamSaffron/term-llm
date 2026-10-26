@@ -138,6 +138,11 @@
   font-weight: 800;
 }
 
+.share-success-mark svg {
+  width: 1em;
+  height: 1em;
+}
+
 .share-success h3 {
   margin: 0;
   font-size: 1rem;

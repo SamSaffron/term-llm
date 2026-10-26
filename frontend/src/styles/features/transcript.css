@@ -128,6 +128,20 @@
   transform: rotate(180deg);
 }
 
+/* Status marks and small chevrons are line icons at the size of the text. */
+.new-chat-project-chevron svg,
+.tool-status svg,
+.interrupt-badge svg,
+.ask-user-result-value svg,
+.voice-status-mark svg,
+.chip-popover-check svg,
+.diff-chevron svg,
+.diff-comment-send-more svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+}
+
 .message {
   width: min(100%, 820px);
   max-width: 100%;

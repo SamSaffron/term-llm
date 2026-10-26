@@ -438,18 +438,11 @@
   outline: none;
 }
 
-.chip-popover-item[aria-selected='true']::before {
-  content: '✓';
-  color: var(--accent, var(--text));
+.chip-popover-check {
+  display: inline-flex;
   flex: none;
   width: 1em;
-  text-align: center;
-}
-
-.chip-popover-item:not([aria-selected='true'])::before {
-  content: '';
-  flex: none;
-  width: 1em;
+  color: var(--accent);
 }
 
 .chip-popover-item-label {

@@ -103,6 +103,13 @@
   min-width: 0;
 }
 
+.inspect-block-toggle svg {
+  flex: none;
+  align-self: center;
+  width: 0.9em;
+  height: 0.9em;
+}
+
 .inspect-block-heading {
   font-size: 0.8rem;
 }

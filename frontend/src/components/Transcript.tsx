@@ -192,7 +192,7 @@ function AskUserAnswer({ answer }: { answer: string }) {
     <div class="ask-user-result">
       <div class="tool-details-label">Answer</div>
       <div class="ask-user-result-value">
-        <span aria-hidden="true">✓</span>
+        <Icon name="check" />
         <span>{answer}</span>
       </div>
     </div>
@@ -621,7 +621,7 @@ const Tool = memo(function Tool({
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
         )}
-        ✕
+        <Icon name="close" />
       </>
     ) : stopped ? (
       <>
@@ -639,7 +639,7 @@ const Tool = memo(function Tool({
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
         )}
-        ✓
+        <Icon name="check" />
       </>
     );
   if (tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error')
@@ -805,7 +805,7 @@ function ToolGroup({
           ) : stopped ? (
             'stopped'
           ) : (
-            '✓'
+            <Icon name="check" />
           )}
         </span>
       </button>
@@ -987,20 +987,20 @@ function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySign
   const interrupt = (
     {
       evaluating: ['pending', '', 'evaluating…'],
-      checking_send: ['pending', '⏳', 'checking whether this was sent'],
-      unconfirmed_send: ['error', '⚠', 'send unconfirmed — it may still be running'],
-      pending_steer: ['pending', '⏳', 'will incorporate'],
-      steer: ['steer', '✓', 'injected'],
-      cancel: ['cancel', '⏹', 'cancelled + queued'],
-      queue: ['queue', '⏳', 'queued'],
-      error: ['error', '⚠', 'failed'],
-    } as Record<string, [string, string, string]>
+      checking_send: ['pending', 'clock', 'checking whether this was sent'],
+      unconfirmed_send: ['error', 'alert-circle', 'send unconfirmed — it may still be running'],
+      pending_steer: ['pending', 'clock', 'will incorporate'],
+      steer: ['steer', 'check', 'injected'],
+      cancel: ['cancel', 'stop', 'cancelled + queued'],
+      queue: ['queue', 'clock', 'queued'],
+      error: ['error', 'alert-circle', 'failed'],
+    } as Record<string, [string, IconName | '', string]>
   )[String(message.interruptState || '')];
   return (
     <div class="message-meta">
       {message.role === 'user' && interrupt && (
         <span class={`interrupt-badge ${interrupt[0]}`}>
-          {interrupt[1] || <span class="interrupt-spinner" />}
+          {interrupt[1] ? <Icon name={interrupt[1]} /> : <span class="interrupt-spinner" />}
           {interrupt[2]}
         </span>
       )}
@@ -1230,7 +1230,7 @@ const MessageRow = memo(function MessageRow({
               class={`tool-status ${failed ? 'error' : 'done'}`}
               aria-label={failed ? 'Failed' : 'Complete'}
             >
-              {failed ? '✕' : '✓'}
+              <Icon name={failed ? 'close' : 'check'} />
             </span>
           </button>
           {expanded && (
@@ -1394,7 +1394,9 @@ function NewChatControls() {
               <>
                 <span class="new-chat-project-label">Agent</span>
                 <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">⌄</span>
+                <span class="new-chat-project-chevron">
+                  <Icon name="chevron-down" />
+                </span>
               </>
             )}
           />
@@ -1422,7 +1424,9 @@ function NewChatControls() {
               <>
                 {selected.value && <span class="new-chat-project-label">Project</span>}
                 <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">⌄</span>
+                <span class="new-chat-project-chevron">
+                  <Icon name="chevron-down" />
+                </span>
               </>
             )}
           />

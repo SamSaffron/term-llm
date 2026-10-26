@@ -3833,7 +3833,7 @@ describe('Preact-owned chat surfaces', () => {
         await vi.advanceTimersByTimeAsync(18_000);
       });
       expect(status).toHaveTextContent('20s');
-      expect(status).not.toHaveTextContent('✓');
+      expect(status?.querySelector('use')).toBeNull();
       expect(container.querySelector('[data-message-id="answer"]')).toBe(unrelated);
     } finally {
       unmount();
@@ -3842,10 +3842,10 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   it.each([
-    { status: 'done' as const, durationMs: 1_999, expected: '✓' },
-    { status: 'done' as const, durationMs: 2_000, expected: '2s ✓' },
-    { status: 'done' as const, durationMs: 20_000, expected: '20s ✓' },
-    { status: 'error' as const, durationMs: 20_000, expected: '20s ✕' },
+    { status: 'done' as const, durationMs: 1_999, expected: '#check' },
+    { status: 'done' as const, durationMs: 2_000, expected: '2s #check' },
+    { status: 'done' as const, durationMs: 20_000, expected: '20s #check' },
+    { status: 'error' as const, durationMs: 20_000, expected: '20s #close' },
     { status: 'cancelled' as const, durationMs: 20_000, expected: '20s stopped' },
   ])(
     'freezes shell duration on $status after $durationMs ms',
@@ -3876,11 +3876,19 @@ describe('Preact-owned chat surfaces', () => {
       );
       try {
         const label = container.querySelector('.tool-status');
-        expect(label?.textContent?.trim()).toBe(expected);
+        // The text, then the icon's symbol (a check, an x) if it draws one.
+        const shown = () =>
+          [
+            label?.textContent?.trim(),
+            label?.querySelector('use')?.getAttribute('href')?.replace(/^.*#/, '#'),
+          ]
+            .filter(Boolean)
+            .join(' ');
+        expect(shown()).toBe(expected);
         await act(async () => {
           await vi.advanceTimersByTimeAsync(5_000);
         });
-        expect(label?.textContent?.trim()).toBe(expected);
+        expect(shown()).toBe(expected);
       } finally {
         unmount();
         vi.useRealTimers();
@@ -4337,9 +4345,9 @@ describe('Preact-owned chat surfaces', () => {
         <Transcript />
       </StoreContext.Provider>,
     );
-    expect(container.querySelector('[data-tool-id="spawn-1"] .tool-status')).toHaveTextContent(
-      '1m30s ✓',
-    );
+    const spawnStatus = container.querySelector('[data-tool-id="spawn-1"] .tool-status');
+    expect(spawnStatus).toHaveTextContent('1m30s');
+    expect(spawnStatus?.querySelector('use')?.getAttribute('href')).toMatch(/#check$/);
   });
 
   it('groups completed tool calls compactly and omits redundant role labels', async () => {
@@ -4376,7 +4384,7 @@ describe('Preact-owned chat surfaces', () => {
     );
     const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
     expect(group).toHaveAttribute('aria-expanded', 'false');
-    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status use')?.getAttribute('href')).toMatch(/#check$/);
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('done');
     expect(screen.queryByText('Assistant')).not.toBeInTheDocument();
     expect(screen.getByText('now')).toBeInTheDocument();
@@ -4532,7 +4540,7 @@ describe('Preact-owned chat surfaces', () => {
     );
     const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
     expect(group).toHaveAttribute('aria-expanded', 'false');
-    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status use')?.getAttribute('href')).toMatch(/#check$/);
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('error');
     expect(document.querySelectorAll('.tool-toggle')).toHaveLength(0);
     fireEvent.click(group);
@@ -4541,7 +4549,7 @@ describe('Preact-owned chat surfaces', () => {
     toolToggles.forEach((toggle) => expect(toggle).toHaveAttribute('aria-expanded', 'false'));
     expect(document.querySelector('.tool-failure-reason')).not.toBeInTheDocument();
     const failed = document.querySelector('.tool-status.error');
-    expect(failed).toHaveTextContent('✕');
+    expect(failed?.querySelector('use')?.getAttribute('href')).toMatch(/#close$/);
     expect(failed).not.toHaveTextContent('error');
   });
 

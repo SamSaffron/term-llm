@@ -9,6 +9,7 @@ import { errorMessage } from '../domain/text';
 import { copyText } from '../platform/clipboard';
 import { Overlay } from './Overlay';
 import '../styles/features/share.css';
+import { Icon } from './Icon';
 
 type ShareScope = 'response' | 'conversation';
 type SharePhase = 'form' | 'submitting' | 'success';
@@ -155,7 +156,7 @@ export function ShareModal() {
       {phase === 'success' && result ? (
         <div class="share-success" ref={success} tabIndex={-1} role="status" aria-live="polite">
           <div class="share-success-mark" aria-hidden="true">
-            ✓
+            <Icon name="check" />
           </div>
           <h3>Share created</h3>
           <p>{visibilityLabel(result.visibility)}</p>

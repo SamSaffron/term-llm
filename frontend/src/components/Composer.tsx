@@ -17,7 +17,7 @@ import type { Attachment } from '../domain/types';
 import { overlayManager } from '../platform/overlay-manager';
 import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
 import type { LiveStore } from '../stores/live-store';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { useMenuKeyboard } from './Menu';
 import { requestTranscriptScrollToTail } from './transcript-scroll';
 
@@ -126,13 +126,13 @@ function voiceStatusText(state: VoiceSnapshot): { label: string; copy: string } 
 
 function VoiceStatusIndicator({ state }: { state: VoiceSnapshot }) {
   const stalled = state.phase === 'transcribing' && state.stage === 'stalled';
-  const mark =
+  const mark: IconName | '' =
     state.phase === 'failed' || stalled
-      ? '!'
+      ? 'alert-circle'
       : state.phase === 'complete'
-        ? '✓'
+        ? 'check'
         : state.phase === 'cancelled'
-          ? '–'
+          ? 'close'
           : '';
   return (
     <span class="voice-status-indicator" aria-hidden="true">
@@ -145,7 +145,7 @@ function VoiceStatusIndicator({ state }: { state: VoiceSnapshot }) {
               : 'voice-status-spinner'
         }
       >
-        {mark}
+        {mark && <Icon name={mark} />}
       </span>
     </span>
   );

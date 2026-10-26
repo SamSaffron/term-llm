@@ -225,8 +225,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// them, and the reply, tool-call, message-box and dialog styling, less
 		// ~7.4 kB of rules for markup that no longer exists and declarations a
 		// later rule always overrides, measure 179.7/34.45 kB: within the raw
-		// budget, and 100 B more gzip.
-		"dist/app.css": {raw: 180_000, gzip: 34_500},
+		// budget, and 100 B more gzip. Status marks as line icons (their size
+		// rules) bring it to 179.85/34.5 kB: another 100 B of gzip.
+		"dist/app.css": {raw: 180_000, gzip: 34_600},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph. The
