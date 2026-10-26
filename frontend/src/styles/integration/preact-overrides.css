@@ -411,6 +411,7 @@ a.message-file:focus-visible {
 .streaming-indicator {
   display: inline-flex;
   align-self: flex-start;
+  align-items: center;
   min-width: 0;
   max-width: min(calc(100vw - 3rem), 42rem);
   padding: 0.35rem 0.2rem;
@@ -429,31 +430,58 @@ a.message-file:focus-visible {
   white-space: nowrap;
 }
 
-@supports (background-clip: text) {
-  .streaming-indicator-text {
-    background-image: linear-gradient(
-      105deg,
-      var(--text) 0%,
-      var(--text) 38%,
-      var(--accent-strong) 49%,
-      var(--text-muted) 60%,
-      var(--text-muted) 100%
-    );
-    background-position: 100% 50%;
-    background-size: 250% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    animation:
-      streaming-status-sheen 8s cubic-bezier(0.45, 0, 0.2, 1) 180ms infinite,
-      streaming-status-reset 8s linear 180ms infinite;
+/* While the assistant works, the app icon's prompt sits before the activity
+   text: its cursor types out in three steps, then breathes twice, like output
+   arriving in bursts. Only scale and opacity change, so nothing jitters. */
+.working-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-inline-end: 0.5rem;
+  overflow: visible;
+  color: var(--accent);
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.working-mark-cursor {
+  transform-box: fill-box;
+  transform-origin: 0 50%;
+  animation:
+    working-mark-type 4.2s steps(1) infinite,
+    working-mark-wait 4.2s ease-in-out infinite;
+}
+
+@keyframes working-mark-type {
+  0% {
+    transform: scaleX(0.34);
+  }
+
+  10% {
+    transform: scaleX(0.67);
+  }
+
+  20%,
+  100% {
+    transform: scaleX(1);
   }
 }
 
-.streaming-indicator-unknown .streaming-indicator-text {
-  background-image: none;
-  color: var(--text-muted);
-  animation: none;
+@keyframes working-mark-wait {
+  0%,
+  30%,
+  64%,
+  100% {
+    opacity: 1;
+  }
+
+  47%,
+  81% {
+    opacity: 0.2;
+  }
 }
 
 @keyframes streaming-status-enter {
@@ -462,38 +490,10 @@ a.message-file:focus-visible {
   }
 }
 
-@keyframes streaming-status-sheen {
-  0% {
-    background-position: 100% 50%;
-  }
-
-  21%,
-  100% {
-    background-position: 0% 50%;
-  }
-}
-
-@keyframes streaming-status-reset {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-
-  4%,
-  96% {
-    opacity: 1;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .streaming-indicator,
-  .streaming-indicator-text {
+  .working-mark-cursor {
     animation: none;
-  }
-
-  .streaming-indicator-text {
-    background: none;
-    color: var(--text);
   }
 }
 

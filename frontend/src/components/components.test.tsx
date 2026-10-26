@@ -3099,7 +3099,8 @@ describe('Preact-owned chat surfaces', () => {
     });
     const initialText = initial.querySelector('.streaming-indicator-text');
     expect(initial).toHaveTextContent('Implement the semantic activity label');
-    expect(initial.querySelectorAll('span')).toHaveLength(1);
+    expect(initial.querySelectorAll('.streaming-indicator-text')).toHaveLength(1);
+    expect(initial.querySelector('.working-mark')).toHaveAttribute('aria-hidden', 'true');
 
     act(() => {
       store.currentPlan.value = {
@@ -3123,7 +3124,9 @@ describe('Preact-owned chat surfaces', () => {
         s1: { ...current, run: { ...current.run, status: 'cancelling' } },
       };
     });
-    expect(screen.getByRole('status', { name: 'Stopping response' })).toHaveTextContent('Stopping');
+    const stopping = screen.getByRole('status', { name: 'Stopping response' });
+    expect(stopping).toHaveTextContent('Stopping');
+    expect(stopping.querySelector('.working-mark')).toBeNull();
   });
 
   it('hides the generic working activity once assistant text starts streaming', () => {

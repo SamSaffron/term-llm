@@ -1815,6 +1815,12 @@ export function Transcript() {
                 : `Assistant is responding: ${activity.text}`
             }
           >
+            {activity.kind !== 'stopping' && (
+              <svg class="working-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M2 3.5 6.5 8 2 12.5" />
+                <line class="working-mark-cursor" x1="9" y1="12.5" x2="14" y2="12.5" />
+              </svg>
+            )}
             <span class="streaming-indicator-text" key={`${activity.kind}:${activity.text}`}>
               {activity.text}
             </span>
