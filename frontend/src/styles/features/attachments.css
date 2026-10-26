@@ -123,13 +123,6 @@
   display: none;
 }
 
-.message-attachments {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.4rem;
-}
-
 .message-attachments img {
   /* Keep these caps coupled to app-render.js; TestAttachmentImageSizeLimitsStayCoupled enforces it. */
   display: block;

@@ -512,11 +512,6 @@
   cursor: not-allowed;
 }
 
-.composer-icon-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
 .approval-mode-chip,
 .goal-chip {
   align-self: flex-start;

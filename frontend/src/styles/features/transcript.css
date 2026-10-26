@@ -941,9 +941,7 @@
 .message-meta {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
   color: var(--text-muted);
-  font-size: 0.74rem;
   padding: 0 0.2rem;
   align-self: flex-end;
 }
@@ -1270,13 +1268,6 @@
 .ask-user-questions {
   display: grid;
   gap: 0.65rem;
-}
-
-.ask-user-question {
-  padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
 }
 
 .ask-user-question-heading {

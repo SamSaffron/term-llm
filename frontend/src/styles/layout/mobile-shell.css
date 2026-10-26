@@ -22,7 +22,6 @@
     bottom: auto;
     left: 0;
     height: var(--app-height);
-    width: min(280px, 85vw);
     display: flex;
     flex-direction: column;
     transform: translateX(-100%);
@@ -92,12 +91,6 @@
   .header-title-row {
     align-items: center;
     gap: 8px;
-    flex-wrap: nowrap;
-  }
-
-  .header-left {
-    flex: 1 1 auto;
-    min-width: 0;
   }
 
   .header-controls-row {
@@ -111,11 +104,6 @@
     line-height: 1.1;
   }
 
-  .header-title {
-    white-space: nowrap;
-    display: block;
-  }
-
   .mobile-menu {
     display: inline-flex;
     width: var(--control-size);
@@ -124,7 +112,6 @@
 
   .diff-toggle {
     flex: 0 0 auto;
-    min-width: 50px;
   }
 
   .header-stats {

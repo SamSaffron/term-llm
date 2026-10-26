@@ -776,7 +776,6 @@
     sans-serif;
   font-size: 0.875rem;
   line-height: 1.55;
-  white-space: normal;
   animation: diff-comment-panel-enter var(--panel-fade-duration) var(--panel-transition-easing);
 }
 
@@ -1195,7 +1194,6 @@
 .diff-toggle {
   position: relative;
   gap: 0.4rem;
-  min-width: 92px;
   font-weight: 700;
   flex-shrink: 0;
 }
