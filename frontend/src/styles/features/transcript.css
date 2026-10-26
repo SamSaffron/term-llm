@@ -329,14 +329,28 @@
   margin-inline-start: calc((16px - 30px) / 2 - 16px / 12);
 }
 
+/* A user message has the same copy button, after its time and mirrored to the
+   bubble's edge by the icon's stroke. */
+.message.user > .message-meta {
+  margin-top: -0.35rem;
+  padding-inline-end: 0;
+}
+
+.message.user .turn-copy-btn {
+  margin-inline-end: calc((16px - 30px) / 2 - 16px / 12);
+}
+
 @media (hover: hover) {
-  .message.assistant .turn-action-panel {
+  .message.assistant .turn-action-panel,
+  .message.user .turn-copy-btn {
     opacity: 0.5;
     transition: opacity 0.15s;
   }
 
   .message.assistant:hover .turn-action-panel,
-  .message.assistant .turn-action-panel:focus-within {
+  .message.assistant .turn-action-panel:focus-within,
+  .message.user:hover .turn-copy-btn,
+  .message.user .turn-copy-btn:focus-visible {
     opacity: 1;
   }
 }

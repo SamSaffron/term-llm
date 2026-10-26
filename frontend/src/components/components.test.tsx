@@ -4625,6 +4625,38 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('puts a copy button after the time under a user message', async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      const store = createStore();
+      store.sessions.value[0].messages = [
+        { id: 'u1', role: 'user', content: 'Question\nwith two lines', created: 1 },
+        { id: 'a1', role: 'assistant', content: 'Answer', created: 2 },
+      ];
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+      const button = screen.getByRole('button', { name: 'Copy message' });
+      expect(container.querySelector('.message.user .message-meta time + .turn-copy-btn')).toBe(
+        button,
+      );
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(writeText).toHaveBeenCalledWith('Question\nwith two lines');
+      expect(button).toHaveAttribute('aria-label', 'Copied');
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+      else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    }
+  });
+
   it('renders branching as a compact icon action', async () => {
     const store = createStore();
     store.sessions.value[0].messages = [

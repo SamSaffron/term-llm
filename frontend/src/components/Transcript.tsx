@@ -25,6 +25,7 @@ import {
   TRANSCRIPT_SCROLL_TO_TAIL_EVENT,
 } from './transcript-scroll';
 import { formatElapsedDuration, subscribeElapsedClock } from '../platform/elapsed-clock';
+import type { ComponentChildren } from 'preact';
 
 function publishedMediaURL(store: AppStore, value: string): string {
   return trustedPublishedMediaURL(rebaseHubAssetURL(store.config, value));
@@ -983,7 +984,15 @@ function MessageTime({ created, clock }: { created: number; clock: ReadonlySigna
   );
 }
 
-function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySignal<number> }) {
+function MessageMeta({
+  message,
+  clock,
+  children,
+}: {
+  message: Message;
+  clock: ReadonlySignal<number>;
+  children?: ComponentChildren;
+}) {
   const interrupt = (
     {
       evaluating: ['pending', '', 'evaluating…'],
@@ -1005,11 +1014,18 @@ function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySign
         </span>
       )}
       <MessageTime created={message.created} clock={clock} />
+      {children}
     </div>
   );
 }
 
-function TurnCopyButton({ text }: { text: string }) {
+function TurnCopyButton({
+  text,
+  label: idleLabel = 'Copy response',
+}: {
+  text: string;
+  label?: string;
+}) {
   const [feedback, setFeedback] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
   const resetTimer = useRef<number | undefined>(undefined);
   useEffect(
@@ -1020,7 +1036,7 @@ function TurnCopyButton({ text }: { text: string }) {
   );
   const copied = feedback === 'copied';
   const failed = feedback === 'failed';
-  const label = copied ? 'Copied' : failed ? 'Copy failed' : 'Copy response';
+  const label = copied ? 'Copied' : failed ? 'Copy failed' : idleLabel;
   const copy = async () => {
     setFeedback('copying');
     try {
@@ -1366,7 +1382,11 @@ const MessageRow = memo(function MessageRow({
           )}
         </div>
       )}
-      <MessageMeta message={message} clock={clock} />
+      <MessageMeta message={message} clock={clock}>
+        {message.role === 'user' && message.content && (
+          <TurnCopyButton text={message.content} label="Copy message" />
+        )}
+      </MessageMeta>
     </article>
   );
 });
