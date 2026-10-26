@@ -106,3 +106,66 @@ func TestTransportHijackedConnectionReleasesOwnership(t *testing.T) {
 	}
 	waitAttempt(t, c)
 }
+
+func TestHTTPTransportNewRequestsDuringDrain(t *testing.T) {
+	for _, phase := range []string{"draining", "cancelling"} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(phase+"/"+method, func(t *testing.T) {
+				c := &Coordinator{draining: true, interrupting: phase == "cancelling", status: Status{Phase: phase}}
+				transport := &HTTPTransport{Coordinator: c}
+				caller, cancel := context.WithCancelCause(context.Background())
+				defer cancel(context.Canceled)
+				callerErr := errors.New("caller stopped request")
+				called := false
+				transport.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					called = true
+					if err := r.Context().Err(); err != nil {
+						t.Fatalf("new request cancelled during %s: %v", phase, context.Cause(r.Context()))
+					}
+					// A request admitted during grace must also survive its expiry.
+					c.interruptTasks(nil)
+					if err := r.Context().Err(); err != nil {
+						t.Fatalf("new drain request interrupted: %v", context.Cause(r.Context()))
+					}
+					if _, release, err := c.Root(r.Context()); !errors.Is(err, ErrDraining) {
+						if release != nil {
+							release()
+						}
+						t.Errorf("root admission = %v, want ErrDraining", err)
+					}
+					cancel(callerErr)
+					if !errors.Is(context.Cause(r.Context()), callerErr) {
+						t.Errorf("caller cancellation lost: %v", context.Cause(r.Context()))
+					}
+				})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "/", nil).WithContext(caller))
+				if !called {
+					t.Fatal("drain request was not dispatched")
+				}
+			})
+		}
+	}
+}
+
+func TestHTTPTransportInterruptsOngoingRequest(t *testing.T) {
+	c := &Coordinator{}
+	transport := &HTTPTransport{Coordinator: c}
+	transport.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Advance the coordinator synchronously, without a grace-period timer.
+		c.mu.Lock()
+		c.draining = true
+		c.mu.Unlock()
+		c.interruptTasks(nil)
+		if !errors.Is(context.Cause(r.Context()), ErrInterrupt) {
+			t.Errorf("ongoing request cause = %v, want ErrInterrupt", context.Cause(r.Context()))
+		}
+		c.mu.Lock()
+		active := c.active
+		c.mu.Unlock()
+		if active != 1 {
+			t.Errorf("interrupted handler ownership = %d, want 1", active)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if c.active != 0 || len(c.tasks) != 0 {
+		t.Fatalf("handler leaked ownership: active=%d tasks=%d", c.active, len(c.tasks))
+	}
+}

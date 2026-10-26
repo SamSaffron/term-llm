@@ -72,8 +72,14 @@ func (h *HTTPTransport) Handler(next http.Handler) http.Handler {
 			return
 		}
 		defer release()
-		ctx, finish := h.Coordinator.Cancellable(ctx)
-		defer finish()
+		// Controls arriving during drain must remain usable, including after
+		// the grace period. Only requests already running opt into interruption;
+		// the caller's cancellation and Activity ownership still apply to all.
+		if !h.Coordinator.Draining() {
+			var finish func()
+			ctx, finish = h.Coordinator.Cancellable(ctx)
+			defer finish()
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

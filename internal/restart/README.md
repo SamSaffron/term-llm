@@ -59,7 +59,11 @@ use explicit root admission.
 - Background delegated agents (`spawn_agent` with an expired wait budget) take
   `restart.Detached` ownership before launch, so they outlive the spawning tool
   call. A reload interrupts them after the grace period; they end `interrupted`
-  and can be resumed with `continue_agent` after the restart.
+  and can be resumed with `continue_agent` after the restart. Hosted web children,
+  including nested children and lifecycle turns, follow this same policy: their
+  runner/borrowed-runtime adapter cannot be serialized as a web continuation.
+  They never park an inner response while its outer runner owns unsettled work;
+  all ownership is retained until execution, persistence and cleanup settle.
 - Idle MCP subprocesses and widgets are stopped and joined only after quiescence.
   Failed exec restores MCP availability; widgets remain available for lazy start.
   An interactive shell is owned work and must exit before the pending restart can proceed.

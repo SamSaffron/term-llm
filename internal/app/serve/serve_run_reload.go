@@ -372,3 +372,19 @@ func (s *serveServer) pauseResponseRun(run *responseRun, runtime *serveRuntime, 
 	run.mu.Unlock()
 	return active, runCtx.Err()
 }
+
+// newResponseReloadTask distinguishes a resumable web invocation from a hosted
+// turn. The hosted runner owns setup, lifecycle turns and cleanup until its inner
+// response settles, and that adapter is not serialized in the web handoff.
+// Parking only the inner turn would wait for reload while the outer owner blocks
+// it. Like other delegated agents, hosted runs finish naturally or interrupt at
+// the grace boundary, retaining every ticket through real settlement.
+func newResponseReloadTask(ctx context.Context, hosted bool) (context.Context, func()) {
+	ctx, closeTask := restart.Default.NewTask(ctx)
+	if hosted {
+		// Isolate the child from its parent's checkpoint claim, while retaining
+		// cooperative step cancellation for this non-resumable invocation.
+		restart.CurrentTask(ctx).SetSuspendAllowed(func() bool { return false })
+	}
+	return ctx, closeTask
+}
