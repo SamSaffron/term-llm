@@ -130,8 +130,16 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
   const [skipping, setSkipping] = useState(false);
+  const fieldset = useRef<HTMLFieldSetElement>(null);
+  // Each step puts focus on its answer (the chosen one, else the first), so the arrow
+  // keys work at once; on opening, the dialog finds the same input by its autofocus.
+  useLayoutEffect(() => {
+    const inputs = [...(fieldset.current?.querySelectorAll<HTMLInputElement>('input') || [])];
+    (inputs.find((input) => input.checked) || inputs[0])?.focus();
+  }, [tab]);
   if (!prompt) return null;
   const question = prompt.questions[tab];
+  const focusLabel = (answers[tab] || [])[0] ?? question.options?.[0]?.label;
   const validate = (item: (typeof prompt.questions)[number], index: number) => {
     const selected = answers[index] || [];
     const own = custom[index]?.trim();
@@ -198,20 +206,26 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
       }
     >
       <p>The agent needs your input to continue.</p>
+      {/* Progress through the questions: a segment each, the current one in the accent. */}
       {prompt.questions.length > 1 && (
         <div class="ask-user-steps">
-          {prompt.questions.map((_item, index) => (
-            <button
-              class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
-              disabled={sending}
-              onClick={() => setTab(index)}
-            >
-              {index + 1}
-            </button>
-          ))}
+          {prompt.questions.map((item, index) => {
+            const label = `Question ${index + 1}${item.header ? `: ${item.header}` : ''}`;
+            return (
+              <button
+                type="button"
+                class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
+                aria-label={label}
+                title={label}
+                aria-current={index === tab ? 'step' : undefined}
+                disabled={sending}
+                onClick={() => setTab(index)}
+              />
+            );
+          })}
         </div>
       )}
-      <fieldset class="ask-user-question" disabled={sending} aria-busy={sending}>
+      <fieldset ref={fieldset} class="ask-user-question" disabled={sending} aria-busy={sending}>
         <legend class="ask-user-question-text">
           {question.header && <strong>{question.header}: </strong>}
           {question.question}
@@ -224,6 +238,7 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
                 : { type: 'radio' as const })}
               name={`question-${tab}`}
               value={option.label}
+              autoFocus={option.label === focusLabel}
               checked={(answers[tab] || []).includes(option.label)}
               onChange={(event) => {
                 const current = answers[tab] || [];

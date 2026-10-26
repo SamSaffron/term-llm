@@ -1218,7 +1218,7 @@ const MessageRow = memo(function MessageRow({
               <Icon name="chevron-right" />
             </span>
             <span class="tool-group-summary">
-              Queued job {status}
+              Job {status}
               {agent && (
                 <>
                   {' '}

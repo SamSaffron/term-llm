@@ -9075,6 +9075,56 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.answerAskUser).toHaveBeenCalledWith([], true, store.askUser.value);
   });
 
+  it('shows question progress as named steps and puts focus on each answer', async () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.askUser.value = {
+      sessionId: 's1',
+      callId: 'ask-2',
+      questions: [
+        {
+          header: 'Language',
+          question: 'Which language?',
+          options: [{ label: 'Go' }, { label: 'Rust' }],
+        },
+        { question: 'Which database?', options: [{ label: 'SQLite' }, { label: 'Redis' }] },
+      ],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    const step = (name: string) => screen.getByRole('button', { name });
+    expect(step('Question 1: Language')).toHaveAttribute('aria-current', 'step');
+    expect(step('Question 2')).not.toHaveAttribute('aria-current');
+    await vi.waitFor(() => expect(screen.getByRole('radio', { name: /Go/ })).toHaveFocus());
+    await userEvent.click(screen.getByRole('radio', { name: /Rust/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(step('Question 2')).toHaveAttribute('aria-current', 'step');
+    expect(step('Question 1: Language')).toHaveClass('completed');
+    expect(screen.getByRole('radio', { name: /SQLite/ })).toHaveFocus();
+    await userEvent.click(step('Question 1: Language'));
+    expect(screen.getByRole('radio', { name: /Rust/ })).toHaveFocus();
+  });
+
+  it('shows no progress for a single question', () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.askUser.value = {
+      sessionId: 's1',
+      callId: 'ask-3',
+      questions: [{ question: 'Only?', options: [{ label: 'Yes' }] }],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(document.querySelector('.ask-user-steps')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Answer question' })).toBeInTheDocument();
+  });
+
   it('shows pending goal saves and keeps failures visible for retry', async () => {
     const store = createStore();
     store.modal.value = 'goal';

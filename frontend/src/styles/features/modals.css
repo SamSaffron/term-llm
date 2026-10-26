@@ -74,6 +74,11 @@
   font-size: 1.05rem;
 }
 
+/* Beside header buttons the row keeps the spacing, so the title centres on them. */
+.modal .modal-title-row:has(> button) h2 {
+  margin: 0;
+}
+
 .modal p {
   margin: 0 0 0.85rem;
   color: var(--text-muted);
