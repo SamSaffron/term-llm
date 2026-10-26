@@ -61,7 +61,7 @@
   /* Inline code, and the bar beside a block quote, so a theme can colour them.
      Code is peach, term-llm.com's number colour, warm beside the green. */
   --code: #e9be91;
-  --quote-rule: var(--accent);
+  --quote-rule: color-mix(in oklab, var(--accent) 45%, var(--bg));
 
   /* Three corner sizes for the whole app. Small: pills and small things. Medium:
      bubbles, code blocks, tool calls, tables, buttons and inputs. Large: the

@@ -665,7 +665,7 @@
 
 .markdown-body blockquote {
   margin: 1em 0;
-  padding: 0 0 0 1em;
+  padding: 0.25em 0 0.25em 0.75em;
   border-left: 3px solid var(--quote-rule);
   color: color-mix(in srgb, var(--text) 80%, var(--text-muted));
   background: transparent;
