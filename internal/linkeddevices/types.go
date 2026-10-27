@@ -2,10 +2,11 @@ package linkeddevices
 
 import "time"
 
+// The hosted default broker is config.DefaultLinkedDevicesBrokerURL and is
+// applied by config resolution, not by Runtime options.
 const (
-	DefaultBrokerURL = ""
-	BrokerURLEnv     = "TERM_LLM_LINKED_DEVICES_BROKER_URL"
-	AdmissionEnv     = "TERM_LLM_LINKED_DEVICES_ADMISSION"
+	BrokerURLEnv = "TERM_LLM_LINKED_DEVICES_BROKER_URL"
+	AdmissionEnv = "TERM_LLM_LINKED_DEVICES_ADMISSION"
 )
 
 type State string

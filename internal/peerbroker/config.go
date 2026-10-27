@@ -62,6 +62,12 @@ type Config struct {
 	SignalBytesPerSecond float64
 	SignalByteBurst      int
 
+	// MaxConnectionLifetime closes any WebSocket after this duration with
+	// close code 4003 so clients reconnect; zero leaves sockets unbounded.
+	MaxConnectionLifetime time.Duration
+	// Clients enables per-client-network limits for open admission.
+	Clients *ClientPolicy
+
 	AdmissionCredential string
 	STUNURLs            []string
 	Coturn              *CoturnConfig
@@ -90,7 +96,7 @@ func (c Config) withDefaults() (Config, error) {
 		c.MaxConnections < 0 || c.MaxSignalBytes < 0 || c.MaxPendingSignals < 0 ||
 		c.MaxSignalsPerConnection < 0 || c.MaxSignalsPerLease < 0 || c.MaxICEMintsPerLease < 0 || c.RequestRate < 0 ||
 		c.RequestBurst < 0 || c.SignalRate < 0 || c.SignalBurst < 0 ||
-		c.SignalBytesPerSecond < 0 || c.SignalByteBurst < 0 {
+		c.SignalBytesPerSecond < 0 || c.SignalByteBurst < 0 || c.MaxConnectionLifetime < 0 {
 		return c, errors.New("peerbroker: negative config value")
 	}
 	c.LeaseTTL = defaultDuration(c.LeaseTTL, DefaultLeaseTTL)
@@ -125,6 +131,13 @@ func (c Config) withDefaults() (Config, error) {
 	c.SignalByteBurst = max(defaultInt(c.SignalByteBurst, 2*c.MaxSignalBytes), c.MaxSignalBytes+1024)
 	if c.Now == nil {
 		c.Now = time.Now
+	}
+	if c.Clients != nil {
+		clients, err := c.Clients.withDefaults()
+		if err != nil {
+			return c, err
+		}
+		c.Clients = &clients
 	}
 	if c.AdmissionCredential != "" {
 		if err := validateCredential(c.AdmissionCredential); err != nil {

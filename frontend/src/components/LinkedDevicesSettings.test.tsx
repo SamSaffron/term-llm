@@ -180,11 +180,17 @@ describe('LinkedDevicesSettings', () => {
       ...offStatus,
       state: 'reconnecting',
       enabled: true,
-      warnings: ['rendezvous disconnected; reconnecting'],
+      warnings: [
+        'Lost connection to the linked-devices service at broker.term-llm.com. Reconnecting…',
+      ],
     });
     const reconnecting = view();
     try {
-      expect(await screen.findByText('rendezvous disconnected; reconnecting')).toBeVisible();
+      expect(
+        await screen.findByText(
+          'Lost connection to the linked-devices service at broker.term-llm.com. Reconnecting…',
+        ),
+      ).toBeVisible();
       fireEvent.click(reconnecting.getByRole('button', { name: 'Resume' }));
       await waitFor(() =>
         expect(linkedDevicesAPI.resumeLinkedDevices).toHaveBeenCalledWith(reconnecting.store.api),
@@ -213,7 +219,8 @@ describe('LinkedDevicesSettings', () => {
     vi.mocked(linkedDevicesAPI.getLinkedDevices).mockResolvedValue({
       ...offStatus,
       state: 'unavailable',
-      reason: 'rendezvous rejected linked devices registration',
+      reason:
+        "The linked-devices service at broker.term-llm.com rejected this server's settings: bad_request. Fix the configuration, then select Resume.",
       can_resume: true,
       can_reset: true,
     });
@@ -233,7 +240,7 @@ describe('LinkedDevicesSettings', () => {
     vi.mocked(linkedDevicesAPI.getLinkedDevices).mockResolvedValue({
       ...offStatus,
       state: 'unavailable',
-      reason: 'no rendezvous service is configured in this build',
+      reason: 'No linked-devices service is configured.',
     });
     const disabled = view();
     try {
@@ -242,6 +249,27 @@ describe('LinkedDevicesSettings', () => {
       expect(screen.queryByRole('button', { name: 'Forget all' })).toBeNull();
     } finally {
       disabled.store.dispose();
+    }
+  });
+
+  it('offers Forget all only when there is something to forget', async () => {
+    vi.mocked(linkedDevicesAPI.getLinkedDevices).mockResolvedValue({
+      ...offStatus,
+      state: 'reconnecting',
+      enabled: true,
+      warnings: [
+        "Can't reach the linked-devices service at broker.term-llm.com. Devices can't connect until it's reachable; retrying automatically.",
+      ],
+    });
+    const { store } = view();
+    try {
+      await screen.findByText(
+        "Can't reach the linked-devices service at broker.term-llm.com. Devices can't connect until it's reachable; retrying automatically.",
+      );
+      expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeVisible();
+      expect(screen.queryByRole('button', { name: 'Forget all' })).toBeNull();
+    } finally {
+      store.dispose();
     }
   });
 

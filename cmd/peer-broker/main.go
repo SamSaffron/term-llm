@@ -1,5 +1,6 @@
 // peer-broker runs the standalone version 2 linked-device rendezvous broker.
-// It provides no hosted defaults or deployment automation.
+// term-llm's hosted default rendezvous runs it with --public; it embeds no
+// TURN relay, credential issuer or deployment automation.
 package main
 
 import (
@@ -28,7 +29,7 @@ func (s *stringList) Set(value string) error {
 
 func main() {
 	var options peerbroker.ServeOptions
-	var stun, turn stringList
+	var stun, turn, proxies stringList
 	flag.StringVar(&options.Host, "host", "127.0.0.1", "Bind host (TLS required off loopback)")
 	flag.IntVar(&options.Port, "port", 8091, "Bind port")
 	flag.StringVar(&options.TLSCert, "tls-cert", "", "TLS certificate file")
@@ -41,12 +42,15 @@ func main() {
 	flag.DurationVar(&options.TURNTTL, "turn-ttl", time.Hour, "Minted coturn credential lifetime")
 	flag.DurationVar(&options.LeaseTTL, "lease-ttl", peerbroker.DefaultLeaseTTL, "Renewable host lease lifetime")
 	flag.IntVar(&options.MaxHosts, "max-hosts", 256, "Concurrent host lease limit")
+	flag.BoolVar(&options.Public, "public", false, "Open host admission with per-client-network rate, quota and socket-lifetime limits")
+	flag.Var(&proxies, "trusted-proxy", "Reverse-proxy IP or CIDR whose X-Real-IP header names the client (repeatable)")
+	flag.DurationVar(&options.MaxConnectionLifetime, "max-connection-lifetime", 0, "Close WebSockets after this duration so clients reconnect (0: 12h with --public, otherwise unbounded)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
 		os.Exit(2)
 	}
-	options.STUNURLs, options.TURNURLs = stun, turn
+	options.STUNURLs, options.TURNURLs, options.TrustedProxies = stun, turn, proxies
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := peerbroker.Run(ctx, options, func(message string) { fmt.Fprintln(os.Stderr, message) }); err != nil {

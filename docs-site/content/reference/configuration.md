@@ -318,7 +318,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `file_tracking.max_observation_session_bytes` | integer | `2097152` | — |
 | `file_tracking.max_observation_age_days` | integer | `30` | — |
 | `file_tracking.path` | string | `""` | — |
-| `linked_devices.broker_url` | string | — | HTTPS rendezvous broker URL; loopback HTTP is allowed for development. |
+| `linked_devices.broker_url` | string | — | HTTPS rendezvous broker URL; when unset, TERM_LLM_LINKED_DEVICES_BROKER_URL and then the hosted default https://broker.term-llm.com are used. Loopback HTTP is allowed for development. |
 | `linked_devices.admission_credential` | string | — | Optional private credential used only to admit host registration at the broker. |
 | `linked_devices.diagnostics` | boolean | `false` | Emit a local redacted linked-device transport timeline to stderr. |
 | `linked_devices.ice_servers` | list of object | `[{"urls":["stun:stun.term-llm.com:3478"]}]` | Ordered ICE policy shared by the host and approved devices; free STUN by default, TURN requires explicit configuration, and [] uses host candidates only. |

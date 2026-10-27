@@ -124,9 +124,13 @@ func (s *Server) ServeChannel(ctx context.Context, dc *webrtc.DataChannel) error
 	}
 	sc.conn.testOnBackpressure = s.cfg.testOnBackpressure
 	if s.cfg.Observer != nil {
-		dc.OnOpen(func() {
-			s.cfg.Observer(DiagnosticEvent{Stage: DiagnosticChannelOpen, Outcome: DiagnosticOutcomeConnected})
-		})
+		var opened sync.Once
+		sc.observeOpen = func() {
+			opened.Do(func() {
+				s.cfg.Observer(DiagnosticEvent{Stage: DiagnosticChannelOpen, Outcome: DiagnosticOutcomeConnected})
+			})
+		}
+		dc.OnOpen(sc.observeOpen)
 	}
 	dc.OnClose(func() {
 		sc.conn.markClosed()
@@ -161,6 +165,10 @@ type serverConn struct {
 	// replies bounds pending rejection replies so a peer that floods
 	// requests without reading cannot pile up goroutines.
 	replies chan struct{}
+	// observeOpen reports channel_open at most once. Pion runs OnOpen on its
+	// own goroutine, so the first inbound message (which proves the channel
+	// is open) also reports it, keeping it ahead of request diagnostics.
+	observeOpen func()
 }
 
 type serverStream struct {
@@ -169,6 +177,9 @@ type serverStream struct {
 }
 
 func (sc *serverConn) onMessage(msg webrtc.DataChannelMessage) {
+	if sc.observeOpen != nil {
+		sc.observeOpen()
+	}
 	f, err := decodeFrame(msg.Data, sc.srv.cfg.Limits.MaxFrameBytes)
 	if err != nil {
 		if f != nil && f.ID != "" && len(f.ID) <= maxIDLength && f.Type == TypeRequest {

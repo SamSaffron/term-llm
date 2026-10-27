@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -263,7 +264,7 @@ func (r *Runtime) rollbackPairingGrant(ctx context.Context, grants *pairing.Gran
 		return
 	}
 	if err := r.renewNow(ctx); err != nil {
-		r.setWarning("cancelled pairing grant removal is pending rendezvous synchronization")
+		r.setWarning(msgCancelledSyncPending)
 	}
 }
 
@@ -355,8 +356,16 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 	if err != nil {
 		return
 	}
-	endpoint.PeerConnection().OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		if state == webrtc.PeerConnectionStateConnected && r.opts.Diagnostics != nil {
+	// Pion delivers connection-state callbacks on their own goroutines, so the
+	// connected callback can run after the DataChannel opens (or after close).
+	// An open channel proves ICE connected, so either path reports it once and
+	// channel_open waits for that report to keep the timeline ordered.
+	var iceReported sync.Once
+	reportICEConnected := func() {
+		if r.opts.Diagnostics == nil {
+			return
+		}
+		iceReported.Do(func() {
 			candidate := peer.DiagnosticCandidateUnknown
 			if stats, selected, _ := endpoint.SelectedPair(); selected {
 				candidate = diagnosticCandidateClass(stats)
@@ -365,6 +374,11 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 				Stage: peer.DiagnosticICEConnected, Outcome: peer.DiagnosticOutcomeConnected,
 				Generation: generation, Connection: connection, Candidate: candidate,
 			})
+		})
+	}
+	endpoint.PeerConnection().OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateConnected {
+			reportICEConnected()
 		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			r.removeSession(id, endpoint)
@@ -375,6 +389,9 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 	var observer peer.DiagnosticObserver
 	if r.opts.Diagnostics != nil {
 		observer = func(event peer.DiagnosticEvent) {
+			if event.Stage == peer.DiagnosticChannelOpen {
+				reportICEConnected()
+			}
 			event.Generation, event.Connection = generation, connection
 			r.observeDiagnostic(event)
 		}
@@ -450,15 +467,11 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 
 func (r *Runtime) Resume(ctx context.Context) error {
 	r.mu.Lock()
-	if brokerRegistrationRejected(r.availableReason) {
-		r.availableReason = ""
+	if r.registrationRejected {
+		r.availableReason, r.registrationRejected = "", false
 	}
 	r.mu.Unlock()
 	return r.Enable(ctx)
-}
-
-func brokerRegistrationRejected(reason string) bool {
-	return strings.HasPrefix(reason, "rendezvous rejected linked devices registration:")
 }
 
 func (r *Runtime) Enable(ctx context.Context) error {
@@ -576,7 +589,7 @@ func (r *Runtime) Revoke(ctx context.Context, id string) error {
 	}
 	r.mu.Unlock()
 	if err := r.renewNow(ctx); err != nil {
-		r.setWarning("device revoked locally; rendezvous synchronization is pending")
+		r.setWarning(msgRevokeSyncPending)
 	}
 	return nil
 }
@@ -614,8 +627,8 @@ func (r *Runtime) Reset(ctx context.Context) error {
 			return err
 		}
 	}
-	r.identity, r.grants, r.host, r.broker, r.warnings = id, grants, host, broker, nil
-	r.availableReason = ""
+	r.identity, r.grants, r.host, r.broker, r.warnings, r.brokerProblem = id, grants, host, broker, nil, ""
+	r.availableReason, r.registrationRejected = "", false
 	r.resetRequired = false
 	r.evaluateAvailability()
 	return nil

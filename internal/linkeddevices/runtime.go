@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -128,6 +127,8 @@ type Runtime struct {
 	pending                    map[string]*pendingRequest
 	sessions                   map[string]*deviceSession
 	warnings                   []string
+	brokerProblem              string // current broker connection problem, shown first
+	registrationRejected       bool   // availableReason is a recoverable broker policy rejection
 	ctx                        context.Context
 	cancel                     context.CancelFunc
 	sharingCtx                 context.Context
@@ -270,7 +271,7 @@ func (r *Runtime) loadState() error {
 			return nil
 		}
 		if target.BrokerURL != "" && r.opts.BrokerURL != "" && target.BrokerURL != r.opts.BrokerURL {
-			r.availableReason = "the rendezvous service changed; forget all devices before continuing"
+			r.availableReason = msgServiceChanged(target.BrokerURL, r.opts.BrokerURL)
 			r.resetRequired = true
 			return nil
 		}
@@ -317,7 +318,7 @@ func (r *Runtime) evaluateAvailability() {
 	case !peer.PlatformSupported():
 		r.availableReason = "linked devices are not supported on this platform"
 	case r.opts.BrokerURL == "":
-		r.availableReason = "no rendezvous service is configured in this build"
+		r.availableReason = msgNoService
 	}
 }
 
@@ -383,7 +384,7 @@ func (r *Runtime) pinBroker() error {
 		return writeJSONPrivate(path, target)
 	}
 	if target.BrokerURL != r.opts.BrokerURL {
-		return errors.New("the rendezvous service changed; forget all devices before continuing")
+		return errors.New(msgServiceChanged(target.BrokerURL, r.opts.BrokerURL))
 	}
 	return nil
 }
@@ -422,7 +423,7 @@ func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegist
 			r.setRegistrationUnavailable(attempt, reason)
 			return err
 		}
-		r.setWarning("rendezvous unreachable")
+		r.setBrokerProblem(connectionProblem(r.opts.BrokerURL, err))
 		return err
 	}
 	conn, err := attempt.broker.DialHost(connectCtx, registration.HostID, registration.LeaseCapability)
@@ -431,7 +432,7 @@ func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegist
 			r.setRegistrationUnavailable(attempt, reason)
 			return err
 		}
-		r.setWarning("rendezvous unreachable")
+		r.setBrokerProblem(connectionProblem(r.opts.BrokerURL, err))
 		return err
 	}
 	r.mu.Lock()
@@ -448,7 +449,7 @@ func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegist
 		r.host.CancelPairing(r.invitation.link.InvitationID)
 		r.invitation = nil
 		r.pending = map[string]*pendingRequest{}
-		r.warnings = append(r.warnings, "the invitation was cancelled after the rendezvous reconnected; create a new invitation")
+		r.warnings = append(r.warnings, msgInvitationReconnect)
 	}
 	r.mu.Unlock()
 	r.observeDiagnostic(peer.DiagnosticEvent{
@@ -458,7 +459,7 @@ func (r *Runtime) connectBroker(connectCtx context.Context, attempt brokerRegist
 	if old != nil {
 		_ = old.Close()
 	}
-	r.clearWarnings("rendezvous unreachable", "rendezvous disconnected; reconnecting")
+	r.setBrokerProblem("")
 	go r.receiveLoop(conn)
 	go r.renewLoop(attempt.ctx, conn)
 	return nil
@@ -481,7 +482,7 @@ func (r *Runtime) renewLoop(ctx context.Context, conn *peerbroker.Conn) {
 				return
 			}
 			if err := r.renewWithRetry(ctx); err != nil {
-				r.setWarning("rendezvous unreachable")
+				r.setBrokerProblem(connectionProblem(r.opts.BrokerURL, err))
 				_ = conn.Close()
 				return
 			}
@@ -524,7 +525,7 @@ func (r *Runtime) receiveLoop(conn *peerbroker.Conn) {
 				r.failPairAnswerDeliveries(errors.New("rendezvous disconnected before pairing answer delivery"))
 			}
 			if enabled && r.ctx.Err() == nil {
-				r.setWarning("rendezvous disconnected; reconnecting")
+				r.setBrokerProblem(msgReconnecting(r.opts.BrokerURL))
 				r.scheduleReconnect()
 			}
 			return
@@ -594,7 +595,12 @@ func (r *Runtime) reconnectLoop(ctx context.Context, generation uint64) {
 
 func permanentBrokerRejection(err error) (string, bool) {
 	var apiErr *peerbroker.APIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode < http.StatusBadRequest || apiErr.StatusCode >= http.StatusInternalServerError ||
+	// A response without a broker error code came from something other than a
+	// rendezvous broker (a placeholder site, proxy or captive portal). Treat it
+	// like an unreachable broker and keep retrying instead of declaring the
+	// broker's policy incompatible.
+	if !errors.As(err, &apiErr) || strings.HasPrefix(apiErr.Code, "http_") ||
+		apiErr.StatusCode < http.StatusBadRequest || apiErr.StatusCode >= http.StatusInternalServerError ||
 		apiErr.StatusCode == http.StatusRequestTimeout || apiErr.StatusCode == http.StatusTooManyRequests ||
 		errors.Is(err, peerbroker.ErrExpired) || errors.Is(err, peerbroker.ErrRateLimited) {
 		return "", false
@@ -603,24 +609,24 @@ func permanentBrokerRejection(err error) (string, bool) {
 	if apiErr.Message != "" {
 		detail += ": " + apiErr.Message
 	}
-	return "rendezvous rejected linked devices registration: " + detail, true
+	return detail, true
 }
 
 func (r *Runtime) setRegistrationUnavailable(attempt brokerRegistrationAttempt, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.settings.Enabled && r.generation == attempt.generation && r.identity == attempt.identity && r.broker == attempt.broker {
-		r.availableReason = reason
-		r.warnings = slices.DeleteFunc(r.warnings, func(existing string) bool { return existing == "rendezvous unreachable" })
+		r.availableReason = msgRejected(r.opts.BrokerURL, reason)
+		r.registrationRejected = true
+		r.brokerProblem = ""
 	}
 }
 
-func (r *Runtime) clearWarnings(messages ...string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, message := range messages {
-		r.warnings = slices.DeleteFunc(r.warnings, func(existing string) bool { return existing == message })
+func (r *Runtime) statusWarnings() []string {
+	if r.brokerProblem == "" {
+		return append([]string(nil), r.warnings...)
 	}
+	return append([]string{r.brokerProblem}, r.warnings...)
 }
 
 func (r *Runtime) setWarning(message string) {
@@ -740,11 +746,19 @@ func (r *Runtime) status(includeInvitation bool) Status {
 			}
 		}
 	}
-	recoverableRejection := brokerRegistrationRejected(r.availableReason)
+	recoverableRejection := r.registrationRejected
+	// Forget all only has something to forget once a device was approved, or
+	// when local state must be reset before linked devices can continue.
+	hasDevices := false
+	if recoverableRejection {
+		for _, grant := range r.mustListGrants() {
+			hasDevices = hasDevices || grant.RevokedAt == nil
+		}
+	}
 	status := Status{
 		Enabled: r.settings.Enabled, ResetRequired: r.resetRequired, CanResume: recoverableRejection,
-		CanReset: r.resetRequired || recoverableRejection, BrokerConnected: r.brokerConnected,
-		PendingRequests: []RequestStatus{}, Devices: []DeviceStatus{}, Warnings: append([]string(nil), r.warnings...), Authority: r.authority(),
+		CanReset: r.resetRequired || recoverableRejection && hasDevices, BrokerConnected: r.brokerConnected,
+		PendingRequests: []RequestStatus{}, Devices: []DeviceStatus{}, Warnings: r.statusWarnings(), Authority: r.authority(),
 	}
 	if r.identity != nil {
 		status.HostFingerprint = r.identity.Fingerprint()

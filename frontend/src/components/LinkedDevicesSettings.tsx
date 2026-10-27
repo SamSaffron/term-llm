@@ -166,8 +166,11 @@ export function LinkedDevicesSettings({ active }: { active: boolean }) {
   const isUnavailable = status.state === 'unavailable';
   const canStop = ['sharing', 'pending', 'inviting', 'reconnecting'].includes(status.state);
   const canResume = ['reconnecting', 'stopped'].includes(status.state) || status.can_resume;
+  // Forget all is offered only when there is something to forget, or when
+  // the server says a reset is required to continue.
   const canReset =
-    ['sharing', 'pending', 'inviting', 'reconnecting', 'stopped'].includes(status.state) ||
+    (devices.length > 0 &&
+      ['sharing', 'pending', 'inviting', 'reconnecting', 'stopped'].includes(status.state)) ||
     status.reset_required ||
     status.can_reset;
 

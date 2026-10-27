@@ -229,16 +229,15 @@ func containsControlChars(s string) bool {
 }
 
 // ResolveLinkedDevices resolves deferred credentials in linked_devices configuration.
-// It only resolves broker_url, admission_credential, and static TURN credentials.
-// This should only be called when the broker URL is actually configured and needed.
+// It applies the broker URL precedence (see LinkedDevicesBrokerURL) and only
+// resolves broker_url, admission_credential, and static TURN credentials.
+// This should only be called when the runtime is actually being constructed.
 func (c *Config) ResolveLinkedDevices() error {
 	if c == nil {
 		return nil
 	}
 	ld := &c.LinkedDevices
-	if strings.TrimSpace(ld.BrokerURL) == "" {
-		ld.BrokerURL = strings.TrimSpace(os.Getenv("TERM_LLM_LINKED_DEVICES_BROKER_URL"))
-	}
+	ld.BrokerURL = c.LinkedDevicesBrokerURL()
 	if strings.TrimSpace(ld.AdmissionCredential) == "" {
 		ld.AdmissionCredential = strings.TrimSpace(os.Getenv("TERM_LLM_LINKED_DEVICES_ADMISSION"))
 	}
@@ -349,19 +348,27 @@ func validateResolvedBrokerCredential(value string) error {
 	return nil
 }
 
-// LinkedDevicesEnabled returns true if linked devices should be available.
-// This checks both explicit broker_url config and the environment fallback.
-func (c *Config) LinkedDevicesEnabled() bool {
+// LinkedDevicesBrokerURL returns the unresolved rendezvous broker URL with
+// precedence explicit linked_devices.broker_url > TERM_LLM_LINKED_DEVICES_BROKER_URL
+// > DefaultLinkedDevicesBrokerURL. Deferred references are resolved later by
+// ResolveLinkedDevices.
+func (c *Config) LinkedDevicesBrokerURL() string {
 	if c == nil {
-		return false
+		return ""
 	}
-	// Check explicit config
-	if strings.TrimSpace(c.LinkedDevices.BrokerURL) != "" {
-		return true
+	if explicit := strings.TrimSpace(c.LinkedDevices.BrokerURL); explicit != "" {
+		return explicit
 	}
-	// Check environment fallback
-	if strings.TrimSpace(os.Getenv("TERM_LLM_LINKED_DEVICES_BROKER_URL")) != "" {
-		return true
+	if env := strings.TrimSpace(os.Getenv("TERM_LLM_LINKED_DEVICES_BROKER_URL")); env != "" {
+		return env
 	}
-	return false
+	return DefaultLinkedDevicesBrokerURL
+}
+
+// LinkedDevicesEnabled reports whether a rendezvous broker is available to the
+// linked devices runtime. The hosted default makes this true for an ordinary
+// configuration; endpoint availability is not sharing consent, which still
+// requires the owner to select Connect.
+func (c *Config) LinkedDevicesEnabled() bool {
+	return c.LinkedDevicesBrokerURL() != ""
 }

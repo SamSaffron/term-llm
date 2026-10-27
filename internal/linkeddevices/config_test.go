@@ -49,24 +49,29 @@ func TestLinkedDevicesServerOptionsPreserveHostOnlyPolicy(t *testing.T) {
 	}
 }
 
-func TestLinkedDevicesServerOptionsDoNotResolveCredentialsWhileDisabled(t *testing.T) {
-	t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", "")
-	marker := filepath.Join(t.TempDir(), "resolved")
-	reference := "$(touch " + marker + "; printf secret)"
-	cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{
-		Diagnostics:         true,
-		AdmissionCredential: reference,
-		ICEServers: []config.LinkedDevicesICEServerConfig{{
-			URLs: []string{"turn:relay.example.com:3478"}, CredentialSource: "static", Username: "device", Credential: reference,
-		}},
-	}}
-
-	got := ServerOptionsFromConfig(cfg)
-	if got.UnavailableReason != "" || !got.Diagnostics {
-		t.Fatalf("disabled configuration options = %+v", got)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("disabled linked devices resolved a credential: %v", err)
+func TestLinkedDevicesServerOptionsBrokerPrecedence(t *testing.T) {
+	const custom, env = "https://broker.example.com", "https://broker.env.example.com"
+	for _, tc := range []struct{ name, yaml, env, want string }{
+		{"hosted default", "", "", config.DefaultLinkedDevicesBrokerURL},
+		{"environment override", "", env, env},
+		{"explicit YAML override", custom, env, custom},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(BrokerURLEnv, tc.env)
+			t.Setenv(AdmissionEnv, "")
+			cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{BrokerURL: tc.yaml, ICEServers: config.DefaultLinkedDevicesICEServers()}}
+			got := ServerOptionsFromConfig(cfg)
+			if got.UnavailableReason != "" || got.BrokerURL != tc.want || got.AdmissionCredential != "" {
+				t.Fatalf("server options = %+v, want broker %q without admission", got, tc.want)
+			}
+			if got.ICEPolicy == nil || !got.ICEPolicy.Configured() {
+				t.Fatal("default ICE policy must be explicitly sent")
+			}
+			servers := got.ICEPolicy.Servers()
+			if len(servers) != 1 || servers[0].CredentialSource != "" || servers[0].URLs[0] != "stun:stun.term-llm.com:3478" {
+				t.Fatalf("default ICE policy = %+v, want free STUN only", servers)
+			}
+		})
 	}
 }
 

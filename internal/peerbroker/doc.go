@@ -31,6 +31,9 @@
 //
 // Capabilities are Bearer credentials and never appear in URLs. Challenge
 // creation additionally requires Config.AdmissionCredential when configured.
+// Open-admission deployments instead set Config.Clients, which bounds each
+// client network's request rate, outstanding challenges, host leases and
+// sockets, and Config.MaxConnectionLifetime, which recycles long-lived sockets.
 // Responses are Cache-Control: no-store. No public broker, STUN, TURN, DNS,
 // deployment, or hosted-provider default is embedded by this package.
 package peerbroker

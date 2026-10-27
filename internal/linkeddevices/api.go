@@ -128,10 +128,10 @@ func (r *Runtime) ownerMutationAllowed(path string) bool {
 	if r.availableReason == "" {
 		return true
 	}
-	if brokerRegistrationRejected(r.availableReason) {
+	if r.registrationRejected {
 		return path == "/resume" || path == "/stop" || path == "/reset"
 	}
-	return path == "/reset" && (strings.Contains(r.availableReason, "reset is required") || strings.Contains(r.availableReason, "rendezvous service changed"))
+	return path == "/reset" && r.resetRequired
 }
 
 func sameOrigin(request *http.Request) bool {

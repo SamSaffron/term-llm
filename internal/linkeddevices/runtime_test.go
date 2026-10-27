@@ -46,20 +46,121 @@ func TestRuntimeOffAndUnavailableMakeNoOutboundCalls(t *testing.T) {
 	}
 }
 
-func TestServeHostDegradesUnavailableRuntime(t *testing.T) {
+func TestLinkedDevicesServiceMessagesNameTheConfiguredBroker(t *testing.T) {
+	for _, tc := range []struct{ broker, want string }{
+		{"https://broker.term-llm.com", "Can't reach the linked-devices service at broker.term-llm.com. Devices can't connect until it's reachable; retrying automatically."},
+		{"https://relay.example.com:8443/term-llm/", "Can't reach the linked-devices service at relay.example.com:8443/term-llm. Devices can't connect until it's reachable; retrying automatically."},
+		{"http://127.0.0.1:8091", "Can't reach the linked-devices service at 127.0.0.1:8091. Devices can't connect until it's reachable; retrying automatically."},
+	} {
+		if got := connectionProblem(tc.broker, errors.New("dial tcp: connection refused")); got != tc.want {
+			t.Errorf("connectionProblem(%q) = %q, want %q", tc.broker, got, tc.want)
+		}
+	}
+	notBroker := &peerbroker.APIError{StatusCode: http.StatusNotFound, Code: "http_404"}
+	if got, want := connectionProblem("https://relay.example.com", notBroker), "relay.example.com isn't responding as a linked-devices service (HTTP 404). Retrying automatically."; got != want {
+		t.Errorf("not-a-broker message = %q, want %q", got, want)
+	}
+	if got, want := msgServiceChanged("https://broker.term-llm.com", "https://relay.example.com/x"), "This server's devices were paired through the linked-devices service at broker.term-llm.com, but it is now configured for relay.example.com/x. Select Forget all to switch, or restore the previous broker_url."; got != want {
+		t.Errorf("service changed = %q", got)
+	}
+	for _, message := range []string{msgUnreachable("https://x.example"), msgReconnecting("https://x.example"), msgRejected("https://x.example", "bad_request"), msgNoService, msgInvitationReconnect} {
+		if strings.Contains(strings.ToLower(message), "rendezvous") {
+			t.Errorf("user-facing message uses internal jargon: %q", message)
+		}
+	}
+}
+
+func TestServeHostOffersHostedDefaultBrokerWithoutConnecting(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv(BrokerURLEnv, "")
+	t.Setenv(AdmissionEnv, "")
 	host, err := NewServeHost(true, context.Background(), nil, "agent", "/", true, "title", "manual", &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	status := host.Status()
-	if status.State != StateUnavailable || !strings.Contains(status.Reason, "no rendezvous service") {
-		t.Fatalf("status = %+v", status)
-	}
 	var logs atomic.Int64
 	host.StartAndLog(func(string, ...any) { logs.Add(1) })
 	if logs.Load() != 0 {
-		t.Fatal("unavailable optional runtime logged a startup failure")
+		t.Fatal("disabled optional runtime logged a startup failure")
+	}
+	status := host.Status()
+	if status.State != StateOff || status.Reason != "" || status.Enabled || status.BrokerConnected {
+		t.Fatalf("ordinary configuration must offer Connect without sharing: %+v", status)
+	}
+	host.mu.Lock()
+	brokerURL, broker, conn := host.opts.BrokerURL, host.broker, host.brokerConn
+	host.mu.Unlock()
+	if brokerURL != config.DefaultLinkedDevicesBrokerURL || broker == nil || conn != nil {
+		t.Fatalf("runtime broker = %q (client %v, conn %v), want idle hosted default", brokerURL, broker != nil, conn != nil)
+	}
+}
+
+func TestRuntimeWithoutBrokerIsUnavailable(t *testing.T) {
+	t.Setenv(BrokerURLEnv, "")
+	runtime, err := New(Options{DataDir: t.TempDir(), Target: "agent", StoreInstanceID: "store", Authenticated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	status := runtime.Status()
+	if status.State != StateUnavailable || status.Reason != msgNoService {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestBrokerOutageIsReportedAsConnectionErrorWithoutFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"gateway error", http.StatusBadGateway, "down"},
+		// A placeholder site where no broker is deployed yet is unreachable,
+		// not a broker policy rejection that needs Resume or Forget all.
+		{"non-broker 404", http.StatusNotFound, "<html><title>404 Not Found</title></html>"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer broker.Close()
+			runtime, err := New(Options{DataDir: t.TempDir(), Target: "outage", StoreInstanceID: "store", Authenticated: true, BrokerURL: broker.URL, Handler: http.NotFoundHandler()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runtime.Close()
+			if err := runtime.Enable(t.Context()); err == nil {
+				t.Fatal("Connect succeeded while the rendezvous was down")
+			}
+			status := runtime.Status()
+			name := strings.TrimPrefix(broker.URL, "http://")
+			want := name + " isn't responding as a linked-devices service (HTTP 404). Retrying automatically."
+			if tc.status == http.StatusBadGateway {
+				want = "Can't reach the linked-devices service at " + name + ". Devices can't connect until it's reachable; retrying automatically."
+			}
+			if status.State != StateReconnecting || status.Reason != "" || status.BrokerConnected || status.CanReset ||
+				len(status.Warnings) != 1 || status.Warnings[0] != want {
+				t.Fatalf("outage status = %+v, want reconnecting with an unreachable warning", status)
+			}
+			runtime.mu.Lock()
+			brokerURL := runtime.opts.BrokerURL
+			runtime.mu.Unlock()
+			if brokerURL != broker.URL || calls.Load() == 0 {
+				t.Fatalf("runtime switched broker or never tried it: %q after %d calls", brokerURL, calls.Load())
+			}
+			if err := runtime.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if status := runtime.Status(); status.State != StateOff || status.Enabled {
+				t.Fatalf("Stop sharing after outage = %+v", status)
+			}
+		})
 	}
 }
 
@@ -95,10 +196,13 @@ func TestConfiguredBrokerICEPolicyRejectionMakesRuntimeUnavailableWithoutRetry(t
 		t.Fatalf("enable error = %v, want rejected ICE policy", err)
 	}
 	status := runtime.Status()
-	if status.State != StateUnavailable || !strings.Contains(status.Reason, "rendezvous rejected linked devices registration: bad_request: invalid ice_policy") {
+	brokerName := strings.TrimPrefix(broker.URL, "http://")
+	if status.State != StateUnavailable || !strings.Contains(status.Reason, "The linked-devices service at "+brokerName+" rejected this server's settings: bad_request: invalid ice_policy") ||
+		!strings.HasSuffix(status.Reason, "Fix the configuration, then select Resume.") {
 		t.Fatalf("status = %+v, want clear unavailable rejection", status)
 	}
-	if !status.CanResume || !status.CanReset {
+	// No device was ever approved, so there is nothing for Forget all to forget.
+	if !status.CanResume || status.CanReset {
 		t.Fatalf("rejected registration recovery flags = %+v", status)
 	}
 	runtime.mu.Lock()
@@ -291,7 +395,11 @@ func startDroppedPairAnswerDelivery(t *testing.T) (*Runtime, *pairing.GrantStore
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _, _ = device.Pair(ctx, invitationURL) }()
+	pairDone := make(chan struct{})
+	go func() { defer close(pairDone); _, _ = device.Pair(ctx, invitationURL) }()
+	// The device may still persist state after the test body returns; stop it
+	// before its TempDir is removed (cleanups run last-registered first).
+	t.Cleanup(func() { cancel(); <-pairDone })
 	code := <-sas
 	var pendingID string
 	for pendingID == "" {
@@ -391,7 +499,7 @@ func TestPermanentBrokerRejectionClassification(t *testing.T) {
 			if permanent != test.permanent {
 				t.Fatalf("permanent = %v, want %v (reason %q)", permanent, test.permanent, reason)
 			}
-			if permanent && !strings.Contains(reason, "rendezvous rejected linked devices registration") {
+			if permanent && !strings.HasPrefix(reason, test.err.(*peerbroker.APIError).Code) {
 				t.Fatalf("reason = %q", reason)
 			}
 		})

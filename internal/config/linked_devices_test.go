@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -21,9 +20,17 @@ func TestLinkedDevicesDefaults(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	// Check defaults are applied
+	// broker_url has no schema default (so it cannot shadow the environment
+	// override); the hosted default applies at resolution.
+	t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", "")
 	if cfg.LinkedDevices.BrokerURL != "" {
-		t.Errorf("expected empty broker_url, got %q", cfg.LinkedDevices.BrokerURL)
+		t.Errorf("expected unset broker_url, got %q", cfg.LinkedDevices.BrokerURL)
+	}
+	if got := cfg.LinkedDevicesBrokerURL(); got != DefaultLinkedDevicesBrokerURL {
+		t.Errorf("effective broker URL = %q, want hosted default %q", got, DefaultLinkedDevicesBrokerURL)
+	}
+	if !cfg.LinkedDevicesEnabled() {
+		t.Error("an ordinary configuration must have linked devices available")
 	}
 	if cfg.LinkedDevices.AdmissionCredential != "" {
 		t.Errorf("expected empty admission_credential, got %q", cfg.LinkedDevices.AdmissionCredential)
@@ -520,66 +527,51 @@ linked_devices:
 	}
 }
 
-func TestLinkedDevicesEnabled(t *testing.T) {
+func TestLinkedDevicesBrokerURLPrecedence(t *testing.T) {
+	const yamlURL, envURL = "https://broker.example.com", "https://broker.env.example.com"
 	tests := []struct {
-		name          string
-		config        string
-		envBrokerURL  string
-		expectEnabled bool
+		name, config, env, want string
 	}{
-		{
-			name:          "config broker_url",
-			config:        "linked_devices:\n  broker_url: https://broker.example.com",
-			expectEnabled: true,
-		},
-		{
-			name:          "env broker_url",
-			envBrokerURL:  "https://broker.env.example.com",
-			expectEnabled: true,
-		},
-		{
-			name:          "both config and env",
-			config:        "linked_devices:\n  broker_url: https://broker.example.com",
-			envBrokerURL:  "https://broker.env.example.com",
-			expectEnabled: true,
-		},
-		{
-			name:          "neither",
-			expectEnabled: false,
-		},
-		{
-			name:          "empty strings",
-			config:        "linked_devices:\n  broker_url: \"\"",
-			expectEnabled: false,
-		},
+		{name: "explicit YAML", config: "linked_devices:\n  broker_url: " + yamlURL, want: yamlURL},
+		{name: "environment fallback", env: envURL, want: envURL},
+		{name: "YAML wins over environment", config: "linked_devices:\n  broker_url: " + yamlURL, env: envURL, want: yamlURL},
+		{name: "empty YAML uses environment", config: "linked_devices:\n  broker_url: \"\"", env: envURL, want: envURL},
+		{name: "other linked_devices keys keep environment", config: "linked_devices:\n  diagnostics: true", env: envURL, want: envURL},
+		{name: "built-in default", want: DefaultLinkedDevicesBrokerURL},
+		{name: "empty YAML uses built-in default", config: "linked_devices:\n  broker_url: \"\"", want: DefaultLinkedDevicesBrokerURL},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			configDir := t.TempDir()
 			t.Setenv("XDG_CONFIG_HOME", configDir)
-			if tt.envBrokerURL != "" {
-				t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", tt.envBrokerURL)
-			} else {
-				os.Unsetenv("TERM_LLM_LINKED_DEVICES_BROKER_URL")
-			}
-
-			configContent := "default_provider: openai\n"
-			if tt.config != "" {
-				configContent += tt.config
-			}
-			writeTestConfig(t, configDir, configContent)
+			t.Setenv("TERM_LLM_LINKED_DEVICES_BROKER_URL", tt.env)
+			t.Setenv("TERM_LLM_LINKED_DEVICES_ADMISSION", "")
+			writeTestConfig(t, configDir, "default_provider: openai\n"+tt.config)
 
 			cfg, err := Load()
 			if err != nil {
 				t.Fatalf("Load failed: %v", err)
 			}
-
-			enabled := cfg.LinkedDevicesEnabled()
-			if enabled != tt.expectEnabled {
-				t.Errorf("expected enabled=%v, got %v", tt.expectEnabled, enabled)
+			if !cfg.LinkedDevicesEnabled() {
+				t.Fatal("linked devices unavailable")
+			}
+			if got := cfg.LinkedDevicesBrokerURL(); got != tt.want {
+				t.Fatalf("effective broker URL = %q, want %q", got, tt.want)
+			}
+			if err := cfg.ResolveLinkedDevices(); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.LinkedDevices.BrokerURL != tt.want {
+				t.Fatalf("resolved broker URL = %q, want %q", cfg.LinkedDevices.BrokerURL, tt.want)
 			}
 		})
+	}
+}
+
+func TestDefaultLinkedDevicesBrokerURLIsValid(t *testing.T) {
+	if err := validateLinkedDevicesBrokerURL(DefaultLinkedDevicesBrokerURL); err != nil || !strings.HasPrefix(DefaultLinkedDevicesBrokerURL, "https://") {
+		t.Fatalf("hosted default broker URL %q is invalid: %v", DefaultLinkedDevicesBrokerURL, err)
 	}
 }
 

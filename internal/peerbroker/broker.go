@@ -16,6 +16,7 @@ import (
 )
 
 type storedChallenge struct {
+	client    string
 	keyHash   [32]byte
 	nonce     string
 	expiresAt time.Time
@@ -44,11 +45,13 @@ type hostLease struct {
 	signals     int
 	stop        chan struct{}
 	icePolicy   HostICEConfig // validated host-requested ICE policy
+	client      string        // client network charged for this lease
 }
 type Handler struct {
 	cfg          Config
 	mux          *http.ServeMux
 	limiter      *tokenBucket
+	clients      *clientRegistry
 	mu           sync.Mutex
 	challenges   map[string]storedChallenge
 	hosts        map[string]*hostLease
@@ -63,7 +66,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{cfg: cfg, limiter: newTokenBucket(cfg.RequestRate, cfg.RequestBurst, cfg.Now), challenges: map[string]storedChallenge{}, hosts: map[string]*hostLease{}, expiredHosts: map[string]time.Time{}, closedCh: make(chan struct{})}
+	h := &Handler{cfg: cfg, limiter: newTokenBucket(cfg.RequestRate, cfg.RequestBurst, cfg.Now), clients: newClientRegistry(cfg.Clients), challenges: map[string]storedChallenge{}, hosts: map[string]*hostLease{}, expiredHosts: map[string]time.Time{}, closedCh: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v2/challenges", h.handleChallenge)
 	mux.HandleFunc("POST /v2/hosts", h.handleRegister)
@@ -94,7 +97,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, CodeBrokerClosed, "")
 		return
 	}
-	if !h.limiter.allow() {
+	if !h.allowClientRequest(h.clientKey(r)) || !h.limiter.allow() {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "")
 		return
@@ -119,6 +122,9 @@ func (h *Handler) Close() {
 	}
 	clear(h.challenges)
 	clear(h.expiredHosts)
+	if h.clients != nil {
+		clear(h.clients.clients)
+	}
 }
 func (h *Handler) HostCount() int {
 	h.mu.Lock()
@@ -148,9 +154,9 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, CodeInternal, "")
 		return
 	}
-	ch := storedChallenge{keyHash: hashCapability(string(key)), nonce: nonce, expiresAt: h.cfg.Now().Add(h.cfg.ChallengeTTL)}
+	ch := storedChallenge{client: h.clientKey(r), keyHash: hashCapability(string(key)), nonce: nonce, expiresAt: h.cfg.Now().Add(h.cfg.ChallengeTTL)}
 	h.mu.Lock()
-	if len(h.challenges) >= h.cfg.MaxChallenges {
+	if len(h.challenges) >= h.cfg.MaxChallenges || !h.acquireChallengeLocked(ch.client) {
 		h.mu.Unlock()
 		writeError(w, http.StatusTooManyRequests, CodeQuotaExceeded, "")
 		return
@@ -228,7 +234,10 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	h.mu.Lock()
 	ch, ok := h.challenges[req.ChallengeID]
-	delete(h.challenges, req.ChallengeID)
+	if ok {
+		delete(h.challenges, req.ChallengeID)
+		h.releaseChallengeLocked(ch.client)
+	}
 	h.mu.Unlock()
 	keyHash := hashCapability(string(key))
 	// Verify signature includes ICE policy
@@ -254,15 +263,18 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hostID := hostIDForKey(key)
-	lease := &hostLease{id: hostID, keyHash: keyHash, leaseHash: hashCapability(leaseCap), expiresAt: h.cfg.Now().Add(h.cfg.LeaseTTL), invitations: map[string]*invitationSlot{}, devices: devices, iceMints: map[string]int{}, stop: make(chan struct{}), icePolicy: icePolicy}
+	lease := &hostLease{id: hostID, keyHash: keyHash, leaseHash: hashCapability(leaseCap), expiresAt: h.cfg.Now().Add(h.cfg.LeaseTTL), invitations: map[string]*invitationSlot{}, devices: devices, iceMints: map[string]int{}, stop: make(chan struct{}), icePolicy: icePolicy, client: h.clientKey(r)}
 	h.mu.Lock()
-	if old := h.hosts[hostID]; old != nil {
-		h.removeHostLocked(old)
-	} else if len(h.hosts) >= h.cfg.MaxHosts {
+	old := h.hosts[hostID]
+	if old == nil && len(h.hosts) >= h.cfg.MaxHosts || !h.hostCapacityLocked(lease.client, old) {
 		h.mu.Unlock()
 		writeError(w, http.StatusTooManyRequests, CodeQuotaExceeded, "")
 		return
 	}
+	if old != nil {
+		h.removeHostLocked(old)
+	}
+	h.acquireHostLocked(lease)
 	h.hosts[hostID] = lease
 	delete(h.expiredHosts, hostID)
 	h.mu.Unlock()
@@ -414,6 +426,7 @@ func (h *Handler) sweepLocked() {
 	for id, ch := range h.challenges {
 		if !ch.expiresAt.After(now) {
 			delete(h.challenges, id)
+			h.releaseChallengeLocked(ch.client)
 		}
 	}
 	for id, until := range h.expiredHosts {
@@ -434,12 +447,14 @@ func (h *Handler) sweepLocked() {
 			}
 		}
 	}
+	h.maybeSweepClientsLocked(now)
 }
 func (h *Handler) removeHostLocked(host *hostLease) {
 	select {
 	case <-host.stop:
 	default:
 		close(host.stop)
+		h.releaseHostLocked(host)
 	}
 }
 

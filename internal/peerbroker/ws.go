@@ -27,8 +27,9 @@ const (
 )
 
 type wsPeer struct {
-	queue chan Frame
-	kick  chan struct{}
+	queue  chan Frame
+	kick   chan struct{}
+	client string
 }
 type wsRole struct{ kind, id string }
 
@@ -59,29 +60,29 @@ func (h *Handler) handleWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code, "")
 		return
 	}
-	if h.connections >= h.cfg.MaxConnections {
+	client := h.clientKey(r)
+	if !h.acquireConnectionLocked(client) {
 		h.mu.Unlock()
 		writeError(w, http.StatusTooManyRequests, CodeQuotaExceeded, "")
 		return
 	}
-	h.connections++
 	h.mu.Unlock()
 	upgrader := websocket.Upgrader{ReadBufferSize: 4 << 10, WriteBufferSize: 4 << 10, Subprotocols: []string{WSSubprotocol}, CheckOrigin: func(*http.Request) bool { return true }}
 	conn, err := upgrader.Upgrade(&rawLimitedWriter{ResponseWriter: w, budget: h.newRawBudget()}, r, nil)
 	if err != nil {
 		h.mu.Lock()
-		h.connections--
+		h.releaseConnectionLocked(client)
 		h.mu.Unlock()
 		return
 	}
-	h.serveWS(conn, hostID, wsRole{kind: kind, id: id}, tok)
+	h.serveWS(conn, hostID, wsRole{kind: kind, id: id}, tok, client)
 }
-func (h *Handler) serveWS(conn *websocket.Conn, hostID string, role wsRole, tok string) {
-	peer := &wsPeer{queue: make(chan Frame, h.cfg.MaxPendingSignals), kick: make(chan struct{})}
+func (h *Handler) serveWS(conn *websocket.Conn, hostID string, role wsRole, tok, client string) {
+	peer := &wsPeer{queue: make(chan Frame, h.cfg.MaxPendingSignals), kick: make(chan struct{}), client: client}
 	h.mu.Lock()
 	host := h.hosts[hostID]
 	if !h.peerAuthorizedLocked(host, role.kind, role.id, tok) {
-		h.connections--
+		h.releaseConnectionLocked(client)
 		h.mu.Unlock()
 		closeWS(conn, WSCloseLeaseExpired, CodeExpired)
 		return
@@ -105,7 +106,7 @@ func (h *Handler) serveWS(conn *websocket.Conn, hostID string, role wsRole, tok 
 			slot.peer = nil
 			delete(host.invitations, role.id)
 			h.notifyPresenceLocked(host, role, false)
-			h.connections--
+			h.releaseConnectionLocked(client)
 			h.mu.Unlock()
 			closeWS(conn, WSCloseSuperseded, "duplicate invitation")
 			_ = conn.Close()
@@ -180,6 +181,12 @@ func (h *Handler) runWS(conn *websocket.Conn, hostID string, role wsRole, peer *
 	leaseCheck := time.NewTicker(time.Second)
 	defer ping.Stop()
 	defer leaseCheck.Stop()
+	var lifetime <-chan time.Time
+	if h.cfg.MaxConnectionLifetime > 0 {
+		timer := time.NewTimer(h.cfg.MaxConnectionLifetime)
+		defer timer.Stop()
+		lifetime = timer.C
+	}
 	for {
 		select {
 		case frame := <-peer.queue:
@@ -193,6 +200,9 @@ func (h *Handler) runWS(conn *websocket.Conn, hostID string, role wsRole, peer *
 		case <-stop:
 			return WSCloseLeaseExpired, CodeExpired
 		case <-h.closedCh:
+			return WSCloseBrokerClosed, CodeBrokerClosed
+		case <-lifetime:
+			// Bounded socket lifetime: clients treat broker_closed as retryable.
 			return WSCloseBrokerClosed, CodeBrokerClosed
 		case <-leaseCheck.C:
 			h.mu.Lock()
@@ -324,7 +334,7 @@ func (h *Handler) routeSignal(hostID string, role wsRole, sender *wsPeer, frame 
 func (h *Handler) detachWS(hostID string, role wsRole, peer *wsPeer) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.connections--
+	h.releaseConnectionLocked(peer.client)
 	host := h.hosts[hostID]
 	if host == nil {
 		return

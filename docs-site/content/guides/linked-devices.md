@@ -10,12 +10,19 @@ Open **Settings → Linked devices** to see the target's current state.
 
 ## Availability
 
-The tab is always honest about availability. A server needs bearer or passkey
-authentication and an operator-provided rendezvous service. term-llm does not
-ship a public broker URL or silently make an outbound connection. With no
-rendezvous configured, the tab says **Not available** and linking remains off.
-The repository includes a synthetic Go/Pion client for protocol and local
-integration testing; it is not production client evidence.
+Linked devices works out of the box for an authenticated `term-llm serve web`
+(bearer or passkey), including `term-llm contain` agents. With no
+configuration it uses term-llm's hosted linked-devices service (a rendezvous
+broker) at `https://broker.term-llm.com`, and the free STUN service
+`stun:stun.term-llm.com:3478`. No YAML, environment variable or private
+credential is needed.
+
+Availability is not consent to share. The server does not contact the
+linked-devices service until the owner selects **Connect**, and **Stop sharing**
+disconnects again. A server without authentication, or on an unsupported
+platform, shows **Not available** with the reason. The repository includes a
+synthetic Go/Pion client for protocol and local integration testing; it is
+not production client evidence.
 
 ## Pair a device
 
@@ -71,30 +78,47 @@ term-llm access or read chat traffic.
 
 ## Configure rendezvous and ICE
 
-Linked devices remains unavailable until an administrator configures a rendezvous
-broker. The standard `config.yaml` surface is:
+The defaults need no configuration. To override them, the standard
+`config.yaml` surface is:
 
 ```yaml
 linked_devices:
-  broker_url: "https://broker.example.com"
+  broker_url: "https://broker.example.com"   # default: https://broker.term-llm.com
   admission_credential: "file:///run/secrets/term-llm-broker-admission"
   diagnostics: false
   ice_servers:
     - urls: ["stun:stun.term-llm.com:3478"]
 ```
 
+The broker URL is chosen in this order: an explicit
+`linked_devices.broker_url`, then `TERM_LLM_LINKED_DEVICES_BROKER_URL`, then
+the hosted default. `admission_credential` (or
+`TERM_LLM_LINKED_DEVICES_ADMISSION`) is only for a private broker that requires
+one; the hosted broker does not. Broker URLs require HTTPS, except that
+loopback HTTP is accepted for local development; credentials, query strings,
+and fragments are not valid broker URLs.
+
+The hosted broker relays signalling only. It admits any host that proves its
+Ed25519 identity, and bounds each client network's request rate, outstanding
+challenges, registered hosts and open sockets; sockets are recycled after 12
+hours and reconnect automatically. It does not relay chat traffic, and it
+offers no TURN relay or TURN credentials.
+
+If the service can't be reached, Connect reports **Reconnecting** and names the
+configured broker, for example *Can't reach the linked-devices service at
+broker.term-llm.com. Devices can't connect until it's reachable; retrying
+automatically.* If something other than a broker answers at that address,
+such as a placeholder site, it says the address *isn't responding as a
+linked-devices service* and includes the HTTP status. Both cases retry the same
+broker automatically and never fall back to another service. Messages always
+name the host and path from your `broker_url`, so a custom deployment points
+at the setting to check.
+
 The default ICE policy includes term-llm's free STUN service at
 `stun:stun.term-llm.com:3478`. STUN helps discover direct connectivity; it does not
 relay chat traffic. TURN is **not** enabled by default: configure your own TURN
 service explicitly if your networks require a relay. Loading configuration does
-not contact ICE servers while linked devices is unavailable or stopped.
-
-`broker_url` also has no default. Configure a broker you trust; term-llm does
-not supply a public broker or credential issuer.
-`TERM_LLM_LINKED_DEVICES_BROKER_URL` and `TERM_LLM_LINKED_DEVICES_ADMISSION`
-remain deployment overrides when their YAML fields are empty. Broker URLs require HTTPS, except that loopback HTTP is
-accepted for local development; credentials, query strings, and fragments are
-not valid broker URLs.
+not contact the broker or ICE servers while linked devices is stopped.
 
 `diagnostics: true` opts this serve process into a local stderr timeline prefixed
 with `[linked-devices]`. Records contain only fixed lifecycle outcomes, monotonic
@@ -115,7 +139,9 @@ The default is `false` and emits nothing.
   `credential`. The credential supports term-llm's deferred secret references.
   The trusted broker receives and holds it in memory for the host lease so it
   can deliver it to the host and an approved device capability; it is never
-  delivered to an invitation/QR capability.
+  delivered to an invitation/QR capability. With the hosted default broker
+  that means term-llm's broker holds it; configure your own `broker_url` if
+  that is not acceptable.
 - Invitation ICE requests are signalling-only and receive STUN entries only;
   they never consume TURN mint quota or call the TURN credential provider.
 - Omitting `ice_servers` or setting it to `null` uses the free STUN-only default.
@@ -150,10 +176,17 @@ broker lease cannot retain the old invitation slot.
 
 ## Self-hosted broker and TURN credentials
 
-`cmd/peer-broker` is the standalone rendezvous service. It binds to loopback by
-default and requires TLS when bound to a non-loopback address. For example,
-keep it behind an HTTPS reverse proxy with WebSocket support and configure your
-own coturn TURN-REST provider:
+`cmd/peer-broker` is the standalone rendezvous service; the hosted default runs
+it with `--public`. It binds to loopback by default and requires TLS when bound
+to a non-loopback address.
+`--public` opens host admission without a shared secret and applies
+per-client-network rate, challenge, host and socket quotas plus a 12-hour socket
+lifetime (`--max-connection-lifetime`). Behind a reverse proxy, pass
+`--trusted-proxy` with the proxy address and have the proxy set `X-Real-IP`.
+
+For a private broker, keep it behind an HTTPS reverse proxy with WebSocket
+support, require an admission credential, and configure your own coturn
+TURN-REST provider:
 
 ```text
 peer-broker \

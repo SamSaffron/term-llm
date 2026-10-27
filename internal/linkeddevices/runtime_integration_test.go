@@ -1055,7 +1055,7 @@ func TestReconnectCancelsInvitationThatBrokerLeaseCannotRetain(t *testing.T) {
 	switcher.replace(second)
 	waitRuntimeStatus(t, ctx, runtime, func(status linkeddevices.Status) bool {
 		return status.BrokerConnected && status.State != linkeddevices.StateInviting && slices.ContainsFunc(status.Warnings, func(warning string) bool {
-			return strings.Contains(warning, "invitation was cancelled after the rendezvous reconnected")
+			return strings.Contains(warning, "the open invitation was cancelled. Select Connect to create a new one.")
 		})
 	})
 }

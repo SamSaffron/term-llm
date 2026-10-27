@@ -24,6 +24,13 @@ type ServeOptions struct {
 	TURNTTL        time.Duration
 	LeaseTTL       time.Duration
 	MaxHosts       int
+	// Public enables open host admission with per-client-network limits.
+	Public bool
+	// TrustedProxies are reverse-proxy IPs/CIDRs whose X-Real-IP is honoured.
+	TrustedProxies []string
+	// MaxConnectionLifetime bounds every WebSocket; zero selects the public
+	// default in public mode and leaves sockets unbounded otherwise.
+	MaxConnectionLifetime time.Duration
 }
 
 func (o ServeOptions) Validate() error {
@@ -46,14 +53,48 @@ func (o ServeOptions) Validate() error {
 	if o.MaxHosts < 1 || o.MaxHosts > 10000 {
 		return errors.New("peerbroker: max-hosts must be 1-10000")
 	}
+	if o.MaxConnectionLifetime < 0 {
+		return errors.New("peerbroker: max-connection-lifetime must not be negative")
+	}
+	if o.Public && o.AdmissionFile != "" {
+		return errors.New("peerbroker: public admission cannot be combined with an admission credential")
+	}
+	if o.Public && o.TLSCert == "" && len(o.TrustedProxies) == 0 {
+		return errors.New("peerbroker: public mode without TLS runs behind a reverse proxy and requires --trusted-proxy")
+	}
+	for _, raw := range o.TrustedProxies {
+		if _, err := ParseTrustedProxy(raw); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// publicConfig applies open-admission process-wide and per-client limits.
+func (o ServeOptions) publicConfig(cfg Config) Config {
+	clients := PublicClientPolicy()
+	for _, raw := range o.TrustedProxies {
+		prefix, _ := ParseTrustedProxy(raw)
+		clients.TrustedProxies = append(clients.TrustedProxies, prefix)
+	}
+	cfg.Clients = &clients
+	cfg.MaxChallenges = 1024
+	cfg.MaxConnections = 4096
+	cfg.RequestRate, cfg.RequestBurst = 200, 400
+	if cfg.MaxConnectionLifetime == 0 {
+		cfg.MaxConnectionLifetime = DefaultPublicConnectionLifetime
+	}
+	return cfg
 }
 
 func Run(ctx context.Context, options ServeOptions, status func(string)) error {
 	if err := options.Validate(); err != nil {
 		return err
 	}
-	cfg := Config{LeaseTTL: options.LeaseTTL, MaxHosts: options.MaxHosts, STUNURLs: append([]string(nil), options.STUNURLs...)}
+	cfg := Config{LeaseTTL: options.LeaseTTL, MaxHosts: options.MaxHosts, MaxConnectionLifetime: options.MaxConnectionLifetime, STUNURLs: append([]string(nil), options.STUNURLs...)}
+	if options.Public {
+		cfg = options.publicConfig(cfg)
+	}
 	var err error
 	if options.AdmissionFile != "" {
 		cfg.AdmissionCredential, err = ReadSecretFile(options.AdmissionFile)
@@ -94,7 +135,13 @@ func Run(ctx context.Context, options ServeOptions, status func(string)) error {
 		}
 	}()
 	if status != nil {
-		status("peer broker v2 listening on " + server.Addr)
+		mode := "private admission"
+		if options.Public {
+			mode = "public admission"
+		} else if cfg.AdmissionCredential == "" {
+			mode = "open admission without per-client limits"
+		}
+		status("peer broker v2 listening on " + server.Addr + " (" + mode + ")")
 	}
 	select {
 	case err := <-finished:

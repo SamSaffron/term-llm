@@ -193,6 +193,12 @@ const (
 	DefaultAutoCompact = true
 )
 
+// DefaultLinkedDevicesBrokerURL is term-llm's hosted public rendezvous broker.
+// It is used when linked_devices.broker_url and
+// TERM_LLM_LINKED_DEVICES_BROKER_URL are both unset. It relays signalling only;
+// it is not a TURN relay or credential issuer.
+const DefaultLinkedDevicesBrokerURL = "https://broker.term-llm.com"
+
 // DefaultLinkedDevicesICEServers returns the free STUN-only default policy.
 // TURN requires explicit configuration; ice_servers: [] uses host candidates only.
 func DefaultLinkedDevicesICEServers() []LinkedDevicesICEServerConfig {
@@ -506,7 +512,10 @@ var keySpecs = []KeySpec{
 	def("file_tracking.max_observation_age_days", DefaultFileTrackingMaxObservationAgeDays),
 	def("file_tracking.path", ""),
 
-	optional("linked_devices.broker_url", described("HTTPS rendezvous broker URL; loopback HTTP is allowed for development.")),
+	// broker_url deliberately has no schema default: an applied default would
+	// shadow TERM_LLM_LINKED_DEVICES_BROKER_URL. ResolveLinkedDevices applies
+	// YAML > environment > DefaultLinkedDevicesBrokerURL.
+	optional("linked_devices.broker_url", withPlaceholder(DefaultLinkedDevicesBrokerURL), described("HTTPS rendezvous broker URL; when unset, TERM_LLM_LINKED_DEVICES_BROKER_URL and then the hosted default "+DefaultLinkedDevicesBrokerURL+" are used. Loopback HTTP is allowed for development.")),
 	optional("linked_devices.admission_credential", sensitive(), described("Optional private credential used only to admit host registration at the broker.")),
 	def("linked_devices.diagnostics", false, described("Emit a local redacted linked-device transport timeline to stderr.")),
 	def("linked_devices.ice_servers", DefaultLinkedDevicesICEServers(), redactExplicit(), described("Ordered ICE policy shared by the host and approved devices; free STUN by default, TURN requires explicit configuration, and [] uses host candidates only.")),
