@@ -182,7 +182,6 @@
 .widgets-sidebar-btn:hover,
 .back-to-hub-link:hover {
   background: var(--surface-2);
-  border-color: var(--border);
 }
 
 .widgets-sidebar-btn.hidden {
@@ -273,7 +272,6 @@
 .hub-agent-menu-trigger:focus-visible {
   background: var(--surface-3);
   color: var(--text);
-  border-color: var(--border);
 }
 
 .hub-agent-row.menu-open .session-menu {
@@ -303,7 +301,6 @@
 
 .hub-agent-link:hover {
   background: var(--surface-2);
-  border-color: var(--border);
 }
 
 .hub-agent-link:focus-visible {
@@ -339,8 +336,8 @@
   height: 0.48rem;
   justify-self: center;
   border-radius: var(--radius-sm);
-  background: #22c55e;
-  box-shadow: 0 0 0 0.14rem rgb(34 197 94 / 12%);
+  background: var(--accent-green);
+  box-shadow: 0 0 0 0.14rem var(--green-tint);
 }
 
 .sidebar-search-wrap {

@@ -10,8 +10,7 @@
 
 .diff-markdown-deleted-banner {
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border));
-  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+  background: var(--danger-tint);
   color: var(--text-muted);
   font-size: 0.75rem;
 }

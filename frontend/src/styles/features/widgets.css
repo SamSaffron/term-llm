@@ -63,7 +63,7 @@
   width: 100%;
   min-height: 2.35rem;
   padding: 0.55rem 2rem 0.55rem 2.25rem;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   appearance: none;
   background: var(--surface-2);
@@ -73,9 +73,8 @@
 }
 
 .widgets-modal .widgets-modal-search input:focus {
-  border-color: var(--border-strong);
-  outline: 2px solid color-mix(in srgb, var(--text) 12%, transparent);
-  outline-offset: 1px;
+  border-color: var(--focus-edge);
+  outline: none;
 }
 
 .widget-grid {
@@ -95,14 +94,9 @@
   min-width: 0;
   min-height: 4.25rem;
   overflow: hidden;
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
-  transition:
-    background 0.14s ease,
-    border-color 0.14s ease,
-    box-shadow 0.14s ease,
-    transform 0.14s ease;
+  background: var(--surface-2);
+  transition: background 0.14s ease;
 }
 
 .widget-card-open {
@@ -122,18 +116,12 @@
 
 .widget-card:hover,
 .widget-card:focus-within {
-  border-color: var(--border-strong);
-  background: var(--surface-2);
-  box-shadow: var(--shadow-soft);
-}
-
-.widget-card:hover {
-  transform: translateY(-1px);
+  background: var(--surface-3);
 }
 
 .widget-card-open:focus-visible {
   border-radius: inherit;
-  outline: 2px solid color-mix(in srgb, var(--text) 16%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -144,9 +132,6 @@
   width: 2rem;
   height: 2rem;
   flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface);
   color: var(--text-muted);
 }
 
@@ -156,13 +141,7 @@
 }
 
 .widget-card[data-state='running'] .widget-card-icon {
-  border-color: color-mix(in srgb, var(--accent-green) 28%, var(--border));
-  background: color-mix(in srgb, var(--accent-green) 6%, var(--surface));
   color: var(--accent-green);
-}
-
-.widget-card[data-state='error'] {
-  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
 }
 
 .widget-card-copy {
@@ -216,11 +195,11 @@
   gap: 0.3rem;
   flex: 0 0 auto;
   padding: 0.08rem 0.42rem;
-  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--surface-3);
   color: var(--text-muted);
   font-size: 0.68rem;
+  font-weight: 600;
   line-height: 1.3;
   text-transform: capitalize;
 }
@@ -233,20 +212,17 @@
 }
 
 .widget-card[data-state='running'] .widget-card-status {
-  border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
-  background: color-mix(in srgb, var(--accent-green) 7%, transparent);
+  background: var(--green-tint);
   color: var(--accent-green);
 }
 
 .widget-card[data-state='starting'] .widget-card-status {
-  border-color: color-mix(in srgb, var(--accent-amber) 35%, transparent);
-  background: color-mix(in srgb, var(--accent-amber) 7%, transparent);
+  background: var(--amber-tint);
   color: var(--accent-amber);
 }
 
 .widget-card[data-state='error'] .widget-card-status {
-  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
-  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  background: var(--danger-tint);
   color: var(--danger);
 }
 
@@ -258,9 +234,9 @@
   min-width: 2.9rem;
   min-height: 1.8rem;
   padding: 0.25rem 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+  border: 0;
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: transparent;
   color: var(--danger);
   font: inherit;
   font-size: 0.7rem;
@@ -272,12 +248,11 @@
 
 .widget-card-stop:hover,
 .widget-card-stop:focus-visible {
-  border-color: color-mix(in srgb, var(--danger) 58%, var(--border));
-  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+  background: var(--danger-tint);
 }
 
 .widget-card-stop:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--danger) 22%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -303,9 +278,6 @@
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.95rem;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
   color: var(--text-muted);
   font-size: 0.9rem;
   line-height: 1.45;

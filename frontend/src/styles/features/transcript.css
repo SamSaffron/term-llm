@@ -92,14 +92,12 @@
 
 .new-chat-project-trigger:hover,
 .new-chat-project-trigger[aria-expanded='true'] {
-  border-color: var(--border-strong);
   background: var(--surface-2);
 }
 
 .new-chat-project-trigger:focus-visible {
-  outline: none;
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 10%, transparent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .new-chat-project-label {
@@ -764,7 +762,7 @@
 
 .turn-action-btn.copied {
   color: var(--accent-green);
-  background: rgb(52 211 153 / 8%);
+  background: var(--green-tint);
 }
 
 .turn-action-btn.copied::after {

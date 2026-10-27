@@ -201,7 +201,6 @@
 .inspect-model-panel,
 .inspect-model-change,
 .inspect-active-model {
-  border: 2px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--surface-2);
   overflow-wrap: anywhere;

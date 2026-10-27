@@ -229,8 +229,7 @@
 }
 
 .approval-mode-option-yolo:has(input:checked) {
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
-  background: color-mix(in srgb, var(--danger) 6%, var(--surface-2));
+  background: var(--danger-tint);
 }
 
 .approval-mode-option-yolo input {
@@ -239,9 +238,8 @@
 
 .approval-mode-notice {
   margin-top: 0.7rem;
-  border: 1px solid rgb(245 158 11 / 38%);
   border-radius: var(--radius-md);
-  background: rgb(245 158 11 / 10%);
+  background: var(--amber-tint);
   padding: 0.6rem 0.7rem;
   color: var(--text-muted);
   font-size: 0.84rem;

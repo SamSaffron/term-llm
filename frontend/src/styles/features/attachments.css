@@ -96,7 +96,6 @@
 .drop-overlay {
   position: absolute;
   inset: 0;
-  background: rgb(255 255 255 / 4%);
   border: 2px dashed var(--border-strong);
   border-radius: var(--radius-md);
   z-index: var(--z-drop-target);
@@ -114,7 +113,6 @@
 }
 
 .drop-overlay.rejected {
-  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
   border-color: var(--danger);
   color: var(--danger);
 }

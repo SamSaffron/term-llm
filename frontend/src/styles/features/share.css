@@ -4,7 +4,6 @@
 }
 
 .share-included {
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-2);
   padding: 0.7rem 0.8rem;
@@ -44,24 +43,19 @@
   gap: 0.65rem;
   align-items: flex-start;
   padding: 0.7rem 0.75rem;
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: transparent;
+  background: var(--surface-2);
   cursor: pointer;
-  transition:
-    border-color 0.12s ease,
-    background 0.12s ease;
+  transition: background 0.12s ease;
 }
 
 .share-choice:hover,
 .share-choice:focus-within {
-  border-color: var(--border-strong);
-  background: var(--surface-2);
+  background: var(--surface-3);
 }
 
 .share-choice.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent) 6%, var(--surface-2));
+  background: var(--accent-tint);
 }
 
 .share-choice input {
@@ -132,7 +126,7 @@
   height: 2.5rem;
   margin: 0 auto 0.65rem;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--accent-green) 16%, transparent);
+  background: var(--green-tint);
   color: var(--accent-green);
   font-size: 1.3rem;
   font-weight: 800;

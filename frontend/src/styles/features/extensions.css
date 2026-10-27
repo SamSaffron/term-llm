@@ -34,14 +34,9 @@
   display: flex;
   gap: 0.5rem;
   align-items: center;
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 0.7rem;
-  background: var(--surface);
-}
-
-.extension-card.is-enabled {
-  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 
 .extension-card label {

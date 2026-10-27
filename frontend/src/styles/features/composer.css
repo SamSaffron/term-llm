@@ -163,7 +163,7 @@
 }
 
 .voice-status-complete .voice-status-mark {
-  color: var(--success, #22c55e);
+  color: var(--accent-green);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -41,7 +41,6 @@
   display: grid;
   place-items: center;
   background: var(--surface-2);
-  border: 1px solid var(--border);
   font-size: 1.45rem;
   font-weight: 800;
 }
