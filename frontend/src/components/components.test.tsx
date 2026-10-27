@@ -770,7 +770,7 @@ describe('Preact-owned chat surfaces', () => {
 
     const textbox = screen.getByRole('textbox', { name: 'Message' });
     expect(textbox).toHaveAttribute('placeholder', 'Steer conversation…');
-    expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Stop subagent' })).not.toBeInTheDocument();
 
     for (const [command, message] of [
@@ -790,7 +790,7 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(textbox, 'stay focused');
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
     expect(store.steer).toHaveBeenCalledWith('stay focused');
-    await userEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(store.cancel).toHaveBeenCalledOnce();
     store.dispose();
   });
@@ -865,7 +865,7 @@ describe('Preact-owned chat surfaces', () => {
         </StoreContext.Provider>,
       );
       expect(await screen.findByText('hello')).toBeVisible();
-      const stop = screen.getByRole('button', { name: 'Stop', exact: true });
+      const stop = screen.getByRole('button', { name: 'Stop' });
       expect(stop).toBeVisible();
       expect(screen.getByRole('button', { name: 'Remove pending steering: hello' })).toBeEnabled();
       expect(
@@ -877,7 +877,6 @@ describe('Preact-owned chat surfaces', () => {
       if (available) {
         const rush = screen.getByRole('button', {
           name: count > 1 ? 'Steer all now' : 'Steer now',
-          exact: true,
         });
         const remove = screen.getByRole('button', {
           name: `Remove pending steering: ${count > 1 ? 'second guidance' : 'hello'}`,
@@ -1358,9 +1357,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    expect(
-      screen.getByRole('button', { name: 'Historical project chat', exact: true }),
-    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Historical project chat' })).toBeVisible();
   });
 
   it('only animates sidebar groups after a user expands them', async () => {
@@ -1402,7 +1399,7 @@ describe('Preact-owned chat surfaces', () => {
     });
     expect(container.querySelectorAll('.is-opening')).toHaveLength(0);
 
-    const projectsToggle = screen.getByRole('button', { name: 'Projects', exact: true });
+    const projectsToggle = screen.getByRole('button', { name: 'Projects' });
     await userEvent.click(projectsToggle);
     await userEvent.click(projectsToggle);
     const list = container.querySelector('.sidebar-project-groups > .session-group-list')!;

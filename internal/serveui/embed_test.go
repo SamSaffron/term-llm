@@ -239,7 +239,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// and CSS from 17.9 to 19.3 KiB.
 		// Per-item "Mark seen" on review inbox rows, with its in-flight state
 		// and reconciliation, takes JS to 105.5/34.5 KiB.
-		"dist/hub.js":  {raw: 107_500, gzip: 35_000},
+		// Preact 11.0.2 and Vite 8.3.5 measure 107.0/35.0 kB raw/gzip;
+		// retain modest gzip headroom for the updated runtime and bundler.
+		"dist/hub.js":  {raw: 107_500, gzip: 35_500},
 		"dist/hub.css": {raw: 20_500, gzip: 5_500},
 	}
 	for name, budget := range budgets {
