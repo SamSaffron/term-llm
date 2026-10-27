@@ -193,7 +193,7 @@ const expectLocked = async (
   if (button) expect(button).toBeDisabled();
   else {
     expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
   }
   expect(input).not.toBeDisabled();
   expect(store.canSteer.value).toBe(false);

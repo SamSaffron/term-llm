@@ -204,8 +204,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// 531.4/156.0. Tighten the raw budget with the same ~1% headroom.
 		"dist/app.js":           {raw: 533_400, gzip: 156_600},
 		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
-		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
-		"dist/chunks/Lightbox.js": {raw: 8_150, gzip: 3_300},
+		// Panel splitting adds a shared-import edge to Lightbox; after the frontend
+		// dependency update it measures 8.16/3.27 kB (the same on main).
+		"dist/chunks/Lightbox.js": {raw: 8_250, gzip: 3_300},
 		// The viewer's controls on the shared corner tokens: 4.02/1.34 kB.
 		"dist/assets/Lightbox.css":   {raw: 4_100, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

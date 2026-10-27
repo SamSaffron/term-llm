@@ -796,7 +796,7 @@ describe('Preact-owned chat surfaces', () => {
     act(() => {
       store.prompt.value = '';
     });
-    await userEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(store.cancel).toHaveBeenCalledOnce();
     store.dispose();
   });
@@ -824,7 +824,7 @@ describe('Preact-owned chat surfaces', () => {
       );
       const textbox = screen.getByRole('textbox', { name: 'Message' });
       const actions = document.querySelector('.composer-actions')!;
-      const stop = () => screen.queryByRole('button', { name: 'Stop', exact: true });
+      const stop = () => screen.queryByRole('button', { name: 'Stop' });
 
       expect(actions.lastElementChild).toBe(stop());
       expect(stop()).toHaveClass('send-btn');
@@ -5386,7 +5386,7 @@ describe('Preact-owned chat surfaces', () => {
     act(() => {
       store.runs.value = { s1: projection('r1') };
     });
-    expect(screen.getByRole('button', { name: 'Stop', exact: true })).not.toHaveClass('live');
+    expect(screen.getByRole('button', { name: 'Stop' })).not.toHaveClass('live');
     expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start live voice' })).not.toBeInTheDocument();
   });
@@ -5411,7 +5411,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const stop = screen.getByRole('button', { name: 'Stop', exact: true });
+    const stop = screen.getByRole('button', { name: 'Stop' });
     expect(stop).toBeEnabled();
     expect(stop).toHaveClass('send-btn');
     expect(stop).toHaveAttribute('title', 'Stop');
@@ -5426,7 +5426,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(steer).toHaveClass('steer');
     expect(steer).toHaveAttribute('title', 'Steer');
     expect(steer.querySelector('.arrow use')?.getAttribute('href')).toMatch(/#steer$/);
-    expect(screen.queryByRole('button', { name: 'Stop', exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {
