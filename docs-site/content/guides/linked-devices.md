@@ -80,20 +80,19 @@ linked_devices:
   admission_credential: "file:///run/secrets/term-llm-broker-admission"
   diagnostics: false
   ice_servers:
-    - urls:
-        - stun:stun.term-llm.com:3478
-    - urls:
-        - turns:stun.term-llm.com:5349?transport=tcp
-      credential_source: broker
+    - urls: ["stun:stun.term-llm.com:3478"]
 ```
 
-The ICE defaults shown above are part of the configuration schema. Loading them
-does not make a network request while linked devices is unavailable or stopped.
-The owned endpoints are intended for admitted testing, not a public relay
-service. `broker_url` deliberately has no public default and no public broker or
-credential issuer is deployed. `TERM_LLM_LINKED_DEVICES_BROKER_URL` and
-`TERM_LLM_LINKED_DEVICES_ADMISSION` remain deployment overrides when their YAML
-fields are empty. Broker URLs require HTTPS, except that loopback HTTP is
+The default ICE policy includes term-llm's free STUN service at
+`stun:stun.term-llm.com:3478`. STUN helps discover direct connectivity; it does not
+relay chat traffic. TURN is **not** enabled by default: configure your own TURN
+service explicitly if your networks require a relay. Loading configuration does
+not contact ICE servers while linked devices is unavailable or stopped.
+
+`broker_url` also has no default. Configure a broker you trust; term-llm does
+not supply a public broker or credential issuer.
+`TERM_LLM_LINKED_DEVICES_BROKER_URL` and `TERM_LLM_LINKED_DEVICES_ADMISSION`
+remain deployment overrides when their YAML fields are empty. Broker URLs require HTTPS, except that loopback HTTP is
 accepted for local development; credentials, query strings, and fragments are
 not valid broker URLs.
 
@@ -119,18 +118,21 @@ The default is `false` and emits nothing.
   delivered to an invitation/QR capability.
 - Invitation ICE requests are signalling-only and receive STUN entries only;
   they never consume TURN mint quota or call the TURN credential provider.
-- An explicit `ice_servers: []` disables STUN and TURN and uses host candidates
-  only. This is useful for same-network testing, not general internet access.
+- Omitting `ice_servers` or setting it to `null` uses the free STUN-only default.
+  An explicit `ice_servers: []` disables STUN and TURN for host candidates only.
+  Neither policy falls back to broker-wide TURN settings or mints credentials.
 
-For example, a privately operated static TURN account can be configured without
-placing its password directly in YAML:
+For example, explicitly configure your own STUN server and a private static TURN
+account without placing its password directly in YAML:
 
 ```yaml
 linked_devices:
   broker_url: "https://broker.example.com"
   ice_servers:
     - urls:
-        - turn:relay.example.com:3478?transport=udp
+        - stun:stun.example.com:3478
+    - urls:
+        - turn:turn.example.com:3478?transport=udp
       credential_source: static
       username: "term-llm"
       credential: "file:///run/secrets/term-llm-turn-password"
@@ -146,100 +148,48 @@ connections fetch the current policy and fresh broker credentials. Any live QR
 invitation is cancelled with a warning after a broker reconnect because the new
 broker lease cannot retain the old invitation slot.
 
-## Testing service
+## Self-hosted broker and TURN credentials
 
-The owned STUN/TURN defaults are for admitted testing. They do not provide a
-public linked-devices service or an unrestricted credential issuer. TURN
-requires a broker configured with the matching private REST secret, or an
-administrator-provided short-lived static credential. For independent
-deployments, configure your own ICE servers and admission policy.
-
-## Operate a broker and coturn
-
-`cmd/peer-broker` is the standalone rendezvous service for development and owned
-deployments. It binds to loopback by default and requires TLS when bound to a
-non-loopback address. A typical deployment keeps it on loopback behind an HTTPS
-reverse proxy with WebSocket support:
+`cmd/peer-broker` is the standalone rendezvous service. It binds to loopback by
+default and requires TLS when bound to a non-loopback address. For example,
+keep it behind an HTTPS reverse proxy with WebSocket support and configure your
+own coturn TURN-REST provider:
 
 ```text
 peer-broker \
   --host 127.0.0.1 --port 8091 \
   --admission-credential-file /run/secrets/term-llm-broker-admission \
-  --stun stun:stun.term-llm.com:3478 \
-  --turn 'turns:stun.term-llm.com:5349?transport=tcp' \
+  --stun stun:stun.example.com:3478 \
+  --turn 'turns:turn.example.com:5349?transport=tcp' \
   --turn-rest-secret-file /run/secrets/term-llm-turn-rest \
   --turn-username term-llm \
   --turn-ttl 1h
 ```
 
-The admission file and coturn REST-secret file are different secrets. Both must
-be private, non-empty, and readable only by their respective services. The REST
-secret must match coturn's `static-auth-secret`; it is never placed in
-`config.yaml`, returned by the broker, or embedded in a TURN URL. Public broker
-registration should require admission. Host-key proof prevents lease spoofing,
-but it is not a substitute for operator admission or abuse controls.
+The admission credential and TURN-REST secret are different secrets. Keep both
+private. The REST secret must match your coturn configuration; it is never
+returned by the broker or placed in the host's `config.yaml`. Configure the host
+explicitly to request credentials for that provider:
 
-For the owned `stun.term-llm.com` layout, the intended network shape is:
-
-- a DNS-only A/AAAA record, not a Cloudflare orange-cloud proxy;
-- existing STUN on UDP and TCP 3478;
-- a dedicated TLS coturn listener on TCP 5349;
-- a bounded, non-overlapping UDP relay range such as 40000-40127;
-- firewall rules limited to those listener ports and that relay range; and
-- an independently issued certificate for `stun.term-llm.com` whose renewal
-  hook reloads only the dedicated relay service.
-
-A matching dedicated coturn instance needs the equivalent of these settings
-(the concrete IP addresses, service user, and secret file integration are
-operator-owned):
-
-```text
-tls-listening-port=5349
-realm=stun.term-llm.com
-use-auth-secret
-static-auth-secret=<same private value used by peer-broker>
-cert=/etc/letsencrypt/live/stun.term-llm.com/fullchain.pem
-pkey=/etc/letsencrypt/live/stun.term-llm.com/privkey.pem
-min-port=40000
-max-port=40127
-no-cli
+```yaml
+linked_devices:
+  broker_url: "https://broker.example.com"
+  admission_credential: "file:///run/secrets/term-llm-broker-admission"
+  ice_servers:
+    - urls: ["stun:stun.example.com:3478"]
+    - urls: ["turns:turn.example.com:5349?transport=tcp"]
+      credential_source: broker
 ```
 
-Do not copy the placeholder secret literally or put the real value in source,
-unit files, shell history, screenshots, or logs. Configure explicit listening
-and relay addresses appropriate to the host. Do not alter an existing coturn
-instance merely to make the dedicated service appear deployed; use a separate
-service/configuration and non-overlapping relay range.
+A broker provider does not opt hosts into using TURN: each host must configure
+its own ICE policy. Invitations receive only the STUN entries from that policy,
+never TURN credentials. Operate your relay with authentication, bounded
+credentials, allocation quotas, and egress monitoring; never enable anonymous
+TURN or an unrestricted credential issuer. Deployment-specific DNS, TLS,
+firewall, relay ranges, and service management belong to the relay operator.
 
-TURN is bandwidth-bearing infrastructure. Set coturn allocation/user quotas,
-monitor allocations, egress, authentication failures, and certificate expiry,
-and size the broker's host/connection/ICE-mint limits for the admitted user
-population. STUN can be public without making TURN an open relay. Never enable
-anonymous TURN or expose an unrestricted credential issuer as a workaround for
-admission policy.
-
-## Verify and roll back
-
-For a new deployment—or after DNS, certificate, firewall, coturn, or broker
-changes—verify from a network outside the relay host:
-
-1. DNS resolves directly to the intended host and is not proxied.
-2. UDP/TCP 3478 answers STUN requests.
-3. TLS on 5349 presents a valid `stun.term-llm.com` certificate.
-4. An admitted broker registration can mint a bounded credential whose username
-   expires as configured, while an arbitrary relay URL is rejected.
-5. A forced-relay linked-device test selects relay candidates on both Pion peers
-   and transfers actual response bytes.
-6. An invitation capability receives STUN only and cannot retrieve or mint TURN
-   credentials, while the approved device can.
-7. Certificate renewal reloads only the dedicated relay service, and allocation
-   and egress monitoring are visible to the operator.
-
-To roll back, first remove TURN from `linked_devices.ice_servers` (or set the
-list to `[]` for host-only mode), restart serve, and verify direct/STUN behavior.
-Then stop the dedicated relay service and remove only its 5349/relay-range
-firewall rules and DNS record. Do not restart or rewrite an unrelated coturn,
-nginx, voice, mail, or push service during rollback.
+To return to host-only connectivity, set `linked_devices.ice_servers: []` and
+restart serve.
 
 The complete pairing and broker contracts are documented in
 `internal/pairing/WIRE.md` and `internal/peerbroker/WIRE.md` in the source tree.

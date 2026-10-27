@@ -63,7 +63,7 @@ func TestServeHostDegradesUnavailableRuntime(t *testing.T) {
 	}
 }
 
-func TestDefaultICEPolicyRejectionMakesRuntimeUnavailableWithoutRetry(t *testing.T) {
+func TestConfiguredBrokerICEPolicyRejectionMakesRuntimeUnavailableWithoutRetry(t *testing.T) {
 	brokerHandler, err := peerbroker.NewHandler(peerbroker.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestDefaultICEPolicyRejectionMakesRuntimeUnavailableWithoutRetry(t *testing
 
 	cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{
 		BrokerURL:  broker.URL,
-		ICEServers: config.DefaultLinkedDevicesICEServers(),
+		ICEServers: []config.LinkedDevicesICEServerConfig{{URLs: []string{"turns:turn.example.com:5349?transport=tcp"}, CredentialSource: "broker"}},
 	}}
 	serverOpts := ServerOptionsFromConfig(cfg)
 	runtime, err := New(Options{
@@ -326,7 +326,10 @@ func TestOwnerCanStopAndResumeAfterBrokerPolicyFix(t *testing.T) {
 	var active http.Handler = first
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) { active.ServeHTTP(w, request) }))
 	defer broker.Close()
-	cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{BrokerURL: broker.URL, ICEServers: config.DefaultLinkedDevicesICEServers()}}
+	cfg := &config.Config{LinkedDevices: config.LinkedDevicesConfig{
+		BrokerURL:  broker.URL,
+		ICEServers: []config.LinkedDevicesICEServerConfig{{URLs: []string{"turns:turn.example.com:5349?transport=tcp"}, CredentialSource: "broker"}},
+	}}
 	serverOpts := ServerOptionsFromConfig(cfg)
 	runtime, err := New(Options{
 		DataDir: t.TempDir(), Target: "policy-recovery", StoreInstanceID: "policy-recovery-store", BasePath: "/",
@@ -337,7 +340,7 @@ func TestOwnerCanStopAndResumeAfterBrokerPolicyFix(t *testing.T) {
 	}
 	defer runtime.Close()
 	if err := runtime.Enable(context.Background()); err == nil {
-		t.Fatal("broker without configured TURN provider accepted default policy")
+		t.Fatal("broker without configured TURN provider accepted configured broker policy")
 	}
 	owner := httptest.NewServer(runtime.Handler())
 	defer owner.Close()
@@ -350,7 +353,7 @@ func TestOwnerCanStopAndResumeAfterBrokerPolicyFix(t *testing.T) {
 		t.Fatalf("stop after policy rejection = %d", response.StatusCode)
 	}
 	second, err := peerbroker.NewHandler(peerbroker.Config{Coturn: &peerbroker.CoturnConfig{
-		URLs: []string{"turns:stun.term-llm.com:5349?transport=tcp"}, SharedSecret: strings.Repeat("s", peerbroker.MinCredentialLen),
+		URLs: []string{"turns:turn.example.com:5349?transport=tcp"}, SharedSecret: strings.Repeat("s", peerbroker.MinCredentialLen),
 	}})
 	if err != nil {
 		t.Fatal(err)

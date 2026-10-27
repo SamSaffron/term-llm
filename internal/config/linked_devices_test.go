@@ -32,25 +32,12 @@ func TestLinkedDevicesDefaults(t *testing.T) {
 		t.Error("linked-device diagnostics must default off")
 	}
 
-	// Check default ICE servers
-	expected := DefaultLinkedDevicesICEServers()
-	if len(cfg.LinkedDevices.ICEServers) != len(expected) {
-		t.Fatalf("expected %d default ICE servers, got %d", len(expected), len(cfg.LinkedDevices.ICEServers))
+	if len(cfg.LinkedDevices.ICEServers) != 1 {
+		t.Fatalf("default ICE policy must contain only free STUN, got %+v", cfg.LinkedDevices.ICEServers)
 	}
-
-	for i, server := range cfg.LinkedDevices.ICEServers {
-		exp := expected[i]
-		if len(server.URLs) != len(exp.URLs) {
-			t.Errorf("server[%d]: expected %d URLs, got %d", i, len(exp.URLs), len(server.URLs))
-		}
-		for j, u := range server.URLs {
-			if u != exp.URLs[j] {
-				t.Errorf("server[%d].urls[%d]: expected %q, got %q", i, j, exp.URLs[j], u)
-			}
-		}
-		if server.CredentialSource != exp.CredentialSource {
-			t.Errorf("server[%d]: expected credential_source %q, got %q", i, exp.CredentialSource, server.CredentialSource)
-		}
+	server := cfg.LinkedDevices.ICEServers[0]
+	if len(server.URLs) != 1 || server.URLs[0] != "stun:stun.term-llm.com:3478" || server.CredentialSource != "" || server.Username != "" || server.Credential != "" {
+		t.Fatalf("default ICE server must be credential-free STUN, got %+v", server)
 	}
 }
 

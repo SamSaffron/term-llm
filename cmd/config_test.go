@@ -304,11 +304,20 @@ func TestDefaultConfigContentContainsEveryDefault(t *testing.T) {
 		"strip_image_base64:",
 		"linked_devices:",
 		"stun:stun.term-llm.com:3478",
-		"turns:stun.term-llm.com:5349?transport=tcp",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated default config missing %q", want)
 		}
+	}
+	var defaults struct {
+		LinkedDevices config.LinkedDevicesConfig `yaml:"linked_devices"`
+	}
+	if err := yaml.Unmarshal([]byte(content), &defaults); err != nil {
+		t.Fatal(err)
+	}
+	servers := defaults.LinkedDevices.ICEServers
+	if len(servers) != 1 || len(servers[0].URLs) != 1 || servers[0].URLs[0] != "stun:stun.term-llm.com:3478" || servers[0].CredentialSource != "" || servers[0].Username != "" || servers[0].Credential != "" {
+		t.Fatalf("generated default ICE policy must contain credential-free STUN only: %+v", servers)
 	}
 	for _, unwanted := range []string{
 		"approval:",

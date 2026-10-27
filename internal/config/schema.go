@@ -193,18 +193,10 @@ const (
 	DefaultAutoCompact = true
 )
 
-// DefaultLinkedDevicesICEServers returns the canonical default ICE server list.
-// Explicit ice_servers: [] in config overrides this to disable all servers.
+// DefaultLinkedDevicesICEServers returns the free STUN-only default policy.
+// TURN requires explicit configuration; ice_servers: [] uses host candidates only.
 func DefaultLinkedDevicesICEServers() []LinkedDevicesICEServerConfig {
-	return []LinkedDevicesICEServerConfig{
-		{
-			URLs: []string{"stun:stun.term-llm.com:3478"},
-		},
-		{
-			URLs:             []string{"turns:stun.term-llm.com:5349?transport=tcp"},
-			CredentialSource: "broker",
-		},
-	}
+	return []LinkedDevicesICEServerConfig{{URLs: []string{"stun:stun.term-llm.com:3478"}}}
 }
 
 var keySpecs = []KeySpec{
@@ -517,7 +509,7 @@ var keySpecs = []KeySpec{
 	optional("linked_devices.broker_url", described("HTTPS rendezvous broker URL; loopback HTTP is allowed for development.")),
 	optional("linked_devices.admission_credential", sensitive(), described("Optional private credential used only to admit host registration at the broker.")),
 	def("linked_devices.diagnostics", false, described("Emit a local redacted linked-device transport timeline to stderr.")),
-	def("linked_devices.ice_servers", DefaultLinkedDevicesICEServers(), redactExplicit(), described("Ordered STUN/TURN policy shared by the host and approved devices; an explicit empty list uses host candidates only.")),
+	def("linked_devices.ice_servers", DefaultLinkedDevicesICEServers(), redactExplicit(), described("Ordered ICE policy shared by the host and approved devices; free STUN by default, TURN requires explicit configuration, and [] uses host candidates only.")),
 }
 
 type specOpt func(*KeySpec)
