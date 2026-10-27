@@ -1037,20 +1037,14 @@
 
 /* Your words are filled, the agent's activity is outlined: tool calls have an
    edge in the tool colour (--tool) and no fill, so the colour has a place
-   without colouring their text. They stop at 800px, just short of the reply's
-   820px measure: wrapped text rarely runs to its full width, so a slightly
-   narrower edge lines up with it by eye. Long summaries and commands
-   truncate rather than widen the card. */
+   without colouring their text. They run to the reply's full 820px measure,
+   and long summaries and commands truncate rather than widen the card. */
 .tool-card,
 .tool-group-card {
-  max-width: 800px;
+  max-width: 100%;
   border: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
   border-radius: var(--radius-sm);
   overflow: hidden;
-}
-
-.message.job-notice .message-body {
-  max-width: 800px;
 }
 
 /* Calls that follow each other join into one block, like the rows of a table: the
