@@ -269,23 +269,17 @@
 }
 
 /* The buttons' own padding already sets them off from the text. The row starts
-   where the text does, by the first icon's stroke (16px icons in 30px buttons,
-   the stroke a twelfth of the way in). */
+   where the text does, so the first button's hover tone lines up with it. */
 .message.assistant > .turn-action-panel {
   margin-top: -0.35rem;
   padding-inline: 0;
-  margin-inline-start: calc((16px - 30px) / 2 - 16px / 12);
 }
 
-/* A user message has the same copy button, after its time and mirrored to the
-   bubble's edge by the icon's stroke. */
+/* A user message has the same copy button, after its time, its hover tone
+   ending at the bubble's edge. */
 .message.user > .message-meta {
   margin-top: -0.35rem;
   padding-inline-end: 0;
-}
-
-.message.user .turn-copy-btn {
-  margin-inline-end: calc((16px - 30px) / 2 - 16px / 12);
 }
 
 @media (hover: hover) {
