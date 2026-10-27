@@ -303,18 +303,21 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent-green);
+  background: var(--accent);
   margin-right: 0.4em;
   flex-shrink: 0;
   vertical-align: middle;
 }
 
-.session-row.is-input-required .session-title::before {
-  background: var(--accent-amber);
+/* A new reply is in the accent; a running chat pulses in a neutral, so the accent
+   only marks something to read; a chat waiting on you is amber. */
+.session-row.is-active .session-title::before {
+  background: var(--text-muted);
+  animation: pulse-dot 1.8s ease-in-out infinite;
 }
 
-.session-row.is-active .session-title::before {
-  animation: pulse-dot 1.8s ease-in-out infinite;
+.session-row.is-input-required .session-title::before {
+  background: var(--accent-amber);
 }
 
 @keyframes pulse-dot {
