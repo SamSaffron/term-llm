@@ -271,7 +271,7 @@
 /* The buttons' own padding already sets them off from the text. The row starts
    where the text does, so the first button's hover tone lines up with it. */
 .message.assistant > .turn-action-panel {
-  margin-top: -0.35rem;
+  margin-top: 0;
   padding-inline: 0;
 }
 
