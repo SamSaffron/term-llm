@@ -964,7 +964,6 @@
   background: var(--danger-tint);
 }
 
-.message.assistant .message-meta,
 .message.tool .message-meta,
 .message.error .message-meta {
   align-self: flex-start;
