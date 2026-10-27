@@ -366,7 +366,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 				return getErr == nil && sess != nil
 			}),
 		}
-		if s.linkedDevices, err = linkeddevices.NewServeHost(hasWeb, ctx, store, agentName, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, resolvedApproval.Mode.String(), cfg); err != nil {
+		if s.linkedDevices, err = linkeddevices.NewServeHost(hasWeb, ctx, store, agentName, opts.BasePath, requireAuth || browserAuth != nil, s.cfg.nodeLabel(), resolvedApproval.Mode.String(), cfg); err != nil {
 			return err
 		}
 		if hasWeb {

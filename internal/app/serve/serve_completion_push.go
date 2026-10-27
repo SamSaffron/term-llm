@@ -46,9 +46,9 @@ func (s *serveServer) validateCompletionPushTarget(ctx context.Context, id strin
 	return sub.ID, nil
 }
 
-// completionPushLabel returns a short label identifying the node that produced
-// a completion notification, or "" when this deployment has no node identity
-// configured.
+// nodeLabel returns a short label naming this node in completion
+// notifications and linked-device invitations, or "" when this deployment has
+// no node identity configured.
 //
 // A Hub fronts several nodes and every node sends byte-identical notification
 // text, so once more than one node has a push subscription the notifications
@@ -57,7 +57,7 @@ func (s *serveServer) validateCompletionPushTarget(ctx context.Context, id strin
 //
 // agentName is deliberately not consulted: nearly every deployment passes
 // --agent, and single-node users should keep the original wording.
-func (c serveServerConfig) completionPushLabel() string {
+func (c serveServerConfig) nodeLabel() string {
 	for _, candidate := range []string{c.uiTitle, c.hubNodeName, c.hubNodeID} {
 		if label := strings.TrimSpace(candidate); label != "" {
 			return label
@@ -71,7 +71,7 @@ func (s *serveServer) completionNotificationPayload(item session.CompletionNotif
 	if item.Outcome == session.ResponseRunFailed {
 		title, body = "Response failed", "Your term-llm response stopped with an error."
 	}
-	if label := s.cfg.completionPushLabel(); label != "" {
+	if label := s.cfg.nodeLabel(); label != "" {
 		title = label + ": " + title
 	}
 	return json.Marshal(completionPushPayload{

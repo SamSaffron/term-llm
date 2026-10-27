@@ -151,7 +151,7 @@ type Runtime struct {
 func NewServer(target, storeID, basePath string, authenticated bool, hostLabel, approval string, serverOpts ServerOptions) (*Runtime, error) {
 	opts := Options{
 		Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated,
-		AgentName: target, HostLabel: safeHostLabel(hostLabel, target), ApprovalDescription: approval,
+		AgentName: target, HostLabel: serverHostLabel(hostLabel, target), ApprovalDescription: approval,
 		BrokerURL: serverOpts.BrokerURL, AdmissionCredential: serverOpts.AdmissionCredential, ICEPolicy: serverOpts.ICEPolicy,
 	}
 	if serverOpts.Diagnostics {

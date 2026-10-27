@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/preact';
+import { act, fireEvent, render, screen } from '@testing-library/preact';
 import { expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
@@ -52,10 +52,85 @@ it('registers the lazy linked-devices settings tab with its stable slug', async 
     expect(await screen.findByText('linked devices active')).toBeVisible();
     expect(document.getElementById('settings-linked-devices-panel')).not.toHaveAttribute('hidden');
 
+    // It stays mounted (but inactive) so a pairing in progress survives.
     fireEvent.click(screen.getByRole('tab', { name: 'Model' }));
-    expect(screen.queryByTestId('linked-devices-loaded')).toBeNull();
+    expect(screen.getByTestId('linked-devices-loaded')).toHaveTextContent(
+      'linked devices inactive',
+    );
     expect(document.getElementById('settings-linked-devices-panel')).toHaveAttribute('hidden');
   } finally {
+    store.dispose();
+  }
+});
+
+it('shows footer actions only on sections that save and supports vertical arrows', () => {
+  const store = new AppStore(testConfig);
+  try {
+    render(
+      <StoreContext.Provider value={store}>
+        <Settings />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('heading', { level: 3, name: 'Model' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeVisible();
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Model' }), { key: 'ArrowDown' });
+    expect(screen.getByRole('tab', { name: 'Interface' })).toHaveFocus();
+    expect(screen.getByRole('tab', { name: 'Interface' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('heading', { level: 3, name: 'Interface' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Interface' }), { key: 'ArrowUp' });
+    expect(screen.getByRole('tab', { name: 'Model' })).toHaveFocus();
+  } finally {
+    store.dispose();
+  }
+});
+
+it('keeps Cancel disabled while settings are saving', async () => {
+  const store = new AppStore(testConfig);
+  store.modal.value = 'settings';
+  let finish: () => void = () => {};
+  store.saveSettings = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  try {
+    render(
+      <StoreContext.Provider value={store}>
+        <Settings />
+      </StoreContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('button', { name: 'Saving…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    await act(async () => finish());
+  } finally {
+    store.dispose();
+  }
+});
+
+it('announces the tab list orientation that matches the layout', () => {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === '(width >= 720px)',
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  const store = new AppStore(testConfig);
+  try {
+    render(
+      <StoreContext.Provider value={store}>
+        <Settings />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('tablist')).toHaveAttribute('aria-orientation', 'vertical');
+  } finally {
+    vi.unstubAllGlobals();
     store.dispose();
   }
 });

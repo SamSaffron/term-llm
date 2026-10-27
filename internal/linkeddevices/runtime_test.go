@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -794,6 +795,22 @@ func TestNewServerBoundsHostLabelAndDegradesOptionalFailures(t *testing.T) {
 	defer unavailable.Close()
 	if status := unavailable.Status(); status.State != StateUnavailable || status.CanResume || status.CanReset {
 		t.Fatalf("optional failure status = %+v", status)
+	}
+}
+
+func TestServerHostLabelAlwaysNamesTheServer(t *testing.T) {
+	if got := serverHostLabel("Dev", "agent"); got != "Dev" {
+		t.Fatalf("node label = %q, want Dev", got)
+	}
+	if got := serverHostLabel("  ", "agent"); got != "agent" {
+		t.Fatalf("agent fallback = %q, want agent", got)
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		t.Skip("hostname unavailable")
+	}
+	if got := serverHostLabel("", ""); got != safeHostLabel(host, "") {
+		t.Fatalf("hostname fallback = %q, want %q", got, safeHostLabel(host, ""))
 	}
 }
 
