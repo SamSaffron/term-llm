@@ -44,7 +44,6 @@ require (
 	github.com/pion/webrtc/v4 v4.2.25
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/shogoki/gotextdiff v1.22.0
-	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/yuin/goldmark v1.8.6

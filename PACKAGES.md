@@ -147,6 +147,9 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/prompt` — builds system and user prompts for ask, edit, suggest, help and goal flows.
 - `internal/providerhttp` — owns shared provider HTTP requests, status errors and Retry-After parsing.
 - `internal/providerspec` — owns declarative metadata for inference provider types.
+- `internal/qrcode` — implements a QR Code encoder.
+- `internal/qrcode/bitset` — implements an append only bit array.
+- `internal/qrcode/reedsolomon` — provides error correction encoding for QR Code 2005.
 - `internal/reasoning` — applies display policy, parsing and streaming rules for model reasoning text.
 - `internal/render/chat` — renders chat history blocks, streaming output and viewport state for the TUI.
 - `internal/render/markdown` — renders markdown to ANSI terminal text with syntax highlighting.

@@ -6997,6 +6997,34 @@ describe('Preact-owned chat surfaces', () => {
       expect(screen.queryByRole('menuitem', { name: 'Move down' })).not.toBeInTheDocument();
     });
 
+    it('does not let a pending reorder focus close the next row menu', async () => {
+      const frames = new Map<number, FrameRequestCallback>();
+      let nextFrame = 0;
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.set(++nextFrame, callback);
+        return nextFrame;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => frames.delete(id));
+      const store = pinnedSidebarStore();
+      renderSidebar(store);
+
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Beta pin' }));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Gamma pin' }));
+      const gammaTrigger = screen.getByRole('button', { name: 'Actions for Gamma pin' });
+      expect(gammaTrigger).toHaveAttribute('aria-expanded', 'true');
+
+      // A slow frame must not restore focus to Beta after the user has
+      // already opened Gamma's menu, dismissing it through focus-outside.
+      act(() => {
+        for (const [id, callback] of [...frames]) {
+          if (frames.delete(id)) callback(0);
+        }
+      });
+      expect(gammaTrigger).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByRole('menuitem', { name: 'Move down' })).toBeInTheDocument();
+    });
+
     it('restores the order and reports when a reorder cannot be saved', async () => {
       const store = pinnedSidebarStore();
       store.endpoints.reorderPinnedSessions = vi.fn(async () => {

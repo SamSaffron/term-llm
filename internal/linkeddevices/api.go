@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/pairing"
-	qrcode "github.com/skip2/go-qrcode"
+	"github.com/samsaffron/term-llm/internal/qrcode"
 )
 
 // Handler serves the owner-only API. The containing server must still apply
