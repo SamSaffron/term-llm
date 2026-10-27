@@ -2,6 +2,7 @@
 package docsgen
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,6 +81,8 @@ func valueType(v any) string {
 		return "list of " + valueType(reflect.Zero(t.Elem()).Interface())
 	case reflect.Map:
 		return "map"
+	case reflect.Struct:
+		return "object"
 	case reflect.Bool:
 		return "boolean"
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -91,6 +94,19 @@ func valueType(v any) string {
 	}
 }
 
+func configDefaultText(value any) string {
+	if value == nil {
+		return ""
+	}
+	kind := reflect.TypeOf(value).Kind()
+	if kind == reflect.Slice || kind == reflect.Map || kind == reflect.Struct {
+		if encoded, err := json.Marshal(value); err == nil {
+			return string(encoded)
+		}
+	}
+	return fmt.Sprint(value)
+}
+
 func configTable() string {
 	var b strings.Builder
 	b.WriteString("| Key | Type | Default | Description |\n|---|---|---|---|\n")
@@ -99,7 +115,7 @@ func configTable() string {
 		defaultText := "—"
 		if s.HasDefault {
 			v = s.Default
-			defaultText = code(fmt.Sprint(s.Default))
+			defaultText = code(configDefaultText(s.Default))
 			if text, ok := s.Default.(string); ok && text == "" {
 				defaultText = "`\"\"`"
 			}

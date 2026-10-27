@@ -76,6 +76,8 @@ After editing files/config manually, use **Rescan files**, then refresh the brow
 
 The server validates and snapshots enabled assets on startup or explicit rescan. A running page never reads half-written files directly. CSS is loaded in enabled-list order, followed by each extension's JavaScript activation. Later CSS obeys the normal cascade.
 
+For signed-in page loads, the server links enabled stylesheets in the page's `<head>`, so themes apply from the first paint instead of after the app starts. JavaScript still activates after startup, so styles that depend on attributes or classes your script sets appear once it runs. Put the default look in plain CSS rules so the first paint is already correct.
+
 The browser uses generation-scoped URLs and extension assets are excluded from the service-worker shell cache. After a rescan, requests for an old generation receive a reload-needed response. A full page reload resets JavaScript effects; there is no hot-uninstall or mandatory publication/revision system.
 
 Direct HTTP and Hub-proxied HTTP connections are supported.

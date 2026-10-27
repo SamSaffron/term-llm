@@ -142,7 +142,7 @@ describe('web inspect', () => {
         'Model changed (handover): openai:gpt-5 · Thinking: high → claude-bin:opus · Thinking: max',
       );
       for (const name of ['System & developer', 'Reasoning', 'Tools', 'Compaction']) {
-        fireEvent.click(screen.getByRole('button', { name, exact: true }));
+        fireEvent.click(screen.getByRole('button', { name }));
         expect(divider).toBeVisible();
       }
       expect(within(divider).queryByRole('button')).toBeNull();
@@ -201,14 +201,14 @@ describe('web inspect', () => {
     expect(screen.getByText(/Compaction 1 · active boundary/)).toBeVisible();
     expect(container.querySelector('.inspect-failed')).toHaveTextContent('failed');
     expect(container.querySelector('.inspect-tail')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Reasoning', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reasoning' }));
     expect(screen.queryByText('Preview m3.p0.reasoning')).toBeNull();
     expect(screen.getByText('Preview m2.p0.user')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'System & developer' }));
     expect(screen.queryByText('Preview m1.p0.system')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Tools', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
     expect(screen.queryByText('Preview m4.p0.tool_call')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Compaction', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Compaction' }));
     expect(screen.getByText('1 of 8 blocks')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Close Inspect' }));
     expect(store.modal.value).toBe('');
@@ -317,7 +317,7 @@ describe('web inspect', () => {
         { id: 'm1.p0.system', format: 'text' as const, text: 'Updated body', total_bytes: 20 },
       ],
     }));
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByText('Updated body')).toBeVisible();
     expect(screen.getByRole('button', { name: /m1.p0.system.*bytes/ })).toHaveAttribute(
       'aria-expanded',
@@ -438,9 +438,9 @@ describe('web inspect', () => {
       .fn()
       .mockRejectedValueOnce(new Error('Inspection failed'))
       .mockResolvedValue(snapshot());
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Inspection failed');
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByText('Transcript blocks')).toBeVisible();
   });
 });

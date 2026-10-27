@@ -105,6 +105,35 @@ export interface LiveSessionChange {
   title: string;
 }
 
+/**
+ * How this page is admitted. `linkedDevices` is the top-level web-v1 peer
+ * profile, which is host-executed only: it can never declare page tools or run
+ * device tool rounds, whatever else is advertised.
+ */
+export interface LiveCapabilityOptions {
+  linkedDevices?: boolean;
+}
+
+/**
+ * Whether the host lets the authenticated page run delegated turns itself.
+ *
+ * The server advertises `delegation_modes` with the live capability. A web-v1
+ * linked device is host-executed only: the host keeps `"server"` and omits
+ * `"client"`, and it rejects page-tool declarations, tool-round results, and
+ * device tools. That restriction is also forced by the caller's linked-device
+ * profile, so an omitted or over-broad mode list cannot re-enable device
+ * authority. Without either signal, ordinary mode allows client delegation.
+ */
+function clientDelegationOffered(
+  capability: Record<string, unknown> | undefined,
+  options: LiveCapabilityOptions,
+): boolean {
+  if (options.linkedDevices) return false;
+  const modes = capability?.delegation_modes;
+  if (!Array.isArray(modes)) return true;
+  return modes.some((mode) => mode === 'client');
+}
+
 /** How the app names a session the call was found bound to. */
 export interface LiveSessionLabel {
   sessionNumber: number;
@@ -142,6 +171,11 @@ function abortError(error: unknown): boolean {
 
 export class LiveStore {
   readonly enabled = signal(false);
+  /**
+   * Whether the host allows this page to declare page tools and run delegated
+   * tool rounds. Host-executed (`"server"`) calls must never touch either path.
+   */
+  readonly clientToolsAllowed = signal(true);
   readonly phase: Signal<LivePhase> = signal('idle');
   readonly capability = signal(this.callCapability());
   readonly partialUser = signal('');
@@ -233,7 +267,8 @@ export class LiveStore {
       ? effect(() => {
           const liveId = this.liveId.value;
           const sessionId = this.sessionId.value;
-          if (!liveId || !sessionId) return;
+          const allowed = this.clientToolsAllowed.value;
+          if (!liveId || !sessionId || !allowed) return;
           const tools = clientTools.definitions(sessionId);
           untracked(() => this.declareTools(liveId, tools));
         })
@@ -270,7 +305,7 @@ export class LiveStore {
     );
   }
 
-  applyCapability(value: unknown): void {
+  applyCapability(value: unknown, options: LiveCapabilityOptions = {}): void {
     const capability =
       value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
     const nextTransport: LiveTransport =
@@ -287,6 +322,15 @@ export class LiveStore {
     }
     this.transport = nextTransport;
     if (!this.call) this.capability.value = this.callCapability();
+    this.clientToolsAllowed.value = clientDelegationOffered(capability, options);
+    if (!this.clientToolsAllowed.peek()) {
+      // The server owns this call's delegations, so a declaration queued for
+      // the previous capability must never reach it, and device work already
+      // running for a round stops now.
+      this.toolDeclaration = '[]';
+      this.clearToolRetry();
+      this.abandonToolRounds();
+    }
     this.enabled.value = capability?.enabled === true;
     if (!this.enabled.peek() && this.active.peek()) void this.stop();
   }
@@ -573,8 +617,16 @@ export class LiveStore {
     }
   }
 
-  /** The page tools the start request declares, recorded as the server's copy. */
-  private startTools(sessionId: string): ClientToolDefinition[] {
+  /**
+   * The page tools the start request declares, recorded as the server's copy.
+   * A host-executed call declares none: that host rejects page tools and runs
+   * its own delegations, so the page must not offer tools it cannot run.
+   */
+  private startTools(sessionId: string): ClientToolDefinition[] | undefined {
+    if (!this.clientToolsAllowed.peek()) {
+      this.toolDeclaration = '[]';
+      return undefined;
+    }
     const tools = this.clientTools?.definitions(sessionId) ?? [];
     this.toolDeclaration = JSON.stringify(tools);
     return tools;
@@ -585,6 +637,7 @@ export class LiveStore {
    * Declarations go out one at a time, so an older one can never land last.
    */
   private declareTools(liveId: string, tools: ClientToolDefinition[]): void {
+    if (!this.clientToolsAllowed.peek()) return;
     const declaration = JSON.stringify(tools);
     if (declaration === this.toolDeclaration) return;
     if (this.toolRetryTimer) {
@@ -592,8 +645,14 @@ export class LiveStore {
     }
     this.toolDeclaration = declaration;
     this.toolSync = this.toolSync.then(async () => {
-      // Superseded while queued by a newer declaration or another call.
-      if (declaration !== this.toolDeclaration || liveId !== this.liveId.peek()) return;
+      // Superseded while queued by a newer declaration or another call, or the
+      // capability withdrew page tools before this declaration was sent.
+      if (
+        !this.clientToolsAllowed.peek() ||
+        declaration !== this.toolDeclaration ||
+        liveId !== this.liveId.peek()
+      )
+        return;
       try {
         await this.endpoints.liveClientTools(liveId, tools);
         this.toolRetryDelay = 1_000;
@@ -626,7 +685,10 @@ export class LiveStore {
   private runToolRound(data: LiveEventData): void {
     const requestId = String(data.request_id || '');
     const liveId = this.liveId.peek();
-    if (!requestId || !liveId || !this.clientTools) return;
+    // A host-executed call never asks the page to run its tools. If such an
+    // event ever arrives, ignoring it is the only safe answer: the host would
+    // reject the result, and running device tools would be authority we lack.
+    if (!this.clientToolsAllowed.peek() || !requestId || !liveId || !this.clientTools) return;
     const existing = this.toolRounds.get(requestId);
     if (existing) {
       void this.postToolResult(liveId, requestId, existing);

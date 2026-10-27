@@ -63,6 +63,14 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				}
 				return next
 			}
+			ctx := context.Background()
+			attemptTimeout := time.Millisecond
+			var cancelBatch context.CancelFunc
+			if exhaustBatch {
+				ctx, cancelBatch = context.WithCancel(ctx)
+				defer cancelBatch()
+				attemptTimeout = time.Second
+			}
 			var calls []string
 			send := func(ctx context.Context, _ *session.PushSubscription, payload []byte, _ *webpush.Options) (int, time.Duration, error) {
 				var envelope completionPushPayload
@@ -71,6 +79,12 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				}
 				calls = append(calls, envelope.ResponseID)
 				if envelope.ResponseID == "slow" {
+					// Exhaust the batch only once a send is in flight, so database
+					// setup and claiming cannot consume a wall-clock deadline.
+					if cancelBatch != nil {
+						cancelBatch()
+						cancelBatch = nil
+					}
 					<-ctx.Done()
 					return 0, 0, fmt.Errorf("send: %w", ctx.Err())
 				}
@@ -78,14 +92,6 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 					t.Fatalf("healthy send received expired context: %v", err)
 				}
 				return http.StatusCreated, 0, nil
-			}
-			ctx := context.Background()
-			attemptTimeout := time.Millisecond
-			if exhaustBatch {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
-				defer cancel()
-				attemptTimeout = time.Second
 			}
 			if _, err := db.Exec(`UPDATE completion_push_outbox SET next_attempt_at = '2000-01-01 00:00:00'`); err != nil {
 				t.Fatal(err)

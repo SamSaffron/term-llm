@@ -27,7 +27,7 @@ describe('form markup primitives', () => {
         <option value="two">Two</option>
       </SettingsSelect>,
     );
-    const select = screen.getByRole('combobox', { name: 'Model', exact: true });
+    const select = screen.getByRole('combobox', { name: 'Model' });
     expect(screen.getByLabelText('Model')).toBe(select);
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
       'One',

@@ -67,11 +67,11 @@ describe('CommitModal publishing', () => {
       status: 'succeeded',
       publish_result: { pushed: true, branch: 'main' },
     }));
-    expect(screen.getByRole('button', { name: 'Push', exact: true })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Push' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Make PR' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Done' })).toBeEnabled();
     expect(screen.queryByText(/1 staged/)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Push', exact: true }));
+    await userEvent.click(screen.getByRole('button', { name: 'Push' }));
     expect(await screen.findByRole('button', { name: 'Pushed' })).toBeDisabled();
     expect(store.endpoints.createCommitOperation).toHaveBeenCalledTimes(1);
     expect(store.endpoints.createCommitOperation).toHaveBeenCalledWith(
@@ -109,7 +109,7 @@ describe('CommitModal publishing', () => {
     });
     expect(screen.getByRole('button', { name: 'Done' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Push', exact: true })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Push' })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(store.modal.value).toBe('commit');
     act(() => {

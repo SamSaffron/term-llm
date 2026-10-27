@@ -420,6 +420,8 @@ a.message-file:focus-visible {
   animation: streaming-status-enter 180ms ease-out both;
 }
 
+/* Keep waiting text static: the clipped, animated gradient kept WebKit
+   repainting even when a running conversation had no new output. */
 .streaming-indicator-text {
   display: block;
   min-width: 0;
@@ -484,6 +486,10 @@ a.message-file:focus-visible {
   }
 }
 
+.streaming-indicator-unknown .streaming-indicator-text {
+  color: var(--text-muted);
+}
+
 @keyframes streaming-status-enter {
   from {
     opacity: 0;
@@ -491,7 +497,10 @@ a.message-file:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .streaming-indicator,
+  .streaming-indicator {
+    animation: none;
+  }
+
   .working-mark-cursor {
     animation: none;
   }

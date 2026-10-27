@@ -294,17 +294,10 @@
   opacity: 0.65;
 }
 
+/* A subtle fade avoids repainting an expanding shadow throughout a call. */
 @keyframes voice-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
-  }
-
-  70% {
-    box-shadow: 0 0 0 10px transparent;
-  }
-
-  100% {
-    box-shadow: 0 0 0 0 transparent;
+  50% {
+    opacity: 0.65;
   }
 }
 
@@ -641,6 +634,7 @@
 }
 
 .prompt {
+  grid-column: 2;
   resize: none;
   min-width: 0;
   min-height: 36px;
@@ -669,10 +663,11 @@
   gap: 4px;
 }
 
-/* The first button's icon (the +) starts where the text does, by its stroke: the
-   icon is 1.1rem and its stroke starts a sixth of the way in. Its tappable square
-   reaches into the box's margin instead, as in ChatGPT. */
-.composer-toolbar > :first-child {
+/* The + icon starts where the text does, by its stroke: the icon is 1.1rem and
+   its stroke starts a sixth of the way in. Its tappable square reaches into the
+   box's margin instead, as in ChatGPT. Linked devices have no +, and Send stays
+   right. */
+.composer-toolbar > .attach-btn {
   margin-inline-start: calc(var(--prompt-inline) - (var(--control-size) - 1.1rem) / 2 - 1.1rem / 6);
 }
 
@@ -710,7 +705,7 @@
 
 /* The Live button is the primary control on an empty composer, so it keeps the
    full-strength send background instead of the disabled treatment. */
-.send-btn.live.live-pulse {
+.send-btn.live.live-pulse:not(:disabled) {
   animation: voice-pulse 1.35s infinite;
 }
 
@@ -762,6 +757,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chat-scroll.transcript-live-swap {
+    animation: none;
+  }
+
+  .live-status-listening .live-status-dot,
+  .live-status-speaking .live-status-dot,
+  .send-btn.live.live-pulse:not(:disabled),
+  .send-btn .spinner {
     animation: none;
   }
 }

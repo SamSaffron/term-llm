@@ -69,8 +69,7 @@
   margin-top: 0.2rem;
 }
 
-.extension-order,
-.extension-actions {
+.extension-order {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
@@ -78,10 +77,6 @@
 
 .extension-order .btn {
   padding: 0.2rem 0.45rem;
-}
-
-.extension-actions {
-  margin-top: 0.85rem;
 }
 
 .extension-error,

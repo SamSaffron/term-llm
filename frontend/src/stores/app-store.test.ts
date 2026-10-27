@@ -2088,6 +2088,46 @@ describe('AppStore compatibility behavior', () => {
   });
 
   it.each([false, true])(
+    'forces host-executed Live without delegation modes (injected profile: %s)',
+    async (injected) => {
+      const store = new AppStore({
+        ...config,
+        ...(injected ? { linkedDevicesScope: 'web-v1' } : {}),
+      });
+      store.endpoints.capabilities = vi.fn(async () => ({
+        linked_devices: injected
+          ? undefined
+          : {
+              active: true,
+              scope: 'web-v1',
+              owner_controls: false,
+              transcript_sharing: false,
+              uploads: false,
+              voice: true,
+              push_notifications: false,
+              device_tools: false,
+            },
+        live: { enabled: true, provider: 'gemini', transport: 'http_pcm', version: 3 },
+      }));
+      store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.sidebar = vi.fn(async () => ({ groups: [] }));
+      (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+      try {
+        await store.bootstrap();
+        expect(store.linkedDevicesMode.value).toBe(true);
+        // The host preserved a genuine Live capability for the peer...
+        expect(store.liveStore.enabled.value).toBe(true);
+        // ...but the peer profile still removes page tools and device delegation.
+        expect(store.liveStore.clientToolsAllowed.value).toBe(false);
+      } finally {
+        store.dispose();
+      }
+    },
+  );
+
+  it.each([false, true])(
     'opens an older Hub attention deep link with projects enabled: %s',
     async (projectsEnabled) => {
       const previousRoute = `${location.pathname}${location.search}${location.hash}`;

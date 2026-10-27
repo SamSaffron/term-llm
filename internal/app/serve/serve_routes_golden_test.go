@@ -92,8 +92,8 @@ func TestServeRoutesGolden(t *testing.T) {
 			return true
 		})
 	}
-	if len(routes) != 107 {
-		t.Fatalf("route count = %d, want 107", len(routes))
+	if len(routes) != 109 {
+		t.Fatalf("route count = %d, want 109", len(routes))
 	}
 	sort.Strings(routes)
 	sort.Strings(outer)

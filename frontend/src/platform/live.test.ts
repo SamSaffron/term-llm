@@ -322,6 +322,34 @@ describe('LiveCall', () => {
     call.dispose();
   });
 
+  it('reports denied microphone access before a linked HTTP PCM call starts', async () => {
+    const context = new FakeAudioContext();
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => {
+          throw new DOMException('blocked', 'NotAllowedError');
+        }),
+      },
+    });
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('AudioWorkletNode', FakeWorkletNode);
+    const startEndpoint = vi.fn();
+    const call = new LiveCall(startEndpoint, vi.fn(), {
+      transport: 'http_pcm',
+      createAudioContext: () => context as unknown as AudioContext,
+    });
+
+    await expect(call.start('session-linked')).resolves.toBeNull();
+
+    expect(call.snapshot.phase).toBe('failed');
+    expect(call.snapshot.error).toMatch(/Microphone access was denied/);
+    expect(call.snapshot.retryable).toBe(true);
+    expect(startEndpoint).not.toHaveBeenCalled();
+    expect(context.close).toHaveBeenCalledOnce();
+    call.dispose();
+  });
+
   it('closes preactivated PCM audio when stopped during the permission prompt', async () => {
     const context = new FakeAudioContext();
     const track = mediaTrack();
@@ -874,6 +902,59 @@ describe('LiveCall', () => {
     await call.stop();
   });
 
+  it('splits a microphone backlog into int16-aligned POSTs inside the peer inline body limit', async () => {
+    const sent: Int16Array[] = [];
+    const releases: Array<() => void> = [];
+    const sendPCMInput = vi.fn(async (_id: string, pcm: ArrayBuffer) => {
+      sent.push(new Int16Array(pcm));
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return new Response(null, { status: 204 });
+    });
+    const call = new LiveCall(
+      vi.fn(),
+      vi.fn(async (id) => ({ live_id: id, status: 'ended' as const })),
+      { transport: 'http_pcm', sendPCMInput },
+    );
+    const input = call as unknown as {
+      pcmInputReady: boolean;
+      mediaAbort: AbortController;
+      liveId: string;
+      sendCapturedPCM(data: ArrayBuffer, generation: number): void;
+    };
+    input.pcmInputReady = true;
+    input.mediaAbort = new AbortController();
+    input.liveId = 'capped-link';
+    let packet = 0;
+    for (let i = 0; i < 200; i += 1)
+      input.sendCapturedPCM(new Int16Array(320).fill(packet++).buffer, call.snapshot.generation);
+
+    // The first, prompt POST starts at the 100 ms batch threshold; the backlog
+    // that accumulates behind it drains one full cap at a time.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toHaveLength(1600);
+    for (let round = 1; round <= 4; round += 1) {
+      releases.shift()!();
+      await vi.waitFor(() => expect(sent).toHaveLength(round + 1), { interval: 1 });
+    }
+
+    const sizes = sent.map((part) => part.length * 2);
+    expect(sizes).toEqual([
+      3_200,
+      32 * 1024,
+      32 * 1024,
+      32 * 1024,
+      200 * 640 - 3_200 - 3 * 32 * 1024,
+    ]);
+    // A native peer raw inline body is capped at 48,384 bytes.
+    expect(sizes.every((size) => size % 2 === 0 && size <= 48_384)).toBe(true);
+    const combined = sent.flatMap((part) => Array.from(part));
+    expect(combined).toHaveLength(packet * 320);
+    expect(combined.findIndex((value, index) => value !== Math.floor(index / 320))).toBe(-1);
+
+    releases.shift()?.();
+    await call.stop();
+  });
+
   it.each([200, 260])(
     'bounds catch-up requests and fails visibly on a stalled link (%i packets)',
     async (packets) => {
@@ -911,9 +992,15 @@ describe('LiveCall', () => {
       } else {
         release();
         await vi.waitFor(() => expect(sent).toHaveLength(2));
-        expect(sent[1]).toBe(64 * 1024);
+        expect(sent[1]).toBe(32 * 1024);
         release();
         await vi.waitFor(() => expect(sent).toHaveLength(3));
+        expect(sent[2]).toBe(32 * 1024);
+        release();
+        await vi.waitFor(() => expect(sent).toHaveLength(4));
+        expect(sent[3]).toBe(32 * 1024);
+        release();
+        await vi.waitFor(() => expect(sent).toHaveLength(5));
         expect(sent.reduce((sum, size) => sum + size, 0)).toBe(packets * 640);
         release();
       }

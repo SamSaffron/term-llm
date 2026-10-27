@@ -187,7 +187,9 @@ live:
 
 The server opens Gemini's `BidiGenerateContent` WebSocket, configures audio plus input and output transcription and the execution-delegation function, seeds bounded visible history, and translates Gemini tool calls for the same live controller used by the other providers. Microphone input is mono signed 16-bit little-endian PCM at 16 kHz. Gemini output is signed 16-bit little-endian PCM at 24 kHz.
 
-The browser captures input through an `AudioWorklet`, resamples it to 16 kHz, and begins uploading after about 100 ms of audio. It then drains accumulated microphone audio in bounded, sequential `POST /v1/live/sessions/{live_id}/audio/input` requests of at most 64 KiB. Provider output returns as base64 PCM and interruption markers on `GET /v1/live/sessions/{live_id}/audio/output`.
+The browser captures input through an `AudioWorklet`, resamples it to 16 kHz, and begins uploading after about 100 ms of audio. It then drains accumulated microphone audio in bounded, sequential `POST /v1/live/sessions/{live_id}/audio/input` requests of at most 32 KiB. This stays within the linked-device HTTP bridge's
+inline request limit, including catch-up batches after a slow upload. Provider
+output returns as base64 PCM and interruption markers on `GET /v1/live/sessions/{live_id}/audio/output`.
 
 One continuous output `AudioWorklet` consumes the 24 kHz PCM from a bounded FIFO. It preserves interpolation phase across provider packet boundaries when the audio context runs at 44.1 or 48 kHz and passes samples through directly at 24 kHz. It does not create an `AudioBufferSourceNode` for each packet. An interruption resets the FIFO immediately. Both routes derive from `live_id` and use the normal authenticated API client, so its public prefix and [Hub](/guides/hub/) authentication apply.
 

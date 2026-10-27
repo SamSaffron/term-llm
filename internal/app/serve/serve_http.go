@@ -87,6 +87,7 @@ func (s *serveServer) Start() (startErr error) {
 		s.startEventWatcher()
 		s.startResponseLifecycle()
 		s.startCompletionPushDispatcher()
+		s.linkedDevices.StartAndLog(s.verboseLog)
 		return nil
 	}
 }
@@ -107,6 +108,10 @@ func (s *serveServer) httpHandler() http.Handler {
 
 	inner.HandleFunc("/healthz", s.handleHealth)
 	inner.HandleFunc("/v1/providers", s.auth(s.cors(s.handleProviders)))
+	if s.linkedDevices != nil {
+		inner.HandleFunc("/v1/linked-devices", s.auth(s.cors(s.linkedDevices.Handler().ServeHTTP)))
+		inner.HandleFunc("/v1/linked-devices/", s.auth(s.cors(s.linkedDevices.Handler().ServeHTTP)))
+	}
 	inner.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
 	inner.HandleFunc("/v1/mentions/search", s.auth(s.cors(s.handleMentionSearch)))
 	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
@@ -175,6 +180,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	if s.cfg.ui {
 		inner.HandleFunc("/", s.cors(s.handleUI)) // catch-all SPA
 	}
+	s.linkedDevices.SetPeerHandler(s.reloadTransport().Handler(inner))
 
 	// Jobs-only serve instances have no UI surface, so mount at root and keep
 	// the canonical /v2/* API paths. The shared base-path wrapper is still used

@@ -1,6 +1,10 @@
 import { effect } from '@preact/signals';
 import { initializeExtensionRecovery } from './stores/extension-runtime';
-import { loadExtensions, watchExtensionActivation } from './api/extensions';
+import {
+  loadExtensions,
+  removeRenderedExtensionStyles,
+  watchExtensionActivation,
+} from './api/extensions';
 import { followThemeColor } from './platform/page-chrome';
 import { render } from 'preact';
 import { App } from './app/App';
@@ -13,7 +17,9 @@ import './styles/app.css';
 async function bootstrap(): Promise<void> {
   // Hub proxy context and <base> rewriting are injected before this deferred module executes.
   const config = readInjectedConfig();
-  initializeExtensionRecovery(config);
+  // The server omits extension styles only for ?safe-mode=1; a stored override
+  // must still drop them before the app renders.
+  if (initializeExtensionRecovery(config)) removeRenderedExtensionStyles();
   const store = new AppStore(config);
   const root = document.getElementById('root');
   if (!root) throw new Error('term-llm application mount is missing');

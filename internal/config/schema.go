@@ -11,14 +11,15 @@ import (
 // mapstructure fields should be added here so defaults, validation,
 // completions, config show, and reset templates do not drift apart.
 type KeySpec struct {
-	Path          string
-	Default       any
-	HasDefault    bool
-	Description   string
-	Sensitive     bool
-	ShowInConfig  bool
-	ResetTemplate bool
-	Placeholder   any
+	Path           string
+	Default        any
+	HasDefault     bool
+	Description    string
+	Sensitive      bool
+	RedactExplicit bool
+	ShowInConfig   bool
+	ResetTemplate  bool
+	Placeholder    any
 }
 
 // ProviderFieldSpec describes a shared providers.<name> schema field.
@@ -191,6 +192,18 @@ const (
 
 	DefaultAutoCompact = true
 )
+
+// DefaultLinkedDevicesBrokerURL is term-llm's hosted public rendezvous broker.
+// It is used when linked_devices.broker_url and
+// TERM_LLM_LINKED_DEVICES_BROKER_URL are both unset. It relays signalling only;
+// it is not a TURN relay or credential issuer.
+const DefaultLinkedDevicesBrokerURL = "https://broker.term-llm.com"
+
+// DefaultLinkedDevicesICEServers returns the free STUN-only default policy.
+// TURN requires explicit configuration; ice_servers: [] uses host candidates only.
+func DefaultLinkedDevicesICEServers() []LinkedDevicesICEServerConfig {
+	return []LinkedDevicesICEServerConfig{{URLs: []string{"stun:stun.term-llm.com:3478"}}}
+}
 
 var keySpecs = []KeySpec{
 	def("default_provider", DefaultConfigProvider),
@@ -498,6 +511,14 @@ var keySpecs = []KeySpec{
 	def("file_tracking.max_observation_session_bytes", int(DefaultFileTrackingMaxObservationSessionBytes)),
 	def("file_tracking.max_observation_age_days", DefaultFileTrackingMaxObservationAgeDays),
 	def("file_tracking.path", ""),
+
+	// broker_url deliberately has no schema default: an applied default would
+	// shadow TERM_LLM_LINKED_DEVICES_BROKER_URL. ResolveLinkedDevices applies
+	// YAML > environment > DefaultLinkedDevicesBrokerURL.
+	optional("linked_devices.broker_url", withPlaceholder(DefaultLinkedDevicesBrokerURL), described("HTTPS rendezvous broker URL; when unset, TERM_LLM_LINKED_DEVICES_BROKER_URL and then the hosted default "+DefaultLinkedDevicesBrokerURL+" are used. Loopback HTTP is allowed for development.")),
+	optional("linked_devices.admission_credential", sensitive(), described("Optional private credential used only to admit host registration at the broker.")),
+	def("linked_devices.diagnostics", false, described("Emit a local redacted linked-device transport timeline to stderr.")),
+	def("linked_devices.ice_servers", DefaultLinkedDevicesICEServers(), redactExplicit(), described("Ordered ICE policy shared by the host and approved devices; free STUN by default, TURN requires explicit configuration, and [] uses host candidates only.")),
 }
 
 type specOpt func(*KeySpec)
@@ -520,6 +541,14 @@ func optional(path string, opts ...specOpt) KeySpec {
 
 func sensitive() specOpt {
 	return func(s *KeySpec) { s.Sensitive = true }
+}
+
+func redactExplicit() specOpt {
+	return func(s *KeySpec) { s.RedactExplicit = true }
+}
+
+func described(description string) specOpt {
+	return func(s *KeySpec) { s.Description = description }
 }
 
 func withPlaceholder(v any) specOpt {

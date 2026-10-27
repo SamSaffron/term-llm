@@ -1432,7 +1432,7 @@ const MessageRow = memo(function MessageRow({
       {message.role === 'assistant' && message.content && copyTarget && (
         <div class="turn-action-panel">
           <TurnCopyButton text={responseText || message.content} />
-          {!streaming && message.durableRowId && (
+          {!store.linkedDevicesMode.value && !streaming && message.durableRowId && (
             <button
               class="turn-action-btn turn-share-btn"
               type="button"

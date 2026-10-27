@@ -302,10 +302,22 @@ func TestDefaultConfigContentContainsEveryDefault(t *testing.T) {
 		"file_tracking:",
 		"max_tool_output_chars:",
 		"strip_image_base64:",
+		"linked_devices:",
+		"stun:stun.term-llm.com:3478",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated default config missing %q", want)
 		}
+	}
+	var defaults struct {
+		LinkedDevices config.LinkedDevicesConfig `yaml:"linked_devices"`
+	}
+	if err := yaml.Unmarshal([]byte(content), &defaults); err != nil {
+		t.Fatal(err)
+	}
+	servers := defaults.LinkedDevices.ICEServers
+	if len(servers) != 1 || len(servers[0].URLs) != 1 || servers[0].URLs[0] != "stun:stun.term-llm.com:3478" || servers[0].CredentialSource != "" || servers[0].Username != "" || servers[0].Credential != "" {
+		t.Fatalf("generated default ICE policy must contain credential-free STUN only: %+v", servers)
 	}
 	for _, unwanted := range []string{
 		"approval:",
@@ -450,5 +462,79 @@ func TestClassifyConfigShowResetAndCompletion(t *testing.T) {
 	}
 	if !slices.Contains(configValueCompletions("classify.default_provider", ""), "custom") {
 		t.Fatal("missing alias value completion")
+	}
+}
+
+func TestLinkedDevicesConfigRedaction(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	configPath := filepath.Join(configDir, "term-llm", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write config with explicit sensitive values
+	raw := []byte(`default_provider: openai
+linked_devices:
+  broker_url: https://broker.example.com
+  admission_credential: secret-admission-credential-123456
+  ice_servers:
+    - urls:
+        - stun:stun.example.com:3478
+    - urls:
+        - turn:turn.example.com:3478
+      credential_source: static
+      username: turn-user
+      credential: turn-secret-password
+`)
+
+	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Parse raw config for display
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		t.Fatal(err)
+	}
+
+	rawKeys := map[string]bool{
+		"default_provider":                    true,
+		"linked_devices":                      true,
+		"linked_devices.broker_url":           true,
+		"linked_devices.admission_credential": true,
+		"linked_devices.ice_servers":          true,
+	}
+
+	var buf strings.Builder
+	printAnnotatedConfig(&buf, config.GetDefaults(), rawKeys, nil, &root, true, cfg)
+	out := buf.String()
+
+	// Verify sensitive values are redacted
+	sensitiveValues := []string{
+		"secret-admission-credential-123456",
+		"turn-secret-password",
+	}
+
+	for _, secret := range sensitiveValues {
+		if strings.Contains(out, secret) {
+			t.Fatalf("config output leaked sensitive value %q:\n%s", secret, out)
+		}
+	}
+
+	// Verify redactions are present
+	if !strings.Contains(out, "<redacted>") {
+		t.Fatalf("config output should redact sensitive linked_devices values:\n%s", out)
+	}
+
+	// Verify broker_url is shown (not sensitive)
+	if !strings.Contains(out, "https://broker.example.com") {
+		t.Fatalf("config output should show non-sensitive broker_url:\n%s", out)
 	}
 }

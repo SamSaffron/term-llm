@@ -105,8 +105,7 @@ describe('web stats', () => {
     expect(await screen.findByText('31.3s')).toBeTruthy();
     for (const text of ['22.4s', '8.9s', '0.5s', '42.0 tokens/s', '≥$0.12'])
       expect(screen.getByText(text)).toBeTruthy();
-    for (const title of sections)
-      expect(screen.getByRole('heading', { name: title, exact: true })).toBeTruthy();
+    for (const title of sections) expect(screen.getByRole('heading', { name: title })).toBeTruthy();
     const table = screen.getByRole('region', { name: 'Model usage' });
     expect(within(table).getByRole('rowheader', { name: /shared-model/ })).toBeTruthy();
     expect(within(table).getByText('$0.02')).toBeTruthy();

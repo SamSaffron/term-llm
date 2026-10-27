@@ -1,0 +1,243 @@
+/* Settings is a fixed-size dialog with a section sidebar, so switching
+   sections never moves the navigation or resizes the dialog. Each section
+   scrolls its body above an optional footer of actions. */
+.modal.settings-modal {
+  --settings-nav-width: 200px;
+
+  width: min(860px, 100%);
+  height: min(600px, 100%);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-modal .modal-title-row {
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 1rem 1rem 0.75rem;
+}
+
+.settings-modal .modal-title-row h2 {
+  margin: 0;
+  line-height: 1.6rem;
+}
+
+.settings-panel-header {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-panel-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.6rem;
+}
+
+.modal .settings-panel-header p {
+  margin: 0.1rem 0 0;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.settings-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-tabs {
+  display: flex;
+  flex: none;
+  gap: 0.25rem;
+  margin: 0 1rem;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.settings-tabs [role='tab'] {
+  flex: 1 0 auto;
+  padding: 0.65rem 0.6rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.settings-tabs [role='tab']:hover {
+  color: var(--text);
+}
+
+.settings-tabs [aria-selected='true'] {
+  color: var(--text);
+  border-bottom-color: var(--accent-green);
+}
+
+.settings-tabs [role='tab']:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: -2px;
+}
+
+.settings-panels {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Each section scrolls its own body so its actions stay pinned in the
+   footer below, however long the section is. */
+.settings-panel:not([hidden]),
+.settings-panel > .extension-settings,
+.settings-panel > .linked-devices {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 1rem;
+  container: settings-panel / inline-size;
+}
+
+.modal-actions.settings-footer {
+  flex: none;
+  align-items: center;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.settings-footer-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-right: auto;
+}
+
+.settings-footer-message {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.modal .settings-footer-message p {
+  margin: 0.1rem 0 0;
+}
+
+.modal .settings-save-error {
+  margin: 0 auto 0 0;
+  color: var(--danger);
+  font-size: 0.84rem;
+}
+
+/* On phones the section heading repeats the selected tab, so the tab strip
+   stays horizontal and the heading is dropped. */
+@media (width < 720px) {
+  .settings-panel-header {
+    display: none;
+  }
+
+  .settings-modal .modal-title-row {
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .settings-footer-message {
+    flex-basis: 100%;
+  }
+}
+
+@media (width >= 720px) {
+  /* The sidebar tint is painted on the dialog so it runs unbroken from the
+     title row to the bottom edge. */
+  .modal.settings-modal {
+    background: linear-gradient(
+        to right,
+        var(--surface-2) calc(var(--settings-nav-width) - 1px),
+        var(--border) calc(var(--settings-nav-width) - 1px) var(--settings-nav-width),
+        transparent var(--settings-nav-width)
+      )
+      var(--surface);
+  }
+
+  .settings-modal .modal-title-row {
+    gap: 0;
+    padding: 1.1rem 1rem 0.9rem;
+  }
+
+  .settings-modal .modal-title-row h2 {
+    flex: 0 0 calc(var(--settings-nav-width) - 1rem);
+  }
+
+  .settings-panel-header {
+    padding-left: 1.5rem;
+  }
+
+  .settings-modal .modal-title-row .close-button {
+    margin-left: 0.75rem;
+  }
+
+  .settings-layout {
+    display: grid;
+    grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
+  }
+
+  .settings-tabs {
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+    padding: 0 0.6rem 1rem;
+    border: 0;
+    overflow: hidden auto;
+  }
+
+  .settings-tabs [role='tab'] {
+    flex: none;
+    padding: 0.5rem 0.7rem;
+    border: 0;
+    border-radius: 6px;
+    text-align: left;
+    font-size: 0.88rem;
+  }
+
+  .settings-tabs [role='tab']:hover {
+    background: var(--surface-3);
+  }
+
+  .settings-tabs [aria-selected='true'] {
+    background: var(--surface-3);
+    font-weight: 600;
+  }
+
+  .settings-panel-body {
+    padding: 0.25rem 1.5rem 1.25rem;
+  }
+
+  .modal-actions.settings-footer {
+    padding: 0.75rem 1.5rem;
+  }
+}
+
+@container settings-panel (width >= 480px) {
+  .settings-model-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 1rem;
+  }
+}

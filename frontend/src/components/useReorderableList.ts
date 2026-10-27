@@ -545,17 +545,31 @@ export function useReorderableList<ListElement extends HTMLElement = HTMLDivElem
 ) {
   const list = useRef<ListElement>(null);
   const [announcement, setAnnouncement] = useState('');
+  const pendingFocus = useRef<{
+    id: string;
+    selector: string;
+    previous: Element | null;
+  } | null>(null);
+  // Restore focus after the reordered DOM commits, before a later user
+  // interaction can open another menu. An animation frame can run too late
+  // and steal focus from that menu, dismissing it through focus-outside.
+  useLayoutEffect(() => {
+    const target = pendingFocus.current;
+    pendingFocus.current = null;
+    if (target) focusRow(list.current, target.id, target.selector, target.previous);
+  });
   const commit = (orderedIds: string[], id: string, to: number, focus?: 'row' | 'menu') => {
-    const previous = document.activeElement;
+    if (focus)
+      pendingFocus.current = {
+        id,
+        selector: options.focusTargets[focus],
+        previous: focus === 'menu' ? null : document.activeElement,
+      };
     setAnnouncement(`Moved ${options.label(id)} to position ${to + 1} of ${orderedIds.length}.`);
     void options.save(orderedIds).catch((error) => {
       setAnnouncement('');
       options.report(error);
     });
-    if (focus)
-      requestAnimationFrame(() =>
-        focusRow(list.current, id, options.focusTargets[focus], focus === 'menu' ? null : previous),
-      );
   };
   const latest = useRef({ ids, commit });
   latest.current = { ids, commit };

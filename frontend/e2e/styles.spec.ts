@@ -148,6 +148,47 @@ test('composer input has its own row, with the controls in a row inside the box 
   }
 });
 
+test('linked-device iPhone composer keeps Send right aligned without attachment or voice controls', async ({
+  page,
+}) => {
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1"><footer class="composer"><div class="composer-inner"><div class="composer-box">
+    <textarea class="prompt" rows="1" aria-label="Message"></textarea>
+    <div class="composer-toolbar"><div class="composer-actions"><button class="send-btn" aria-label="Send">↑</button></div></div>
+  </div></div></footer>`);
+  await page.addStyleTag({ content: css });
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const value of ['', 'Hi', 'A longer\nmessage\nwith lines', 'unbroken'.repeat(80)]) {
+      await page.getByRole('textbox', { name: 'Message' }).fill(value);
+      const layout = await page.locator('.composer-box').evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const input = element.querySelector('textarea')!.getBoundingClientRect();
+        const send = element.querySelector('.send-btn')!.getBoundingClientRect();
+        return {
+          rightGap: box.right - send.right,
+          expectedGap: parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth),
+          // The input has the top row to itself; Send sits in the toolbar below it.
+          inputWidth: input.width,
+          availableWidth:
+            box.width -
+            parseFloat(style.paddingLeft) -
+            parseFloat(style.paddingRight) -
+            parseFloat(style.borderLeftWidth) -
+            parseFloat(style.borderRightWidth),
+          inputOverlapsSend: input.bottom > send.top,
+          overflow: document.documentElement.scrollWidth - innerWidth,
+        };
+      });
+      const context = `${width}px, ${value.slice(0, 30)}`;
+      expect(Math.abs(layout.rightGap - layout.expectedGap), context).toBeLessThanOrEqual(1);
+      expect(Math.abs(layout.inputWidth - layout.availableWidth), context).toBeLessThanOrEqual(1);
+      expect(layout.inputOverlapsSend, context).toBe(false);
+      expect(layout.overflow, context).toBeLessThanOrEqual(1);
+    }
+  }
+});
+
 test('composer attachments and status chips keep clearance above the input', async ({ page }) => {
   await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1"><footer class="composer"><div class="composer-inner">
     <button class="interaction-attention-banner">Decision waiting — Open</button>

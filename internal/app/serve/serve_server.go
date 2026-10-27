@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/live"
 	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -45,6 +46,7 @@ type serveServer struct {
 	sessionStore             runtime.SessionStoreOverrides
 	memoryPaths              appmemory.Paths
 	mediaPublisher           *serveMediaPublisher
+	linkedDevices            *linkeddevices.ServeHost
 	approvalDefault          tools.ApprovalMode
 	sharePublisherFactory    func() (share.Publisher, error)
 	shareMu                  sync.Mutex

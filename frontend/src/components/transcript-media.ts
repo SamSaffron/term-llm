@@ -1,5 +1,12 @@
 import { showAudioMediaError } from '../domain/audio-media';
 
+const pauseTranscriptPlayers = new Set<() => void>();
+
+/** Stop transcript playback before starting a video preview outside its root. */
+export function pauseTranscriptMedia(): void {
+  for (const pause of pauseTranscriptPlayers) pause();
+}
+
 /** Native play/error do not bubble. Keep playback scoped to one transcript. */
 export function bindTranscriptMedia(root: HTMLElement): () => void {
   const players = () => [...root.querySelectorAll<HTMLMediaElement>('audio,video')];
@@ -23,15 +30,20 @@ export function bindTranscriptMedia(root: HTMLElement): () => void {
       active = null;
     }
   });
+  const pauseAll = () => {
+    for (const player of players()) if (player !== active) pause(player);
+    if (active) pause(active);
+    active = null;
+  };
+  pauseTranscriptPlayers.add(pauseAll);
   root.addEventListener('play', onPlay, true);
   root.addEventListener('error', onError, true);
   observer.observe(root, { childList: true, subtree: true });
   return () => {
+    pauseTranscriptPlayers.delete(pauseAll);
     root.removeEventListener('play', onPlay, true);
     root.removeEventListener('error', onError, true);
     observer.disconnect();
-    if (active) pause(active);
-    for (const player of players()) if (player !== active) pause(player);
-    active = null;
+    pauseAll();
   };
 }

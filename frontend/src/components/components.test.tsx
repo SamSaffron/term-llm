@@ -773,7 +773,7 @@ describe('Preact-owned chat surfaces', () => {
 
     const textbox = screen.getByRole('textbox', { name: 'Message' });
     expect(textbox).toHaveAttribute('placeholder', 'Steer conversation…');
-    expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Stop subagent' })).not.toBeInTheDocument();
 
     for (const [command, message] of [
@@ -913,7 +913,7 @@ describe('Preact-owned chat surfaces', () => {
         </StoreContext.Provider>,
       );
       expect(await screen.findByText('hello')).toBeVisible();
-      const stop = screen.getByRole('button', { name: 'Stop', exact: true });
+      const stop = screen.getByRole('button', { name: 'Stop' });
       expect(stop).toBeVisible();
       expect(screen.getByRole('button', { name: 'Remove pending steering: hello' })).toBeEnabled();
       expect(
@@ -925,7 +925,6 @@ describe('Preact-owned chat surfaces', () => {
       if (available) {
         const rush = screen.getByRole('button', {
           name: count > 1 ? 'Steer all now' : 'Steer now',
-          exact: true,
         });
         const remove = screen.getByRole('button', {
           name: `Remove pending steering: ${count > 1 ? 'second guidance' : 'hello'}`,
@@ -1406,9 +1405,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    expect(
-      screen.getByRole('button', { name: 'Historical project chat', exact: true }),
-    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Historical project chat' })).toBeVisible();
   });
 
   it('only animates sidebar groups after a user expands them', async () => {
@@ -1450,7 +1447,7 @@ describe('Preact-owned chat surfaces', () => {
     });
     expect(container.querySelectorAll('.is-opening')).toHaveLength(0);
 
-    const projectsToggle = screen.getByRole('button', { name: 'Projects', exact: true });
+    const projectsToggle = screen.getByRole('button', { name: 'Projects' });
     await userEvent.click(projectsToggle);
     await userEvent.click(projectsToggle);
     const list = container.querySelector('.sidebar-project-groups > .session-group-list')!;
@@ -4833,6 +4830,26 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.openShare).toHaveBeenCalledWith(42);
   });
 
+  it('does not offer transcript publishing to a linked-device client', () => {
+    const store = createStore();
+    store.linkedDevicesMode.value = true;
+    store.sessions.value[0].messages = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        created: 2,
+        durableRowId: 42,
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Share…' })).toBeNull();
+  });
+
   it('pins a near-tail transcript immediately without smooth scrolling', () => {
     const store = createStore();
     const { container } = render(
@@ -5144,6 +5161,90 @@ describe('Preact-owned chat surfaces', () => {
       expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled(),
     );
   });
+
+  it('offers Live to a linked-device client when the host advertises it', async () => {
+    const store = createStore();
+    store.linkedDevicesMode.value = true;
+    store.liveStore.applyCapability({
+      enabled: true,
+      transport: 'http_pcm',
+      delegation_modes: ['server'],
+    });
+    store.liveStore.capability.value = { supported: true, reason: '' };
+    store.liveStore.start = vi.fn(async () => true);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    // Dictation and uploads remain restricted to the host device.
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
+    const live = screen.getByRole('button', { name: 'Start live voice' });
+    expect(live).toBeEnabled();
+    expect(live).toHaveClass('live');
+    await userEvent.click(live);
+    expect(store.liveStore.start).toHaveBeenCalledOnce();
+  });
+
+  it('shows Live status and its stop control to a linked-device client', async () => {
+    const store = createStore();
+    store.linkedDevicesMode.value = true;
+    store.liveStore.applyCapability({
+      enabled: true,
+      transport: 'http_pcm',
+      delegation_modes: ['server'],
+    });
+    store.liveStore.capability.value = { supported: true, reason: '' };
+    store.liveStore.liveId.value = 'live_one';
+    store.liveStore.phase.value = 'listening';
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Stop live voice' })).toBeEnabled();
+    expect(await screen.findByRole('region', { name: 'Live voice' })).toBeInTheDocument();
+    expect(await screen.findByText('Listening…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
+  });
+
+  it.each([
+    ['the host does not advertise Live', { enabled: false }, { supported: true, reason: '' }, ''],
+    [
+      'the browser cannot use the microphone',
+      { enabled: true, transport: 'http_pcm', delegation_modes: ['server'] },
+      { supported: false, reason: 'Live voice requires a secure HTTPS connection.' },
+      'Live voice requires a secure HTTPS connection.',
+    ],
+  ])(
+    'keeps Live off for a linked-device client when %s',
+    async (_label, capability, localCapability, reason) => {
+      const store = createStore();
+      store.linkedDevicesMode.value = true;
+      store.liveStore.applyCapability(capability);
+      store.liveStore.capability.value = localCapability;
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+
+      expect(screen.queryByRole('button', { name: 'Start live voice' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
+      // An advertised call the browser cannot run explains itself; a host that
+      // offers no Live stays quiet rather than showing a dead control.
+      expect(document.querySelector('#liveUnsupported')?.textContent || '').toBe(reason);
+
+      const input = screen.getByRole('textbox', { name: 'Message' });
+      await userEvent.type(input, 'peer message');
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    },
+  );
 
   it('routes typed text through an active live call and falls back to normal send on failure', async () => {
     const store = createStore();
@@ -7193,6 +7294,34 @@ describe('Preact-owned chat surfaces', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Actions for Regular chat' }));
       expect(screen.queryByRole('menuitem', { name: 'Move up' })).not.toBeInTheDocument();
       expect(screen.queryByRole('menuitem', { name: 'Move down' })).not.toBeInTheDocument();
+    });
+
+    it('does not let a pending reorder focus close the next row menu', async () => {
+      const frames = new Map<number, FrameRequestCallback>();
+      let nextFrame = 0;
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.set(++nextFrame, callback);
+        return nextFrame;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => frames.delete(id));
+      const store = pinnedSidebarStore();
+      renderSidebar(store);
+
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Beta pin' }));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Gamma pin' }));
+      const gammaTrigger = screen.getByRole('button', { name: 'Actions for Gamma pin' });
+      expect(gammaTrigger).toHaveAttribute('aria-expanded', 'true');
+
+      // A slow frame must not restore focus to Beta after the user has
+      // already opened Gamma's menu, dismissing it through focus-outside.
+      act(() => {
+        for (const [id, callback] of [...frames]) {
+          if (frames.delete(id)) callback(0);
+        }
+      });
+      expect(gammaTrigger).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByRole('menuitem', { name: 'Move down' })).toBeInTheDocument();
     });
 
     it('restores the order and reports when a reorder cannot be saved', async () => {
@@ -9371,7 +9500,7 @@ describe('Preact-owned chat surfaces', () => {
         <Modals />
       </StoreContext.Provider>,
     );
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.getByRole('tab', { name: 'Model' })).toHaveAttribute('aria-selected', 'true');
     expect(fetchExtensions).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('Effort'), { target: { value: 'high' } });
@@ -9932,6 +10061,69 @@ describe('Preact-owned chat surfaces', () => {
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
       else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not draw the blank lines around a streaming paragraph', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(<Markdown value={'\n\nFirst'} streaming />);
+      rerender(<Markdown value={'\n\nFirst line of the reply.\n\n'} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      const tail = container.querySelector('.streaming-tail-plain');
+      expect(tail).toBeInTheDocument();
+      expect(tail?.textContent).toBe('First line of the reply.');
+      rerender(<Markdown value={'\n\nFirst line of the reply.\n\nSecond'} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(container.textContent).not.toMatch(/^\s|\s$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { source: '\n\nFirst\nSecond\n\n', expected: 'First\nSecond' },
+    { source: ' \t\r\n\t\r\nFirst\r\nSecond\r\n \t', expected: 'First\r\nSecond' },
+    { source: '\n\n \t', expected: '' },
+    { source: 'Price:\u00a0', expected: 'Price:\u00a0' },
+    { source: '\u00a0\nHello', expected: '\u00a0\nHello' },
+    { source: '\n\nHello\u2003\n', expected: 'Hello\u2003' },
+  ])(
+    'normalizes only layout whitespace in a plain streaming tail: $source',
+    ({ source, expected }) => {
+      const { container, rerender } = render(<Markdown value={source} streaming />);
+      const tail = container.querySelector('.streaming-tail-plain');
+      expect(tail).toBeInTheDocument();
+      expect(tail?.textContent).toBe(expected);
+      rerender(<Markdown value={source} streaming={false} />);
+      expect(container.textContent).toBe(expected);
+      expect(container.querySelector('.streaming-tail')).not.toBeInTheDocument();
+    },
+  );
+
+  it('keeps the plain tail text node and restores spaces when more text arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(<Markdown value="Hello " streaming />);
+      const node = container.querySelector('.streaming-tail-plain')?.firstChild;
+      expect(node?.textContent).toBe('Hello');
+      for (const source of ['Hello world ', 'Hello world again']) {
+        rerender(<Markdown value={source} streaming />);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+        expect(container.querySelector('.streaming-tail-plain')?.firstChild).toBe(node);
+        expect(node?.textContent).toBe(source.trimEnd());
+      }
+      rerender(<Markdown value="Hello world again" streaming={false} />);
+      expect(container.textContent).toBe('Hello world again');
+      expect(container.firstChild?.firstChild).toBe(node);
+    } finally {
       vi.useRealTimers();
     }
   });
@@ -10764,6 +10956,49 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('status')).toBeEmptyDOMElement();
     expect(store.toasts.value).toEqual([]);
     expect(store.lightbox.value).not.toBeNull();
+  });
+
+  it('pauses transcript playback for a video preview, but not for an image or unrelated media', () => {
+    const store = createStore();
+    const root = document.createElement('div');
+    root.innerHTML = '<audio></audio><video></video>';
+    document.body.append(root);
+    const [audio, inlineVideo] = [...root.querySelectorAll<HTMLMediaElement>('audio,video')];
+    const outside = document.createElement('audio');
+    document.body.append(outside);
+    const pauseAudio = vi.spyOn(audio, 'pause').mockImplementation(() => undefined);
+    const pauseInlineVideo = vi.spyOn(inlineVideo, 'pause').mockImplementation(() => undefined);
+    const pauseOutside = vi.spyOn(outside, 'pause').mockImplementation(() => undefined);
+    for (const player of [audio, inlineVideo, outside])
+      Object.defineProperty(player, 'paused', { configurable: true, value: false });
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const cleanup = bindTranscriptMedia(root);
+    const items = [
+      { key: 'image', src: '/image.png', type: 'image' as const },
+      { key: 'video', src: '/video.mp4', type: 'video' as const },
+    ];
+    try {
+      const { unmount } = render(
+        <StoreContext.Provider value={store}>
+          <Lightbox />
+        </StoreContext.Provider>,
+      );
+      act(() => {
+        store.lightbox.value = { ...items[0], items, index: 0 };
+      });
+      expect(pauseAudio).not.toHaveBeenCalled();
+      expect(pauseInlineVideo).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'Next media' }));
+      expect(pauseAudio).toHaveBeenCalledTimes(1);
+      expect(pauseInlineVideo).toHaveBeenCalledTimes(1);
+      expect(pauseOutside).not.toHaveBeenCalled();
+      unmount();
+      cleanup();
+    } finally {
+      root.remove();
+      outside.remove();
+    }
   });
 
   it('pauses and clears owned video resources when the lightbox closes', async () => {

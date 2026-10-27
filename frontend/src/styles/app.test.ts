@@ -67,6 +67,56 @@ describe('compaction progress styles', () => {
   });
 });
 
+describe('running conversation status styles', () => {
+  it('keeps waiting text static instead of continuously repainting a clipped gradient', () => {
+    const start = preactOverrides.indexOf('.streaming-indicator {');
+    const end = preactOverrides.indexOf('/* Composer */', start);
+    const statusCSS = preactOverrides.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(statusCSS).toMatch(/\.streaming-indicator-text\s*\{[^}]*color: var\(--text\);/);
+    expect(statusCSS).toMatch(
+      /\.streaming-indicator-unknown \.streaming-indicator-text\s*\{[^}]*color: var\(--text-muted\);/,
+    );
+    expect(statusCSS).not.toContain('background-clip');
+    expect(statusCSS).not.toContain('background-position');
+    // The activity indicator's 14px cursor is the only continuous animation here.
+    expect(statusCSS.replace(/\.working-mark-cursor\s*\{[^}]*\}/, '')).not.toContain('infinite');
+    expect(statusCSS).not.toMatch(/\.streaming-indicator-text\s*\{[^}]*animation:/);
+    // A short entrance is fine; it must still respect reduced motion.
+    expect(statusCSS).toContain('streaming-status-enter 180ms ease-out both');
+    expect(statusCSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.streaming-indicator\s*\{[^}]*animation: none;/,
+    );
+  });
+});
+
+describe('live voice motion styles', () => {
+  it('uses an opacity pulse instead of repeatedly painting an expanding shadow', () => {
+    const composerCSS = readFileSync(resolve(stylesRoot, 'features/composer.css'), 'utf8');
+    const start = composerCSS.indexOf('@keyframes voice-pulse {');
+    const end = composerCSS.indexOf('.pending-steering {', start);
+    const pulse = composerCSS.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(pulse).toContain('opacity: 0.65;');
+    expect(pulse).not.toMatch(/(?:box-shadow|background|filter)\s*:/);
+    expect(composerCSS).toMatch(
+      /\.send-btn\.live\.live-pulse:not\(:disabled\)\s*\{\s*animation: voice-pulse/,
+    );
+    expect(composerCSS).not.toMatch(/\.send-btn\.live\.live-pulse\s*\{/);
+  });
+
+  it('stops voice pulses and the composer spinner for reduced motion', () => {
+    const composerCSS = readFileSync(resolve(stylesRoot, 'features/composer.css'), 'utf8');
+    expect(composerCSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{[^@]*\.live-status-listening \.live-status-dot,\s*\.live-status-speaking \.live-status-dot,\s*\.send-btn\.live\.live-pulse:not\(:disabled\),\s*\.send-btn \.spinner\s*\{\s*animation: none;/,
+    );
+  });
+});
+
 describe('shared switch styles', () => {
   it('loads for settings without opening MCP and stays visible in forced colors', () => {
     expect(appCSS).toContain('.toggle-switch-track');

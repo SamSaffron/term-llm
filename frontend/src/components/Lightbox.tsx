@@ -6,6 +6,7 @@ import { copyImage } from '../platform/clipboard';
 import { overlayManager } from '../platform/overlay-manager';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';
+import { pauseTranscriptMedia } from './transcript-media';
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 32;
@@ -126,6 +127,9 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
   } | null>(null);
   const revoked = useRef(new Set<string>());
   const current = items[Math.max(0, Math.min(items.length - 1, index))];
+  useLayoutEffect(() => {
+    if (current?.type === 'video') pauseTranscriptMedia();
+  }, [media, current?.key, current?.type]);
 
   const updateView = (next: typeof INITIAL_VIEW, deferred = false) => {
     liveView.current = next;

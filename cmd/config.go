@@ -265,12 +265,13 @@ func printAnnotatedConfigFiltered(out io.Writer, defaults map[string]any, rawKey
 }
 
 type renderKey struct {
-	RenderPath  string
-	FullPath    string
-	Default     any
-	HasDefault  bool
-	Sensitive   bool
-	Placeholder any
+	RenderPath     string
+	FullPath       string
+	Default        any
+	HasDefault     bool
+	Sensitive      bool
+	RedactExplicit bool
+	Placeholder    any
 }
 
 type renderNode struct {
@@ -282,12 +283,13 @@ type renderNode struct {
 
 func renderKeyFromSpec(spec config.KeySpec) renderKey {
 	return renderKey{
-		RenderPath:  spec.Path,
-		FullPath:    spec.Path,
-		Default:     spec.Default,
-		HasDefault:  spec.HasDefault,
-		Sensitive:   spec.Sensitive,
-		Placeholder: spec.Placeholder,
+		RenderPath:     spec.Path,
+		FullPath:       spec.Path,
+		Default:        spec.Default,
+		HasDefault:     spec.HasDefault,
+		Sensitive:      spec.Sensitive,
+		RedactExplicit: spec.RedactExplicit,
+		Placeholder:    spec.Placeholder,
 	}
 }
 
@@ -385,7 +387,7 @@ func printRenderValue(out io.Writer, key renderKey, rawKeys map[string]bool, raw
 	var valueStr string
 	var annotation string
 	if active && isExplicit && hasRawVal {
-		if key.Sensitive && strings.TrimSpace(rawVal) != "" {
+		if (key.Sensitive || key.RedactExplicit) && strings.TrimSpace(rawVal) != "" {
 			valueStr = "<redacted>"
 			annotation = "# (set, redacted)"
 		} else {
@@ -619,55 +621,6 @@ func formatValue(raw string, defaultVal any) string {
 		return fmt.Sprintf("%q", raw)
 	}
 	return raw
-}
-
-// formatDefaultValue formats a default value for display
-func formatDefaultValue(val any) string {
-	switch v := val.(type) {
-	case string:
-		if needsQuoting(v) {
-			return fmt.Sprintf("%q", v)
-		}
-		return v
-	case bool:
-		return fmt.Sprintf("%t", v)
-	case int:
-		return fmt.Sprintf("%d", v)
-	case int64:
-		return fmt.Sprintf("%d", v)
-	case float64:
-		return fmt.Sprintf("%g", v)
-	case []string:
-		if len(v) == 0 {
-			return "[]"
-		}
-		var items []string
-		for _, item := range v {
-			items = append(items, quoteArrayItem(item))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	case []int64:
-		if len(v) == 0 {
-			return "[]"
-		}
-		items := make([]string, 0, len(v))
-		for _, item := range v {
-			items = append(items, fmt.Sprintf("%d", item))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	case map[string]any:
-		if len(v) == 0 {
-			return "{}"
-		}
-	}
-	return fmt.Sprintf("%v", val)
-}
-
-func formatPlaceholderValue(val any) string {
-	if val == nil {
-		return "null"
-	}
-	return formatDefaultValue(val)
 }
 
 // needsQuoting checks if a string value needs YAML quoting

@@ -188,6 +188,7 @@ export class AppStore {
   readonly runs: Signal<Record<string, ResponseProjection>>;
   readonly connected: Signal<boolean>;
   readonly authRequired: Signal<boolean>;
+  readonly linkedDevicesMode = signal(false);
   readonly startup = signal('Loading your chat shell…');
   readonly startupFailed = signal(false);
   readonly startupDone = signal(false);
@@ -315,6 +316,7 @@ export class AppStore {
     persistentCache?: PersistentCache,
   ) {
     this.services = new AppStoreServices(config, storage, persistentCache);
+    this.linkedDevicesMode.value = config.linkedDevicesScope === 'web-v1';
     this.startupMetrics = this.services.startupMetrics;
     this.keys = this.services.keys;
     this.api = this.services.api;
@@ -1345,6 +1347,10 @@ export class AppStore {
   }
 
   private applyCapabilities(data: Record<string, unknown>): void {
+    const linkedDevices = recordValue(data.linked_devices);
+    const linkedDevicesActive =
+      this.config.linkedDevicesScope === 'web-v1' || linkedDevices?.active === true;
+    this.linkedDevicesMode.value = linkedDevicesActive;
     const projects =
       data.projects && typeof data.projects === 'object'
         ? (data.projects as Record<string, unknown>)
@@ -1359,7 +1365,9 @@ export class AppStore {
       worktrees.enabled === true || (worktrees.enabled === undefined && this.config.worktrees);
     this.sessionStore.applyCapabilities(projectsEnabled, worktreesEnabled);
     this.shellStore.enabled.value = recordValue(data.shell)?.enabled === true;
-    this.liveStore.applyCapability(data.live);
+    // A web-v1 peer is host-executed only even if the live map omits or
+    // overstates its delegation modes: the profile itself removes device tools.
+    this.liveStore.applyCapability(data.live, { linkedDevices: linkedDevicesActive });
     const admission = recordValue(data.response_admission);
     this.runEngine.admissionInstance.value =
       admission?.version === 1 && typeof admission.instance_id === 'string'

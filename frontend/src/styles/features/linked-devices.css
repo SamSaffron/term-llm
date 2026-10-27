@@ -1,0 +1,323 @@
+.linked-devices {
+  min-width: 0;
+}
+
+.linked-devices-body {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.linked-devices p {
+  margin: 0;
+}
+
+.linked-devices-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface-2);
+}
+
+.linked-devices-state > span {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.linked-devices-state > strong {
+  color: var(--accent-green);
+}
+
+.linked-devices-state.is-unavailable,
+.linked-devices-state.is-off,
+.linked-devices-state.is-stopped {
+  display: grid;
+}
+
+.linked-devices-state.is-unavailable > strong,
+.linked-devices-state.is-off > strong,
+.linked-devices-state.is-stopped > strong {
+  color: var(--text-muted);
+}
+
+.linked-devices-state.is-unavailable p {
+  font-size: 0.85rem;
+}
+
+.linked-devices-warning {
+  padding: 0.75rem 0.85rem;
+  border-left: 3px solid var(--accent-amber);
+  background: color-mix(in srgb, var(--accent-amber) 8%, transparent);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.linked-devices-reason,
+.linked-devices-error {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.linked-devices-error {
+  color: var(--danger);
+}
+
+.linked-devices-countdown {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.linked-devices-note,
+.linked-devices-waiting {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* Device list: one bordered group, one row per device. */
+.linked-devices-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.linked-devices-device {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.linked-devices-device + .linked-devices-device {
+  border-top: 1px solid var(--border);
+}
+
+.linked-devices-device > div {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.linked-devices-device strong {
+  overflow-wrap: anywhere;
+}
+
+.linked-devices-device small {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.linked-devices-device .btn {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+.linked-devices-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  background: var(--border-strong);
+  vertical-align: 1px;
+}
+
+.linked-devices-dot.is-online {
+  background: var(--accent-green);
+}
+
+.linked-devices-quiet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.linked-devices-text-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.linked-devices-text-button:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.linked-devices-text-button.is-danger {
+  color: var(--danger);
+}
+
+.linked-devices-empty {
+  display: grid;
+  justify-items: center;
+  gap: 0.4rem;
+  padding: 2.25rem 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.linked-devices-empty p {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* The two-step link flow. */
+.linked-devices-steps {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.78rem;
+}
+
+.linked-devices-steps li {
+  padding: 0.2rem 0.6rem;
+  border-radius: 99px;
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+.linked-devices-steps li[aria-current='step'] {
+  background: var(--text);
+  color: var(--surface);
+  font-weight: 600;
+}
+
+.linked-devices-scan {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1rem;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.linked-devices-scan img {
+  flex: none;
+  width: 12rem;
+  aspect-ratio: 1;
+  padding: 0.6rem;
+  border-radius: 10px;
+  background: white;
+}
+
+.linked-devices-scan > div {
+  display: grid;
+  gap: 0.45rem;
+  justify-items: start;
+}
+
+.linked-devices-scan p:not(.linked-devices-countdown, .linked-devices-note) {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.linked-devices-confirm-code {
+  display: grid;
+  justify-items: center;
+  gap: 0.55rem;
+  padding: 1.75rem 1rem 1.25rem;
+  border-radius: 12px;
+  background: var(--surface-2);
+  text-align: center;
+}
+
+.linked-devices-queue {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.linked-devices-body:focus {
+  outline: none;
+}
+
+.linked-devices-confirm-title {
+  font-size: 1.05rem;
+}
+
+.linked-devices-confirm-code > p {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.linked-devices-confirm-code details {
+  max-width: 32rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.linked-devices-confirm-code summary {
+  cursor: pointer;
+}
+
+.linked-devices-confirm-code details p {
+  margin-top: 0.35rem;
+  text-align: left;
+}
+
+/* One box per digit. */
+.pairing-code {
+  display: flex;
+  gap: 0.45rem;
+  margin: 0.35rem 0;
+}
+
+.modal .pairing-code input {
+  width: min(2.75rem, 11vw);
+  height: 3.25rem;
+  padding: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  font: 600 1.4rem/1 var(--font-mono);
+  font-variant-ligatures: none;
+  text-align: center;
+  resize: none;
+}
+
+.linked-devices .btn.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--btn-accent-text);
+}
+
+/* A pending confirmation takes over the settings footer. */
+.modal-actions.linked-devices-confirm {
+  border-top-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+
+.linked-devices-confirm p {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+@media (width < 640px) {
+  .linked-devices-scan {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .linked-devices-scan > div {
+    justify-items: center;
+  }
+
+  .linked-devices-scan img {
+    width: min(14rem, 70vw);
+  }
+}

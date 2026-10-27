@@ -190,7 +190,7 @@ it('preserves the mounted chat when authentication expires and explains reconnec
   const { container } = render(<App store={store} />);
   await waitFor(() => expect(container.querySelector('#appShell')).not.toBeNull());
   const shell = container.querySelector('#appShell');
-  fireEvent.input(screen.getByRole('textbox', { name: 'Message', exact: true }), {
+  fireEvent.input(screen.getByRole('textbox', { name: 'Message' }), {
     target: { value: 'Keep this unsent draft while reconnecting.' },
   });
   const draftId = store.composer.ownerKey();
@@ -206,7 +206,7 @@ it('preserves the mounted chat when authentication expires and explains reconnec
   fireEvent.submit(input.closest('form')!);
   await waitFor(() => expect(shell).toBeVisible());
   expect(container.querySelector('#appShell')).toBe(shell);
-  expect(screen.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue(
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(
     'Keep this unsent draft while reconnecting.',
   );
   expect(store.composer.ownerKey()).toBe(draftId);
@@ -225,7 +225,7 @@ it('keeps Settings and the working credential intact when a replacement token is
   fireEvent.input(screen.getByLabelText('Bearer token'), {
     target: { value: 'rejected-replacement' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('invalid authentication credentials');
   expect(store.authRequired.value).toBe(false);
   expect(store.modal.value).toBe('settings');

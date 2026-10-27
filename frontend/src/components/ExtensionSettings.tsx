@@ -89,100 +89,106 @@ export function ExtensionSettings() {
     : [];
   return (
     <section class="extension-settings" aria-label="Extensions">
-      {store.config.agentNames.includes('extension-builder') && (
-        <button type="button" class="btn extension-builder" onClick={startExtensionBuilder}>
-          ✦ Make UI Mine
-        </button>
-      )}
-      {safe && (
-        <div class="extension-recovery" role="status">
-          <strong>Safe mode is on</strong>
-          <button type="button" class="btn" onClick={exitExtensionRecovery}>
-            Exit safe mode and reload
+      <div class="settings-panel-body">
+        {store.config.agentNames.includes('extension-builder') && (
+          <button type="button" class="btn extension-builder" onClick={startExtensionBuilder}>
+            ✦ Make UI Mine
           </button>
-        </div>
-      )}
-      {error && (
-        <p class="extension-error" role="alert">
-          {error}
-        </p>
-      )}
-      {status && (
-        <>
-          {controlled && (
-            <p class="extension-caption">
-              {status.disabled ? 'Disabled by boot flag.' : 'Controlled by boot flags.'}
-            </p>
-          )}
-          {!ordered.length && <p class="extension-empty">No extensions installed.</p>}
-          <div class="extension-list">
-            {ordered.map((entry) => (
-              <div
-                class={`extension-card ${enabled.includes(entry.id) ? 'is-enabled' : ''}`}
-                key={entry.id}
-              >
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={enabled.includes(entry.id)}
-                    disabled={controlled || busy}
-                    onChange={(event) =>
-                      setEnabled(
-                        event.currentTarget.checked
-                          ? [...enabled, entry.id]
-                          : enabled.filter((id) => id !== entry.id),
-                      )
-                    }
-                  />
-                  <span>
-                    <strong>{entry.title || entry.id}</strong>
-                    {entry.description && <small>{entry.description}</small>}
-                    {entry.error && <small class="extension-error">{entry.error}</small>}
-                  </span>
-                </label>
-                {enabled.includes(entry.id) && (
-                  <div class="extension-order">
-                    <button
-                      class="btn"
-                      type="button"
-                      aria-label={`Move ${entry.title} up`}
-                      disabled={controlled || busy || enabled.indexOf(entry.id) === 0}
-                      onClick={() => move(entry.id, -1)}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      class="btn"
-                      type="button"
-                      aria-label={`Move ${entry.title} down`}
-                      disabled={
-                        controlled || busy || enabled.indexOf(entry.id) === enabled.length - 1
-                      }
-                      onClick={() => move(entry.id, 1)}
-                    >
-                      ↓
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <div class="extension-actions">
-            {!safe &&
-              !status.disabled &&
-              status.generation !== extensionRuntime.generation.value && (
-                <button type="button" class="btn" disabled={busy} onClick={() => location.reload()}>
-                  Reload UI to apply changes
-                </button>
-              )}
-            <button
-              type="button"
-              class="btn primary"
-              disabled={busy || controlled}
-              onClick={() => void reload(true)}
-            >
-              {busy ? 'Saving…' : safe ? 'Save configuration' : 'Save and reload UI'}
+        )}
+        {safe && (
+          <div class="extension-recovery" role="status">
+            <strong>Safe mode is on</strong>
+            <button type="button" class="btn" onClick={exitExtensionRecovery}>
+              Exit safe mode and reload
             </button>
+          </div>
+        )}
+        {error && (
+          <p class="extension-error" role="alert">
+            {error}
+          </p>
+        )}
+        {status && (
+          <>
+            {controlled && (
+              <p class="extension-caption">
+                {status.disabled ? 'Disabled by boot flag.' : 'Controlled by boot flags.'}
+              </p>
+            )}
+            {!ordered.length && <p class="extension-empty">No extensions installed.</p>}
+            <div class="extension-list">
+              {ordered.map((entry) => (
+                <div
+                  class={`extension-card ${enabled.includes(entry.id) ? 'is-enabled' : ''}`}
+                  key={entry.id}
+                >
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={enabled.includes(entry.id)}
+                      disabled={controlled || busy}
+                      onChange={(event) =>
+                        setEnabled(
+                          event.currentTarget.checked
+                            ? [...enabled, entry.id]
+                            : enabled.filter((id) => id !== entry.id),
+                        )
+                      }
+                    />
+                    <span>
+                      <strong>{entry.title || entry.id}</strong>
+                      {entry.description && <small>{entry.description}</small>}
+                      {entry.error && <small class="extension-error">{entry.error}</small>}
+                    </span>
+                  </label>
+                  {enabled.includes(entry.id) && (
+                    <div class="extension-order">
+                      <button
+                        class="btn"
+                        type="button"
+                        aria-label={`Move ${entry.title} up`}
+                        disabled={controlled || busy || enabled.indexOf(entry.id) === 0}
+                        onClick={() => move(entry.id, -1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        class="btn"
+                        type="button"
+                        aria-label={`Move ${entry.title} down`}
+                        disabled={
+                          controlled || busy || enabled.indexOf(entry.id) === enabled.length - 1
+                        }
+                        onClick={() => move(entry.id, 1)}
+                      >
+                        ↓
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            {extensionRuntime.errors.value.map((message) => (
+              <p class="extension-error" key={message}>
+                {message}
+              </p>
+            ))}
+            <details class="extension-details">
+              <summary>Directory & recovery</summary>
+              <code>{status.directory}</code>
+              <p>
+                <a href={recoveryURL()} target="_blank" rel="noreferrer">
+                  Open safe mode
+                </a>{' '}
+                · Extensions run trusted code.
+              </p>
+            </details>
+          </>
+        )}
+      </div>
+      {status && (
+        <div class="modal-actions settings-footer">
+          <div class="settings-footer-secondary">
             <button type="button" class="btn" disabled={busy} onClick={() => void reload(false)}>
               Rescan files
             </button>
@@ -195,22 +201,20 @@ export function ExtensionSettings() {
               Disable all
             </button>
           </div>
-          {extensionRuntime.errors.value.map((message) => (
-            <p class="extension-error" key={message}>
-              {message}
-            </p>
-          ))}
-          <details class="extension-details">
-            <summary>Directory & recovery</summary>
-            <code>{status.directory}</code>
-            <p>
-              <a href={recoveryURL()} target="_blank" rel="noreferrer">
-                Open safe mode
-              </a>{' '}
-              · Extensions run trusted code.
-            </p>
-          </details>
-        </>
+          {!safe && !status.disabled && status.generation !== extensionRuntime.generation.value && (
+            <button type="button" class="btn" disabled={busy} onClick={() => location.reload()}>
+              Reload UI to apply changes
+            </button>
+          )}
+          <button
+            type="button"
+            class="btn primary"
+            disabled={busy || controlled}
+            onClick={() => void reload(true)}
+          >
+            {busy ? 'Saving…' : safe ? 'Save configuration' : 'Save and reload UI'}
+          </button>
+        </div>
       )}
     </section>
   );

@@ -112,7 +112,11 @@ const PCM_OUTPUT_RATE = 24_000;
 const PCM_INPUT_BATCH_BYTES = (PCM_INPUT_RATE * 2) / 10;
 // Start promptly at 100 ms, but drain accumulated audio after a slow POST.
 // A fixed 100 ms maximum loses most microphone audio when RTT exceeds 100 ms.
-const PCM_INPUT_POST_LIMIT = 64 * 1024;
+// Every POST must fit a native peer link's 48,384-byte raw inline body limit,
+// whose 64 KiB frame limit is reached sooner once base64 and headers are added,
+// so a 64 KiB catch-up batch failed there. 32 KiB leaves a safe margin, stays
+// int16-aligned, and still drains a backlog quickly.
+const PCM_INPUT_POST_LIMIT = 32 * 1024;
 const PCM_INPUT_QUEUE_LIMIT = PCM_INPUT_RATE * 2 * 5;
 const PCM_INPUT_BATCH_MS = 100;
 const PCM_SOCKET_BUFFER_LIMIT = 256 * 1024;
@@ -679,6 +683,8 @@ export class LiveCall {
   }
 
   private takePCMInputBatch(): ArrayBuffer {
+    // Captured packets are int16-aligned and the limit is even, so a batch
+    // never splits a sample; only the last drained batch can be shorter.
     const size = Math.min(this.inputQueuedBytes, PCM_INPUT_POST_LIMIT);
     const batch = new Uint8Array(size);
     let offset = 0;

@@ -84,6 +84,9 @@ export function Overlay({
   useLayoutEffect(() => {
     token.current = overlayManager.acquire(undefined, overlay.current);
     const focusFrame = requestAnimationFrame(() => {
+      // A user may already have focused a control or opened a row menu before
+      // this frame. Delayed opening focus must not steal that interaction.
+      if (dialog.current?.contains(document.activeElement)) return;
       const explicit = dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])');
       const firstControl = focusContent
         ? [
