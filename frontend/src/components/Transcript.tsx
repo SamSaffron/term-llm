@@ -471,23 +471,39 @@ function subagentChildSessionIds(store: AppStore, tool: ToolCall): string[] {
   return [];
 }
 
+function spawnAgentName(tool: ToolCall): string {
+  try {
+    const args: unknown = JSON.parse(tool.arguments || 'null');
+    const name =
+      args && typeof args === 'object' ? (args as Record<string, unknown>).agent_name : '';
+    return typeof name === 'string' ? name.trim() : '';
+  } catch {
+    // Arguments may still be streaming.
+    return '';
+  }
+}
+
 // The agent each delegation is about, aligned with its child sessions: a spawn
-// names it in its arguments, and the others find it on the child they point at.
+// names it in its arguments, and the others find it on the child they point at,
+// or on the spawn that made that child.
 function subagentNames(store: AppStore, tool: ToolCall, childSessionIds: string[]): string[] {
   if (tool.name.toLowerCase() === 'spawn_agent') {
-    try {
-      const args: unknown = JSON.parse(tool.arguments || 'null');
-      const name =
-        args && typeof args === 'object' ? (args as Record<string, unknown>).agent_name : '';
-      if (typeof name === 'string' && name.trim()) return [name.trim()];
-    } catch {
-      // Arguments may still be streaming.
-    }
+    const name = spawnAgentName(tool);
+    if (name) return [name];
   }
   const children = store.childSessionStore.children.value;
-  return childSessionIds.map((id) =>
-    String(children.find((child) => child.session_id === id)?.agent || '').trim(),
-  );
+  // Spawn arguments never change, so the lookup needn't subscribe to the transcript.
+  const messages = store.activeSession.peek()?.messages || [];
+  return childSessionIds.map((id) => {
+    const child = children.find((candidate) => candidate.session_id === id);
+    const agent = String(child?.agent || '').trim();
+    if (agent || !child?.parent_spawn_call_id) return agent;
+    for (const message of messages) {
+      const spawn = message.tools?.find((candidate) => candidate.id === child.parent_spawn_call_id);
+      if (spawn) return spawnAgentName(spawn);
+    }
+    return '';
+  });
 }
 
 const delegationVerbs: Record<string, [running: string, done: string, failed: string]> = {
@@ -496,7 +512,7 @@ const delegationVerbs: Record<string, [running: string, done: string, failed: st
   wait_agent: ['Waiting on', 'Waited on', 'wait on'],
 };
 
-// A collapsed group says what happened to whom ("Continuing reviewer"); without
+// A delegation line says what happened to whom ("Continuing reviewer"); without
 // a name for every agent it keeps the tool name.
 function delegationLabel(tool: ToolCall, names: string[]): string {
   const verbs = delegationVerbs[tool.name.toLowerCase()];
@@ -577,8 +593,8 @@ function SubagentProgressLine({
   const running =
     tool.status === 'running' &&
     (!progress || !['completed', 'failed', 'cancelled'].includes(progress.state));
-  const names = labelled ? subagentNames(store, tool, childSessionIds) : [];
-  const label = labelled ? delegationLabel(tool, names) : '';
+  const names = subagentNames(store, tool, childSessionIds);
+  const label = delegationLabel(tool, names);
   return parts.length || childSessionIds.length || label ? (
     <div class={`tool-progress ${label ? 'named' : ''}`}>
       {label ? (
