@@ -199,58 +199,6 @@
   white-space: normal;
 }
 
-.skill-run-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  color: var(--accent-strong);
-}
-
-.skill-run-detail {
-  margin-top: 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-}
-
-.skill-run-output {
-  margin: 0.75rem 0 0;
-  max-height: 28rem;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--text);
-  font: inherit;
-}
-
-.skill-run-error {
-  margin-top: 0.6rem;
-  color: var(--error-text);
-}
-
-.skill-run-action {
-  display: inline-block;
-  margin-top: 0.6rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 0.2rem 0.6rem;
-  background: transparent;
-  color: var(--accent-strong);
-  font: inherit;
-  font-size: 0.78rem;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.skill-run-header .skill-run-action {
-  margin-top: 0;
-}
-
-.skill-run-action:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
 .message-body {
   max-width: 100%;
   min-width: 0;
@@ -1500,57 +1448,6 @@
 
 .subagent-result {
   margin: 0.5rem 0 0;
-}
-
-.subagent-result-output {
-  margin: 0;
-  max-height: 16rem;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font: 0.78rem/1.5 var(--font-mono);
-  font-variant-ligatures: none;
-  color: var(--text);
-}
-
-.subagent-result-error {
-  color: var(--accent-red, #ef4444);
-  font-size: 0.8rem;
-}
-
-.subagent-result-meta {
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-
-.subagent-result-action {
-  color: var(--accent);
-  font-size: 0.78rem;
-  width: fit-content;
-}
-
-.tool-artifacts {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  padding: 0.7rem 0.75rem 0.7rem 2rem;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.tool-artifacts img {
-  max-width: min(360px, 100%);
-  max-height: 270px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  object-fit: cover;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-  background: var(--surface-2);
-}
-
-.tool-artifacts img:hover {
-  opacity: 0.85;
 }
 
 .markdown-body img,

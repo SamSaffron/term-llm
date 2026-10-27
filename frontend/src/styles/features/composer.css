@@ -570,12 +570,6 @@
   min-height: 120px;
 }
 
-.goal-modal-subtitle {
-  margin: 0 0 1rem;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
 .goal-actions {
   flex-wrap: wrap;
 }

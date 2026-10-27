@@ -23,12 +23,6 @@
   pointer-events: auto;
 }
 
-.panel-swipe-dragging {
-  transition: none !important;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
 .diff-resize-handle {
   left: 0;
 }
@@ -115,14 +109,11 @@
 }
 
 .diff-bulk-collapse-icon,
-.diff-bulk-toggle[data-action='collapse'] .diff-bulk-expand-icon,
-.diff-restore-icon,
-.diff-sidebar-maximize[data-action='restore'] .diff-maximize-icon {
+.diff-bulk-toggle[data-action='collapse'] .diff-bulk-expand-icon {
   display: none;
 }
 
-.diff-bulk-toggle[data-action='collapse'] .diff-bulk-collapse-icon,
-.diff-sidebar-maximize[data-action='restore'] .diff-restore-icon {
+.diff-bulk-toggle[data-action='collapse'] .diff-bulk-collapse-icon {
   display: inline;
 }
 
@@ -1087,37 +1078,6 @@
   padding-left: 0.45rem;
 }
 
-.diff-comment-history-actions {
-  display: flex;
-  gap: 0.45rem;
-  margin-top: 0.3rem;
-}
-
-.diff-comment-history-edit,
-.diff-comment-history-remove {
-  min-height: 34px;
-  padding: 0.2rem 0.35rem;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.7rem;
-  text-decoration: underline;
-}
-
-.diff-comment-history-edit:hover,
-.diff-comment-history-remove:hover {
-  color: var(--text);
-}
-
-.diff-comment-history-edit:disabled,
-.diff-comment-history-remove:disabled {
-  color: var(--text-muted);
-  cursor: default;
-  opacity: 0.55;
-}
-
 @media (hover: none), (pointer: coarse) {
   .diff-comment-affordance {
     opacity: 1;
@@ -1128,47 +1088,6 @@
   .diff-comment-shortcut {
     display: none;
   }
-}
-
-.diff-comment-message-body {
-  display: grid;
-  gap: 0.38rem;
-}
-
-.diff-comment-message-summary {
-  font-weight: 700;
-}
-
-.diff-comment-message-block {
-  display: grid;
-  gap: 0.38rem;
-}
-
-.diff-comment-message-block + .diff-comment-message-block {
-  margin-top: 0.45rem;
-  padding-top: 0.55rem;
-  border-top: 1px solid var(--border);
-}
-
-.diff-comment-message-heading {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 600;
-}
-
-.diff-comment-message-instruction {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.diff-comment-message-line {
-  display: block;
-  padding: 0.32rem 0.45rem;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .diff-row.add .diff-code::before {

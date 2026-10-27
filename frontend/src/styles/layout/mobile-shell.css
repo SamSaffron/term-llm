@@ -164,11 +164,6 @@
     padding: 0.8rem calc(1rem + var(--safe-right)) 0.7rem calc(1rem + var(--safe-left));
   }
 
-  .settings-row {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .ask-user-question {
     padding: 0.9rem;
   }
