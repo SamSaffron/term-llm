@@ -471,6 +471,44 @@ function subagentChildSessionIds(store: AppStore, tool: ToolCall): string[] {
   return [];
 }
 
+// The agent each delegation is about, aligned with its child sessions: a spawn
+// names it in its arguments, and the others find it on the child they point at.
+function subagentNames(store: AppStore, tool: ToolCall, childSessionIds: string[]): string[] {
+  if (tool.name.toLowerCase() === 'spawn_agent') {
+    try {
+      const args: unknown = JSON.parse(tool.arguments || 'null');
+      const name =
+        args && typeof args === 'object' ? (args as Record<string, unknown>).agent_name : '';
+      if (typeof name === 'string' && name.trim()) return [name.trim()];
+    } catch {
+      // Arguments may still be streaming.
+    }
+  }
+  const children = store.childSessionStore.children.value;
+  return childSessionIds.map((id) =>
+    String(children.find((child) => child.session_id === id)?.agent || '').trim(),
+  );
+}
+
+const delegationVerbs: Record<string, [running: string, done: string, failed: string]> = {
+  spawn_agent: ['Spawning', 'Spawned', 'spawn'],
+  continue_agent: ['Continuing', 'Continued', 'continue'],
+  wait_agent: ['Waiting on', 'Waited on', 'wait on'],
+};
+
+// A collapsed group says what happened to whom ("Continuing reviewer"); without
+// a name for every agent it keeps the tool name.
+function delegationLabel(tool: ToolCall, names: string[]): string {
+  const verbs = delegationVerbs[tool.name.toLowerCase()];
+  if (!verbs || !names.length || names.some((name) => !name)) return '';
+  const who = [...new Set(names)].join(', ');
+  if (tool.status === 'running') return `${verbs[0]} ${who}`;
+  if (tool.status === 'error' || tool.resultStatus === 'error')
+    return `Couldn't ${verbs[2]} ${who}`;
+  if (tool.status === 'cancelled') return `Stopped ${who}`;
+  return `${verbs[1]} ${who}`;
+}
+
 function subagentActivity(tool: ToolCall): string {
   const progress = tool.subagentProgress;
   if (progress && ['completed', 'failed', 'cancelled'].includes(progress.state)) return '';
@@ -539,13 +577,22 @@ function SubagentProgressLine({
   const running =
     tool.status === 'running' &&
     (!progress || !['completed', 'failed', 'cancelled'].includes(progress.state));
-  return parts.length || childSessionIds.length ? (
-    <div class="tool-progress">
-      {labelled && (
+  const names = labelled ? subagentNames(store, tool, childSessionIds) : [];
+  const label = labelled ? delegationLabel(tool, names) : '';
+  return parts.length || childSessionIds.length || label ? (
+    <div class={`tool-progress ${label ? 'named' : ''}`}>
+      {label ? (
         <strong>
-          {name}
-          {tool.status === 'running' ? ' · running' : ''}:{' '}
+          {label}
+          {parts.length ? ': ' : ''}
         </strong>
+      ) : (
+        labelled && (
+          <strong>
+            {name}
+            {tool.status === 'running' ? ' · running' : ''}:{' '}
+          </strong>
+        )
       )}
       {parts.join(' · ')}
       <SubagentQuietPeriod
@@ -556,15 +603,22 @@ function SubagentProgressLine({
       />
       {childSessionIds.map((childSessionId, index) => (
         <span key={childSessionId}>
-          {(parts.length > 0 || index > 0) && ' · '}
+          {!label && (parts.length > 0 || index > 0) && ' · '}
           <button
             class="text-action subagent-open"
             type="button"
+            aria-label={label ? `Open ${names[index] || 'subagent'}` : undefined}
             onClick={() =>
               void store.resolveAndSelectSession(childSessionId, false, { prepend: false })
             }
           >
-            {childSessionIds.length > 1 ? `Open subagent ${index + 1}` : 'Open subagent'}
+            {label
+              ? childSessionIds.length > 1
+                ? `Open ${names[index]}`
+                : 'Open'
+              : childSessionIds.length > 1
+                ? `Open subagent ${index + 1}`
+                : 'Open subagent'}
             <Icon name="chevron-right" />
           </button>
         </span>

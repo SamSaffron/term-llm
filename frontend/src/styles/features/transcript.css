@@ -1196,6 +1196,11 @@
   height: 0.95em;
 }
 
+/* Once the line names the agent, Open needs no bullet, only a little room. */
+.tool-progress.named .subagent-open {
+  margin-inline-start: 0.6em;
+}
+
 /* In an opened group the line starts under the tool name (the row is already
    inset). */
 .tool-group-entry-body .tool-progress {

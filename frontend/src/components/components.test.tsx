@@ -588,6 +588,8 @@ describe('Preact-owned chat surfaces', () => {
   it.each([false, true])(
     'links an in-flight spawn from child provenance before any result (grouped: %s)',
     async (grouped) => {
+      // In a group the line names the agent, so the link does too.
+      const openName = grouped ? 'Open developer' : 'Open subagent';
       const store = createStore();
       store.sessions.value = [
         {
@@ -617,7 +619,7 @@ describe('Preact-owned chat surfaces', () => {
           <Transcript />
         </StoreContext.Provider>,
       );
-      expect(screen.queryByRole('button', { name: 'Open subagent' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: openName })).not.toBeInTheDocument();
 
       const child = {
         session_id: 'live-child',
@@ -642,14 +644,14 @@ describe('Preact-owned chat surfaces', () => {
           { ...child, session_id: 'wrong-call', parent_spawn_call_id: 'another-call' },
         ];
       });
-      expect(screen.queryByRole('button', { name: 'Open subagent' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: openName })).not.toBeInTheDocument();
       act(() => {
         store.childSessionStore.children.value = [
           ...store.childSessionStore.children.peek(),
           child,
         ];
       });
-      await userEvent.click(await screen.findByRole('button', { name: 'Open subagent' }));
+      await userEvent.click(await screen.findByRole('button', { name: openName }));
       expect(store.resolveAndSelectSession).toHaveBeenCalledWith('live-child', false, {
         prepend: false,
       });
@@ -4176,6 +4178,65 @@ describe('Preact-owned chat surfaces', () => {
       store.dispose();
       vi.useRealTimers();
     }
+  });
+
+  it('names the agent on collapsed delegation lines', () => {
+    const store = createStore();
+    store.childSessionStore.children.value = [
+      {
+        session_id: 'child-reviewer',
+        parent_session_id: store.activeSessionId.value,
+        title: 'Review',
+        agent: 'reviewer',
+        state: 'idle',
+        attention: false,
+        revision: 1,
+      } as never,
+    ];
+    store.sessions.value[0].messages = [
+      {
+        id: 'named-delegations',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'continue-1',
+            name: 'continue_agent',
+            arguments: '{"agent_id":"child-reviewer"}',
+            status: 'running',
+            agentSessionIds: ['child-reviewer'],
+            subagentProgress: {
+              seq: 1,
+              state: 'running',
+              phase: 'running_tools',
+              callsStarted: 11,
+              callsActive: 0,
+            },
+          },
+          {
+            id: 'spawn-1',
+            name: 'spawn_agent',
+            arguments: '{"agent_name":"dev"}',
+            status: 'done',
+            subagentProgress: { seq: 2, state: 'completed', callsStarted: 62, callsActive: 0 },
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    const lines = Array.from(container.querySelectorAll('.tool-group-card > .tool-progress'));
+    expect(lines.map((line) => line.querySelector('strong')?.textContent)).toEqual([
+      'Continuing reviewer: ',
+      'Spawned dev: ',
+    ]);
+    expect(lines[0]).toHaveClass('named');
+    expect(lines[0]).not.toHaveTextContent('· Open');
+    expect(screen.getByRole('button', { name: 'Open reviewer' })).toHaveTextContent(/^Open$/);
   });
 
   it('keeps collapsed delegation previews chronological as running statuses transition', async () => {
