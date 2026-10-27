@@ -270,17 +270,10 @@
   opacity: 0.65;
 }
 
+/* A subtle fade avoids repainting an expanding shadow throughout a call. */
 @keyframes voice-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgb(248 113 113 / 55%);
-  }
-
-  70% {
-    box-shadow: 0 0 0 10px rgb(248 113 113 / 0%);
-  }
-
-  100% {
-    box-shadow: 0 0 0 0 rgb(248 113 113 / 0%);
+  50% {
+    opacity: 0.65;
   }
 }
 
@@ -711,7 +704,7 @@
 
 /* The Live button is the primary control on an empty composer, so it keeps the
    full-strength send background instead of the disabled treatment. */
-.send-btn.live.live-pulse {
+.send-btn.live.live-pulse:not(:disabled) {
   animation: voice-pulse 1.35s infinite;
 }
 
@@ -762,6 +755,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chat-scroll.transcript-live-swap {
+    animation: none;
+  }
+
+  .live-status-listening .live-status-dot,
+  .live-status-speaking .live-status-dot,
+  .send-btn.live.live-pulse:not(:disabled),
+  .send-btn .spinner {
     animation: none;
   }
 }

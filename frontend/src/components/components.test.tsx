@@ -10516,6 +10516,49 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.lightbox.value).not.toBeNull();
   });
 
+  it('pauses transcript playback for a video preview, but not for an image or unrelated media', () => {
+    const store = createStore();
+    const root = document.createElement('div');
+    root.innerHTML = '<audio></audio><video></video>';
+    document.body.append(root);
+    const [audio, inlineVideo] = [...root.querySelectorAll<HTMLMediaElement>('audio,video')];
+    const outside = document.createElement('audio');
+    document.body.append(outside);
+    const pauseAudio = vi.spyOn(audio, 'pause').mockImplementation(() => undefined);
+    const pauseInlineVideo = vi.spyOn(inlineVideo, 'pause').mockImplementation(() => undefined);
+    const pauseOutside = vi.spyOn(outside, 'pause').mockImplementation(() => undefined);
+    for (const player of [audio, inlineVideo, outside])
+      Object.defineProperty(player, 'paused', { configurable: true, value: false });
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const cleanup = bindTranscriptMedia(root);
+    const items = [
+      { key: 'image', src: '/image.png', type: 'image' as const },
+      { key: 'video', src: '/video.mp4', type: 'video' as const },
+    ];
+    try {
+      const { unmount } = render(
+        <StoreContext.Provider value={store}>
+          <Lightbox />
+        </StoreContext.Provider>,
+      );
+      act(() => {
+        store.lightbox.value = { ...items[0], items, index: 0 };
+      });
+      expect(pauseAudio).not.toHaveBeenCalled();
+      expect(pauseInlineVideo).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'Next media' }));
+      expect(pauseAudio).toHaveBeenCalledTimes(1);
+      expect(pauseInlineVideo).toHaveBeenCalledTimes(1);
+      expect(pauseOutside).not.toHaveBeenCalled();
+      unmount();
+      cleanup();
+    } finally {
+      root.remove();
+      outside.remove();
+    }
+  });
+
   it('pauses and clears owned video resources when the lightbox closes', async () => {
     const store = createStore();
     const trigger = document.createElement('button');
