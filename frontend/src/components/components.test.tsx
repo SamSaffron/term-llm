@@ -4291,6 +4291,9 @@ describe('Preact-owned chat surfaces', () => {
     );
     const line = container.querySelector('[data-message-id="continued"] .tool-progress');
     expect(line).toHaveClass('named');
+    // The line names the agent, so the header shows neither its name nor its ID.
+    expect(container.querySelector('[data-tool-id="continue-advocate"] .tool-summary')).toBeNull();
+    expect(container.querySelector('[data-tool-id="spawn-advocate"] .tool-summary')).toBeNull();
     expect(line?.querySelector('strong')).toHaveTextContent(/^Continued advocate$/);
     expect(screen.getAllByRole('button', { name: 'Open advocate' })).toHaveLength(2);
   });

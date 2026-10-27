@@ -661,7 +661,11 @@ const Tool = memo(function Tool({
   const stopped = tool.status === 'cancelled';
   const [localExpanded, setLocalExpanded] = useState(false);
   const expanded = controlledExpanded ?? localExpanded;
-  const summary = toolSummary(tool);
+  // A named delegation line says which agent it is, so the header doesn't repeat it.
+  const delegationNamed = Boolean(
+    delegationLabel(tool, subagentNames(store, tool, subagentChildSessionIds(store, tool))),
+  );
+  const summary = delegationNamed ? '' : toolSummary(tool);
   const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
   const spawnAgent = tool.name.toLowerCase() === 'spawn_agent';
   const shell = tool.name.toLowerCase() === 'shell';
