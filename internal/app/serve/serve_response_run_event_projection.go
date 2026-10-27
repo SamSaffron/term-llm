@@ -48,6 +48,14 @@ func (s *serveServer) appendResponseToolCall(runtime *serveRuntime, run *respons
 	if ev.Tool == nil {
 		return nil
 	}
+	if ev.ToolInline && runtime != nil {
+		// Inline-loop providers (claude-bin and the other CLI bridges) run their
+		// whole tool loop in one provider stream, so the engine reports a
+		// completed response only when that loop ends. Each inline call follows
+		// a response the model completed inside the loop, so it starts a fresh
+		// inactivity window like a completed engine response does.
+		runtime.refreshResponseDeadline()
+	}
 	// Suppress tool call metadata for server-executed tools in API mode, but
 	// retain the assistant boundary so persisted callback turn ordinals and
 	// streamed segment identities remain aligned end to end.
