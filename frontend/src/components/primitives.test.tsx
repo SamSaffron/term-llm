@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import userEvent from '@testing-library/user-event';
 import { useRef, useState } from 'preact/hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -56,6 +56,48 @@ describe('shared interaction primitives', () => {
     const close = screen.getByRole('button', { name: 'Close Question' });
     expect(close).toHaveClass('close-button');
     await waitFor(() => expect(screen.getByRole('button', { name: 'Answer' })).toHaveFocus());
+  });
+
+  it('does not dismiss a menu opened before the dialog opening-focus frame', async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameID = 0;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.set(++frameID, callback);
+      return frameID;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => frames.delete(id));
+    const remove = vi.fn();
+    function Fixture() {
+      const [open, setOpen] = useState(false);
+      const trigger = useRef<HTMLButtonElement>(null);
+      return (
+        <Overlay title="MCP servers">
+          <button>Add server</button>
+          <button ref={trigger} onClick={() => setOpen(true)}>
+            More actions
+          </button>
+          <Menu
+            open={open}
+            label="Server actions"
+            onClose={() => setOpen(false)}
+            triggerRef={trigger}
+          >
+            <button role="menuitem" onClick={remove}>
+              Remove server
+            </button>
+          </Menu>
+        </Overlay>
+      );
+    }
+    render(<Fixture />);
+    // Hold the modal's mount-time autofocus until after a real user interaction.
+    const openingFrame = frames.get(1)!;
+    await act(() => userEvent.click(screen.getByRole('button', { name: 'More actions' })));
+    expect(screen.getByRole('menu')).toBeVisible();
+    await act(() => openingFrame(0));
+    expect(screen.getByRole('menu')).toBeVisible();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Remove server' }));
+    expect(remove).toHaveBeenCalledOnce();
   });
 
   it('keeps nested Overlay ownership until the final surface closes', async () => {
