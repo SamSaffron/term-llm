@@ -269,6 +269,7 @@
 /* The buttons' own padding already sets them off from the text. The row starts
    where the text does, so the first button's hover tone lines up with it. */
 .message.assistant > .turn-action-panel {
+  gap: 0.2rem;
   margin-top: 0;
   padding-inline: 0;
 }
@@ -276,6 +277,7 @@
 /* A user message has the same copy button, after its time, its hover tone
    ending at the bubble's edge. */
 .message.user > .message-meta {
+  gap: 0.45rem;
   margin-top: -0.35rem;
   padding-inline-end: 0;
 }
