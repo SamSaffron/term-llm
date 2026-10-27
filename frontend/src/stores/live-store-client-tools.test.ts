@@ -117,7 +117,11 @@ function pageTools(initial: ClientTool[] = [ping]) {
   return { tools, disabled, run, bridge };
 }
 
-function setup(bridge: LiveClientTools) {
+function setup(
+  bridge: LiveClientTools,
+  capability: Record<string, unknown> = {},
+  options?: { linkedDevices?: boolean },
+) {
   const events = eventStream();
   const endpoints = {
     liveStart: vi.fn(async (_sdp: string, sessionId: string) => ({
@@ -138,7 +142,7 @@ function setup(bridge: LiveClientTools) {
     undefined,
     bridge,
   );
-  store.applyCapability({ enabled: true });
+  store.applyCapability({ enabled: true, ...capability }, options);
   return { store, endpoints, events };
 }
 
@@ -197,6 +201,71 @@ describe('LiveStore page tools', () => {
     expect(endpoints.liveStart).toHaveBeenCalledWith('offer-sdp', 'session-one', undefined, []);
     await vi.waitFor(() => expect(endpoints.liveEvents).toHaveBeenCalled());
     expect(endpoints.liveClientTools).not.toHaveBeenCalled();
+    store.dispose();
+    events.close();
+  });
+
+  it('keeps client delegation when an ordinary call advertises both modes', async () => {
+    const page = pageTools();
+    const { store, endpoints, events } = setup(page.bridge, {
+      delegation_modes: ['server', 'client'],
+    });
+    await expect(store.start()).resolves.toBe(true);
+    expect(endpoints.liveStart).toHaveBeenCalledWith('offer-sdp', 'session-one', undefined, [
+      expect.objectContaining({ type: 'function', name: 'webmcp__ping' }),
+    ]);
+    store.dispose();
+    events.close();
+  });
+
+  it.each([
+    ['omitted delegation modes', {}, { linkedDevices: true }],
+    ['server-only delegation modes', { delegation_modes: ['server'] }, undefined],
+    [
+      'an over-broad mode list on a linked device',
+      { delegation_modes: ['server', 'client'] },
+      { linkedDevices: true },
+    ],
+  ])('never declares or runs page tools with %s', async (_label, capability, options) => {
+    const page = pageTools();
+    const { store, endpoints, events } = setup(page.bridge, capability, options);
+    await expect(store.start()).resolves.toBe(true);
+    expect(endpoints.liveStart).toHaveBeenCalledWith(
+      'offer-sdp',
+      'session-one',
+      undefined,
+      undefined,
+    );
+
+    // A settings change must not queue a declaration the host would reject,
+    // and a tool round addressed to this device must not acquire authority.
+    page.tools.value = [ping, music];
+    events.push(1, 'live.tool_calls_requested', round);
+    events.push(2, 'live.transcript', { role: 'assistant', text: 'The host ran that.' });
+    await vi.waitFor(() => expect(store.partialAssistant.value).toBe('The host ran that.'));
+    expect(endpoints.liveClientTools).not.toHaveBeenCalled();
+    expect(page.run).not.toHaveBeenCalled();
+    expect(endpoints.liveToolResult).not.toHaveBeenCalled();
+    store.dispose();
+    events.close();
+  });
+
+  it('stops page-tool declarations and rounds when a live call turns host-executed', async () => {
+    const page = pageTools();
+    const { store, endpoints, events } = setup(page.bridge);
+    await expect(store.start()).resolves.toBe(true);
+    // The linked-device profile wins over an over-broad mode list.
+    store.applyCapability(
+      { enabled: true, delegation_modes: ['server', 'client'] },
+      { linkedDevices: true },
+    );
+    page.tools.value = [ping, music];
+    events.push(1, 'live.tool_calls_requested', round);
+    events.push(2, 'live.transcript', { role: 'assistant', text: 'Handled by the host.' });
+    await vi.waitFor(() => expect(store.partialAssistant.value).toBe('Handled by the host.'));
+    expect(endpoints.liveClientTools).not.toHaveBeenCalled();
+    expect(page.run).not.toHaveBeenCalled();
+    expect(endpoints.liveToolResult).not.toHaveBeenCalled();
     store.dispose();
     events.close();
   });

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v4"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
 	"github.com/samsaffron/term-llm/internal/pairing"
@@ -33,9 +34,23 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	broker := httptest.NewServer(brokerHandler)
 	defer broker.Close()
 
+	// Pin transport to loopback like the peer bridge harness; host network/ICE
+	// candidates must not make this protocol regression depend on external NICs.
+	settings := &webrtc.SettingEngine{}
+	settings.SetIncludeLoopbackCandidate(true)
+	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	settings.SetInterfaceFilter(func(name string) bool { return name == "lo" || name == "lo0" })
+	endpoint := peer.EndpointConfig{SettingEngine: settings}
+
 	streamStarted, streamClosed := make(chan struct{}), make(chan struct{})
+	peerPrincipal := make(chan linkeddevices.DevicePrincipal, 1)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/events" {
+		if r.URL.Path == "/v1/live/sessions/live_capability/audio/output" {
+			principal, _ := linkeddevices.DeviceFromRequest(r)
+			peerPrincipal <- principal
+			if r.Header.Get("X-Term-LLM-Live-Audio-Capability") != "one-use-test-capability" {
+				t.Error("peer HTTP profile stripped the Live audio capability header")
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
 			if flusher, ok := w.(http.Flusher); ok {
@@ -47,6 +62,8 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/v1/sessions" {
+			principal, _ := linkeddevices.DeviceFromRequest(r)
+			peerPrincipal <- principal
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"data":[{"id":"s1"}]}`)
 			return
@@ -54,7 +71,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		http.NotFound(w, r)
 	})
 	dataDir := t.TempDir()
-	runtime, err := linkeddevices.New(linkeddevices.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner})
+	runtime, err := linkeddevices.New(linkeddevices.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner, Endpoint: endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +107,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 
 	sasCh := make(chan string, 1)
 	deviceState := t.TempDir() + "/device.json"
-	device, err := testdevice.New(testdevice.Config{DeviceName: "Synthetic test device", StatePath: deviceState, OnSAS: func(code string) { sasCh <- code }})
+	device, err := testdevice.New(testdevice.Config{DeviceName: "Synthetic test device", StatePath: deviceState, Endpoint: endpoint, OnSAS: func(code string) { sasCh <- code }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +154,11 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		t.Fatalf("peer sessions = %d %s", response.StatusCode, body)
 	}
 
+	firstPrincipal := <-peerPrincipal
+	if firstPrincipal.Lifetime == nil {
+		t.Fatal("peer request did not carry a trusted connection lifetime")
+	}
+
 	// Server-owned enablement, identity and grants survive restart. The
 	// invitation does not, and the device reconnects without another QR.
 	if err := session.Close(); err != nil {
@@ -153,11 +175,16 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	select {
+	case <-firstPrincipal.Lifetime.Done():
+	case <-ctx.Done():
+		t.Fatal("disconnect did not cancel the trusted peer lifetime")
+	}
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
 	owner.Close()
-	runtime, err = linkeddevices.New(linkeddevices.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner})
+	runtime, err = linkeddevices.New(linkeddevices.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner, Endpoint: endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +194,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 	owner = httptest.NewServer(runtime.Handler())
 	defer owner.Close()
-	device, err = testdevice.New(testdevice.Config{StatePath: deviceState})
+	device, err = testdevice.New(testdevice.Config{StatePath: deviceState, Endpoint: endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +203,15 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		t.Fatalf("reconnect after restart: %v", err)
 	}
 	defer session.Close()
+
+	response, err = session.HTTPClient().Post("http://peer/v1/live/sessions/live_capability/%74ext", "application/json", strings.NewReader(`{"text":"alias"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("encoded Live action alias = %d, want 403", response.StatusCode)
+	}
 
 	response, err = session.HTTPClient().Get("http://peer/v1/linked-devices")
 	if err != nil {
@@ -190,11 +226,17 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	if !ok {
 		t.Fatal("device did not persist pairing")
 	}
-	streamResponse, err := session.HTTPClient().Get("http://peer/v1/events")
+	streamRequest, _ := http.NewRequest(http.MethodGet, "http://peer/v1/live/sessions/live_capability/audio/output", nil)
+	streamRequest.Header.Set("X-Term-LLM-Live-Audio-Capability", "one-use-test-capability")
+	streamResponse, err := session.HTTPClient().Do(streamRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	<-streamStarted
+	principal := <-peerPrincipal
+	if principal.DeviceID != pairing.DeviceID || principal.Lifetime == nil || principal.Lifetime.Err() != nil {
+		t.Fatalf("peer principal has no active trusted lifetime: %+v", principal)
+	}
 	request, _ := http.NewRequest(http.MethodDelete, owner.URL+"/v1/linked-devices/devices/"+pairing.DeviceID, nil)
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
@@ -208,6 +250,11 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	case <-streamClosed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("revocation did not cancel the active SSE stream within two seconds")
+	}
+	select {
+	case <-principal.Lifetime.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("revocation did not cancel the trusted peer lifetime")
 	}
 	_ = streamResponse.Body.Close()
 	if _, err := device.Connect(ctx); err == nil {

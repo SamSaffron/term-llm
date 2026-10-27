@@ -86,7 +86,7 @@ func linkedDevicesRelayEndpoint() peer.EndpointConfig {
 	settings := &webrtc.SettingEngine{}
 	settings.SetIncludeLoopbackCandidate(true)
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	settings.SetInterfaceFilter(func(name string) bool { return name == "lo" })
+	settings.SetInterfaceFilter(func(name string) bool { return name == "lo" || name == "lo0" })
 	return peer.EndpointConfig{ICETransportPolicy: webrtc.ICETransportPolicyRelay, SettingEngine: settings}
 }
 

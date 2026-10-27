@@ -621,6 +621,7 @@
 }
 
 .prompt {
+  grid-column: 2;
   resize: none;
   min-width: 0;
   min-height: 36px;
@@ -642,6 +643,7 @@
 }
 
 .composer-actions {
+  grid-column: 3;
   display: inline-flex;
   align-items: center;
   gap: 4px;

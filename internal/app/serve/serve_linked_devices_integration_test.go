@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/webrtc/v4"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
 	"github.com/samsaffron/term-llm/internal/peer"
@@ -111,9 +112,17 @@ func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func(
 	}
 	broker := httptest.NewServer(brokerHandler)
 
+	// Keep this protocol fixture local and deterministic, independent of host
+	// network interfaces and external ICE connectivity.
+	settings := &webrtc.SettingEngine{}
+	settings.SetIncludeLoopbackCandidate(true)
+	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	settings.SetInterfaceFilter(func(name string) bool { return name == "lo" || name == "lo0" })
+	endpoint := peer.EndpointConfig{SettingEngine: settings}
+
 	runtime, err := linkeddevices.New(linkeddevices.Options{
 		DataDir: t.TempDir(), Target: "mounted-test", StoreInstanceID: "mounted-store",
-		BasePath: basePath, Authenticated: true, AgentName: "test", HostLabel: "Mounted test", BrokerURL: broker.URL,
+		BasePath: basePath, Authenticated: true, AgentName: "test", HostLabel: "Mounted test", BrokerURL: broker.URL, Endpoint: endpoint,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +150,7 @@ func mountedPeerServeFixture(t *testing.T, basePath string) (*http.Client, func(
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	sas := make(chan string, 1)
 	device, err := testdevice.New(testdevice.Config{
-		DeviceName: "Mounted peer", StatePath: t.TempDir() + "/device.json",
+		DeviceName: "Mounted peer", StatePath: t.TempDir() + "/device.json", Endpoint: endpoint,
 		OnSAS: func(code string) { sas <- code },
 	})
 	if err != nil {

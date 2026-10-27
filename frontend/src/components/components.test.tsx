@@ -4934,24 +4934,89 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('hides upload, voice, and live controls for a linked-device client', async () => {
+  it('offers Live to a linked-device client when the host advertises it', async () => {
     const store = createStore();
     store.linkedDevicesMode.value = true;
-    store.liveStore.enabled.value = true;
+    store.liveStore.applyCapability({
+      enabled: true,
+      transport: 'http_pcm',
+      delegation_modes: ['server'],
+    });
     store.liveStore.capability.value = { supported: true, reason: '' };
+    store.liveStore.start = vi.fn(async () => true);
     render(
       <StoreContext.Provider value={store}>
         <Composer />
       </StoreContext.Provider>,
     );
 
+    // Dictation and uploads remain restricted to the host device.
     expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Start live voice' })).toBeNull();
-    const input = screen.getByRole('textbox', { name: 'Message' });
-    await userEvent.type(input, 'peer message');
-    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    const live = screen.getByRole('button', { name: 'Start live voice' });
+    expect(live).toBeEnabled();
+    expect(live).toHaveClass('live');
+    await userEvent.click(live);
+    expect(store.liveStore.start).toHaveBeenCalledOnce();
   });
+
+  it('shows Live status and its stop control to a linked-device client', async () => {
+    const store = createStore();
+    store.linkedDevicesMode.value = true;
+    store.liveStore.applyCapability({
+      enabled: true,
+      transport: 'http_pcm',
+      delegation_modes: ['server'],
+    });
+    store.liveStore.capability.value = { supported: true, reason: '' };
+    store.liveStore.liveId.value = 'live_one';
+    store.liveStore.phase.value = 'listening';
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Stop live voice' })).toBeEnabled();
+    expect(await screen.findByRole('region', { name: 'Live voice' })).toBeInTheDocument();
+    expect(await screen.findByText('Listening…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
+  });
+
+  it.each([
+    ['the host does not advertise Live', { enabled: false }, { supported: true, reason: '' }, ''],
+    [
+      'the browser cannot use the microphone',
+      { enabled: true, transport: 'http_pcm', delegation_modes: ['server'] },
+      { supported: false, reason: 'Live voice requires a secure HTTPS connection.' },
+      'Live voice requires a secure HTTPS connection.',
+    ],
+  ])(
+    'keeps Live off for a linked-device client when %s',
+    async (_label, capability, localCapability, reason) => {
+      const store = createStore();
+      store.linkedDevicesMode.value = true;
+      store.liveStore.applyCapability(capability);
+      store.liveStore.capability.value = localCapability;
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+
+      expect(screen.queryByRole('button', { name: 'Start live voice' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
+      // An advertised call the browser cannot run explains itself; a host that
+      // offers no Live stays quiet rather than showing a dead control.
+      expect(document.querySelector('#liveUnsupported')?.textContent || '').toBe(reason);
+
+      const input = screen.getByRole('textbox', { name: 'Message' });
+      await userEvent.type(input, 'peer message');
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    },
+  );
 
   it('routes typed text through an active live call and falls back to normal send on failure', async () => {
     const store = createStore();

@@ -306,6 +306,9 @@ func (r *Runtime) removeSession(id string, endpoint *peer.Endpoint) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if session := r.sessions[id]; session != nil && session.endpoint == endpoint {
+		if session.cancel != nil {
+			session.cancel()
+		}
 		delete(r.sessions, id)
 	}
 }
@@ -403,14 +406,15 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 				return
 			}
 			defer r.peerRequests.Done()
-			r.opts.Handler.ServeHTTP(w, WithDevicePrincipal(request, DevicePrincipal{DeviceID: id, Scope: ScopeWebV1}))
+			r.opts.Handler.ServeHTTP(w, WithDevicePrincipal(request, DevicePrincipal{DeviceID: id, Scope: ScopeWebV1, Lifetime: sessionCtx}))
 		}),
 		SessionGate: func(context.Context) error { _, err := r.grants.Authorize(id, verified.DeviceKey); return err },
 		Authorize: func(request *http.Request) error {
+			escaped := request.URL.EscapedPath() != request.URL.Path
 			if err := prepareMountedRequest(request, basePath); err != nil {
 				return err
 			}
-			if !RouteAllowed(request.Method, request.URL.Path) {
+			if escaped && strings.HasPrefix(request.URL.Path, "/v1/live") || !RouteAllowed(request.Method, request.URL.Path) {
 				return errors.New("route is not available to paired devices")
 			}
 			return nil

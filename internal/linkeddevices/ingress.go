@@ -15,6 +15,9 @@ type devicePrincipalKey struct{}
 type DevicePrincipal struct {
 	DeviceID string
 	Scope    string
+	// Lifetime is the trusted peer connection's context, not an HTTP request's.
+	// It is cancelled on revocation, disconnect, replacement and host shutdown.
+	Lifetime context.Context
 }
 
 // WithDevicePrincipal marks a request as admitted by the peer ingress. It is
@@ -102,6 +105,9 @@ func prepareMountedRequest(request *http.Request, basePath string) error {
 // remain denied until deliberately classified here and in the route audit test.
 func RouteAllowed(method, path string) bool {
 	method = strings.ToUpper(method)
+	if strings.HasPrefix(path, "/v1/live") {
+		return liveRouteAllowed(method, path)
+	}
 	if method == http.MethodHead {
 		method = http.MethodGet
 	}
@@ -189,4 +195,37 @@ func hasAnySuffix(value string, suffixes ...string) bool {
 		}
 	}
 	return false
+}
+
+// liveRouteAllowed deliberately excludes WebSocket audio and all client-owned
+// tools/results. IDs are a single bounded ASCII identifier; action matching is
+// exact so nested paths, empty segments and suffix aliases cannot pass.
+func liveRouteAllowed(method, path string) bool {
+	const root = "/v1/live/sessions"
+	if path == root {
+		return method == http.MethodPost
+	}
+	if !strings.HasPrefix(path, root+"/") {
+		return false
+	}
+	id, action, _ := strings.Cut(strings.TrimPrefix(path, root+"/"), "/")
+	if !strings.HasPrefix(id, "live_") || len(id) <= len("live_") || len(id) > 128 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	if path == root+"/"+id {
+		return method == http.MethodDelete
+	}
+	switch action {
+	case "events", "audio/output":
+		return method == http.MethodGet
+	case "audio/input", "diagnostics", "text", "session":
+		return method == http.MethodPost
+	default:
+		return false
+	}
 }

@@ -46,7 +46,7 @@ func loopbackSettings() *webrtc.SettingEngine {
 	se := &webrtc.SettingEngine{}
 	se.SetIncludeLoopbackCandidate(true)
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	se.SetInterfaceFilter(func(name string) bool { return name == "lo" })
+	se.SetInterfaceFilter(func(name string) bool { return name == "lo" || name == "lo0" })
 	return se
 }
 

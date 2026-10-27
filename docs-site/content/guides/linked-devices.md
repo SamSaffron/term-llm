@@ -55,12 +55,21 @@ taken or retrieve information already disclosed.
 ## Security boundary
 
 A paired device reaches a positive allowlist of this server's chat, session,
-event, and read-only media routes over an authenticated WebRTC DataChannel. It
-cannot reach linked-device owner endpoints, auth, admin, MCP, jobs, shell,
-push, live voice, upload creation, transcript publishing, workspace file-content,
-worktree, or extension/widget management routes. The peer capability response
-hides or explains those unsupported controls. This allowlist limits network
-management surfaces; it is not a tool sandbox.
+event, Live voice, and read-only media routes over an authenticated WebRTC
+DataChannel. Live follows the host's real provider readiness and transport; it is
+not enabled when the host does not support it. PCM voice uses streamed HTTP/SSE
+output and finite microphone posts, as with a reverse Hub connection. Providers
+that advertise WebRTC keep their existing signaling path. Linked Live calls use
+server-owned execution, cannot register client/device tools, and are scoped to
+the device that started them. Disconnecting or revoking that peer ends its calls.
+The compatible client still needs a secure microphone context and user permission.
+
+A paired device cannot reach linked-device owner endpoints, auth, admin, MCP,
+jobs, shell, push, upload creation, transcript publishing, workspace file-content,
+worktree, or extension/widget management routes. Dictation uploads, WebSocket
+voice transport, and client-owned Live delegation/tool-result routes remain
+unavailable. The peer capability response hides or explains unsupported controls.
+This allowlist limits network management surfaces; it is not a tool sandbox.
 
 The agent and sharing runtime run as the same OS user. In the standard contained
 agent the agent also has passwordless sudo, runs with `--yolo`, and can read the

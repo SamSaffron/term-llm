@@ -1348,7 +1348,9 @@ export class AppStore {
 
   private applyCapabilities(data: Record<string, unknown>): void {
     const linkedDevices = recordValue(data.linked_devices);
-    this.linkedDevicesMode.value = linkedDevices?.active === true;
+    const linkedDevicesActive =
+      this.config.linkedDevicesScope === 'web-v1' || linkedDevices?.active === true;
+    this.linkedDevicesMode.value = linkedDevicesActive;
     const projects =
       data.projects && typeof data.projects === 'object'
         ? (data.projects as Record<string, unknown>)
@@ -1363,7 +1365,9 @@ export class AppStore {
       worktrees.enabled === true || (worktrees.enabled === undefined && this.config.worktrees);
     this.sessionStore.applyCapabilities(projectsEnabled, worktreesEnabled);
     this.shellStore.enabled.value = recordValue(data.shell)?.enabled === true;
-    this.liveStore.applyCapability(data.live);
+    // A web-v1 peer is host-executed only even if the live map omits or
+    // overstates its delegation modes: the profile itself removes device tools.
+    this.liveStore.applyCapability(data.live, { linkedDevices: linkedDevicesActive });
     const admission = recordValue(data.response_admission);
     this.runEngine.admissionInstance.value =
       admission?.version === 1 && typeof admission.instance_id === 'string'

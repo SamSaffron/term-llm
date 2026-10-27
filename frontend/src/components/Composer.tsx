@@ -772,9 +772,9 @@ function ConversationComposer() {
   const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
   // An empty composer has nothing to send, so the send control becomes the Live
   // button. A running turn keeps its progress indicator, and an open call always
-  // keeps its stop control.
+  // keeps its stop control. Linked devices keep Live when their host advertises
+  // it, while attachments and dictation stay restricted.
   const liveButton =
-    !linkedDevicesMode &&
     !hasDraft &&
     (liveActive ||
       (store.liveStore.enabled.value && store.liveStore.capability.value.supported && !runActive));
@@ -925,12 +925,19 @@ function ConversationComposer() {
           ))}
         {unconfirmedSend && <UnconfirmedSendNotice ownerId={store.activeSessionId.value} />}
         {!linkedDevicesMode && <VoiceStatus snapshot={voiceSnapshot} voice={voice} />}
-        {!linkedDevicesMode && <LiveStatus live={store.liveStore} />}
+        <LiveStatus live={store.liveStore} />
         {!linkedDevicesMode && !voiceState.capability.supported && (
           <span class="voice-unsupported" id="voiceUnsupported">
             {voiceState.capability.reason}
           </span>
         )}
+        {linkedDevicesMode &&
+          store.liveStore.enabled.value &&
+          !store.liveStore.capability.value.supported && (
+            <span class="voice-unsupported" id="liveUnsupported">
+              {store.liveStore.capability.value.reason}
+            </span>
+          )}
         {store.attachments.value.length > 0 && (
           <div id="attachmentsStrip" class="attachments">
             {store.attachments.value.map((attachment) => {
