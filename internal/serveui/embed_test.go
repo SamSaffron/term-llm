@@ -202,7 +202,8 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		"dist/app.js":           {raw: 534_000, gzip: 156_600},
 		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
 		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
-		"dist/chunks/Lightbox.js":    {raw: 8_150, gzip: 3_300},
+		// Pausing transcript media while a video is open brings it to 8.16/3.27 kB.
+		"dist/chunks/Lightbox.js":    {raw: 8_300, gzip: 3_350},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
